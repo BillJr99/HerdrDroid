@@ -69,6 +69,27 @@ fun SettingsScreen(vm: AppViewModel, back: Screen) {
                     }
                 }
             }
+            Section("Reading font") {
+                ReadingFont.entries.forEach { f ->
+                    Row(
+                        Modifier.fillMaxWidth().clickable { vm.chooseReadingFont(f) }.padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = vm.readingFont == f, onClick = { vm.chooseReadingFont(f) })
+                        Column {
+                            Text(f.label, color = Palette.Ink, fontSize = 16.sp)
+                            Text(
+                                "Done. All 16 tests pass, and the APK is ready.",
+                                color = Palette.Muted, fontSize = 14.sp, fontFamily = f.family,
+                            )
+                        }
+                    }
+                }
+                Text(
+                    "Used for the agent's replies. Tables, code and the full terminal always use the monospace font.",
+                    color = Palette.Muted, fontSize = 13.sp,
+                )
+            }
             Section("Usage limits") {
                 Row(
                     Modifier.fillMaxWidth().clickable { vm.setQuotasShown(!vm.showQuotas) },

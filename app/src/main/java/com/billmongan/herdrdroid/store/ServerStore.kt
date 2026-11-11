@@ -115,6 +115,14 @@ class AppPrefs(context: Context) {
         get() = prefs.getString("theme", "SYSTEM") ?: "SYSTEM"
         set(v) = prefs.edit().putString("theme", v).apply()
 
+    var readingFont: String
+        get() = prefs.getString("readingFont", "SANS") ?: "SANS"
+        set(v) = prefs.edit().putString("readingFont", v).apply()
+
+    var showKeys: Boolean
+        get() = prefs.getBoolean("showKeys", true)
+        set(v) = prefs.edit().putBoolean("showKeys", v).apply()
+
     var showQuotas: Boolean
         get() = prefs.getBoolean("showQuotas", true)
         set(v) = prefs.edit().putBoolean("showQuotas", v).apply()

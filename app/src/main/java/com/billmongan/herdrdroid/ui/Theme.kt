@@ -13,8 +13,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.material3.Typography
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import com.billmongan.herdrdroid.R
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.billmongan.herdrdroid.herdr.Status
@@ -52,7 +57,52 @@ object Palette {
     val Preview get() = pick(0xFF3A404C, 0xFFC3C9D4)
     val Terminal get() = pick(0xFF14161B, 0xFF08090C)
     val TerminalInk get() = pick(0xFFD9DEE7, 0xFFD9DEE7)
-    val Code get() = pick(0xFFF3F5F8, 0xFF111419)
+    val Code get() = pick(0xFFF3F5F8, 0xFF14171D)
+    val Bubble get() = pick(0xFFE9ECF1, 0xFF262B34)
+    val Composer get() = pick(0xFFFFFFFF, 0xFF1C2027)
+}
+
+/** The fonts bundled with the app (all under the SIL Open Font License; see assets/licenses). */
+object Fonts {
+    val Sans = FontFamily(
+        Font(R.font.inter_regular, FontWeight.Normal),
+        Font(R.font.inter_medium, FontWeight.Medium),
+        Font(R.font.inter_semibold, FontWeight.SemiBold),
+        Font(R.font.inter_semibold, FontWeight.Bold),
+    )
+    val Serif = FontFamily(
+        Font(R.font.sourceserif_regular, FontWeight.Normal),
+        Font(R.font.sourceserif_semibold, FontWeight.SemiBold),
+        Font(R.font.sourceserif_semibold, FontWeight.Bold),
+    )
+    val Mono = FontFamily(
+        Font(R.font.jetbrainsmono_regular, FontWeight.Normal),
+        Font(R.font.jetbrainsmono_bold, FontWeight.Bold),
+        Font(R.font.jetbrainsmono_bold, FontWeight.SemiBold),
+    )
+}
+
+/** The font for the agent's replies on the agent screen. */
+enum class ReadingFont(val label: String) {
+    SANS("Sans (Inter)"), SERIF("Serif (Source Serif)"), MONO("Monospace (JetBrains Mono)");
+
+    val family: FontFamily get() = when (this) {
+        SANS -> Fonts.Sans
+        SERIF -> Fonts.Serif
+        MONO -> Fonts.Mono
+    }
+}
+
+private fun TextStyle.inter() = copy(fontFamily = Fonts.Sans)
+
+private val AppType = Typography().let { t ->
+    Typography(
+        displayLarge = t.displayLarge.inter(), displayMedium = t.displayMedium.inter(), displaySmall = t.displaySmall.inter(),
+        headlineLarge = t.headlineLarge.inter(), headlineMedium = t.headlineMedium.inter(), headlineSmall = t.headlineSmall.inter(),
+        titleLarge = t.titleLarge.inter(), titleMedium = t.titleMedium.inter(), titleSmall = t.titleSmall.inter(),
+        bodyLarge = t.bodyLarge.inter(), bodyMedium = t.bodyMedium.inter(), bodySmall = t.bodySmall.inter(),
+        labelLarge = t.labelLarge.inter(), labelMedium = t.labelMedium.inter(), labelSmall = t.labelSmall.inter(),
+    )
 }
 
 enum class ThemeMode(val label: String) { SYSTEM("Match phone"), LIGHT("Light"), DARK("Dark") }
@@ -78,7 +128,7 @@ fun HerdrTheme(dark: Boolean, content: @Composable () -> Unit) {
                 outline = Palette.Field, error = Palette.OrangeInk,
             )
         }
-        MaterialTheme(colorScheme = colors, content = content)
+        MaterialTheme(colorScheme = colors, typography = AppType, content = content)
     }
 }
 

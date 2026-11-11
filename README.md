@@ -7,8 +7,8 @@ HerdrDroid is an Android app for talking to the coding agents in a [herdr](https
 - **Servers.** You add each computer yourself: a name, its address, its SSH port, your username, and the command that runs herdr there (for example `herdr` or `~/.local/bin/herdr`). Nothing is filled in for you, so the app works with any herdr server you can reach.
 - **All tabs.** Every herdr pane is a card with its agent, its status (Needs you, Working, Done, Idle), the model it is running, and the last line it printed. A tab that is waiting on you has an orange border and sorts to the top. The list refreshes every three seconds.
 - **Talking to an agent.** Tap a card to see the pane's recent output and send it a message. Messages to an agent go through `herdr agent prompt`, which submits text the way the agent expects. Other panes get the text and Enter.
-- **Reading the screen.** The default view wraps ordinary lines at word boundaries and indents each continuation under the first word, so lists and indented code stay lined up. Tables, boxes and column-aligned output keep their exact layout in a strip that scrolls sideways, and full-width rules become thin dividers. Pinch with two fingers to change the text size, which is remembered for each server. **Terminal** shows the exact screen, unwrapped.
-- **Keys.** Quick keys send Esc, Tab, the four arrows, Backspace and Enter, and Ctrl+C after you confirm. **Ctrl** and **Alt** work like a phone terminal's extra keys: tap one and it applies to the next key, so Ctrl then R sends Ctrl+R (a letter typed on the keyboard counts as the next key); long-press one and it stays held until you tap it again. They combine with each other and with the quick keys, for example Ctrl+Alt+↑.
+- **Reading the screen.** The default **Chat** view reads like a messaging app. The app joins the lines the agent wrapped at the terminal's width back into paragraphs, so they wrap again at the phone's width, with bullets and numbers hanging in their own column. Messages you sent appear as bubbles on the right. Tables, boxes and column-aligned output keep their exact layout in a monospace strip that scrolls sideways, and full-width rules become thin dividers. Scrollbars, right-hand clocks and side panels (such as OpenCode's) are left out, and the agent's own input box and status line move to a small footer. The replies use a reading font you choose in Settings: Inter (sans, the default), Source Serif, or JetBrains Mono. Pinch with two fingers to change the text size, which is remembered for each server. **Terminal** shows the exact screen, unwrapped, in JetBrains Mono.
+- **Keys.** Two rows that always fit the screen: **Ctrl**, **Alt** and the four arrows (side by side, like a keyboard's arrow cluster) on top, then Esc, Tab, Backspace, Enter and Ctrl+C (after you confirm). **Keys** in the message box hides or shows them, and the choice is remembered. **Ctrl** and **Alt** work like a phone terminal's extra keys: tap one and it applies to the next key, so Ctrl then R sends Ctrl+R (a letter typed on the keyboard counts as the next key); long-press one and it stays held until you tap it again. They combine with each other and with the other keys, for example Ctrl+Alt+↑.
 - **An agent needs you.** When herdr reports an agent as blocked, or the bottom of the screen shows a numbered menu or a `(y/n)` question, the app shows the question with one button per answer. Each button says exactly which keys it sends.
 
 The version number is shown beside the name on the server list and at the end of the status line on the tabs screen.
@@ -97,7 +97,7 @@ The build needs JDK 17, the Android SDK (platform 34, build-tools 34.0.0) and Gr
 bash build-in-docker.sh /path/to/work-folder
 ```
 
-The build runs the usage-parser tests first, then writes the signed APK to `<work-folder>/out/`. The app is signed with the sideload key in `keystore/`, so a newer build installs over an older one. Keep that file with the source: a build signed with a different key will not install over this one without uninstalling first.
+The build runs the parser tests first, then writes the signed APK to `<work-folder>/out/`. The app is signed with the sideload key in `keystore/`, so a newer build installs over an older one. Keep that file with the source: a build signed with a different key will not install over this one without uninstalling first.
 
 The key's passwords are read from `keystore/signing.properties` (`storePassword`, `keyAlias`, `keyPassword`), which git ignores, so neither the build file nor the build script holds them.
 
@@ -107,8 +107,11 @@ The key's passwords are read from `keystore/signing.properties` (`storePassword`
 |---|---|
 | `app/src/main/java/.../ssh/HerdrSsh.kt` | The SSH connection, host key pinning, and running one command at a time |
 | `app/src/main/java/.../herdr/Herdr.kt` | The herdr commands, pane parsing, question detection, and the guarded usage check |
+| `app/src/main/java/.../herdr/Reflow.kt` | Turning a terminal screen into the chat view: rejoining wrapped paragraphs, tables, your messages, and the footer |
 | `app/src/main/java/.../herdr/Quota.kt` | The usage profile for each agent and the parser for their usage screens |
 | `app/src/main/java/.../store/ServerStore.kt` | Saved servers, app settings, the Keystore encryption, and keys made on the phone |
 | `app/src/main/java/.../AppViewModel.kt` | App state, the connect flow, reconnecting, the send queue, and the usage checks |
 | `app/src/main/java/.../ui/` | The screens: servers, editing a server, settings, all tabs, and one agent |
 | `app/src/test/java/.../QuotaTest.kt` | The parser run against each agent's captured usage screen |
+| `app/src/test/java/.../ReflowTest.kt` | The chat view's parser run against screens shaped like Grok, Claude Code, Codex and OpenCode |
+| `app/src/main/res/font/`, `app/src/main/assets/licenses/` | The bundled fonts (Inter, Source Serif 4, JetBrains Mono) and their SIL Open Font License texts |

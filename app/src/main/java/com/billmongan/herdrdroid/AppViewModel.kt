@@ -28,6 +28,7 @@ import com.billmongan.herdrdroid.store.PasswordVault
 import com.billmongan.herdrdroid.store.Server
 import com.billmongan.herdrdroid.store.ServerStore
 import com.billmongan.herdrdroid.store.SshKeyVault
+import com.billmongan.herdrdroid.ui.ReadingFont
 import com.billmongan.herdrdroid.ui.ThemeMode
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -108,6 +109,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var themeMode by mutableStateOf(runCatching { ThemeMode.valueOf(prefs.theme) }.getOrDefault(ThemeMode.SYSTEM))
         private set
     var showQuotas by mutableStateOf(prefs.showQuotas)
+        private set
+    var readingFont by mutableStateOf(runCatching { ReadingFont.valueOf(prefs.readingFont) }.getOrDefault(ReadingFont.SANS))
+        private set
+    var showKeys by mutableStateOf(prefs.showKeys)
         private set
     /** The latest usage reading for each kind of agent on the open server. */
     var quotas by mutableStateOf<Map<String, QuotaReading>>(emptyMap())
@@ -201,6 +206,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun setTheme(mode: ThemeMode) {
         themeMode = mode
         prefs.theme = mode.name
+    }
+
+    fun chooseReadingFont(f: ReadingFont) {
+        readingFont = f
+        prefs.readingFont = f.name
+    }
+
+    fun setKeysShown(on: Boolean) {
+        showKeys = on
+        prefs.showKeys = on
     }
 
     fun setQuotasShown(on: Boolean) {

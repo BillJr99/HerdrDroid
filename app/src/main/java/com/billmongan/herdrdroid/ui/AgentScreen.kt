@@ -3,6 +3,7 @@ package com.billmongan.herdrdroid.ui
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -13,8 +14,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -23,8 +25,10 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -32,7 +36,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -43,10 +47,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -58,37 +63,25 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.ParagraphStyle
-import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.style.TextIndent
-import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.billmongan.herdrdroid.AppViewModel
+import com.billmongan.herdrdroid.Link
 import com.billmongan.herdrdroid.Screen
 import com.billmongan.herdrdroid.herdr.Choice
 import com.billmongan.herdrdroid.herdr.Prompt
+import com.billmongan.herdrdroid.herdr.Reflow
+import com.billmongan.herdrdroid.herdr.Seg
 import com.billmongan.herdrdroid.herdr.Status
 import com.billmongan.herdrdroid.herdr.detectPrompt
-
-private data class QuickKey(val label: String, val key: String)
-
-private val QUICK_KEYS = listOf(
-    QuickKey("Esc", "esc"),
-    QuickKey("Tab", "tab"),
-    QuickKey("←", "left"),
-    QuickKey("↑", "up"),
-    QuickKey("↓", "down"),
-    QuickKey("→", "right"),
-    QuickKey("⌫", "backspace"),
-    QuickKey("Enter", "enter"),
-)
 
 /** A modifier key: off, on for the next key only (tap), or held until tapped again (long-press). */
 enum class Hold { OFF, ONCE, LOCKED }
@@ -110,7 +103,6 @@ private fun keyName(c: Char): String? = when {
     else -> null
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun AgentScreen(vm: AppViewModel, paneId: String) {
     val pane = vm.pane(paneId)
@@ -146,6 +138,11 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
         if (alt == Hold.ONCE) alt = Hold.OFF
     }
     val modifiersOn = ctrl != Hold.OFF || alt != Hold.OFF
+    fun send() {
+        if (message.isNotBlank() && pane != null) {
+            vm.sendMessage(pane, message); message = ""; typingAnswer = false
+        }
+    }
 
     val status = pane?.status ?: Status.UNKNOWN
     val prompt: Prompt? = if (typingAnswer) null else detectPrompt(vm.paneText, status == Status.NEEDS_YOU)
@@ -161,37 +158,40 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     }
 
     Column(Modifier.fillMaxSize().background(Palette.Ground).systemBarsPadding().imePadding()) {
-        Surface(color = Palette.Card, border = BorderStroke(1.dp, Palette.Line)) {
-            Row(
-                Modifier.fillMaxWidth().padding(start = 4.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconButton(onClick = { vm.screen = Screen.Tabs }) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to all tabs", tint = Palette.Ink)
-                }
-                AgentTile(pane?.initial ?: "?", status, size = 36)
-                Column(Modifier.weight(1f).padding(start = 10.dp)) {
-                    Text(pane?.agentName ?: paneId, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = Palette.Ink)
-                    if (vm.link == com.billmongan.herdrdroid.Link.CONNECTED) {
+        // ---- Header: the agent, what it's doing, and its model -----------------------------
+        Row(
+            Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = { vm.screen = Screen.Tabs }) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to all tabs", tint = Palette.Ink)
+            }
+            Column(Modifier.weight(1f).padding(start = 2.dp)) {
+                Text(pane?.agentName ?: paneId, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, color = Palette.Ink)
+                if (vm.link == Link.CONNECTED) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(7.dp).background(look(status).ink, CircleShape))
                         Text(
-                            look(status).label + " · " + (vm.modelLine(paneId) ?: paneId),
-                            color = look(status).ink, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
-                            maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                            "  " + look(status).label + " · " + (vm.modelLine(paneId) ?: paneId),
+                            color = Palette.Muted, fontSize = 12.5.sp,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis,
                         )
-                    } else {
-                        LinkLabel(vm, "")
                     }
-                }
-                if (quota != null) {
-                    TextButton(onClick = { showUsage = !showUsage }) { Text("Usage") }
-                }
-                TextButton(onClick = { fullTerminal = !fullTerminal }) {
-                    Text(if (fullTerminal) "Wrapped" else "Terminal")
+                } else {
+                    LinkLabel(vm, "")
                 }
             }
+            if (quota != null) {
+                TextButton(onClick = { showUsage = !showUsage }) { Text("Usage", fontSize = 14.sp) }
+            }
+            TextButton(onClick = { fullTerminal = !fullTerminal }) {
+                Text(if (fullTerminal) "Chat" else "Terminal", fontSize = 14.sp)
+            }
         }
+        HorizontalDivider(color = Palette.Line)
         ServerBanners(vm)
 
+        // ---- The conversation ---------------------------------------------------------------
         Column(
             Modifier
                 .weight(1f)
@@ -216,52 +216,32 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                     }
                 }
                 .verticalScroll(scroll)
-                .padding(16.dp),
+                .padding(horizontal = 16.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             if (showUsage && quota != null) QuotaDetails(quota) { showUsage = false }
-            vm.lastSent?.takeIf { it.first == paneId }?.let { (_, text) ->
-                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
-                    Text(
-                        text,
-                        color = Palette.OnBlue,
-                        fontSize = 15.sp,
-                        modifier = Modifier
-                            .widthIn(max = 300.dp)
-                            .background(Palette.Blue, RoundedCornerShape(18.dp, 18.dp, 4.dp, 18.dp))
-                            .padding(horizontal = 14.dp, vertical = 10.dp),
-                    )
-                }
-            }
-            if (fullTerminal) {
+            val text = vm.paneText
+            if (text.isBlank()) {
+                Text("Loading…", color = Palette.Muted, fontSize = 15.sp)
+            } else if (fullTerminal) {
                 SelectionContainer {
                     Text(
-                        vm.paneText.ifBlank { "Loading…" },
+                        text,
                         color = Palette.TerminalInk,
-                        fontFamily = FontFamily.Monospace,
+                        fontFamily = Fonts.Mono,
                         fontSize = (liveSize * 0.88f).sp,
                         lineHeight = (liveSize * 0.88f * 1.35f).sp,
                         softWrap = false,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .background(Palette.Terminal, RoundedCornerShape(10.dp))
+                            .background(Palette.Terminal, RoundedCornerShape(12.dp))
                             .horizontalScroll(rememberScrollState())
-                            .padding(10.dp),
+                            .padding(12.dp),
                     )
                 }
             } else {
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = Palette.Card,
-                    border = BorderStroke(1.dp, Palette.Line),
-                ) {
-                    val text = vm.paneText
-                    if (text.isBlank()) {
-                        Text("Loading…", color = Palette.Muted, modifier = Modifier.padding(14.dp))
-                    } else {
-                        WrappedScreen(text, liveSize, Modifier.fillMaxWidth().padding(vertical = 12.dp))
-                    }
-                }
+                val pending = vm.lastSent?.takeIf { it.first == paneId }?.second
+                ChatView(text, pending, liveSize, vm.readingFont)
             }
             prompt?.let { p ->
                 PromptCard(
@@ -274,59 +254,46 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
             }
         }
 
-        Surface(color = Palette.Card, border = BorderStroke(1.dp, Palette.Line)) {
-            Column(Modifier.padding(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                if (modifiersOn) {
-                    val names = listOfNotNull("Ctrl".takeIf { ctrl != Hold.OFF }, "Alt".takeIf { alt != Hold.OFF }).joinToString("+")
-                    val held = ctrl == Hold.LOCKED || alt == Hold.LOCKED
-                    Text(
-                        if (held) "$names is held: every key and letter you type goes with it. Tap it to let go."
-                        else "$names is on for the next key. Type a letter or tap a key.",
-                        color = Palette.Blue, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
-                    )
-                }
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    ModifierKey("Ctrl", ctrl) { ctrl = it }
-                    ModifierKey("Alt", alt) { alt = it }
-                    QUICK_KEYS.forEach { k -> KeyButton(k.label) { press(k.key) } }
-                    KeyButton("Ctrl+C", danger = true) { confirmCtrlC = true }
-                }
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = message,
-                        onValueChange = { new ->
-                            // With Ctrl or Alt on, a typed character becomes a key chord instead of text.
-                            if (modifiersOn && new.length == message.length + 1 && new.startsWith(message)) {
-                                keyName(new.last())?.let { press(it) }
-                            } else {
-                                message = new
-                            }
-                        },
-                        placeholder = {
-                            Text(if (modifiersOn) "Type a letter to send it with the modifier" else "Message ${pane?.agentName ?: "this tab"}…")
-                        },
-                        shape = RoundedCornerShape(24.dp),
-                        maxLines = 5,
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                        keyboardActions = KeyboardActions(onSend = {
-                            if (message.isNotBlank() && pane != null) {
-                                vm.sendMessage(pane, message); message = ""; typingAnswer = false
-                            }
-                        }),
-                        modifier = Modifier.weight(1f),
-                    )
-                    FilledIconButton(
-                        onClick = {
-                            if (message.isNotBlank() && pane != null) {
-                                vm.sendMessage(pane, message); message = ""; typingAnswer = false
-                            }
-                        },
-                        enabled = message.isNotBlank() && pane != null,
-                        colors = IconButtonDefaults.filledIconButtonColors(containerColor = Palette.Blue),
-                        modifier = Modifier.size(52.dp),
-                    ) { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", tint = Palette.OnBlue) }
-                }
+        // ---- Keys and the message box -------------------------------------------------------
+        Column(
+            Modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, top = 6.dp, bottom = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (modifiersOn) {
+                val names = listOfNotNull("Ctrl".takeIf { ctrl != Hold.OFF }, "Alt".takeIf { alt != Hold.OFF }).joinToString("+")
+                val held = ctrl == Hold.LOCKED || alt == Hold.LOCKED
+                Text(
+                    if (held) "$names is held for every key and letter. Tap it to let go."
+                    else "$names goes with the next key or letter you type.",
+                    color = Palette.Blue, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(horizontal = 4.dp),
+                )
             }
+            if (vm.showKeys || modifiersOn) {
+                KeyPad(
+                    ctrl = ctrl, alt = alt,
+                    onCtrl = { ctrl = it }, onAlt = { alt = it },
+                    onKey = ::press,
+                    onCtrlC = { confirmCtrlC = true },
+                )
+            }
+            Composer(
+                value = message,
+                onValueChange = { new ->
+                    // With Ctrl or Alt on, a typed character becomes a key chord instead of text.
+                    if (modifiersOn && new.length == message.length + 1 && new.startsWith(message)) {
+                        keyName(new.last())?.let { press(it) }
+                    } else {
+                        message = new
+                    }
+                },
+                placeholder = if (modifiersOn) "Type a letter to send it with ${if (ctrl != Hold.OFF) "Ctrl" else "Alt"}"
+                else "Message ${pane?.agentName ?: "this tab"}",
+                keysShown = vm.showKeys,
+                onToggleKeys = { vm.setKeysShown(!vm.showKeys) },
+                canSend = message.isNotBlank() && pane != null,
+                onSend = ::send,
+            )
         }
     }
 
@@ -343,47 +310,179 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     }
 }
 
+// ---- Keys -------------------------------------------------------------------------------------
+
+private val KEY_HEIGHT = 42.dp
+
+/**
+ * Two rows that always fit the screen: Ctrl, Alt and the four arrows together on top, then
+ * Esc, Tab, Backspace, Enter and Ctrl+C.
+ */
 @Composable
-private fun KeyButton(label: String, danger: Boolean = false, onClick: () -> Unit) {
-    OutlinedButton(
-        onClick = onClick,
+private fun KeyPad(
+    ctrl: Hold,
+    alt: Hold,
+    onCtrl: (Hold) -> Unit,
+    onAlt: (Hold) -> Unit,
+    onKey: (String) -> Unit,
+    onCtrlC: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            ModifierKey("Ctrl", ctrl, onCtrl, Modifier.weight(1.2f))
+            ModifierKey("Alt", alt, onAlt, Modifier.weight(1.2f))
+            ArrowKeys(onKey, Modifier.weight(4f))
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            KeyButton("Esc", Modifier.weight(1f)) { onKey("esc") }
+            KeyButton("Tab", Modifier.weight(1f)) { onKey("tab") }
+            KeyButton("⌫", Modifier.weight(1f)) { onKey("backspace") }
+            KeyButton("Enter", Modifier.weight(1.3f)) { onKey("enter") }
+            KeyButton("Ctrl+C", Modifier.weight(1.4f), danger = true) { onCtrlC() }
+        }
+    }
+}
+
+/** The four arrows side by side in one rounded strip, like a keyboard's arrow cluster. */
+@Composable
+private fun ArrowKeys(onKey: (String) -> Unit, modifier: Modifier) {
+    Surface(
         shape = RoundedCornerShape(10.dp),
+        color = Palette.Key,
+        border = BorderStroke(1.dp, Palette.KeyEdge),
+        modifier = modifier.height(KEY_HEIGHT),
+    ) {
+        Row {
+            listOf("←" to "left", "↑" to "up", "↓" to "down", "→" to "right").forEachIndexed { i, (label, key) ->
+                if (i > 0) Box(Modifier.width(1.dp).fillMaxHeight().background(Palette.KeyEdge))
+                Box(
+                    Modifier.weight(1f).fillMaxHeight().clickable { onKey(key) },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(label, color = Palette.Ink, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun KeyButton(label: String, modifier: Modifier = Modifier, danger: Boolean = false, onClick: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = if (danger) Palette.OrangeSoft else Palette.Key,
         border = BorderStroke(1.dp, if (danger) Palette.OrangeEdge else Palette.KeyEdge),
-        colors = ButtonDefaults.outlinedButtonColors(
-            containerColor = if (danger) Palette.OrangeSoft else Palette.Key,
-            contentColor = if (danger) Palette.OrangeInk else Palette.Ink,
-        ),
-        contentPadding = PaddingValues(horizontal = 10.dp),
-        modifier = Modifier.heightIn(min = 44.dp).widthIn(min = 44.dp),
-    ) { Text(label, fontWeight = FontWeight.SemiBold) }
+        modifier = modifier.height(KEY_HEIGHT).widthIn(min = 44.dp).clickable(onClick = onClick),
+    ) {
+        Box(Modifier.padding(horizontal = 6.dp), contentAlignment = Alignment.Center) {
+            Text(
+                label,
+                color = if (danger) Palette.OrangeInk else Palette.Ink,
+                fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
+            )
+        }
+    }
 }
 
 /** Tap: on for the next key. Long-press: held until tapped again. */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ModifierKey(label: String, state: Hold, onChange: (Hold) -> Unit) {
+private fun ModifierKey(label: String, state: Hold, onChange: (Hold) -> Unit, modifier: Modifier) {
     val on = state != Hold.OFF
     Surface(
         shape = RoundedCornerShape(10.dp),
         color = if (on) Palette.Blue else Palette.Key,
         border = BorderStroke(if (state == Hold.LOCKED) 2.dp else 1.dp, if (on) Palette.Blue else Palette.KeyEdge),
-        modifier = Modifier
-            .heightIn(min = 44.dp)
-            .widthIn(min = 52.dp)
+        modifier = modifier
+            .height(KEY_HEIGHT)
             .combinedClickable(
                 onClick = { onChange(if (state == Hold.OFF) Hold.ONCE else Hold.OFF) },
                 onLongClick = { onChange(if (state == Hold.LOCKED) Hold.OFF else Hold.LOCKED) },
             ),
     ) {
-        Box(Modifier.padding(horizontal = 12.dp, vertical = 12.dp), contentAlignment = Alignment.Center) {
+        Box(contentAlignment = Alignment.Center) {
             Text(
                 if (state == Hold.LOCKED) "$label ●" else label,
                 color = if (on) Palette.OnBlue else Palette.Ink,
-                fontWeight = FontWeight.SemiBold,
+                fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
             )
         }
     }
 }
+
+/** The message box: a rounded card with the text on top and its buttons underneath. */
+@Composable
+private fun Composer(
+    value: String,
+    onValueChange: (String) -> Unit,
+    placeholder: String,
+    keysShown: Boolean,
+    onToggleKeys: () -> Unit,
+    canSend: Boolean,
+    onSend: () -> Unit,
+) {
+    Surface(
+        shape = RoundedCornerShape(24.dp),
+        color = Palette.Composer,
+        border = BorderStroke(1.dp, Palette.Line),
+        shadowElevation = 3.dp,
+    ) {
+        Column(Modifier.padding(start = 4.dp, end = 8.dp, bottom = 8.dp)) {
+            TextField(
+                value = value,
+                onValueChange = onValueChange,
+                placeholder = { Text(placeholder, color = Palette.Muted, fontSize = 16.sp) },
+                textStyle = TextStyle(fontFamily = Fonts.Sans, fontSize = 16.sp, color = Palette.Ink),
+                maxLines = 6,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                keyboardActions = KeyboardActions(onSend = { onSend() }),
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = Color.Transparent,
+                    unfocusedContainerColor = Color.Transparent,
+                    disabledContainerColor = Color.Transparent,
+                    focusedIndicatorColor = Color.Transparent,
+                    unfocusedIndicatorColor = Color.Transparent,
+                    disabledIndicatorColor = Color.Transparent,
+                    cursorColor = Palette.Blue,
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = if (keysShown) Palette.BlueSoft else Color.Transparent,
+                    border = BorderStroke(1.dp, if (keysShown) Palette.BlueSoft else Palette.Line),
+                    modifier = Modifier.padding(start = 8.dp).clickable(onClick = onToggleKeys),
+                ) {
+                    Text(
+                        if (keysShown) "Keys ▾" else "Keys ▴",
+                        color = if (keysShown) Palette.Blue else Palette.Muted,
+                        fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                FilledIconButton(
+                    onClick = onSend,
+                    enabled = canSend,
+                    shape = CircleShape,
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = Palette.Blue,
+                        disabledContainerColor = Palette.Gray,
+                    ),
+                    modifier = Modifier.size(38.dp),
+                ) {
+                    Icon(
+                        Icons.Filled.KeyboardArrowUp, contentDescription = "Send",
+                        tint = if (canSend) Palette.OnBlue else Palette.Muted,
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ---- The prompt card --------------------------------------------------------------------------
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -439,98 +538,120 @@ private fun PromptCard(
     }
 }
 
-// ---- The wrapped view ---------------------------------------------------------------------
+// ---- The chat view ----------------------------------------------------------------------------
 
-private const val BOX_CHARS = "─│┌┐└┘├┤┬┴┼╭╮╰╯═║╔╗╚╝━┃▔▁█░▓▒■□"
-private val RULE = Regex("""^[\s─━═▔▁\-_]{12,}$""")
-private val ALIGNED = Regex("""\S {3,}\S""")
-private val BULLET = Regex("""^(\s*)([-*•·▸▹›>]\s+|\d{1,3}[.)]\s+|[⏺●○◦✓✗✔✘❯⎿]\s*)""")
-
-private sealed interface Block {
-    data class Prose(val lines: List<String>) : Block
-    data class Wide(val lines: List<String>) : Block
-    data object Rule : Block
+private fun markGlyph(mark: String): String = when {
+    mark == "-" || mark == "*" || mark == "·" -> "•"
+    mark == "⎿" -> "↳"
+    else -> mark
 }
+
+private fun markColor(mark: String): Color = when (mark) {
+    "●", "⏺", "◆", "◈", "◇", "★" -> Palette.Blue
+    "✓", "✔" -> Palette.Green
+    "✗", "✘" -> Palette.OrangeInk
+    else -> Palette.Muted
+}
+
+private fun norm(s: String) = s.filterNot { it.isWhitespace() }.take(40)
 
 /**
- * A line that only reads correctly at full width: box drawing, a table, column-aligned output,
- * or a progress bar. These keep their layout and scroll sideways; everything else wraps.
- */
-private fun isWide(line: String): Boolean {
-    val t = line.trim()
-    if (t.isEmpty()) return false
-    if (t.count { it in BOX_CHARS } >= 2) return true
-    if (t.startsWith("|") && t.count { it == '|' } >= 2) return true
-    return ALIGNED.containsMatchIn(t) && t.length > 24
-}
-
-private fun blocks(text: String): List<Block> {
-    val out = mutableListOf<Block>()
-    val prose = mutableListOf<String>()
-    val wide = mutableListOf<String>()
-    fun flushProse() { if (prose.isNotEmpty()) { out += Block.Prose(prose.toList()); prose.clear() } }
-    fun flushWide() { if (wide.isNotEmpty()) { out += Block.Wide(wide.toList()); wide.clear() } }
-    val lines = text.lines().map { it.trimEnd() }
-        .joinToString("\n").replace(Regex("\n{3,}"), "\n\n").trim('\n').lines()
-    for (l in lines) {
-        when {
-            RULE.matches(l) && l.isNotBlank() -> { flushProse(); flushWide(); out += Block.Rule }
-            isWide(l) -> { flushProse(); wide += l }
-            else -> { flushWide(); prose += l }
-        }
-    }
-    flushProse(); flushWide()
-    return out
-}
-
-/**
- * The pane as it reads best on a phone: ordinary lines wrap at word boundaries with their
- * continuation lines indented under the first word (so lists and indented code stay lined up),
- * while tables and boxes keep their exact layout in a strip that scrolls sideways.
+ * The pane as a conversation: the agent's paragraphs rewrapped for the phone in the reading
+ * font, your messages as bubbles on the right, tables and boxes in monospace strips that scroll
+ * sideways, and the agent's own input box and status line as a quiet footer.
  */
 @Composable
-private fun WrappedScreen(text: String, size: Float, modifier: Modifier) {
-    val charWidth = size * 0.6f
-    val list = remember(text) { blocks(text) }
-    SelectionContainer(modifier) {
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            list.forEach { b ->
-                when (b) {
-                    Block.Rule -> HorizontalDivider(color = Palette.Line, modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp))
-                    is Block.Wide -> Text(
-                        b.lines.joinToString("\n"),
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = (size * 0.9f).sp,
-                        lineHeight = (size * 0.9f * 1.3f).sp,
-                        softWrap = false,
-                        color = Palette.Ink,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(Palette.Code)
-                            .horizontalScroll(rememberScrollState())
-                            .padding(horizontal = 14.dp, vertical = 6.dp),
-                    )
-                    is Block.Prose -> Text(
-                        prose(b.lines, charWidth),
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = size.sp,
-                        lineHeight = (size * 1.45f).sp,
-                        color = Palette.Ink,
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp),
-                    )
+private fun ChatView(text: String, pending: String?, size: Float, font: ReadingFont) {
+    val segs = remember(text) { Reflow.parse(text) }
+    val family: FontFamily = font.family
+    val prose = if (font == ReadingFont.MONO) size else size * 1.2f
+    val showPending = pending != null && segs.none { it is Seg.You && norm(it.text).startsWith(norm(pending).take(20)) }
+
+    SelectionContainer {
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            segs.forEach { s ->
+                when (s) {
+                    Seg.Gap -> Spacer(Modifier.height(6.dp))
+                    Seg.Rule -> HorizontalDivider(color = Palette.Line, modifier = Modifier.padding(vertical = 6.dp))
+                    is Seg.You -> YouBubble(s.text, prose)
+                    is Seg.Code -> Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = Palette.Code,
+                        border = BorderStroke(1.dp, Palette.Line),
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                    ) {
+                        Text(
+                            s.lines.joinToString("\n"),
+                            fontFamily = Fonts.Mono,
+                            fontSize = (size * 0.88f).sp,
+                            lineHeight = (size * 0.88f * 1.4f).sp,
+                            softWrap = false,
+                            color = Palette.Ink,
+                            modifier = Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 10.dp),
+                        )
+                    }
+                    is Seg.Para -> {
+                        val fs = if (s.detail) prose * 0.88f else prose
+                        val ink = if (s.detail) Palette.Muted else Palette.Ink
+                        Row(Modifier.fillMaxWidth().padding(start = (s.indent.coerceAtMost(16) * 6).dp)) {
+                            if (s.mark != null) {
+                                Text(
+                                    markGlyph(s.mark),
+                                    color = markColor(s.mark),
+                                    fontFamily = family,
+                                    fontSize = fs.sp,
+                                    lineHeight = (fs * 1.5f).sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.widthIn(min = (fs * 1.3f).dp).padding(end = 6.dp),
+                                )
+                            }
+                            Text(
+                                s.text,
+                                color = ink,
+                                fontFamily = family,
+                                fontSize = fs.sp,
+                                lineHeight = (fs * 1.5f).sp,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    }
+                    is Seg.Footer -> Column(
+                        Modifier.fillMaxWidth().padding(top = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        HorizontalDivider(color = Palette.Line, modifier = Modifier.padding(bottom = 6.dp))
+                        s.lines.forEach { l ->
+                            Text(
+                                l,
+                                fontFamily = Fonts.Mono,
+                                fontSize = (size * 0.8f).sp,
+                                color = Palette.Muted,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
                 }
             }
+            if (showPending) YouBubble(pending!!, prose, sending = true)
         }
     }
 }
 
-private fun prose(lines: List<String>, charWidth: Float): AnnotatedString = buildAnnotatedString {
-    lines.forEach { line ->
-        val m = BULLET.find(line)
-        val lead = line.length - line.trimStart().length
-        val hang = (m?.value?.length ?: lead).coerceAtMost(24)
-        withStyle(ParagraphStyle(textIndent = TextIndent(firstLine = 0.sp, restLine = (hang * charWidth).sp))) {
-            append(line.ifEmpty { " " })
-        }
+@Composable
+private fun YouBubble(text: String, size: Float, sending: Boolean = false) {
+    Box(Modifier.fillMaxWidth().padding(vertical = 4.dp), contentAlignment = Alignment.CenterEnd) {
+        Text(
+            text,
+            color = Palette.Ink.copy(alpha = if (sending) 0.6f else 1f),
+            fontFamily = Fonts.Sans,
+            fontSize = size.sp,
+            lineHeight = (size * 1.45f).sp,
+            modifier = Modifier
+                .widthIn(max = 300.dp)
+                .heightIn(min = 20.dp)
+                .background(Palette.Bubble, RoundedCornerShape(20.dp, 20.dp, 6.dp, 20.dp))
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+        )
     }
 }
