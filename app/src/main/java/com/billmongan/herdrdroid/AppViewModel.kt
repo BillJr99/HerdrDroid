@@ -109,7 +109,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val queue = ArrayDeque<Queued>()
     private val quotaLock = Mutex()
     private val lastQuotaTry = mutableMapOf<String, Long>()
-    private var probingPane: String? = null
+    /** The pane whose usage is being checked right now, shown on its card as "Checking usage…". */
+    var probingPane by mutableStateOf<String?>(null)
+        private set
     private var textSizeJob: Job? = null
 
     private val canPoll get() = herdr != null && foreground && link == Link.CONNECTED
@@ -514,7 +516,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun startQuotaChecks() {
         if (quotaJob?.isActive == true) return
         quotaJob = viewModelScope.launch {
-            delay(4_000)
+            delay(1_500)
             while (isActive) {
                 if (showQuotas && canPoll) runCatching { quotaRound(force = false) }
                 delay(30_000)
@@ -523,9 +525,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** The refresh button: check again now, but not more than once every two minutes per agent. */
-    fun refreshQuotasSoon() {
+    fun refreshQuotasSoon(force: Boolean = true) {
         if (!showQuotas || herdr == null) return
-        viewModelScope.launch { runCatching { quotaRound(force = true) } }
+        viewModelScope.launch { runCatching { quotaRound(force = force) } }
     }
 
     /**
@@ -541,7 +543,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val byAgent = fresh.mapNotNull { p -> QuotaProfiles.key(p.agent)?.let { it to p } }.groupBy({ it.first }, { it.second })
         for ((agentKey, list) in byAgent) {
             val last = lastQuotaTry[agentKey] ?: 0L
-            val due = if (force) now - last > 2 * 60_000 else now - last > 30 * 60_000
+            val every = (QuotaProfiles.forAgent(list.first().agent)?.everyMinutes ?: 30) * 60_000L
+            val due = if (force) now - last > 2 * 60_000 else now - last > every
             if (!due) continue
             // Prefer a pane that is not in front at the computer, but use that one if it is the only
             // choice: the check presses Enter only when the input line holds exactly its command.
@@ -565,7 +568,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             when {
                 // Someone had text in that agent's input line, or the screen had no limits on it this
                 // time (a Hermes session that hasn't made a call yet). Try again in 5 minutes.
-                items.isNullOrEmpty() -> lastQuotaTry[agentKey] = now - 25 * 60_000
+                items.isNullOrEmpty() -> lastQuotaTry[agentKey] = now - (every - 5 * 60_000L).coerceAtLeast(0)
                 else -> {
                     lastQuotaTry[agentKey] = now
                     quotas = quotas + (agentKey to QuotaReading(now, items))

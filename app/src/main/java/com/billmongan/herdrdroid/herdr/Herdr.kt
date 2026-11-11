@@ -146,7 +146,8 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
     ): String? {
         sendText(paneId, command)
         delay(600)
-        val echo = Regex("""^[\s│┃|>❯›»$]*""" + Regex.escape(command) + """[\s│┃|]*$""")
+        // \u00A0 is listed because some prompts put a no-break space after the ❯ glyph.
+        val echo = Regex("""^[\s\u00A0│┃|>❯›»$]*""" + Regex.escape(command) + """[\s\u00A0│┃|]*$""")
         if (read(paneId, 24).lines().none { echo.matches(it) }) {
             sendKeys(paneId, *Array(command.length) { "backspace" })
             return null

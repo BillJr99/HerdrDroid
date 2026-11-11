@@ -58,7 +58,7 @@ pi and OpenCode have no usage limit to read (OpenCode's `/stats` is only a token
 
 The checks are careful with the pane:
 
-- They run about every 30 minutes per agent, and when you tap refresh (at most once every two minutes).
+- They run every 10 minutes for Claude Code, every 15 for Grok and Antigravity (whose usage screens close without a trace), and every 30 for the agents that print their usage into the conversation (Codex, Copilot, Hermes). Opening the card list runs any check that is due right away, and tapping refresh checks again (at most once every two minutes per agent). A card shows "Checking usage…" while its check runs.
 - They use a pane that herdr reports as idle or done. Claude Code is the exception: it opens `/usage` and `/status` even while it is working, without interrupting the work, so a working Claude pane is checked too (an idle one is still preferred). A pane that is not in front in herdr's own window at the computer is preferred; the one in front is used only when it is the only pane running that agent.
 - The app types the command, then reads the input line. It presses Enter only if that line holds exactly the command. If anything else was already typed there, it erases what it typed, leaves the pane as it was, and tries again in five minutes.
 - While a check runs in a pane, anything you send to that pane waits for it to finish.

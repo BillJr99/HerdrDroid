@@ -34,6 +34,11 @@ data class QuotaProfile(
     /** A command that shows the active model when the agent's footer does not (Claude's /status). */
     val modelCommand: String? = null,
     val modelPattern: Regex? = null,
+    /**
+     * How often to check. Agents whose usage screen closes without a trace are checked more often;
+     * agents that print their usage into the conversation stay at 30 minutes to keep it uncluttered.
+     */
+    val everyMinutes: Int = 30,
 )
 
 object QuotaProfiles {
@@ -48,13 +53,17 @@ object QuotaProfiles {
             openMarker = Regex("Esc to cancel", RegexOption.IGNORE_CASE),
             modelCommand = "/status",
             modelPattern = Regex("""^\s*Model:\s+(.+?)\s*$"""),
+            everyMinutes = 10,
         ),
         QuotaProfile(setOf("codex"), "/status", emptyList(), 2_500),
         QuotaProfile(setOf("copilot"), "/usage", emptyList(), 3_000),
-        QuotaProfile(setOf("grok"), "/usage", listOf("esc"), 3_000, openMarker = Regex("Esc close", RegexOption.IGNORE_CASE)),
+        QuotaProfile(
+            setOf("grok"), "/usage", listOf("esc"), 3_000,
+            openMarker = Regex("Esc close", RegexOption.IGNORE_CASE), everyMinutes = 15,
+        ),
         QuotaProfile(
             setOf("agy", "antigravity"), "/usage", listOf("esc"), 3_500,
-            bareMeansLeft = true, openMarker = Regex("esc Close", RegexOption.IGNORE_CASE),
+            bareMeansLeft = true, openMarker = Regex("esc Close", RegexOption.IGNORE_CASE), everyMinutes = 15,
         ),
         QuotaProfile(setOf("hermes"), "/usage", emptyList(), 2_500),
     )

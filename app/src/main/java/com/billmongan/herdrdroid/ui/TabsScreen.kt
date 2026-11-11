@@ -68,6 +68,9 @@ fun TabsScreen(vm: AppViewModel) {
     var filter by rememberSaveable { mutableStateOf(Filter.ALL) }
     val scope = rememberCoroutineScope()
 
+    // Coming back to the card list checks any usage reading that is due, without waiting for the timer.
+    LaunchedEffect(Unit) { vm.refreshQuotasSoon(force = false) }
+
     // Panes every 3 seconds; the one-line previews every 9.
     LaunchedEffect(vm.current?.id) {
         var tick = 0
@@ -131,7 +134,10 @@ fun TabsScreen(vm: AppViewModel) {
         ) {
             items(panes.filter { filter.matches(it) }, key = { it.id }) { p ->
                 val dup = (names[p.agentName] ?: 0) > 1
-                PaneCard(p, vm.previews[p.id].orEmpty(), showFolder = dup, model = vm.models[p.id], quota = vm.quotaFor(p)) { vm.openPane(p.id) }
+                PaneCard(
+                    p, vm.previews[p.id].orEmpty(), showFolder = dup, model = vm.models[p.id], quota = vm.quotaFor(p),
+                    checking = vm.showQuotas && vm.probingPane == p.id,
+                ) { vm.openPane(p.id) }
             }
             item { Spacer(Modifier.height(24.dp)) }
         }
@@ -139,7 +145,10 @@ fun TabsScreen(vm: AppViewModel) {
 }
 
 @Composable
-private fun PaneCard(p: Pane, preview: String, showFolder: Boolean, model: String?, quota: QuotaReading?, onClick: () -> Unit) {
+private fun PaneCard(
+    p: Pane, preview: String, showFolder: Boolean, model: String?, quota: QuotaReading?, checking: Boolean,
+    onClick: () -> Unit,
+) {
     val needs = p.status == Status.NEEDS_YOU
     Surface(
         shape = RoundedCornerShape(16.dp),
@@ -180,6 +189,7 @@ private fun PaneCard(p: Pane, preview: String, showFolder: Boolean, model: Strin
                     overflow = TextOverflow.Ellipsis,
                 )
                 quota?.let { QuotaLine(it, Modifier.padding(top = 4.dp)) }
+                if (checking) Text("Checking usage…", color = Palette.Muted, fontSize = 12.sp)
             }
         }
     }
