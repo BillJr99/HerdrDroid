@@ -131,7 +131,7 @@ fun TabsScreen(vm: AppViewModel) {
         ) {
             items(panes.filter { filter.matches(it) }, key = { it.id }) { p ->
                 val dup = (names[p.agentName] ?: 0) > 1
-                PaneCard(p, vm.previews[p.id].orEmpty(), showFolder = dup, quota = vm.quotaFor(p)) { vm.openPane(p.id) }
+                PaneCard(p, vm.previews[p.id].orEmpty(), showFolder = dup, model = vm.models[p.id], quota = vm.quotaFor(p)) { vm.openPane(p.id) }
             }
             item { Spacer(Modifier.height(24.dp)) }
         }
@@ -139,7 +139,7 @@ fun TabsScreen(vm: AppViewModel) {
 }
 
 @Composable
-private fun PaneCard(p: Pane, preview: String, showFolder: Boolean, quota: QuotaReading?, onClick: () -> Unit) {
+private fun PaneCard(p: Pane, preview: String, showFolder: Boolean, model: String?, quota: QuotaReading?, onClick: () -> Unit) {
     val needs = p.status == Status.NEEDS_YOU
     Surface(
         shape = RoundedCornerShape(16.dp),
@@ -161,6 +161,16 @@ private fun PaneCard(p: Pane, preview: String, showFolder: Boolean, quota: Quota
                         modifier = Modifier.weight(1f, fill = false),
                     )
                     StatusPill(p.status)
+                }
+                model?.let {
+                    Text(
+                        it,
+                        color = Palette.Blue,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
                 Text(
                     preview.ifBlank { p.id },

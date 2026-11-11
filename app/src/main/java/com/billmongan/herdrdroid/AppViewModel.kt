@@ -12,6 +12,7 @@ import com.billmongan.herdrdroid.herdr.HerdrError
 import com.billmongan.herdrdroid.herdr.Pane
 import com.billmongan.herdrdroid.herdr.QuotaProfiles
 import com.billmongan.herdrdroid.herdr.QuotaReading
+import com.billmongan.herdrdroid.herdr.footerModel
 import com.billmongan.herdrdroid.herdr.Status
 import com.billmongan.herdrdroid.ssh.AuthRejected
 import com.billmongan.herdrdroid.ssh.Credentials
@@ -81,6 +82,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var panes by mutableStateOf<List<Pane>>(emptyList())
         private set
     var previews by mutableStateOf<Map<String, String>>(emptyMap())
+        private set
+    /** The active model in each pane: read from the agent's footer, or for Claude from /status. */
+    var models by mutableStateOf<Map<String, String>>(emptyMap())
         private set
     var paneText by mutableStateOf("")
         private set
@@ -239,6 +243,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 linkProblem = null
                 panes = emptyList()
                 previews = emptyMap()
+                models = emptyMap()
                 quotas = prefs.quotas(saved.id)
                 lastQuotaTry.clear()
                 screen = Screen.Tabs
@@ -459,7 +464,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     suspend fun refreshPreviews() {
         val ids = panes.map { it.id }
-        quietly { it.previews(ids) }?.let { previews = it }
+        quietly { it.previews(ids) }?.let { peeks ->
+            previews = peeks.mapValues { it.value.line }
+            val seen = peeks.mapNotNull { (id, peek) ->
+                footerModel(panes.firstOrNull { it.id == id }?.agent, peek.tail)?.let { id to it }
+            }
+            if (seen.isNotEmpty()) models = models + seen
+        }
     }
 
     suspend fun readPane(paneId: String) {
@@ -534,21 +545,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             if (!due) continue
             // Prefer a pane that is not in front at the computer, but use that one if it is the only
             // choice: the check presses Enter only when the input line holds exactly its command.
-            val target = list.filter { it.status == Status.IDLE || it.status == Status.DONE }
-                .sortedBy { it.focused }
+            // Idle panes first; a working pane only for an agent that answers while working (Claude).
+            val profile0 = QuotaProfiles.forAgent(list.first().agent) ?: continue
+            val target = list.filter {
+                it.status == Status.IDLE || it.status == Status.DONE || (profile0.whileWorking && it.status == Status.WORKING)
+            }
+                .sortedWith(compareBy({ it.status == Status.WORKING }, { it.focused }))
                 .firstOrNull() ?: continue
             val profile = QuotaProfiles.forAgent(target.agent) ?: continue
             if (!canPoll) return@withLock
             probingPane = target.id
-            val items = try {
+            val result = try {
                 quietly { it.probeQuota(target.id, profile) }
             } finally {
                 probingPane = null
             }
+            result?.model?.let { models = models + (target.id to it) }
+            val items = result?.items
             when {
-                // Someone had text in that agent's input line; it was left as it was. Try again in 5 minutes.
-                items == null -> lastQuotaTry[agentKey] = now - 25 * 60_000
-                items.isEmpty() -> lastQuotaTry[agentKey] = now
+                // Someone had text in that agent's input line, or the screen had no limits on it this
+                // time (a Hermes session that hasn't made a call yet). Try again in 5 minutes.
+                items.isNullOrEmpty() -> lastQuotaTry[agentKey] = now - 25 * 60_000
                 else -> {
                     lastQuotaTry[agentKey] = now
                     quotas = quotas + (agentKey to QuotaReading(now, items))

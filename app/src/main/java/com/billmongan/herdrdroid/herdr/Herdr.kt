@@ -88,18 +88,19 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
         stripAnsi(run(cmd("pane", "read", paneId, "--source", "recent", "--lines", lines.toString())))
 
     /** The last few lines of every pane, fetched in one round trip. */
-    suspend fun previews(ids: List<String>): Map<String, String> {
+    suspend fun previews(ids: List<String>): Map<String, Peek> {
         if (ids.isEmpty()) return emptyMap()
         val script = ids.joinToString("; ") { id ->
-            "echo ${shq("@@herdrdroid@@$id")}; ${cmd("pane", "read", id, "--source", "recent", "--lines", "8")} 2>/dev/null"
+            "echo ${shq("@@herdrdroid@@$id")}; ${cmd("pane", "read", id, "--source", "recent", "--lines", "12")} 2>/dev/null"
         }
         val out = stripAnsi(ssh.exec(script).out)
-        val result = mutableMapOf<String, String>()
+        val result = mutableMapOf<String, Peek>()
         var current: String? = null
         val buf = StringBuilder()
         fun flush() {
             current?.let { id ->
-                result[id] = buf.lines().map { it.trim() }.lastOrNull { it.isNotEmpty() && !isChrome(it) } ?: ""
+                val line = buf.lines().map { it.trim() }.lastOrNull { it.isNotEmpty() && !isChrome(it) } ?: ""
+                result[id] = Peek(line, buf.toString())
             }
             buf.clear()
         }
@@ -134,24 +135,43 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
     suspend fun sendKeys(paneId: String, vararg keys: String) = run(cmd("pane", "send-keys", paneId, *keys))
 
     /**
-     * Asks an idle agent for its usage with a command its own program answers (no model call).
-     * The command is typed first and Enter is pressed only if the input line then holds exactly
-     * that command, so a half-typed message in the pane is never sent; otherwise the typed
-     * characters are erased again and the check is skipped. Returns null when skipped.
+     * Types a command the agent's own program answers (no model call) and returns the screen it
+     * shows. Enter is pressed only if the input line then holds exactly that command, so a
+     * half-typed message is never sent; otherwise the typed characters are erased and this returns
+     * null. Close keys go out only while [openMarker] is on screen, so an Esc can never reach an
+     * agent that is working.
      */
-    suspend fun probeQuota(paneId: String, profile: QuotaProfile): List<QuotaItem>? {
-        sendText(paneId, profile.command)
+    private suspend fun guardedCommand(
+        paneId: String, command: String, waitMillis: Long, closeKeys: List<String>, openMarker: Regex?,
+    ): String? {
+        sendText(paneId, command)
         delay(600)
-        val echo = Regex("""^[\s│┃|>❯›»$]*""" + Regex.escape(profile.command) + """[\s│┃|]*$""")
+        val echo = Regex("""^[\s│┃|>❯›»$]*""" + Regex.escape(command) + """[\s│┃|]*$""")
         if (read(paneId, 24).lines().none { echo.matches(it) }) {
-            sendKeys(paneId, *Array(profile.command.length) { "backspace" })
+            sendKeys(paneId, *Array(command.length) { "backspace" })
             return null
         }
         sendKeys(paneId, "enter")
-        delay(profile.waitMillis)
+        delay(waitMillis)
         val shown = read(paneId, 120)
-        if (profile.closeKeys.isNotEmpty()) sendKeys(paneId, *profile.closeKeys.toTypedArray())
-        return parseQuota(shown, profile.bareMeansLeft)
+        if (closeKeys.isNotEmpty() && (openMarker == null || openMarker.containsMatchIn(shown))) {
+            sendKeys(paneId, *closeKeys.toTypedArray())
+            delay(300)
+        }
+        return shown
+    }
+
+    /** One usage check: the limits, and for agents that need it, the active model. Null when skipped. */
+    suspend fun probeQuota(paneId: String, profile: QuotaProfile): ProbeResult? {
+        val shown = guardedCommand(paneId, profile.command, profile.waitMillis, profile.closeKeys, profile.openMarker)
+            ?: return null
+        val items = parseQuota(shown, profile.bareMeansLeft)
+        var model: String? = null
+        if (profile.modelCommand != null && profile.modelPattern != null) {
+            val status = guardedCommand(paneId, profile.modelCommand, 1_500, profile.closeKeys, profile.openMarker)
+            model = status?.lines()?.firstNotNullOfOrNull { profile.modelPattern.find(it)?.groupValues?.get(1) }
+        }
+        return ProbeResult(items, model)
     }
 
     /** Confirms the command exists before the app shows any tabs. */
@@ -168,6 +188,11 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
 }
 
 class HerdrError(message: String, val exit: Int) : Exception(message)
+
+data class ProbeResult(val items: List<QuotaItem>, val model: String?)
+
+/** The last few lines of a pane: the one-line preview, and the raw lines the footer model comes from. */
+data class Peek(val line: String, val tail: String)
 
 /** Box-drawing and status-bar lines that make a poor one-line preview. */
 private fun isChrome(line: String): Boolean {

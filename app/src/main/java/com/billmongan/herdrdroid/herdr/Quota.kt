@@ -21,6 +21,19 @@ data class QuotaProfile(
     val waitMillis: Long,
     /** A percentage with no "used" or "left" beside it means the amount left (Antigravity's bars). */
     val bareMeansLeft: Boolean = false,
+    /**
+     * The agent opens its usage screen even while it is working, without interrupting the work
+     * (checked for Claude Code). Other agents are asked only when idle or done.
+     */
+    val whileWorking: Boolean = false,
+    /**
+     * Text the agent's usage screen shows while it is open. The close keys are sent only when it
+     * is on screen, so an Esc can never reach the agent itself and interrupt it.
+     */
+    val openMarker: Regex? = null,
+    /** A command that shows the active model when the agent's footer does not (Claude's /status). */
+    val modelCommand: String? = null,
+    val modelPattern: Regex? = null,
 )
 
 object QuotaProfiles {
@@ -29,11 +42,20 @@ object QuotaProfiles {
      * to read (OpenCode's /stats is a token history), so they have no profile and are skipped.
      */
     val builtIn = listOf(
-        QuotaProfile(setOf("claude"), "/usage", listOf("esc"), 3_000),
+        QuotaProfile(
+            setOf("claude"), "/usage", listOf("esc"), 3_000,
+            whileWorking = true,
+            openMarker = Regex("Esc to cancel", RegexOption.IGNORE_CASE),
+            modelCommand = "/status",
+            modelPattern = Regex("""^\s*Model:\s+(.+?)\s*$"""),
+        ),
         QuotaProfile(setOf("codex"), "/status", emptyList(), 2_500),
         QuotaProfile(setOf("copilot"), "/usage", emptyList(), 3_000),
-        QuotaProfile(setOf("grok"), "/usage", listOf("esc"), 3_000),
-        QuotaProfile(setOf("agy", "antigravity"), "/usage", listOf("esc"), 3_500, bareMeansLeft = true),
+        QuotaProfile(setOf("grok"), "/usage", listOf("esc"), 3_000, openMarker = Regex("Esc close", RegexOption.IGNORE_CASE)),
+        QuotaProfile(
+            setOf("agy", "antigravity"), "/usage", listOf("esc"), 3_500,
+            bareMeansLeft = true, openMarker = Regex("esc Close", RegexOption.IGNORE_CASE),
+        ),
         QuotaProfile(setOf("hermes"), "/usage", emptyList(), 2_500),
     )
 
@@ -175,4 +197,33 @@ fun ago(at: Long, now: Long = System.currentTimeMillis()): String {
         s < 86400 -> "${s / 3600}h ago"
         else -> "${s / 86400}d ago"
     }
+}
+
+/**
+ * The active model, read from the footer each agent draws at the bottom of its screen. Claude Code
+ * has no model in its footer, so its model comes from /status during the usage check instead.
+ */
+fun footerModel(agent: String?, screen: String): String? {
+    val lines = screen.lines().map { it.trimEnd() }.filter { it.isNotBlank() }.takeLast(12)
+    fun lastMatch(r: Regex) = lines.asReversed().firstNotNullOfOrNull { r.find(it)?.groupValues?.get(1)?.trim() }
+    val found = when (agent?.lowercase()) {
+        // "GPT-6.1-Sol default · ~/agents/codex"
+        "codex" -> lastMatch(Regex("""^\s*(\S[^·]*?)\s+·\s+~"""))
+            ?.replace(Regex("""\s+(default|minimal|low|medium|high|xhigh)$"""), " · $1")
+        // "? for shortcuts            Gemini 4 Argon · medium"
+        "agy", "antigravity" -> lastMatch(Regex("""\S\s{3,}(\S[^│]*·\s*\S+)\s*$"""))
+        // "╰────── Grok 4.7 (high) ─╯"
+        "grok" -> lastMatch(Regex("""─\s+([^─│]+?)\s+─+╯"""))
+        // "☤ gpt-6.1-sol │ ~124K/500K │ ..."
+        "hermes" -> lastMatch(Regex("""☤\s+([^│]+?)\s+│"""))
+        // "... / commands · tab next tab        GPT-5.6 Terra"
+        "copilot" -> lines.lastOrNull { it.contains("/ commands") }
+            ?.let { Regex("""\s{3,}(\S.*?)\s*$""").find(it)?.groupValues?.get(1) }
+        // "┃  Build · Big Pickle OpenCode"
+        "opencode" -> lastMatch(Regex("""┃\s+(?:Build|Plan|\w+)\s+·\s+(.+?)\s*$"""))
+        // "0.0%/128k (auto)          (compat-llmproxy) llmproxy/flagship__free"
+        "pi" -> lastMatch(Regex("""\)\s+(\S+/\S+)\s*$""")) ?: lastMatch(Regex("""%/\S+.*\s{3,}(\S+)\s*$"""))
+        else -> null
+    }
+    return found?.takeIf { it.length in 2..48 }
 }

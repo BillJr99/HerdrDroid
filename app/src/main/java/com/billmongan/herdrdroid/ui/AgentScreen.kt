@@ -173,7 +173,11 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 Column(Modifier.weight(1f).padding(start = 10.dp)) {
                     Text(pane?.agentName ?: paneId, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = Palette.Ink)
                     if (vm.link == com.billmongan.herdrdroid.Link.CONNECTED) {
-                        Text(look(status).label + " · " + paneId, color = look(status).ink, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            look(status).label + " · " + (vm.models[paneId] ?: paneId),
+                            color = look(status).ink, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                            maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        )
                     } else {
                         LinkLabel(vm, "")
                     }

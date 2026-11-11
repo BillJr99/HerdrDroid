@@ -5,7 +5,7 @@ HerdrDroid is an Android app for talking to the coding agents in a [herdr](https
 ## What it does
 
 - **Servers.** You add each computer yourself: a name, its address, its SSH port, your username, and the command that runs herdr there (for example `herdr` or `~/.local/bin/herdr`). Nothing is filled in for you, so the app works with any herdr server you can reach.
-- **All tabs.** Every herdr pane is a card with its agent, its status (Needs you, Working, Done, Idle) and the last line it printed. A tab that is waiting on you has an orange border and sorts to the top. The list refreshes every three seconds.
+- **All tabs.** Every herdr pane is a card with its agent, its status (Needs you, Working, Done, Idle), the model it is running, and the last line it printed. A tab that is waiting on you has an orange border and sorts to the top. The list refreshes every three seconds.
 - **Talking to an agent.** Tap a card to see the pane's recent output and send it a message. Messages to an agent go through `herdr agent prompt`, which submits text the way the agent expects. Other panes get the text and Enter.
 - **Reading the screen.** The default view wraps ordinary lines at word boundaries and indents each continuation under the first word, so lists and indented code stay lined up. Tables, boxes and column-aligned output keep their exact layout in a strip that scrolls sideways, and full-width rules become thin dividers. Pinch with two fingers to change the text size, which is remembered for each server. **Terminal** shows the exact screen, unwrapped.
 - **Keys.** Quick keys send Esc, Tab, the four arrows, Backspace and Enter, and Ctrl+C after you confirm. **Ctrl** and **Alt** work like a phone terminal's extra keys: tap one and it applies to the next key, so Ctrl then R sends Ctrl+R (a letter typed on the keyboard counts as the next key); long-press one and it stays held until you tap it again. They combine with each other and with the quick keys, for example Ctrl+Alt+↑.
@@ -18,6 +18,22 @@ When the phone sleeps or the app goes to the background, Android drops the SSH s
 - A dropped connection never shows a banner by itself. Previews, screen reads and refreshes that fail because of it are retried quietly, with 1, 2, 4 and then 8 seconds between tries.
 - Keys, messages and answers you send while it's reconnecting wait in a queue (the top bar shows how many) and go out in order once the link is back.
 - A banner appears only for something you have to act on: still unreachable after 15 seconds (with a **Retry** button), a refused sign-in, a changed host key, or a herdr command that itself failed.
+
+## Models
+
+Each card shows the pane's active model, read from the footer the agent draws at the bottom of its screen. Nothing is sent to the agent for this; it comes from the same reads as the card previews.
+
+| Agent | Footer | Shown as |
+|---|---|---|
+| Codex | `GPT-6.1-Sol default · ~/agents/codex` | GPT-6.1-Sol · default |
+| Antigravity | `? for shortcuts   Gemini 4 Argon · medium` | Gemini 4 Argon · medium |
+| Grok | `╰──── Grok 4.7 (high) ─╯` | Grok 4.7 (high) |
+| Hermes | `☤ gpt-6.1-sol │ ~124K/500K │ …` | gpt-6.1-sol |
+| Copilot CLI | `… / commands · tab next tab   GPT-5.6 Terra` | GPT-5.6 Terra |
+| OpenCode | `┃  Build · Big Pickle OpenCode` | Big Pickle OpenCode |
+| pi | `0.0%/128k (auto)   (compat-llmproxy) llmproxy/flagship__free` | llmproxy/flagship__free |
+
+Claude Code shows no model in its footer, so its model comes from `/status` ("Model: Default (Fable 5.2)") during its usage check, and appears once that check has run.
 
 ## Usage limits
 
@@ -41,9 +57,11 @@ pi and OpenCode have no usage limit to read (OpenCode's `/stats` is only a token
 The checks are careful with the pane:
 
 - They run about every 30 minutes per agent, and when you tap refresh (at most once every two minutes).
-- They only use a pane that herdr reports as idle or done. A pane that is not in front in herdr's own window at the computer is preferred; the one in front is used only when it is the only pane running that agent.
+- They use a pane that herdr reports as idle or done. Claude Code is the exception: it opens `/usage` and `/status` even while it is working, without interrupting the work, so a working Claude pane is checked too (an idle one is still preferred). A pane that is not in front in herdr's own window at the computer is preferred; the one in front is used only when it is the only pane running that agent.
 - The app types the command, then reads the input line. It presses Enter only if that line holds exactly the command. If anything else was already typed there, it erases what it typed, leaves the pane as it was, and tries again in five minutes.
 - While a check runs in a pane, anything you send to that pane waits for it to finish.
+- Esc, which closes Claude's, Grok's and Antigravity's usage screens, is sent only while that screen's own "Esc to cancel" or "Esc close" line is showing. If the screen didn't open, no Esc is sent, so it can never interrupt an agent that is working.
+- A check that found no limits (for example a Hermes session that hasn't made a call yet) is tried again in five minutes.
 
 ## Security
 

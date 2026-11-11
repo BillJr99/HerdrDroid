@@ -192,4 +192,49 @@ GEMINI 4 ARGON
         assertEquals("Plan", shortLabel("Plan"))
         assertEquals("Usage credits", shortLabel("Usage credits"))
     }
+
+    /** Footers captured from each agent's pane on demo-box2. */
+    @Test fun modelsFromFooters() {
+        assertEquals("GPT-6.1-Sol · default", footerModel("codex", """
+› Ask Codex to do anything
+  GPT-6.1-Sol default · ~/agents/codex
+  ← for agents · ? for shortcuts
+"""))
+        assertEquals("Gemini 4 Argon · medium", footerModel("agy", """
+>
+? for shortcuts                                                                                               Gemini 4 Argon · medium
+"""))
+        assertEquals("Grok 4.7 (high)", footerModel("grok", """
+  │ ❯                                                                                                                              │
+  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────── Grok 4.7 (high) ─╯
+  Shift+Tab:mode  │  Ctrl+.:shortcuts
+"""))
+        assertEquals("gpt-6.1-sol", footerModel("hermes", """
+ ☤ gpt-6.1-sol │ ~124K/500K │ [██░░░░░░░░] ~25% │ ◎ 99.8% │ ◷ 6.0s │ ↑ 25 t/s │ 3.0d │ ⏲ 27s │ ✓ 1... ─ Complete teaching brief r...
+❯ Type / to browse commands, or Ctrl+P for the palette
+"""))
+        assertEquals("GPT-5.6 Terra", footerModel("copilot", """
+❯
+ Update: v1.0.109 · next launch or /  ·  ← open sidebar · Interactive · Manual Approval · / commands · tab next tab     GPT-5.6 Terra
+"""))
+        assertEquals("Big Pickle OpenCode", footerModel("opencode", """
+  ┃
+  ┃  Build · Big Pickle OpenCode
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  ~/agents/opencode                                           54.1K (27%)  ctrl+p commands    ~/agents/opencode
+"""))
+        assertEquals("llmproxy/flagship__free", footerModel("pi", """
+~/agents/pi
+0.0%/128k (auto)                                                                             (compat-llmproxy) llmproxy/flagship__free
+"""))
+        assertEquals(null, footerModel("claude", "❯\n  ⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt"))
+    }
+
+    @Test fun claudeStatusModel() {
+        val p = QuotaProfiles.forAgent("claude")!!
+        val screen = "   Login method:      Claude Ultra account\n   Model:             Default (Fable 5.2)\n"
+        assertEquals("Default (Fable 5.2)", screen.lines().firstNotNullOfOrNull { p.modelPattern!!.find(it)?.groupValues?.get(1) })
+        assertTrue(p.whileWorking)
+        assertTrue(p.openMarker!!.containsMatchIn("   Esc to cancel"))
+    }
 }
