@@ -7,14 +7,21 @@ import androidx.activity.viewModels
 import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_WEAK
 import androidx.biometric.BiometricManager.Authenticators.DEVICE_CREDENTIAL
 import androidx.biometric.BiometricPrompt
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.runtime.SideEffect
+import androidx.compose.ui.graphics.toArgb
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
 import androidx.fragment.app.FragmentActivity
 import com.billmongan.herdrdroid.store.Server
 import com.billmongan.herdrdroid.ui.AgentScreen
 import com.billmongan.herdrdroid.ui.EditServerScreen
 import com.billmongan.herdrdroid.ui.HerdrTheme
+import com.billmongan.herdrdroid.ui.Palette
 import com.billmongan.herdrdroid.ui.ServersScreen
+import com.billmongan.herdrdroid.ui.SettingsScreen
 import com.billmongan.herdrdroid.ui.TabsScreen
+import com.billmongan.herdrdroid.ui.ThemeMode
 
 class MainActivity : FragmentActivity() {
     private val vm: AppViewModel by viewModels()
@@ -22,7 +29,21 @@ class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            HerdrTheme {
+            val dark = when (vm.themeMode) {
+                ThemeMode.SYSTEM -> isSystemInDarkTheme()
+                ThemeMode.LIGHT -> false
+                ThemeMode.DARK -> true
+            }
+            HerdrTheme(dark) {
+                SideEffect {
+                    window.statusBarColor = Palette.Card.toArgb()
+                    window.navigationBarColor = Palette.Card.toArgb()
+                    window.decorView.setBackgroundColor(Palette.Ground.toArgb())
+                    WindowCompat.getInsetsController(window, window.decorView).apply {
+                        isAppearanceLightStatusBars = !dark
+                        isAppearanceLightNavigationBars = !dark
+                    }
+                }
                 when (val s = vm.screen) {
                     Screen.Servers -> ServersScreen(vm, ::unlock)
                     is Screen.EditServer -> {
@@ -37,12 +58,26 @@ class MainActivity : FragmentActivity() {
                         BackHandler { vm.screen = Screen.Tabs }
                         AgentScreen(vm, s.paneId)
                     }
+                    is Screen.Settings -> {
+                        BackHandler { vm.screen = s.back }
+                        SettingsScreen(vm, s.back)
+                    }
                 }
             }
         }
     }
 
-    /** Asks for a fingerprint (or the phone's screen lock) before a saved password is used. */
+    override fun onStart() {
+        super.onStart()
+        vm.onForeground()
+    }
+
+    override fun onStop() {
+        vm.onBackground()
+        super.onStop()
+    }
+
+    /** Asks for a fingerprint (or the phone's screen lock) before a saved password or key is used. */
     private fun unlock(server: Server, done: (Boolean) -> Unit) {
         val prompt = BiometricPrompt(
             this,
@@ -50,7 +85,10 @@ class MainActivity : FragmentActivity() {
             object : BiometricPrompt.AuthenticationCallback() {
                 override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) = done(true)
                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                    vm.error = errString.toString()
+                    // Backing out of the prompt is not an error worth a banner.
+                    val cancelled = errorCode == BiometricPrompt.ERROR_USER_CANCELED ||
+                        errorCode == BiometricPrompt.ERROR_NEGATIVE_BUTTON || errorCode == BiometricPrompt.ERROR_CANCELED
+                    if (!cancelled) vm.error = errString.toString()
                     done(false)
                 }
             },

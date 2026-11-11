@@ -1,5 +1,8 @@
 package com.billmongan.herdrdroid.ui
 
+import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -13,7 +16,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -24,6 +26,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
@@ -34,6 +37,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -43,6 +47,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -51,7 +58,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.billmongan.herdrdroid.AppViewModel
 import com.billmongan.herdrdroid.Screen
+import com.billmongan.herdrdroid.store.PasswordVault
 import com.billmongan.herdrdroid.store.Server
+import java.util.UUID
 
 /** The saved herdr servers. Tap one to connect. */
 @Composable
@@ -59,27 +68,31 @@ fun ServersScreen(vm: AppViewModel, unlock: (Server, (Boolean) -> Unit) -> Unit)
     var askPasswordFor by remember { mutableStateOf<Server?>(null) }
 
     fun start(server: Server) {
-        val saved = server.passwordCipher
-        if (saved == null) {
+        if (!vm.canSignInSilently(server)) {
             askPasswordFor = server
             return
         }
         val go = {
             val pw = vm.savedPassword(server)
-            if (pw == null) askPasswordFor = server else vm.connect(server, pw, remember = true)
+            if (pw == null && !(server.useKey && server.hasKey)) askPasswordFor = server
+            else vm.connect(server, pw, remember = pw != null)
         }
         if (server.biometric) unlock(server) { ok -> if (ok) go() } else go()
     }
 
     Box(Modifier.fillMaxSize().background(Palette.Ground).systemBarsPadding()) {
         Column(Modifier.fillMaxSize()) {
-            Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 28.dp, bottom = 12.dp)) {
-                Text("HerdrDroid", fontSize = 28.sp, fontWeight = FontWeight.Bold)
-                Text(
-                    "Pick the computer running your agents.",
-                    color = Palette.Muted,
-                    fontSize = 15.sp,
-                )
+            Row(
+                Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 20.dp, bottom = 12.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Column(Modifier.weight(1f).padding(top = 8.dp)) {
+                    Text("HerdrDroid", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Palette.Ink)
+                    Text("Pick the computer running your agents.", color = Palette.Muted, fontSize = 15.sp)
+                }
+                IconButton(onClick = { vm.screen = Screen.Settings(Screen.Servers) }) {
+                    Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = Palette.Muted)
+                }
             }
             vm.error?.let { ErrorBanner(it) { vm.error = null } }
             if (vm.servers.isEmpty()) {
@@ -87,7 +100,7 @@ fun ServersScreen(vm: AppViewModel, unlock: (Server, (Boolean) -> Unit) -> Unit)
                     Modifier.fillMaxWidth().padding(24.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Text("No servers yet", fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
+                    Text("No servers yet", fontWeight = FontWeight.SemiBold, fontSize = 17.sp, color = Palette.Ink)
                     Text(
                         "Add the address, port and username of a computer that runs herdr. " +
                             "You can add as many as you like.",
@@ -109,11 +122,17 @@ fun ServersScreen(vm: AppViewModel, unlock: (Server, (Boolean) -> Unit) -> Unit)
                         Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                             AgentTile(s.label.take(1).uppercase(), com.billmongan.herdrdroid.herdr.Status.WORKING)
                             Column(Modifier.weight(1f).padding(start = 12.dp)) {
-                                Text(s.label, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                                Text(s.label, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = Palette.Ink)
                                 Text("${s.user}@${s.host}:${s.port}", color = Palette.Muted, fontSize = 13.sp)
+                                if (s.useKey && s.hasKey) {
+                                    Text(
+                                        if (s.passwordCipher != null) "Key, then password" else "Key",
+                                        color = Palette.Muted, fontSize = 12.sp,
+                                    )
+                                }
                             }
                             IconButton(onClick = { vm.screen = Screen.EditServer(s) }) {
-                                Icon(Icons.Filled.Edit, contentDescription = "Edit ${s.label}")
+                                Icon(Icons.Filled.Edit, contentDescription = "Edit ${s.label}", tint = Palette.Muted)
                             }
                         }
                     }
@@ -131,17 +150,18 @@ fun ServersScreen(vm: AppViewModel, unlock: (Server, (Boolean) -> Unit) -> Unit)
             icon = { Icon(Icons.Filled.Add, contentDescription = null) },
             text = { Text("Add server") },
             containerColor = Palette.Blue,
-            contentColor = androidx.compose.ui.graphics.Color.White,
+            contentColor = Palette.OnBlue,
             modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp),
         )
     }
 
-    askPasswordFor?.let { s ->
+    (askPasswordFor ?: vm.needPasswordFor)?.let { s ->
         PasswordDialog(
             server = s,
-            onDismiss = { askPasswordFor = null },
+            onDismiss = { askPasswordFor = null; vm.needPasswordFor = null },
             onConnect = { pw, rememberIt ->
                 askPasswordFor = null
+                vm.needPasswordFor = null
                 vm.connect(s, pw, rememberIt)
             },
         )
@@ -157,15 +177,7 @@ fun ServersScreen(vm: AppViewModel, unlock: (Server, (Boolean) -> Unit) -> Unit)
                         "Check that this fingerprint belongs to ${p.server.label}. The app remembers it " +
                             "and stops if it ever changes.",
                     )
-                    Text(
-                        p.fingerprint,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 13.sp,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(Palette.Gray, RoundedCornerShape(8.dp))
-                            .padding(10.dp),
-                    )
+                    MonoBox(p.fingerprint)
                     Text(
                         "On that computer, ssh-keyscan localhost | ssh-keygen -lf - prints its fingerprints.",
                         color = Palette.Muted,
@@ -177,6 +189,20 @@ fun ServersScreen(vm: AppViewModel, unlock: (Server, (Boolean) -> Unit) -> Unit)
             dismissButton = { TextButton(onClick = { vm.rejectHostKey() }) { Text("Cancel") } },
         )
     }
+}
+
+@Composable
+private fun MonoBox(text: String) {
+    Text(
+        text,
+        fontFamily = FontFamily.Monospace,
+        fontSize = 12.sp,
+        color = Palette.Ink,
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Palette.Gray, RoundedCornerShape(8.dp))
+            .padding(10.dp),
+    )
 }
 
 @Composable
@@ -208,21 +234,65 @@ private fun PasswordDialog(server: Server, onDismiss: () -> Unit, onConnect: (St
     )
 }
 
+@Composable
+private fun SwitchRow(title: String, detail: String?, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable { onChange(!checked) }.padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+            Text(title, color = Palette.Ink, fontSize = 16.sp)
+            detail?.let { Text(it, color = Palette.Muted, fontSize = 13.sp) }
+        }
+        Switch(checked = checked, onCheckedChange = onChange)
+    }
+}
+
 /** Add or edit a server. Every field is the user's; nothing is filled in for them. */
 @Composable
 fun EditServerScreen(vm: AppViewModel, existing: Server?) {
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    val draftId = remember { existing?.id ?: UUID.randomUUID().toString() }
     var name by remember { mutableStateOf(existing?.name ?: "") }
     var host by remember { mutableStateOf(existing?.host ?: "") }
     var port by remember { mutableStateOf(existing?.port?.toString() ?: "") }
     var user by remember { mutableStateOf(existing?.user ?: "") }
     var herdrPath by remember { mutableStateOf(existing?.herdrPath ?: "") }
     var biometric by remember { mutableStateOf(existing?.biometric ?: false) }
+    var useKey by remember { mutableStateOf(existing?.useKey ?: false) }
+    var keyKind by remember { mutableStateOf(existing?.keyKind) }
+    var keyCipher by remember { mutableStateOf(existing?.keyCipher) }
+    var keyPassCipher by remember { mutableStateOf(existing?.keyPassCipher) }
+    var publicLine by remember { mutableStateOf(existing?.let { e -> vm.keyLineFor(e) }) }
+    var importedPem by remember { mutableStateOf<String?>(null) }
+    var replaceKeyConfirm by remember { mutableStateOf(false) }
     var forgetPassword by remember { mutableStateOf(false) }
     var forgetFingerprint by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
+    var keyError by remember { mutableStateOf<String?>(null) }
+
+    val pickKeyFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            val text = runCatching {
+                context.contentResolver.openInputStream(uri)?.use { it.readBytes().take(32_768).toByteArray() }
+                    ?.toString(Charsets.UTF_8)
+            }.getOrNull()
+            if (text.isNullOrBlank() || !text.contains("PRIVATE KEY")) keyError = "That file isn't a private key."
+            else importedPem = text
+        }
+    }
+
+    fun makeKey() {
+        vm.generateKey(draftId)?.let {
+            keyKind = "keystore"; keyCipher = null; keyPassCipher = null; publicLine = it; keyError = null
+        }
+    }
 
     val portNum = port.toIntOrNull()
-    val valid = host.isNotBlank() && user.isNotBlank() && portNum != null && portNum in 1..65535 && herdrPath.isNotBlank()
+    val keyReady = keyKind == "keystore" || (keyKind == "imported" && keyCipher != null)
+    val valid = host.isNotBlank() && user.isNotBlank() && portNum != null && portNum in 1..65535 &&
+        herdrPath.isNotBlank() && (!useKey || keyReady)
 
     Column(
         Modifier
@@ -234,7 +304,7 @@ fun EditServerScreen(vm: AppViewModel, existing: Server?) {
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Text(if (existing == null) "Add a server" else "Edit server", fontSize = 26.sp, fontWeight = FontWeight.Bold)
+        Text(if (existing == null) "Add a server" else "Edit server", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Palette.Ink)
         OutlinedTextField(name, { name = it }, label = { Text("Name (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             OutlinedTextField(
@@ -254,21 +324,67 @@ fun EditServerScreen(vm: AppViewModel, existing: Server?) {
             supportingText = { Text("The command that runs herdr on that computer, such as herdr or ~/.local/bin/herdr") },
             modifier = Modifier.fillMaxWidth(),
         )
+
+        Text("Signing in", fontWeight = FontWeight.SemiBold, fontSize = 17.sp, color = Palette.Ink, modifier = Modifier.padding(top = 6.dp))
+        SwitchRow(
+            "Use an SSH key",
+            if (useKey) "The key is tried first. If the server turns it down, the password is used."
+            else "Off: this server never sees a key from the app, only the password.",
+            useKey,
+        ) { useKey = it }
+        if (useKey) {
+            Surface(shape = RoundedCornerShape(14.dp), color = Palette.Card, border = BorderStroke(1.dp, Palette.Line)) {
+                Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    when {
+                        keyKind == "keystore" && publicLine != null -> {
+                            Text("A key made on this phone", fontWeight = FontWeight.SemiBold, color = Palette.Ink)
+                            Text(
+                                "Its private half stays in the phone's secure storage and can't be copied out. Add this " +
+                                    "line to ~/.ssh/authorized_keys on ${host.ifBlank { "the computer" }}:",
+                                color = Palette.Muted, fontSize = 13.sp,
+                            )
+                            MonoBox(publicLine!!)
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedButton(onClick = { clipboard.setText(AnnotatedString(publicLine!!)) }) { Text("Copy") }
+                                OutlinedButton(onClick = {
+                                    val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, publicLine)
+                                    context.startActivity(Intent.createChooser(send, "Share the public key"))
+                                }) { Text("Share") }
+                            }
+                        }
+                        keyKind == "imported" && keyCipher != null -> {
+                            Text("An imported key file", fontWeight = FontWeight.SemiBold, color = Palette.Ink)
+                            Text("Stored encrypted on this phone.", color = Palette.Muted, fontSize = 13.sp)
+                            publicLine?.let { MonoBox(it) }
+                        }
+                        else -> Text("Choose where the key comes from.", color = Palette.Muted)
+                    }
+                    keyError?.let { Text(it, color = Palette.OrangeInk, fontSize = 13.sp) }
+                    Button(
+                        onClick = { if (keyKind != null) replaceKeyConfirm = true else makeKey() },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text(if (keyKind == "keystore") "Make a new key on this phone" else "Make a key on this phone") }
+                    OutlinedButton(onClick = { pickKeyFile.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth()) {
+                        Text(if (keyKind == "imported") "Import a different key file" else "Import a key file")
+                    }
+                }
+            }
+        }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Checkbox(checked = biometric, onCheckedChange = { biometric = it })
-            Text("Ask for my fingerprint before using the saved password")
+            Text("Ask for my fingerprint before using the saved password or key", color = Palette.Ink)
         }
         if (existing?.passwordCipher != null) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(checked = forgetPassword, onCheckedChange = { forgetPassword = it })
-                Text("Forget the saved password")
+                Text("Forget the saved password", color = Palette.Ink)
             }
         }
         if (existing?.fingerprint != null) {
             Column {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(checked = forgetFingerprint, onCheckedChange = { forgetFingerprint = it })
-                    Text("Forget the saved host fingerprint")
+                    Text("Forget the saved host fingerprint", color = Palette.Ink)
                 }
                 Text(existing.fingerprint, fontFamily = FontFamily.Monospace, fontSize = 12.sp, color = Palette.Muted,
                     modifier = Modifier.padding(start = 48.dp))
@@ -276,21 +392,32 @@ fun EditServerScreen(vm: AppViewModel, existing: Server?) {
         }
         Button(
             onClick = {
-                val base = existing ?: Server(name = "", host = "", port = 0, user = "", herdrPath = "")
+                val base = existing ?: Server(id = draftId, name = "", host = "", port = 0, user = "", herdrPath = "")
                 val changedTarget = existing != null && (existing.host != host || existing.port != portNum)
+                if (keyKind != "keystore") vm.forgetGeneratedKey(draftId)
                 vm.saveServer(
                     base.copy(
                         name = name.trim(), host = host, port = portNum!!, user = user, herdrPath = herdrPath.trim(),
                         biometric = biometric,
                         passwordCipher = if (forgetPassword || (existing != null && existing.user != user)) null else base.passwordCipher,
                         fingerprint = if (forgetFingerprint || changedTarget) null else base.fingerprint,
+                        useKey = useKey,
+                        keyKind = keyKind,
+                        keyCipher = if (keyKind == "imported") keyCipher else null,
+                        keyPassCipher = if (keyKind == "imported") keyPassCipher else null,
                     )
                 )
             },
             enabled = valid,
             modifier = Modifier.fillMaxWidth().height(52.dp),
         ) { Text("Save") }
-        OutlinedButton(onClick = { vm.screen = Screen.Servers }, modifier = Modifier.fillMaxWidth().height(48.dp)) { Text("Cancel") }
+        OutlinedButton(
+            onClick = {
+                if (existing == null) vm.forgetGeneratedKey(draftId)
+                vm.screen = Screen.Servers
+            },
+            modifier = Modifier.fillMaxWidth().height(48.dp),
+        ) { Text("Cancel") }
         if (existing != null) {
             TextButton(onClick = { confirmDelete = true }, modifier = Modifier.fillMaxWidth()) {
                 Text("Remove this server", color = Palette.OrangeInk)
@@ -298,11 +425,58 @@ fun EditServerScreen(vm: AppViewModel, existing: Server?) {
         }
     }
 
+    importedPem?.let { pem ->
+        var passphrase by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { importedPem = null },
+            title = { Text("Import the key") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("If the key file has a passphrase, enter it. It's stored encrypted with the key.")
+                    OutlinedTextField(
+                        passphrase, { passphrase = it }, label = { Text("Passphrase (if any)") }, singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    val pass = passphrase.ifEmpty { null }
+                    val result = vm.checkKeyFile(pem, pass)
+                    if (result.isFailure) {
+                        keyError = result.exceptionOrNull()?.message ?: "That key couldn't be read."
+                    } else {
+                        if (keyKind == "keystore") vm.forgetGeneratedKey(draftId)
+                        keyKind = "imported"
+                        keyCipher = PasswordVault.encrypt(pem)
+                        keyPassCipher = pass?.let { PasswordVault.encrypt(it) }
+                        publicLine = result.getOrNull()
+                        keyError = null
+                    }
+                    importedPem = null
+                }) { Text("Import") }
+            },
+            dismissButton = { TextButton(onClick = { importedPem = null }) { Text("Cancel") } },
+        )
+    }
+
+    if (replaceKeyConfirm) {
+        AlertDialog(
+            onDismissRequest = { replaceKeyConfirm = false },
+            title = { Text("Replace the key?") },
+            text = { Text("The current key stops working for this server right away. You'll need to add the new key's line to authorized_keys.") },
+            confirmButton = { Button(onClick = { replaceKeyConfirm = false; makeKey() }) { Text("Make a new key") } },
+            dismissButton = { TextButton(onClick = { replaceKeyConfirm = false }) { Text("Cancel") } },
+        )
+    }
+
     if (confirmDelete && existing != null) {
         AlertDialog(
             onDismissRequest = { confirmDelete = false },
             title = { Text("Remove ${existing.label}?") },
-            text = { Text("Its saved password and fingerprint are deleted from this phone. Nothing changes on the computer.") },
+            text = { Text("Its saved password, key and fingerprint are deleted from this phone. Nothing changes on the computer.") },
             confirmButton = { Button(onClick = { vm.deleteServer(existing) }) { Text("Remove") } },
             dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } },
         )
@@ -310,7 +484,7 @@ fun EditServerScreen(vm: AppViewModel, existing: Server?) {
 }
 
 @Composable
-fun ErrorBanner(message: String, onDismiss: () -> Unit) {
+fun ErrorBanner(message: String, actionLabel: String = "Dismiss", onAction: () -> Unit) {
     Surface(
         color = Palette.OrangeSoft,
         border = BorderStroke(1.dp, Palette.Orange),
@@ -319,7 +493,7 @@ fun ErrorBanner(message: String, onDismiss: () -> Unit) {
     ) {
         Row(Modifier.padding(start = 14.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(message, color = Palette.OrangeInk, fontSize = 14.sp, modifier = Modifier.weight(1f))
-            TextButton(onClick = onDismiss) { Text("Dismiss", color = Palette.OrangeInk) }
+            TextButton(onClick = onAction) { Text(actionLabel, color = Palette.OrangeInk) }
         }
     }
 }

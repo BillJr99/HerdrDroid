@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Builds the signed HerdrDroid APK in a throwaway container.
 # Usage: bash build-in-docker.sh <work-folder>
-#   <work-folder>/src   the source (this folder's contents)
+#   <work-folder>/src   the source (this folder's contents), including keystore/signing.properties
+#                       with storePassword, keyAlias and keyPassword (git ignores that file)
 #   <work-folder>/.cache   SDK and Gradle caches (reused between builds; delete to clean)
 #   <work-folder>/out   the APK
 set -euo pipefail
@@ -27,12 +28,18 @@ if [ ! -x "$G" ]; then
 fi
 cd /w/src
 mkdir -p keystore
-[ -f keystore/herdrdroid-sideload.jks ] || keytool -genkeypair -keystore keystore/herdrdroid-sideload.jks \
-  -alias herdrdroid -keyalg RSA -keysize 3072 -validity 10000 \
-  -storepass herdrdroid -keypass herdrdroid -dname "CN=HerdrDroid sideload" >/dev/null 2>&1
+P=keystore/signing.properties
+[ -f "$P" ] || { echo "missing $P (storePassword, keyAlias, keyPassword)" >&2; exit 1; }
+prop() { sed -n "s/^$1=//p" "$P" | head -1; }
+# Make the key only when there is none, so every build signs with the same one and installs over the last.
+if [ ! -f keystore/herdrdroid-sideload.jks ]; then
+  SP="$(prop storePassword)" KP="$(prop keyPassword)" keytool -genkeypair -keystore keystore/herdrdroid-sideload.jks \
+    -alias "$(prop keyAlias)" -keyalg RSA -keysize 3072 -validity 10000 \
+    -storepass:env SP -keypass:env KP -dname "CN=HerdrDroid sideload" >/dev/null 2>&1
+fi
 [ -f gradlew ] || "$G" wrapper --gradle-version 8.9 -q
 echo "sdk.dir=$ANDROID_HOME" > local.properties
-"$G" --no-daemon --console=plain -q assembleRelease
+"$G" --no-daemon --console=plain -q testReleaseUnitTest assembleRelease
 cp app/build/outputs/apk/release/app-release.apk /w/out/HerdrDroid.apk
 "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs /w/out/HerdrDroid.apk | head -3
 chown -R "$HOST_UID:$HOST_GID" /w/src /w/out /w/.cache

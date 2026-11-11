@@ -23,6 +23,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -45,6 +46,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.billmongan.herdrdroid.AppViewModel
+import com.billmongan.herdrdroid.Screen
+import com.billmongan.herdrdroid.herdr.QuotaReading
 import com.billmongan.herdrdroid.herdr.Pane
 import com.billmongan.herdrdroid.herdr.Status
 import kotlinx.coroutines.delay
@@ -86,26 +89,21 @@ fun TabsScreen(vm: AppViewModel) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f)) {
-                    Text(vm.current?.label ?: "", fontSize = 24.sp, fontWeight = FontWeight.Bold)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.size(8.dp).background(if (vm.error == null) Palette.Green else Palette.Orange, CircleShape))
-                        Text(
-                            (if (vm.error == null) "Connected" else "Reconnecting") + " · ${panes.size} tabs",
-                            color = Palette.Muted,
-                            fontSize = 13.sp,
-                            modifier = Modifier.padding(start = 6.dp),
-                        )
-                    }
+                    Text(vm.current?.label ?: "", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Palette.Ink)
+                    LinkLabel(vm, " · ${panes.size} tabs")
                 }
-                IconButton(onClick = { scope.launch { vm.refreshPanes(); vm.refreshPreviews() } }) {
-                    Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
+                IconButton(onClick = { scope.launch { vm.refreshPanes(); vm.refreshPreviews() }; vm.refreshQuotasSoon() }) {
+                    Icon(Icons.Filled.Refresh, contentDescription = "Refresh", tint = Palette.Ink)
+                }
+                IconButton(onClick = { vm.screen = Screen.Settings(Screen.Tabs) }) {
+                    Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = Palette.Ink)
                 }
                 IconButton(onClick = { vm.disconnect() }) {
-                    Icon(Icons.Filled.Close, contentDescription = "Disconnect")
+                    Icon(Icons.Filled.Close, contentDescription = "Disconnect", tint = Palette.Ink)
                 }
             }
         }
-        vm.error?.let { ErrorBanner(it) { vm.error = null } }
+        ServerBanners(vm)
         FlowRow(
             Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -117,11 +115,12 @@ fun TabsScreen(vm: AppViewModel) {
                     selected = filter == f,
                     onClick = { filter = f },
                     label = { Text("${f.label} $n", fontWeight = FontWeight.SemiBold) },
+                    border = FilterChipDefaults.filterChipBorder(enabled = true, selected = filter == f, borderColor = Palette.Line),
                     colors = FilterChipDefaults.filterChipColors(
                         containerColor = if (needs) Palette.OrangeSoft else Palette.Card,
                         labelColor = if (needs) Palette.OrangeInk else Palette.Ink,
                         selectedContainerColor = Palette.Ink,
-                        selectedLabelColor = Color.White,
+                        selectedLabelColor = Palette.Ground,
                     ),
                 )
             }
@@ -132,7 +131,7 @@ fun TabsScreen(vm: AppViewModel) {
         ) {
             items(panes.filter { filter.matches(it) }, key = { it.id }) { p ->
                 val dup = (names[p.agentName] ?: 0) > 1
-                PaneCard(p, vm.previews[p.id].orEmpty(), showFolder = dup) { vm.openPane(p.id) }
+                PaneCard(p, vm.previews[p.id].orEmpty(), showFolder = dup, quota = vm.quotaFor(p)) { vm.openPane(p.id) }
             }
             item { Spacer(Modifier.height(24.dp)) }
         }
@@ -140,7 +139,7 @@ fun TabsScreen(vm: AppViewModel) {
 }
 
 @Composable
-private fun PaneCard(p: Pane, preview: String, showFolder: Boolean, onClick: () -> Unit) {
+private fun PaneCard(p: Pane, preview: String, showFolder: Boolean, quota: QuotaReading?, onClick: () -> Unit) {
     val needs = p.status == Status.NEEDS_YOU
     Surface(
         shape = RoundedCornerShape(16.dp),
@@ -156,6 +155,7 @@ private fun PaneCard(p: Pane, preview: String, showFolder: Boolean, onClick: () 
                         if (showFolder && p.folder.isNotBlank()) "${p.agentName} · ${p.folder}" else p.agentName,
                         fontWeight = FontWeight.SemiBold,
                         fontSize = 16.sp,
+                        color = Palette.Ink,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false),
@@ -164,11 +164,12 @@ private fun PaneCard(p: Pane, preview: String, showFolder: Boolean, onClick: () 
                 }
                 Text(
                     preview.ifBlank { p.id },
-                    color = Color(0xFF3A404C),
+                    color = Palette.Preview,
                     fontSize = 14.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                quota?.let { QuotaLine(it, Modifier.padding(top = 4.dp)) }
             }
         }
     }

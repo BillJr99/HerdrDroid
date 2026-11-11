@@ -7,8 +7,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -17,42 +19,68 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.billmongan.herdrdroid.herdr.Status
 
+/**
+ * The app's colors. [dark] is set once per theme change by [HerdrTheme], which rebuilds the
+ * screen with key(dark), so every color below is read again in the new theme.
+ */
 object Palette {
-    val Ground = Color(0xFFF5F6F8)
-    val Card = Color(0xFFFFFFFF)
-    val Ink = Color(0xFF15171C)
-    val Muted = Color(0xFF4A5160)
-    val Line = Color(0xFFE3E6EB)
-    val Field = Color(0xFFC9CFD8)
-    val Blue = Color(0xFF2457C5)
-    val BlueSoft = Color(0xFFEDF3FE)
-    val BlueTile = Color(0xFFE3ECFD)
-    val Orange = Color(0xFFE8833A)
-    val OrangeInk = Color(0xFF9A3412)
-    val OrangeSoft = Color(0xFFFFF3EA)
-    val OrangeTile = Color(0xFFFFE7D6)
-    val Green = Color(0xFF1F7A4D)
-    val GreenSoft = Color(0xFFE6F4EC)
-    val Gray = Color(0xFFEEF0F3)
-    val Terminal = Color(0xFF14161B)
-    val TerminalInk = Color(0xFFD9DEE7)
+    var dark = false
+        internal set
+
+    private fun pick(light: Long, night: Long) = Color(if (dark) night else light)
+
+    val Ground get() = pick(0xFFF5F6F8, 0xFF0F1115)
+    val Card get() = pick(0xFFFFFFFF, 0xFF181B21)
+    val Ink get() = pick(0xFF15171C, 0xFFE8EBF0)
+    val Muted get() = pick(0xFF4A5160, 0xFFA4ACBA)
+    val Line get() = pick(0xFFE3E6EB, 0xFF2A2F38)
+    val Field get() = pick(0xFFC9CFD8, 0xFF3A404C)
+    val Blue get() = pick(0xFF2457C5, 0xFF6C9BFF)
+    val OnBlue get() = pick(0xFFFFFFFF, 0xFF0B1630)
+    val BlueSoft get() = pick(0xFFEDF3FE, 0xFF1A2540)
+    val BlueTile get() = pick(0xFFE3ECFD, 0xFF1F2C4D)
+    val Orange get() = pick(0xFFE8833A, 0xFFF0A060)
+    val OrangeInk get() = pick(0xFF9A3412, 0xFFFFB27A)
+    val OrangeSoft get() = pick(0xFFFFF3EA, 0xFF2E1F14)
+    val OrangeTile get() = pick(0xFFFFE7D6, 0xFF3A2616)
+    val OrangeEdge get() = pick(0xFFF2C9A8, 0xFF5C3A20)
+    val Green get() = pick(0xFF1F7A4D, 0xFF5CCB8F)
+    val GreenSoft get() = pick(0xFFE6F4EC, 0xFF15291F)
+    val Gray get() = pick(0xFFEEF0F3, 0xFF22262E)
+    val Key get() = pick(0xFFF7F8FA, 0xFF20242B)
+    val KeyEdge get() = pick(0xFFD5DAE2, 0xFF353B46)
+    val Preview get() = pick(0xFF3A404C, 0xFFC3C9D4)
+    val Terminal get() = pick(0xFF14161B, 0xFF08090C)
+    val TerminalInk get() = pick(0xFFD9DEE7, 0xFFD9DEE7)
+    val Code get() = pick(0xFFF3F5F8, 0xFF111419)
 }
 
-private val Colors = lightColorScheme(
-    primary = Palette.Blue,
-    onPrimary = Color.White,
-    background = Palette.Ground,
-    onBackground = Palette.Ink,
-    surface = Palette.Card,
-    onSurface = Palette.Ink,
-    surfaceVariant = Palette.Gray,
-    onSurfaceVariant = Palette.Muted,
-    outline = Palette.Field,
-    error = Palette.OrangeInk,
-)
+enum class ThemeMode(val label: String) { SYSTEM("Match phone"), LIGHT("Light"), DARK("Dark") }
 
 @Composable
-fun HerdrTheme(content: @Composable () -> Unit) = MaterialTheme(colorScheme = Colors, content = content)
+fun HerdrTheme(dark: Boolean, content: @Composable () -> Unit) {
+    Palette.dark = dark
+    key(dark) {
+        val colors = if (dark) {
+            darkColorScheme(
+                primary = Palette.Blue, onPrimary = Palette.OnBlue,
+                background = Palette.Ground, onBackground = Palette.Ink,
+                surface = Palette.Card, onSurface = Palette.Ink,
+                surfaceVariant = Palette.Gray, onSurfaceVariant = Palette.Muted,
+                outline = Palette.Field, error = Palette.OrangeInk,
+            )
+        } else {
+            lightColorScheme(
+                primary = Palette.Blue, onPrimary = Palette.OnBlue,
+                background = Palette.Ground, onBackground = Palette.Ink,
+                surface = Palette.Card, onSurface = Palette.Ink,
+                surfaceVariant = Palette.Gray, onSurfaceVariant = Palette.Muted,
+                outline = Palette.Field, error = Palette.OrangeInk,
+            )
+        }
+        MaterialTheme(colorScheme = colors, content = content)
+    }
+}
 
 data class StatusLook(val label: String, val ink: Color, val bg: Color, val tile: Color)
 

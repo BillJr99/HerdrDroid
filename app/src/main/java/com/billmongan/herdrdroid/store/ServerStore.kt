@@ -4,9 +4,17 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import com.billmongan.herdrdroid.herdr.QuotaItem
+import com.billmongan.herdrdroid.herdr.QuotaReading
+import net.schmizz.sshj.common.KeyType
+import net.schmizz.sshj.userauth.keyprovider.KeyProvider
 import org.json.JSONArray
 import org.json.JSONObject
+import java.security.KeyPairGenerator
 import java.security.KeyStore
+import java.security.PrivateKey
+import java.security.PublicKey
+import java.security.spec.ECGenParameterSpec
 import java.util.UUID
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -26,8 +34,19 @@ data class Server(
     /** The password, encrypted with a key held in the Android Keystore; null if not saved. */
     val passwordCipher: String? = null,
     val biometric: Boolean = false,
+    /** Sign in with a key first; when off, the key is never offered to this server. */
+    val useKey: Boolean = false,
+    /** "keystore" for a key made on this phone, "imported" for a key file, or null for none. */
+    val keyKind: String? = null,
+    /** The imported key file and its passphrase, encrypted the same way as the password. */
+    val keyCipher: String? = null,
+    val keyPassCipher: String? = null,
+    /** Text size for the agent screen, set by pinching. */
+    val textSize: Float = 12.5f,
 ) {
     val label: String get() = name.ifBlank { "$user@$host" }
+    val keystoreAlias: String get() = "herdrdroid_ssh_$id"
+    val hasKey: Boolean get() = keyKind == "keystore" || (keyKind == "imported" && keyCipher != null)
 
     fun toJson(): JSONObject = JSONObject()
         .put("id", id).put("name", name).put("host", host).put("port", port)
@@ -35,8 +54,15 @@ data class Server(
         .put("fingerprint", fingerprint ?: JSONObject.NULL)
         .put("passwordCipher", passwordCipher ?: JSONObject.NULL)
         .put("biometric", biometric)
+        .put("useKey", useKey)
+        .put("keyKind", keyKind ?: JSONObject.NULL)
+        .put("keyCipher", keyCipher ?: JSONObject.NULL)
+        .put("keyPassCipher", keyPassCipher ?: JSONObject.NULL)
+        .put("textSize", textSize.toDouble())
 
     companion object {
+        private fun JSONObject.str(k: String) = optString(k).takeIf { !isNull(k) && it.isNotBlank() }
+
         fun fromJson(o: JSONObject) = Server(
             id = o.getString("id"),
             name = o.optString("name"),
@@ -44,9 +70,14 @@ data class Server(
             port = o.getInt("port"),
             user = o.getString("user"),
             herdrPath = o.optString("herdrPath", "herdr"),
-            fingerprint = o.optString("fingerprint").takeIf { !o.isNull("fingerprint") && it.isNotBlank() },
-            passwordCipher = o.optString("passwordCipher").takeIf { !o.isNull("passwordCipher") && it.isNotBlank() },
+            fingerprint = o.str("fingerprint"),
+            passwordCipher = o.str("passwordCipher"),
             biometric = o.optBoolean("biometric", false),
+            useKey = o.optBoolean("useKey", false),
+            keyKind = o.str("keyKind"),
+            keyCipher = o.str("keyCipher"),
+            keyPassCipher = o.str("keyPassCipher"),
+            textSize = o.optDouble("textSize", 12.5).toFloat(),
         )
     }
 }
@@ -76,7 +107,52 @@ class ServerStore(context: Context) {
     }
 }
 
-/** Encrypts saved passwords with an AES key that never leaves the Android Keystore. */
+/** App-wide choices, and the last usage reading for each agent on each server. */
+class AppPrefs(context: Context) {
+    private val prefs = context.getSharedPreferences("app", Context.MODE_PRIVATE)
+
+    var theme: String
+        get() = prefs.getString("theme", "SYSTEM") ?: "SYSTEM"
+        set(v) = prefs.edit().putString("theme", v).apply()
+
+    var showQuotas: Boolean
+        get() = prefs.getBoolean("showQuotas", true)
+        set(v) = prefs.edit().putBoolean("showQuotas", v).apply()
+
+    fun quotas(serverId: String): Map<String, QuotaReading> {
+        val raw = prefs.getString("quota_$serverId", null) ?: return emptyMap()
+        return runCatching {
+            val o = JSONObject(raw)
+            o.keys().asSequence().associateWith { agent ->
+                val r = o.getJSONObject(agent)
+                val items = r.getJSONArray("items")
+                QuotaReading(
+                    at = r.getLong("at"),
+                    items = (0 until items.length()).map { i ->
+                        val it = items.getJSONObject(i)
+                        QuotaItem(it.getString("label"), it.getDouble("used"), it.optString("reset").ifBlank { null })
+                    },
+                )
+            }
+        }.getOrDefault(emptyMap())
+    }
+
+    fun saveQuotas(serverId: String, readings: Map<String, QuotaReading>) {
+        val o = JSONObject()
+        readings.forEach { (agent, r) ->
+            val items = JSONArray()
+            r.items.forEach {
+                items.put(JSONObject().put("label", it.label).put("used", it.usedPercent).put("reset", it.resets ?: ""))
+            }
+            o.put(agent, JSONObject().put("at", r.at).put("items", items))
+        }
+        prefs.edit().putString("quota_$serverId", o.toString()).apply()
+    }
+
+    fun forgetQuotas(serverId: String) = prefs.edit().remove("quota_$serverId").apply()
+}
+
+/** Encrypts saved passwords and key files with an AES key that never leaves the Android Keystore. */
 object PasswordVault {
     private const val ALIAS = "herdrdroid_passwords"
 
@@ -105,5 +181,44 @@ object PasswordVault {
         val c = Cipher.getInstance("AES/GCM/NoPadding")
         c.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, bytes, 0, 12))
         return String(c.doFinal(bytes, 12, bytes.size - 12), Charsets.UTF_8)
+    }
+}
+
+/**
+ * SSH keys made on this phone. Each is an ECDSA P-256 key pair inside the Android Keystore, so the
+ * private key can sign but can never be read or copied out. (The Keystore has no Ed25519 before
+ * Android 13, so ECDSA works on every phone the app supports.)
+ */
+object SshKeyVault {
+    private fun ks() = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+
+    fun exists(alias: String): Boolean = runCatching { ks().containsAlias(alias) }.getOrDefault(false)
+
+    fun generate(alias: String) {
+        val gen = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore")
+        gen.initialize(
+            KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY)
+                .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
+                .setDigests(KeyProperties.DIGEST_SHA256)
+                .build()
+        )
+        gen.generateKeyPair()
+    }
+
+    fun publicKey(alias: String): PublicKey? = runCatching { ks().getCertificate(alias)?.publicKey }.getOrNull()
+
+    fun provider(alias: String): KeyProvider? {
+        val store = ks()
+        val priv = store.getKey(alias, null) as? PrivateKey ?: return null
+        val pub = store.getCertificate(alias)?.publicKey ?: return null
+        return object : KeyProvider {
+            override fun getPrivate(): PrivateKey = priv
+            override fun getPublic(): PublicKey = pub
+            override fun getType(): KeyType = KeyType.ECDSA256
+        }
+    }
+
+    fun delete(alias: String) {
+        runCatching { ks().deleteEntry(alias) }
     }
 }

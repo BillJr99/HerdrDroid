@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -12,17 +14,22 @@ android {
         applicationId = "com.billmongan.herdrdroid"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
     }
 
     // A sideload signing key kept with the source, so later builds install over this one.
+    // Its passwords live in keystore/signing.properties, which git ignores.
+    val signing = Properties().apply {
+        val f = rootProject.file("keystore/signing.properties")
+        if (f.exists()) f.inputStream().use { load(it) }
+    }
     signingConfigs {
         create("sideload") {
-            storeFile = file("../keystore/herdrdroid-sideload.jks")
-            storePassword = System.getenv("HD_SIGNING_REMOVED") ?: ""
-            keyAlias = "herdrdroid"
-            keyPassword = System.getenv("HD_SIGNING_REMOVED") ?: ""
+            storeFile = rootProject.file("keystore/herdrdroid-sideload.jks")
+            storePassword = signing.getProperty("storePassword")
+            keyAlias = signing.getProperty("keyAlias")
+            keyPassword = signing.getProperty("keyPassword")
         }
     }
 
@@ -45,6 +52,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     packaging {
         resources {
@@ -76,4 +84,5 @@ dependencies {
     implementation("com.hierynomus:sshj:0.39.0")
     implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
     implementation("org.slf4j:slf4j-nop:2.0.13")
+    testImplementation("junit:junit:4.13.2")
 }

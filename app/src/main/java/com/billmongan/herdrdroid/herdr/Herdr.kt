@@ -1,6 +1,7 @@
 package com.billmongan.herdrdroid.herdr
 
 import com.billmongan.herdrdroid.ssh.HerdrSsh
+import kotlinx.coroutines.delay
 import org.json.JSONObject
 
 enum class Status { NEEDS_YOU, WORKING, DONE, IDLE, UNKNOWN }
@@ -13,6 +14,8 @@ data class Pane(
     val status: Status,
     val title: String,
     val cwd: String,
+    /** herdr's own window has this pane in front, so someone may be typing in it at the computer. */
+    val focused: Boolean = false,
 ) {
     val agentName: String
         get() = when (agent?.lowercase()) {
@@ -74,6 +77,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
                 },
                 title = p.optString("terminal_title_stripped"),
                 cwd = p.optString("foreground_cwd", p.optString("cwd")),
+                focused = p.optBoolean("focused", false),
             )
         }
         val order = listOf(Status.NEEDS_YOU, Status.WORKING, Status.DONE, Status.IDLE, Status.UNKNOWN)
@@ -128,6 +132,27 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
     suspend fun sendText(paneId: String, text: String) = run(cmd("pane", "send-text", paneId, text))
 
     suspend fun sendKeys(paneId: String, vararg keys: String) = run(cmd("pane", "send-keys", paneId, *keys))
+
+    /**
+     * Asks an idle agent for its usage with a command its own program answers (no model call).
+     * The command is typed first and Enter is pressed only if the input line then holds exactly
+     * that command, so a half-typed message in the pane is never sent; otherwise the typed
+     * characters are erased again and the check is skipped. Returns null when skipped.
+     */
+    suspend fun probeQuota(paneId: String, profile: QuotaProfile): List<QuotaItem>? {
+        sendText(paneId, profile.command)
+        delay(600)
+        val echo = Regex("""^[\s│┃|>❯›»$]*""" + Regex.escape(profile.command) + """[\s│┃|]*$""")
+        if (read(paneId, 24).lines().none { echo.matches(it) }) {
+            sendKeys(paneId, *Array(profile.command.length) { "backspace" })
+            return null
+        }
+        sendKeys(paneId, "enter")
+        delay(profile.waitMillis)
+        val shown = read(paneId, 120)
+        if (profile.closeKeys.isNotEmpty()) sendKeys(paneId, *profile.closeKeys.toTypedArray())
+        return parseQuota(shown, profile.bareMeansLeft)
+    }
 
     /** Confirms the command exists before the app shows any tabs. */
     suspend fun check() {
