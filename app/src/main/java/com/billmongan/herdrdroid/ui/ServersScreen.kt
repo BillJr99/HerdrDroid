@@ -87,7 +87,13 @@ fun ServersScreen(vm: AppViewModel, unlock: (Server, (Boolean) -> Unit) -> Unit)
                 verticalAlignment = Alignment.Top,
             ) {
                 Column(Modifier.weight(1f).padding(top = 8.dp)) {
-                    Text("HerdrDroid", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Palette.Ink)
+                    Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("HerdrDroid", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Palette.Ink)
+                        Text(
+                            com.billmongan.herdrdroid.BuildConfig.VERSION_NAME,
+                            fontSize = 14.sp, color = Palette.Muted, modifier = Modifier.padding(bottom = 5.dp),
+                        )
+                    }
                     Text("Pick the computer running your agents.", color = Palette.Muted, fontSize = 15.sp)
                 }
                 IconButton(onClick = { vm.screen = Screen.Settings(Screen.Servers) }) {

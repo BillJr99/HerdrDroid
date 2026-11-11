@@ -11,6 +11,8 @@ HerdrDroid is an Android app for talking to the coding agents in a [herdr](https
 - **Keys.** Quick keys send Esc, Tab, the four arrows, Backspace and Enter, and Ctrl+C after you confirm. **Ctrl** and **Alt** work like a phone terminal's extra keys: tap one and it applies to the next key, so Ctrl then R sends Ctrl+R (a letter typed on the keyboard counts as the next key); long-press one and it stays held until you tap it again. They combine with each other and with the quick keys, for example Ctrl+Alt+↑.
 - **An agent needs you.** When herdr reports an agent as blocked, or the bottom of the screen shows a numbered menu or a `(y/n)` question, the app shows the question with one button per answer. Each button says exactly which keys it sends.
 
+The version number is shown beside the name on the server list and at the end of the status line on the tabs screen.
+
 ## Staying connected
 
 When the phone sleeps or the app goes to the background, Android drops the SSH socket. HerdrDroid stops polling while it is in the background, and when it comes back it opens a fresh connection before polling again. Until then the top bar says **Reconnecting…** in grey; nothing else changes on screen.

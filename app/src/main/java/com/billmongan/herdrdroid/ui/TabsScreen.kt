@@ -90,7 +90,7 @@ fun TabsScreen(vm: AppViewModel) {
             ) {
                 Column(Modifier.weight(1f)) {
                     Text(vm.current?.label ?: "", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Palette.Ink)
-                    LinkLabel(vm, " · ${panes.size} tabs")
+                    LinkLabel(vm, " · ${panes.size} tabs · v${com.billmongan.herdrdroid.BuildConfig.VERSION_NAME}")
                 }
                 IconButton(onClick = { scope.launch { vm.refreshPanes(); vm.refreshPreviews() }; vm.refreshQuotasSoon() }) {
                     Icon(Icons.Filled.Refresh, contentDescription = "Refresh", tint = Palette.Ink)
