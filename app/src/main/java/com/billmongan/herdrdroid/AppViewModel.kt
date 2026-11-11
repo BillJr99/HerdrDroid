@@ -86,6 +86,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** The active model in each pane: read from the agent's footer, or for Claude from /status. */
     var models by mutableStateOf<Map<String, String>>(emptyMap())
         private set
+    /** Reasoning effort read by command where the footer has none (Claude, Hermes). */
+    var efforts by mutableStateOf<Map<String, String>>(emptyMap())
+        private set
+
+    /** The model line for a card: the model, plus the effort when it isn't already part of it. */
+    fun modelLine(paneId: String): String? {
+        val m = models[paneId]
+        val e = efforts[paneId]
+        return when {
+            m == null -> e?.let { "$it effort" }
+            e == null || m.contains(e, ignoreCase = true) -> m
+            else -> "$m · $e"
+        }
+    }
     var paneText by mutableStateOf("")
         private set
     var lastSent by mutableStateOf<Pair<String, String>?>(null)
@@ -246,6 +260,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 panes = emptyList()
                 previews = emptyMap()
                 models = emptyMap()
+                efforts = emptyMap()
                 quotas = prefs.quotas(saved.id)
                 lastQuotaTry.clear()
                 screen = Screen.Tabs
@@ -559,11 +574,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             if (!canPoll) return@withLock
             probingPane = target.id
             val result = try {
-                quietly { it.probeQuota(target.id, profile) }
+                quietly { it.probeQuota(target.id, profile, working = target.status == Status.WORKING) }
             } finally {
                 probingPane = null
             }
             result?.model?.let { models = models + (target.id to it) }
+            result?.effort?.let { efforts = efforts + (target.id to it) }
             val items = result?.items
             when {
                 // Someone had text in that agent's input line, or the screen had no limits on it this

@@ -143,6 +143,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
      */
     private suspend fun guardedCommand(
         paneId: String, command: String, waitMillis: Long, closeKeys: List<String>, openMarker: Regex?,
+        working: Boolean, ready: (String) -> Boolean,
     ): String? {
         sendText(paneId, command)
         delay(600)
@@ -154,25 +155,41 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
         }
         sendKeys(paneId, "enter")
         delay(waitMillis)
-        val shown = read(paneId, 120)
-        if (closeKeys.isNotEmpty() && (openMarker == null || openMarker.containsMatchIn(shown))) {
+        // Some screens draw their frame first and their numbers a moment later (Antigravity), so
+        // keep reading for up to 6 more seconds until the screen is open and has what we need.
+        var shown = read(paneId, 120)
+        val deadline = System.currentTimeMillis() + 6_000
+        fun done(s: String) = ready(s) && (openMarker == null || openMarker.containsMatchIn(s))
+        while (!done(shown) && System.currentTimeMillis() < deadline) {
+            delay(700)
+            shown = read(paneId, 120)
+        }
+        // Close keys go out when the screen shows it is open. Without that sign, only an idle agent
+        // gets them: there an Esc can't interrupt anything, while a working agent could be stopped.
+        val open = openMarker?.containsMatchIn(shown) ?: true
+        if (closeKeys.isNotEmpty() && (open || !working)) {
             sendKeys(paneId, *closeKeys.toTypedArray())
-            delay(300)
+            delay(400)
         }
         return shown
     }
 
-    /** One usage check: the limits, and for agents that need it, the active model. Null when skipped. */
-    suspend fun probeQuota(paneId: String, profile: QuotaProfile): ProbeResult? {
-        val shown = guardedCommand(paneId, profile.command, profile.waitMillis, profile.closeKeys, profile.openMarker)
-            ?: return null
+    /** One usage check: the limits, and where the agent needs it, the model and effort. Null when skipped. */
+    suspend fun probeQuota(paneId: String, profile: QuotaProfile, working: Boolean): ProbeResult? {
+        val shown = guardedCommand(paneId, profile.command, profile.waitMillis, profile.closeKeys, profile.openMarker, working) {
+            parseQuota(it, profile.bareMeansLeft).isNotEmpty()
+        } ?: return null
         val items = parseQuota(shown, profile.bareMeansLeft)
-        var model: String? = null
-        if (profile.modelCommand != null && profile.modelPattern != null) {
-            val status = guardedCommand(paneId, profile.modelCommand, 1_500, profile.closeKeys, profile.openMarker)
-            model = status?.lines()?.firstNotNullOfOrNull { profile.modelPattern.find(it)?.groupValues?.get(1) }
+        var info: PaneInfo? = null
+        val cmd = profile.infoCommand
+        val parse = profile.parseInfo
+        if (cmd != null && parse != null) {
+            val screen = guardedCommand(paneId, cmd, 1_200, profile.closeKeys, profile.openMarker, working) {
+                parse(it).let { i -> i.model != null || i.effort != null }
+            }
+            info = screen?.let(parse)
         }
-        return ProbeResult(items, model)
+        return ProbeResult(items, info?.model, info?.effort)
     }
 
     /** Confirms the command exists before the app shows any tabs. */
@@ -190,7 +207,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
 
 class HerdrError(message: String, val exit: Int) : Exception(message)
 
-data class ProbeResult(val items: List<QuotaItem>, val model: String?)
+data class ProbeResult(val items: List<QuotaItem>, val model: String?, val effort: String?)
 
 /** The last few lines of a pane: the one-line preview, and the raw lines the footer model comes from. */
 data class Peek(val line: String, val tail: String)

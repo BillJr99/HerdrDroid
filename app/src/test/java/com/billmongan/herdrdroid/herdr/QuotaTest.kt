@@ -230,11 +230,35 @@ GEMINI 4 ARGON
         assertEquals(null, footerModel("claude", "❯\n  ⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt"))
     }
 
-    @Test fun claudeStatusModel() {
+    @Test fun claudeModelPicker() {
+        val screen = """
+   Select model
+   ❯ 1.  Default (recommended) ✔  Fable 5.2
+     2.  Opus 5.5                 For complex work and everyday tasks
+     3.  Fable 5.2                For your toughest challenges
+   ◐ Medium effort (default) ←/→ to adjust
+   Enter to set as default · s to use this session only · Esc to cancel
+"""
+        assertEquals(PaneInfo("Fable 5.2", "medium"), claudeModelScreen(screen))
+        val picked = "   ❯ 2.  Opus 5.5 ✔               For complex work and everyday tasks\n   ◐ High effort ←/→ to adjust"
+        assertEquals(PaneInfo("Opus 5.5", "high"), claudeModelScreen(picked))
         val p = QuotaProfiles.forAgent("claude")!!
-        val screen = "   Login method:      Claude Ultra account\n   Model:             Default (Fable 5.2)\n"
-        assertEquals("Default (Fable 5.2)", screen.lines().firstNotNullOfOrNull { p.modelPattern!!.find(it)?.groupValues?.get(1) })
+        assertEquals("/model", p.infoCommand)
         assertTrue(p.whileWorking)
         assertTrue(p.openMarker!!.containsMatchIn("   Esc to cancel"))
+    }
+
+    @Test fun hermesReasoning() {
+        val p = QuotaProfiles.forAgent("hermes")!!
+        val screen = "⚙️  /reasoning\n  Reasoning effort:  medium\n  Reasoning display: on ✓ (clamped to 10 lines)\n"
+        assertEquals(PaneInfo(null, "medium"), p.parseInfo!!(screen))
+    }
+
+    /** With Antigravity's usage screen still open, the model line has nothing to its left. */
+    @Test fun antigravityFooterUnderDialog() {
+        assertEquals("Gemini 4 Argon · medium", footerModel("agy", """
+  ↑/↓ Scroll · pgup/pgdown Page · ctrl+end Bottom · ctrl+home Top · esc Close
+                                                                                                              Gemini 4 Argon · medium
+"""))
     }
 }

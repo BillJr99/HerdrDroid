@@ -135,7 +135,7 @@ fun TabsScreen(vm: AppViewModel) {
             items(panes.filter { filter.matches(it) }, key = { it.id }) { p ->
                 val dup = (names[p.agentName] ?: 0) > 1
                 PaneCard(
-                    p, vm.previews[p.id].orEmpty(), showFolder = dup, model = vm.models[p.id], quota = vm.quotaFor(p),
+                    p, vm.previews[p.id].orEmpty(), showFolder = dup, model = vm.modelLine(p.id), quota = vm.quotaFor(p),
                     checking = vm.showQuotas && vm.probingPane == p.id,
                 ) { vm.openPane(p.id) }
             }

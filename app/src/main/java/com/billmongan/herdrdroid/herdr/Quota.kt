@@ -3,6 +3,31 @@ package com.billmongan.herdrdroid.herdr
 /** One usage limit, normalized to the percent used. */
 data class QuotaItem(val label: String, val usedPercent: Double, val resets: String?)
 
+/** The model and reasoning effort read from an agent's own screen; either may be unknown. */
+data class PaneInfo(val model: String?, val effort: String?)
+
+/**
+ * Claude Code's /model picker: the current choice carries a ✔ ("1. Default (recommended) ✔ Fable
+ * 5.2", or "2. Opus 5.5 ✔ For complex work…"), and the effort sits below ("◐ Medium effort").
+ */
+fun claudeModelScreen(screen: String): PaneInfo {
+    val lines = screen.lines()
+    val picked = lines.lastNotNullOfOrNull { Regex("""^\s*[❯>]?\s*\d+\.\s+(.+?)\s*✔\s*(.*?)\s*$""").find(it) }
+    val model = picked?.let { m ->
+        val name = m.groupValues[1].trim()
+        val rest = m.groupValues[2].trim()
+        if (name.startsWith("Default", true) && rest.isNotBlank() && rest.length <= 24) rest else name
+    }
+    val effort = lines.lastNotNullOfOrNull { Regex("""(?i)\b(low|medium|high|xhigh|max)\s+effort\b""").find(it) }
+        ?.groupValues?.get(1)?.lowercase()
+    return PaneInfo(model, effort)
+}
+
+private inline fun <T, R : Any> List<T>.lastNotNullOfOrNull(f: (T) -> R?): R? {
+    for (i in indices.reversed()) f(this[i])?.let { return it }
+    return null
+}
+
 /** What one agent reported, and when. */
 data class QuotaReading(val at: Long, val items: List<QuotaItem>) {
     /** The limit closest to running out, which is the one worth showing on a card. */
@@ -31,9 +56,12 @@ data class QuotaProfile(
      * is on screen, so an Esc can never reach the agent itself and interrupt it.
      */
     val openMarker: Regex? = null,
-    /** A command that shows the active model when the agent's footer does not (Claude's /status). */
-    val modelCommand: String? = null,
-    val modelPattern: Regex? = null,
+    /**
+     * A command that shows what the footer does not: Claude's /model (model and effort) or Hermes's
+     * /reasoning (effort). [parseInfo] reads its screen.
+     */
+    val infoCommand: String? = null,
+    val parseInfo: ((String) -> PaneInfo)? = null,
     /**
      * How often to check. Agents whose usage screen closes without a trace are checked more often;
      * agents that print their usage into the conversation stay at 30 minutes to keep it uncluttered.
@@ -51,8 +79,8 @@ object QuotaProfiles {
             setOf("claude"), "/usage", listOf("esc"), 3_000,
             whileWorking = true,
             openMarker = Regex("Esc to cancel", RegexOption.IGNORE_CASE),
-            modelCommand = "/status",
-            modelPattern = Regex("""^\s*Model:\s+(.+?)\s*$"""),
+            infoCommand = "/model",
+            parseInfo = ::claudeModelScreen,
             everyMinutes = 10,
         ),
         QuotaProfile(setOf("codex"), "/status", emptyList(), 2_500),
@@ -65,7 +93,11 @@ object QuotaProfiles {
             setOf("agy", "antigravity"), "/usage", listOf("esc"), 3_500,
             bareMeansLeft = true, openMarker = Regex("esc Close", RegexOption.IGNORE_CASE), everyMinutes = 15,
         ),
-        QuotaProfile(setOf("hermes"), "/usage", emptyList(), 2_500),
+        QuotaProfile(
+            setOf("hermes"), "/usage", emptyList(), 2_500,
+            infoCommand = "/reasoning",
+            parseInfo = { screen -> PaneInfo(null, Regex("""Reasoning effort:\s+(\S+)""").findAll(screen).lastOrNull()?.groupValues?.get(1)) },
+        ),
     )
 
     /** The key quota readings are filed under, shared by every pane running that agent. */
@@ -220,7 +252,8 @@ fun footerModel(agent: String?, screen: String): String? {
         "codex" -> lastMatch(Regex("""^\s*(\S[^·]*?)\s+·\s+~"""))
             ?.replace(Regex("""\s+(default|minimal|low|medium|high|xhigh)$"""), " · $1")
         // "? for shortcuts            Gemini 4 Argon · medium"
-        "agy", "antigravity" -> lastMatch(Regex("""\S\s{3,}(\S[^│]*·\s*\S+)\s*$"""))
+        // The text on its left changes, and is blank while a dialog covers the screen.
+        "agy", "antigravity" -> lastMatch(Regex("""^(?:.*\S\s{3,}|\s*)([^\s│][^│·]*·\s*(?:minimal|low|medium|high|xhigh|max))\s*$"""))
         // "╰────── Grok 4.7 (high) ─╯"
         "grok" -> lastMatch(Regex("""─\s+([^─│]+?)\s+─+╯"""))
         // "☤ gpt-6.1-sol │ ~124K/500K │ ..."

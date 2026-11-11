@@ -35,7 +35,7 @@ Each card shows the pane's active model, read from the footer the agent draws at
 | OpenCode | `┃  Build · Big Pickle OpenCode` | Big Pickle OpenCode |
 | pi | `0.0%/128k (auto)   (compat-llmproxy) llmproxy/flagship__free` | llmproxy/flagship__free |
 
-Claude Code shows no model in its footer, so its model comes from `/status` ("Model: Default (Fable 5.2)") during its usage check, and appears once that check has run.
+The reasoning level is shown wherever an agent makes it available without a model call. Codex, Grok and Antigravity show it in their footers. Claude Code's footer has neither model nor effort, so during its usage check the app opens `/model` ("1. Default (recommended) ✔ Fable 5.2" and "◐ Medium effort") and closes it with Esc, which changes nothing. Hermes's effort comes from `/reasoning` ("Reasoning effort: medium"), which prints inline. Copilot and OpenCode show no reasoning level anywhere, so their cards show the model only. pi's footer shows "(auto)", which isn't clearly a reasoning level, so pi shows the model only too. These appear once each agent's first check has run.
 
 ## Usage limits
 
@@ -62,7 +62,7 @@ The checks are careful with the pane:
 - They use a pane that herdr reports as idle or done. Claude Code is the exception: it opens `/usage` and `/status` even while it is working, without interrupting the work, so a working Claude pane is checked too (an idle one is still preferred). A pane that is not in front in herdr's own window at the computer is preferred; the one in front is used only when it is the only pane running that agent.
 - The app types the command, then reads the input line. It presses Enter only if that line holds exactly the command. If anything else was already typed there, it erases what it typed, leaves the pane as it was, and tries again in five minutes.
 - While a check runs in a pane, anything you send to that pane waits for it to finish.
-- Esc, which closes Claude's, Grok's and Antigravity's usage screens, is sent only while that screen's own "Esc to cancel" or "Esc close" line is showing. If the screen didn't open, no Esc is sent, so it can never interrupt an agent that is working.
+- The app keeps reading for up to six seconds until the usage screen is fully drawn (Antigravity draws its frame first and its numbers a moment later). Esc, which closes Claude's, Grok's and Antigravity's screens, goes out when the screen's own "Esc to cancel" or "Esc close" line is showing. Without that line, Esc goes only to an idle agent, where it can't interrupt anything, never to a working one.
 - A check that found no limits (for example a Hermes session that hasn't made a call yet) is tried again in five minutes.
 
 ## Security
