@@ -46,44 +46,70 @@ object QuotaProfiles {
     }
 }
 
+private const val SEP = "│┃"
 private val BOX = "│┃|┌┐└┘╭╮╰╯├┤═║"
 private val BAR = Regex("[█░▓▒■□▤▦▩▏▎▍▌▋▊▉━]")
 private val PERCENT = Regex("""(\d{1,3}(?:\.\d+)?)\s*%""")
-private val RESET_INLINE = Regex("""resets?:?\s+(?:in\s+)?([^)·│┃]+)""", RegexOption.IGNORE_CASE)
+private val RESET_INLINE = Regex("""resets?:?\s+(?:in\s+)?([^)·•│┃]+)""", RegexOption.IGNORE_CASE)
 
 private fun clean(line: String) = line.trim().trim { it in BOX || it.isWhitespace() }
+
+/** True for a status bar such as Hermes's footer, which packs many fields between separators. */
+private fun isStatusBar(line: String) = line.count { it in SEP } >= 4
 
 /**
  * Reads usage limits out of an agent's screen. It looks for lines with a percentage and either a
  * bar or the words used, left or remaining, takes the label from the same line or the line above,
  * and a reset time from the same line or the next two. "Left" and "remaining" are turned into
  * percent used. Agents that group limits under an all-capitals heading keep that heading.
+ *
+ * Some agents draw their usage box over the conversation (Grok), so a screen line can hold the
+ * conversation on the left and the box on the right. Each percentage is read only within the
+ * column it sits in, between the box borders around it, and the label and reset lines above and
+ * below are cut to the same column.
  */
 fun parseQuota(text: String, bareMeansLeft: Boolean = false): List<QuotaItem> {
-    val lines = text.lines().map(::clean)
+    val raw = text.lines()
     val found = linkedMapOf<String, QuotaItem>()
     var section: String? = null
-    for ((i, line) in lines.withIndex()) {
-        if (line.length in 4..40 && line.any { it.isLetter() } && line == line.uppercase() &&
-            line.all { it.isLetterOrDigit() || it == ' ' || it in "&/-." }
+    for ((i, line) in raw.withIndex()) {
+        val whole = clean(line)
+        if (line.none { it in SEP } && whole.length in 4..40 && whole.any { it.isLetter() } &&
+            whole == whole.uppercase() && whole.all { it.isLetterOrDigit() || it == ' ' || it in "&/-." }
         ) {
-            section = line
+            section = whole
             continue
         }
-        val m = PERCENT.find(line) ?: continue
-        val hasBar = BAR.containsMatchIn(line)
-        val after = line.substring(m.range.last + 1).trim().lowercase()
-        val word = after.substringBefore(' ')
+        if (isStatusBar(line)) continue
+        // Each column of the line is read once, from its first percentage.
+        val seenColumns = mutableSetOf<Int>()
+        for (first in PERCENT.findAll(line)) {
+        // The column around the percentage: from the border on its left to the border on its right.
+        val left = line.substring(0, first.range.first).indexOfLast { it in SEP }
+        if (!seenColumns.add(left)) continue
+        val right = line.indexOfAny(SEP.toCharArray(), first.range.last + 1).let { if (it < 0) Int.MAX_VALUE else it }
+        fun column(s: String): String {
+            if (left + 1 >= s.length) return ""
+            return clean(s.substring(left + 1, minOf(right, s.length)))
+        }
+
+        val seg = column(line)
+        val m = PERCENT.find(seg) ?: continue
+        if (m.range.first > 0 && seg[m.range.first - 1] == '~') continue
+        val hasBar = BAR.containsMatchIn(seg)
+        val after = seg.substring(m.range.last + 1).trim().lowercase()
+        val word = after.substringBefore(' ').trim('(', ')', ',', '.')
         if (!hasBar && word !in setOf("used", "left", "remaining")) continue
 
-        val before = line.substring(0, m.range.first).let { b ->
+        val before = seg.substring(0, m.range.first).let { b ->
             val cut = b.indexOfFirst { BAR.matches(it.toString()) || it == '[' }
             (if (cut >= 0) b.substring(0, cut) else b).trim().trimEnd(':').trim()
         }
         val label = before.ifBlank {
-            (i - 1 downTo maxOf(0, i - 2)).map { lines[it] }
+            (i - 1 downTo maxOf(0, i - 2)).map { column(raw[it]) }
                 .firstOrNull { it.isNotBlank() && !PERCENT.containsMatchIn(it) && !BAR.containsMatchIn(it) }
                 ?.trimEnd(':')
+                ?.takeIf { it.length <= 48 && !it.endsWith(".") }
         } ?: continue
         // Context-window gauges are not usage limits.
         if (label.length > 60 || label.contains("context", true)) continue
@@ -96,16 +122,37 @@ fun parseQuota(text: String, bareMeansLeft: Boolean = false): List<QuotaItem> {
         }
         val used = (if (remaining) 100.0 - pct else pct).coerceIn(0.0, 100.0)
 
-        val reset = RESET_INLINE.find(line)?.groupValues?.get(1)?.trim()
-            ?: (i + 1..minOf(lines.lastIndex, i + 2)).map { lines[it] }
+        val reset = RESET_INLINE.find(seg)?.groupValues?.get(1)?.trim()
+            ?: (i + 1..minOf(raw.lastIndex, i + 2)).map { column(raw[it]) }
                 .firstOrNull { it.startsWith("resets", true) || it.contains("· resets", true) }
                 ?.let { RESET_INLINE.find(it)?.groupValues?.get(1)?.trim() }
 
         val sec = section
         val full = if (sec != null && !label.contains(sec, true)) "${titleCase(sec)} · $label" else label
         found[full] = QuotaItem(full, used, reset?.substringBefore(" (")?.trimEnd('.', ' ', ',')?.ifBlank { null })
+        }
     }
     return found.values.toList()
+}
+
+/**
+ * A short name for a card: "Current week (all models)" becomes "Week (all)", "Claude and GPT
+ * Models · Five Hour Limit Remaining" becomes "Claude/GPT 5h", "Weekly limit (SuperGrok)" becomes
+ * "Week (SuperGrok)".
+ */
+fun shortLabel(label: String): String {
+    val parts = label.split(" · ")
+    val group = if (parts.size > 1) parts[0] else null
+    var l = parts.last()
+    l = l.replace(Regex("(?i)five[ -]hour|5[ -]hour"), "5h")
+        .replace(Regex("(?i)\\bweekly\\b|\\bweek\\b"), "Week")
+        .replace(Regex("(?i)\\b(current|limit|remaining|left)\\b"), "")
+        .replace(Regex("(?i)\\(all models\\)"), "(all)")
+    if (group != null) l = l.replace(Regex("(?i)" + Regex.escape(group)), "")
+    l = l.replace(Regex("\\s+"), " ").trim()
+    val g = group?.replace(Regex("(?i)\\s*models?\\b"), "")?.replace(Regex("(?i)\\s+and\\s+"), "/")?.trim()
+    val out = listOfNotNull(g?.ifBlank { null }, l.ifBlank { null }).joinToString(" ")
+    return out.ifBlank { label }
 }
 
 private val SMALL = setOf("and", "or", "of", "the", "for", "in", "to")
@@ -124,8 +171,8 @@ fun ago(at: Long, now: Long = System.currentTimeMillis()): String {
     val s = ((now - at) / 1000).coerceAtLeast(0)
     return when {
         s < 60 -> "just now"
-        s < 3600 -> "${s / 60} min ago"
-        s < 86400 -> "${s / 3600} h ago"
-        else -> "${s / 86400} d ago"
+        s < 3600 -> "${s / 60}m ago"
+        s < 86400 -> "${s / 3600}h ago"
+        else -> "${s / 86400}d ago"
     }
 }

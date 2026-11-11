@@ -21,7 +21,7 @@ When the phone sleeps or the app goes to the background, Android drops the SSH s
 
 ## Usage limits
 
-The app keeps each agent's usage limits up to date by itself. Each agent's card shows a thin bar and its tightest limit, such as "Current week (all models) 50% used · resets Nov 12, 2:59am · 4 min ago", and **Usage** on the agent screen lists every limit. Settings has one switch to turn this off; with it off, the app never asks any agent about usage and shows nothing about it.
+The app keeps each agent's usage limits up to date by itself. Each agent's card shows its tightest limit in two short lines, such as "Week (all) [bar] 50%" and "resets Nov 12, 2:59am · 4m ago · +2 more", and **Usage** on the agent screen lists every limit with its full name. Settings has one switch to turn this off; with it off, the app never asks any agent about usage and shows nothing about it.
 
 It works by agent, not by pane. On each check, the app reads which agent herdr reports in every pane, groups the panes by agent, and asks one pane of each kind. The answer applies to every pane running that agent, so moving an agent to another pane needs no setup. Every built-in check is a command the agent's own program answers, so none of them uses a model call:
 
@@ -32,14 +32,16 @@ It works by agent, not by pane. On each check, the app reads which agent herdr r
 | Copilot CLI | `/usage` | (prints inline) |
 | Grok | `/usage` | Esc |
 | Antigravity | `/usage` | Esc |
-| Hermes | `/usage` (shows limits once the session has made a call) | (prints inline) |
+| Hermes | `/usage` ("Weekly: N% remaining … resets in …", once the session has made a call) | (prints inline) |
+
+Grok draws its usage box over the conversation, so the parser reads each percentage only within the box column it sits in, and cuts the label and reset lines above and below it to that column. Status bars with many `│` fields (such as Hermes's footer) and approximate figures such as "~25%" are ignored.
 
 pi and OpenCode have no usage limit to read (OpenCode's `/stats` is only a token history), so panes running them, plain shells, and any agent not in the table are never sent anything.
 
 The checks are careful with the pane:
 
 - They run about every 30 minutes per agent, and when you tap refresh (at most once every two minutes).
-- They only use a pane that herdr reports as idle or done, and not one that is in front in herdr's own window at the computer.
+- They only use a pane that herdr reports as idle or done. A pane that is not in front in herdr's own window at the computer is preferred; the one in front is used only when it is the only pane running that agent.
 - The app types the command, then reads the input line. It presses Enter only if that line holds exactly the command. If anything else was already typed there, it erases what it typed, leaves the pane as it was, and tries again in five minutes.
 - While a check runs in a pane, anything you send to that pane waits for it to finish.
 

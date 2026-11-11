@@ -41,6 +41,7 @@ import com.billmongan.herdrdroid.Screen
 import com.billmongan.herdrdroid.herdr.QuotaItem
 import com.billmongan.herdrdroid.herdr.QuotaReading
 import com.billmongan.herdrdroid.herdr.ago
+import com.billmongan.herdrdroid.herdr.shortLabel
 
 @Composable
 fun SettingsScreen(vm: AppViewModel, back: Screen) {
@@ -80,9 +81,9 @@ fun SettingsScreen(vm: AppViewModel, back: Screen) {
                     if (vm.showQuotas) {
                         "The app keeps each agent's limits up to date by itself, about every 30 minutes, using the " +
                             "agent's own usage command (Claude Code, Codex, Copilot, Grok, Antigravity and Hermes). " +
-                            "None of these uses a model call. It only asks an agent that's idle and not in front at " +
-                            "the computer, and it never presses Enter if something is already typed there. Agents " +
-                            "with no usage command are left alone."
+                            "None of these uses a model call. It only asks an agent that's idle, prefers a pane " +
+                            "that isn't in front at the computer, and never presses Enter if something is already " +
+                            "typed there. Agents with no usage command are left alone."
                     } else {
                         "Off. The app never asks any agent about usage."
                     },
@@ -139,14 +140,27 @@ fun ServerBanners(vm: AppViewModel) {
     vm.error?.let { ErrorBanner(it) { vm.error = null } }
 }
 
-/** A thin bar and one line for the tightest limit, as on an agent's card. */
+/**
+ * The tightest limit on an agent's card, in two short lines: a short name, a bar and the percent
+ * used, then when it resets and how old the reading is.
+ */
 @Composable
 fun QuotaLine(r: QuotaReading, modifier: Modifier = Modifier) {
     val t = r.tightest ?: return
+    val more = r.items.size - 1
     Column(modifier, verticalArrangement = Arrangement.spacedBy(3.dp)) {
-        QuotaBar(t)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                shortLabel(t.label),
+                color = Palette.Ink, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
+            )
+            Box(Modifier.weight(1f)) { QuotaBar(t) }
+            Text("${t.usedPercent.fmt()}%", color = Palette.Ink, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        }
         Text(
-            "${t.label} ${t.usedPercent.fmt()}% used" + (t.resets?.let { " · resets $it" } ?: "") + " · ${ago(r.at)}",
+            listOfNotNull(t.resets?.let { "resets $it" }, ago(r.at), if (more > 0) "+$more more" else null).joinToString(" · "),
             color = Palette.Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
         )
     }

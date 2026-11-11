@@ -109,4 +109,87 @@ Nous Rate Limits (captured just now):
         assertEquals(null, QuotaProfiles.key("opencode"))
         assertEquals(null, QuotaProfiles.key(null))
     }
+
+    /** Grok draws its box over the conversation; the text to its left must not leak into labels. */
+    @Test fun grokOverConversation() {
+        val items = parseQuota("""
+                       │─────────────────────────────────────────────────────────────────────────────────────│
+     Worked for 12s    │  Weekly limit (SuperGrok)                                                           │
+                       │                                                                                     │
+                       │  ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  0%                                                 │
+     ❯ A long line of t│  Resets: November 17, 12:44                                                         │ally         8:59
+       keeps 50% going │                                                                                     │only an
+                       │  Credits: ${'$'}100.00                                                              │ reset
+""")
+
+        assertEquals(1, items.size)
+        assertEquals("Weekly limit (SuperGrok)", items[0].label)
+        assertEquals(0.0, items[0].usedPercent, 0.01)
+        assertEquals("November 17, 12:44", items[0].resets)
+    }
+
+    /** Hermes's real /usage, with its status-bar footer, which is not a limit. */
+    @Test fun hermesAccountLimits() {
+        val items = parseQuota("""
+  Current context:  123,055 / 500,000 (25%)
+  Messages:         185
+
+  📈 Account limits
+  Provider: openai-codex (Prolite)
+  Weekly: 100% remaining (0% used) • resets in 6d 21h (2026-11-18 06:04 EST)
+  You have 2 resets banked - use /usage reset to activate
+ ☤ gpt │ ~124K/500K │ [██░░░░░░░░] ~25% │ ◎ 99.8% │ ◷ 6.0s │ ↑ 25 t/s │ 3.0d │ ⏲ 27s │ ✓ 1
+""")
+        assertEquals(listOf("Weekly"), items.map { it.label })
+        assertEquals(0.0, items[0].usedPercent, 0.01)
+        assertEquals("6d 21h", items[0].resets)
+    }
+
+    /** Antigravity's real screen, including its intro lines and blank lines between limits. */
+    @Test fun antigravityLive() {
+        val items = parseQuota("""
+└ Models & Quota
+
+  Account: someone@example.com
+
+GEMINI MODELS
+  Models within this group: Gemini Flash, Gemini Pro
+
+  Weekly Limit Remaining
+    [██████████████████████████████████████████████████] 100.00%
+    Quota available
+
+  Five Hour Limit Remaining
+    [██████████████████████████████████████████████████] 100.00%
+    Quota available
+
+
+CLAUDE AND GPT MODELS
+  Models within this group: Claude Opus, Claude Sonnet, GPT-OSS
+
+  Weekly Limit Remaining
+    [██████████████████████████████████████████████████] 100.00%
+    Quota available
+
+GEMINI 4 ARGON
+  For paid Pro plans, Argon quota is separate. Higher Argon quota (included as part of the larger Gemini quota bucket) i
+
+  Gemini 4 Argon Weekly Limit
+    [██████████████████████████████████████████████████] 100.00%
+    Quota available
+""", bareMeansLeft = true)
+        assertEquals(4, items.size)
+        assertTrue(items.all { it.usedPercent == 0.0 })
+    }
+
+    @Test fun shortLabels() {
+        assertEquals("Week (all)", shortLabel("Current week (all models)"))
+        assertEquals("Week (Fable)", shortLabel("Current week (Fable)"))
+        assertEquals("Week", shortLabel("Weekly limit"))
+        assertEquals("Week (SuperGrok)", shortLabel("Weekly limit (SuperGrok)"))
+        assertEquals("Claude/GPT 5h", shortLabel("Claude and GPT Models · Five Hour Limit Remaining"))
+        assertEquals("Gemini 4 Argon Week", shortLabel("Gemini 4 Argon Weekly Limit"))
+        assertEquals("Plan", shortLabel("Plan"))
+        assertEquals("Usage credits", shortLabel("Usage credits"))
+    }
 }

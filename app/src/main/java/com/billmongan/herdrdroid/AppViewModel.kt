@@ -519,7 +519,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * For each kind of agent that can report usage without a model call, picks one pane running it
-     * that is idle and not in front at the computer, and asks it. The reading applies to every pane
+     * that is idle (preferring one not in front at the computer), and asks it. The reading applies to every pane
      * running that agent. Agents with no way to report usage are never sent anything.
      */
     private suspend fun quotaRound(force: Boolean) = quotaLock.withLock {
@@ -532,8 +532,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val last = lastQuotaTry[agentKey] ?: 0L
             val due = if (force) now - last > 2 * 60_000 else now - last > 30 * 60_000
             if (!due) continue
-            val target = list.firstOrNull { (it.status == Status.IDLE || it.status == Status.DONE) && !it.focused }
-                ?: continue
+            // Prefer a pane that is not in front at the computer, but use that one if it is the only
+            // choice: the check presses Enter only when the input line holds exactly its command.
+            val target = list.filter { it.status == Status.IDLE || it.status == Status.DONE }
+                .sortedBy { it.focused }
+                .firstOrNull() ?: continue
             val profile = QuotaProfiles.forAgent(target.agent) ?: continue
             if (!canPoll) return@withLock
             probingPane = target.id
