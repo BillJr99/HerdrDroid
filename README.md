@@ -5,7 +5,7 @@ HerdrDroid is an Android app for talking to the coding agents in a [herdr](https
 ## What it does
 
 - **Servers.** You add each computer yourself: a name, its address, its SSH port, your username, and the command that runs herdr there (for example `herdr` or `~/.local/bin/herdr`). Nothing is filled in for you, so the app works with any herdr server you can reach.
-- **All tabs.** Every herdr pane is a card with its agent, its status (Needs you, Working, Done, Idle), the model it is running, and the last line it printed. A tab that is waiting on you has an orange border and sorts to the top. The list refreshes every three seconds.
+- **All tabs.** Every herdr pane is a card with its agent and working folder ("Claude · claude"), its status (Needs you, Working, Done, Idle), the model it is running, and the last line it printed. A tab that is waiting on you has an orange border and sorts to the top. The list refreshes every three seconds.
 - **Talking to an agent.** Tap a card to see the pane's recent output and send it a message. Messages to an agent go through `herdr agent prompt`, which submits text the way the agent expects. Other panes get the text and Enter.
 - **Reading the screen.** The default **Chat** view reads like a messaging app. The app joins the lines the agent wrapped at the terminal's width back into paragraphs, so they wrap again at the phone's width, with bullets and numbers hanging in their own column. Messages you sent appear as bubbles on the right. Tables, boxes and column-aligned output keep their exact layout in a monospace strip that scrolls sideways, and full-width rules become thin dividers. Scrollbars, right-hand clocks and side panels (such as OpenCode's) are left out, and the agent's own input box and status line move to a small footer. The replies use a reading font you choose in Settings: Inter (sans, the default), Source Serif, or JetBrains Mono. Pinch with two fingers to change the text size, which is remembered for each server. **Terminal** shows the exact screen, unwrapped, in JetBrains Mono.
 - **Keys.** Two rows that always fit the screen: **Ctrl**, **Alt** and the four arrows (side by side, like a keyboard's arrow cluster) on top, then Esc, Tab, Backspace, Enter and Ctrl+C (after you confirm). **Keys** in the message box hides or shows them, and the choice is remembered. **Ctrl** and **Alt** work like a phone terminal's extra keys: tap one and it applies to the next key, so Ctrl then R sends Ctrl+R (a letter typed on the keyboard counts as the next key); long-press one and it stays held until you tap it again. They combine with each other and with the other keys, for example Ctrl+Alt+↑.
@@ -22,6 +22,8 @@ When the phone sleeps or the app goes to the background, Android drops the SSH s
 - A banner appears only for something you have to act on: still unreachable after 15 seconds (with a **Retry** button), a refused sign-in, a changed host key, or a herdr command that itself failed.
 
 ## Models
+
+Terminal glyphs the app's fonts cannot draw are swapped for plain ones before anything is shown, so Claude Code's "⏵⏵ auto mode on" reads "» auto mode on" and "⏸ plan mode on" reads "‖ plan mode on" (`forPhone` in `herdr/Herdr.kt`). Without this, Android drew them from a fallback font, and they came out as a pause sign or an emoji.
 
 Each card shows the pane's active model, read from the footer the agent draws at the bottom of its screen. Nothing is sent to the agent for this; it comes from the same reads as the card previews.
 

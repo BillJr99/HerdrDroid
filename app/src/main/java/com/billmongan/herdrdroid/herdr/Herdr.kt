@@ -42,6 +42,22 @@ fun shq(s: String): String = "'" + s.replace("'", "'\"'\"'") + "'"
 private val ANSI = Regex("\u001B\\[[0-9;?]*[ -/]*[@-~]|\u001B\\][^\u0007]*\u0007|\u001B[()][A-Z0-9]")
 fun stripAnsi(s: String): String = ANSI.replace(s, "")
 
+/**
+ * Terminal glyphs that the app's fonts lack, mapped to plain ones. Android draws a missing glyph
+ * from a fallback font, and some come out as emoji: Claude's "⏵⏵ auto mode on" showed a
+ * pause-like sign, and its "⏸ plan mode on" a pause emoji.
+ */
+private val GLYPHS = listOf(
+    "\u23F5\u23F5" to "\u00BB", // ⏵⏵ -> »
+    "\u23F5" to "\u203A", // ⏵ -> ›
+    "\u23F8" to "\u2016", // ⏸ -> ‖
+    "\u23EF" to "\u00BB", // ⏯ -> »
+    "\u23F9" to "\u25A0", // ⏹ -> ■
+)
+
+/** Pane text as the phone shows it: no ANSI codes, and only glyphs the app's fonts can draw. */
+fun forPhone(s: String): String = GLYPHS.fold(stripAnsi(s)) { acc, (from, to) -> acc.replace(from, to) }
+
 /** Every herdr action the app performs, as one command line over SSH. */
 class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
     // The path is the user's setting; "~" stays unquoted so the remote shell expands it.
@@ -85,7 +101,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
     }
 
     suspend fun read(paneId: String, lines: Int = 200): String =
-        stripAnsi(run(cmd("pane", "read", paneId, "--source", "recent", "--lines", lines.toString())))
+        forPhone(run(cmd("pane", "read", paneId, "--source", "recent", "--lines", lines.toString())))
 
     /** The last few lines of every pane, fetched in one round trip. */
     suspend fun previews(ids: List<String>): Map<String, Peek> {
@@ -93,7 +109,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
         val script = ids.joinToString("; ") { id ->
             "echo ${shq("@@herdrdroid@@$id")}; ${cmd("pane", "read", id, "--source", "recent", "--lines", "12")} 2>/dev/null"
         }
-        val out = stripAnsi(ssh.exec(script).out)
+        val out = forPhone(ssh.exec(script).out)
         val result = mutableMapOf<String, Peek>()
         var current: String? = null
         val buf = StringBuilder()

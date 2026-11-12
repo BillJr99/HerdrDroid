@@ -83,7 +83,6 @@ fun TabsScreen(vm: AppViewModel) {
     }
 
     val panes = vm.panes
-    val names = panes.groupingBy { it.agentName }.eachCount()
 
     Column(Modifier.fillMaxSize().background(Palette.Ground).systemBarsPadding()) {
         Surface(color = Palette.Card, border = BorderStroke(1.dp, Palette.Line)) {
@@ -133,9 +132,8 @@ fun TabsScreen(vm: AppViewModel) {
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             items(panes.filter { filter.matches(it) }, key = { it.id }) { p ->
-                val dup = (names[p.agentName] ?: 0) > 1
                 PaneCard(
-                    p, vm.previews[p.id].orEmpty(), showFolder = dup, model = vm.modelLine(p.id), quota = vm.quotaFor(p),
+                    p, vm.previews[p.id].orEmpty(), model = vm.modelLine(p.id), quota = vm.quotaFor(p),
                     checking = vm.showQuotas && vm.probingPane == p.id,
                 ) { vm.openPane(p.id) }
             }
@@ -146,7 +144,7 @@ fun TabsScreen(vm: AppViewModel) {
 
 @Composable
 private fun PaneCard(
-    p: Pane, preview: String, showFolder: Boolean, model: String?, quota: QuotaReading?, checking: Boolean,
+    p: Pane, preview: String, model: String?, quota: QuotaReading?, checking: Boolean,
     onClick: () -> Unit,
 ) {
     val needs = p.status == Status.NEEDS_YOU
@@ -161,7 +159,7 @@ private fun PaneCard(
             Column(Modifier.weight(1f).padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        if (showFolder && p.folder.isNotBlank()) "${p.agentName} · ${p.folder}" else p.agentName,
+                        if (p.folder.isNotBlank()) "${p.agentName} · ${p.folder}" else p.agentName,
                         fontWeight = FontWeight.SemiBold,
                         fontSize = 16.sp,
                         color = Palette.Ink,
