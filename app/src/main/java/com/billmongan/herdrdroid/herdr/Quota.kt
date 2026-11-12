@@ -69,6 +69,22 @@ data class QuotaProfile(
     val everyMinutes: Int = 30,
 )
 
+/**
+ * True when [screen] shows this agent's usage (or model) screen open: its close hint is visible
+ * AND the screen has usage numbers, or the model/effort the info command shows. The close hint
+ * alone is not enough, because a permission prompt can carry the same "Esc to cancel", and an
+ * Esc there would answer it.
+ */
+fun QuotaProfile.screenOpen(screen: String): Boolean {
+    val marker = openMarker ?: return false
+    val tail = screen.lines().takeLast(40).joinToString("\n")
+    if (!marker.containsMatchIn(tail)) return false
+    if (parseQuota(tail, bareMeansLeft).isNotEmpty()) return true
+    // The model screen counts only by its picked model (the ✔ line); "high effort" alone can
+    // appear in ordinary conversation text.
+    return parseInfo?.invoke(tail)?.model != null
+}
+
 object QuotaProfiles {
     /**
      * Agents checked on the computer this was built against. pi and OpenCode have no usage limit
@@ -76,8 +92,10 @@ object QuotaProfiles {
      */
     val builtIn = listOf(
         QuotaProfile(
+            // Not while working: Claude queues a command typed mid-turn and opens the screen only
+            // when the turn ends, after the app has stopped watching, which left it stuck open
+            // (2026-11-12). Idle panes only, like every other agent.
             setOf("claude"), "/usage", listOf("esc"), 3_000,
-            whileWorking = true,
             openMarker = Regex("Esc to cancel", RegexOption.IGNORE_CASE),
             infoCommand = "/model",
             parseInfo = ::claudeModelScreen,

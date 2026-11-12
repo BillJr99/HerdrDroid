@@ -17,7 +17,6 @@ import com.billmongan.herdrdroid.store.Server
 import com.billmongan.herdrdroid.ui.AgentScreen
 import com.billmongan.herdrdroid.ui.EditServerScreen
 import com.billmongan.herdrdroid.ui.HerdrTheme
-import com.billmongan.herdrdroid.ui.HermesChatScreen
 import com.billmongan.herdrdroid.ui.Palette
 import com.billmongan.herdrdroid.ui.ServersScreen
 import com.billmongan.herdrdroid.ui.SettingsScreen
@@ -58,10 +57,6 @@ class MainActivity : FragmentActivity() {
                     is Screen.Agent -> {
                         BackHandler { vm.screen = Screen.Tabs }
                         AgentScreen(vm, s.paneId)
-                    }
-                    Screen.HermesChat -> {
-                        BackHandler { vm.screen = Screen.Tabs }
-                        HermesChatScreen(vm)
                     }
                     is Screen.Settings -> {
                         BackHandler { vm.screen = s.back }

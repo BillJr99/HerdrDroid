@@ -119,6 +119,10 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     val textSize = vm.current?.textSize ?: 12.5f
     var pinch by remember { mutableFloatStateOf(1f) }
     val liveSize = (textSize * pinch).coerceIn(8f, 24f)
+    val isHermes = pane?.agent?.lowercase() == "hermes"
+    var hermesLive by rememberSaveable(paneId) { mutableStateOf(false) }
+    val live = isHermes && hermesLive
+    val liveNow by rememberUpdatedState(live)
     val structured = vm.transcriptState == TranscriptMode.ON && !fullTerminal
     val listState = rememberLazyListState()
 
@@ -128,7 +132,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
         vm.resetTranscript(paneId)
         var tick = 0
         while (true) {
-            if (vm.hasTranscriptReader(paneId) && (vm.transcriptState != TranscriptMode.OFF || tick % 10 == 0)) {
+            if (!liveNow && vm.hasTranscriptReader(paneId) && (vm.transcriptState != TranscriptMode.OFF || tick % 10 == 0)) {
                 vm.readTranscript(paneId)
             }
             tick++
@@ -238,15 +242,40 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
             if (quota != null) {
                 TextButton(onClick = { showUsage = !showUsage }) { Text("Usage", fontSize = 14.sp) }
             }
-            TextButton(onClick = { fullTerminal = !fullTerminal }) {
-                Text(if (fullTerminal) "Chat" else "Terminal", fontSize = 14.sp)
+            if (!live) {
+                TextButton(onClick = { fullTerminal = !fullTerminal }) {
+                    Text(if (fullTerminal) "Chat" else "Terminal", fontSize = 14.sp)
+                }
+            }
+        }
+        if (isHermes) {
+            // Hermes can be driven two ways: its CLI session in this pane, or a live chat through
+            // its gateway with streaming, tool progress and approvals as buttons.
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)
+                    .background(Palette.Gray, RoundedCornerShape(12.dp)).padding(3.dp),
+            ) {
+                listOf(false to "This pane", true to "Live chat").forEach { (value, label) ->
+                    val on = hermesLive == value
+                    Box(
+                        Modifier.weight(1f)
+                            .background(if (on) Palette.Card else Color.Transparent, RoundedCornerShape(10.dp))
+                            .clickable { hermesLive = value }
+                            .padding(vertical = 7.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(label, color = if (on) Palette.Ink else Palette.Muted, fontSize = 14.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Medium)
+                    }
+                }
             }
         }
         HorizontalDivider(color = Palette.Line)
         ServerBanners(vm)
 
         // ---- The conversation ---------------------------------------------------------------
-        if (structured) {
+        if (live) {
+            HermesLiveChat(vm, Modifier.weight(1f).fillMaxWidth())
+        } else if (structured) {
             val rows = remember(vm.transcriptItems) { rowsOf(vm.transcriptItems) }
             val family: FontFamily = vm.readingFont.family
             TranscriptChat(
@@ -303,7 +332,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
         }
 
         // ---- Keys and the message box -------------------------------------------------------
-        Column(
+        if (!live) Column(
             Modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, top = 6.dp, bottom = 10.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {

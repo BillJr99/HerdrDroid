@@ -14,17 +14,14 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Warning
@@ -40,7 +37,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -54,48 +50,42 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.billmongan.herdrdroid.AppViewModel
-import com.billmongan.herdrdroid.Screen
 import com.billmongan.herdrdroid.hermes.Ask
 import com.billmongan.herdrdroid.hermes.HermesChat
 import com.billmongan.herdrdroid.hermes.HermesPhase
 import com.billmongan.herdrdroid.hermes.HermesSession
 import com.billmongan.herdrdroid.transcript.rowsOf
 
-/** A native chat with Hermes through its gateway, not through the terminal. */
+/**
+ * The live chat with Hermes through its gateway, shown inside the Hermes pane's screen when its
+ * "Live chat" switch is on. It brings its own message box; the pane's keys are not used here.
+ */
 @Composable
-fun HermesChatScreen(vm: AppViewModel) {
+fun HermesLiveChat(vm: AppViewModel, modifier: Modifier = Modifier) {
     val chat = vm.hermesChat() ?: return
-    DisposableEffect(Unit) { onDispose { } }
-    Column(Modifier.fillMaxSize().background(Palette.Ground).systemBarsPadding().imePadding()) {
+    Column(modifier) {
         Row(
-            Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+            Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(onClick = { if (chat.phase == HermesPhase.CHAT) chat.showPicker() else vm.screen = Screen.Tabs }) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Palette.Ink)
+            val (dot, label) = when (chat.phase) {
+                HermesPhase.CONNECTING -> Palette.Muted to "Connecting to Hermes…"
+                HermesPhase.OFFLINE -> Palette.OrangeInk to "Not connected"
+                HermesPhase.PICKER -> Palette.Green to "Choose a conversation"
+                HermesPhase.CHAT -> (if (chat.running) Palette.Blue else Palette.Green) to chat.title
             }
-            Column(Modifier.weight(1f).padding(start = 2.dp)) {
-                Text(
-                    if (chat.phase == HermesPhase.CHAT) chat.title else "Hermes",
-                    fontWeight = FontWeight.SemiBold, fontSize = 17.sp, color = Palette.Ink,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis,
-                )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    val (dot, label) = when (chat.phase) {
-                        HermesPhase.CONNECTING -> Palette.Muted to "Connecting to Hermes…"
-                        HermesPhase.OFFLINE -> Palette.OrangeInk to "Not connected"
-                        else -> (if (chat.running) Palette.Blue else Palette.Green) to (if (chat.running) "Working" else "Connected through the gateway")
-                    }
-                    Box(Modifier.size(7.dp).background(dot, CircleShape))
-                    Text("  $label", color = Palette.Muted, fontSize = 12.5.sp, maxLines = 1)
-                }
-            }
+            Box(Modifier.size(7.dp).background(dot, CircleShape))
+            Text(
+                "  $label", color = Palette.Muted, fontSize = 12.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
             if (chat.phase == HermesPhase.CHAT) {
                 IconButton(onClick = { chat.showPicker() }) { Icon(Icons.Filled.Menu, contentDescription = "Conversations", tint = Palette.Ink) }
             }
-            IconButton(onClick = { chat.newChat() }) { Icon(Icons.Filled.Add, contentDescription = "New chat", tint = Palette.Ink) }
+            if (chat.phase == HermesPhase.CHAT || chat.phase == HermesPhase.PICKER) {
+                IconButton(onClick = { chat.newChat() }) { Icon(Icons.Filled.Add, contentDescription = "New chat", tint = Palette.Ink) }
+            }
         }
-        HorizontalDivider(color = Palette.Line)
         chat.problem?.let { p ->
             Surface(color = Palette.OrangeSoft, modifier = Modifier.fillMaxWidth()) {
                 Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {

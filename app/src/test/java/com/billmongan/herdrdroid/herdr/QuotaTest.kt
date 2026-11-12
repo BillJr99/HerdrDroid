@@ -244,8 +244,10 @@ GEMINI 4 ARGON
         assertEquals(PaneInfo("Opus 5.5", "high"), claudeModelScreen(picked))
         val p = QuotaProfiles.forAgent("claude")!!
         assertEquals("/model", p.infoCommand)
-        assertTrue(p.whileWorking)
+        assertEquals(false, p.whileWorking)
         assertTrue(p.openMarker!!.containsMatchIn("   Esc to cancel"))
+        assertTrue(p.screenOpen(screen))
+        assertEquals(false, p.screenOpen("I'll use high effort here.\n Do you want to proceed?\n ❯ 1. Yes\n Esc to cancel"))
     }
 
     @Test fun hermesReasoning() {
@@ -260,5 +262,33 @@ GEMINI 4 ARGON
   ↑/↓ Scroll · pgup/pgdown Page · ctrl+end Bottom · ctrl+home Top · esc Close
                                                                                                               Gemini 4 Argon · medium
 """))
+    }
+
+    @Test fun leftoverScreenIsRecognisedOnlyWithItsNumbers() {
+        val p = QuotaProfiles.forAgent("claude")!!
+        val usage = """
+   Current week (all models)
+   █████████████████████████                          50% used
+   Resets Nov 12, 2:59am (America/New_York)
+
+   Esc to cancel
+"""
+        assertTrue(p.screenOpen(usage))
+        val permission = """
+ Bash command
+   rm -rf build
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No
+   Esc to cancel
+"""
+        assertEquals(false, p.screenOpen(permission))
+        assertEquals(false, p.screenOpen("❯ \n  ⏵⏵ auto mode on · esc to interrupt"))
+        assertEquals(false, p.whileWorking)
+    }
+
+    @Test fun profilesWithoutAScreenNeverClose() {
+        val codex = QuotaProfiles.forAgent("codex")!!
+        assertEquals(false, codex.screenOpen("Esc to cancel 50% used"))
     }
 }

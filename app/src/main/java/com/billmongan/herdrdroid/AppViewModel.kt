@@ -18,7 +18,9 @@ import androidx.lifecycle.viewModelScope
 import com.billmongan.herdrdroid.herdr.Herdr
 import com.billmongan.herdrdroid.herdr.HerdrError
 import com.billmongan.herdrdroid.herdr.Pane
+import com.billmongan.herdrdroid.herdr.QuotaProfile
 import com.billmongan.herdrdroid.herdr.QuotaProfiles
+import com.billmongan.herdrdroid.herdr.screenOpen
 import com.billmongan.herdrdroid.herdr.QuotaReading
 import com.billmongan.herdrdroid.herdr.footerModel
 import com.billmongan.herdrdroid.herdr.Status
@@ -52,7 +54,6 @@ sealed interface Screen {
     data object Tabs : Screen
     data class Agent(val paneId: String) : Screen
     data class Settings(val back: Screen) : Screen
-    data object HermesChat : Screen
 }
 
 /** Whether the open pane's conversation comes from the agent's own log (ON) or its screen (OFF). */
@@ -351,6 +352,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun closeSession() {
+        closeJob?.cancel()
+        closeWatch.clear()
         hermes?.close()
         hermes = null
         reconnectJob?.cancel()
@@ -630,13 +633,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- Hermes through its gateway ------------------------------------------------------------
 
-    /** True when the open server runs Hermes in one of its panes. */
-    val hasHermes get() = panes.any { it.agent?.lowercase() == "hermes" }
-
-    fun openHermesChat() {
-        screen = Screen.HermesChat
-    }
-
     /** The native Hermes chat for this server, made and connected on first use. */
     fun hermesChat(): HermesChat? {
         hermes?.let { return it }
@@ -727,6 +723,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             } finally {
                 probingPane = null
             }
+            if (result != null) watchForLeftoverScreen(target.id, profile)
             result?.model?.let { models = models + (target.id to it) }
             result?.effort?.let { efforts = efforts + (target.id to it) }
             val items = result?.items
@@ -738,6 +735,36 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     lastQuotaTry[agentKey] = now
                     quotas = quotas + (agentKey to QuotaReading(now, items))
                     prefs.saveQuotas(serverId, quotas)
+                }
+            }
+        }
+    }
+
+    private val closeWatch = mutableMapOf<String, Pair<QuotaProfile, Long>>()
+    private var closeJob: Job? = null
+
+    /**
+     * After the app opens an agent's usage or model screen, it keeps an eye on that pane for ten
+     * minutes and closes the screen if it is (still, or newly) open: an agent can draw it late,
+     * after the check finished. Only the screen the app opened is closed, recognised by its close
+     * hint together with its usage numbers or model line ([screenOpen]), so the Esc can't reach
+     * a permission prompt or a working agent.
+     */
+    private fun watchForLeftoverScreen(paneId: String, profile: QuotaProfile) {
+        if (profile.closeKeys.isEmpty() || profile.openMarker == null) return
+        closeWatch[paneId] = profile to System.currentTimeMillis() + 10 * 60_000
+        if (closeJob?.isActive == true) return
+        closeJob = viewModelScope.launch {
+            while (isActive && closeWatch.isNotEmpty()) {
+                delay(3_000)
+                val now = System.currentTimeMillis()
+                closeWatch.entries.removeAll { it.value.second < now }
+                for ((id, pair) in closeWatch.toMap()) {
+                    if (probingPane == id) continue
+                    val screen = quietly { it.read(id, 60) } ?: continue
+                    if (pair.first.screenOpen(screen)) {
+                        quietly { it.sendKeys(id, *pair.first.closeKeys.toTypedArray()) }
+                    }
                 }
             }
         }
