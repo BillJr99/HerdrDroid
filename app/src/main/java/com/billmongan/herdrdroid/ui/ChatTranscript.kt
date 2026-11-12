@@ -94,6 +94,8 @@ import kotlinx.coroutines.launch
 class ChatActions(
     val onQuote: (String) -> Unit,
     val onStop: (() -> Unit)?,
+    /** Sends a reply on to another agent (opens it with the reply in its message box). */
+    val onForward: ((String) -> Unit)? = null,
 )
 
 /**
@@ -234,7 +236,7 @@ private fun ItemView(item: Item, rows: List<ChatRow>, size: Float, family: FontF
                     MarkdownText(item.text, size * 1.12f, family)
                 }
                 MentionedFiles(files)
-                if (endsTurn) ReplyActions(item.text, actions.onQuote)
+                if (endsTurn) ReplyActions(item.text, actions.onQuote, actions.onForward)
             }
         }
         is ThinkItem -> ThinkView(item, size)
@@ -299,7 +301,7 @@ private fun share(context: android.content.Context, text: String) {
 
 /** Copy, Share and Quote under a finished reply. */
 @Composable
-private fun ReplyActions(text: String, onQuote: (String) -> Unit) {
+private fun ReplyActions(text: String, onQuote: (String) -> Unit, onForward: ((String) -> Unit)?) {
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
     var copied by remember { mutableStateOf(false) }
@@ -308,6 +310,7 @@ private fun ReplyActions(text: String, onQuote: (String) -> Unit) {
         Pill(if (copied) "Copied" else "Copy") { clipboard.setText(AnnotatedString(text)); copied = true }
         Pill("Share") { share(context, text) }
         Pill("Quote") { onQuote(text) }
+        if (onForward != null) Pill("Forward") { onForward(text) }
     }
 }
 

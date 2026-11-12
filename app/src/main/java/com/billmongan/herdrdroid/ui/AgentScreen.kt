@@ -8,6 +8,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -109,7 +110,8 @@ private fun keyName(c: Char): String? = when {
 @Composable
 fun AgentScreen(vm: AppViewModel, paneId: String) {
     val pane = vm.pane(paneId)
-    var message by rememberSaveable(paneId) { mutableStateOf("") }
+    var message by rememberSaveable(paneId) { mutableStateOf(vm.takePrefill(paneId) ?: "") }
+    var forwarding by remember { mutableStateOf<String?>(null) }
     var fullTerminal by rememberSaveable { mutableStateOf(false) }
     var confirmCtrlC by remember { mutableStateOf(false) }
     var typingAnswer by remember { mutableStateOf(false) }
@@ -212,8 +214,20 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
 
     Column(Modifier.fillMaxSize().background(Palette.Ground).systemBarsPadding().imePadding()) {
         // ---- Header: the agent, what it's doing, and its model -----------------------------
+        // Swipe the header left or right to move to the next or previous agent.
+        var swipe by remember { mutableFloatStateOf(0f) }
         Row(
-            Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+            Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, top = 6.dp, bottom = 6.dp)
+                .pointerInput(paneId) {
+                    detectHorizontalDragGestures(
+                        onDragStart = { swipe = 0f },
+                        onDragEnd = {
+                            if (kotlin.math.abs(swipe) > 120f) vm.neighbor(paneId, if (swipe < 0) 1 else -1)?.let { vm.openPane(it) }
+                            swipe = 0f
+                        },
+                        onHorizontalDrag = { _, d -> swipe += d },
+                    )
+                },
             verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(onClick = { vm.screen = Screen.Tabs }) {
@@ -241,6 +255,9 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
             }
             if (quota != null) {
                 TextButton(onClick = { showUsage = !showUsage }) { Text("Usage", fontSize = 14.sp) }
+            }
+            if (pane != null) {
+                TextButton(onClick = { vm.openFiles(pane.cwd.ifBlank { "~" }) }) { Text("Files", fontSize = 14.sp) }
             }
             if (!live) {
                 TextButton(onClick = { fullTerminal = !fullTerminal }) {
@@ -287,7 +304,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 more = vm.transcriptMore,
                 size = liveSize,
                 family = family,
-                actions = ChatActions(onQuote = quote, onStop = pane?.let { p -> { vm.stopPane(p) } }),
+                actions = ChatActions(onQuote = quote, onStop = pane?.let { p -> { vm.stopPane(p) } }, onForward = { t -> forwarding = t }),
                 header = { if (showUsage && quota != null) QuotaDetails(quota) { showUsage = false } },
                 footer = promptCard,
                 state = listState,
@@ -346,6 +363,16 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                     modifier = Modifier.padding(horizontal = 4.dp),
                 )
             }
+            // Messages waiting for this agent to be ready ("When idle").
+            vm.queued.filter { it.paneId == paneId }.forEach { q ->
+                Row(
+                    Modifier.fillMaxWidth().background(Palette.BlueSoft, RoundedCornerShape(12.dp)).padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Queued until idle: " + q.text.lines().first(), color = Palette.Blue, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                    Text("Cancel", color = Palette.Blue, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.clickable { vm.cancelQueued(q) }.padding(start = 8.dp))
+                }
+            }
             if (vm.showKeys || modifiersOn) {
                 KeyPad(
                     ctrl = ctrl, alt = alt,
@@ -373,9 +400,18 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 onAttach = { uri -> vm.attach(uri) { path -> message = (message.trimEnd() + " " + path).trim() + " " } },
                 attachBusy = vm.uploading,
                 commands = SlashCommands.forAgent(pane?.agent),
-                leading = { ComposerChip(if (vm.showKeys) "Keys ▾" else "Keys ▴", vm.showKeys) { vm.setKeysShown(!vm.showKeys) } },
+                leading = {
+                    ComposerChip(if (vm.showKeys) "Keys ▾" else "Keys ▴", vm.showKeys) { vm.setKeysShown(!vm.showKeys) }
+                    if (status == Status.WORKING && message.isNotBlank()) {
+                        ComposerChip("When idle", false) { vm.enqueue(paneId, message.trim()); message = "" }
+                    }
+                },
             )
         }
+    }
+
+    forwarding?.let { t ->
+        ForwardPicker(vm, exclude = paneId, onPick = { to -> forwarding = null; vm.forward(t, pane, to) }, onDismiss = { forwarding = null })
     }
 
     if (confirmCtrlC) {

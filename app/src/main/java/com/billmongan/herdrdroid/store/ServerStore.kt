@@ -127,6 +127,25 @@ class AppPrefs(context: Context) {
         get() = prefs.getBoolean("showQuotas", true)
         set(v) = prefs.edit().putBoolean("showQuotas", v).apply()
 
+    /** Alerts when an agent needs you or finishes, with a background "Watching" service. */
+    var watching: Boolean
+        get() = prefs.getBoolean("watching", false)
+        set(v) = prefs.edit().putBoolean("watching", v).apply()
+
+    /** Also watch the other saved servers that can sign in without a prompt. */
+    var watchOthers: Boolean
+        get() = prefs.getBoolean("watchOthers", true)
+        set(v) = prefs.edit().putBoolean("watchOthers", v).apply()
+
+    /** "Done" alerts too, not only "needs you". */
+    var alertDone: Boolean
+        get() = prefs.getBoolean("alertDone", true)
+        set(v) = prefs.edit().putBoolean("alertDone", v).apply()
+
+    var darkPalette: String
+        get() = prefs.getString("darkPalette", "STANDARD") ?: "STANDARD"
+        set(v) = prefs.edit().putString("darkPalette", v).apply()
+
     fun quotas(serverId: String): Map<String, QuotaReading> {
         val raw = prefs.getString("quota_$serverId", null) ?: return emptyMap()
         return runCatching {

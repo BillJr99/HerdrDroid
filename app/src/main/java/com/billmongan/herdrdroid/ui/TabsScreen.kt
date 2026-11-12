@@ -31,6 +31,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -94,6 +95,8 @@ fun TabsScreen(vm: AppViewModel) {
                     Text(vm.current?.label ?: "", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Palette.Ink)
                     LinkLabel(vm, " · ${panes.size} tabs · v${com.billmongan.herdrdroid.BuildConfig.VERSION_NAME}")
                 }
+                TextButton(onClick = { vm.screen = Screen.Dispatch }) { Text("Hand out", fontWeight = FontWeight.SemiBold) }
+                TextButton(onClick = { vm.openFiles("~") }) { Text("Files") }
                 IconButton(onClick = { scope.launch { vm.refreshPanes(); vm.refreshPreviews() }; vm.refreshQuotasSoon() }) {
                     Icon(Icons.Filled.Refresh, contentDescription = "Refresh", tint = Palette.Ink)
                 }
@@ -131,11 +134,59 @@ fun TabsScreen(vm: AppViewModel) {
             Modifier.fillMaxSize().padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            items(panes.filter { filter.matches(it) }, key = { it.id }) { p ->
-                PaneCard(
-                    p, vm.previews[p.id].orEmpty(), model = vm.modelLine(p.id), quota = vm.quotaFor(p),
-                    checking = vm.showQuotas && vm.probingPane == p.id,
-                ) { vm.openPane(p.id) }
+            // Agents on the other watched servers that are waiting on you.
+            val elsewhere = vm.fleetStates.values.flatMap { st -> st.panes.filter { it.status == Status.NEEDS_YOU }.map { st.server to it } }
+            if (elsewhere.isNotEmpty() && filter != Filter.IDLE && filter != Filter.WORKING) {
+                item(key = "_elsewhere") {
+                    Text("Needs you on other servers", color = Palette.OrangeInk, fontSize = 13.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 4.dp))
+                }
+                items(elsewhere, key = { "x:" + it.first.id + it.second.id }) { (server, p) ->
+                    Surface(
+                        shape = RoundedCornerShape(16.dp), color = Palette.Card, border = BorderStroke(2.dp, Palette.Orange),
+                        modifier = Modifier.fillMaxWidth().clickable { vm.switchTo(server.id, p.id) },
+                    ) {
+                        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            AgentTile(p.initial, p.status, size = 36)
+                            Column(Modifier.weight(1f).padding(start = 10.dp)) {
+                                Text("${p.agentName} · ${p.folder}", color = Palette.Ink, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text("on ${server.label} · tap to switch", color = Palette.Muted, fontSize = 12.5.sp)
+                            }
+                        }
+                    }
+                }
+            }
+            if (vm.fleetStates.isNotEmpty() && filter == Filter.ALL) {
+                item(key = "_fleet") {
+                    Text(
+                        vm.fleetStates.values.joinToString("   ") { st ->
+                            val w = st.panes.count { it.status == Status.WORKING }
+                            val n = st.panes.count { it.status == Status.NEEDS_YOU }
+                            st.server.label + ": " + (st.error?.let { "unreachable" } ?: "$n need you, $w working")
+                        },
+                        color = Palette.Muted, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            val shown = panes.filter { filter.matches(it) }
+            val byWorkspace = shown.groupBy { it.workspaceId }
+            byWorkspace.forEach { (ws, list) ->
+                if (byWorkspace.size > 1) {
+                    item(key = "_ws:$ws") {
+                        // Each workspace rolls up to its most urgent agent state.
+                        val urgent = listOf(Status.NEEDS_YOU, Status.WORKING, Status.DONE, Status.IDLE, Status.UNKNOWN).first { s -> list.any { it.status == s } || s == Status.UNKNOWN }
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 6.dp)) {
+                            Text("Workspace $ws  ", color = Palette.Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                            StatusPill(urgent)
+                        }
+                    }
+                }
+                items(list, key = { it.id }) { p ->
+                    PaneCard(
+                        p, vm.previews[p.id].orEmpty(), model = vm.modelLine(p.id), quota = vm.quotaFor(p),
+                        checking = vm.showQuotas && vm.probingPane == p.id,
+                        onClose = if (p.tabLabel.startsWith("helper-")) ({ vm.closeHelper(p) }) else null,
+                    ) { vm.openPane(p.id) }
+                }
             }
             item { Spacer(Modifier.height(24.dp)) }
         }
@@ -145,6 +196,7 @@ fun TabsScreen(vm: AppViewModel) {
 @Composable
 private fun PaneCard(
     p: Pane, preview: String, model: String?, quota: QuotaReading?, checking: Boolean,
+    onClose: (() -> Unit)? = null,
     onClick: () -> Unit,
 ) {
     val needs = p.status == Status.NEEDS_YOU
@@ -169,6 +221,11 @@ private fun PaneCard(
                     )
                     StatusPill(p.status)
                 }
+                // The agent's terminal title, which most agents set to what they are working on.
+                val title = p.title.trim()
+                if (title.isNotBlank() && !title.equals(p.agentName, ignoreCase = true) && !title.equals(p.agent, ignoreCase = true) && title != p.cwd) {
+                    Text(title, color = Palette.Ink, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
                 model?.let {
                     Text(
                         it,
@@ -188,6 +245,13 @@ private fun PaneCard(
                 )
                 quota?.let { QuotaLine(it, Modifier.padding(top = 4.dp)) }
                 if (checking) Text("Checking usage…", color = Palette.Muted, fontSize = 12.sp)
+                if (onClose != null) {
+                    Text(
+                        if (p.status == Status.WORKING) "Helper · working" else "Helper · Close tab",
+                        color = Palette.Blue, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.clickable(enabled = p.status != Status.WORKING) { onClose() }.padding(top = 2.dp),
+                    )
+                }
             }
         }
     }

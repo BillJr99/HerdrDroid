@@ -21,6 +21,8 @@ data class Pane(
     val cwd: String,
     /** herdr's own window has this pane in front, so someone may be typing in it at the computer. */
     val focused: Boolean = false,
+    /** The label of the tab the pane is in ("opencode-scoped", "helper-codex-2", …). */
+    val tabLabel: String = "",
 ) {
     val agentName: String
         get() = when (agent?.lowercase()) {
@@ -81,7 +83,14 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
     }
 
     suspend fun panes(): List<Pane> {
-        val root = JSONObject(run(cmd("pane", "list")))
+        // Panes and tab labels in one round trip; a tab list failure only loses the labels.
+        val both = run(cmd("pane", "list") + "; echo @@herdrdroid-tabs@@; " + cmd("tab", "list") + " 2>/dev/null || true")
+        val paneJson = both.substringBefore("@@herdrdroid-tabs@@")
+        val labels = runCatching {
+            val tabs = JSONObject(both.substringAfter("@@herdrdroid-tabs@@").trim()).getJSONObject("result").getJSONArray("tabs")
+            (0 until tabs.length()).associate { tabs.getJSONObject(it).let { t -> t.optString("tab_id") to t.optString("label") } }
+        }.getOrDefault(emptyMap())
+        val root = JSONObject(paneJson)
         val arr = root.getJSONObject("result").getJSONArray("panes")
         val list = (0 until arr.length()).map { i ->
             val p = arr.getJSONObject(i)
@@ -100,6 +109,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
                 title = p.optString("terminal_title_stripped"),
                 cwd = p.optString("foreground_cwd", p.optString("cwd")),
                 focused = p.optBoolean("focused", false),
+                tabLabel = labels[p.optString("tab_id")].orEmpty(),
             )
         }
         val order = listOf(Status.NEEDS_YOU, Status.WORKING, Status.DONE, Status.IDLE, Status.UNKNOWN)
@@ -297,6 +307,39 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
         return runCatching { parse(r.out) }.getOrNull()
     }
 
+    /**
+     * Starts an agent in a new tab: makes the tab in [workspace] at [cwd] (created if missing),
+     * then `herdr agent start` in its pane, which returns once the agent is ready for input.
+     * Returns the new pane's id. Agents started this way are not in the boot launcher.
+     */
+    suspend fun startAgent(kind: String, cwd: String, label: String, name: String, workspace: String?): String {
+        ssh.exec("mkdir -p " + (if (cwd.startsWith("~/")) "\"\$HOME\"/" + shq(cwd.removePrefix("~/")) else shq(cwd)))
+        val dir = if (cwd.startsWith("~/")) ssh.exec("printf %s \"\$HOME\"").out.trim() + "/" + cwd.removePrefix("~/") else cwd
+        val args = mutableListOf("tab", "create", "--cwd", dir, "--label", label, "--no-focus")
+        if (!workspace.isNullOrBlank()) args.addAll(listOf("--workspace", workspace))
+        val created = JSONObject(run(cmd(*args.toTypedArray())))
+        val pane = created.getJSONObject("result").getJSONObject("root_pane").getString("pane_id")
+        delay(800)
+        run(cmd("agent", "start", name, "--kind", kind, "--pane", pane, "--timeout", "90000"))
+        return pane
+    }
+
+    /** Closes a tab and everything in it (a helper made with [startAgent]). */
+    suspend fun closeTab(tabId: String) = run(cmd("tab", "close", tabId))
+
+    /** A folder's entries, folders first, through the computer's python3 (names, kinds, sizes, times). */
+    suspend fun listDir(path: String): List<DirEntry> {
+        val target = if (path.startsWith("~")) "\"\$HOME\"" + shq(path.removePrefix("~")) else shq(path)
+        val py = "import os,sys,json\np=os.path.realpath(sys.argv[1])\nout=[]\n" +
+            "for e in sorted(os.scandir(p),key=lambda e:(not e.is_dir(),e.name.lower())):\n" +
+            "  try:\n    st=e.stat()\n    out.append([e.name,e.is_dir(),st.st_size,int(st.st_mtime)])\n" +
+            "  except Exception:\n    out.append([e.name,e.is_dir(),0,0])\n" +
+            "print(json.dumps({'path':p,'entries':out[:2000]}))"
+        val r = ssh.execInput("python3 - $target", py.toByteArray())
+        if (r.exit != 0) throw HerdrError(r.err.trim().lines().lastOrNull() ?: "That folder couldn't be read.", r.exit)
+        return parseDir(r.out)
+    }
+
     /** Confirms the command exists before the app shows any tabs. */
     suspend fun check() {
         val r = ssh.exec("$herdr --version")
@@ -311,6 +354,21 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
 }
 
 class HerdrError(message: String, val exit: Int) : Exception(message)
+
+/** One entry in a folder listing. [dir] is the folder's resolved path. */
+data class DirEntry(val name: String, val isDir: Boolean, val size: Long, val mtime: Long, val dir: String) {
+    val path get() = if (dir == "/") "/$name" else "$dir/$name"
+}
+
+fun parseDir(json: String): List<DirEntry> {
+    val o = JSONObject(json.trim())
+    val dir = o.getString("path")
+    val arr = o.getJSONArray("entries")
+    return (0 until arr.length()).map { i ->
+        val e = arr.getJSONArray(i)
+        DirEntry(e.getString(0), e.getBoolean(1), e.optLong(2), e.optLong(3), dir)
+    }
+}
 
 data class ProbeResult(val items: List<QuotaItem>, val model: String?, val effort: String?)
 

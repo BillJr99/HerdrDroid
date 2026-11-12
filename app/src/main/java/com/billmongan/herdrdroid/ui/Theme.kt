@@ -31,8 +31,11 @@ import com.billmongan.herdrdroid.herdr.Status
 object Palette {
     var dark = false
         internal set
+    /** Which dark palette is in use; only matters when [dark] is on. */
+    var variant = DarkPalette.STANDARD
+        internal set
 
-    private fun pick(light: Long, night: Long) = Color(if (dark) night else light)
+    private fun pick(light: Long, night: Long) = Color(if (dark) variant.remap(night) else light)
 
     val Ground get() = pick(0xFFF5F6F8, 0xFF0F1115)
     val Card get() = pick(0xFFFFFFFF, 0xFF181B21)
@@ -71,6 +74,46 @@ object Palette {
     val DiffDel get() = pick(0xFFFDECEC, 0xFF2C1517)
     val DiffAddInk get() = pick(0xFF146C3E, 0xFF8BDAAA)
     val DiffDelInk get() = pick(0xFFA4262C, 0xFFFF9C9C)
+}
+
+/**
+ * Dark palettes. Each maps the standard dark colors onto its own; colors it doesn't list (the
+ * status oranges and greens, diff colors) keep the standard ones.
+ */
+enum class DarkPalette(val label: String, private val map: Map<Long, Long>) {
+    STANDARD("Standard dark", emptyMap()),
+    BLACK_GLASS(
+        "Black Glass",
+        mapOf(
+            0xFF0F1115 to 0xFF000000, 0xFF181B21 to 0xFF0B0B0D, 0xFFE8EBF0 to 0xFFF0F0F2, 0xFFA4ACBA to 0xFF9A9AA2,
+            0xFF2A2F38 to 0xFF1F1F24, 0xFF262B34 to 0xFF17171B, 0xFF1C2027 to 0xFF0E0E11, 0xFF14171D to 0xFF070708,
+            0xFF22262E to 0xFF141417, 0xFF20242B to 0xFF121215, 0xFF353B46 to 0xFF26262C, 0xFF15181E to 0xFF08080A,
+            0xFF1B1F26 to 0xFF101013, 0xFF08090C to 0xFF000000,
+        ),
+    ),
+    CATPPUCCIN(
+        "Catppuccin Mocha",
+        mapOf(
+            0xFF0F1115 to 0xFF1E1E2E, 0xFF181B21 to 0xFF181825, 0xFFE8EBF0 to 0xFFCDD6F4, 0xFFA4ACBA to 0xFFA6ADC8,
+            0xFF2A2F38 to 0xFF313244, 0xFF6C9BFF to 0xFF89B4FA, 0xFF1A2540 to 0xFF2A2F4A, 0xFF1F2C4D to 0xFF313A5C,
+            0xFF262B34 to 0xFF313244, 0xFF1C2027 to 0xFF181825, 0xFF14171D to 0xFF11111B, 0xFF22262E to 0xFF313244,
+            0xFF20242B to 0xFF262637, 0xFF353B46 to 0xFF45475A, 0xFF15181E to 0xFF181825, 0xFF1B1F26 to 0xFF11111B,
+            0xFF5CCB8F to 0xFFA6E3A1, 0xFFF0A060 to 0xFFFAB387, 0xFFC4A5FF to 0xFFCBA6F7, 0xFF08090C to 0xFF11111B,
+        ),
+    ),
+    TOKYO_NIGHT(
+        "Tokyo Night",
+        mapOf(
+            0xFF0F1115 to 0xFF1A1B26, 0xFF181B21 to 0xFF16161E, 0xFFE8EBF0 to 0xFFC0CAF5, 0xFFA4ACBA to 0xFFA9B1D6,
+            0xFF2A2F38 to 0xFF292E42, 0xFF6C9BFF to 0xFF7AA2F7, 0xFF1A2540 to 0xFF24304F, 0xFF1F2C4D to 0xFF2D3A5E,
+            0xFF262B34 to 0xFF292E42, 0xFF1C2027 to 0xFF16161E, 0xFF14171D to 0xFF13131A, 0xFF22262E to 0xFF292E42,
+            0xFF20242B to 0xFF1F2335, 0xFF353B46 to 0xFF3B4261, 0xFF15181E to 0xFF16161E, 0xFF1B1F26 to 0xFF13131A,
+            0xFF5CCB8F to 0xFF9ECE6A, 0xFFF0A060 to 0xFFFF9E64, 0xFFC4A5FF to 0xFFBB9AF7, 0xFF08090C to 0xFF13131A,
+        ),
+    ),
+    ;
+
+    fun remap(night: Long): Long = map[night] ?: night
 }
 
 /** The fonts bundled with the app (all under the SIL Open Font License; see assets/licenses). */
@@ -119,9 +162,10 @@ private val AppType = Typography().let { t ->
 enum class ThemeMode(val label: String) { SYSTEM("Match phone"), LIGHT("Light"), DARK("Dark") }
 
 @Composable
-fun HerdrTheme(dark: Boolean, content: @Composable () -> Unit) {
+fun HerdrTheme(dark: Boolean, variant: DarkPalette = DarkPalette.STANDARD, content: @Composable () -> Unit) {
     Palette.dark = dark
-    key(dark) {
+    Palette.variant = variant
+    key(dark, variant) {
         val colors = if (dark) {
             darkColorScheme(
                 primary = Palette.Blue, onPrimary = Palette.OnBlue,

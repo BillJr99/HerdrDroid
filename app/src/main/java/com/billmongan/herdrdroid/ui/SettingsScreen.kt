@@ -45,6 +45,9 @@ import com.billmongan.herdrdroid.herdr.shortLabel
 
 @Composable
 fun SettingsScreen(vm: AppViewModel, back: Screen) {
+    val askNotify = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+    ) { granted -> vm.changeWatching(granted) }
     Column(Modifier.fillMaxSize().background(Palette.Ground).systemBarsPadding()) {
         Surface(color = Palette.Card, border = BorderStroke(1.dp, Palette.Line)) {
             Row(Modifier.fillMaxWidth().padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -68,6 +71,55 @@ fun SettingsScreen(vm: AppViewModel, back: Screen) {
                         Text(m.label, color = Palette.Ink, fontSize = 16.sp)
                     }
                 }
+            }
+            Section("Dark palette") {
+                DarkPalette.entries.forEach { p ->
+                    Row(
+                        Modifier.fillMaxWidth().clickable { vm.chooseDarkPalette(p) }.padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = vm.darkPalette == p, onClick = { vm.chooseDarkPalette(p) })
+                        Text(p.label, color = Palette.Ink, fontSize = 16.sp)
+                    }
+                }
+                Text("Used whenever the app is dark (the phone's dark mode, or Dark above).", color = Palette.Muted, fontSize = 13.sp)
+            }
+            Section("Alerts") {
+                Row(
+                    Modifier.fillMaxWidth().clickable {
+                        if (vm.watching) vm.changeWatching(false)
+                        else if (android.os.Build.VERSION.SDK_INT >= 33) askNotify.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                        else vm.changeWatching(true)
+                    },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Tell me when an agent needs me", color = Palette.Ink, fontSize = 16.sp, modifier = Modifier.weight(1f))
+                    Switch(checked = vm.watching, onCheckedChange = { on ->
+                        if (!on) vm.changeWatching(false)
+                        else if (android.os.Build.VERSION.SDK_INT >= 33) askNotify.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                        else vm.changeWatching(true)
+                    })
+                }
+                Text(
+                    "While connected, the app keeps watching in the background (a quiet \"Watching\" notification shows) " +
+                        "and alerts you when an agent starts waiting on you, with its first two choices as buttons. A " +
+                        "button answers only if the same question is still on screen. Alerts are made on the phone from " +
+                        "what it reads over SSH; nothing is set up on the computer. Watching uses some battery.",
+                    color = Palette.Muted, fontSize = 13.sp,
+                )
+                Row(Modifier.fillMaxWidth().clickable { vm.changeAlertDone(!vm.alertDone) }, verticalAlignment = Alignment.CenterVertically) {
+                    Text("Also when an agent finishes", color = Palette.Ink, fontSize = 16.sp, modifier = Modifier.weight(1f))
+                    Switch(checked = vm.alertDone, onCheckedChange = { vm.changeAlertDone(it) })
+                }
+                Row(Modifier.fillMaxWidth().clickable { vm.changeWatchOthers(!vm.watchOthers) }, verticalAlignment = Alignment.CenterVertically) {
+                    Text("Watch my other servers too", color = Palette.Ink, fontSize = 16.sp, modifier = Modifier.weight(1f))
+                    Switch(checked = vm.watchOthers, onCheckedChange = { vm.changeWatchOthers(it) })
+                }
+                Text(
+                    "Servers that sign in without asking (a key or a saved password; fingerprint-locked ones once " +
+                        "unlocked) are checked every 15 seconds, so the tab list can show what needs you everywhere.",
+                    color = Palette.Muted, fontSize = 13.sp,
+                )
             }
             Section("Reading font") {
                 ReadingFont.entries.forEach { f ->

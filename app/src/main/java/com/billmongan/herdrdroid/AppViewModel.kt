@@ -3,7 +3,19 @@ package com.billmongan.herdrdroid
 import android.app.Application
 import android.net.Uri
 import android.provider.OpenableColumns
+import com.billmongan.herdrdroid.fleet.Fleet
+import com.billmongan.herdrdroid.fleet.FleetState
+import com.billmongan.herdrdroid.herdr.Candidate
+import com.billmongan.herdrdroid.herdr.DirEntry
+import com.billmongan.herdrdroid.herdr.detectPrompt
+import com.billmongan.herdrdroid.herdr.rankCandidates
 import com.billmongan.herdrdroid.hermes.HermesChat
+import com.billmongan.herdrdroid.notify.AppBus
+import com.billmongan.herdrdroid.notify.Notify
+import com.billmongan.herdrdroid.notify.NotifyAction
+import com.billmongan.herdrdroid.notify.WatchService
+import com.billmongan.herdrdroid.ui.DarkPalette
+import androidx.compose.runtime.mutableStateMapOf
 import com.billmongan.herdrdroid.transcript.Item
 import com.billmongan.herdrdroid.transcript.Transcript
 import com.billmongan.herdrdroid.transcript.UserItem
@@ -54,6 +66,9 @@ sealed interface Screen {
     data object Tabs : Screen
     data class Agent(val paneId: String) : Screen
     data class Settings(val back: Screen) : Screen
+    data class Files(val path: String, val back: Screen) : Screen
+    data object Dispatch : Screen
+    data object Compare : Screen
 }
 
 /** Whether the open pane's conversation comes from the agent's own log (ON) or its screen (OFF). */
@@ -166,7 +181,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
     private var textSizeJob: Job? = null
 
-    private val canPoll get() = herdr != null && foreground && link == Link.CONNECTED
+    // Reads go on in the background only while the user has alerts ("Watching") turned on.
+    private val canPoll get() = herdr != null && (foreground || watching) && link == Link.CONNECTED
 
     // ---- Servers ----------------------------------------------------------------------------
 
@@ -311,9 +327,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 efforts = emptyMap()
                 quotas = prefs.quotas(saved.id)
                 lastQuotaTry.clear()
+                unlockedThisSession += saved.id
+                lastStatus.clear()
                 screen = Screen.Tabs
                 refreshPanes()
                 if (showQuotas) startQuotaChecks()
+                startWatching()
+                pendingOpen?.let { p -> pendingOpen = null; if (panes.any { it.id == p }) openPane(p) }
             } catch (e: UnconfirmedHostKey) {
                 s.close()
                 pendingHostKey = PendingHostKey(server, password, remember, e.fingerprint)
@@ -366,6 +386,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun disconnect() {
+        fleet?.stop()
+        fleet = null
+        watchJob?.cancel()
+        WatchService.stop(getApplication())
         closeSession()
         current = null
         panes = emptyList()
@@ -528,7 +552,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // ---- Panes ------------------------------------------------------------------------------
 
     suspend fun refreshPanes() {
-        quietly { it.panes() }?.let { panes = it }
+        quietly { it.panes() }?.let { fresh ->
+            panes = fresh
+            current?.let { s -> noticeChanges(s.id, s.label, fresh) { herdr } }
+        }
     }
 
     suspend fun refreshPreviews() {
@@ -805,6 +832,295 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun quotaFor(pane: Pane?): QuotaReading? =
         if (!showQuotas) null else QuotaProfiles.key(pane?.agent)?.let { quotas[it] }
+
+    // ---- 0.4.0: alerts, other servers, dispatch, compare, queue, helpers, files ------------------
+
+    var watching by mutableStateOf(prefs.watching)
+        private set
+    var watchOthers by mutableStateOf(prefs.watchOthers)
+        private set
+    var alertDone by mutableStateOf(prefs.alertDone)
+        private set
+    var darkPalette by mutableStateOf(runCatching { DarkPalette.valueOf(prefs.darkPalette) }.getOrDefault(DarkPalette.STANDARD))
+        private set
+    private val unlockedThisSession = mutableSetOf<String>()
+    private val lastStatus = mutableMapOf<String, Status>()
+    private var fleet: Fleet? = null
+    private var watchJob: Job? = null
+    private var pendingOpen: String? = null
+
+    /** What the other watched servers' agents are doing, by server id. */
+    val fleetStates: Map<String, FleetState> get() = fleet?.states ?: emptyMap()
+
+    fun chooseDarkPalette(p: DarkPalette) {
+        darkPalette = p
+        prefs.darkPalette = p.name
+    }
+
+    fun changeWatching(on: Boolean) {
+        watching = on
+        prefs.watching = on
+        if (on) startWatching() else {
+            watchJob?.cancel()
+            WatchService.stop(getApplication())
+        }
+    }
+
+    fun changeWatchOthers(on: Boolean) {
+        watchOthers = on
+        prefs.watchOthers = on
+        startWatching()
+    }
+
+    fun changeAlertDone(on: Boolean) {
+        alertDone = on
+        prefs.alertDone = on
+    }
+
+    /** The other servers that can be watched without asking for anything. */
+    private fun watchable(): List<Server> = servers.filter {
+        it.id != current?.id && it.fingerprint != null && canSignInSilently(it) && (!it.biometric || it.id in unlockedThisSession)
+    }
+
+    /** Starts the other-server watcher and, with alerts on, the background loop and service. */
+    private fun startWatching() {
+        if (herdr == null) return
+        if (watchOthers) {
+            val f = fleet ?: Fleet(
+                viewModelScope,
+                credentials = { s -> credentialsFor(s, savedPassword(s)) },
+                keystoreKey = SshKeyVault::provider,
+                onSeen = { st -> noticeChanges(st.server.id, st.server.label, st.panes) { fleet?.herdr(st.server.id) } },
+            ).also { fleet = it }
+            f.watch(watchable())
+        } else {
+            fleet?.stop()
+            fleet = null
+        }
+        if (!watching) return
+        Notify.channels(getApplication())
+        WatchService.start(getApplication(), "Watching ${current?.label ?: "your server"}" + if (watchOthers && watchable().isNotEmpty()) " and ${watchable().size} more" else "")
+        if (watchJob?.isActive == true) return
+        watchJob = viewModelScope.launch {
+            while (isActive) {
+                delay(6_000)
+                // In front, the screens refresh panes themselves; behind, this keeps alerts coming.
+                if (!foreground && herdr != null) runCatching { refreshPanes() }
+            }
+        }
+    }
+
+    /**
+     * Compares each pane's status with the last one seen and raises an alert when an agent starts
+     * waiting on you, or (if wanted) finishes. The pane open on screen in the foreground is skipped.
+     */
+    private fun noticeChanges(serverId: String, serverLabel: String, seen: List<Pane>, client: () -> Herdr?) {
+        if (!watching) {
+            seen.forEach { lastStatus["$serverId|${it.id}"] = it.status }
+            return
+        }
+        val app = getApplication<Application>()
+        for (p in seen) {
+            val key = "$serverId|${p.id}"
+            val before = lastStatus[key]
+            lastStatus[key] = p.status
+            if (before == null || before == p.status || p.agent == null) continue
+            val onScreen = foreground && serverId == current?.id && (screen as? Screen.Agent)?.paneId == p.id
+            if (onScreen) continue
+            when {
+                p.status == Status.NEEDS_YOU -> viewModelScope.launch {
+                    val text = runCatching { client()?.read(p.id, 40) }.getOrNull().orEmpty()
+                    val prompt = detectPrompt(text, blocked = true)
+                    Notify.needsYou(app, serverId, serverLabel, p.id, p.agentName, prompt?.question ?: "Waiting for you.", prompt?.choices.orEmpty())
+                }
+                before == Status.WORKING && (p.status == Status.DONE || p.status == Status.IDLE) && alertDone ->
+                    Notify.done(app, serverId, serverLabel, p.id, p.agentName, if (serverId == current?.id) previews[p.id].orEmpty() else "")
+                before == Status.NEEDS_YOU -> Notify.clear(app, serverId, p.id)
+            }
+        }
+    }
+
+    init {
+        viewModelScope.launch { AppBus.actions.collect { a -> answerFromNotification(a) } }
+    }
+
+    /** A notification button: answer only if the same question is still on screen. */
+    private suspend fun answerFromNotification(a: NotifyAction) {
+        val h = if (a.serverId == current?.id) herdr else fleet?.herdr(a.serverId)
+        h ?: return
+        val app = getApplication<Application>()
+        val text = runCatching { h.read(a.paneId, 40) }.getOrNull() ?: return
+        val now = detectPrompt(text, blocked = true)
+        val same = now != null && now.question.filterNot { it.isWhitespace() } == a.question.filterNot { it.isWhitespace() } &&
+            now.choices.any { it.keys == a.keys }
+        if (!same) {
+            Notify.needsYou(app, a.serverId, servers.firstOrNull { it.id == a.serverId }?.label ?: "", a.paneId, "The agent",
+                "The question changed before your answer arrived. Open the app to answer.", emptyList())
+            return
+        }
+        runCatching {
+            h.sendText(a.paneId, a.keys)
+            if (a.pressEnter) h.sendKeys(a.paneId, "enter")
+        }
+    }
+
+    /** A notification was tapped: open that pane, switching servers if it is on another one. */
+    fun openFromNotification(serverId: String, paneId: String) {
+        if (serverId == current?.id) {
+            openPane(paneId)
+            return
+        }
+        val s = servers.firstOrNull { it.id == serverId } ?: return
+        // A fingerprint-locked server opens only if it was already unlocked this session.
+        if (!canSignInSilently(s) || (s.biometric && s.id !in unlockedThisSession)) {
+            screen = Screen.Servers
+            return
+        }
+        pendingOpen = paneId
+        connect(s, savedPassword(s), remember = false)
+    }
+
+    /** Switches to another watched server from the "needs you" list. */
+    fun switchTo(serverId: String, paneId: String?) {
+        val s = servers.firstOrNull { it.id == serverId } ?: return
+        pendingOpen = paneId
+        connect(s, savedPassword(s), remember = false)
+    }
+
+    // -- Dispatch and compare --------------------------------------------------------------------
+
+    fun candidates(sensitive: Boolean): List<Candidate> = rankCandidates(panes, ::quotaFor, sensitive)
+
+    /** Sends one task to each target, or queues it for a busy one when [whenIdle] is on. */
+    fun dispatch(text: String, targets: List<Pane>, whenIdle: Boolean) {
+        for (p in targets) {
+            if (whenIdle && p.status == Status.WORKING) enqueue(p.id, text) else sendMessage(p, text)
+        }
+        if (targets.size > 1) {
+            compareTargets = targets.map { it.id }
+            compareItems.clear()
+            compareCursors.clear()
+            screen = Screen.Compare
+        } else targets.firstOrNull()?.let { openPane(it.id) }
+    }
+
+    var compareTargets by mutableStateOf<List<String>>(emptyList())
+        private set
+    val compareItems = mutableStateMapOf<String, List<Item>>()
+    private val compareCursors = mutableMapOf<String, String>()
+
+    /** Reads each compared pane's log since the last read (each with its own cursor). */
+    suspend fun refreshCompare() {
+        for (id in compareTargets) {
+            val p = pane(id) ?: continue
+            val r = quietly { it.transcript(p, compareCursors[id].orEmpty(), transcriptScript) } ?: continue
+            if (!r.ok) continue
+            compareCursors[id] = r.cursor
+            if (r.reset || r.items.isNotEmpty()) compareItems[id] = Transcript.merge(compareItems[id].orEmpty(), r.items, r.reset)
+        }
+    }
+
+    // -- Send when idle --------------------------------------------------------------------------
+
+    data class QueuedPrompt(val id: Long, val paneId: String, val text: String)
+
+    var queued by mutableStateOf<List<QueuedPrompt>>(emptyList())
+        private set
+    private var queueJob: Job? = null
+
+    /** Holds a message until the pane's agent is ready, then sends it. */
+    fun enqueue(paneId: String, text: String) {
+        queued = queued + QueuedPrompt(System.nanoTime(), paneId, text)
+        if (queueJob?.isActive == true) return
+        queueJob = viewModelScope.launch {
+            while (isActive && queued.isNotEmpty()) {
+                delay(3_000)
+                refreshPanes()
+                for (q in queued.toList()) {
+                    val p = pane(q.paneId)
+                    if (p == null) { queued = queued - q; continue }
+                    if (p.status == Status.IDLE || p.status == Status.DONE) {
+                        queued = queued - q
+                        sendMessage(p, q.text)
+                    }
+                }
+            }
+        }
+    }
+
+    fun cancelQueued(q: QueuedPrompt) {
+        queued = queued - q
+    }
+
+    // -- New agents and helpers ------------------------------------------------------------------
+
+    var starting by mutableStateOf<String?>(null)
+        private set
+
+    private fun mainWorkspace(): String? = panes.groupingBy { it.workspaceId }.eachCount().maxByOrNull { it.value }?.key
+
+    /**
+     * Starts an agent of [kind] in a new tab at [cwd]. A [task] is sent once it is ready. Helpers
+     * get a "helper-" label so the list can offer to close them when they are finished.
+     */
+    fun startAgent(kind: String, cwd: String, label: String, task: String?) {
+        if (starting != null) return
+        starting = label
+        act(null, "Couldn't start $kind") { h ->
+            try {
+                val name = label.lowercase().replace(Regex("[^a-z0-9_-]"), "-").trim('-').take(32).let { if (it.firstOrNull()?.isLetter() == true) it else "a$it" }
+                val pane = h.startAgent(kind, cwd, label, name, mainWorkspace())
+                refreshPanes()
+                if (!task.isNullOrBlank()) pane(pane)?.let { sendMessage(it, task) }
+                openPane(pane)
+            } finally {
+                starting = null
+            }
+        }
+    }
+
+    fun nextHelperLabel(kind: String): String {
+        val n = panes.count { it.tabLabel.startsWith("helper-") } + 1
+        return "helper-$kind-$n"
+    }
+
+    fun closeHelper(p: Pane) {
+        act(p.id, "Couldn't close the helper") { h ->
+            h.closeTab(p.tabId)
+            refreshPanes()
+        }
+    }
+
+    // -- Forwarding -------------------------------------------------------------------------------
+
+    private val prefills = mutableStateMapOf<String, String>()
+
+    /** Opens [to] with a reply from another agent already in its message box. */
+    fun forward(text: String, from: Pane?, to: Pane) {
+        prefills[to.id] = "From ${from?.agentName ?: "another agent"}:\n\n" + text.trim() + "\n\n"
+        openPane(to.id)
+    }
+
+    fun takePrefill(paneId: String): String? = prefills.remove(paneId)
+
+    /** The next (or previous) agent pane in the list, for swiping between agents. */
+    fun neighbor(paneId: String, step: Int): String? {
+        val list = panes.filter { it.agent != null }
+        val i = list.indexOfFirst { it.id == paneId }
+        if (i < 0 || list.isEmpty()) return null
+        return list[(i + step + list.size) % list.size].id
+    }
+
+    // -- Files ------------------------------------------------------------------------------------
+
+    suspend fun listDir(path: String): Result<List<DirEntry>> {
+        val h = herdr ?: return Result.failure(IllegalStateException("Not connected."))
+        return runCatching { h.listDir(path) }
+    }
+
+    fun openFiles(path: String) {
+        screen = Screen.Files(path, screen)
+    }
 
     // ---- Messages ---------------------------------------------------------------------------
 

@@ -28,13 +28,15 @@ class MainActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        com.billmongan.herdrdroid.notify.Notify.channels(this)
+        openFrom(intent)
         setContent {
             val dark = when (vm.themeMode) {
                 ThemeMode.SYSTEM -> isSystemInDarkTheme()
                 ThemeMode.LIGHT -> false
                 ThemeMode.DARK -> true
             }
-            HerdrTheme(dark) {
+            HerdrTheme(dark, vm.darkPalette) {
                 SideEffect {
                     window.statusBarColor = Palette.Card.toArgb()
                     window.navigationBarColor = Palette.Card.toArgb()
@@ -58,6 +60,18 @@ class MainActivity : FragmentActivity() {
                         BackHandler { vm.screen = Screen.Tabs }
                         AgentScreen(vm, s.paneId)
                     }
+                    is Screen.Files -> {
+                        BackHandler { vm.screen = s.back }
+                        com.billmongan.herdrdroid.ui.FilesScreen(vm, s.path, s.back)
+                    }
+                    Screen.Dispatch -> {
+                        BackHandler { vm.screen = Screen.Tabs }
+                        com.billmongan.herdrdroid.ui.DispatchScreen(vm)
+                    }
+                    Screen.Compare -> {
+                        BackHandler { vm.screen = Screen.Tabs }
+                        com.billmongan.herdrdroid.ui.CompareScreen(vm)
+                    }
                     is Screen.Settings -> {
                         BackHandler { vm.screen = s.back }
                         SettingsScreen(vm, s.back)
@@ -65,6 +79,19 @@ class MainActivity : FragmentActivity() {
                 }
             }
         }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        openFrom(intent)
+    }
+
+    /** A tapped alert carries the server and pane to open. */
+    private fun openFrom(intent: android.content.Intent?) {
+        val server = intent?.getStringExtra(com.billmongan.herdrdroid.notify.Notify.EXTRA_SERVER) ?: return
+        val pane = intent.getStringExtra(com.billmongan.herdrdroid.notify.Notify.EXTRA_PANE) ?: return
+        intent.removeExtra(com.billmongan.herdrdroid.notify.Notify.EXTRA_SERVER)
+        vm.openFromNotification(server, pane)
     }
 
     override fun onStart() {
