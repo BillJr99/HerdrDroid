@@ -187,6 +187,16 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
             sendKeys(paneId, *closeKeys.toTypedArray())
             delay(400)
         }
+        // A screen that finished drawing after the close keys went out (Antigravity, when slow) is
+        // still open. Check a few more times and close it, but only while its own marker shows, so
+        // these extra keys can never reach the agent itself.
+        if (closeKeys.isNotEmpty() && openMarker != null) {
+            repeat(4) {
+                delay(700)
+                if (!openMarker.containsMatchIn(read(paneId, 40))) return shown
+                sendKeys(paneId, *closeKeys.toTypedArray())
+            }
+        }
         return shown
     }
 
