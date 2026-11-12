@@ -60,6 +60,17 @@ object Palette {
     val Code get() = pick(0xFFF3F5F8, 0xFF14171D)
     val Bubble get() = pick(0xFFE9ECF1, 0xFF262B34)
     val Composer get() = pick(0xFFFFFFFF, 0xFF1C2027)
+    val Activity get() = pick(0xFFF8F9FB, 0xFF15181E)
+    val InlineCode get() = pick(0xFFECEFF3, 0xFF262B34)
+    val CodeHead get() = pick(0xFFEAEDF1, 0xFF1B1F26)
+    val CodeComment get() = pick(0xFF6B7280, 0xFF7D8696)
+    val CodeString get() = pick(0xFF0F7B4F, 0xFF8BD5A7)
+    val CodeNumber get() = pick(0xFFB4530B, 0xFFF2B27A)
+    val CodeKeyword get() = pick(0xFF7C3AED, 0xFFC4A5FF)
+    val DiffAdd get() = pick(0xFFE7F6EC, 0xFF14281C)
+    val DiffDel get() = pick(0xFFFDECEC, 0xFF2C1517)
+    val DiffAddInk get() = pick(0xFF146C3E, 0xFF8BDAAA)
+    val DiffDelInk get() = pick(0xFFA4262C, 0xFFFF9C9C)
 }
 
 /** The fonts bundled with the app (all under the SIL Open Font License; see assets/licenses). */

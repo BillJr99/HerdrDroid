@@ -20,6 +20,9 @@ import net.schmizz.sshj.userauth.method.AuthPassword
 import net.schmizz.sshj.userauth.method.AuthPublickey
 import net.schmizz.sshj.userauth.password.PasswordFinder
 import net.schmizz.sshj.userauth.password.Resource
+import net.schmizz.sshj.connection.channel.direct.Parameters
+import java.net.InetSocketAddress
+import java.net.ServerSocket
 import java.security.MessageDigest
 import java.security.PrivateKey
 import java.security.PublicKey
@@ -40,6 +43,11 @@ class AuthRejected(message: String) : Exception(message)
 class LinkDown(cause: Throwable) : Exception(cause.message ?: cause.javaClass.simpleName, cause)
 
 data class ExecResult(val exit: Int, val out: String, val err: String)
+
+/** A local port forwarded over SSH; [close] stops it. */
+class Forward(val localPort: Int, private val stop: () -> Unit) {
+    fun close() = stop()
+}
 
 /** How the app signs in to one server: a key, a password, or the key first and then the password. */
 data class Credentials(val key: KeySource?, val password: String?)
@@ -223,6 +231,61 @@ class HerdrSsh(
             }
             @Suppress("UNREACHABLE_CODE")
             ExecResult(-1, "", "")
+        }
+    }
+
+    /**
+     * Runs a command with [input] on its standard input: how the transcript reader script and an
+     * uploaded file reach the computer without anything being installed there.
+     */
+    suspend fun execInput(command: String, input: ByteArray, timeoutSeconds: Long = 30): ExecResult = withContext(Dispatchers.IO) {
+        lock.withLock {
+            var attempt = 0
+            while (true) {
+                try {
+                    val c = open()
+                    c.startSession().use { session ->
+                        val cmd = session.exec(command)
+                        cmd.outputStream.use { it.write(input); it.flush() }
+                        val out = cmd.inputStream.readBytes().toString(Charsets.UTF_8)
+                        val err = cmd.errorStream.readBytes().toString(Charsets.UTF_8)
+                        cmd.join(timeoutSeconds, TimeUnit.SECONDS)
+                        return@withLock ExecResult(cmd.exitStatus ?: -1, out, err)
+                    }
+                } catch (e: UnconfirmedHostKey) {
+                    throw e
+                } catch (e: HostKeyChanged) {
+                    throw e
+                } catch (e: AuthRejected) {
+                    throw e
+                } catch (e: Exception) {
+                    client?.runCatching { disconnect() }
+                    client = null
+                    if (++attempt > 1) throw (e as? LinkDown ?: LinkDown(e))
+                }
+            }
+            @Suppress("UNREACHABLE_CODE")
+            ExecResult(-1, "", "")
+        }
+    }
+
+    /**
+     * Forwards a port on this phone's loopback to [remoteHost]:[remotePort] as seen from the
+     * computer, over this SSH connection. The connection arrives at the computer from 127.0.0.1,
+     * so a service that only listens there (Hermes's gateway) can be reached without exposing it.
+     */
+    suspend fun forward(remoteHost: String, remotePort: Int): Forward = withContext(Dispatchers.IO) {
+        val c = lock.withLock { open() }
+        val ss = ServerSocket()
+        ss.reuseAddress = true
+        ss.bind(InetSocketAddress("127.0.0.1", 0))
+        val fwd = c.newLocalPortForwarder(Parameters("127.0.0.1", ss.localPort, remoteHost, remotePort), ss)
+        val t = Thread({ runCatching { fwd.listen() } }, "herdrdroid-forward-${ss.localPort}")
+        t.isDaemon = true
+        t.start()
+        Forward(ss.localPort) {
+            runCatching { fwd.close() }
+            runCatching { ss.close() }
         }
     }
 

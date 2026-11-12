@@ -74,6 +74,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.billmongan.herdrdroid.AppViewModel
+import androidx.compose.foundation.lazy.rememberLazyListState
+import com.billmongan.herdrdroid.TranscriptMode
+import com.billmongan.herdrdroid.transcript.rowsOf
 import com.billmongan.herdrdroid.Link
 import com.billmongan.herdrdroid.Screen
 import com.billmongan.herdrdroid.herdr.Choice
@@ -116,12 +119,27 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     val textSize = vm.current?.textSize ?: 12.5f
     var pinch by remember { mutableFloatStateOf(1f) }
     val liveSize = (textSize * pinch).coerceIn(8f, 24f)
+    val structured = vm.transcriptState == TranscriptMode.ON && !fullTerminal
+    val listState = rememberLazyListState()
 
-    // Re-read the pane every 1.5 seconds while this screen is open.
+    // The agent's own session log, every 1.5 seconds, where there is one to read. When there
+    // isn't, the screen view below is used and the log is looked for again every 15 seconds.
     LaunchedEffect(paneId) {
+        vm.resetTranscript(paneId)
+        var tick = 0
+        while (true) {
+            if (vm.hasTranscriptReader(paneId) && (vm.transcriptState != TranscriptMode.OFF || tick % 10 == 0)) {
+                vm.readTranscript(paneId)
+            }
+            tick++
+            kotlinx.coroutines.delay(1_500)
+        }
+    }
+    // The screen itself: the terminal view, the fallback chat view, and questions the agent asks.
+    LaunchedEffect(paneId, structured) {
         while (true) {
             vm.readPane(paneId)
-            kotlinx.coroutines.delay(1_500)
+            kotlinx.coroutines.delay(if (structured) 2_500 else 1_500)
         }
     }
     LaunchedEffect(paneId) {
@@ -140,20 +158,51 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     val modifiersOn = ctrl != Hold.OFF || alt != Hold.OFF
     fun send() {
         if (message.isNotBlank() && pane != null) {
-            vm.sendMessage(pane, message); message = ""; typingAnswer = false
+            vm.sendMessage(pane, message.trim()); message = ""; typingAnswer = false
         }
     }
+    val quote: (String) -> Unit = { q -> message = q.lines().joinToString("\n") { "> $it" } + "\n\n" }
 
     val status = pane?.status ?: Status.UNKNOWN
     val prompt: Prompt? = if (typingAnswer) null else detectPrompt(vm.paneText, status == Status.NEEDS_YOU)
     val scroll = rememberScrollState()
-    LaunchedEffect(vm.paneText) { scroll.animateScrollTo(scroll.maxValue) }
+    LaunchedEffect(vm.paneText, structured) { if (!structured) scroll.animateScrollTo(scroll.maxValue) }
     val quota = vm.quotaFor(pane)
     val onZoom by rememberUpdatedState<(Float) -> Unit> { z -> pinch = (pinch * z) }
     val onZoomEnd by rememberUpdatedState<() -> Unit> {
         if (pinch != 1f) {
             vm.setTextSize(liveSize)
             pinch = 1f
+        }
+    }
+    val pinchToZoom = Modifier.pointerInput(Unit) {
+        // Two fingers change the text size; one finger still scrolls.
+        awaitEachGesture {
+            awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            var zoomed = false
+            do {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                if (event.changes.count { it.pressed } >= 2) {
+                    val z = event.calculateZoom()
+                    if (z != 1f) {
+                        onZoom(z)
+                        zoomed = true
+                        event.changes.forEach { it.consume() }
+                    }
+                }
+            } while (event.changes.any { it.pressed })
+            if (zoomed) onZoomEnd()
+        }
+    }
+    val promptCard: @Composable () -> Unit = {
+        prompt?.let { p ->
+            PromptCard(
+                p,
+                agent = pane?.agentName ?: "The agent",
+                onChoice = { c -> vm.answer(paneId, c.keys, c.pressEnter) },
+                onKey = { k -> vm.sendKeys(paneId, k) },
+                onTypeAnswer = { typingAnswer = true },
+            )
         }
     }
 
@@ -166,13 +215,18 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
             IconButton(onClick = { vm.screen = Screen.Tabs }) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to all tabs", tint = Palette.Ink)
             }
-            Column(Modifier.weight(1f).padding(start = 2.dp)) {
-                Text(pane?.agentName ?: paneId, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, color = Palette.Ink)
+            AgentTile(pane?.initial ?: "?", status, size = 34)
+            Column(Modifier.weight(1f).padding(start = 10.dp)) {
+                Text(
+                    vm.transcriptTitle?.takeIf { structured } ?: (pane?.agentName ?: paneId),
+                    fontWeight = FontWeight.SemiBold, fontSize = 17.sp, color = Palette.Ink,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
                 if (vm.link == Link.CONNECTED) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(Modifier.size(7.dp).background(look(status).ink, CircleShape))
                         Text(
-                            "  " + look(status).label + " · " + (vm.modelLine(paneId) ?: paneId),
+                            "  " + look(status).label + " · " + (vm.modelLine(paneId) ?: pane?.folder ?: paneId),
                             color = Palette.Muted, fontSize = 12.5.sp,
                             maxLines = 1, overflow = TextOverflow.Ellipsis,
                         )
@@ -192,65 +246,59 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
         ServerBanners(vm)
 
         // ---- The conversation ---------------------------------------------------------------
-        Column(
-            Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .pointerInput(Unit) {
-                    // Two fingers change the text size; one finger still scrolls.
-                    awaitEachGesture {
-                        awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-                        var zoomed = false
-                        do {
-                            val event = awaitPointerEvent(PointerEventPass.Initial)
-                            if (event.changes.count { it.pressed } >= 2) {
-                                val z = event.calculateZoom()
-                                if (z != 1f) {
-                                    onZoom(z)
-                                    zoomed = true
-                                    event.changes.forEach { it.consume() }
-                                }
-                            }
-                        } while (event.changes.any { it.pressed })
-                        if (zoomed) onZoomEnd()
+        if (structured) {
+            val rows = remember(vm.transcriptItems) { rowsOf(vm.transcriptItems) }
+            val family: FontFamily = vm.readingFont.family
+            TranscriptChat(
+                rows = rows,
+                working = status == Status.WORKING,
+                workingLabel = "",
+                agentName = pane?.agentName ?: "The agent",
+                pending = vm.pendingFor(paneId),
+                more = vm.transcriptMore,
+                size = liveSize,
+                family = family,
+                actions = ChatActions(onQuote = quote, onStop = pane?.let { p -> { vm.stopPane(p) } }),
+                header = { if (showUsage && quota != null) QuotaDetails(quota) { showUsage = false } },
+                footer = promptCard,
+                state = listState,
+                modifier = Modifier.weight(1f).fillMaxWidth().then(pinchToZoom),
+            )
+        } else {
+            Column(
+                Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .then(pinchToZoom)
+                    .verticalScroll(scroll)
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                if (showUsage && quota != null) QuotaDetails(quota) { showUsage = false }
+                val text = vm.paneText
+                if (text.isBlank()) {
+                    Text("Loading…", color = Palette.Muted, fontSize = 15.sp)
+                } else if (fullTerminal) {
+                    SelectionContainer {
+                        Text(
+                            text,
+                            color = Palette.TerminalInk,
+                            fontFamily = Fonts.Mono,
+                            fontSize = (liveSize * 0.88f).sp,
+                            lineHeight = (liveSize * 0.88f * 1.35f).sp,
+                            softWrap = false,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Palette.Terminal, RoundedCornerShape(12.dp))
+                                .horizontalScroll(rememberScrollState())
+                                .padding(12.dp),
+                        )
                     }
+                } else {
+                    val pending = vm.lastSent?.takeIf { it.first == paneId }?.second
+                    ChatView(text, pending, liveSize, vm.readingFont)
                 }
-                .verticalScroll(scroll)
-                .padding(horizontal = 16.dp, vertical = 14.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            if (showUsage && quota != null) QuotaDetails(quota) { showUsage = false }
-            val text = vm.paneText
-            if (text.isBlank()) {
-                Text("Loading…", color = Palette.Muted, fontSize = 15.sp)
-            } else if (fullTerminal) {
-                SelectionContainer {
-                    Text(
-                        text,
-                        color = Palette.TerminalInk,
-                        fontFamily = Fonts.Mono,
-                        fontSize = (liveSize * 0.88f).sp,
-                        lineHeight = (liveSize * 0.88f * 1.35f).sp,
-                        softWrap = false,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(Palette.Terminal, RoundedCornerShape(12.dp))
-                            .horizontalScroll(rememberScrollState())
-                            .padding(12.dp),
-                    )
-                }
-            } else {
-                val pending = vm.lastSent?.takeIf { it.first == paneId }?.second
-                ChatView(text, pending, liveSize, vm.readingFont)
-            }
-            prompt?.let { p ->
-                PromptCard(
-                    p,
-                    agent = pane?.agentName ?: "The agent",
-                    onChoice = { c -> vm.answer(paneId, c.keys, c.pressEnter) },
-                    onKey = { k -> vm.sendKeys(paneId, k) },
-                    onTypeAnswer = { typingAnswer = true },
-                )
+                promptCard()
             }
         }
 
@@ -277,7 +325,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                     onCtrlC = { confirmCtrlC = true },
                 )
             }
-            Composer(
+            ChatComposer(
                 value = message,
                 onValueChange = { new ->
                     // With Ctrl or Alt on, a typed character becomes a key chord instead of text.
@@ -289,10 +337,14 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 },
                 placeholder = if (modifiersOn) "Type a letter to send it with ${if (ctrl != Hold.OFF) "Ctrl" else "Alt"}"
                 else "Message ${pane?.agentName ?: "this tab"}",
-                keysShown = vm.showKeys,
-                onToggleKeys = { vm.setKeysShown(!vm.showKeys) },
                 canSend = message.isNotBlank() && pane != null,
                 onSend = ::send,
+                working = status == Status.WORKING,
+                onStop = pane?.let { p -> { vm.stopPane(p) } },
+                onAttach = { uri -> vm.attach(uri) { path -> message = (message.trimEnd() + " " + path).trim() + " " } },
+                attachBusy = vm.uploading,
+                commands = SlashCommands.forAgent(pane?.agent),
+                leading = { ComposerChip(if (vm.showKeys) "Keys ▾" else "Keys ▴", vm.showKeys) { vm.setKeysShown(!vm.showKeys) } },
             )
         }
     }
@@ -406,78 +458,6 @@ private fun ModifierKey(label: String, state: Hold, onChange: (Hold) -> Unit, mo
                 color = if (on) Palette.OnBlue else Palette.Ink,
                 fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
             )
-        }
-    }
-}
-
-/** The message box: a rounded card with the text on top and its buttons underneath. */
-@Composable
-private fun Composer(
-    value: String,
-    onValueChange: (String) -> Unit,
-    placeholder: String,
-    keysShown: Boolean,
-    onToggleKeys: () -> Unit,
-    canSend: Boolean,
-    onSend: () -> Unit,
-) {
-    Surface(
-        shape = RoundedCornerShape(24.dp),
-        color = Palette.Composer,
-        border = BorderStroke(1.dp, Palette.Line),
-        shadowElevation = 3.dp,
-    ) {
-        Column(Modifier.padding(start = 4.dp, end = 8.dp, bottom = 8.dp)) {
-            TextField(
-                value = value,
-                onValueChange = onValueChange,
-                placeholder = { Text(placeholder, color = Palette.Muted, fontSize = 16.sp) },
-                textStyle = TextStyle(fontFamily = Fonts.Sans, fontSize = 16.sp, color = Palette.Ink),
-                maxLines = 6,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                keyboardActions = KeyboardActions(onSend = { onSend() }),
-                colors = TextFieldDefaults.colors(
-                    focusedContainerColor = Color.Transparent,
-                    unfocusedContainerColor = Color.Transparent,
-                    disabledContainerColor = Color.Transparent,
-                    focusedIndicatorColor = Color.Transparent,
-                    unfocusedIndicatorColor = Color.Transparent,
-                    disabledIndicatorColor = Color.Transparent,
-                    cursorColor = Palette.Blue,
-                ),
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = if (keysShown) Palette.BlueSoft else Color.Transparent,
-                    border = BorderStroke(1.dp, if (keysShown) Palette.BlueSoft else Palette.Line),
-                    modifier = Modifier.padding(start = 8.dp).clickable(onClick = onToggleKeys),
-                ) {
-                    Text(
-                        if (keysShown) "Keys ▾" else "Keys ▴",
-                        color = if (keysShown) Palette.Blue else Palette.Muted,
-                        fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                    )
-                }
-                Spacer(Modifier.weight(1f))
-                FilledIconButton(
-                    onClick = onSend,
-                    enabled = canSend,
-                    shape = CircleShape,
-                    colors = IconButtonDefaults.filledIconButtonColors(
-                        containerColor = Palette.Blue,
-                        disabledContainerColor = Palette.Gray,
-                    ),
-                    modifier = Modifier.size(38.dp),
-                ) {
-                    Icon(
-                        Icons.Filled.KeyboardArrowUp, contentDescription = "Send",
-                        tint = if (canSend) Palette.OnBlue else Palette.Muted,
-                    )
-                }
-            }
         }
     }
 }

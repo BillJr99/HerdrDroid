@@ -1,6 +1,14 @@
 package com.billmongan.herdrdroid
 
 import android.app.Application
+import android.net.Uri
+import android.provider.OpenableColumns
+import com.billmongan.herdrdroid.hermes.HermesChat
+import com.billmongan.herdrdroid.transcript.Item
+import com.billmongan.herdrdroid.transcript.Transcript
+import com.billmongan.herdrdroid.transcript.UserItem
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import android.os.Build
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -44,7 +52,11 @@ sealed interface Screen {
     data object Tabs : Screen
     data class Agent(val paneId: String) : Screen
     data class Settings(val back: Screen) : Screen
+    data object HermesChat : Screen
 }
+
+/** Whether the open pane's conversation comes from the agent's own log (ON) or its screen (OFF). */
+enum class TranscriptMode { UNKNOWN, ON, OFF }
 
 /** The state of the SSH link while a server is open. Only OFFLINE is shown as a problem. */
 enum class Link { CONNECTED, RECONNECTING, OFFLINE }
@@ -105,6 +117,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var lastSent by mutableStateOf<Pair<String, String>?>(null)
         private set
+    private var lastSentAt = 0L
+
+    // ---- The open pane's structured conversation ----------------------------------------------
+    var transcriptItems by mutableStateOf<List<Item>>(emptyList())
+        private set
+    var transcriptState by mutableStateOf(TranscriptMode.UNKNOWN)
+        private set
+    var transcriptMore by mutableStateOf(false)
+        private set
+    var transcriptTitle by mutableStateOf<String?>(null)
+        private set
+    private var transcriptPane: String? = null
+    private var transcriptCursor = ""
+    private val transcriptScript: ByteArray by lazy {
+        getApplication<Application>().assets.open("transcript.py").use { it.readBytes() }
+    }
+    /** True while a file picked in the message box is being copied to the computer. */
+    var uploading by mutableStateOf(false)
+        private set
+    private var hermes: HermesChat? = null
 
     var themeMode by mutableStateOf(runCatching { ThemeMode.valueOf(prefs.theme) }.getOrDefault(ThemeMode.SYSTEM))
         private set
@@ -319,6 +351,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun closeSession() {
+        hermes?.close()
+        hermes = null
         reconnectJob?.cancel()
         quotaJob?.cancel()
         queue.clear()
@@ -511,13 +545,113 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun openPane(paneId: String) {
         paneText = ""
+        resetTranscript(paneId)
         screen = Screen.Agent(paneId)
+    }
+
+    // ---- Structured conversations ------------------------------------------------------------
+
+    private val readers = setOf("claude", "codex", "pi", "grok", "opencode", "hermes", "copilot")
+
+    fun hasTranscriptReader(paneId: String) = pane(paneId)?.agent?.lowercase() in readers
+
+    fun resetTranscript(paneId: String) {
+        if (transcriptPane == paneId) return
+        transcriptPane = paneId
+        transcriptCursor = ""
+        transcriptItems = emptyList()
+        transcriptMore = false
+        transcriptTitle = null
+        transcriptState = if (hasTranscriptReader(paneId)) TranscriptMode.UNKNOWN else TranscriptMode.OFF
+    }
+
+    /** Reads what the pane's agent added to its session log since the last read. */
+    suspend fun readTranscript(paneId: String) {
+        val p = pane(paneId) ?: return
+        resetTranscript(paneId)
+        val r = quietly { it.transcript(p, transcriptCursor, transcriptScript) } ?: return
+        if (transcriptPane != paneId) return
+        if (!r.ok) {
+            if (transcriptItems.isEmpty()) transcriptState = TranscriptMode.OFF
+            return
+        }
+        transcriptCursor = r.cursor
+        if (r.reset || r.items.isNotEmpty()) {
+            transcriptItems = Transcript.merge(transcriptItems, r.items, r.reset)
+        }
+        if (r.reset) transcriptMore = r.more
+        r.title?.let { transcriptTitle = it }
+        transcriptState = TranscriptMode.ON
+        lastSent?.let { (pid, text) ->
+            val want = text.filterNot { it.isWhitespace() }.take(60)
+            if (pid == paneId && transcriptItems.takeLast(16).any { it is UserItem && it.text.filterNot { c -> c.isWhitespace() }.take(60) == want }) {
+                lastSent = null
+            }
+        }
+    }
+
+    /** The message just sent from this phone, until it shows up in the agent's log (20 s at most). */
+    fun pendingFor(paneId: String): String? =
+        lastSent?.takeIf { it.first == paneId && System.currentTimeMillis() - lastSentAt < 20_000 }?.second
+
+    /** The Stop button: the key each agent's own program uses to interrupt a turn. */
+    fun stopPane(pane: Pane) {
+        val key = when (pane.agent?.lowercase()) {
+            "hermes" -> "ctrl+c"
+            else -> "esc"
+        }
+        sendKeys(pane.id, key)
+    }
+
+    /**
+     * Copies a file picked in the message box to ~/.herdrdroid/inbox on the computer, then hands
+     * its path to [done] so the message can point the agent at it.
+     */
+    fun attach(uri: Uri, done: (String) -> Unit) {
+        if (uploading) return
+        val app = getApplication<Application>()
+        uploading = true
+        act(null, "Couldn't attach the file") { h ->
+            try {
+                val (name, bytes) = withContext(Dispatchers.IO) {
+                    val n = app.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                        if (c.moveToFirst()) c.getString(0) else null
+                    } ?: "attachment"
+                    val b = app.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: ByteArray(0)
+                    n to b
+                }
+                if (bytes.size > 50 * 1024 * 1024) throw IllegalArgumentException("That file is over 50 MB.")
+                done(h.upload(name, bytes))
+            } finally {
+                uploading = false
+            }
+        }
+    }
+
+    // ---- Hermes through its gateway ------------------------------------------------------------
+
+    /** True when the open server runs Hermes in one of its panes. */
+    val hasHermes get() = panes.any { it.agent?.lowercase() == "hermes" }
+
+    fun openHermesChat() {
+        screen = Screen.HermesChat
+    }
+
+    /** The native Hermes chat for this server, made and connected on first use. */
+    fun hermesChat(): HermesChat? {
+        hermes?.let { return it }
+        val s = ssh ?: return null
+        return HermesChat(s, viewModelScope).also {
+            hermes = it
+            it.start()
+        }
     }
 
     fun pane(id: String): Pane? = panes.firstOrNull { it.id == id }
 
     fun sendMessage(pane: Pane, text: String) {
         lastSent = pane.id to text
+        lastSentAt = System.currentTimeMillis()
         act(pane.id, "Couldn't send") { h ->
             h.sendMessage(pane, text)
             readPane(pane.id)

@@ -14,8 +14,8 @@ android {
         applicationId = "com.billmongan.herdrdroid"
         minSdk = 26
         targetSdk = 34
-        versionCode = 10
-        versionName = "0.2.8"
+        versionCode = 11
+        versionName = "0.3.0"
     }
 
     // A sideload signing key kept with the source, so later builds install over this one.
@@ -82,7 +82,9 @@ dependencies {
     implementation("androidx.biometric:biometric:1.1.0")
     implementation("androidx.fragment:fragment-ktx:1.8.3")
     implementation("com.hierynomus:sshj:0.39.0")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
     implementation("org.slf4j:slf4j-nop:2.0.13")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }

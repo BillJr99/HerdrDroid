@@ -1,6 +1,11 @@
 package com.billmongan.herdrdroid.herdr
 
 import com.billmongan.herdrdroid.ssh.HerdrSsh
+import com.billmongan.herdrdroid.transcript.Transcript
+import com.billmongan.herdrdroid.transcript.TranscriptRead
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlinx.coroutines.delay
 import org.json.JSONObject
 
@@ -216,6 +221,37 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
             info = screen?.let(parse)
         }
         return ProbeResult(items, info?.model, info?.effort)
+    }
+
+    /**
+     * Reads what the agent in [pane] has added to its own session log since [cursor], by sending
+     * the transcript reader on standard input to the computer's python3. Nothing is installed or
+     * written there. Null when the pane has no agent.
+     */
+    suspend fun transcript(pane: Pane, cursor: String, script: ByteArray): TranscriptRead? {
+        val agent = pane.agent ?: return null
+        val r = ssh.execInput("python3 - ${shq(agent)} ${shq(pane.cwd)} ${shq(cursor)}", script)
+        if (r.exit != 0 || r.out.isBlank()) {
+            val why = r.err.trim().lines().lastOrNull { it.isNotBlank() } ?: "the reader exited ${r.exit}"
+            return TranscriptRead(false, why, "", false, false, null, emptyList())
+        }
+        return Transcript.parseRead(r.out)
+    }
+
+    /**
+     * Copies a file from the phone to ~/.herdrdroid/inbox on the computer and returns its full
+     * path there, so a message can point the agent at it.
+     */
+    suspend fun upload(name: String, bytes: ByteArray): String {
+        val safe = name.replace(Regex("[^A-Za-z0-9._-]"), "_").trim('_').take(80).ifBlank { "file" }
+        val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+        val rel = ".herdrdroid/inbox/$stamp-$safe"
+        val r = ssh.execInput(
+            "mkdir -p \"\$HOME/.herdrdroid/inbox\" && cat > \"\$HOME\"/${shq(rel)} && printf %s \"\$HOME\"/${shq(rel)}",
+            bytes, timeoutSeconds = 120,
+        )
+        if (r.exit != 0) throw HerdrError(r.err.trim().ifBlank { "The upload failed (exit ${r.exit})." }, r.exit)
+        return r.out.trim()
     }
 
     /** Confirms the command exists before the app shows any tabs. */

@@ -131,6 +131,9 @@ fun TabsScreen(vm: AppViewModel) {
             Modifier.fillMaxSize().padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
+            if (vm.hasHermes && filter == Filter.ALL) {
+                item(key = "_hermes_chat") { HermesCard { vm.openHermesChat() } }
+            }
             items(panes.filter { filter.matches(it) }, key = { it.id }) { p ->
                 PaneCard(
                     p, vm.previews[p.id].orEmpty(), model = vm.modelLine(p.id), quota = vm.quotaFor(p),
@@ -138,6 +141,31 @@ fun TabsScreen(vm: AppViewModel) {
                 ) { vm.openPane(p.id) }
             }
             item { Spacer(Modifier.height(24.dp)) }
+        }
+    }
+}
+
+/** The way into the native Hermes chat, above the panes. */
+@Composable
+private fun HermesCard(onClick: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = Palette.BlueSoft,
+        border = BorderStroke(1.dp, Palette.BlueTile),
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+    ) {
+        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(44.dp).background(Palette.Blue, RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) {
+                Text("H", color = Palette.OnBlue, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            }
+            Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                Text("Chat with Hermes", fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = Palette.Ink)
+                Text(
+                    "Live replies, tool progress and approvals, straight from Hermes's gateway",
+                    color = Palette.Muted, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Text("›", color = Palette.Blue, fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
         }
     }
 }
