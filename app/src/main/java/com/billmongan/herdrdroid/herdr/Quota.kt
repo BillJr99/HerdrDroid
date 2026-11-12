@@ -67,7 +67,50 @@ data class QuotaProfile(
      * agents that print their usage into the conversation stay at 30 minutes to keep it uncluttered.
      */
     val everyMinutes: Int = 30,
+    /**
+     * A shell command that reports usage without touching the pane (Oh My Pi: `omp usage --json`).
+     * When set, [command] is not typed anywhere and [parseCli] reads the command's output.
+     */
+    val cliCommand: String? = null,
+    val parseCli: ((String) -> List<QuotaItem>)? = null,
 )
+
+/**
+ * `omp usage --json`: `{reports: [{provider, limits: [{label, window: {label, resetLabel, resetsAt},
+ * amount: {usedFraction, used, limit, remainingFraction}}]}]}`. Accounts signed in to Oh My Pi
+ * itself report here; providers reached through pi-openai-compat (llmproxy) do not, so with none
+ * signed in this is empty and the card simply shows no usage.
+ */
+fun ompUsage(json: String): List<QuotaItem> {
+    val root = org.json.JSONObject(json.trim())
+    val reports = root.optJSONArray("reports") ?: return emptyList()
+    val out = mutableListOf<QuotaItem>()
+    for (i in 0 until reports.length()) {
+        val rep = reports.optJSONObject(i) ?: continue
+        val provider = rep.optString("provider")
+        val limits = rep.optJSONArray("limits") ?: continue
+        for (j in 0 until limits.length()) {
+            val l = limits.optJSONObject(j) ?: continue
+            val a = l.optJSONObject("amount") ?: continue
+            val used = when {
+                a.has("usedFraction") -> a.optDouble("usedFraction") * 100
+                a.has("remainingFraction") -> (1 - a.optDouble("remainingFraction")) * 100
+                a.has("used") && a.optDouble("limit", 0.0) > 0 -> a.optDouble("used") / a.optDouble("limit") * 100
+                else -> continue
+            }
+            if (used.isNaN()) continue
+            val w = l.optJSONObject("window")
+            val label = listOf(provider, l.optString("label").ifBlank { w?.optString("label").orEmpty() })
+                .filter { it.isNotBlank() }.joinToString(" ")
+            val resets = w?.optString("resetLabel")?.ifBlank { null }
+                ?: w?.optLong("resetsAt", 0L)?.takeIf { it > 0 }?.let {
+                    java.text.SimpleDateFormat("MMM d, h:mma", java.util.Locale.US).format(java.util.Date(it))
+                }
+            out += QuotaItem(label.ifBlank { "Usage" }, used.coerceIn(0.0, 100.0), resets)
+        }
+    }
+    return out
+}
 
 /**
  * True when [screen] shows this agent's usage (or model) screen open: its close hint is visible
@@ -110,6 +153,10 @@ object QuotaProfiles {
         QuotaProfile(
             setOf("agy", "antigravity"), "/usage", listOf("esc"), 3_500,
             bareMeansLeft = true, openMarker = Regex("esc Close", RegexOption.IGNORE_CASE), everyMinutes = 15,
+        ),
+        QuotaProfile(
+            setOf("omp"), "", emptyList(), 0,
+            cliCommand = "omp usage --json", parseCli = ::ompUsage,
         ),
         QuotaProfile(
             setOf("hermes"), "/usage", emptyList(), 2_500,

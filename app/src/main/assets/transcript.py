@@ -340,9 +340,19 @@ def codex(cwd, cur):
     return {"cur": ncur, "reset": reset, "more": more, "items": items, "title": None}
 
 
-def pi(cwd, cur):
-    d = "--" + cwd.strip("/").replace("/", "-") + "--"
-    path = newest(glob.glob(os.path.join(HOME, ".pi", "agent", "sessions", d, "*.jsonl")))
+def pi(cwd, cur, root=(".pi", "agent")):
+    """pi, and Oh My Pi (root ~/.omp/agent), which keeps pi's session format.
+
+    pi names a session folder "--home-bill-agents-pi--". Oh My Pi names a folder inside the home
+    directory relative to it ("-agents-omp" for ~/agents/omp) and others the pi way.
+    """
+    names = ["--" + cwd.strip("/").replace("/", "-") + "--"]
+    if cwd.startswith(HOME + "/"):
+        names.append("-" + cwd[len(HOME) + 1:].replace("/", "-"))
+    files = []
+    for d in names:
+        files += glob.glob(os.path.join(HOME, *root, "sessions", d, "*.jsonl"))
+    path = newest(files)
     if not path:
         return None
     recs, ncur, reset, more = read_jsonl(path, cur)
@@ -564,7 +574,11 @@ def hermes(cwd, cur):
     return {"cur": {"sid": sid, "id": last}, "reset": reset, "more": more, "items": items, "title": title}
 
 
-READERS = {"claude": claude, "codex": codex, "pi": pi, "grok": grok, "copilot": copilot,
+def omp(cwd, cur):
+    return pi(cwd, cur, root=(".omp", "agent"))
+
+
+READERS = {"claude": claude, "codex": codex, "pi": pi, "omp": omp, "grok": grok, "copilot": copilot,
            "opencode": opencode, "hermes": hermes}
 
 

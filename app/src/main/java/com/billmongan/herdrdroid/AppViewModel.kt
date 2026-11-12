@@ -554,7 +554,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- Structured conversations ------------------------------------------------------------
 
-    private val readers = setOf("claude", "codex", "pi", "grok", "opencode", "hermes", "copilot")
+    private val readers = setOf("claude", "codex", "pi", "omp", "grok", "opencode", "hermes", "copilot")
 
     fun hasTranscriptReader(paneId: String) = pane(paneId)?.agent?.lowercase() in readers
 
@@ -710,6 +710,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             // choice: the check presses Enter only when the input line holds exactly its command.
             // Idle panes first; a working pane only for an agent that answers while working (Claude).
             val profile0 = QuotaProfiles.forAgent(list.first().agent) ?: continue
+            if (profile0.cliCommand != null) {
+                // Asked from the command line, not the pane: no pane to choose and nothing typed.
+                if (!canPoll) return@withLock
+                val items = quietly { it.cliQuota(profile0) }
+                lastQuotaTry[agentKey] = now
+                if (!items.isNullOrEmpty()) {
+                    quotas = quotas + (agentKey to QuotaReading(now, items))
+                    prefs.saveQuotas(serverId, quotas)
+                }
+                continue
+            }
             val target = list.filter {
                 it.status == Status.IDLE || it.status == Status.DONE || (profile0.whileWorking && it.status == Status.WORKING)
             }

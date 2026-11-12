@@ -73,6 +73,18 @@ object SlashCommands {
             "/resume" to "Resume a session", "/tree" to "Browse the session tree", "/settings" to "Settings",
             "/session" to "Session info", "/hotkeys" to "Show keyboard shortcuts",
         )
+        "omp" -> listOf(
+            "/model" to "Choose the model", "/new" to "Start a new session", "/resume" to "Resume a session",
+            "/compact" to "Summarize the conversation", "/fork" to "Fork this session", "/tree" to "Browse the session tree",
+            "/plan" to "Plan mode", "/goal" to "Set a goal for the session", "/todo" to "Show the todo list",
+            "/btw" to "Ask a side question without derailing the task", "/handoff" to "Hand off to a fresh session",
+            "/context" to "Show context use", "/usage" to "Show provider usage limits", "/mcp" to "MCP servers",
+            "/collab" to "Share this session for remote access", "/join" to "Join a shared session", "/leave" to "Leave or stop sharing",
+            "/thinking" to "Set thinking effort", "/extended-context" to "Use the larger context window",
+            "/diff" to "Show changes", "/commit" to "Write a commit message", "/export" to "Export the session",
+            "/copy" to "Copy the last reply", "/memory" to "Memory", "/agents" to "Task agents", "/skills" to "Skills",
+            "/settings" to "Settings", "/hotkeys" to "Keyboard shortcuts", "/help" to "Help",
+        )
         "opencode" -> listOf(
             "/models" to "Choose the model", "/new" to "Start a new session", "/sessions" to "Switch sessions",
             "/compact" to "Summarize the session", "/undo" to "Undo the last change", "/redo" to "Redo",

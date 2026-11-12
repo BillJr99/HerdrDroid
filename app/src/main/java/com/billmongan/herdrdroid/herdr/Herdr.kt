@@ -32,6 +32,7 @@ data class Pane(
             "agy", "antigravity" -> "Antigravity"
             "grok" -> "Grok"
             "pi" -> "pi"
+            "omp" -> "Oh My Pi"
             "copilot" -> "Copilot"
             "gemini" -> "Gemini"
             else -> agent.replaceFirstChar { it.uppercase() }
@@ -252,6 +253,19 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
         )
         if (r.exit != 0) throw HerdrError(r.err.trim().ifBlank { "The upload failed (exit ${r.exit})." }, r.exit)
         return r.out.trim()
+    }
+
+    /**
+     * A usage check that asks the agent's own command line instead of its pane (Oh My Pi's
+     * `omp usage --json`), so nothing is typed into the pane and it can run while the agent works.
+     * Null when the command isn't there or failed.
+     */
+    suspend fun cliQuota(profile: QuotaProfile): List<QuotaItem>? {
+        val cmd = profile.cliCommand ?: return null
+        val parse = profile.parseCli ?: return null
+        val r = ssh.exec("PATH=\"\$HOME/.local/bin:\$PATH\" $cmd", timeoutSeconds = 60)
+        if (r.exit != 0) return null
+        return runCatching { parse(r.out) }.getOrNull()
     }
 
     /** Confirms the command exists before the app shows any tabs. */

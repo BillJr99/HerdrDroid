@@ -291,4 +291,20 @@ GEMINI 4 ARGON
         val codex = QuotaProfiles.forAgent("codex")!!
         assertEquals(false, codex.screenOpen("Esc to cancel 50% used"))
     }
+
+    @Test fun ompUsageJson() {
+        val json = """{"generatedAt":1,"reports":[{"provider":"anthropic","fetchedAt":1,"limits":[
+            {"id":"5h","label":"5-hour","scope":{"provider":"anthropic"},"window":{"id":"5h","label":"5h","resetLabel":"in 2h"},"amount":{"usedFraction":0.42,"unit":"percent"}},
+            {"id":"7d","label":"Weekly","scope":{"provider":"anthropic"},"amount":{"used":30,"limit":120,"unit":"requests"}}]}],
+            "accountsWithoutUsage":[],"disabledCredentials":[],"capacity":{}}"""
+        val items = ompUsage(json)
+        assertEquals(2, items.size)
+        assertEquals(42.0, items[0].usedPercent, 0.01)
+        assertEquals("anthropic 5-hour", items[0].label)
+        assertEquals("in 2h", items[0].resets)
+        assertEquals(25.0, items[1].usedPercent, 0.01)
+        assertEquals(0, ompUsage("""{"reports":[],"accountsWithoutUsage":[]}""").size)
+        val p = QuotaProfiles.forAgent("omp")!!
+        assertEquals("omp usage --json", p.cliCommand)
+    }
 }
