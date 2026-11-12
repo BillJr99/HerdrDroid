@@ -316,10 +316,11 @@ private fun ReplyActions(text: String, onQuote: (String) -> Unit, onForward: ((S
     val context = LocalContext.current
     var copied by remember { mutableStateOf(false) }
     if (copied) LaunchedEffect(Unit) { delay(1500); copied = false }
-    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         Pill(if (copied) "Copied" else "Copy") { clipboard.setText(AnnotatedString(text)); copied = true }
         Pill("Share") { share(context, text) }
         Pill("Quote") { onQuote(text) }
+        Pill(if (Speaker.speakingKey == text.hashCode().toString()) "Stop reading" else "Read") { Speaker.speak(context, text.hashCode().toString(), text) }
         if (onForward != null) Pill("Forward") { onForward(text) }
     }
 }

@@ -77,6 +77,18 @@ fun SettingsScreen(vm: AppViewModel, back: Screen) {
                     }
                 }
             }
+            Section("Light palette") {
+                LightPalette.entries.forEach { p ->
+                    Row(
+                        Modifier.fillMaxWidth().clickable { vm.chooseLightPalette(p) }.padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = vm.lightPalette == p, onClick = { vm.chooseLightPalette(p) })
+                        Text(p.label, color = Palette.Ink, fontSize = 16.sp)
+                    }
+                }
+                Text("Used whenever the app is light (the phone's light mode, or Light above).", color = Palette.Muted, fontSize = 13.sp)
+            }
             Section("Dark palette") {
                 DarkPalette.entries.forEach { p ->
                     Row(
@@ -273,7 +285,7 @@ fun QuotaBar(item: QuotaItem) {
 
 /** Every limit for one agent, for the agent screen. */
 @Composable
-fun QuotaDetails(r: QuotaReading, onClose: () -> Unit) {
+fun QuotaDetails(r: QuotaReading, history: List<com.billmongan.herdrdroid.AppViewModel.QuotaPoint> = emptyList(), onClose: () -> Unit) {
     Surface(shape = RoundedCornerShape(14.dp), color = Palette.Card, border = BorderStroke(1.dp, Palette.Line)) {
         Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -288,6 +300,8 @@ fun QuotaDetails(r: QuotaReading, onClose: () -> Unit) {
                     }
                     QuotaBar(i)
                     i.resets?.let { Text("Resets $it", color = Palette.Muted, fontSize = 12.sp) }
+                    val points = history.mapNotNull { pt -> pt.used[i.label]?.let { pt.at to it } }
+                    if (points.size >= 2) UsageChart(points)
                 }
             }
         }
@@ -351,6 +365,39 @@ private fun Diagnostics() {
                 .background(Palette.Gray, androidx.compose.foundation.shape.RoundedCornerShape(10.dp))
                 .verticalScroll(androidx.compose.foundation.rememberScrollState())
                 .padding(10.dp),
+        )
+    }
+}
+
+/**
+ * One limit's readings over the last days: percent used (0 to 100) against time, a line with a
+ * light fill, the latest point marked, and the time span below.
+ */
+@Composable
+fun UsageChart(points: List<Pair<Long, Double>>) {
+    val line = Palette.Blue
+    val fill = Palette.BlueSoft
+    val grid = Palette.Line
+    val t0 = points.first().first
+    val t1 = points.last().first.coerceAtLeast(t0 + 1)
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        androidx.compose.foundation.Canvas(Modifier.fillMaxWidth().height(44.dp)) {
+            val w = size.width
+            val h = size.height
+            fun x(t: Long) = (t - t0).toFloat() / (t1 - t0) * w
+            fun y(v: Double) = h - (v.coerceIn(0.0, 100.0) / 100.0).toFloat() * h
+            listOf(0.0, 50.0, 100.0).forEach { g -> drawLine(grid, androidx.compose.ui.geometry.Offset(0f, y(g)), androidx.compose.ui.geometry.Offset(w, y(g)), 1f) }
+            val path = androidx.compose.ui.graphics.Path()
+            points.forEachIndexed { k, (t, v) -> if (k == 0) path.moveTo(x(t), y(v)) else path.lineTo(x(t), y(v)) }
+            val area = androidx.compose.ui.graphics.Path().apply { addPath(path); lineTo(x(points.last().first), h); lineTo(x(t0), h); close() }
+            drawPath(area, fill)
+            drawPath(path, line, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3f))
+            drawCircle(line, 5f, androidx.compose.ui.geometry.Offset(x(points.last().first), y(points.last().second)))
+        }
+        val days = (t1 - t0) / 86_400_000.0
+        Text(
+            if (days >= 1) "Last %.1f days".format(days) else "Last %d hours".format(((t1 - t0) / 3_600_000).coerceAtLeast(1)),
+            color = Palette.Muted, fontSize = 11.sp,
         )
     }
 }

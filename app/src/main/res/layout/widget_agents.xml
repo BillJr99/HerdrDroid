@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="14dp"
+    android:background="@drawable/widget_bg">
+    <TextView
+        android:id="@+id/widget_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="#FFE8EBF0"
+        android:textSize="15sp"
+        android:textStyle="bold"
+        android:maxLines="1"
+        android:ellipsize="end"
+        android:text="HerdrDroid" />
+    <TextView
+        android:id="@+id/widget_summary"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:textColor="#FFF0A060"
+        android:textSize="13sp"
+        android:maxLines="1"
+        android:text="Open the app to connect" />
+    <TextView
+        android:id="@+id/widget_list"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:textColor="#FFC3C9D4"
+        android:textSize="13sp"
+        android:lineSpacingExtra="2dp"
+        android:maxLines="5"
+        android:ellipsize="end"
+        android:text="" />
+    <TextView
+        android:id="@+id/widget_when"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:textColor="#FF7C8494"
+        android:textSize="11sp"
+        android:text="" />
+</LinearLayout>

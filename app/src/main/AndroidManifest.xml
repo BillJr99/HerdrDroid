@@ -26,6 +26,12 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Text, links, photos and files shared from other apps go to an agent you pick. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
         </activity>
         <service
             android:name=".notify.WatchService"
@@ -34,6 +40,17 @@
         <receiver
             android:name=".notify.ActionReceiver"
             android:exported="false" />
+        <!-- The home-screen widget: what the app last saw on the open server. -->
+        <receiver
+            android:name=".notify.AgentsWidget"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/agents_widget_info" />
+        </receiver>
         <!-- Shares attachments with other apps from a copy in the app's cache. -->
         <provider
             android:name="androidx.core.content.FileProvider"

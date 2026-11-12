@@ -99,3 +99,30 @@ fun ageText(sec: Long): String = when {
     sec < 86400 -> "${sec / 3600}h ${(sec % 3600) / 60}m"
     else -> "${sec / 86400}d ${(sec % 86400) / 3600}h"
 }
+
+/** A folder's git state for its card: branch, changed files, commits ahead of and behind upstream. */
+data class GitInfo(val branch: String?, val changed: Int, val ahead: Int, val behind: Int)
+
+fun parseGit(json: String): Map<String, GitInfo> {
+    val o = JSONObject(json.trim())
+    if (!o.optBoolean("ok")) return emptyMap()
+    val g = o.optJSONObject("git") ?: return emptyMap()
+    return g.keys().asSequence().associateWith { k ->
+        val i = g.getJSONObject(k)
+        GitInfo(i.optString("branch").takeIf { !i.isNull("branch") && it.isNotBlank() }, i.optInt("changed"), i.optInt("ahead"), i.optInt("behind"))
+    }
+}
+
+/** One search result: the agent, its session ([ref], in [db] for SQLite agents), and the matching text. */
+data class SearchHit(val agent: String, val ref: String, val db: String?, val whenSec: Long, val title: String?, val snippet: String)
+
+fun parseSearch(json: String): List<SearchHit> {
+    val o = JSONObject(json.trim())
+    if (!o.optBoolean("ok")) throw IllegalStateException(o.optString("why").ifBlank { "The search failed." })
+    return o.list("hits").map {
+        SearchHit(
+            it.optString("agent"), it.optString("ref"), it.optString("db").takeIf { d -> d.isNotBlank() && !it.isNull("db") },
+            it.optLong("when"), it.optString("title").takeIf { t -> t.isNotBlank() && !it.isNull("title") }, it.optString("snippet"),
+        )
+    }
+}

@@ -27,6 +27,8 @@ data class NotifyAction(
     val serverId: String, val paneId: String, val keys: String, val pressEnter: Boolean, val question: String,
     /** True for the Esc button: [keys] is a key name sent with send-keys, not typed text. */
     val isKey: Boolean = false,
+    /** True for a typed reply from the notification: [keys] is the message. */
+    val isReply: Boolean = false,
 )
 
 /** Connects the notification buttons (a broadcast receiver) to the running app. */
@@ -46,6 +48,17 @@ object Notify {
     const val WATCHING = "watching"
     const val EXTRA_SERVER = "herdrdroid.server"
     const val EXTRA_PANE = "herdrdroid.pane"
+    const val KEY_REPLY = "herdrdroid.reply"
+
+    /** A Reply action with a text box: what you type goes to the agent (Android's inline reply). */
+    private fun replyAction(ctx: Context, serverId: String, paneId: String, agent: String): NotificationCompat.Action {
+        val input = androidx.core.app.RemoteInput.Builder(KEY_REPLY).setLabel("Reply to $agent").build()
+        val i = Intent(ctx, ActionReceiver::class.java)
+            .putExtra(EXTRA_SERVER, serverId).putExtra(EXTRA_PANE, paneId).putExtra("reply", true)
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0)
+        val pi = PendingIntent.getBroadcast(ctx, id(serverId, paneId) * 4 + 2, i, flags)
+        return NotificationCompat.Action.Builder(0, "Reply", pi).addRemoteInput(input).setAllowGeneratedReplies(false).build()
+    }
 
     fun channels(ctx: Context) {
         if (Build.VERSION.SDK_INT < 26) return
@@ -98,6 +111,7 @@ object Notify {
             .putExtra(EXTRA_SERVER, serverId).putExtra(EXTRA_PANE, paneId)
             .putExtra("keys", "esc").putExtra("isKey", true).putExtra("question", question)
         b.addAction(0, "Esc", PendingIntent.getBroadcast(ctx, id(serverId, paneId) * 4 + 3, esc, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
+        b.addAction(replyAction(ctx, serverId, paneId, agent))
         runCatching { NotificationManagerCompat.from(ctx).notify(id(serverId, paneId), b.build()) }
     }
 
@@ -110,6 +124,7 @@ object Notify {
             .setContentText(preview.ifBlank { "Ready for your next message." })
             .setContentIntent(openIntent(ctx, serverId, paneId))
             .setAutoCancel(true)
+            .addAction(replyAction(ctx, serverId, paneId, agent))
             .build()
         runCatching { NotificationManagerCompat.from(ctx).notify(id(serverId, paneId), n) }
     }
@@ -124,6 +139,12 @@ class ActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val server = intent.getStringExtra(Notify.EXTRA_SERVER) ?: return
         val pane = intent.getStringExtra(Notify.EXTRA_PANE) ?: return
+        if (intent.getBooleanExtra("reply", false)) {
+            val text = androidx.core.app.RemoteInput.getResultsFromIntent(intent)?.getCharSequence(Notify.KEY_REPLY)?.toString()?.trim()
+            if (!text.isNullOrEmpty()) AppBus.emit(NotifyAction(server, pane, text, true, "", isReply = true))
+            Notify.clear(context, server, pane)
+            return
+        }
         AppBus.emit(
             NotifyAction(
                 server, pane, intent.getStringExtra("keys").orEmpty(), intent.getBooleanExtra("enter", false),

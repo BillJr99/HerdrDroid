@@ -158,6 +158,25 @@ class AppPrefs(context: Context) {
         get() = prefs.getBoolean("autoCloseHelpers", true)
         set(v) = prefs.edit().putBoolean("autoCloseHelpers", v).apply()
 
+    var lightPalette: String
+        get() = prefs.getString("lightPalette", "STANDARD") ?: "STANDARD"
+        set(v) = prefs.edit().putString("lightPalette", v).apply()
+
+    /** Saved prompts for the message box, as a JSON array of {name, text}. */
+    var snippets: String
+        get() = prefs.getString("snippets", "[]") ?: "[]"
+        set(v) = prefs.edit().putString("snippets", v).apply()
+
+    /** Usage readings over time, per server and agent, as JSON (kept for the charts). */
+    var quotaHistory: String
+        get() = prefs.getString("quotaHistory", "{}") ?: "{}"
+        set(v) = prefs.edit().putString("quotaHistory", v).apply()
+
+    /** What the home-screen widget shows, written whenever the app reads its agents. */
+    var widgetState: String
+        get() = prefs.getString("widgetState", "{}") ?: "{}"
+        set(v) = prefs.edit().putString("widgetState", v).apply()
+
     var darkPalette: String
         get() = prefs.getString("darkPalette", "STANDARD") ?: "STANDARD"
         set(v) = prefs.edit().putString("darkPalette", v).apply()

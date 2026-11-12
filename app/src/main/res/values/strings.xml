@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">HerdrDroid</string>
+    <string name="widget_description">Agents that need you and agents that are working, on the server you last opened.</string>
 </resources>

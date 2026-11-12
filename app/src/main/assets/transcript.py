@@ -1134,6 +1134,101 @@ def stop_proc(pane, pid, sig):
             pass
     return {"ok": True, "sent": sent}
 
+
+# ---- Git status for the cards, and search across sessions -------------------------------------
+
+def git_status(cwds):
+    """Branch, changed files, and commits ahead or behind its upstream, for each folder that is a repo."""
+    import subprocess
+    out = {}
+    for cwd in cwds:
+        try:
+            r = subprocess.run(["git", "-C", cwd, "status", "--porcelain=v2", "--branch", "--untracked-files=normal"],
+                               capture_output=True, text=True, timeout=8)
+        except Exception:
+            continue
+        if r.returncode != 0:
+            continue
+        info = {"branch": None, "changed": 0, "ahead": 0, "behind": 0}
+        for line in r.stdout.splitlines():
+            if line.startswith("# branch.head "):
+                info["branch"] = line[14:].strip()
+            elif line.startswith("# branch.ab "):
+                m = re.match(r"# branch.ab \+(\d+) -(\d+)", line)
+                if m:
+                    info["ahead"], info["behind"] = int(m.group(1)), int(m.group(2))
+            elif line and line[0] in "12u?":
+                info["changed"] += 1
+        out[cwd] = info
+    return {"ok": True, "git": out}
+
+
+def search_sessions(query, limit=60):
+    """Messages matching [query] (case-insensitive) in every agent's logs on this computer, newest first."""
+    import time
+    q = query.lower()
+    hits = []
+
+    def scan(agent, f):
+        # Line by line, so a very large log (hundreds of MB) is searched too; the first match wins.
+        try:
+            st = os.stat(f)
+            h = open(f, "rb")
+        except Exception:
+            return
+        qb = q.encode()
+        with h:
+            for line in h:
+                if qb not in line.lower():
+                    continue
+                try:
+                    r = json.loads(line)
+                except Exception:
+                    continue
+                m = r.get("message") if isinstance(r.get("message"), dict) else None
+                p = r.get("payload") if isinstance(r.get("payload"), dict) else None
+                d = r.get("data") if isinstance(r.get("data"), dict) else None
+                role = (m or p or {}).get("role") or r.get("type")
+                text = text_of((m or p or d or r).get("content")) or ""
+                i = text.lower().find(q)
+                if i < 0:
+                    continue
+                snip = text[max(0, i - 60): i + len(q) + 100].replace("\n", " ")
+                hits.append({"agent": agent, "ref": f, "when": int(st.st_mtime), "title": first_user_text(f), "role": role, "snippet": snip})
+                return
+
+    roots = [("claude", os.path.join(HOME, ".claude", "projects", "*", "*.jsonl")),
+             ("codex", os.path.join(HOME, ".codex", "sessions", "*", "*", "*", "*.jsonl")),
+             ("pi", os.path.join(HOME, ".pi", "agent", "sessions", "*", "*.jsonl")),
+             ("omp", os.path.join(HOME, ".omp", "agent", "sessions", "*", "*.jsonl")),
+             ("grok", os.path.join(HOME, ".grok", "sessions", "*", "*", "chat_history.jsonl")),
+             ("copilot", os.path.join(HOME, ".copilot", "session-state", "*", "events.jsonl"))]
+    deadline = time.time() + 25
+    for agent, pattern in roots:
+        for f in sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)[:400]:
+            if time.time() > deadline:
+                break
+            scan(agent, f)
+    # OpenCode and Hermes keep sessions in SQLite.
+    like = "%" + query.replace("%", "") + "%"
+    for agent, db, sql in (
+            ("hermes", os.path.join(HOME, ".hermes", "state.db"),
+             "select s.id, s.title, coalesce(s.last_activity_at, s.started_at), m.content from messages m join sessions s on s.id = m.session_id "
+             "where m.content like ? order by m.id desc limit 40"),):
+        if os.path.isfile(db):
+            try:
+                c = ro(db)
+                for sid, title, when, content in c.execute(sql, (like,)):
+                    t = content if isinstance(content, str) else ""
+                    i = t.lower().find(q)
+                    hits.append({"agent": agent, "ref": sid, "db": db, "when": int(when or 0), "title": title,
+                                 "role": None, "snippet": t[max(0, i - 60): i + len(q) + 100].replace("\n", " ")})
+                c.close()
+            except Exception:
+                pass
+    hits.sort(key=lambda h: h["when"], reverse=True)
+    return {"ok": True, "hits": hits[:limit]}
+
 def main():
     if len(sys.argv) > 3 and sys.argv[1] == "__blob__":
         try:
@@ -1143,6 +1238,16 @@ def main():
     if len(sys.argv) > 4 and sys.argv[1] == "__image__":
         try:
             fetch_image(sys.argv[2], sys.argv[3], json.loads(sys.argv[4]))
+        except Exception as e:
+            done({"ok": False, "why": "%s: %s" % (type(e).__name__, str(e)[:200])})
+    if len(sys.argv) > 2 and sys.argv[1] == "__git__":
+        try:
+            done(git_status(json.loads(sys.argv[2])))
+        except Exception as e:
+            done({"ok": False, "why": "%s: %s" % (type(e).__name__, str(e)[:200])})
+    if len(sys.argv) > 2 and sys.argv[1] == "__search__":
+        try:
+            done(search_sessions(sys.argv[2]))
         except Exception as e:
             done({"ok": False, "why": "%s: %s" % (type(e).__name__, str(e)[:200])})
     if len(sys.argv) > 2 and sys.argv[1] in ("__work__", "__workcounts__", "__tail__", "__stop__"):

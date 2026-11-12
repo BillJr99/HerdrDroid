@@ -131,6 +131,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     LaunchedEffect(fullTerminal) { if (!fullTerminal) commandScreen = null }
     var menu by remember { mutableStateOf(false) }
     var choosingModel by remember { mutableStateOf(false) }
+    var showSnippets by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val textSize = vm.current?.textSize ?: 12.5f
     var pinch by remember { mutableFloatStateOf(1f) }
@@ -236,7 +237,23 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
             PromptCard(
                 p,
                 agent = pane?.agentName ?: "The agent",
-                onChoice = { c -> vm.answer(paneId, c.keys, c.pressEnter) },
+                onChoice = { c -> vm.answerChoice(paneId, p, c) },
+                // The edit waiting for approval: the last tool call in the log, still running.
+                preview = (vm.transcriptItems.lastOrNull { it is com.billmongan.herdrdroid.transcript.ToolItem } as? com.billmongan.herdrdroid.transcript.ToolItem)
+                    ?.takeIf { structured && it.state == com.billmongan.herdrdroid.transcript.ToolState.RUNNING && (it.diff != null || !it.patch.isNullOrBlank()) }
+                    ?.let { t ->
+                        {
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text("Proposed change" + (t.path?.let { " · " + it.substringAfterLast('/') } ?: ""), color = Palette.Muted, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
+                                val d = t.diff
+                                if (d != null) DiffCard(d, liveSize)
+                                else SelectionContainer {
+                                    Text(t.patch.orEmpty().take(20_000), fontFamily = Fonts.Mono, fontSize = 11.5.sp, color = Palette.Ink,
+                                        modifier = Modifier.fillMaxWidth().background(Palette.Code, RoundedCornerShape(10.dp)).horizontalScroll(rememberScrollState()).padding(10.dp))
+                                }
+                            }
+                        }
+                    },
                 onKey = { k -> vm.sendKeys(paneId, k) },
                 onTypeAnswer = { typingAnswer = true },
             )
@@ -363,7 +380,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 size = liveSize,
                 family = family,
                 actions = ChatActions(onQuote = quote, onStop = pane?.let { p -> { vm.stopPane(p) } }, onForward = { t -> forwarding = t }),
-                header = { if (showUsage && quota != null) QuotaDetails(quota) { showUsage = false } },
+                header = { if (showUsage && quota != null) QuotaDetails(quota, vm.quotaHistoryFor(pane)) { showUsage = false } },
                 footer = promptCard,
                 state = listState,
                 modifier = Modifier.fillMaxSize().then(pinchToZoom),
@@ -378,7 +395,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                     .padding(horizontal = 16.dp, vertical = 14.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                if (showUsage && quota != null) QuotaDetails(quota) { showUsage = false }
+                if (showUsage && quota != null) QuotaDetails(quota, vm.quotaHistoryFor(pane)) { showUsage = false }
                 val text = vm.paneText
                 if (text.isBlank()) {
                     Text("Loading…", color = Palette.Muted, fontSize = 15.sp)
@@ -485,6 +502,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 commands = SlashCommands.forAgent(pane?.agent),
                 leading = {
                     ComposerChip(if (vm.showKeys) "Keys ▾" else "Keys ▴", vm.showKeys) { vm.setKeysShown(!vm.showKeys) }
+                    ComposerChip("Snippets", false) { showSnippets = true }
                     if (status == Status.WORKING && message.isNotBlank()) {
                         ComposerChip("When idle", false) { vm.enqueue(paneId, message.trim()); message = "" }
                     }
@@ -495,6 +513,10 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
 
     forwarding?.let { t ->
         ForwardPicker(vm, exclude = paneId, onPick = { to -> forwarding = null; vm.forward(t, pane, to) }, onDismiss = { forwarding = null })
+    }
+
+    if (showSnippets) {
+        SnippetsDialog(vm, onInsert = { t -> message = if (message.isBlank()) t else message.trimEnd() + "\n" + t }, onDismiss = { showSnippets = false })
     }
 
     if (choosingModel && pane != null) {
@@ -662,6 +684,8 @@ private fun PromptCard(
     onChoice: (Choice) -> Unit,
     onKey: (String) -> Unit,
     onTypeAnswer: () -> Unit,
+    /** The change the agent asks to make (an edit's diff), shown above the question. */
+    preview: (@Composable () -> Unit)? = null,
 ) {
     Surface(
         shape = RoundedCornerShape(18.dp),
@@ -680,6 +704,7 @@ private fun PromptCard(
                 Modifier.fillMaxWidth().heightIn(max = maxHeight).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                preview?.invoke()
                 Text(p.question, fontSize = 19.sp, fontWeight = FontWeight.SemiBold, lineHeight = 25.sp, color = Palette.Ink)
                 p.choices.forEachIndexed { i, c ->
                     val what = if (c.pressEnter) "sends ${c.keys} + Enter" else "sends ${c.keys}"

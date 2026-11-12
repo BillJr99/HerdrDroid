@@ -80,6 +80,8 @@ sealed interface Screen {
      * "task", one subagent's conversation or one task's output ([file]), read-only.
      */
     data class Work(val paneId: String, val kind: String? = null, val file: String? = null, val title: String? = null) : Screen
+    /** Search every agent's past conversations on this server. */
+    data object Search : Screen
     /** The pane's past sessions; with [session] set, that one session, read-only. */
     data class History(val paneId: String, val session: PastSession? = null) : Screen
 }
@@ -723,7 +725,28 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             panes = fresh
             current?.let { s -> noticeChanges(s.id, s.label, fresh) { herdr } }
             collectFinishedHelpers(fresh)
+            updateWidget(fresh)
         }
+    }
+
+    private var widgetSig = ""
+
+    /** Saves what the home-screen widget shows and redraws it, when something changed. */
+    private fun updateWidget(fresh: List<Pane>) {
+        val s = current ?: return
+        val agents = fresh.filter { it.agent != null }
+        val lines = agents.take(5).joinToString("\n") { p ->
+            val mark = when (p.status) { Status.NEEDS_YOU -> "● "; Status.WORKING -> "◐ "; else -> "○ " }
+            mark + p.agentName + (if (p.folder.isNotBlank()) " · " + p.folder else "") + " · " + com.billmongan.herdrdroid.ui.look(p.status).label
+        }
+        val needs = agents.count { it.status == Status.NEEDS_YOU }
+        val working = agents.count { it.status == Status.WORKING }
+        val sig = "${s.id}|$needs|$working|$lines"
+        if (sig == widgetSig) return
+        widgetSig = sig
+        prefs.widgetState = org.json.JSONObject().put("server", s.label).put("needs", needs).put("working", working)
+            .put("lines", lines).put("at", System.currentTimeMillis()).toString()
+        runCatching { com.billmongan.herdrdroid.notify.AgentsWidget.update(getApplication()) }
     }
 
     private val missingModelLogged = mutableSetOf<String>()
@@ -748,6 +771,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         // Claude's footer has no model, so its cards take it from Claude's own session log.
         quietly { it.logModels(panes) }?.let { fromLog -> if (fromLog.isNotEmpty()) models = models + fromLog }
         refreshWorkCounts()
+        refreshGit()
     }
 
     suspend fun readPane(paneId: String) {
@@ -947,6 +971,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Answers a menu question: moves the highlight with the arrow keys and presses Enter when the
+     * highlighted option is known, so a digit is never typed into an option's text box.
+     */
+    fun answerChoice(paneId: String, prompt: com.billmongan.herdrdroid.herdr.Prompt, choice: com.billmongan.herdrdroid.herdr.Choice) {
+        val keys = com.billmongan.herdrdroid.herdr.menuKeys(prompt, choice)
+        if (keys == null) { answer(paneId, choice.keys, choice.pressEnter); return }
+        act(paneId, "Couldn't answer") { h ->
+            h.sendKeys(paneId, *keys.toTypedArray())
+            readPane(paneId)
+            refreshPanes()
+        }
+    }
+
     fun answer(paneId: String, keys: String, pressEnter: Boolean) {
         act(paneId, "Couldn't answer") { h ->
             if (pressEnter) h.typeAndEnter(paneId, keys) else h.sendText(paneId, keys)
@@ -1002,6 +1040,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 if (!items.isNullOrEmpty()) {
                     quotas = quotas + (agentKey to QuotaReading(now, items))
                     prefs.saveQuotas(serverId, quotas)
+                    recordQuota(serverId, agentKey, QuotaReading(now, items))
                 }
                 continue
             }
@@ -1030,6 +1069,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     lastQuotaTry[agentKey] = now
                     quotas = quotas + (agentKey to QuotaReading(now, items))
                     prefs.saveQuotas(serverId, quotas)
+                    recordQuota(serverId, agentKey, QuotaReading(now, items))
                 }
             }
         }
@@ -1086,6 +1126,97 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** What the other watched servers' agents are doing, by server id. */
     val fleetStates: Map<String, FleetState> get() = fleet?.states ?: emptyMap()
+
+    var lightPalette by mutableStateOf(runCatching { com.billmongan.herdrdroid.ui.LightPalette.valueOf(prefs.lightPalette) }.getOrDefault(com.billmongan.herdrdroid.ui.LightPalette.STANDARD))
+        private set
+
+    fun chooseLightPalette(p: com.billmongan.herdrdroid.ui.LightPalette) {
+        lightPalette = p
+        prefs.lightPalette = p.name
+    }
+
+    // -- Usage over time ---------------------------------------------------------------------------
+
+    /** One reading for the chart: when, and each limit's percent used. */
+    data class QuotaPoint(val at: Long, val used: Map<String, Double>)
+
+    /** Keeps each agent's readings for eight days (at most 400) for the usage charts. */
+    private fun recordQuota(serverId: String, agentKey: String, r: QuotaReading) {
+        runCatching {
+            val all = org.json.JSONObject(prefs.quotaHistory)
+            val k = "$serverId|$agentKey"
+            val arr = all.optJSONArray(k) ?: org.json.JSONArray()
+            arr.put(org.json.JSONObject().put("at", r.at).put("used", org.json.JSONObject(r.items.associate { it.label to it.usedPercent })))
+            val cutoff = r.at - 8L * 24 * 3600 * 1000
+            val kept = (0 until arr.length()).map { arr.getJSONObject(it) }.filter { it.optLong("at") >= cutoff }.takeLast(400)
+            all.put(k, org.json.JSONArray(kept))
+            prefs.quotaHistory = all.toString()
+        }
+    }
+
+    /** The open server's readings for this pane's agent, oldest first. */
+    fun quotaHistoryFor(pane: Pane?): List<QuotaPoint> {
+        val key = QuotaProfiles.key(pane?.agent) ?: return emptyList()
+        val sid = current?.id ?: return emptyList()
+        return runCatching {
+            val arr = org.json.JSONObject(prefs.quotaHistory).optJSONArray("$sid|$key") ?: return emptyList()
+            (0 until arr.length()).map { i ->
+                val o = arr.getJSONObject(i)
+                val u = o.getJSONObject("used")
+                QuotaPoint(o.optLong("at"), u.keys().asSequence().associateWith { u.optDouble(it) })
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    // -- Shared from other apps ----------------------------------------------------------------------
+
+    /** Something shared into HerdrDroid, waiting for an agent to be picked. */
+    data class Share(val text: String?, val uri: Uri?)
+
+    var pendingShare by mutableStateOf<Share?>(null)
+        private set
+
+    fun receiveShare(text: String?, uri: Uri?) {
+        if (text.isNullOrBlank() && uri == null) return
+        pendingShare = Share(text?.trim(), uri)
+        if (herdr != null && screen !is Screen.Tabs) screen = Screen.Tabs
+    }
+
+    fun discardShare() { pendingShare = null }
+
+    /** Puts the shared text (and a shared file, uploaded first) into [pane]'s message box. */
+    fun sendShareTo(pane: Pane) {
+        val s = pendingShare ?: return
+        pendingShare = null
+        val text = s.text.orEmpty()
+        if (s.uri == null) {
+            prefills[pane.id] = text + "\n"
+            openPane(pane.id)
+            return
+        }
+        attach(s.uri) { path ->
+            prefills[pane.id] = (if (text.isNotBlank()) "$text\n\n" else "") + path + " "
+            openPane(pane.id)
+        }
+    }
+
+    // -- Snippets ----------------------------------------------------------------------------------
+
+    var snippets by mutableStateOf(loadSnippets())
+        private set
+
+    private fun loadSnippets(): List<com.billmongan.herdrdroid.ui.Snippet> = runCatching {
+        val a = org.json.JSONArray(prefs.snippets)
+        (0 until a.length()).map { a.getJSONObject(it).let { o -> com.billmongan.herdrdroid.ui.Snippet(o.getString("name"), o.getString("text")) } }
+    }.getOrDefault(emptyList())
+
+    private fun saveSnippets(list: List<com.billmongan.herdrdroid.ui.Snippet>) {
+        snippets = list
+        prefs.snippets = org.json.JSONArray(list.map { org.json.JSONObject().put("name", it.name).put("text", it.text) }).toString()
+    }
+
+    fun addSnippet(s: com.billmongan.herdrdroid.ui.Snippet) = saveSnippets(snippets.filterNot { it.name == s.name } + s)
+    fun removeSnippet(s: com.billmongan.herdrdroid.ui.Snippet) = saveSnippets(snippets - s)
 
     fun chooseDarkPalette(p: DarkPalette) {
         darkPalette = p
@@ -1188,6 +1319,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val h = if (a.serverId == current?.id) herdr else fleet?.herdr(a.serverId)
         h ?: return
         val app = getApplication<Application>()
+        // A typed reply: sent as a message (as the answer when the agent is waiting on a question).
+        if (a.isReply) {
+            runCatching {
+                val p = h.panes().firstOrNull { it.id == a.paneId } ?: return
+                h.sendMessage(p, a.keys)
+                if (a.serverId == current?.id && transcriptPane == a.paneId) lastSent = a.paneId to a.keys
+            }.onFailure {
+                Notify.needsYou(app, a.serverId, servers.firstOrNull { it.id == a.serverId }?.label ?: "", a.paneId, "The agent",
+                    "Your reply couldn't be sent (${it.message}). Open the app to send it.", emptyList())
+            }
+            return
+        }
         val text = runCatching { h.read(a.paneId, 40) }.getOrNull() ?: return
         val now = detectPrompt(text, blocked = true)
         val same = now != null && now.question.filterNot { it.isWhitespace() } == a.question.filterNot { it.isWhitespace() } &&
@@ -1198,7 +1341,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         runCatching {
-            if (a.isKey) h.sendKeys(a.paneId, a.keys)
+            val nav = if (!a.isKey) now?.let { p -> p.choices.firstOrNull { it.keys == a.keys }?.let { c -> com.billmongan.herdrdroid.herdr.menuKeys(p, c) } } else null
+            if (nav != null) h.sendKeys(a.paneId, *nav.toTypedArray())
+            else if (a.isKey) h.sendKeys(a.paneId, a.keys)
             else if (a.pressEnter) h.typeAndEnter(a.paneId, a.keys)
             else h.sendText(a.paneId, a.keys)
         }
@@ -1218,6 +1363,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         pendingOpen = paneId
         connect(s, savedPassword(s), remember = false)
+    }
+
+    /**
+     * Switches to another server from the machine menu: straight away when it signs in without
+     * asking, otherwise back to the server list to sign in there.
+     */
+    fun switchServer(s: Server) {
+        if (canSignInSilently(s) && (!s.biometric || s.id in unlockedThisSession) && s.fingerprint != null) switchTo(s.id, null)
+        else disconnect()
     }
 
     /** Switches to another watched server from the "needs you" list. */
@@ -1411,6 +1565,36 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     var endedProcs by mutableStateOf<Map<String, List<EndedProc>>>(emptyMap())
         private set
+
+    /** Each card folder's git state, refreshed about every 30 seconds with the previews. */
+    var gitInfo by mutableStateOf<Map<String, com.billmongan.herdrdroid.herdr.GitInfo>>(emptyMap())
+        private set
+    private var gitAt = 0L
+
+    suspend fun refreshGit(force: Boolean = false) {
+        if (!force && System.currentTimeMillis() - gitAt < 30_000) return
+        gitAt = System.currentTimeMillis()
+        val cwds = panes.filter { it.agent != null && it.cwd.isNotBlank() }.map { it.cwd }.distinct()
+        quietly { it.gitStatus(cwds, transcriptScript) }?.let { gitInfo = it }
+    }
+
+    /** Searches every agent's past conversations on this server. */
+    suspend fun searchSessions(query: String): Result<List<com.billmongan.herdrdroid.herdr.SearchHit>> {
+        val h = herdr ?: return Result.failure(IllegalStateException("Not connected."))
+        return runCatching { h.search(query, transcriptScript) }
+    }
+
+    /** One past session found by search, read through the pinned reader (any folder will do). */
+    suspend fun readHit(hit: com.billmongan.herdrdroid.herdr.SearchHit): Result<Pair<List<Item>, Boolean>> {
+        val h = herdr ?: return Result.failure(IllegalStateException("Not connected."))
+        val pane = Pane(id = "search", tabId = "", workspaceId = "", agent = hit.agent, status = Status.UNKNOWN, title = "", cwd = "/")
+        val s = PastSession(hit.ref, hit.db, hit.whenSec, hit.title, 0)
+        return runCatching {
+            val r = h.transcript(pane, s.pinCursor(), transcriptScript) ?: throw IllegalStateException("No reader for ${hit.agent}.")
+            if (!r.ok) throw IllegalStateException(r.why ?: "That session couldn't be read.")
+            Transcript.merge(emptyList(), r.items, true) to r.more
+        }
+    }
 
     suspend fun refreshWorkCounts() {
         quietly { it.workCounts(panes, transcriptScript) }?.let { workCounts = it }

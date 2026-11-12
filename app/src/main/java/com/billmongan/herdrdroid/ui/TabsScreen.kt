@@ -1,5 +1,9 @@
 package com.billmongan.herdrdroid.ui
 
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
@@ -92,6 +96,7 @@ fun TabsScreen(vm: AppViewModel) {
 
     val panes = vm.panes
     var forwardingResult by remember { mutableStateOf<String?>(null) }
+    var confirmStopAll by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
 
     Column(Modifier.fillMaxSize().background(Palette.Ground).systemBarsPadding()) {
@@ -105,7 +110,29 @@ fun TabsScreen(vm: AppViewModel) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to servers", tint = Palette.Ink)
                 }
                 Column(Modifier.weight(1f)) {
-                    Text(vm.current?.label ?: "", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Palette.Ink)
+                    // The machine's name opens a menu of the other machines, to switch quickly.
+                    Box {
+                        var machines by remember { mutableStateOf(false) }
+                        Row(Modifier.clickable { machines = true }, verticalAlignment = Alignment.CenterVertically) {
+                            Text(vm.current?.label ?: "", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Palette.Ink, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                            Text(" ▾", fontSize = 18.sp, color = Palette.Muted)
+                        }
+                        DropdownMenu(expanded = machines, onDismissRequest = { machines = false }) {
+                            vm.servers.filter { it.id != vm.current?.id }.forEach { s ->
+                                val h = vm.serverHealth[s.id]
+                                DropdownMenuItem(
+                                    text = {
+                                        Column {
+                                            Text(s.label)
+                                            h?.let { Text(it.line, fontSize = 12.sp, color = Palette.Muted) }
+                                        }
+                                    },
+                                    onClick = { machines = false; vm.switchServer(s) },
+                                )
+                            }
+                            DropdownMenuItem(text = { Text("All servers…") }, onClick = { machines = false; vm.disconnect() })
+                        }
+                    }
                     LinkLabel(vm, " · ${panes.size} tabs · v${com.billmongan.herdrdroid.BuildConfig.VERSION_NAME}")
                 }
                 TextButton(onClick = { vm.screen = Screen.Dispatch }) { Text("Hand out", fontWeight = FontWeight.SemiBold) }
@@ -113,8 +140,18 @@ fun TabsScreen(vm: AppViewModel) {
                 IconButton(onClick = { scope.launch { vm.refreshPanes(); vm.refreshPreviews() }; vm.refreshQuotasSoon() }) {
                     Icon(Icons.Filled.Refresh, contentDescription = "Refresh", tint = Palette.Ink)
                 }
-                IconButton(onClick = { vm.screen = Screen.Settings(Screen.Tabs) }) {
-                    Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = Palette.Ink)
+                Box {
+                    var menu by remember { mutableStateOf(false) }
+                    IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More", tint = Palette.Ink) }
+                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                        DropdownMenuItem(text = { Text("Search conversations") }, onClick = { menu = false; vm.screen = Screen.Search })
+                        DropdownMenuItem(
+                            text = { Text("Stop everything…", color = Palette.OrangeInk) },
+                            enabled = panes.any { it.status == Status.WORKING && it.agent != null },
+                            onClick = { menu = false; confirmStopAll = true },
+                        )
+                        DropdownMenuItem(text = { Text("Settings") }, onClick = { menu = false; vm.screen = Screen.Settings(Screen.Tabs) })
+                    }
                 }
 
             }
@@ -145,6 +182,26 @@ fun TabsScreen(vm: AppViewModel) {
             Modifier.fillMaxSize().padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
+            // Something shared from another app, waiting for an agent.
+            vm.pendingShare?.let { sh ->
+                item(key = "_share") {
+                    var picking by remember { mutableStateOf(false) }
+                    Surface(shape = RoundedCornerShape(16.dp), color = Palette.BlueSoft, border = BorderStroke(1.dp, Palette.Blue)) {
+                        Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("Shared with HerdrDroid", color = Palette.Blue, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            Text(
+                                listOfNotNull(sh.text?.takeIf { it.isNotBlank() }, sh.uri?.let { "A file (it will be uploaded to ~/.herdrdroid/inbox)" }).joinToString("\n"),
+                                color = Palette.Ink, fontSize = 13.5.sp, maxLines = 4, overflow = TextOverflow.Ellipsis,
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                TextButton(onClick = { picking = true }) { Text("Send to an agent…") }
+                                TextButton(onClick = { vm.discardShare() }) { Text("Discard") }
+                            }
+                        }
+                    }
+                    if (picking) ForwardPicker(vm, exclude = null, onPick = { to -> picking = false; vm.sendShareTo(to) }, onDismiss = { picking = false })
+                }
+            }
             // Helpers that finished and were closed: their last reply, kept until dismissed.
             if (vm.helperResults.isNotEmpty()) {
                 item(key = "_helpers") {
@@ -188,18 +245,6 @@ fun TabsScreen(vm: AppViewModel) {
                     }
                 }
             }
-            if (vm.fleetStates.isNotEmpty() && filter == Filter.ALL) {
-                item(key = "_fleet") {
-                    Text(
-                        vm.fleetStates.values.joinToString("   ") { st ->
-                            val w = st.panes.count { it.status == Status.WORKING }
-                            val n = st.panes.count { it.status == Status.NEEDS_YOU }
-                            st.server.label + ": " + (st.error?.let { "unreachable" } ?: "$n need you, $w working")
-                        },
-                        color = Palette.Muted, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
             val shown = panes.filter { filter.matches(it) }
             val byWorkspace = shown.groupBy { it.workspaceId }
             byWorkspace.forEach { (ws, list) ->
@@ -218,35 +263,28 @@ fun TabsScreen(vm: AppViewModel) {
                         p, vm.previews[p.id].orEmpty(), model = vm.modelLine(p.id), quota = vm.quotaFor(p),
                         checking = vm.showQuotas && vm.probingPane == p.id,
                         underneath = vm.workCounts[p.id] ?: 0,
+                        git = vm.gitInfo[p.cwd],
                         onClose = if (p.tabLabel.startsWith("helper-")) ({ vm.closeHelper(p) }) else null,
                     ) { vm.openPane(p.id) }
                 }
             }
-            // Every agent on the other watched servers, grouped by server; a tap switches servers.
-            vm.fleetStates.values.sortedBy { it.server.label.lowercase() }.forEach { st ->
-                val agents = st.panes.filter { it.agent != null && it.status != Status.NEEDS_YOU && filter.matches(it) }
-                if (agents.isEmpty()) return@forEach
-                item(key = "_srv:" + st.server.id) {
-                    Text("On ${st.server.label}", color = Palette.Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 10.dp))
-                }
-                items(agents, key = { "o:" + st.server.id + it.id }) { p ->
-                    Surface(
-                        shape = RoundedCornerShape(16.dp), color = Palette.Card, border = BorderStroke(1.dp, Palette.Line),
-                        modifier = Modifier.fillMaxWidth().clickable { vm.switchTo(st.server.id, p.id) },
-                    ) {
-                        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            AgentTile(p.initial, p.status, size = 32)
-                            Column(Modifier.weight(1f).padding(start = 10.dp)) {
-                                Text("${p.agentName} · ${p.folder}", color = Palette.Ink, fontWeight = FontWeight.SemiBold, fontSize = 14.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Text(p.title.trim().ifBlank { look(p.status).label }, color = Palette.Muted, fontSize = 12.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            }
-                            StatusPill(p.status)
-                        }
-                    }
-                }
-            }
             item { Spacer(Modifier.height(24.dp)) }
         }
+    }
+    if (confirmStopAll) {
+        val working = panes.filter { it.status == Status.WORKING && it.agent != null }
+        AlertDialog(
+            onDismissRequest = { confirmStopAll = false },
+            title = { Text("Stop every working agent?") },
+            text = {
+                Text("Each of these gets its own stop key (Esc, or Ctrl+C for Hermes), which ends its current turn:\n\n" +
+                    working.joinToString("\n") { "• ${it.agentName} · ${it.folder}" })
+            },
+            confirmButton = {
+                TextButton(onClick = { confirmStopAll = false; working.forEach { vm.stopPane(it) } }) { Text("Stop ${working.size}", color = Palette.OrangeInk) }
+            },
+            dismissButton = { TextButton(onClick = { confirmStopAll = false }) { Text("Cancel") } },
+        )
     }
     forwardingResult?.let { t ->
         ForwardPicker(vm, exclude = null, onPick = { to -> forwardingResult = null; vm.forward(t, null, to) }, onDismiss = { forwardingResult = null })
@@ -257,6 +295,7 @@ fun TabsScreen(vm: AppViewModel) {
 private fun PaneCard(
     p: Pane, preview: String, model: String?, quota: QuotaReading?, checking: Boolean,
     underneath: Int = 0,
+    git: com.billmongan.herdrdroid.herdr.GitInfo? = null,
     onClose: (() -> Unit)? = null,
     onClick: () -> Unit,
 ) {
@@ -267,55 +306,65 @@ private fun PaneCard(
         border = if (needs) BorderStroke(2.dp, Palette.Orange) else BorderStroke(1.dp, Palette.Line),
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
     ) {
-        Row(Modifier.padding(14.dp)) {
+        // Every card has the same rows in the same order, each only when it has something:
+        // name and status; folder, model and git; the last real line; usage; extras.
+        Row(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
             AgentTile(p.initial, p.status)
             Column(Modifier.weight(1f).padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        if (p.folder.isNotBlank()) "${p.agentName} · ${p.folder}" else p.agentName,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 16.sp,
-                        color = Palette.Ink,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false),
+                        p.agentName, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = Palette.Ink,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
                     )
-                    // Subagents and background tasks running under this agent.
-                    if (underneath > 0) Text("+$underneath", color = Palette.Blue, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
                     StatusPill(p.status)
                 }
-                // The agent's terminal title, which most agents set to what they are working on.
-                val title = p.title.trim()
-                if (title.isNotBlank() && !title.equals(p.agentName, ignoreCase = true) && !title.equals(p.agent, ignoreCase = true) && title != p.cwd) {
-                    Text(title, color = Palette.Ink, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (p.folder.isNotBlank()) Text(p.folder, color = Palette.Muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                    model?.let { Text(it, color = Palette.Blue, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false)) }
                 }
-                model?.let {
-                    Text(
-                        it,
-                        color = Palette.Blue,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+                git?.let { g ->
+                    val bits = listOfNotNull(
+                        g.branch?.let { "⎇ $it" },
+                        if (g.changed > 0) "${g.changed} changed" else "clean",
+                        if (g.ahead > 0) "↑${g.ahead}" else null,
+                        if (g.behind > 0) "↓${g.behind}" else null,
                     )
+                    Text(bits.joinToString(" · "), color = Palette.Muted, fontSize = 12.sp, fontFamily = Fonts.Mono, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                Text(
-                    preview.ifBlank { p.id },
-                    color = Palette.Preview,
-                    fontSize = 14.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                quota?.let { QuotaLine(it, Modifier.padding(top = 4.dp)) }
-                if (checking) Text("Checking usage…", color = Palette.Muted, fontSize = 12.sp)
-                if (onClose != null) {
-                    Text(
-                        if (p.status == Status.WORKING) "Helper · working" else "Helper · Close tab",
-                        color = Palette.Blue, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.clickable(enabled = p.status != Status.WORKING) { onClose() }.padding(top = 2.dp),
-                    )
+                val line = cardLine(preview)
+                if (line.isNotBlank()) Text(line, color = Palette.Preview, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                quota?.let { QuotaLine(it, Modifier.padding(top = 2.dp)) }
+                if (underneath > 0 || checking || onClose != null) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        if (underneath > 0) Text("$underneath active underneath", color = Palette.Blue, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                        if (checking) Text("Checking usage…", color = Palette.Muted, fontSize = 12.sp, maxLines = 1)
+                        if (onClose != null) {
+                            Text(
+                                if (p.status == Status.WORKING) "Helper · working" else "Close helper",
+                                color = Palette.Blue, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
+                                modifier = Modifier.clickable(enabled = p.status != Status.WORKING) { onClose() },
+                            )
+                        }
+                    }
                 }
             }
         }
     }
+}
+
+/**
+ * The card's one line of the agent's latest output, without the status chrome agents draw at the
+ * bottom of their screens (spinners, "esc to interrupt", key hints, mode lines), which the status
+ * pill already says. Empty when only chrome is left.
+ */
+fun cardLine(preview: String): String {
+    val t = preview.trim()
+    if (t.isEmpty()) return ""
+    val chrome = listOf(
+        Regex("""^[✶✳✻✽✢✺✹✸✷·*•◐◓◑◒⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s*\S+…"""),
+        Regex("""(?i)esc to (interrupt|cancel)|for shortcuts|ctrl\+[a-z] to|shift\+tab|auto mode|bypass permissions|accept edits on"""),
+        Regex("""(?i)^\(?\d+s\s*·"""),
+        Regex("""^[»›‖■]"""),
+    )
+    return if (chrome.any { it.containsMatchIn(t) }) "" else t
 }

@@ -48,7 +48,7 @@ class MainActivity : FragmentActivity() {
                 ThemeMode.LIGHT -> false
                 ThemeMode.DARK -> true
             }
-            HerdrTheme(dark, vm.darkPalette) {
+            HerdrTheme(dark, vm.darkPalette, vm.lightPalette) {
                 SideEffect {
                     window.statusBarColor = Palette.Card.toArgb()
                     window.navigationBarColor = Palette.Card.toArgb()
@@ -108,6 +108,10 @@ class MainActivity : FragmentActivity() {
                         BackHandler { vm.screen = s.back }
                         SettingsScreen(vm, s.back)
                     }
+                    Screen.Search -> {
+                        BackHandler { vm.screen = Screen.Tabs }
+                        com.billmongan.herdrdroid.ui.SearchScreen(vm)
+                    }
                     is Screen.Work -> {
                         BackHandler { vm.screen = if (s.kind != null) Screen.Work(s.paneId) else Screen.Agent(s.paneId) }
                         com.billmongan.herdrdroid.ui.WorkScreen(vm, s)
@@ -129,6 +133,13 @@ class MainActivity : FragmentActivity() {
 
     /** A tapped alert carries the server and pane to open. */
     private fun openFrom(intent: android.content.Intent?) {
+        if (intent?.action == android.content.Intent.ACTION_SEND) {
+            val uri = if (android.os.Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(android.content.Intent.EXTRA_STREAM, android.net.Uri::class.java)
+            else @Suppress("DEPRECATION") intent.getParcelableExtra(android.content.Intent.EXTRA_STREAM)
+            vm.receiveShare(intent.getStringExtra(android.content.Intent.EXTRA_TEXT), uri)
+            intent.action = null
+            return
+        }
         val server = intent?.getStringExtra(com.billmongan.herdrdroid.notify.Notify.EXTRA_SERVER) ?: return
         val pane = intent.getStringExtra(com.billmongan.herdrdroid.notify.Notify.EXTRA_PANE) ?: return
         intent.removeExtra(com.billmongan.herdrdroid.notify.Notify.EXTRA_SERVER)

@@ -121,6 +121,12 @@ fun ServersScreen(vm: AppViewModel, unlock: (Server, (Boolean) -> Unit) -> Unit)
                 }
             }
             vm.error?.let { ErrorBanner(it) { vm.error = null } }
+            if (vm.pendingShare != null) {
+                Text(
+                    "Connect to a server, then pick the agent for what you shared.",
+                    color = Palette.Blue, fontSize = 13.5.sp, modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+                )
+            }
             if (vm.servers.isEmpty()) {
                 Column(
                     Modifier.fillMaxWidth().padding(24.dp),

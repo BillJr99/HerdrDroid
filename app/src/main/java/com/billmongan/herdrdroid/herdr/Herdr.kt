@@ -558,6 +558,21 @@ print(json.dumps(out))
         return o.optInt("sent")
     }
 
+    /** Git branch and changes for each folder that is a repository (one short python3 run). */
+    suspend fun gitStatus(cwds: List<String>, script: ByteArray): Map<String, GitInfo> {
+        if (cwds.isEmpty()) return emptyMap()
+        val arg = org.json.JSONArray(cwds).toString()
+        val r = ssh.execInput("$PYZ __git__ ${shq(arg)}", z(script), timeoutSeconds = 40)
+        return runCatching { parseGit(r.out) }.getOrDefault(emptyMap())
+    }
+
+    /** Messages matching [query] in every agent's logs on the computer, newest first. */
+    suspend fun search(query: String, script: ByteArray): List<SearchHit> {
+        val r = ssh.execInput("$PYZ __search__ ${shq(query)}", z(script), timeoutSeconds = 60)
+        if (r.out.isBlank()) throw HerdrError(r.err.trim().lines().lastOrNull { it.isNotBlank() } ?: "The search didn't finish.", r.exit)
+        return parseSearch(r.out)
+    }
+
     /** Confirms the command exists before the app shows any tabs. */
     suspend fun check() {
         if (core) {
@@ -635,7 +650,21 @@ private fun isChrome(line: String): Boolean {
 }
 
 data class Choice(val label: String, val keys: String, val pressEnter: Boolean)
-data class Prompt(val question: String, val choices: List<Choice>)
+/**
+ * A question on screen. [selected] is the number of the highlighted menu option (the ❯ line),
+ * when there is one: answers then move the highlight with the arrow keys and press Enter instead
+ * of typing a digit, which could land in an option's own text box.
+ */
+data class Prompt(val question: String, val choices: List<Choice>, val selected: String? = null)
+
+/** The keys that pick [choice]: arrows from the highlighted option, then Enter; null to type it. */
+fun menuKeys(prompt: Prompt, choice: Choice): List<String>? {
+    val from = prompt.selected?.toIntOrNull() ?: return null
+    val to = choice.keys.toIntOrNull() ?: return null
+    if (prompt.choices.none { it.keys == choice.keys }) return null
+    val step = if (to > from) "down" else "up"
+    return List(kotlin.math.abs(to - from)) { step } + "enter"
+}
 
 /**
  * Looks at the bottom of a pane for a question the agent is waiting on:
@@ -648,8 +677,11 @@ fun detectPrompt(text: String, blocked: Boolean): Prompt? {
 
     val clean = { s: String -> s.trim().trim('│', '┃', '|', '╭', '╰', '╮', '╯', '─', ' ').trim() }
     // "❯ 1. Yes", "  2. Yes, and don't ask again for …" (labels can be long; up to 200 characters).
-    val option = Regex("""^[\s│┃|]*(?:[❯›>▶➤]\s*)?(\d)[.)]\s+(.{1,200}?)[\s│┃|]*$""")
-    val optionRows = lines.withIndex().mapNotNull { (i, l) -> option.find(l)?.let { m -> Triple(i, m.groupValues[1], m.groupValues[2].trim()) } }
+    val option = Regex("""^[\s│┃|]*([❯›>▶➤]\s*)?(\d)[.)]\s+(.{1,200}?)[\s│┃|]*$""")
+    val marked = mutableSetOf<Int>()
+    val optionRows = lines.withIndex().mapNotNull { (i, l) ->
+        option.find(l)?.let { m -> if (m.groupValues[1].isNotBlank()) marked += i; Triple(i, m.groupValues[2], m.groupValues[3].trim()) }
+    }
     // Keep the last run of consecutive numbers (1, 2, 3 …), so a numbered list earlier on the
     // screen isn't mixed into the menu.
     val run = mutableListOf<Triple<Int, String, String>>()
@@ -668,7 +700,8 @@ fun detectPrompt(text: String, blocked: Boolean): Prompt? {
     val question = above ?: lines.lastOrNull { clean(it).endsWith("?") }?.let(clean)
 
     if (numbered.size in 2..9 && (blocked || question?.endsWith("?") == true)) {
-        return Prompt(question ?: "Choose an option", numbered)
+        val selected = run.firstOrNull { it.first in marked }?.second
+        return Prompt(question ?: "Choose an option", numbered, selected)
     }
 
     val yn = Regex("""[(\[]\s*[yY](?:es)?\s*/\s*[nN]o?\s*[)\]]""")
