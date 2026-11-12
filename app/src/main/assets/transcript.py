@@ -836,6 +836,288 @@ def fetch_blob(db, h):
     done({"ok": True, "mime": row[0], "data": base64.b64encode(data).decode()})
 
 
+
+# ---- Work under a pane: processes, Claude's subagents and background tasks -------------------
+
+SECRET_ARG = re.compile(r"(?i)(token|secret|passw(or)?d|passwd|api[_-]?key|apikey|auth|bearer|credential|private[_-]?key|cookie|session[_-]?key)")
+LONG_RANDOM = re.compile(r"(?<![/\w.-])[A-Za-z0-9_\-+=]{32,}")
+
+
+def mask_args(args):
+    """A command line safe to show on the phone: values that look secret become •••."""
+    out = []
+    hide_next = False
+    for a in args:
+        if hide_next:
+            out.append("•••")
+            hide_next = False
+            continue
+        if re.match(r"^-{1,2}[\w.-]+$", a) and SECRET_ARG.search(a):
+            out.append(a)
+            hide_next = True
+            continue
+        m = re.match(r"^(-{0,2}[\w.-]+)[=:](.+)$", a)
+        if m and SECRET_ARG.search(m.group(1)):
+            out.append(m.group(1) + "=•••")
+            continue
+        a = re.sub(r"://[^/\s:@]+:[^/\s@]+@", "://•••@", a)
+        a = re.sub(r"(?i)(authorization:\s*\S+\s+)\S+", r"\1•••", a)
+        a = LONG_RANDOM.sub("•••", a)
+        out.append(a)
+    s = " ".join(out)
+    return s if len(s) <= 240 else s[:240] + "…"
+
+
+def proc_table():
+    """Every process of this user: pid -> (ppid, start ticks, utime+stime ticks)."""
+    uid = os.getuid()
+    procs = {}
+    for d in os.listdir("/proc"):
+        if not d.isdigit():
+            continue
+        try:
+            if os.stat("/proc/" + d).st_uid != uid:
+                continue
+            with open("/proc/%s/stat" % d) as f:
+                st = f.read()
+            rest = st[st.rindex(")") + 2:].split()
+            procs[int(d)] = (int(rest[1]), int(rest[19]), int(rest[11]) + int(rest[12]))
+        except Exception:
+            continue
+    return procs
+
+
+def pane_of(pid):
+    try:
+        with open("/proc/%d/environ" % pid, "rb") as f:
+            for kv in f.read().split(b"\0"):
+                if kv.startswith(b"HERDR_PANE_ID="):
+                    return kv[14:].decode("utf-8", "replace")
+    except Exception:
+        pass
+    return None
+
+
+def pane_procs(pane, table=None):
+    """The processes running in a herdr pane (they all carry HERDR_PANE_ID), as a tree."""
+    table = table if table is not None else proc_table()
+    me = {os.getpid(), os.getppid()}
+    mine = {pid: v for pid, v in table.items() if pid not in me and pane_of(pid) == pane}
+    hz = os.sysconf("SC_CLK_TCK")
+    with open("/proc/uptime") as f:
+        up = float(f.read().split()[0])
+    kids = {}
+    for pid, (ppid, _, _) in mine.items():
+        kids.setdefault(ppid if ppid in mine else 0, []).append(pid)
+    out = []
+
+    def walk(pid, depth):
+        ppid, start, cpu = mine[pid]
+        age = max(0.0, up - start / hz)
+        try:
+            with open("/proc/%d/cmdline" % pid, "rb") as f:
+                args = [a.decode("utf-8", "replace") for a in f.read().split(b"\0") if a]
+        except Exception:
+            args = []
+        try:
+            with open("/proc/%d/statm" % pid) as f:
+                rss_kb = int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE") // 1024
+        except Exception:
+            rss_kb = 0
+        out.append({"pid": pid, "ppid": ppid, "depth": depth, "cmd": mask_args(args) or "?",
+                    "name": os.path.basename(args[0]) if args else "?",
+                    "age": int(age), "cpu": round(100.0 * (cpu / hz) / age, 1) if age > 1 else 0.0, "rss": rss_kb})
+        for c in sorted(kids.get(pid, [])):
+            walk(c, depth + 1)
+
+    for r in sorted(kids.get(0, [])):
+        walk(r, 0)
+    return out[:200], set(mine)
+
+
+def claude_session_dir(cwd):
+    d = os.path.join(HOME, ".claude", "projects", re.sub(r"[^A-Za-z0-9]", "-", cwd))
+    fs = glob.glob(os.path.join(d, "*.jsonl"))
+    if not fs:
+        return None, None
+    f = max(fs, key=os.path.getmtime)
+    return f, os.path.splitext(f)[0]
+
+
+def claude_subagents(cwd, now):
+    log, sdir = claude_session_dir(cwd)
+    out = []
+    if not sdir:
+        return out
+    fs = sorted(glob.glob(os.path.join(sdir, "subagents", "agent-*.jsonl")), key=os.path.getmtime, reverse=True)[:30]
+    for f in fs:
+        st = os.stat(f)
+        title = None
+        try:
+            with open(f, "rb") as h:
+                for n, line in enumerate(h):
+                    if n > 60:
+                        break
+                    try:
+                        r = json.loads(line)
+                    except Exception:
+                        continue
+                    m = r.get("message") if isinstance(r.get("message"), dict) else None
+                    if m and isinstance(m.get("content"), list):
+                        for b in m["content"]:
+                            if isinstance(b, dict) and b.get("type") == "tool_use" and isinstance(b.get("input"), dict) and b["input"].get("description"):
+                                title = title or b["input"]["description"]
+                    if m and m.get("role") == "user" and not r.get("isMeta"):
+                        t = (text_of(m.get("content")) or "").strip()
+                        if t and not t.startswith("<"):
+                            title = title or first_line(t, 100)
+                    if title:
+                        break
+        except Exception:
+            pass
+        out.append({"id": os.path.basename(f)[6:-6], "file": f, "title": title or "Subagent",
+                    "updated": int(st.st_mtime), "active": now - st.st_mtime < 120, "kb": st.st_size // 1024})
+    return out
+
+
+def claude_tasks(cwd, now, open_files):
+    log, sdir = claude_session_dir(cwd)
+    if not log:
+        return []
+    sid = os.path.basename(sdir)
+    slug = re.sub(r"[^A-Za-z0-9]", "-", cwd)
+    tdir = os.path.join("/tmp", "claude-%d" % os.getuid(), slug, sid, "tasks")
+    fs = sorted(glob.glob(os.path.join(tdir, "*.output")), key=os.path.getmtime, reverse=True)[:20]
+    if not fs:
+        return []
+    # What each task is, from the session log: a background tool call and the id its result names.
+    what = {}
+    try:
+        size = os.path.getsize(log)
+        with open(log, "rb") as h:
+            h.seek(max(0, size - 4_000_000))
+            uses = {}
+            for line in h:
+                if b"tool_use" not in line and b"tool_result" not in line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except Exception:
+                    continue
+                m = r.get("message") if isinstance(r.get("message"), dict) else None
+                if not m or not isinstance(m.get("content"), list):
+                    continue
+                for b in m["content"]:
+                    if not isinstance(b, dict):
+                        continue
+                    if b.get("type") == "tool_use" and isinstance(b.get("input"), dict):
+                        i = b["input"]
+                        uses[b.get("id")] = i.get("description") or first_line(str(i.get("command") or i.get("prompt") or b.get("name")), 100)
+                    elif b.get("type") == "tool_result":
+                        t = text_of(b.get("content")) or ""
+                        for tid in re.findall(r"(?:ID|id)[:\s]+([a-z0-9]{6,})", t):
+                            if b.get("tool_use_id") in uses:
+                                what[tid] = uses[b["tool_use_id"]]
+    except Exception:
+        pass
+    out = []
+    for f in fs:
+        st = os.stat(f)
+        tid = os.path.basename(f)[:-7]
+        out.append({"id": tid, "file": f, "title": what.get(tid) or "Background task " + tid,
+                    "updated": int(st.st_mtime), "running": os.path.realpath(f) in open_files, "kb": st.st_size // 1024})
+    return out
+
+
+def open_files_of(pids):
+    out = set()
+    for pid in pids:
+        try:
+            for fd in os.listdir("/proc/%d/fd" % pid):
+                try:
+                    out.add(os.path.realpath("/proc/%d/fd/%s" % (pid, fd)))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    return out
+
+
+def pane_work(pane, agent, cwd):
+    import time
+    now = time.time()
+    procs, pids = pane_procs(pane)
+    work = {"ok": True, "procs": procs, "subagents": [], "tasks": []}
+    if agent == "claude" and cwd:
+        work["subagents"] = claude_subagents(cwd, now)
+        work["tasks"] = claude_tasks(cwd, now, open_files_of(pids))
+    return work
+
+
+def work_counts(panes):
+    """For the cards: active subagents and running background tasks per pane (cheap)."""
+    import time
+    now = time.time()
+    table = proc_table()
+    by_pane = {}
+    for pid in table:
+        p = pane_of(pid)
+        if p:
+            by_pane.setdefault(p, set()).add(pid)
+    out = {}
+    for pane, agent, cwd in panes:
+        n = 0
+        if agent == "claude" and cwd:
+            n += sum(1 for s in claude_subagents(cwd, now) if s["active"])
+            n += sum(1 for t in claude_tasks(cwd, now, open_files_of(by_pane.get(pane, ()))) if t["running"])
+        out[pane] = n
+    return {"ok": True, "counts": out}
+
+
+def tail_file(path, offset):
+    """New bytes of a background task's output since [offset] (the last 64 KB the first time)."""
+    path = os.path.realpath(path)
+    if not (path.endswith(".output") and path.startswith("/tmp/claude-%d/" % os.getuid())):
+        return {"ok": False, "why": "not a task output file"}
+    size = os.path.getsize(path)
+    start = offset if 0 <= offset <= size else max(0, size - 65536)
+    if offset < 0:
+        start = max(0, size - 65536)
+    with open(path, "rb") as f:
+        f.seek(start)
+        data = f.read(262144)
+    return {"ok": True, "text": data.decode("utf-8", "replace"), "next": start + len(data), "size": size, "cut": start > 0 and offset < 0}
+
+
+def stop_proc(pane, pid, sig):
+    """Stops a process in [pane] and everything under it, children first. Refuses a pid in another pane."""
+    import signal
+    table = proc_table()
+    if pid not in table or pane_of(pid) != pane:
+        return {"ok": False, "why": "That process is no longer running in this pane."}
+    kids = {}
+    for p, (pp, _, _) in table.items():
+        kids.setdefault(pp, []).append(p)
+    order = []
+
+    def walk(p):
+        for c in kids.get(p, []):
+            walk(c)
+        order.append(p)
+
+    walk(pid)
+    s = signal.SIGKILL if sig == "KILL" else signal.SIGTERM
+    sent = 0
+    for p in order:
+        if pane_of(p) != pane:
+            continue
+        try:
+            os.kill(p, s)
+            sent += 1
+        except Exception:
+            pass
+    return {"ok": True, "sent": sent}
+
 def main():
     if len(sys.argv) > 3 and sys.argv[1] == "__blob__":
         try:
@@ -845,6 +1127,19 @@ def main():
     if len(sys.argv) > 4 and sys.argv[1] == "__image__":
         try:
             fetch_image(sys.argv[2], sys.argv[3], json.loads(sys.argv[4]))
+        except Exception as e:
+            done({"ok": False, "why": "%s: %s" % (type(e).__name__, str(e)[:200])})
+    if len(sys.argv) > 2 and sys.argv[1] in ("__work__", "__workcounts__", "__tail__", "__stop__"):
+        try:
+            mode = sys.argv[1]
+            if mode == "__work__":
+                done(pane_work(sys.argv[2], (sys.argv[3] if len(sys.argv) > 3 else "").lower(), (sys.argv[4] if len(sys.argv) > 4 else "").rstrip("/")))
+            if mode == "__workcounts__":
+                done(work_counts([(p, a.lower(), c.rstrip("/")) for p, a, c in json.loads(sys.argv[2])]))
+            if mode == "__tail__":
+                done(tail_file(sys.argv[2], int(sys.argv[3])))
+            if mode == "__stop__":
+                done(stop_proc(sys.argv[2], int(sys.argv[3]), sys.argv[4] if len(sys.argv) > 4 else "TERM"))
         except Exception as e:
             done({"ok": False, "why": "%s: %s" % (type(e).__name__, str(e)[:200])})
     if len(sys.argv) > 3 and sys.argv[1] == "__sessions__":

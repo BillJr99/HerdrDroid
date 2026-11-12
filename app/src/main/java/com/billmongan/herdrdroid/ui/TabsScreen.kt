@@ -214,6 +214,7 @@ fun TabsScreen(vm: AppViewModel) {
                     PaneCard(
                         p, vm.previews[p.id].orEmpty(), model = vm.modelLine(p.id), quota = vm.quotaFor(p),
                         checking = vm.showQuotas && vm.probingPane == p.id,
+                        underneath = vm.workCounts[p.id] ?: 0,
                         onClose = if (p.tabLabel.startsWith("helper-")) ({ vm.closeHelper(p) }) else null,
                     ) { vm.openPane(p.id) }
                 }
@@ -252,6 +253,7 @@ fun TabsScreen(vm: AppViewModel) {
 @Composable
 private fun PaneCard(
     p: Pane, preview: String, model: String?, quota: QuotaReading?, checking: Boolean,
+    underneath: Int = 0,
     onClose: (() -> Unit)? = null,
     onClick: () -> Unit,
 ) {
@@ -275,6 +277,8 @@ private fun PaneCard(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false),
                     )
+                    // Subagents and background tasks running under this agent.
+                    if (underneath > 0) Text("+$underneath", color = Palette.Blue, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
                     StatusPill(p.status)
                 }
                 // The agent's terminal title, which most agents set to what they are working on.

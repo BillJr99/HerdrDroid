@@ -73,6 +73,11 @@ sealed interface Screen {
     data class Files(val path: String, val back: Screen) : Screen
     data object Dispatch : Screen
     data object Compare : Screen
+    /**
+     * What runs under a pane: processes, subagents and background tasks. With [kind] "sub" or
+     * "task", one subagent's conversation or one task's output ([file]), read-only.
+     */
+    data class Work(val paneId: String, val kind: String? = null, val file: String? = null, val title: String? = null) : Screen
     /** The pane's past sessions; with [session] set, that one session, read-only. */
     data class History(val paneId: String, val session: PastSession? = null) : Screen
 }
@@ -648,6 +653,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         // Claude's footer has no model, so its cards take it from Claude's own session log.
         quietly { it.logModels(panes) }?.let { fromLog -> if (fromLog.isNotEmpty()) models = models + fromLog }
+        refreshWorkCounts()
     }
 
     suspend fun readPane(paneId: String) {
@@ -1230,6 +1236,52 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun dismissHelperResult(r: HelperResult) {
         helperResults = helperResults - r
+    }
+
+    // -- Work under a pane ---------------------------------------------------------------------------
+
+    /** The latest read of each pane's processes, subagents and background tasks. */
+    var work by mutableStateOf<Map<String, com.billmongan.herdrdroid.herdr.WorkInfo>>(emptyMap())
+        private set
+    /** For the cards: active subagents plus running background tasks, per pane. */
+    var workCounts by mutableStateOf<Map<String, Int>>(emptyMap())
+        private set
+
+    suspend fun refreshWork(paneId: String) {
+        val p = pane(paneId) ?: return
+        quietly { it.work(p, transcriptScript) }?.let { work = work + (paneId to it) }
+    }
+
+    suspend fun refreshWorkCounts() {
+        quietly { it.workCounts(panes, transcriptScript) }?.let { workCounts = it }
+    }
+
+    /** One Claude subagent's log since [cursor] (its file is pinned in the cursor). */
+    suspend fun readSubagent(paneId: String, cursor: String): Result<com.billmongan.herdrdroid.transcript.TranscriptRead> {
+        val p = pane(paneId) ?: return Result.failure(IllegalStateException("That pane is gone."))
+        val h = herdr ?: return Result.failure(IllegalStateException("Not connected."))
+        return runCatching {
+            val r = h.transcript(p, cursor, transcriptScript) ?: throw IllegalStateException("No agent in this pane.")
+            if (!r.ok) throw IllegalStateException(r.why ?: "That subagent's log couldn't be read.")
+            r
+        }
+    }
+
+    suspend fun tailTask(file: String, offset: Long): Result<com.billmongan.herdrdroid.herdr.TailRead> {
+        val h = herdr ?: return Result.failure(IllegalStateException("Not connected."))
+        return runCatching { h.tail(file, offset, transcriptScript) }
+    }
+
+    /** Stops a process (and its children) in a pane, after the user confirmed it. */
+    fun stopProcess(paneId: String, pid: Int, force: Boolean, done: (Result<Int>) -> Unit) {
+        viewModelScope.launch {
+            val h = herdr
+            val r = if (h == null) Result.failure(IllegalStateException("Not connected.")) else runCatching { h.stopProcess(paneId, pid, force, transcriptScript) }
+            com.billmongan.herdrdroid.diag.DiagLog.log("work", "stop ${if (force) "KILL" else "TERM"} pid $pid in $paneId: " +
+                r.fold({ "sent to $it process(es)" }, { "failed: ${it.message}" }))
+            done(r)
+            refreshWork(paneId)
+        }
     }
 
     // -- History and export -------------------------------------------------------------------------

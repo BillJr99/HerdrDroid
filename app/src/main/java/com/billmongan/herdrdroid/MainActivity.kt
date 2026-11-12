@@ -108,6 +108,10 @@ class MainActivity : FragmentActivity() {
                         BackHandler { vm.screen = s.back }
                         SettingsScreen(vm, s.back)
                     }
+                    is Screen.Work -> {
+                        BackHandler { vm.screen = if (s.kind != null) Screen.Work(s.paneId) else Screen.Agent(s.paneId) }
+                        com.billmongan.herdrdroid.ui.WorkScreen(vm, s)
+                    }
                     is Screen.History -> {
                         BackHandler { vm.screen = if (s.session != null) Screen.History(s.paneId) else Screen.Agent(s.paneId) }
                         com.billmongan.herdrdroid.ui.HistoryScreen(vm, s.paneId, s.session)

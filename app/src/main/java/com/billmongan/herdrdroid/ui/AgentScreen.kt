@@ -168,6 +168,13 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
             vm.refreshPanes()
         }
     }
+    // What runs under this agent (subagents, background tasks, processes), every 5 seconds.
+    LaunchedEffect(paneId) {
+        while (true) {
+            vm.refreshWork(paneId)
+            kotlinx.coroutines.delay(5_000)
+        }
+    }
 
     /** Sends one key with whatever modifiers are on, then lets go of the one-shot ones. */
     fun press(key: String) {
@@ -286,6 +293,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                         DropdownMenuItem(text = { Text("History") }, onClick = { menu = false; vm.screen = Screen.History(paneId) })
                     }
                     if (pane?.agent != null) DropdownMenuItem(text = { Text("Model…") }, onClick = { menu = false; choosingModel = true })
+                    DropdownMenuItem(text = { Text("Running underneath") }, onClick = { menu = false; vm.screen = Screen.Work(paneId) })
                     if (structured && vm.transcriptItems.isNotEmpty()) {
                         DropdownMenuItem(text = { Text("Export as Markdown") }, onClick = {
                             menu = false
@@ -316,6 +324,21 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                     ) {
                         Text(label, color = if (on) Palette.Ink else Palette.Muted, fontSize = 14.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Medium)
                     }
+                }
+            }
+        }
+        // What the agent has running underneath: tap to drill in.
+        vm.work[paneId]?.let { w ->
+            val kids = w.childProcs(pane?.agent)
+            if (w.activeSubagents > 0 || w.runningTasks > 0 || kids > 0) {
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    val open = { vm.screen = Screen.Work(paneId) }
+                    if (w.activeSubagents > 0) ComposerChip("${w.activeSubagents} subagent${if (w.activeSubagents == 1) "" else "s"} running", true) { open() }
+                    if (w.runningTasks > 0) ComposerChip("${w.runningTasks} background task${if (w.runningTasks == 1) "" else "s"}", true) { open() }
+                    if (kids > 0) ComposerChip("$kids process${if (kids == 1) "" else "es"}", false) { open() }
                 }
             }
         }

@@ -433,6 +433,42 @@ print(json.dumps(out))
         return o.keys().asSequence().associateWith { prettyClaudeModel(o.getString(it)) }
     }
 
+    // ---- Work under a pane (the reader's __work__, __workcounts__, __tail__ and __stop__ modes) ----
+
+    /** The processes, subagents and background tasks under [pane]. Read-only. */
+    suspend fun work(pane: Pane, script: ByteArray): WorkInfo {
+        val r = ssh.execInput("$PY - __work__ ${shq(pane.id)} ${shq(pane.agent.orEmpty())} ${shq(pane.cwd)}", script, timeoutSeconds = 30)
+        if (r.out.isBlank()) throw HerdrError(r.err.trim().lines().lastOrNull { it.isNotBlank() } ?: "The work list couldn't be read.", r.exit)
+        return parseWork(r.out)
+    }
+
+    /** For the cards: active subagents plus running background tasks, per pane. */
+    suspend fun workCounts(panes: List<Pane>, script: ByteArray): Map<String, Int> {
+        val list = panes.filter { it.agent == "claude" }
+        if (list.isEmpty()) return emptyMap()
+        val arg = org.json.JSONArray(list.map { org.json.JSONArray(listOf(it.id, it.agent.orEmpty(), it.cwd)) }).toString()
+        val r = ssh.execInput("$PY - __workcounts__ ${shq(arg)}", script, timeoutSeconds = 30)
+        return runCatching { parseWorkCounts(r.out) }.getOrDefault(emptyMap())
+    }
+
+    /** A background task's output since [offset]; -1 starts from its last 64 KB. */
+    suspend fun tail(file: String, offset: Long, script: ByteArray): TailRead {
+        val r = ssh.execInput("$PY - __tail__ ${shq(file)} $offset", script)
+        if (r.out.isBlank()) throw HerdrError(r.err.trim().lines().lastOrNull { it.isNotBlank() } ?: "The output couldn't be read.", r.exit)
+        return parseTail(r.out)
+    }
+
+    /**
+     * Stops process [pid] in [paneId] and everything under it (TERM, or KILL when [force]). The
+     * computer checks that the pid is still in that pane first, so a reused pid is never hit.
+     */
+    suspend fun stopProcess(paneId: String, pid: Int, force: Boolean, script: ByteArray): Int {
+        val r = ssh.execInput("$PY - __stop__ ${shq(paneId)} $pid ${if (force) "KILL" else "TERM"}", script)
+        val o = runCatching { JSONObject(r.out.trim()) }.getOrNull() ?: throw HerdrError("Stop didn't answer.", r.exit)
+        if (!o.optBoolean("ok")) throw HerdrError(o.optString("why").ifBlank { "Couldn't stop it." }, r.exit)
+        return o.optInt("sent")
+    }
+
     /** Confirms the command exists before the app shows any tabs. */
     suspend fun check() {
         val r = ssh.exec("$herdr --version")
