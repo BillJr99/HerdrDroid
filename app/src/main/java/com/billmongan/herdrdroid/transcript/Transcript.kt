@@ -13,6 +13,30 @@ data class TextItem(override val key: String, val text: String) : Item
 data class ThinkItem(override val key: String, val text: String, val ms: Long?) : Item
 data class NoteItem(override val key: String, val text: String) : Item
 
+/**
+ * An attachment in the conversation: an image or any other file or blob. It lives inside the
+ * agent's log ([logFile], [logOffset], [logIndex], a JSON array of block indexes), in OpenCode's
+ * blob table ([blobDb], [blobHash]), or as a file on the computer ([path]). Its bytes are fetched
+ * only when it is shown or opened. Images are drawn in the chat; other files get a card with
+ * Download and Share. [user] marks one you attached.
+ */
+data class ImageItem(
+    override val key: String,
+    val logFile: String? = null,
+    val logOffset: Long = 0,
+    val logIndex: String? = null,
+    val path: String? = null,
+    val mime: String = "image/png",
+    val kb: Int = 0,
+    val user: Boolean = false,
+    val blobDb: String? = null,
+    val blobHash: String? = null,
+    val name: String? = null,
+) : Item {
+    val isImage get() = mime.startsWith("image/") && !mime.contains("svg")
+    val label get() = name ?: path?.substringAfterLast('/') ?: if (isImage) "image" else "attachment"
+}
+
 enum class ToolState { RUNNING, OK, ERROR }
 
 /** The before and after of an edit, for the diff card. */
@@ -29,7 +53,33 @@ data class ToolItem(
     val patch: String?,
     val out: String?,
     val state: ToolState,
+    /** The file the call read or wrote, so it can be opened, saved or shared. */
+    val path: String? = null,
+    /** An image file the call produced, shown in the chat. */
+    val image: String? = null,
 ) : Item
+
+/** A MIME type from a file name, for attachments known only by path. */
+fun mimeFor(path: String): String = when (path.substringAfterLast('.', "").lowercase()) {
+    "png" -> "image/png"
+    "jpg", "jpeg" -> "image/jpeg"
+    "gif" -> "image/gif"
+    "webp" -> "image/webp"
+    "bmp" -> "image/bmp"
+    "svg" -> "image/svg+xml"
+    "pdf" -> "application/pdf"
+    "html", "htm" -> "text/html"
+    "md" -> "text/markdown"
+    "csv" -> "text/csv"
+    "json" -> "application/json"
+    "zip" -> "application/zip"
+    "apk" -> "application/vnd.android.package-archive"
+    "txt", "log", "py", "kt", "ts", "js", "sh", "yaml", "yml", "toml" -> "text/plain"
+    "docx" -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    "xlsx" -> "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    "pptx" -> "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    else -> "application/octet-stream"
+}
 
 /** What one read of an agent's log returned. */
 data class TranscriptRead(
@@ -70,6 +120,22 @@ object Transcript {
             "text" -> TextItem(k, j.optString("text"))
             "think" -> ThinkItem(k, j.optString("text"), if (j.isNull("ms")) null else j.optLong("ms").takeIf { it > 0 })
             "note" -> NoteItem(k, j.optString("text"))
+            "image" -> {
+                val src = j.optJSONObject("src")
+                ImageItem(
+                    key = k,
+                    logFile = src?.optString("file")?.ifEmpty { null },
+                    logOffset = src?.optLong("off") ?: 0,
+                    logIndex = src?.optJSONArray("idx")?.toString(),
+                    path = j.str("path"),
+                    mime = j.optString("mime").ifBlank { "image/png" },
+                    kb = j.optInt("kb"),
+                    user = j.optBoolean("user"),
+                    blobDb = src?.optString("db")?.ifEmpty { null },
+                    blobHash = src?.optString("hash")?.ifEmpty { null },
+                    name = j.str("name"),
+                )
+            }
             "tool" -> {
                 val d = j.optJSONObject("diff")
                 ToolItem(
@@ -87,6 +153,8 @@ object Transcript {
                         "err" -> ToolState.ERROR
                         else -> ToolState.RUNNING
                     },
+                    path = j.str("path"),
+                    image = j.str("image"),
                 )
             }
             else -> null
@@ -137,6 +205,7 @@ object Transcript {
         is TextItem -> item.text
         is ThinkItem -> item.text
         is NoteItem -> item.text
+        is ImageItem -> item.path ?: "[image]"
         is ToolItem -> buildString {
             append(item.title)
             item.input?.let { append("\n\n").append(it) }
@@ -174,12 +243,22 @@ fun rowsOf(items: List<Item>): List<Row> {
         rows += if (run.size == 1 && run[0] is ThinkItem) OneRow(run[0]) else ActivityRow("act:" + run.first().key, run.toList())
         run.clear()
     }
+    val produced = mutableListOf<ImageItem>()
     for (it in items) {
-        if (it is ToolItem || it is ThinkItem) run += it else {
+        if (it is ToolItem || it is ThinkItem) {
+            run += it
+            // An image file a tool wrote is shown in the chat after that stretch of work.
+            if (it is ToolItem && it.image != null && it.state == ToolState.OK) {
+                produced += ImageItem("img:" + it.key, path = it.image, mime = mimeFor(it.image))
+            }
+        } else {
             flush()
+            produced.forEach { p -> rows += OneRow(p) }
+            produced.clear()
             rows += OneRow(it)
         }
     }
     flush()
+    produced.forEach { p -> rows += OneRow(p) }
     return rows
 }

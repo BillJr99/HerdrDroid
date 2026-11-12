@@ -135,4 +135,28 @@ class TranscriptTest {
         assertEquals(false, (b[1] as MdBlock.ListItem).checked)
         assertEquals(MdBlock.Code("", "open fence"), b[2])
     }
+
+    @Test
+    fun attachmentsParseAndWrittenImagesShowAfterTheWork() {
+        val l = Transcript.merge(emptyList(), listOf(
+            j("""{"k":"i","t":"image","src":{"file":"/l.jsonl","off":12,"idx":[1,0]},"mime":"image/png","kb":3,"user":true}"""),
+            j("""{"k":"b","t":"image","src":{"db":"/o.db","hash":"abc"},"mime":"application/pdf","kb":40}"""),
+            j("""{"k":"t","t":"tool","id":"c","name":"Write","title":"Write chart.png","kind":"edit","path":"/w/chart.png","image":"/w/chart.png","state":"run"}"""),
+            j("""{"k":"r","t":"result","ref":"c","out":"ok"}"""),
+            j("""{"k":"a","t":"text","text":"Saved to /w/chart.png and ~/out/report.pdf."}"""),
+        ), true)
+        val img = l[0] as ImageItem
+        assertEquals("/l.jsonl", img.logFile)
+        assertEquals("[1,0]", img.logIndex)
+        assertTrue(img.isImage && img.user)
+        val blob = l[1] as ImageItem
+        assertEquals("abc", blob.blobHash)
+        assertEquals(false, blob.isImage)
+        val rows = rowsOf(l)
+        // the tool's image comes right after its activity row, before the reply
+        val produced = rows.indexOfFirst { it is OneRow && (it.item as? ImageItem)?.path == "/w/chart.png" }
+        assertTrue(produced > 0 && rows[produced - 1] is ActivityRow)
+        assertEquals(listOf("/w/chart.png", "~/out/report.pdf"), com.billmongan.herdrdroid.ui.mentionedFiles((l.last() as TextItem).text))
+        assertEquals("application/pdf", mimeFor("x/y.PDF"))
+    }
 }

@@ -278,7 +278,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
         } else if (structured) {
             val rows = remember(vm.transcriptItems) { rowsOf(vm.transcriptItems) }
             val family: FontFamily = vm.readingFont.family
-            TranscriptChat(
+            Box(Modifier.weight(1f).fillMaxWidth()) { ProvideAttachments(vm::attachmentBytes) { TranscriptChat(
                 rows = rows,
                 working = status == Status.WORKING,
                 workingLabel = "",
@@ -291,8 +291,8 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 header = { if (showUsage && quota != null) QuotaDetails(quota) { showUsage = false } },
                 footer = promptCard,
                 state = listState,
-                modifier = Modifier.weight(1f).fillMaxWidth().then(pinchToZoom),
-            )
+                modifier = Modifier.fillMaxSize().then(pinchToZoom),
+            ) } }
         } else {
             Column(
                 Modifier

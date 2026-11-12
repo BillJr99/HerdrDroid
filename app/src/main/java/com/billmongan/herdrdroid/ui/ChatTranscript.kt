@@ -76,6 +76,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.billmongan.herdrdroid.transcript.ActivityRow
 import com.billmongan.herdrdroid.transcript.DiffData
+import com.billmongan.herdrdroid.transcript.ImageItem
 import com.billmongan.herdrdroid.transcript.Item
 import com.billmongan.herdrdroid.transcript.NoteItem
 import com.billmongan.herdrdroid.transcript.OneRow
@@ -227,10 +228,12 @@ private fun ItemView(item: Item, rows: List<ChatRow>, size: Float, family: FontF
             // The reply's actions sit under the last piece of the agent's text in a turn.
             val endsTurn = rows.drop(idx + 1).firstOrNull { it is OneRow && (it.item is UserItem || it.item is TextItem) }
                 .let { it == null || (it as OneRow).item is UserItem }
+            val files = remember(item.text) { mentionedFiles(item.text) }
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 SelectionContainer {
                     MarkdownText(item.text, size * 1.12f, family)
                 }
+                MentionedFiles(files)
                 if (endsTurn) ReplyActions(item.text, actions.onQuote)
             }
         }
@@ -242,6 +245,7 @@ private fun ItemView(item: Item, rows: List<ChatRow>, size: Float, family: FontF
             modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
         )
         is ToolItem -> ToolView(item, size, live = false)
+        is ImageItem -> AttachmentView(item)
     }
 }
 
@@ -467,6 +471,7 @@ private fun ToolView(t: ToolItem, size: Float, live: Boolean) {
         }
         if (open) {
             Column(Modifier.padding(start = 8.dp, end = 8.dp, bottom = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                t.path?.let { MentionedFiles(listOf(it)) }
                 t.diff?.let { DiffCard(it, size) }
                 t.patch?.let { CodeBlock(it, "diff", size) }
                 t.input?.takeIf { it.isNotBlank() }?.let { Mono("Input", it, size) }

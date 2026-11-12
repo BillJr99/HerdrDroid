@@ -239,6 +239,35 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
         return Transcript.parseRead(r.out)
     }
 
+    /** One image inside an agent's log, fetched with the reader's image mode. */
+    suspend fun logImage(file: String, offset: Long, index: String, script: ByteArray): ByteArray {
+        val r = ssh.execInput("python3 - __image__ ${shq(file)} $offset ${shq(index)}", script)
+        val o = runCatching { JSONObject(r.out) }.getOrNull() ?: throw HerdrError("The image couldn't be read.", r.exit)
+        if (!o.optBoolean("ok")) throw HerdrError(o.optString("why").ifBlank { "The image couldn't be read." }, r.exit)
+        return java.util.Base64.getMimeDecoder().decode(o.getString("data"))
+    }
+
+    /** One OpenCode blob (an attachment it stored in its database). */
+    suspend fun blob(db: String, hash: String, script: ByteArray): ByteArray {
+        val r = ssh.execInput("python3 - __blob__ ${shq(db)} ${shq(hash)}", script)
+        val o = runCatching { JSONObject(r.out) }.getOrNull() ?: throw HerdrError("The attachment couldn't be read.", r.exit)
+        if (!o.optBoolean("ok")) throw HerdrError(o.optString("why").ifBlank { "The attachment couldn't be read." }, r.exit)
+        return java.util.Base64.getMimeDecoder().decode(o.getString("data"))
+    }
+
+    /** A file on the computer, up to [maxBytes]; "~/" paths are taken from the home folder. */
+    suspend fun fetchFile(path: String, maxBytes: Long = 50L * 1024 * 1024): ByteArray {
+        val p = if (path.startsWith("~/")) "\"\$HOME\"/" + shq(path.removePrefix("~/")) else shq(path)
+        val size = ssh.exec("stat -L -c %s -- $p").let { r ->
+            if (r.exit != 0) throw HerdrError("That file isn't there (${path.substringAfterLast('/')}).", r.exit)
+            r.out.trim().toLongOrNull() ?: 0L
+        }
+        if (size > maxBytes) throw HerdrError("That file is ${size / (1024 * 1024)} MB, over the ${maxBytes / (1024 * 1024)} MB limit.", 0)
+        val (exit, bytes) = ssh.execBytes("cat -- $p")
+        if (exit != 0) throw HerdrError("That file couldn't be read.", exit)
+        return bytes
+    }
+
     /**
      * Copies a file from the phone to ~/.herdrdroid/inbox on the computer and returns its full
      * path there, so a message can point the agent at it.

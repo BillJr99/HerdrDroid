@@ -318,8 +318,12 @@ class HermesChat(ssh: HerdrSsh, private val scope: CoroutineScope) {
                     ?: payload.opt("result")?.let { r -> if (r is String) r else r.toString() }?.take(6000)
                     ?: payload.optString("summary").ifBlank { null }
                 val inline = payload.optString("inline_diff").ifBlank { null }
+                // A local image the call produced or looked at: shown in the chat, and downloadable.
+                val image = payload.optString("image_path").ifBlank { null }
                 items = items.map {
-                    if (it is ToolItem && it.id == id) it.copy(out = out, patch = inline ?: it.patch, state = ToolState.OK) else it
+                    if (it is ToolItem && it.id == id) {
+                        it.copy(out = out, patch = inline ?: it.patch, state = ToolState.OK, path = image ?: it.path, image = image ?: it.image)
+                    } else it
                 }
             }
             "status.update" -> status = payload.optString("text").ifBlank { payload.optString("message") }

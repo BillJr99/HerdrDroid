@@ -631,6 +631,28 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ---- Attachments ----------------------------------------------------------------------------
+
+    /** Recently fetched attachments, up to 32 MB, so scrolling back doesn't fetch them again. */
+    private val attachmentCache = object : android.util.LruCache<String, ByteArray>(32 * 1024 * 1024) {
+        override fun sizeOf(key: String, value: ByteArray) = value.size
+    }
+
+    /** An attachment's bytes, from the agent's log, OpenCode's blob table, or a file on the computer. */
+    suspend fun attachmentBytes(item: com.billmongan.herdrdroid.transcript.ImageItem): Result<ByteArray> {
+        val cacheKey = item.path?.let { "file:$it" } ?: item.key
+        attachmentCache.get(cacheKey)?.let { return Result.success(it) }
+        val h = herdr ?: return Result.failure(IllegalStateException("Not connected."))
+        return runCatching {
+            when {
+                item.logFile != null -> h.logImage(item.logFile, item.logOffset, item.logIndex ?: "[]", transcriptScript)
+                item.blobDb != null && item.blobHash != null -> h.blob(item.blobDb, item.blobHash, transcriptScript)
+                item.path != null -> h.fetchFile(item.path)
+                else -> throw IllegalStateException("Nothing to fetch.")
+            }
+        }.onSuccess { attachmentCache.put(cacheKey, it) }
+    }
+
     // ---- Hermes through its gateway ------------------------------------------------------------
 
     /** The native Hermes chat for this server, made and connected on first use. */

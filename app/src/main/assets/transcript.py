@@ -162,6 +162,10 @@ def tool_item(key, call_id, name, args, out=None, err=None, state="run"):
         hint = a.get("description") or a.get("query") or a.get("pattern") or path or a.get("url") or a.get("name")
         item["title"] = name + (": " + first_line(hint, 60) if hint else "")
         item["kind"] = "other"
+    if path and item.get("kind") in ("edit", "read"):
+        item["path"] = str(path)
+        if item["kind"] == "edit" and re.search(r"\.(png|jpe?g|gif|webp|bmp)$", str(path), re.I):
+            item["image"] = str(path)
     if "diff" not in item and "patch" not in item:
         item["input"] = clip(a if len(a) != 1 or "input" not in a else a["input"], IN_CHARS)
     if out is not None:
@@ -173,6 +177,35 @@ def tool_item(key, call_id, name, args, out=None, err=None, state="run"):
 
 def result_item(key, ref, out, err=False):
     return {"k": key, "t": "result", "ref": ref, "out": clip(out, OUT_CHARS), "err": bool(err)}
+
+
+def image_of(b):
+    """(mime, base64) for an image block in any agent's shape, or None."""
+    if not isinstance(b, dict):
+        return None
+    t = b.get("type")
+    if t == "image":
+        src = b.get("source") if isinstance(b.get("source"), dict) else {}
+        data = src.get("data") or b.get("data")
+        mime = src.get("media_type") or b.get("mimeType") or b.get("mime_type") or "image/png"
+        if isinstance(data, str) and data:
+            return mime, data
+    if t in ("input_image", "image_url"):
+        url = b.get("image_url")
+        url = url.get("url") if isinstance(url, dict) else url
+        m = re.match(r"data:([\w/+.-]+);base64,(.*)", str(url or ""), re.S)
+        if m:
+            return m.group(1), m.group(2)
+    return None
+
+
+def image_item(key, path, off, idx, b):
+    """A pointer to an image inside a log line. The picture is fetched only when shown."""
+    got = image_of(b)
+    if not got:
+        return None
+    return {"k": key, "t": "image", "src": {"file": path, "off": off, "idx": idx}, "mime": got[0],
+            "kb": len(got[1]) * 3 // 4 // 1024}
 
 
 # ---- JSONL logs ----------------------------------------------------------------------------------
@@ -264,10 +297,18 @@ def claude(cwd, cur):
                         continue
                     if b.get("type") == "tool_result":
                         items.append(result_item("c%d.%d" % (off, i), b.get("tool_use_id"), text_of(b.get("content")), b.get("is_error")))
+                        if isinstance(b.get("content"), list):
+                            for j, x in enumerate(b["content"]):
+                                im = image_item("c%d.%d.%d" % (off, i, j), path, off, [i, j], x)
+                                if im:
+                                    items.append(im)
                     elif b.get("type") == "text":
                         user_items("c%d.%d" % (off, i), b.get("text"), items)
                     elif b.get("type") == "image":
-                        items.append({"k": "c%d.%d" % (off, i), "t": "user", "text": "[image]"})
+                        im = image_item("c%d.%d" % (off, i), path, off, [i], b)
+                        if im:
+                            im["user"] = True
+                            items.append(im)
         elif t == "assistant" and isinstance(c, list):
             for i, b in enumerate(c):
                 if not isinstance(b, dict):
@@ -316,6 +357,11 @@ def codex(cwd, cur):
             txt = text_of(p.get("content"))
             if role == "user":
                 user_items(k, txt, items)
+                for i, b in enumerate(p.get("content") or []):
+                    im = image_item("%s.%d" % (k, i), path, off, [i], b)
+                    if im:
+                        im["user"] = True
+                        items.append(im)
             elif role == "assistant" and txt.strip():
                 items.append({"k": k, "t": "text", "text": txt})
         elif pt == "reasoning":
@@ -365,6 +411,11 @@ def pi(cwd, cur, root=(".pi", "agent")):
         c = m.get("content")
         if role == "user":
             user_items("p%d" % off, text_of(c), items)
+            for i, b in enumerate(c if isinstance(c, list) else []):
+                im = image_item("p%d.%d" % (off, i), path, off, [i], b)
+                if im:
+                    im["user"] = True
+                    items.append(im)
         elif role == "assistant" and isinstance(c, list):
             for i, b in enumerate(c):
                 if not isinstance(b, dict):
@@ -378,6 +429,10 @@ def pi(cwd, cur, root=(".pi", "agent")):
                     items.append(tool_item(k, b.get("id"), b.get("name"), b.get("arguments")))
         elif role == "toolResult":
             items.append(result_item("p%d" % off, m.get("toolCallId"), text_of(c), m.get("isError")))
+            for i, b in enumerate(c if isinstance(c, list) else []):
+                im = image_item("p%d.%d" % (off, i), path, off, [i], b)
+                if im:
+                    items.append(im)
     return {"cur": ncur, "reset": reset, "more": more, "items": items, "title": None}
 
 
@@ -393,6 +448,11 @@ def grok(cwd, cur):
         k = "g%d" % off
         if t == "user" and not r.get("synthetic_reason"):
             user_items(k, text_of(r.get("content")), items)
+            for i, b in enumerate(r.get("content") if isinstance(r.get("content"), list) else []):
+                im = image_item("%s.%d" % (k, i), path, off, [i], b)
+                if im:
+                    im["user"] = True
+                    items.append(im)
         elif t == "assistant":
             txt = text_of(r.get("content"))
             if txt.strip():
@@ -486,6 +546,14 @@ def opencode(cwd, cur):
         start = cur.get("seq", 0)
     rows = c.execute("select id, type, seq, data from session_message where session_id = ? and seq >= ? order by seq",
                      (sid, start)).fetchall()
+    blobs = {}
+    try:
+        for mid, h, mime, size in c.execute(
+                "select r.message_id, r.hash, b.mime, b.bytes from blob_ref r join blob b on b.hash = r.hash "
+                "where r.session_id = ? order by r.seq", (sid,)):
+            blobs.setdefault(mid, []).append((h, mime, size))
+    except Exception:
+        pass
     c.close()
     items = []
     last = start
@@ -497,6 +565,12 @@ def opencode(cwd, cur):
             continue
         if typ == "user":
             user_items("oc%s" % mid, d.get("text") or text_of(d.get("content")), items)
+            for i, f in enumerate(d.get("files") or []):
+                fp = f.get("path") or f.get("filename") if isinstance(f, dict) else f
+                if isinstance(fp, str) and fp.startswith("/"):
+                    items.append({"k": "oc%s.f%d" % (mid, i), "t": "image", "path": fp,
+                                  "mime": (f.get("mime") if isinstance(f, dict) else None) or "application/octet-stream",
+                                  "name": os.path.basename(fp), "user": True})
         elif typ == "assistant":
             for i, b in enumerate(d.get("content") or []):
                 k = "oc%s.%d" % (mid, i)
@@ -515,6 +589,9 @@ def opencode(cwd, cur):
                     items.append(tool_item(k, b.get("id"), b.get("name"), st.get("input"),
                                            out if status in ("completed", "error") or out else None, err,
                                            "run" if status in (None, "pending", "running") else "ok"))
+        for h, mime, size in blobs.get(mid, []):
+            items.append({"k": "ob%s" % h, "t": "image", "src": {"db": db, "hash": h}, "mime": mime or "application/octet-stream",
+                          "kb": int(size or 0) // 1024, "user": typ == "user"})
     # The last message is re-read every poll: OpenCode updates a streaming reply in place.
     return {"cur": {"db": db, "sid": sid, "seq": last}, "reset": reset, "more": more, "items": items, "title": title}
 
@@ -582,7 +659,50 @@ READERS = {"claude": claude, "codex": codex, "pi": pi, "omp": omp, "grok": grok,
            "opencode": opencode, "hermes": hermes}
 
 
+def fetch_image(path, off, idx):
+    """Print one image from a log line as {"mime", "data"} (base64). Used when the app shows it."""
+    with open(path, "rb") as f:
+        f.seek(int(off))
+        r = json.loads(f.readline())
+    for key in ("message", "payload"):
+        if isinstance(r.get(key), dict) and "content" in r[key]:
+            node = r[key]["content"]
+            break
+    else:
+        node = r.get("content")
+    for n, i in enumerate(idx):
+        node = node[int(i)]
+        if n < len(idx) - 1:
+            node = node.get("content")
+    got = image_of(node)
+    if not got:
+        done({"ok": False, "why": "no image there"})
+    done({"ok": True, "mime": got[0], "data": got[1]})
+
+
+def fetch_blob(db, h):
+    """Print one OpenCode blob as {"mime", "data"} (base64)."""
+    import base64
+    c = ro(db)
+    row = c.execute("select mime, data from blob where hash = ?", (h,)).fetchone()
+    c.close()
+    if not row:
+        done({"ok": False, "why": "no such blob"})
+    data = row[1] if isinstance(row[1], (bytes, bytearray)) else str(row[1]).encode()
+    done({"ok": True, "mime": row[0], "data": base64.b64encode(data).decode()})
+
+
 def main():
+    if len(sys.argv) > 3 and sys.argv[1] == "__blob__":
+        try:
+            fetch_blob(sys.argv[2], sys.argv[3])
+        except Exception as e:
+            done({"ok": False, "why": "%s: %s" % (type(e).__name__, str(e)[:200])})
+    if len(sys.argv) > 4 and sys.argv[1] == "__image__":
+        try:
+            fetch_image(sys.argv[2], sys.argv[3], json.loads(sys.argv[4]))
+        except Exception as e:
+            done({"ok": False, "why": "%s: %s" % (type(e).__name__, str(e)[:200])})
     agent = (sys.argv[1] if len(sys.argv) > 1 else "").lower()
     cwd = sys.argv[2] if len(sys.argv) > 2 else ""
     try:

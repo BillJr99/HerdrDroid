@@ -178,7 +178,7 @@ private fun HermesConversation(vm: AppViewModel, chat: HermesChat, modifier: Mod
     val state = rememberLazyListState()
     val rows = remember(chat.items) { rowsOf(chat.items) }
     Column(modifier) {
-        TranscriptChat(
+        Box(Modifier.weight(1f).fillMaxWidth()) { ProvideAttachments(vm::attachmentBytes) { TranscriptChat(
             rows = rows,
             working = chat.running,
             workingLabel = chat.status,
@@ -199,8 +199,8 @@ private fun HermesConversation(vm: AppViewModel, chat: HermesChat, modifier: Mod
                     }
                 }
             },
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-        )
+            modifier = Modifier.fillMaxSize(),
+        ) } }
         Box(Modifier.padding(start = 10.dp, end = 10.dp, top = 6.dp, bottom = 10.dp)) {
             ChatComposer(
                 value = message,

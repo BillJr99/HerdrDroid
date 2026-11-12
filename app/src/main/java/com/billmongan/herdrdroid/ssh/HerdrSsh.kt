@@ -234,6 +234,37 @@ class HerdrSsh(
         }
     }
 
+    /** Runs a command and returns its standard output as bytes (for files fetched from the computer). */
+    suspend fun execBytes(command: String, timeoutSeconds: Long = 120): Pair<Int, ByteArray> = withContext(Dispatchers.IO) {
+        lock.withLock {
+            var attempt = 0
+            while (true) {
+                try {
+                    val c = open()
+                    c.startSession().use { session ->
+                        val cmd = session.exec(command)
+                        val out = cmd.inputStream.readBytes()
+                        cmd.errorStream.readBytes()
+                        cmd.join(timeoutSeconds, TimeUnit.SECONDS)
+                        return@withLock (cmd.exitStatus ?: -1) to out
+                    }
+                } catch (e: UnconfirmedHostKey) {
+                    throw e
+                } catch (e: HostKeyChanged) {
+                    throw e
+                } catch (e: AuthRejected) {
+                    throw e
+                } catch (e: Exception) {
+                    client?.runCatching { disconnect() }
+                    client = null
+                    if (++attempt > 1) throw (e as? LinkDown ?: LinkDown(e))
+                }
+            }
+            @Suppress("UNREACHABLE_CODE")
+            -1 to ByteArray(0)
+        }
+    }
+
     /**
      * Runs a command with [input] on its standard input: how the transcript reader script and an
      * uploaded file reach the computer without anything being installed there.
