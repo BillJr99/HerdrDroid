@@ -1296,6 +1296,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Where Settings was scrolled to, kept across the rebuild a theme change causes. */
+    var settingsScroll = 0
+
     // -- Snippets ----------------------------------------------------------------------------------
 
     var snippets by mutableStateOf(loadSnippets())

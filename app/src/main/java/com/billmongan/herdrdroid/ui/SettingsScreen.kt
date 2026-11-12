@@ -53,6 +53,12 @@ fun SettingsScreen(vm: AppViewModel, back: Screen) {
     val askNotify = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
     ) { granted -> vm.changeWatching(granted) }
+    // Choosing a theme or palette rebuilds every screen; the scroll position is kept in the view
+    // model so Settings stays where it was instead of jumping to the top.
+    val scroll = androidx.compose.runtime.remember { androidx.compose.foundation.ScrollState(vm.settingsScroll) }
+    androidx.compose.runtime.LaunchedEffect(scroll) {
+        androidx.compose.runtime.snapshotFlow { scroll.value }.collect { vm.settingsScroll = it }
+    }
     Column(Modifier.fillMaxSize().background(Palette.Ground).systemBarsPadding()) {
         Surface(color = Palette.Card, border = BorderStroke(1.dp, Palette.Line)) {
             Row(Modifier.fillMaxWidth().padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -63,7 +69,7 @@ fun SettingsScreen(vm: AppViewModel, back: Screen) {
             }
         }
         Column(
-            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
+            Modifier.fillMaxSize().verticalScroll(scroll).padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
             Section("Appearance") {
