@@ -160,6 +160,7 @@ fun ServersScreen(vm: AppViewModel, unlock: (Server, (Boolean) -> Unit) -> Unit)
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     CircularProgressIndicator()
                     vm.connectNote?.let { Text(it, color = Palette.Ink, fontSize = 14.sp, modifier = Modifier.padding(horizontal = 32.dp)) }
+                    OutlinedButton(onClick = { vm.cancelConnect() }) { Text("Cancel") }
                 }
             }
         }
@@ -552,7 +553,11 @@ fun EditServerScreen(vm: AppViewModel, existing: Server?) {
 }
 
 @Composable
-fun ErrorBanner(message: String, actionLabel: String = "Dismiss", onAction: () -> Unit) {
+fun ErrorBanner(
+    message: String, actionLabel: String = "Dismiss",
+    secondLabel: String? = null, onSecond: (() -> Unit)? = null,
+    onAction: () -> Unit,
+) {
     Surface(
         color = Palette.OrangeSoft,
         border = BorderStroke(1.dp, Palette.Orange),
@@ -561,6 +566,7 @@ fun ErrorBanner(message: String, actionLabel: String = "Dismiss", onAction: () -
     ) {
         Row(Modifier.padding(start = 14.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(message, color = Palette.OrangeInk, fontSize = 14.sp, modifier = Modifier.weight(1f))
+            if (secondLabel != null && onSecond != null) TextButton(onClick = onSecond) { Text(secondLabel, color = Palette.OrangeInk) }
             TextButton(onClick = onAction) { Text(actionLabel, color = Palette.OrangeInk) }
         }
     }

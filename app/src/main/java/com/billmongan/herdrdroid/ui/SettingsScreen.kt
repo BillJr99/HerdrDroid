@@ -1,5 +1,10 @@
 package com.billmongan.herdrdroid.ui
 
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -123,6 +128,7 @@ fun SettingsScreen(vm: AppViewModel, back: Screen) {
                     color = Palette.Muted, fontSize = 13.sp,
                 )
             }
+            Section("Diagnostics") { Diagnostics() }
             Section("Helpers") {
                 Row(Modifier.fillMaxWidth().clickable { vm.changeAutoCloseHelpers(!vm.autoCloseHelpers) }, verticalAlignment = Alignment.CenterVertically) {
                     Text("Close helpers when they finish", color = Palette.Ink, fontSize = 16.sp, modifier = Modifier.weight(1f))
@@ -222,6 +228,8 @@ fun ServerBanners(vm: AppViewModel) {
             "Can't reach ${vm.current?.label ?: "the computer"}. " + (vm.linkProblem ?: "") +
                 if (vm.queuedCount > 0) " What you sent will go out when it's back." else "",
             actionLabel = "Retry",
+            // Stops the reconnect tries and goes back to the server list.
+            secondLabel = "Disconnect", onSecond = { vm.disconnect() },
         ) { vm.retryNow() }
     }
     vm.error?.let { ErrorBanner(it) { vm.error = null } }
@@ -294,3 +302,62 @@ fun QuotaDetails(r: QuotaReading, onClose: () -> Unit) {
 }
 
 private fun Double.fmt(): String = if (this % 1.0 == 0.0) toInt().toString() else "%.1f".format(this)
+
+/**
+ * The diagnostic log (connections, the WebSocket bridge, SSH steps), with Copy, Save and Clear.
+ * It holds no addresses of WebSocket servers, keys, passwords or file contents.
+ */
+@Composable
+private fun Diagnostics() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    var text by remember { mutableStateOf(com.billmongan.herdrdroid.diag.DiagLog.text()) }
+    var note by remember { mutableStateOf<String?>(null) }
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        var seen = -1L
+        while (true) {
+            val v = com.billmongan.herdrdroid.diag.DiagLog.version
+            if (v != seen) { seen = v; text = com.billmongan.herdrdroid.diag.DiagLog.text() }
+            kotlinx.coroutines.delay(1_000)
+        }
+    }
+    val save = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.CreateDocument("text/plain"),
+    ) { uri ->
+        if (uri != null) {
+            note = runCatching {
+                context.contentResolver.openOutputStream(uri)?.use { it.write(text.toByteArray()) }
+                "Saved."
+            }.getOrElse { "Couldn't save: ${it.message}" }
+        }
+    }
+    Text(
+        "What the app did while connecting: the WebSocket bridge's steps and byte counts, and each SSH step. " +
+            "It has no server addresses, keys or passwords, so it's safe to copy and send. Kept in memory only " +
+            "(the last ${com.billmongan.herdrdroid.diag.DiagLog.MAX} lines) until the app closes.",
+        color = Palette.Muted, fontSize = 13.sp,
+    )
+    Row(horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)) {
+        androidx.compose.material3.OutlinedButton(enabled = text.isNotEmpty(), onClick = {
+            clipboard.setText(androidx.compose.ui.text.AnnotatedString(text)); note = "Copied."
+        }) { Text("Copy") }
+        androidx.compose.material3.OutlinedButton(enabled = text.isNotEmpty(), onClick = {
+            val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(java.util.Date())
+            save.launch("herdrdroid-diagnostics-$stamp.txt")
+        }) { Text("Save…") }
+        androidx.compose.material3.OutlinedButton(enabled = text.isNotEmpty(), onClick = {
+            com.billmongan.herdrdroid.diag.DiagLog.clear(); note = null
+        }) { Text("Clear") }
+    }
+    note?.let { Text(it, color = Palette.Blue, fontSize = 13.sp) }
+    androidx.compose.foundation.text.selection.SelectionContainer {
+        Text(
+            text.ifEmpty { "Nothing yet. Connect to a server, then come back here." }.lines().takeLast(200).joinToString("\n"),
+            fontFamily = Fonts.Mono, fontSize = 11.sp, lineHeight = 15.sp, color = Palette.Ink,
+            modifier = Modifier.fillMaxWidth().heightIn(max = 360.dp)
+                .background(Palette.Gray, androidx.compose.foundation.shape.RoundedCornerShape(10.dp))
+                .verticalScroll(androidx.compose.foundation.rememberScrollState())
+                .padding(10.dp),
+        )
+    }
+}

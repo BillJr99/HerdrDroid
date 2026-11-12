@@ -108,6 +108,49 @@ class WsBridgeTest {
         server.shutdown()
     }
 
+    @Test fun theServerSpeaksFirstAndALateClientStillGetsEveryByteInOrder() {
+        com.billmongan.herdrdroid.diag.DiagLog.clear()
+        val banner = "SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u10\r\n".toByteArray()
+        val server = MockWebServer()
+        server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                // Like sshd behind a bridge: the identification string at once, in two frames.
+                webSocket.send(banner.toByteString(0, 10))
+                webSocket.send(banner.toByteString(10, banner.size - 10))
+            }
+            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                webSocket.send(("got " + bytes.utf8()).toByteArray().toByteString())
+            }
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(1000, null) }
+        }))
+        server.start()
+        val bridge = WsBridge.open(server.url("/").toString().replaceFirst("http", "ws"))
+        // The bridge listens on IPv4 loopback, which is where sshj is pointed.
+        assertEquals("127.0.0.1", bridge.host)
+        Thread.sleep(500) // the server's bytes arrive before anyone connects
+        Socket(bridge.host, bridge.port).use { s ->
+            s.soTimeout = 10_000
+            val input = s.getInputStream()
+            val got = ByteArray(banner.size)
+            var n = 0
+            while (n < got.size) { val k = input.read(got, n, got.size - n); if (k < 0) break; n += k }
+            assertArrayEquals(banner, got)
+            s.getOutputStream().apply { write("SSH-2.0-test\r\n".toByteArray()); flush() }
+            val reply = ByteArray(18)
+            n = 0
+            while (n < reply.size) { val k = input.read(reply, n, reply.size - n); if (k < 0) break; n += k }
+            assertEquals("got SSH-2.0-test\r\n", String(reply))
+        }
+        bridge.close()
+        val log = com.billmongan.herdrdroid.diag.DiagLog.text()
+        assertTrue(log, log.contains("onOpen: HTTP 101"))
+        assertTrue(log, log.contains("onMessage(binary) #1: 10 bytes, starts \"SSH-2.0-Op\""))
+        assertTrue(log, log.contains("ws.send(binary) #1: 14 bytes, starts \"SSH-2.0-test\\r\\n\""))
+        // The address never goes in the log.
+        assertTrue(log, !log.contains(server.hostName + ":" + server.port) && log.contains("<address hidden>"))
+        server.shutdown()
+    }
+
     /**
      * End to end against a real sshd behind a WebSocket, only when one is given:
      * HD_WS_URL, HD_WS_KEY (a private key file), HD_WS_BADKEY (one the server doesn't know),

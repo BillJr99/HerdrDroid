@@ -21,6 +21,7 @@ import net.schmizz.sshj.userauth.method.AuthPublickey
 import net.schmizz.sshj.userauth.password.PasswordFinder
 import net.schmizz.sshj.userauth.password.Resource
 import net.schmizz.sshj.connection.channel.direct.Parameters
+import com.billmongan.herdrdroid.diag.DiagLog
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.security.MessageDigest
@@ -169,12 +170,16 @@ class HerdrSsh(
             if (wsUrl != null) {
                 val b = WsBridge.open(wsUrl)
                 bridge = b
-                c.connect("127.0.0.1", b.port)
+                DiagLog.log("ssh", "sshj connecting to ${b.host}:${b.port} (the WebSocket bridge)")
+                c.connect(b.host, b.port)
             } else {
+                DiagLog.log("ssh", "sshj connecting over TCP")
                 c.connect(host, port)
             }
+            DiagLog.log("ssh", "key exchange done; server says \"${c.transport.serverVersion}\"; host key ${verifier.seen}")
         } catch (e: Exception) {
             val seen = verifier.seen
+            DiagLog.log("ssh", "connect failed: ${DiagLog.describe(e)}; host key seen: ${seen ?: "none"}")
             runCatching { c.disconnect() }
             bridge?.close()
             bridge = null
@@ -186,7 +191,9 @@ class HerdrSsh(
         }
         try {
             c.auth(user, methods(c))
+            DiagLog.log("ssh", "signed in")
         } catch (e: UserAuthException) {
+            DiagLog.log("ssh", "sign-in refused: ${DiagLog.describe(e)}")
             runCatching { c.disconnect() }
             bridge?.close(); bridge = null
             throw AuthRejected(e.message ?: "Sign-in was refused")

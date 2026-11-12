@@ -312,9 +312,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (connecting) return
         connecting = true
         error = null
-        viewModelScope.launch {
+        val run = ++connectRun
+        connectJob = viewModelScope.launch {
             val creds = credentialsFor(server, password)
             val s = HerdrSsh(server.host, server.port, server.user, creds, server.fingerprint, SshKeyVault::provider, server.wsUrl?.takeIf { server.overWebSocket })
+            connectingSsh = s
             try {
                 val h = Herdr(s, server.herdrPath)
                 // A WebSocket server may be asleep and take a while to answer, so a failed
@@ -374,14 +376,41 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 } else {
                     error = authMessage(server, creds, e)
                 }
+            } catch (c: CancellationException) {
+                // Cancel on the connecting screen: drop the attempt quietly.
+                s.close()
+                throw c
             } catch (e: Exception) {
                 s.close()
                 error = friendly(e)
             } finally {
-                connecting = false
-                connectNote = null
+                // A cancelled attempt may finish late; it must not touch a newer one.
+                if (run == connectRun) {
+                    connecting = false
+                    connectNote = null
+                    connectingSsh = null
+                }
             }
         }
+    }
+
+    private var connectJob: Job? = null
+    private var connectRun = 0
+    private var connectingSsh: HerdrSsh? = null
+
+    /**
+     * Stops a connection attempt, including its wake-up retries. The screen is freed at once; an
+     * attempt still waiting on the network is closed and its result thrown away.
+     */
+    fun cancelConnect() {
+        connectRun++
+        connectJob?.cancel()
+        connectJob = null
+        connectingSsh?.close()
+        connectingSsh = null
+        connecting = false
+        connectNote = null
+        pendingOpen = null
     }
 
     /** Shown while a sleeping server is being retried. */
