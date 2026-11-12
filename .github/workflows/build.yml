@@ -1,0 +1,105 @@
+# Builds and tests HerdrDroid on every push and pull request, and attaches the signed APK to a
+# GitHub release when a version tag (v0.5.2, ...) is pushed.
+#
+# Signing uses two repository secrets, set once by the owner:
+#   KEYSTORE_B64        the sideload keystore, base64-encoded (base64 -w0 keystore/herdrdroid-sideload.jks)
+#   SIGNING_PROPERTIES  the contents of keystore/signing.properties (storePassword, keyAlias, keyPassword)
+# Without them the tests still run, but no APK is built.
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: "platforms;android-34 build-tools;34.0.0 platform-tools"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Signing key
+        id: signing
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+          SIGNING_PROPERTIES: ${{ secrets.SIGNING_PROPERTIES }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ] && [ -n "$SIGNING_PROPERTIES" ]; then
+            mkdir -p keystore
+            printf '%s' "$KEYSTORE_B64" | base64 -d > keystore/herdrdroid-sideload.jks
+            printf '%s\n' "$SIGNING_PROPERTIES" > keystore/signing.properties
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No signing secrets; running the tests only."
+          fi
+
+      # A throwaway sshd behind websockify, for the SSH-over-WebSocket end-to-end test.
+      - name: WebSocket test server
+        run: |
+          docker build -q -t hdws-test tools/ws-test-server
+          docker run -d --name hdws-srv -p 8080:8080 hdws-test
+          sleep 3
+          mkdir -p e2e
+          docker cp hdws-srv:/tmp/good e2e/good
+          docker cp hdws-srv:/tmp/bad e2e/bad
+          echo "HD_WS_URL=ws://127.0.0.1:8080/" >> "$GITHUB_ENV"
+          echo "HD_WS_KEY=$PWD/e2e/good" >> "$GITHUB_ENV"
+          echo "HD_WS_BADKEY=$PWD/e2e/bad" >> "$GITHUB_ENV"
+          echo "HD_WS_FP=$(docker exec hdws-srv ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub | cut -d' ' -f2)" >> "$GITHUB_ENV"
+
+      - name: Tests
+        run: ./gradlew --no-daemon --console=plain testReleaseUnitTest
+
+      - name: Signed APK
+        if: steps.signing.outputs.ready == 'true'
+        run: |
+          ./gradlew --no-daemon --console=plain assembleRelease
+          v=$(sed -n 's/.*versionName = "\(.*\)".*/\1/p' app/build.gradle.kts | head -1)
+          mkdir -p out && cp app/build/outputs/apk/release/app-release.apk "out/HerdrDroid-$v.apk"
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "out/HerdrDroid-$v.apk" | head -2
+          sha256sum out/*.apk
+
+      - name: Test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: app/build/reports/tests/
+          if-no-files-found: ignore
+
+      - name: APK
+        if: steps.signing.outputs.ready == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: HerdrDroid-apk
+          path: out/*.apk
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v') && steps.signing.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" out/*.apk --title "HerdrDroid ${GITHUB_REF_NAME#v}" --notes "Built by CI from $GITHUB_SHA."
+
+      - name: Clean up
+        if: always()
+        run: |
+          docker rm -f hdws-srv >/dev/null 2>&1 || true
+          rm -rf keystore/herdrdroid-sideload.jks keystore/signing.properties e2e
