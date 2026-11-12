@@ -340,6 +340,60 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
         return parseDir(r.out)
     }
 
+    /** Past sessions of [agent] in [cwd], newest first, from the reader's session-list mode. */
+    suspend fun sessions(agent: String, cwd: String, script: ByteArray): List<PastSession> {
+        val r = ssh.execInput("python3 - __sessions__ ${shq(agent)} ${shq(cwd)}", script, timeoutSeconds = 60)
+        val o = runCatching { JSONObject(r.out) }.getOrNull() ?: throw HerdrError("The session list couldn't be read.", r.exit)
+        if (!o.optBoolean("ok")) throw HerdrError(o.optString("why").ifBlank { "The session list couldn't be read." }, r.exit)
+        return parseSessions(o.optJSONArray("sessions") ?: org.json.JSONArray())
+    }
+
+    /** The shell form of a path, with "~" taken from the home folder. */
+    private fun shellPath(path: String) =
+        if (path == "~") "\"\$HOME\"" else if (path.startsWith("~/")) "\"\$HOME\"/" + shq(path.removePrefix("~/")) else shq(path)
+
+    /** Copies a file from the phone into [dir] (never over an existing file) and returns its path. */
+    suspend fun uploadTo(dir: String, name: String, bytes: ByteArray): String {
+        val safe = safeName(name) ?: throw HerdrError("That name can't be used for a file.", 0)
+        val target = shellPath(dir.trimEnd('/') + "/" + safe)
+        val r = ssh.execInput(
+            "set -C; [ -e $target ] && { echo 'A file with that name is already there.' >&2; exit 3; }; cat > $target && printf %s $target",
+            bytes, timeoutSeconds = 120,
+        )
+        if (r.exit != 0) throw HerdrError(r.err.trim().lines().lastOrNull { it.isNotBlank() } ?: "The upload failed (exit ${r.exit}).", r.exit)
+        return r.out.trim()
+    }
+
+    /** Makes a folder inside [dir]. */
+    suspend fun makeFolder(dir: String, name: String) {
+        val safe = safeName(name) ?: throw HerdrError("That name can't be used for a folder.", 0)
+        val r = ssh.exec("mkdir -- " + shellPath(dir.trimEnd('/') + "/" + safe))
+        if (r.exit != 0) throw HerdrError(r.err.trim().ifBlank { "The folder couldn't be made." }, r.exit)
+    }
+
+    /** Renames [path] within its folder, refusing to replace anything already there. */
+    suspend fun rename(path: String, newName: String) {
+        val safe = safeName(newName) ?: throw HerdrError("That name can't be used.", 0)
+        val to = path.substringBeforeLast('/') + "/" + safe
+        val r = ssh.exec("mv -n -- ${shellPath(path)} ${shellPath(to)} && [ -e ${shellPath(to)} ] && [ ! -e ${shellPath(path)} ]")
+        if (r.exit != 0) throw HerdrError(r.err.trim().ifBlank { "It couldn't be renamed (is that name taken?)." }, r.exit)
+    }
+
+    /**
+     * Moves [path] into ~/scratch/herdrdroid-recycled-<date>, the recycle bin, instead of
+     * deleting it. Nothing is ever deleted from the phone. Returns where it went.
+     */
+    suspend fun recycle(path: String): String {
+        val stamp = SimpleDateFormat("yyyyMMdd", Locale.US).format(Date())
+        val bin = "~/scratch/herdrdroid-recycled-$stamp"
+        val name = path.trimEnd('/').substringAfterLast('/')
+        val clock = SimpleDateFormat("HHmmss", Locale.US).format(Date())
+        val dest = "$bin/$clock-$name"
+        val r = ssh.exec("mkdir -p ${shellPath(bin)} && mv -n -- ${shellPath(path)} ${shellPath(dest)} && [ ! -e ${shellPath(path)} ]")
+        if (r.exit != 0) throw HerdrError(r.err.trim().ifBlank { "It couldn't be moved to ~/scratch." }, r.exit)
+        return dest
+    }
+
     /** Confirms the command exists before the app shows any tabs. */
     suspend fun check() {
         val r = ssh.exec("$herdr --version")
@@ -354,6 +408,34 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
 }
 
 class HerdrError(message: String, val exit: Int) : Exception(message)
+
+/** A file or folder name typed on the phone, or null when it has a slash, is empty, or is "." or "..". */
+fun safeName(name: String): String? {
+    val n = name.trim()
+    return n.takeIf { it.isNotEmpty() && it.length <= 200 && '/' !in it && '\u0000' !in it && it != "." && it != ".." }
+}
+
+/**
+ * One past session of an agent, for the history list. [ref] is the session's log file, or its id
+ * in [db] for the agents that keep sessions in SQLite (OpenCode, Hermes).
+ */
+data class PastSession(val ref: String, val db: String?, val whenSec: Long, val title: String?, val kb: Int) {
+    /** The cursor that makes the reader show this session instead of the newest one. */
+    fun pinCursor(): String = JSONObject().apply {
+        if (db != null) { put("pin_sid", ref); put("db", db) } else put("pin", ref)
+    }.toString()
+}
+
+fun parseSessions(arr: org.json.JSONArray): List<PastSession> = (0 until arr.length()).mapNotNull { i ->
+    val s = arr.optJSONObject(i) ?: return@mapNotNull null
+    PastSession(
+        ref = s.optString("ref").ifBlank { return@mapNotNull null },
+        db = s.optString("db").takeIf { !s.isNull("db") && it.isNotBlank() },
+        whenSec = s.optLong("when"),
+        title = s.optString("title").takeIf { !s.isNull("title") && it.isNotBlank() },
+        kb = s.optInt("kb"),
+    )
+}
 
 /** One entry in a folder listing. [dir] is the folder's resolved path. */
 data class DirEntry(val name: String, val isDir: Boolean, val size: Long, val mtime: Long, val dir: String) {

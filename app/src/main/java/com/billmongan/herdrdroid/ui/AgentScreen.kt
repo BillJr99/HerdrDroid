@@ -1,5 +1,9 @@
 package com.billmongan.herdrdroid.ui
 
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -118,6 +122,9 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     var ctrl by remember { mutableStateOf(Hold.OFF) }
     var alt by remember { mutableStateOf(Hold.OFF) }
     var showUsage by rememberSaveable { mutableStateOf(false) }
+    var menu by remember { mutableStateOf(false) }
+    var choosingModel by remember { mutableStateOf(false) }
+    val context = LocalContext.current
     val textSize = vm.current?.textSize ?: 12.5f
     var pinch by remember { mutableFloatStateOf(1f) }
     val liveSize = (textSize * pinch).coerceIn(8f, 24f)
@@ -253,15 +260,30 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                     LinkLabel(vm, "")
                 }
             }
-            if (quota != null) {
-                TextButton(onClick = { showUsage = !showUsage }) { Text("Usage", fontSize = 14.sp) }
-            }
-            if (pane != null) {
-                TextButton(onClick = { vm.openFiles(pane.cwd.ifBlank { "~" }) }) { Text("Files", fontSize = 14.sp) }
-            }
-            if (!live) {
+            if (!live && vm.transcriptState == TranscriptMode.ON) {
                 TextButton(onClick = { fullTerminal = !fullTerminal }) {
                     Text(if (fullTerminal) "Chat" else "Terminal", fontSize = 14.sp)
+                }
+            }
+            // Everything else lives in one menu, so the header stays readable on a phone.
+            Box {
+                IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More", tint = Palette.Ink) }
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    if (quota != null) DropdownMenuItem(text = { Text(if (showUsage) "Hide usage" else "Usage") }, onClick = { menu = false; showUsage = !showUsage })
+                    if (pane != null) DropdownMenuItem(text = { Text("Files") }, onClick = { menu = false; vm.openFiles(pane.cwd.ifBlank { "~" }) })
+                    if (pane?.agent != null && vm.hasTranscriptReader(paneId)) {
+                        DropdownMenuItem(text = { Text("History") }, onClick = { menu = false; vm.screen = Screen.History(paneId) })
+                    }
+                    if (pane?.agent != null) DropdownMenuItem(text = { Text("Model…") }, onClick = { menu = false; choosingModel = true })
+                    if (structured && vm.transcriptItems.isNotEmpty()) {
+                        DropdownMenuItem(text = { Text("Export as Markdown") }, onClick = {
+                            menu = false
+                            vm.exportMarkdown(context, vm.transcriptTitle ?: "${pane?.agentName ?: "Agent"} in ${pane?.folder ?: ""}", pane?.agentName ?: "Agent", vm.transcriptItems)
+                        })
+                    }
+                    if (!live && vm.transcriptState != TranscriptMode.ON) {
+                        DropdownMenuItem(text = { Text(if (fullTerminal) "Chat view" else "Terminal view") }, onClick = { menu = false; fullTerminal = !fullTerminal })
+                    }
                 }
             }
         }
@@ -397,6 +419,8 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 onSend = ::send,
                 working = status == Status.WORKING,
                 onStop = pane?.let { p -> { vm.stopPane(p) } },
+                // herdr's agent prompt reaches a working agent, so a message sent now steers it.
+                steerLabel = if (pane?.agent != null) "Steer" else null,
                 onAttach = { uri -> vm.attach(uri) { path -> message = (message.trimEnd() + " " + path).trim() + " " } },
                 attachBusy = vm.uploading,
                 commands = SlashCommands.forAgent(pane?.agent),
@@ -412,6 +436,48 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
 
     forwarding?.let { t ->
         ForwardPicker(vm, exclude = paneId, onPick = { to -> forwarding = null; vm.forward(t, pane, to) }, onDismiss = { forwarding = null })
+    }
+
+    if (choosingModel && pane != null) {
+        val presets = ModelPresets.forAgent(pane.agent)
+        AlertDialog(
+            onDismissRequest = { choosingModel = false },
+            title = { Text("Model for ${pane.agentName}") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (status == Status.WORKING) {
+                        Text("${pane.agentName} is working. The model can be changed once it's done.", color = Palette.OrangeInk, fontSize = 14.sp)
+                    }
+                    presets.forEach { (label, cmd) ->
+                        Surface(
+                            shape = RoundedCornerShape(12.dp), color = Palette.Card, border = BorderStroke(1.dp, Palette.Line),
+                            modifier = Modifier.fillMaxWidth().clickable(enabled = status != Status.WORKING) {
+                                choosingModel = false
+                                vm.runCommand(paneId, cmd)
+                            },
+                        ) {
+                            Column(Modifier.padding(horizontal = 12.dp, vertical = 9.dp)) {
+                                Text(label, color = Palette.Ink, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                                Text(cmd, color = Palette.Muted, fontFamily = Fonts.Mono, fontSize = 12.sp)
+                            }
+                        }
+                    }
+                    Text(
+                        "\"Open the picker\" sends the agent's own model command and shows the terminal, where you choose with the keys.",
+                        color = Palette.Muted, fontSize = 12.5.sp,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = status != Status.WORKING, onClick = {
+                    choosingModel = false
+                    vm.runCommand(paneId, ModelPresets.pickerCommand(pane.agent))
+                    fullTerminal = true
+                    vm.setKeysShown(true)
+                }) { Text("Open the picker") }
+            },
+            dismissButton = { TextButton(onClick = { choosingModel = false }) { Text("Cancel") } },
+        )
     }
 
     if (confirmCtrlC) {

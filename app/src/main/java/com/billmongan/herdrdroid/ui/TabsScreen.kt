@@ -1,5 +1,11 @@
 package com.billmongan.herdrdroid.ui
 
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.runtime.remember
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -84,6 +90,8 @@ fun TabsScreen(vm: AppViewModel) {
     }
 
     val panes = vm.panes
+    var forwardingResult by remember { mutableStateOf<String?>(null) }
+    val clipboard = LocalClipboardManager.current
 
     Column(Modifier.fillMaxSize().background(Palette.Ground).systemBarsPadding()) {
         Surface(color = Palette.Card, border = BorderStroke(1.dp, Palette.Line)) {
@@ -134,6 +142,28 @@ fun TabsScreen(vm: AppViewModel) {
             Modifier.fillMaxSize().padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
+            // Helpers that finished and were closed: their last reply, kept until dismissed.
+            if (vm.helperResults.isNotEmpty()) {
+                item(key = "_helpers") {
+                    Text("Helper results", color = Palette.Blue, fontSize = 13.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 4.dp))
+                }
+                items(vm.helperResults.reversed(), key = { "h:" + it.id }) { r ->
+                    Surface(shape = RoundedCornerShape(16.dp), color = Palette.Card, border = BorderStroke(1.dp, Palette.Blue)) {
+                        Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("${r.agent} · ${r.label}", color = Palette.Ink, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text("Task: " + r.task.lines().first(), color = Palette.Muted, fontSize = 12.5.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            Column(Modifier.heightIn(max = 260.dp).verticalScroll(rememberScrollState())) {
+                                MarkdownText(r.reply.ifBlank { "The helper finished without a written reply." }, 14f, vm.readingFont.family)
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                TextButton(onClick = { clipboard.setText(AnnotatedString(r.reply)) }) { Text("Copy") }
+                                TextButton(onClick = { forwardingResult = "${r.agent} (${r.label}) answered \"${r.task.lines().first().take(80)}\":\n\n${r.reply}" }) { Text("Send to…") }
+                                TextButton(onClick = { vm.dismissHelperResult(r) }) { Text("Dismiss") }
+                            }
+                        }
+                    }
+                }
+            }
             // Agents on the other watched servers that are waiting on you.
             val elsewhere = vm.fleetStates.values.flatMap { st -> st.panes.filter { it.status == Status.NEEDS_YOU }.map { st.server to it } }
             if (elsewhere.isNotEmpty() && filter != Filter.IDLE && filter != Filter.WORKING) {
@@ -188,8 +218,34 @@ fun TabsScreen(vm: AppViewModel) {
                     ) { vm.openPane(p.id) }
                 }
             }
+            // Every agent on the other watched servers, grouped by server; a tap switches servers.
+            vm.fleetStates.values.sortedBy { it.server.label.lowercase() }.forEach { st ->
+                val agents = st.panes.filter { it.agent != null && it.status != Status.NEEDS_YOU && filter.matches(it) }
+                if (agents.isEmpty()) return@forEach
+                item(key = "_srv:" + st.server.id) {
+                    Text("On ${st.server.label}", color = Palette.Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 10.dp))
+                }
+                items(agents, key = { "o:" + st.server.id + it.id }) { p ->
+                    Surface(
+                        shape = RoundedCornerShape(16.dp), color = Palette.Card, border = BorderStroke(1.dp, Palette.Line),
+                        modifier = Modifier.fillMaxWidth().clickable { vm.switchTo(st.server.id, p.id) },
+                    ) {
+                        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            AgentTile(p.initial, p.status, size = 32)
+                            Column(Modifier.weight(1f).padding(start = 10.dp)) {
+                                Text("${p.agentName} · ${p.folder}", color = Palette.Ink, fontWeight = FontWeight.SemiBold, fontSize = 14.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(p.title.trim().ifBlank { look(p.status).label }, color = Palette.Muted, fontSize = 12.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                            StatusPill(p.status)
+                        }
+                    }
+                }
+            }
             item { Spacer(Modifier.height(24.dp)) }
         }
+    }
+    forwardingResult?.let { t ->
+        ForwardPicker(vm, exclude = null, onPick = { to -> forwardingResult = null; vm.forward(t, null, to) }, onDismiss = { forwardingResult = null })
     }
 }
 

@@ -23,7 +23,11 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 
 /** A tap on a notification button, handed from the receiver to the view model. */
-data class NotifyAction(val serverId: String, val paneId: String, val keys: String, val pressEnter: Boolean, val question: String)
+data class NotifyAction(
+    val serverId: String, val paneId: String, val keys: String, val pressEnter: Boolean, val question: String,
+    /** True for the Esc button: [keys] is a key name sent with send-keys, not typed text. */
+    val isKey: Boolean = false,
+)
 
 /** Connects the notification buttons (a broadcast receiver) to the running app. */
 object AppBus {
@@ -71,7 +75,7 @@ object Notify {
         return PendingIntent.getActivity(ctx, id(serverId, paneId), i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
     }
 
-    /** An agent is waiting on a question; [choices] become up to two buttons. */
+    /** An agent is waiting on a question; [choices] become up to two buttons, plus Esc to decline. */
     fun needsYou(ctx: Context, serverId: String, serverLabel: String, paneId: String, agent: String, question: String, choices: List<Choice>) {
         if (!allowed(ctx)) return
         val b = NotificationCompat.Builder(ctx, ATTENTION)
@@ -89,6 +93,11 @@ object Notify {
             val pi = PendingIntent.getBroadcast(ctx, id(serverId, paneId) * 4 + n, i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
             b.addAction(0, c.label.take(24), pi)
         }
+        // Esc declines or dismisses the question, the same as the Esc key in the app.
+        val esc = Intent(ctx, ActionReceiver::class.java)
+            .putExtra(EXTRA_SERVER, serverId).putExtra(EXTRA_PANE, paneId)
+            .putExtra("keys", "esc").putExtra("isKey", true).putExtra("question", question)
+        b.addAction(0, "Esc", PendingIntent.getBroadcast(ctx, id(serverId, paneId) * 4 + 3, esc, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
         runCatching { NotificationManagerCompat.from(ctx).notify(id(serverId, paneId), b.build()) }
     }
 
@@ -118,7 +127,7 @@ class ActionReceiver : BroadcastReceiver() {
         AppBus.emit(
             NotifyAction(
                 server, pane, intent.getStringExtra("keys").orEmpty(), intent.getBooleanExtra("enter", false),
-                intent.getStringExtra("question").orEmpty(),
+                intent.getStringExtra("question").orEmpty(), intent.getBooleanExtra("isKey", false),
             ),
         )
         Notify.clear(context, server, pane)

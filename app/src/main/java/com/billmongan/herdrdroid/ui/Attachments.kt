@@ -101,7 +101,7 @@ fun ProvideAttachments(load: AttachmentLoader, content: @Composable () -> Unit) 
     CompositionLocalProvider(LocalAttachments provides host) { content() }
 }
 
-private fun shareBytes(context: Context, bytes: ByteArray, name: String, mime: String, open: Boolean) {
+internal fun shareBytes(context: Context, bytes: ByteArray, name: String, mime: String, open: Boolean) {
     val dir = File(context.cacheDir, "shared").apply { mkdirs() }
     // Old shared copies are cleared each time, so the cache never grows.
     dir.listFiles()?.forEach { it.delete() }

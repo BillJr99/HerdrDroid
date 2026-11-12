@@ -1,5 +1,15 @@
 package com.billmongan.herdrdroid.ui
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.OutlinedTextField
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import com.billmongan.herdrdroid.herdr.safeName
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -69,15 +79,39 @@ private fun size(b: Long) = when {
     else -> "$b B"
 }
 
-/** Browses the computer's folders over SSH; files open as code, Markdown, JSON, images or a download card. */
+/** What a long-press or a header button asked for, shown as a dialog until confirmed. */
+private sealed interface FileAsk {
+    data object NewFolder : FileAsk
+    data class Actions(val e: DirEntry) : FileAsk
+    data class Rename(val e: DirEntry) : FileAsk
+    data class Recycle(val e: DirEntry) : FileAsk
+}
+
+/**
+ * Browses the computer's folders over SSH; files open as code, Markdown, JSON, images or a
+ * download card. Upload and New folder add to the folder; a long-press renames an entry or moves
+ * it to ~/scratch (the recycle bin). Nothing is deleted, and each change is confirmed first.
+ */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun FilesScreen(vm: AppViewModel, path: String, back: Screen) {
     var entries by remember(path) { mutableStateOf<List<DirEntry>?>(null) }
     var problem by remember(path) { mutableStateOf<String?>(null) }
     var resolved by remember(path) { mutableStateOf(path) }
     var opened by remember(path) { mutableStateOf<DirEntry?>(null) }
-    LaunchedEffect(path) {
-        vm.listDir(path).onSuccess { e -> entries = e; resolved = e.firstOrNull()?.dir ?: path }.onFailure { problem = it.message }
+    var reload by remember(path) { mutableStateOf(0) }
+    var ask by remember(path) { mutableStateOf<FileAsk?>(null) }
+    var note by remember(path) { mutableStateOf<String?>(null) }
+    var busy by remember(path) { mutableStateOf(false) }
+    LaunchedEffect(path, reload) {
+        vm.listDir(path).onSuccess { e -> entries = e; problem = null; resolved = e.firstOrNull()?.dir ?: resolved }.onFailure { problem = it.message }
+    }
+    val finished: (Result<String>, String) -> Unit = { r, ok ->
+        busy = false
+        r.onSuccess { note = ok.replace("%s", it); reload++ }.onFailure { note = it.message }
+    }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) { busy = true; vm.uploadInto(resolved, uri) { finished(it, "Uploaded to %s") } }
     }
     Column(Modifier.fillMaxSize().background(Palette.Ground).systemBarsPadding()) {
         Row(Modifier.fillMaxWidth().padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -89,8 +123,28 @@ fun FilesScreen(vm: AppViewModel, path: String, back: Screen) {
             if (opened == null && resolved != "/") {
                 TextButton(onClick = { vm.screen = Screen.Files(resolved.substringBeforeLast('/').ifBlank { "/" }, back) }) { Text("Up") }
             }
+            if (opened == null && problem == null) {
+                Box {
+                    var menu by remember { mutableStateOf(false) }
+                    IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More", tint = Palette.Ink) }
+                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                        DropdownMenuItem(text = { Text("Upload a file here") }, onClick = { menu = false; picker.launch("*/*") })
+                        DropdownMenuItem(text = { Text("New folder") }, onClick = { menu = false; ask = FileAsk.NewFolder })
+                    }
+                }
+            }
         }
         HorizontalDivider(color = Palette.Line)
+        if (busy) LinearProgressIndicator(Modifier.fillMaxWidth(), color = Palette.Blue)
+        note?.let { n ->
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp).background(Palette.BlueSoft, RoundedCornerShape(10.dp)).padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(n, color = Palette.Blue, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                Text("OK", color = Palette.Blue, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, modifier = Modifier.clickable { note = null }.padding(start = 8.dp))
+            }
+        }
         val o = opened
         if (o != null) {
             FileView(vm, o)
@@ -103,9 +157,10 @@ fun FilesScreen(vm: AppViewModel, path: String, back: Screen) {
             else -> LazyColumn(Modifier.fillMaxSize()) {
                 items(entries!!, key = { it.name }) { e ->
                     Row(
-                        Modifier.fillMaxWidth().clickable {
-                            if (e.isDir) vm.screen = Screen.Files(e.path, back) else opened = e
-                        }.padding(horizontal = 16.dp, vertical = 11.dp),
+                        Modifier.fillMaxWidth().combinedClickable(
+                            onClick = { if (e.isDir) vm.screen = Screen.Files(e.path, back) else opened = e },
+                            onLongClick = { ask = FileAsk.Actions(e) },
+                        ).padding(horizontal = 16.dp, vertical = 11.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(if (e.isDir) "▸" else "·", color = if (e.isDir) Palette.Blue else Palette.Muted, fontSize = 16.sp, modifier = Modifier.width(22.dp))
@@ -116,6 +171,51 @@ fun FilesScreen(vm: AppViewModel, path: String, back: Screen) {
                 }
             }
         }
+    }
+    when (val a = ask) {
+        null -> Unit
+        is FileAsk.Actions -> AlertDialog(
+            onDismissRequest = { ask = null },
+            title = { Text(a.e.name, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+            text = { Text(if (a.e.isDir) "A folder in ${a.e.dir}" else "${size(a.e.size)} in ${a.e.dir}", color = Palette.Muted) },
+            confirmButton = {
+                Row {
+                    TextButton(onClick = { ask = FileAsk.Rename(a.e) }) { Text("Rename") }
+                    TextButton(onClick = { ask = FileAsk.Recycle(a.e) }) { Text("Move to ~/scratch") }
+                }
+            },
+            dismissButton = { TextButton(onClick = { ask = null }) { Text("Cancel") } },
+        )
+        is FileAsk.Rename, FileAsk.NewFolder -> {
+            val renaming = a as? FileAsk.Rename
+            var name by remember(a) { mutableStateOf(renaming?.e?.name ?: "") }
+            val ok = safeName(name) != null && name.trim() != renaming?.e?.name
+            AlertDialog(
+                onDismissRequest = { ask = null },
+                title = { Text(if (renaming != null) "Rename" else "New folder in ${resolved.substringAfterLast('/').ifBlank { "/" }}") },
+                text = { OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true, label = { Text("Name") }) },
+                confirmButton = {
+                    TextButton(enabled = ok, onClick = {
+                        ask = null; busy = true
+                        if (renaming != null) vm.renameFile(renaming.e.path, name.trim()) { finished(it, "Renamed to %s") }
+                        else vm.makeFolder(resolved, name.trim()) { finished(it, "Made the folder %s") }
+                    }) { Text(if (renaming != null) "Rename" else "Make it") }
+                },
+                dismissButton = { TextButton(onClick = { ask = null }) { Text("Cancel") } },
+            )
+        }
+        is FileAsk.Recycle -> AlertDialog(
+            onDismissRequest = { ask = null },
+            title = { Text("Move to ~/scratch?") },
+            text = { Text("${a.e.name} moves to ~/scratch/herdrdroid-recycled-<today>, the recycle bin. Nothing is deleted, and you can move it back.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    ask = null; busy = true
+                    vm.recycleFile(a.e.path) { finished(it, "Moved to %s") }
+                }) { Text("Move it") }
+            },
+            dismissButton = { TextButton(onClick = { ask = null }) { Text("Cancel") } },
+        )
     }
 }
 

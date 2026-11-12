@@ -7,7 +7,19 @@ import androidx.activity.viewModels
 import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_WEAK
 import androidx.biometric.BiometricManager.Authenticators.DEVICE_CREDENTIAL
 import androidx.biometric.BiometricPrompt
+import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Text
+import androidx.compose.material3.VerticalDivider
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.toArgb
 import androidx.core.content.ContextCompat
@@ -46,7 +58,27 @@ class MainActivity : FragmentActivity() {
                         isAppearanceLightNavigationBars = !dark
                     }
                 }
-                when (val s = vm.screen) {
+                // A tablet, an unfolded phone or a wide window shows the list and the open agent
+                // side by side; a phone shows one at a time.
+                BoxWithConstraints(Modifier.fillMaxSize().background(Palette.Ground)) {
+                val wide = maxWidth >= 840.dp
+                val s0 = vm.screen
+                if (wide && (s0 == Screen.Tabs || s0 is Screen.Agent)) {
+                    BackHandler { if (s0 is Screen.Agent) vm.screen = Screen.Tabs else vm.disconnect() }
+                    Row(Modifier.fillMaxSize()) {
+                        Box(Modifier.weight(0.42f).fillMaxHeight()) { TabsScreen(vm) }
+                        VerticalDivider(color = Palette.Line)
+                        Box(Modifier.weight(0.58f).fillMaxHeight()) {
+                            if (s0 is Screen.Agent) {
+                                androidx.compose.runtime.key(s0.paneId) { AgentScreen(vm, s0.paneId) }
+                            } else {
+                                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                    Text("Choose an agent on the left.", color = Palette.Muted, fontSize = 16.sp)
+                                }
+                            }
+                        }
+                    }
+                } else when (val s = vm.screen) {
                     Screen.Servers -> ServersScreen(vm, ::unlock)
                     is Screen.EditServer -> {
                         BackHandler { vm.screen = Screen.Servers }
@@ -76,6 +108,11 @@ class MainActivity : FragmentActivity() {
                         BackHandler { vm.screen = s.back }
                         SettingsScreen(vm, s.back)
                     }
+                    is Screen.History -> {
+                        BackHandler { vm.screen = if (s.session != null) Screen.History(s.paneId) else Screen.Agent(s.paneId) }
+                        com.billmongan.herdrdroid.ui.HistoryScreen(vm, s.paneId, s.session)
+                    }
+                }
                 }
             }
         }

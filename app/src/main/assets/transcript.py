@@ -269,6 +269,15 @@ def newest(paths):
     return max(paths, key=os.path.getmtime) if paths else None
 
 
+PIN = {}  # set by main(): {"pin": file} or {"pin_sid": id, "db": path} to read a past session
+
+
+def pinned(default):
+    """The pinned session's log when one was asked for (history view), otherwise [default]."""
+    p = PIN.get("pin")
+    return p if p and os.path.isfile(p) else default
+
+
 SKIP_USER = ("<system-reminder>", "<environment_context>", "<user_instructions>", "<permissions", "# AGENTS.md",
              "<local-command-caveat>", "Caveat: ", "<task-notification>", "<turn_aborted>")
 
@@ -297,7 +306,7 @@ def user_items(key, text, out):
 
 def claude(cwd, cur):
     slug = re.sub(r"[^A-Za-z0-9]", "-", cwd)
-    path = newest(glob.glob(os.path.join(HOME, ".claude", "projects", slug, "*.jsonl")))
+    path = pinned(newest(glob.glob(os.path.join(HOME, ".claude", "projects", slug, "*.jsonl"))))
     if not path:
         return None
     recs, ncur, reset, more = read_jsonl(path, cur)
@@ -365,6 +374,7 @@ def codex(cwd, cur):
             continue
     if path is None or (cur.get("file") and cur["file"] != path and os.path.getmtime(cur["file"]) > os.path.getmtime(path)):
         path = path or cur.get("file")
+    path = pinned(path)
     if not path:
         return None
     recs, ncur, reset, more = read_jsonl(path, cur)
@@ -421,7 +431,7 @@ def pi(cwd, cur, root=(".pi", "agent")):
     files = []
     for d in names:
         files += glob.glob(os.path.join(HOME, *root, "sessions", d, "*.jsonl"))
-    path = newest(files)
+    path = pinned(newest(files))
     if not path:
         return None
     recs, ncur, reset, more = read_jsonl(path, cur)
@@ -461,7 +471,7 @@ def pi(cwd, cur, root=(".pi", "agent")):
 
 def grok(cwd, cur):
     d = os.path.join(HOME, ".grok", "sessions", urllib.parse.quote(cwd, safe=""))
-    path = newest(glob.glob(os.path.join(d, "*", "chat_history.jsonl")))
+    path = pinned(newest(glob.glob(os.path.join(d, "*", "chat_history.jsonl"))))
     if not path:
         return None
     recs, ncur, reset, more = read_jsonl(path, cur)
@@ -502,6 +512,7 @@ def copilot(cwd, cur):
                     best = f
         except Exception:
             continue
+    best = pinned(best)
     if not best:
         return None
     recs, ncur, reset, more = read_jsonl(best, cur)
@@ -555,6 +566,8 @@ def opencode(cwd, cur):
             continue
         if row and (best is None or row[2] > best[3]):
             best = (db, row[0], row[1], row[2])
+    if PIN.get("pin_sid") and PIN.get("db"):
+        best = (PIN["db"], PIN["pin_sid"], None, 0)
     if not best:
         return None
     db, sid, title, _ = best
@@ -628,6 +641,8 @@ def hermes(cwd, cur):
         "select id, title from sessions where source in ('cli', 'tui', 'local') and coalesce(archived, 0) = 0 "
         "and coalesce(hidden, 0) = 0 and (cwd = ? or cwd is null) "
         "order by coalesce(last_activity_at, started_at) desc limit 1", (cwd,)).fetchone()
+    if PIN.get("pin_sid"):
+        row = (PIN["pin_sid"], None)
     if not row:
         c.close()
         return None
@@ -703,6 +718,112 @@ def fetch_image(path, off, idx):
     done({"ok": True, "mime": got[0], "data": got[1]})
 
 
+def first_user_text(path):
+    """The first thing you said in a JSONL session log, for the history list."""
+    try:
+        with open(path, "rb") as f:
+            for n, line in enumerate(f):
+                if n > 400:
+                    break
+                try:
+                    r = json.loads(line)
+                except Exception:
+                    continue
+                cands = []
+                m = r.get("message") if isinstance(r.get("message"), dict) else None
+                p = r.get("payload") if isinstance(r.get("payload"), dict) else None
+                if m and m.get("role") == "user" and r.get("type") in (None, "user", "message") and not r.get("isMeta"):
+                    cands.append(text_of(m.get("content")))
+                elif p and p.get("type") == "message" and p.get("role") == "user":
+                    cands.append(text_of(p.get("content")))
+                elif r.get("type") == "user" and not r.get("synthetic_reason"):
+                    cands.append(text_of(r.get("content")))
+                elif r.get("type") == "user.message":
+                    cands.append(text_of((r.get("data") or {}).get("content")))
+                for t in cands:
+                    t = (t or "").strip()
+                    if t and not t.startswith(SKIP_USER) and not t.startswith("<"):
+                        return first_line(t, 120)
+    except Exception:
+        pass
+    return None
+
+
+def list_sessions(agent, cwd):
+    """Past sessions for this agent and folder, newest first: [{ref, db?, when, title, kb}]."""
+    out = []
+
+    def files(fs):
+        for f in fs:
+            try:
+                st = os.stat(f)
+            except Exception:
+                continue
+            out.append({"ref": f, "when": int(st.st_mtime), "kb": st.st_size // 1024, "title": None})
+
+    if agent == "claude":
+        files(glob.glob(os.path.join(HOME, ".claude", "projects", re.sub(r"[^A-Za-z0-9]", "-", cwd), "*.jsonl")))
+    elif agent in ("pi", "omp"):
+        root = (".pi", "agent") if agent == "pi" else (".omp", "agent")
+        names = ["--" + cwd.strip("/").replace("/", "-") + "--"]
+        if cwd.startswith(HOME + "/"):
+            names.append("-" + cwd[len(HOME) + 1:].replace("/", "-"))
+        for d in names:
+            files(glob.glob(os.path.join(HOME, *root, "sessions", d, "*.jsonl")))
+    elif agent == "grok":
+        files(glob.glob(os.path.join(HOME, ".grok", "sessions", urllib.parse.quote(cwd, safe=""), "*", "chat_history.jsonl")))
+    elif agent == "codex":
+        fs = sorted(glob.glob(os.path.join(HOME, ".codex", "sessions", "*", "*", "*", "*.jsonl")), key=os.path.getmtime, reverse=True)[:300]
+        mine = []
+        for f in fs:
+            try:
+                with open(f, "rb") as fh:
+                    if (json.loads(fh.readline() or b"{}").get("payload") or {}).get("cwd") == cwd:
+                        mine.append(f)
+            except Exception:
+                pass
+        files(mine)
+    elif agent == "copilot":
+        mine = []
+        for f in glob.glob(os.path.join(HOME, ".copilot", "session-state", "*", "events.jsonl")):
+            try:
+                with open(f, "rb") as fh:
+                    if ((json.loads(fh.readline() or b"{}").get("data") or {}).get("context") or {}).get("cwd") == cwd:
+                        mine.append(f)
+            except Exception:
+                pass
+        files(mine)
+    elif agent == "opencode":
+        dbs = [os.path.join(HOME, ".local", "share", "opencode", "opencode.db")] + glob.glob(os.path.join(HOME, ".local", "*", "data", "opencode", "opencode.db"))
+        for db in dbs:
+            if not os.path.isfile(db):
+                continue
+            try:
+                c = ro(db)
+                for sid, title, upd in c.execute("select id, title, time_updated from session_v2 where directory = ? and parent_id is null "
+                                                 "order by time_updated desc limit 60", (cwd,)):
+                    out.append({"ref": sid, "db": db, "when": int((upd or 0) / 1000) if (upd or 0) > 10**11 else int(upd or 0), "title": title, "kb": 0})
+                c.close()
+            except Exception:
+                pass
+    elif agent == "hermes":
+        db = os.path.join(HOME, ".hermes", "state.db")
+        if os.path.isfile(db):
+            c = ro(db)
+            for sid, title, when, n in c.execute(
+                    "select id, title, coalesce(last_activity_at, started_at), message_count from sessions "
+                    "where source in ('cli', 'tui', 'local') and (cwd = ? or cwd is null) and coalesce(hidden, 0) = 0 "
+                    "order by coalesce(last_activity_at, started_at) desc limit 60", (cwd,)):
+                out.append({"ref": sid, "db": db, "when": int(when or 0), "title": title, "kb": 0, "messages": n})
+            c.close()
+    out.sort(key=lambda s: s["when"], reverse=True)
+    out = out[:60]
+    for s in out:
+        if not s.get("title") and "db" not in s:
+            s["title"] = first_user_text(s["ref"])
+    return out
+
+
 def fetch_blob(db, h):
     """Print one OpenCode blob as {"mime", "data"} (base64)."""
     import base64
@@ -726,12 +847,21 @@ def main():
             fetch_image(sys.argv[2], sys.argv[3], json.loads(sys.argv[4]))
         except Exception as e:
             done({"ok": False, "why": "%s: %s" % (type(e).__name__, str(e)[:200])})
+    if len(sys.argv) > 3 and sys.argv[1] == "__sessions__":
+        try:
+            done({"ok": True, "sessions": list_sessions(sys.argv[2].lower(), sys.argv[3].rstrip("/") or "/")})
+        except Exception as e:
+            done({"ok": False, "why": "%s: %s" % (type(e).__name__, str(e)[:200])})
     agent = (sys.argv[1] if len(sys.argv) > 1 else "").lower()
     cwd = sys.argv[2] if len(sys.argv) > 2 else ""
     try:
         cur = json.loads(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else {}
     except Exception:
         cur = {}
+    # A history view pins one past session; the pin rides in the cursor.
+    for k in ("pin", "pin_sid", "db"):
+        if cur.get(k):
+            PIN[k] = cur[k]
     reader = READERS.get(agent)
     if reader is None or not cwd:
         done({"ok": False, "why": "no log reader for this agent"})
@@ -742,6 +872,8 @@ def main():
     if res is None:
         done({"ok": False, "why": "no session log found for this folder"})
     res.update({"ok": True, "src": agent})
+    if PIN and isinstance(res.get("cur"), dict):
+        res["cur"].update(PIN)  # later reads stay on the pinned session
     done(res)
 
 

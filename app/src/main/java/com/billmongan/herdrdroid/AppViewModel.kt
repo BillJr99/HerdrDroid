@@ -7,6 +7,10 @@ import com.billmongan.herdrdroid.fleet.Fleet
 import com.billmongan.herdrdroid.fleet.FleetState
 import com.billmongan.herdrdroid.herdr.Candidate
 import com.billmongan.herdrdroid.herdr.DirEntry
+import com.billmongan.herdrdroid.herdr.PastSession
+import com.billmongan.herdrdroid.herdr.forPhone
+import com.billmongan.herdrdroid.transcript.lastReply
+import com.billmongan.herdrdroid.transcript.toMarkdown
 import com.billmongan.herdrdroid.herdr.detectPrompt
 import com.billmongan.herdrdroid.herdr.rankCandidates
 import com.billmongan.herdrdroid.hermes.HermesChat
@@ -69,6 +73,8 @@ sealed interface Screen {
     data class Files(val path: String, val back: Screen) : Screen
     data object Dispatch : Screen
     data object Compare : Screen
+    /** The pane's past sessions; with [session] set, that one session, read-only. */
+    data class History(val paneId: String, val session: PastSession? = null) : Screen
 }
 
 /** Whether the open pane's conversation comes from the agent's own log (ON) or its screen (OFF). */
@@ -555,6 +561,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         quietly { it.panes() }?.let { fresh ->
             panes = fresh
             current?.let { s -> noticeChanges(s.id, s.label, fresh) { herdr } }
+            collectFinishedHelpers(fresh)
         }
     }
 
@@ -892,6 +899,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 keystoreKey = SshKeyVault::provider,
                 onSeen = { st -> noticeChanges(st.server.id, st.server.label, st.panes) { fleet?.herdr(st.server.id) } },
             ).also { fleet = it }
+            // Other servers are read every 5 seconds while alerts are on, 15 when only listed.
+            f.everyMs = if (watching) 5_000L else 15_000L
             f.watch(watchable())
         } else {
             fleet?.stop()
@@ -903,7 +912,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (watchJob?.isActive == true) return
         watchJob = viewModelScope.launch {
             while (isActive) {
-                delay(6_000)
+                delay(3_000)
                 // In front, the screens refresh panes themselves; behind, this keeps alerts coming.
                 if (!foreground && herdr != null) runCatching { refreshPanes() }
             }
@@ -952,15 +961,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val text = runCatching { h.read(a.paneId, 40) }.getOrNull() ?: return
         val now = detectPrompt(text, blocked = true)
         val same = now != null && now.question.filterNot { it.isWhitespace() } == a.question.filterNot { it.isWhitespace() } &&
-            now.choices.any { it.keys == a.keys }
+            (a.isKey || now.choices.any { it.keys == a.keys })
         if (!same) {
             Notify.needsYou(app, a.serverId, servers.firstOrNull { it.id == a.serverId }?.label ?: "", a.paneId, "The agent",
                 "The question changed before your answer arrived. Open the app to answer.", emptyList())
             return
         }
         runCatching {
-            h.sendText(a.paneId, a.keys)
-            if (a.pressEnter) h.sendKeys(a.paneId, "enter")
+            if (a.isKey) h.sendKeys(a.paneId, a.keys) else {
+                h.sendText(a.paneId, a.keys)
+                if (a.pressEnter) h.sendKeys(a.paneId, "enter")
+            }
         }
     }
 
@@ -1071,7 +1082,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val name = label.lowercase().replace(Regex("[^a-z0-9_-]"), "-").trim('-').take(32).let { if (it.firstOrNull()?.isLetter() == true) it else "a$it" }
                 val pane = h.startAgent(kind, cwd, label, name, mainWorkspace())
                 refreshPanes()
-                if (!task.isNullOrBlank()) pane(pane)?.let { sendMessage(it, task) }
+                if (!task.isNullOrBlank()) pane(pane)?.let {
+                    sendMessage(it, task)
+                    if (label.startsWith("helper-") && autoCloseHelpers) helperWatch[pane] = HelperRun(label, task, false)
+                }
                 openPane(pane)
             } finally {
                 starting = null
@@ -1089,6 +1103,97 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             h.closeTab(p.tabId)
             refreshPanes()
         }
+    }
+
+    // -- Helpers that finish -----------------------------------------------------------------------
+
+    private data class HelperRun(val label: String, val task: String, val sawWork: Boolean)
+
+    /** A finished helper's last reply, kept after its tab is closed. */
+    data class HelperResult(val id: Long, val label: String, val agent: String, val task: String, val reply: String)
+
+    private val helperWatch = mutableMapOf<String, HelperRun>()
+    var helperResults by mutableStateOf<List<HelperResult>>(emptyList())
+        private set
+    var autoCloseHelpers by mutableStateOf(prefs.autoCloseHelpers)
+        private set
+
+    fun changeAutoCloseHelpers(on: Boolean) {
+        autoCloseHelpers = on
+        prefs.autoCloseHelpers = on
+        if (!on) helperWatch.clear()
+    }
+
+    /**
+     * A helper started with a task is closed once it has worked and gone quiet: its last reply is
+     * read from its log into "Helper results" first. One that asks a question is left open.
+     */
+    private fun collectFinishedHelpers(fresh: List<Pane>) {
+        for ((id, run) in helperWatch.toMap()) {
+            val p = fresh.firstOrNull { it.id == id }
+            if (p == null) { helperWatch.remove(id); continue }
+            when {
+                p.status == Status.WORKING -> if (!run.sawWork) helperWatch[id] = run.copy(sawWork = true)
+                run.sawWork && (p.status == Status.DONE || p.status == Status.IDLE) -> {
+                    helperWatch.remove(id)
+                    viewModelScope.launch {
+                        val h = herdr ?: return@launch
+                        val r = runCatching { h.transcript(p, "", transcriptScript) }.getOrNull()
+                        val items = if (r?.ok == true) Transcript.merge(emptyList(), r.items, true) else emptyList()
+                        val reply = lastReply(items).ifBlank {
+                            runCatching { forPhone(h.read(p.id, 60)) }.getOrDefault("").trim()
+                        }
+                        helperResults = helperResults + HelperResult(System.nanoTime(), run.label, p.agentName, run.task, reply)
+                        runCatching { h.closeTab(p.tabId) }
+                        refreshPanes()
+                    }
+                }
+            }
+        }
+    }
+
+    fun dismissHelperResult(r: HelperResult) {
+        helperResults = helperResults - r
+    }
+
+    // -- History and export -------------------------------------------------------------------------
+
+    /** The open pane's agent's past sessions in its folder, newest first. */
+    suspend fun pastSessions(paneId: String): Result<List<PastSession>> {
+        val p = pane(paneId) ?: return Result.failure(IllegalStateException("That pane is gone."))
+        val agent = p.agent ?: return Result.failure(IllegalStateException("No agent in this pane."))
+        val h = herdr ?: return Result.failure(IllegalStateException("Not connected."))
+        return runCatching { h.sessions(agent, p.cwd, transcriptScript) }
+    }
+
+    /** One past session's conversation, read without touching the live one. */
+    suspend fun readPastSession(paneId: String, s: PastSession): Result<Pair<List<Item>, Boolean>> {
+        val p = pane(paneId) ?: return Result.failure(IllegalStateException("That pane is gone."))
+        val h = herdr ?: return Result.failure(IllegalStateException("Not connected."))
+        return runCatching {
+            val r = h.transcript(p, s.pinCursor(), transcriptScript) ?: throw IllegalStateException("No agent in this pane.")
+            if (!r.ok) throw IllegalStateException(r.why ?: "That session couldn't be read.")
+            Transcript.merge(emptyList(), r.items, true) to r.more
+        }
+    }
+
+    /** Shares a conversation as a Markdown file. */
+    fun exportMarkdown(context: android.content.Context, title: String, agent: String, items: List<Item>) {
+        val md = toMarkdown(title, agent, items)
+        val name = title.replace(Regex("[^A-Za-z0-9._-]+"), "-").trim('-').take(60).ifBlank { "conversation" } + ".md"
+        com.billmongan.herdrdroid.ui.shareBytes(context, md.toByteArray(), name, "text/markdown", open = false)
+    }
+
+    // -- Model -------------------------------------------------------------------------------------
+
+    /** Types a model command into an idle pane and presses Enter (the agent's own picker answers it). */
+    fun runCommand(paneId: String, command: String) {
+        val p = pane(paneId) ?: return
+        if (p.status == Status.WORKING) {
+            error = "${p.agentName} is working. Change the model once it's done."
+            return
+        }
+        answer(paneId, command, pressEnter = true)
     }
 
     // -- Forwarding -------------------------------------------------------------------------------
@@ -1121,6 +1226,39 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun openFiles(path: String) {
         screen = Screen.Files(path, screen)
     }
+
+    /** Runs one file action and reports the outcome to [done] on the main thread. */
+    private fun fileAction(label: String, done: (Result<String>) -> Unit, run: suspend (Herdr) -> String) {
+        viewModelScope.launch {
+            val h = herdr
+            val r = if (h == null) Result.failure(IllegalStateException("Not connected.")) else runCatching { run(h) }
+            done(r.recoverCatching { throw IllegalStateException("$label: ${it.message}") })
+        }
+    }
+
+    /** Copies a file picked on the phone into [dir] on the computer. */
+    fun uploadInto(dir: String, uri: Uri, done: (Result<String>) -> Unit) {
+        val app = getApplication<Application>()
+        fileAction("Couldn't upload", done) { h ->
+            val (name, bytes) = withContext(Dispatchers.IO) {
+                val n = app.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                    if (c.moveToFirst()) c.getString(0) else null
+                } ?: "upload"
+                n to (app.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: ByteArray(0))
+            }
+            if (bytes.size > 50 * 1024 * 1024) throw IllegalArgumentException("That file is over 50 MB.")
+            h.uploadTo(dir, name, bytes)
+        }
+    }
+
+    fun makeFolder(dir: String, name: String, done: (Result<String>) -> Unit) =
+        fileAction("Couldn't make the folder", done) { h -> h.makeFolder(dir, name); name }
+
+    fun renameFile(path: String, name: String, done: (Result<String>) -> Unit) =
+        fileAction("Couldn't rename", done) { h -> h.rename(path, name); name }
+
+    fun recycleFile(path: String, done: (Result<String>) -> Unit) =
+        fileAction("Couldn't move it to ~/scratch", done) { h -> h.recycle(path) }
 
     // ---- Messages ---------------------------------------------------------------------------
 

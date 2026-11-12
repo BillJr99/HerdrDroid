@@ -102,9 +102,10 @@ fun SettingsScreen(vm: AppViewModel, back: Screen) {
                 }
                 Text(
                     "While connected, the app keeps watching in the background (a quiet \"Watching\" notification shows) " +
-                        "and alerts you when an agent starts waiting on you, with its first two choices as buttons. A " +
-                        "button answers only if the same question is still on screen. Alerts are made on the phone from " +
-                        "what it reads over SSH; nothing is set up on the computer. Watching uses some battery.",
+                        "and alerts you when an agent starts waiting on you, with its first two choices and Esc as buttons. A " +
+                        "button answers only if the same question is still on screen. Agents are checked every 3 seconds. " +
+                        "Alerts are made on the phone from what it reads over SSH; nothing is set up or left running on the " +
+                        "computer. Watching uses some battery.",
                     color = Palette.Muted, fontSize = 13.sp,
                 )
                 Row(Modifier.fillMaxWidth().clickable { vm.changeAlertDone(!vm.alertDone) }, verticalAlignment = Alignment.CenterVertically) {
@@ -117,7 +118,20 @@ fun SettingsScreen(vm: AppViewModel, back: Screen) {
                 }
                 Text(
                     "Servers that sign in without asking (a key or a saved password; fingerprint-locked ones once " +
-                        "unlocked) are checked every 15 seconds, so the tab list can show what needs you everywhere.",
+                        "unlocked) are checked every 5 seconds with alerts on (15 without), and their agents are listed " +
+                        "under the ones on this server.",
+                    color = Palette.Muted, fontSize = 13.sp,
+                )
+            }
+            Section("Helpers") {
+                Row(Modifier.fillMaxWidth().clickable { vm.changeAutoCloseHelpers(!vm.autoCloseHelpers) }, verticalAlignment = Alignment.CenterVertically) {
+                    Text("Close helpers when they finish", color = Palette.Ink, fontSize = 16.sp, modifier = Modifier.weight(1f))
+                    Switch(checked = vm.autoCloseHelpers, onCheckedChange = { vm.changeAutoCloseHelpers(it) })
+                }
+                Text(
+                    "A helper started from Hand out with a task closes its tab once it has worked and gone quiet. Its last " +
+                        "reply is kept under \"Helper results\" at the top of the tab list, to copy or send on. A helper " +
+                        "that asks you something stays open.",
                     color = Palette.Muted, fontSize = 13.sp,
                 )
             }

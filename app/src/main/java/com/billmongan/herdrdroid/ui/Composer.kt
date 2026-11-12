@@ -259,3 +259,20 @@ fun ComposerChip(label: String, on: Boolean, onClick: () -> Unit) {
         )
     }
 }
+
+/**
+ * One-tap model choices for each agent, as the command its own program takes. Agents whose
+ * command opens a picker instead get only [pickerCommand].
+ */
+object ModelPresets {
+    fun forAgent(agent: String?): List<Pair<String, String>> = when (agent?.lowercase()) {
+        "claude" -> listOf("Opus" to "/model opus", "Sonnet" to "/model sonnet", "Haiku" to "/model haiku", "Default" to "/model default")
+        else -> emptyList()
+    }
+
+    /** The command that opens the agent's own model picker. */
+    fun pickerCommand(agent: String?): String = when (agent?.lowercase()) {
+        "opencode" -> "/models"
+        else -> "/model"
+    }
+}

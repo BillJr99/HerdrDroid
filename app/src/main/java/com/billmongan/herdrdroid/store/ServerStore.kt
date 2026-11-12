@@ -142,6 +142,10 @@ class AppPrefs(context: Context) {
         get() = prefs.getBoolean("alertDone", true)
         set(v) = prefs.edit().putBoolean("alertDone", v).apply()
 
+    var autoCloseHelpers: Boolean
+        get() = prefs.getBoolean("autoCloseHelpers", true)
+        set(v) = prefs.edit().putBoolean("autoCloseHelpers", v).apply()
+
     var darkPalette: String
         get() = prefs.getString("darkPalette", "STANDARD") ?: "STANDARD"
         set(v) = prefs.edit().putString("darkPalette", v).apply()
