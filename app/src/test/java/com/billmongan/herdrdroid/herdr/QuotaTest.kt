@@ -318,4 +318,15 @@ GEMINI 4 ARGON
         val omp = " π > ⬢ llmproxy/flagship > 📁 ~/agents/omp ▶────41%────╎────128K─\n╰─"
         assertEquals("llmproxy/flagship", footerModel("omp", omp))
     }
+
+    @Test fun antigravityModelUnderAnyNameAndWithoutEffort() {
+        assertEquals("agy", canonicalAgent("antigravity-cli"))
+        assertEquals("agy", canonicalAgent("Antigravity"))
+        assertEquals("claude", canonicalAgent("claude-code"))
+        assertEquals("hermes", canonicalAgent("hermes"))
+        val withEffort = "? for shortcuts                                Gemini 4 Argon · medium"
+        assertEquals("Gemini 4 Argon · medium", footerModel(canonicalAgent("antigravity-cli"), withEffort))
+        val bare = "? for shortcuts                                Gemini 4 Argon"
+        assertEquals("Gemini 4 Argon", footerModel("agy", bare))
+    }
 }

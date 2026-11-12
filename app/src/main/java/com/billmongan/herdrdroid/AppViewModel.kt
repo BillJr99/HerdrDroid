@@ -627,12 +627,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private val missingModelLogged = mutableSetOf<String>()
+
     suspend fun refreshPreviews() {
         val ids = panes.map { it.id }
         quietly { it.previews(ids) }?.let { peeks ->
             previews = peeks.mapValues { it.value.line }
             val seen = peeks.mapNotNull { (id, peek) ->
-                footerModel(panes.firstOrNull { it.id == id }?.agent, peek.tail)?.let { id to it }
+                val agent = panes.firstOrNull { it.id == id }?.agent
+                val m = footerModel(agent, peek.tail)
+                // Once per pane: a card that should show a model but whose footer gave none. The
+                // footer's last line goes in the diagnostic log (a status line, nothing secret).
+                if (m == null && agent != null && agent !in setOf("claude") && missingModelLogged.add("${current?.id}|$id")) {
+                    val last = peek.tail.lines().map { it.trimEnd() }.lastOrNull { it.isNotBlank() }.orEmpty()
+                    com.billmongan.herdrdroid.diag.DiagLog.log("model", "no model in the footer of $agent pane $id; last line: \"${last.trim().take(120)}\"")
+                }
+                m?.let { id to it }
             }
             if (seen.isNotEmpty()) models = models + seen
         }

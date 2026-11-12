@@ -329,6 +329,8 @@ fun footerModel(agent: String?, screen: String): String? {
         // "? for shortcuts            Gemini 4 Argon · medium"
         // The text on its left changes, and is blank while a dialog covers the screen.
         "agy", "antigravity" -> lastMatch(Regex("""^(?:.*\S\s{3,}|\s*)([^\s│][^│·]*·\s*(?:minimal|low|medium|high|xhigh|max))\s*$"""))
+            // A footer with the model alone: "? for shortcuts            Gemini 4 Argon"
+            ?: lastMatch(Regex("""for shortcuts\s{3,}(\S.*?)\s*$"""))
         // "╰────── Grok 4.7 (high) ─╯"
         "grok" -> lastMatch(Regex("""─\s+([^─│]+?)\s+─+╯"""))
         // "☤ gpt-6.1-sol │ ~124K/500K │ ..."

@@ -104,7 +104,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
                 id = p.getString("pane_id"),
                 tabId = p.optString("tab_id"),
                 workspaceId = p.optString("workspace_id"),
-                agent = p.optString("agent").takeIf { !p.isNull("agent") && it.isNotBlank() },
+                agent = p.optString("agent").takeIf { !p.isNull("agent") && it.isNotBlank() }?.let(::canonicalAgent),
                 status = when (p.optString("agent_status")) {
                     "blocked" -> Status.NEEDS_YOU
                     "working" -> Status.WORKING
@@ -547,4 +547,20 @@ fun screenLinks(text: String): ScreenLinks {
     val codes = Regex("""(?<![A-Za-z0-9-])[A-Z0-9]{4}(?:-[A-Z0-9]{4}){1,2}(?![A-Za-z0-9-])""").findAll(tail)
         .map { it.value }.filter { c -> c.any { it.isDigit() } || c.any { it.isLetter() } }.distinct().toList().takeLast(2)
     return ScreenLinks(urls, codes)
+}
+
+/**
+ * The app's name for an agent kind. herdr versions and integrations name some agents differently
+ * (Antigravity's integration is "antigravity-cli"), and every per-agent rule in the app (footer
+ * models, usage checks, commands, log readers) keys on these names.
+ */
+fun canonicalAgent(name: String): String = when (val n = name.trim().lowercase()) {
+    "agy", "antigravity", "antigravity-cli", "antigravity_cli", "gemini-antigravity" -> "agy"
+    "claude-code", "claude_code", "claudecode" -> "claude"
+    "codex-cli", "openai-codex" -> "codex"
+    "grok-cli", "grok-build" -> "grok"
+    "copilot-cli", "github-copilot", "gh-copilot" -> "copilot"
+    "oh-my-pi", "ohmypi" -> "omp"
+    "pi-agent", "pi-coding-agent" -> "pi"
+    else -> n
 }
