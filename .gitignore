@@ -7,3 +7,5 @@ local.properties
 .idea/
 keystore/signing.properties
 .kotlin/
+keystore/*.jks
+keystore/*.keystore
