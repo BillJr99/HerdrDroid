@@ -305,11 +305,13 @@ class HermesChat(ssh: HerdrSsh, private val scope: CoroutineScope) {
                 val id = payload.optString("tool_id")
                 val name = payload.optString("name")
                 val args = payload.optJSONObject("args")
+                val sent = if (Regex("send|message|notify|reply|deliver").containsMatchIn(name.lowercase())) mediaIn(args) else emptyList()
                 items = items + ToolItem(
                     key = "t$id", id = id, name = name,
-                    title = toolTitle(name, payload.optString("context"), args),
+                    title = if (sent.isNotEmpty()) "Sent " + sent.joinToString(", ") { it.substringAfterLast('/') } else toolTitle(name, payload.optString("context"), args),
                     kind = toolKind(name), input = args?.toString(1)?.take(4000),
                     diff = diffOf(args), patch = null, out = null, state = ToolState.RUNNING,
+                    attach = sent,
                 )
             }
             "tool.complete" -> {
@@ -447,6 +449,17 @@ class HermesChat(ssh: HerdrSsh, private val scope: CoroutineScope) {
             "shell" -> "$ " + (first ?: name)
             else -> if (first != null) "$name · $first" else name
         }
+    }
+
+    /** MEDIA:/path tags in a tool's arguments (send_message): files Hermes is handing over. */
+    private fun mediaIn(args: JSONObject?): List<String> {
+        args ?: return emptyList()
+        val out = mutableListOf<String>()
+        for (k in args.keys()) {
+            val v = args.opt(k) as? String ?: continue
+            Regex("""MEDIA:((?:~/|/)[^\s"'`<>]+)""").findAll(v).forEach { out += it.groupValues[1].trimEnd('.', ',', ';', ':', ')', ']') }
+        }
+        return out.distinct()
     }
 
     private fun diffOf(args: JSONObject?): DiffData? {

@@ -57,6 +57,8 @@ data class ToolItem(
     val path: String? = null,
     /** An image file the call produced, shown in the chat. */
     val image: String? = null,
+    /** Files the call handed to the user (SendUserFile), shown in the chat as attachments. */
+    val attach: List<String> = emptyList(),
 ) : Item
 
 /** A MIME type from a file name, for attachments known only by path. */
@@ -155,6 +157,7 @@ object Transcript {
                     },
                     path = j.str("path"),
                     image = j.str("image"),
+                    attach = j.optJSONArray("attach")?.let { a -> (0 until a.length()).mapNotNull { a.optString(it).ifBlank { null } } }.orEmpty(),
                 )
             }
             else -> null
@@ -250,6 +253,11 @@ fun rowsOf(items: List<Item>): List<Row> {
             // An image file a tool wrote is shown in the chat after that stretch of work.
             if (it is ToolItem && it.image != null && it.state == ToolState.OK) {
                 produced += ImageItem("img:" + it.key, path = it.image, mime = mimeFor(it.image))
+            }
+            if (it is ToolItem) {
+                it.attach.forEachIndexed { i, f ->
+                    produced += ImageItem("att:${it.key}:$i", path = f, mime = mimeFor(f), name = f.substringAfterLast('/'))
+                }
             }
         } else {
             flush()

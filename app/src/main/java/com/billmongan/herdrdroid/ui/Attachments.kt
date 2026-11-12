@@ -288,12 +288,21 @@ private fun ViewerButton(label: String, onClick: () -> Unit) {
 }
 
 private val PATH = Regex(
-    """(?<![\w/~.])((?:~/|/)(?:[\w.@+-]+/)*[\w.@+-]*[\w@+-]\.(?:png|jpe?g|gif|webp|bmp|svg|pdf|csv|md|txt|json|html?|zip|apk|docx|xlsx|pptx|log|py|kt|ts|js|sh|ya?ml|toml))(?![\w/])""",
+    """(?<![\w/~.])((?:~/|/)(?:[\w.@+-]+/)*[\w.@+-]*[\w@+-]\.(?:png|jpe?g|gif|webp|bmp|svg|pdf|csv|md|txt|json|html?|zip|apk|docx|xlsx|pptx|log|py|kt|ts|js|sh|ya?ml|toml|mp3|ogg|oga|opus|wav|m4a|flac|mp4|mov|webm|mkv|tar|gz|tgz|7z|rtf|odt|ods|epub|ics|xml|heic|tiff?|ipynb|tex|doc|xls|ppt))(?![\w/])""",
     RegexOption.IGNORE_CASE,
 )
 
-/** File paths mentioned in a reply, at most six, so they can be opened from the chat. */
-fun mentionedFiles(text: String): List<String> = PATH.findAll(text).map { it.groupValues[1] }.distinct().take(6).toList()
+/** Hermes's file delivery tag: MEDIA:/absolute/path, any file type. */
+private val MEDIA = Regex("""(?<![\w"'`])MEDIA:((?:~/|/)[^\s"'`<>]+)""")
+
+/**
+ * Files a reply mentions, at most six, so they can be opened from the chat: MEDIA:/path tags
+ * (Hermes's way of sending a file, any type) and plain paths with a known file extension.
+ */
+fun mentionedFiles(text: String): List<String> {
+    val media = MEDIA.findAll(text).map { it.groupValues[1].trimEnd('.', ',', ';', ':', ')', ']', '}', '"', '\'') }
+    return (media + PATH.findAll(text).map { it.groupValues[1] }).distinct().take(6).toList()
+}
 
 /** Chips for the files a reply mentions; tapping one fetches it from the computer. */
 @Composable

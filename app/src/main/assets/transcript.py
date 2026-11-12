@@ -162,6 +162,29 @@ def tool_item(key, call_id, name, args, out=None, err=None, state="run"):
         hint = a.get("description") or a.get("query") or a.get("pattern") or path or a.get("url") or a.get("name")
         item["title"] = name + (": " + first_line(hint, 60) if hint else "")
         item["kind"] = "other"
+    # Files a tool hands to the user become attachments: Claude Code's SendUserFile (and other
+    # send/share/upload tools) by their file arguments, and Hermes's send_message (or any tool)
+    # by the MEDIA:/path tags in its arguments.
+    got = []
+    if re.search(r"send.*file|share|upload|attach|deliver", low):
+        files = a.get("files") or a.get("paths") or a.get("attachments") or ([path] if path else [])
+        if isinstance(files, str):
+            files = [files]
+        for f in files if isinstance(files, list) else []:
+            fp = f.get("path") or f.get("file") if isinstance(f, dict) else f
+            if isinstance(fp, str) and fp.strip():
+                got.append(fp.strip())
+    # MEDIA tags count only in a messaging tool (Hermes's send_message), never in an edit or a
+    # command that merely contains the text "MEDIA:".
+    if re.search(r"send|message|notify|reply|deliver", low) and low not in SHELL | EDIT | WRITE:
+        for v in a.values():
+            if isinstance(v, str) and "MEDIA:" in v:
+                got += [m.rstrip(".,;:)]}\"'") for m in re.findall(r"MEDIA:((?:~/|/)[^\s\"'`<>]+)", v)]
+    got = list(dict.fromkeys(g for g in got if g.startswith(("/", "~/")) and len(g) > 2))
+    if got:
+        item["attach"] = got[:10]
+        item["title"] = "Sent " + ", ".join(base(f) for f in got[:3]) + (" and more" if len(got) > 3 else "")
+        item["kind"] = "other"
     if path and item.get("kind") in ("edit", "read"):
         item["path"] = str(path)
         if item["kind"] == "edit" and re.search(r"\.(png|jpe?g|gif|webp|bmp)$", str(path), re.I):

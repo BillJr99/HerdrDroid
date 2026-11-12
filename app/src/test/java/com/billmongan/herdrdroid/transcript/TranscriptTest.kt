@@ -159,4 +159,26 @@ class TranscriptTest {
         assertEquals(listOf("/w/chart.png", "~/out/report.pdf"), com.billmongan.herdrdroid.ui.mentionedFiles((l.last() as TextItem).text))
         assertEquals("application/pdf", mimeFor("x/y.PDF"))
     }
+
+    @Test
+    fun sentFilesBecomeAttachmentCards() {
+        val l = Transcript.merge(emptyList(), listOf(
+            j("""{"k":"t","t":"tool","id":"s","name":"SendUserFile","title":"Sent HerdrDroid-0.3.4.apk","kind":"other","attach":["/s/HerdrDroid-0.3.4.apk"],"state":"run"}"""),
+            j("""{"k":"r","t":"result","ref":"s","out":"1 file delivered"}"""),
+            j("""{"k":"a","t":"text","text":"Sent."}"""),
+        ), true)
+        val rows = rowsOf(l)
+        val card = rows.mapNotNull { (it as? OneRow)?.item as? ImageItem }.single()
+        assertEquals("/s/HerdrDroid-0.3.4.apk", card.path)
+        assertEquals("application/vnd.android.package-archive", card.mime)
+        assertEquals("HerdrDroid-0.3.4.apk", card.label)
+        assertEquals(false, card.isImage)
+    }
+
+    @Test
+    fun mediaTagsAndMoreExtensionsAreAttachments() {
+        val m = com.billmongan.herdrdroid.ui.mentionedFiles("Here it is MEDIA:/home/user/out/voice.ogg, and the build at /tmp/x/HerdrDroid-0.3.4.apk.")
+        assertEquals(listOf("/home/user/out/voice.ogg", "/tmp/x/HerdrDroid-0.3.4.apk"), m)
+        assertEquals(listOf("/w/data.bin"), com.billmongan.herdrdroid.ui.mentionedFiles("MEDIA:/w/data.bin"))
+    }
 }
