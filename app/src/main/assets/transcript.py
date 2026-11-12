@@ -300,6 +300,16 @@ def user_items(key, text, out, via=None):
         if body:
             out.append({"k": key, "t": "note", "text": first_line(body, 200)})
         return
+    # A shell command typed with "!" (Claude Code's bash mode): shown as you typed it, and its
+    # output as a note.
+    m = re.match(r"<bash-input>(.*?)</bash-input>", text, re.S)
+    if m:
+        out.append({"k": key, "t": "user", "text": "! " + m.group(1).strip()})
+        return
+    if text.startswith("<bash-stdout>") or text.startswith("<bash-stderr>"):
+        body = (re.sub(r"</?bash-std(out|err)>", "\n", text)).strip()
+        out.append({"k": key, "t": "note", "text": first_line(body, 200) if body else "(no output)"})
+        return
     if text.startswith("[Request interrupted"):
         out.append({"k": key, "t": "note", "text": "Interrupted"})
         return

@@ -940,7 +940,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         // Each message sent from the phone stays on screen until the agent's log has it.
         val mine = pendingSends.filter { it.paneId == paneId }
         if (mine.isNotEmpty()) {
-            val seen = mine.filter { p -> sameTextCount(p.text) > p.seenBefore }
+            // A slash command is logged as a note naming it ("/model opus" shows as "model opus" or
+            // "/model opus"), not as your message: a note that came in after it was sent clears it.
+            val notes = transcriptItems.takeLast(30).filterIsInstance<com.billmongan.herdrdroid.transcript.NoteItem>().map { norm(it.text.removePrefix("/")) }
+            val seen = mine.filter { p ->
+                sameTextCount(p.text) > p.seenBefore ||
+                    (p.text.startsWith("/") && notes.any { n -> n.startsWith(norm(p.text.removePrefix("/").substringBefore(' '))) })
+            }
             if (seen.isNotEmpty()) pendingSends = pendingSends - seen.toSet()
         }
     }
