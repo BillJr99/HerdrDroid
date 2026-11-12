@@ -400,6 +400,39 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
         return dest
     }
 
+    /**
+     * The model each Claude pane last answered with, read from the end of its newest session log
+     * ("message":{"model":"claude-…"}), since Claude's footer doesn't show it. One short python3
+     * run for all of them; nothing is written. Panes without a log are left out.
+     */
+    suspend fun logModels(panes: List<Pane>): Map<String, String> {
+        val want = panes.filter { it.agent?.lowercase() == "claude" && it.cwd.isNotBlank() }
+        if (want.isEmpty()) return emptyMap()
+        val py = """
+import glob, json, os, re, sys
+out = {}
+for arg in sys.argv[1:]:
+    pid, cwd = arg.split("\t", 1)
+    d = os.path.join(os.path.expanduser("~"), ".claude", "projects", re.sub(r"[^A-Za-z0-9]", "-", cwd))
+    fs = glob.glob(os.path.join(d, "*.jsonl"))
+    if not fs:
+        continue
+    f = max(fs, key=os.path.getmtime)
+    with open(f, "rb") as h:
+        h.seek(max(0, os.path.getsize(f) - 262144))
+        tail = h.read().decode("utf-8", "replace")
+    ms = [m for m in re.findall(r'"model"\s*:\s*"([^"]+)"', tail) if m.startswith("claude")]
+    if ms:
+        out[pid] = ms[-1]
+print(json.dumps(out))
+""".trimIndent()
+        val args = want.joinToString(" ") { shq(it.id + "\t" + it.cwd) }
+        val r = ssh.execInput("$PY - $args", py.toByteArray())
+        if (r.exit != 0) return emptyMap()
+        val o = runCatching { JSONObject(r.out.trim()) }.getOrNull() ?: return emptyMap()
+        return o.keys().asSequence().associateWith { prettyClaudeModel(o.getString(it)) }
+    }
+
     /** Confirms the command exists before the app shows any tabs. */
     suspend fun check() {
         val r = ssh.exec("$herdr --version")

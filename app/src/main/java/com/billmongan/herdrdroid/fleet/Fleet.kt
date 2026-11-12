@@ -46,7 +46,7 @@ class Fleet(
         states = states.filterKeys { it in ids }
         servers.forEach { s ->
             if (s.id !in clients && s.fingerprint != null) {
-                val ssh = HerdrSsh(s.host, s.port, s.user, credentials(s), s.fingerprint, keystoreKey)
+                val ssh = HerdrSsh(s.host, s.port, s.user, credentials(s), s.fingerprint, keystoreKey, s.wsUrl?.takeIf { s.overWebSocket })
                 clients[s.id] = ssh to Herdr(ssh, s.herdrPath)
             }
         }

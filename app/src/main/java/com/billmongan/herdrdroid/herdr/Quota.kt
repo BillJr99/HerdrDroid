@@ -138,9 +138,12 @@ object QuotaProfiles {
             // Not while working: Claude queues a command typed mid-turn and opens the screen only
             // when the turn ends, after the app has stopped watching, which left it stuck open
             // (2026-11-12). Idle panes only, like every other agent.
+            // No /model: its picker could stay open when it was drawn differently than expected
+            // (2026-11-12, twice). Claude's model now comes from its own session log
+            // (Herdr.logModels), so nothing but /usage is ever typed into a Claude pane.
             setOf("claude"), "/usage", listOf("esc"), 3_000,
             openMarker = Regex("Esc to cancel", RegexOption.IGNORE_CASE),
-            infoCommand = "/model",
+            // Kept only to recognize a model picker left open (and close it); never typed.
             parseInfo = ::claudeModelScreen,
             everyMinutes = 10,
         ),
@@ -309,6 +312,13 @@ fun ago(at: Long, now: Long = System.currentTimeMillis()): String {
  * The active model, read from the footer each agent draws at the bottom of its screen. Claude Code
  * has no model in its footer, so its model comes from /status during the usage check instead.
  */
+/** "claude-opus-5-5" as "Opus 5.5"; anything else as it is. */
+fun prettyClaudeModel(id: String): String {
+    val m = Regex("""^claude-(opus|sonnet|haiku|fable)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?(\[1m])?$""").find(id.trim()) ?: return id.trim()
+    val (family, major, minor, big) = m.destructured
+    return family.replaceFirstChar { it.uppercase() } + " " + major + (if (minor.isNotEmpty()) ".$minor" else "") + if (big.isNotEmpty()) " (1M)" else ""
+}
+
 fun footerModel(agent: String?, screen: String): String? {
     val lines = screen.lines().map { it.trimEnd() }.filter { it.isNotBlank() }.takeLast(12)
     fun lastMatch(r: Regex) = lines.asReversed().firstNotNullOfOrNull { r.find(it)?.groupValues?.get(1)?.trim() }
@@ -328,6 +338,8 @@ fun footerModel(agent: String?, screen: String): String? {
             ?.let { Regex("""\s{3,}(\S.*?)\s*$""").find(it)?.groupValues?.get(1) }
         // "┃  Build · Big Pickle OpenCode"
         "opencode" -> lastMatch(Regex("""┃\s+(?:Build|Plan|\w+)\s+·\s+(.+?)\s*$"""))
+        // " π > ⬢ llmproxy/flagship > 📁 ~/agents/omp ▶───41%───"
+        "omp" -> lastMatch(Regex("""⬢\s+(\S+)"""))
         // "0.0%/128k (auto)          (compat-llmproxy) llmproxy/flagship__free"
         "pi" -> lastMatch(Regex("""\)\s+(\S+/\S+)\s*$""")) ?: lastMatch(Regex("""%/\S+.*\s{3,}(\S+)\s*$"""))
         else -> null

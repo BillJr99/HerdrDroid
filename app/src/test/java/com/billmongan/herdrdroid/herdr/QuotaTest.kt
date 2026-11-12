@@ -243,7 +243,8 @@ GEMINI 4 ARGON
         val picked = "   ❯ 2.  Opus 5.5 ✔               For complex work and everyday tasks\n   ◐ High effort ←/→ to adjust"
         assertEquals(PaneInfo("Opus 5.5", "high"), claudeModelScreen(picked))
         val p = QuotaProfiles.forAgent("claude")!!
-        assertEquals("/model", p.infoCommand)
+        // /model is never typed into Claude (its model comes from the session log).
+        assertEquals(null, p.infoCommand)
         assertEquals(false, p.whileWorking)
         assertTrue(p.openMarker!!.containsMatchIn("   Esc to cancel"))
         assertTrue(p.screenOpen(screen))
@@ -306,5 +307,15 @@ GEMINI 4 ARGON
         assertEquals(0, ompUsage("""{"reports":[],"accountsWithoutUsage":[]}""").size)
         val p = QuotaProfiles.forAgent("omp")!!
         assertEquals("omp usage --json", p.cliCommand)
+    }
+
+    @Test fun claudeAndOmpModelsForTheCards() {
+        assertEquals("Opus 5.5", prettyClaudeModel("claude-opus-5-5"))
+        assertEquals("Fable 5.1", prettyClaudeModel("claude-fable-5-1"))
+        assertEquals("Sonnet 4", prettyClaudeModel("claude-sonnet-4-20250514"))
+        assertEquals("Opus 5.5 (1M)", prettyClaudeModel("claude-opus-5-5[1m]"))
+        assertEquals("something-else", prettyClaudeModel("something-else"))
+        val omp = " π > ⬢ llmproxy/flagship > 📁 ~/agents/omp ▶────41%────╎────128K─\n╰─"
+        assertEquals("llmproxy/flagship", footerModel("omp", omp))
     }
 }

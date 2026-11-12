@@ -464,6 +464,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      *  so it is replaced before any poll can stall on it. */
     fun onForeground() {
         foreground = true
+        if (watchOthers && herdr != null) fleet?.watch(watchable())
         if (herdr != null && backgroundAt > 0 && System.currentTimeMillis() - backgroundAt > 8_000) {
             ssh?.reset()
             linkLost(null)
@@ -473,6 +474,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun onBackground() {
         foreground = false
         backgroundAt = System.currentTimeMillis()
+        // Other servers reached over a WebSocket are let go too (watchable() now leaves them out).
+        fleet?.watch(watchable())
         // Close a WebSocket connection right away: holding it open would keep that server awake.
         if (current?.overWebSocket == true) {
             hermes?.close()
@@ -633,6 +636,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             if (seen.isNotEmpty()) models = models + seen
         }
+        // Claude's footer has no model, so its cards take it from Claude's own session log.
+        quietly { it.logModels(panes) }?.let { fromLog -> if (fromLog.isNotEmpty()) models = models + fromLog }
     }
 
     suspend fun readPane(paneId: String) {
@@ -946,7 +951,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** The other servers that can be watched without asking for anything. */
     private fun watchable(): List<Server> = servers.filter {
         it.id != current?.id && it.fingerprint != null && canSignInSilently(it) && (!it.biometric || it.id in unlockedThisSession) &&
-            !it.overWebSocket // never kept open in the background, so not watched from another server
+            // A WebSocket server is watched only while the app is in front, so it can sleep otherwise.
+            (!it.overWebSocket || foreground)
     }
 
     /** Starts the other-server watcher and, with alerts on, the background loop and service. */

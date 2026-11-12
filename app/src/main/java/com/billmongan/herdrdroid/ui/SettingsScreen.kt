@@ -124,7 +124,8 @@ fun SettingsScreen(vm: AppViewModel, back: Screen) {
                 Text(
                     "Servers that sign in without asking (a key or a saved password; fingerprint-locked ones once " +
                         "unlocked) are checked every 5 seconds with alerts on (15 without), and their agents are listed " +
-                        "under the ones on this server.",
+                        "under the ones on this server. A server reached over a WebSocket is watched only while the " +
+                        "app is open, so it can sleep when you're away.",
                     color = Palette.Muted, fontSize = 13.sp,
                 )
             }
