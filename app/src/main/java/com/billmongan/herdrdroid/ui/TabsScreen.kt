@@ -336,7 +336,7 @@ private fun PaneCard(
                 quota?.let { QuotaLine(it, Modifier.padding(top = 2.dp)) }
                 if (underneath > 0 || checking || onClose != null) {
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                        if (underneath > 0) Text("$underneath active underneath", color = Palette.Blue, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                        if (underneath > 0) Text("$underneath subagent${if (underneath == 1) "" else "s"} running", color = Palette.Blue, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
                         if (checking) Text("Checking usage…", color = Palette.Muted, fontSize = 12.sp, maxLines = 1)
                         if (onClose != null) {
                             Text(

@@ -1071,7 +1071,7 @@ def pane_work(pane, agent, cwd):
 
 
 def work_counts(panes):
-    """For the cards: active subagents and running background tasks per pane (cheap)."""
+    """For the cards: running subagents per pane (cheap)."""
     import time
     now = time.time()
     table = proc_table()
@@ -1082,10 +1082,10 @@ def work_counts(panes):
             by_pane.setdefault(p, set()).add(pid)
     out = {}
     for pane, agent, cwd in panes:
+        # The card's count: subagents still running (shells are counted on the agent's own screen).
         n = 0
         if agent == "claude" and cwd:
             n += sum(1 for s in claude_subagents(cwd, now) if s["active"])
-            n += sum(1 for t in claude_tasks(cwd, now, open_files_of(by_pane.get(pane, ()))) if t["running"])
         out[pane] = n
     return {"ok": True, "counts": out}
 
