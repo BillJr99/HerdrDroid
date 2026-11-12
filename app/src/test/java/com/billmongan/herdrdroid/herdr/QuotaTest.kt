@@ -329,4 +329,10 @@ GEMINI 4 ARGON
         val bare = "? for shortcuts                                Gemini 4 Argon"
         assertEquals("Gemini 4 Argon", footerModel("agy", bare))
     }
+
+    @Test fun hermesModelWithEitherSeparator() {
+        val now = " ☤ gpt-6.1-sol · ctx -- · [░░░░░░░░░░] -- · 13h 44m · ⏲ 0s · ~/Documents/workspace                    / commands · @ files · ! shell"
+        assertEquals("gpt-6.1-sol", footerModel("hermes", now))
+        assertEquals("gpt-6.1-sol", footerModel("hermes", " ☤ gpt-6.1-sol │ ~124K/500K │ 3m"))
+    }
 }

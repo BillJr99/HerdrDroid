@@ -333,8 +333,8 @@ fun footerModel(agent: String?, screen: String): String? {
             ?: lastMatch(Regex("""for shortcuts\s{3,}(\S.*?)\s*$"""))
         // "╰────── Grok 4.7 (high) ─╯"
         "grok" -> lastMatch(Regex("""─\s+([^─│]+?)\s+─+╯"""))
-        // "☤ gpt-6.1-sol │ ~124K/500K │ ..."
-        "hermes" -> lastMatch(Regex("""☤\s+([^│]+?)\s+│"""))
+        // "☤ gpt-6.1-sol │ ~124K/500K │ ..." (older) or "☤ gpt-6.1-sol · ctx -- · [░░░] -- · ..." (2026-11-12)
+        "hermes" -> lastMatch(Regex("""☤\s+([^│·\s][^│·]*?)\s+[│·]"""))
         // "... / commands · tab next tab        GPT-5.6 Terra"
         "copilot" -> lines.lastOrNull { it.contains("/ commands") }
             ?.let { Regex("""\s{3,}(\S.*?)\s*$""").find(it)?.groupValues?.get(1) }
