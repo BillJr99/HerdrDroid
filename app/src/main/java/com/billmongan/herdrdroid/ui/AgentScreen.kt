@@ -1,5 +1,7 @@
 package com.billmongan.herdrdroid.ui
 
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -614,22 +616,41 @@ private fun PromptCard(
                 Icon(Icons.Filled.Warning, contentDescription = null, tint = Palette.OrangeInk, modifier = Modifier.size(18.dp))
                 Text("$agent is asking".uppercase(), color = Palette.OrangeInk, fontSize = 13.sp, fontWeight = FontWeight.Bold)
             }
-            Text(p.question, fontSize = 19.sp, fontWeight = FontWeight.SemiBold, lineHeight = 25.sp, color = Palette.Ink)
-            p.choices.forEachIndexed { i, c ->
-                val what = if (c.pressEnter) "sends ${c.keys} + Enter" else "sends ${c.keys}"
-                if (i == 0) {
-                    Button(
-                        onClick = { onChoice(c) },
-                        shape = RoundedCornerShape(14.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Palette.Blue, contentColor = Palette.OnBlue),
-                        modifier = Modifier.fillMaxWidth().height(52.dp),
-                    ) { Text("${c.label}  ·  $what") }
-                } else {
-                    OutlinedButton(
-                        onClick = { onChoice(c) },
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier.fillMaxWidth().height(52.dp),
-                    ) { Text("${c.label}  ·  $what", color = Palette.Ink) }
+            // The question and its choices scroll inside the card when they don't all fit, so the
+            // keys below stay in reach. Each choice grows to fit its whole label.
+            val maxHeight = (LocalConfiguration.current.screenHeightDp * 0.55f).dp
+            Column(
+                Modifier.fillMaxWidth().heightIn(max = maxHeight).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(p.question, fontSize = 19.sp, fontWeight = FontWeight.SemiBold, lineHeight = 25.sp, color = Palette.Ink)
+                p.choices.forEachIndexed { i, c ->
+                    val what = if (c.pressEnter) "sends ${c.keys} + Enter" else "sends ${c.keys}"
+                    val first = i == 0
+                    val body: @Composable () -> Unit = {
+                        Column(Modifier.fillMaxWidth()) {
+                            Text(c.label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, lineHeight = 20.sp,
+                                color = if (first) Palette.OnBlue else Palette.Ink)
+                            Text(what, fontSize = 12.sp, color = if (first) Palette.OnBlue.copy(alpha = 0.8f) else Palette.Muted)
+                        }
+                    }
+                    val pad = PaddingValues(horizontal = 16.dp, vertical = 10.dp)
+                    if (first) {
+                        Button(
+                            onClick = { onChoice(c) },
+                            shape = RoundedCornerShape(14.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Palette.Blue, contentColor = Palette.OnBlue),
+                            contentPadding = pad,
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                        ) { body() }
+                    } else {
+                        OutlinedButton(
+                            onClick = { onChoice(c) },
+                            shape = RoundedCornerShape(14.dp),
+                            contentPadding = pad,
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                        ) { body() }
+                    }
                 }
             }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {

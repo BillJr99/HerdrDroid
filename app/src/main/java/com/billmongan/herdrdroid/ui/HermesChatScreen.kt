@@ -1,5 +1,6 @@
 package com.billmongan.herdrdroid.ui
 
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -243,11 +244,11 @@ private fun ApprovalCard(a: Ask.Approval, onChoice: (String) -> Unit) {
                     Button(
                         onClick = { onChoice(c) }, shape = RoundedCornerShape(14.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = Palette.Blue, contentColor = Palette.OnBlue),
-                        modifier = Modifier.fillMaxWidth().height(48.dp),
-                    ) { Text(approvalLabel(c)) }
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                    ) { Text(approvalLabel(c), textAlign = androidx.compose.ui.text.style.TextAlign.Center) }
                 } else {
-                    OutlinedButton(onClick = { onChoice(c) }, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth().height(48.dp)) {
-                        Text(approvalLabel(c), color = Palette.Ink)
+                    OutlinedButton(onClick = { onChoice(c) }, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                        Text(approvalLabel(c), color = Palette.Ink, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                     }
                 }
             }
