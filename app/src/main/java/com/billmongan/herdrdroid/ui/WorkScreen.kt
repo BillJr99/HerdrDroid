@@ -87,6 +87,26 @@ private fun WorkHeader(title: String, subtitle: String, onBack: () -> Unit, acti
     HorizontalDivider(color = Palette.Line)
 }
 
+@Composable
+private fun ProcRow(p: ProcInfo, keep: Set<Int>, agent: String?, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 6.dp, horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Spacer(Modifier.width((p.depth.coerceAtMost(8) * 10).dp))
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(p.name, color = Palette.Ink, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1)
+                if (p.pid in keep) Text("  ${if (p.depth == 0) "pane shell" else if (p.name.contains(agent ?: "\u0000", true)) "the agent" else "launcher"}",
+                    color = Palette.Muted, fontSize = 12.sp, maxLines = 1)
+            }
+            Text(p.cmd, color = Palette.Muted, fontFamily = Fonts.Mono, fontSize = 11.5.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+        Text("${ageText(p.ageSec)}\n${p.cpu}% · ${p.rssKb / 1024} MB", color = Palette.Muted, fontSize = 11.sp, lineHeight = 14.sp,
+            modifier = Modifier.padding(start = 8.dp), softWrap = false)
+    }
+}
+
 private fun ago(epochSec: Long): String = ageText((System.currentTimeMillis() / 1000 - epochSec).coerceAtLeast(0)) + " ago"
 
 @Composable
@@ -107,47 +127,49 @@ private fun WorkList(vm: AppViewModel, paneId: String) {
             return@Column
         }
         val keep = remember(w) { protectedPids(w, pane?.agent) }
+        val activeProcs = remember(w) { w.activeProcs(pane?.agent) }
+        val activePids = activeProcs.map { it.pid }.toSet()
+        val ended = vm.endedProcs[paneId].orEmpty()
+        val doneSubs = w.subagents.filter { !it.active }
+        val doneTasks = w.tasks.filter { !it.running }
+        val other = w.procs.filter { it.pid !in activePids }
+        var showOther by remember { mutableStateOf(false) }
         LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             item { Spacer(Modifier.height(6.dp)) }
-            if (w.subagents.isNotEmpty()) {
-                item { SectionTitle("Subagents", "${w.activeSubagents} running · ${w.subagents.size} in this session") }
-                items(w.subagents, key = { "s:" + it.id }) { a ->
-                    WorkRow(
-                        dot = if (a.active) Palette.Blue else Palette.Muted,
-                        title = a.title,
-                        detail = (if (a.active) "Running" else "Done") + " · updated ${ago(a.updated)} · ${a.kb} KB",
-                    ) { vm.screen = Screen.Work(paneId, "sub", a.file, a.title) }
+            // ---- Active ----------------------------------------------------------------------
+            item { SectionTitle("Active", "${w.activeCount(pane?.agent)} still running") }
+            if (w.activeCount(pane?.agent) == 0) item { Text("Nothing is running underneath right now.", color = Palette.Muted, fontSize = 13.sp) }
+            items(w.subagents.filter { it.active }, key = { "s:" + it.id }) { a ->
+                WorkRow(Palette.Blue, a.title, "Subagent · running · updated ${ago(a.updated)} · ${a.kb} KB") { vm.screen = Screen.Work(paneId, "sub", a.file, a.title) }
+            }
+            items(w.tasks.filter { it.running }, key = { "t:" + it.id }) { t ->
+                WorkRow(Palette.Blue, t.title, "Background task · running · output ${t.kb} KB") { vm.screen = Screen.Work(paneId, "task", t.file, t.title) }
+            }
+            items(activeProcs, key = { "ap:" + it.pid }) { p -> ProcRow(p, keep, pane?.agent) { asking = p } }
+            // ---- Finished --------------------------------------------------------------------
+            if (doneSubs.isNotEmpty() || doneTasks.isNotEmpty() || ended.isNotEmpty()) {
+                item { SectionTitle("Finished", "${doneSubs.size + doneTasks.size + ended.size} in this session") }
+                items(ended, key = { "e:" + it.proc.pid + ":" + it.endedAt }) { e ->
+                    WorkRow(Palette.Muted, e.proc.name + "  " + e.proc.cmd, "Process · ended ${ago(e.endedAt / 1000)} · ran at least ${ageText(e.proc.ageSec)}") {}
+                }
+                items(doneTasks, key = { "t:" + it.id }) { t ->
+                    WorkRow(Palette.Muted, t.title, "Background task · finished ${ago(t.updated)} · output ${t.kb} KB") { vm.screen = Screen.Work(paneId, "task", t.file, t.title) }
+                }
+                items(doneSubs, key = { "s:" + it.id }) { a ->
+                    WorkRow(Palette.Muted, a.title, "Subagent · done · ${ago(a.updated)} · ${a.kb} KB") { vm.screen = Screen.Work(paneId, "sub", a.file, a.title) }
                 }
             }
-            if (w.tasks.isNotEmpty()) {
-                item { SectionTitle("Background tasks", "${w.runningTasks} running · ${w.tasks.size} in this session") }
-                items(w.tasks, key = { "t:" + it.id }) { t ->
-                    WorkRow(
-                        dot = if (t.running) Palette.Blue else Palette.Muted,
-                        title = t.title,
-                        detail = (if (t.running) "Running" else "Finished") + " · output ${t.kb} KB · ${ago(t.updated)}",
-                    ) { vm.screen = Screen.Work(paneId, "task", t.file, t.title) }
-                }
-            }
-            item { SectionTitle("Processes", "${w.procs.size} in this pane · tap one for details") }
-            items(w.procs, key = { "p:" + it.pid }) { p ->
-                Row(
-                    Modifier.fillMaxWidth().clickable { asking = p }.padding(vertical = 6.dp, horizontal = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Spacer(Modifier.width((p.depth.coerceAtMost(8) * 12).dp))
+            // ---- Everything else in the pane (its shell, the agent, helpers it keeps) ----------
+            item {
+                Row(Modifier.fillMaxWidth().clickable { showOther = !showOther }.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(p.name, color = Palette.Ink, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1)
-                            if (p.pid in keep) Text("  ${if (p.depth == 0) "pane shell" else if (p.name.contains(pane?.agent ?: "\u0000", true)) "the agent" else "launcher"}",
-                                color = Palette.Muted, fontSize = 12.sp, maxLines = 1)
-                        }
-                        Text(p.cmd, color = Palette.Muted, fontFamily = Fonts.Mono, fontSize = 11.5.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text("Other processes", color = Palette.Ink, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                        Text("${other.size} · the pane's shell, the agent, and helpers it runs all the time", color = Palette.Muted, fontSize = 12.sp)
                     }
-                    Text("${ageText(p.ageSec)}\n${p.cpu}% · ${p.rssKb / 1024} MB", color = Palette.Muted, fontSize = 11.sp, lineHeight = 14.sp,
-                        modifier = Modifier.padding(start = 8.dp), softWrap = false)
+                    Text(if (showOther) "▾" else "▸", color = Palette.Muted, fontSize = 18.sp)
                 }
             }
+            if (showOther) items(other, key = { "p:" + it.pid }) { p -> ProcRow(p, keep, pane?.agent) { asking = p } }
             item { Spacer(Modifier.height(24.dp)) }
         }
     }

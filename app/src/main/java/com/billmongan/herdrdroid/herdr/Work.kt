@@ -21,6 +21,19 @@ data class WorkInfo(val procs: List<ProcInfo>, val subagents: List<SubagentInfo>
     val runningTasks get() = tasks.count { it.running }
     /** Processes other than the pane's shell, a launcher and the agent: what the agent started. */
     fun childProcs(agent: String?): Int = (protectedPids(this, agent)).let { keep -> procs.count { it.pid !in keep } }
+
+    /**
+     * Processes the agent started for its work, still running: younger than the agent by more
+     * than two minutes, so helpers it started with itself (MCP servers and the like) don't count.
+     */
+    fun activeProcs(agent: String?): List<ProcInfo> {
+        val keep = protectedPids(this, agent)
+        val agentAge = procs.filter { it.pid in keep }.minOfOrNull { if (it.depth == 0) Long.MAX_VALUE else it.ageSec } ?: Long.MAX_VALUE
+        return procs.filter { it.pid !in keep && (agentAge == Long.MAX_VALUE || it.ageSec < agentAge - 120) }
+    }
+
+    /** What is still active: running subagents, running background tasks, and active processes. */
+    fun activeCount(agent: String?): Int = activeSubagents + runningTasks + activeProcs(agent).size
 }
 
 /** New output of a background task since a byte offset. */

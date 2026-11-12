@@ -37,6 +37,7 @@ class Fleet(
     private var job: Job? = null
     private var watched = mapOf<String, Server>()
     var everyMs = 15_000L
+    private val detected = mutableSetOf<String>()
 
     /** Starts (or retargets) watching [servers]; the rest are dropped. */
     fun watch(servers: List<Server>) {
@@ -47,14 +48,28 @@ class Fleet(
         servers.forEach { s ->
             if (s.id !in clients && s.fingerprint != null) {
                 val ssh = HerdrSsh(s.host, s.port, s.user, credentials(s), s.fingerprint, keystoreKey, s.wsUrl?.takeIf { s.overWebSocket })
-                clients[s.id] = ssh to Herdr(ssh, s.herdrPath)
+                // A server set to herdr-core is watched through hc; Automatic ones through herdr
+                // (a watcher never asks which one).
+                clients[s.id] = ssh to Herdr(ssh, s.herdrPath, if (s.backend == "core") com.billmongan.herdrdroid.herdr.Backend.CORE else com.billmongan.herdrdroid.herdr.Backend.TUI)
             }
         }
         if (job?.isActive != true && clients.isNotEmpty()) {
             job = scope.launch {
                 while (isActive && clients.isNotEmpty()) {
-                    for ((id, pair) in clients.toMap()) {
+                    for ((id, pair0) in clients.toMap()) {
                         val server = watched[id] ?: continue
+                        // An Automatic server is looked at once to see which herdr it runs.
+                        var pair = pair0
+                        if (server.backend == null && id !in detected) {
+                            val d = runCatching { com.billmongan.herdrdroid.herdr.detectBackend(pair.first, server.herdrPath) }.getOrNull()
+                            if (d != null) {
+                                detected += id
+                                if (d.coreRunning && !d.tuiRunning) {
+                                    pair = pair.first to Herdr(pair.first, server.herdrPath, com.billmongan.herdrdroid.herdr.Backend.CORE, d.hcPath)
+                                    clients[id] = pair
+                                }
+                            }
+                        }
                         val st = try {
                             FleetState(server, pair.second.panes(), null, System.currentTimeMillis())
                         } catch (c: CancellationException) {

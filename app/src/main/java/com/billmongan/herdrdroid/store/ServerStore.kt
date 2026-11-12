@@ -48,6 +48,8 @@ data class Server(
      * Such a server signs in with its key only and is never held open in the background.
      */
     val wsUrl: String? = null,
+    /** "tui" (herdr), "core" (herdr-core), or null to use whichever is running. */
+    val backend: String? = null,
 ) {
     val overWebSocket: Boolean get() = !wsUrl.isNullOrBlank()
     val label: String get() = name.ifBlank { "$user@$host" }
@@ -66,6 +68,7 @@ data class Server(
         .put("keyPassCipher", keyPassCipher ?: JSONObject.NULL)
         .put("textSize", textSize.toDouble())
         .put("wsUrl", wsUrl ?: JSONObject.NULL)
+        .put("backend", backend ?: JSONObject.NULL)
 
     companion object {
         private fun JSONObject.str(k: String) = optString(k).takeIf { !isNull(k) && it.isNotBlank() }
@@ -86,6 +89,7 @@ data class Server(
             keyPassCipher = o.str("keyPassCipher"),
             textSize = o.optDouble("textSize", 12.5).toFloat(),
             wsUrl = o.str("wsUrl"),
+            backend = o.str("backend"),
         )
     }
 }

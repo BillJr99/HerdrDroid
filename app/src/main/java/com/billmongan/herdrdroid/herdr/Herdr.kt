@@ -67,17 +67,69 @@ private val GLYPHS = listOf(
 fun forPhone(s: String): String = GLYPHS.fold(stripAnsi(s)) { acc, (from, to) -> acc.replace(from, to) }
 
 /** Every herdr action the app performs, as one command line over SSH. */
-class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
+/**
+ * Which herdr a computer runs: the herdr TUI's server (`herdr`), or herdr-core (`hc`, the server
+ * behind Herdr App). The two don't share agents; a server in the app talks to one of them.
+ */
+enum class Backend { TUI, CORE }
+
+/** What a computer has: which herdr is installed and which one's server is running. */
+data class Detected(val tuiInstalled: Boolean, val tuiRunning: Boolean, val coreInstalled: Boolean, val coreRunning: Boolean, val hcPath: String?)
+
+class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend = Backend.TUI, hcPath: String? = null) {
     // The path is the user's setting; "~" stays unquoted so the remote shell expands it.
     private val herdr = herdrPath.trim().ifBlank { "herdr" }
+    private val hc = hcPath?.takeIf { it.isNotBlank() }?.let(::shq) ?: "\"\$(command -v hc || echo \"\$HOME/.local/bin/hc\")\""
+    private val core get() = backend == Backend.CORE
 
     private fun cmd(vararg args: String) = herdr + " " + args.joinToString(" ") { shq(it) }
+    private fun hcCmd(vararg args: String) = hc + " " + args.joinToString(" ") { shq(it) }
+
+    /** herdr-core's usage checks can't type a command without pressing Enter, so they are skipped. */
+    val canProbeScreens: Boolean get() = !core
 
     /**
      * The system python3 by its absolute path when it is there: a non-interactive SSH command
      * doesn't read ~/.bashrc, and `python3` on an interactive PATH may be a virtualenv's.
      */
     private val PY = "\"\$([ -x /usr/bin/python3 ] && echo /usr/bin/python3 || echo python3)\""
+
+    /**
+     * The transcript reader sent compressed (about a quarter of its size): python3 inflates it
+     * from standard input and runs it, with the same arguments as before.
+     */
+    private val PYZ = "$PY -c 'import sys,zlib;exec(compile(zlib.decompress(sys.stdin.buffer.read()),\"transcript.py\",\"exec\"))'"
+    private var zFrom: ByteArray? = null
+    private var zTo: ByteArray? = null
+
+    private fun z(script: ByteArray): ByteArray {
+        if (zFrom === script) return zTo!!
+        val out = java.io.ByteArrayOutputStream()
+        java.util.zip.DeflaterOutputStream(out, java.util.zip.Deflater(9)).use { it.write(script) }
+        return out.toByteArray().also { zFrom = script; zTo = it }
+    }
+
+    /** A command on the send lane: it doesn't wait behind reads. */
+    private suspend fun runNow(command: String): String {
+        val r = ssh.execNow(command)
+        if (r.exit != 0) {
+            val msg = (r.err.ifBlank { r.out }).trim().lines().lastOrNull { it.isNotBlank() } ?: "exit ${r.exit}"
+            throw HerdrError(msg, r.exit)
+        }
+        return r.out
+    }
+
+    /**
+     * Streams what the agent adds to its log, for up to [seconds]: the reader's follow mode checks
+     * about three times a second and prints a line whenever something changed. Returns when the
+     * stream ends; [onRead] gets each read.
+     */
+    suspend fun followTranscript(pane: Pane, cursor: String, script: ByteArray, seconds: Int, onRead: suspend (TranscriptRead) -> Unit) {
+        val agent = pane.agent ?: return
+        ssh.execStream("$PYZ __follow__ ${shq(agent)} ${shq(pane.cwd)} ${shq(cursor)} $seconds", z(script)) { line ->
+            runCatching { Transcript.parseRead(line) }.getOrNull()?.let { onRead(it) }
+        }
+    }
 
     private suspend fun run(command: String): String {
         val r = ssh.exec(command)
@@ -89,6 +141,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
     }
 
     suspend fun panes(): List<Pane> {
+        if (core) return corePanes(run(hcCmd("ls", "--json")))
         // Panes and tab labels in one round trip; a tab list failure only loses the labels.
         val both = run(cmd("pane", "list") + "; echo @@herdrdroid-tabs@@; " + cmd("tab", "list") + " 2>/dev/null || true")
         val paneJson = both.substringBefore("@@herdrdroid-tabs@@")
@@ -123,13 +176,14 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
     }
 
     suspend fun read(paneId: String, lines: Int = 200): String =
-        forPhone(run(cmd("pane", "read", paneId, "--source", "recent", "--lines", lines.toString())))
+        if (core) forPhone(run(hcCmd("read", paneId, "--lines", lines.toString())))
+        else forPhone(run(cmd("pane", "read", paneId, "--source", "recent", "--lines", lines.toString())))
 
     /** The last few lines of every pane, fetched in one round trip. */
     suspend fun previews(ids: List<String>): Map<String, Peek> {
         if (ids.isEmpty()) return emptyMap()
         val script = ids.joinToString("; ") { id ->
-            "echo ${shq("@@herdrdroid@@$id")}; ${cmd("pane", "read", id, "--source", "recent", "--lines", "12")} 2>/dev/null"
+            "echo ${shq("@@herdrdroid@@$id")}; ${if (core) hcCmd("read", id, "--lines", "12") else cmd("pane", "read", id, "--source", "recent", "--lines", "12")} 2>/dev/null"
         }
         val out = forPhone(ssh.exec(script).out)
         val result = mutableMapOf<String, Peek>()
@@ -156,21 +210,43 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
 
     /** Sends a message the way an agent expects it; plain panes get the text and Enter. */
     suspend fun sendMessage(pane: Pane, text: String) {
+        if (core) {
+            // hc send pastes and presses Enter; it refuses a terminal waiting on a question
+            // unless forced, and a message sent then is meant as the answer.
+            if (pane.status == Status.NEEDS_YOU) runNow(hcCmd("send", "--force", pane.id, text)) else runNow(hcCmd("send", pane.id, text))
+            return
+        }
         if (pane.agent != null && pane.status != Status.NEEDS_YOU) {
             try {
-                run(cmd("agent", "prompt", pane.id, text))
+                runNow(cmd("agent", "prompt", pane.id, text))
                 return
             } catch (_: HerdrError) {
                 // Fall through to typing it in, which works in any pane.
             }
         }
-        run(cmd("pane", "send-text", pane.id, text))
-        run(cmd("pane", "send-keys", pane.id, "enter"))
+        runNow(cmd("pane", "send-text", pane.id, text))
+        runNow(cmd("pane", "send-keys", pane.id, "enter"))
     }
 
-    suspend fun sendText(paneId: String, text: String) = run(cmd("pane", "send-text", paneId, text))
+    /**
+     * Types [text] without pressing Enter. herdr-core has no plain typing, so there short text
+     * (a menu number, a y or n) goes as key presses.
+     */
+    suspend fun sendText(paneId: String, text: String): String {
+        if (!core) return runNow(cmd("pane", "send-text", paneId, text))
+        val keys = text.map { c -> when (c) { ' ' -> "space"; else -> c.toString() } }
+        return runNow(hcCmd("keys", paneId, *keys.toTypedArray()))
+    }
 
-    suspend fun sendKeys(paneId: String, vararg keys: String) = run(cmd("pane", "send-keys", paneId, *keys))
+    /** Types [text] and presses Enter: one paste-and-submit on herdr-core. */
+    suspend fun typeAndEnter(paneId: String, text: String) {
+        if (core) { runNow(hcCmd("send", "--force", paneId, text)); return }
+        runNow(cmd("pane", "send-text", paneId, text))
+        runNow(cmd("pane", "send-keys", paneId, "enter"))
+    }
+
+    suspend fun sendKeys(paneId: String, vararg keys: String) =
+        if (core) runNow(hcCmd("keys", paneId, *keys)) else runNow(cmd("pane", "send-keys", paneId, *keys))
 
     /**
      * Types a command the agent's own program answers (no model call) and returns the screen it
@@ -224,6 +300,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
 
     /** One usage check: the limits, and where the agent needs it, the model and effort. Null when skipped. */
     suspend fun probeQuota(paneId: String, profile: QuotaProfile, working: Boolean): ProbeResult? {
+        if (core) return null
         val shown = guardedCommand(paneId, profile.command, profile.waitMillis, profile.closeKeys, profile.openMarker, working) {
             parseQuota(it, profile.bareMeansLeft).isNotEmpty()
         } ?: return null
@@ -247,7 +324,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
      */
     suspend fun transcript(pane: Pane, cursor: String, script: ByteArray): TranscriptRead? {
         val agent = pane.agent ?: return null
-        val r = ssh.execInput("$PY - ${shq(agent)} ${shq(pane.cwd)} ${shq(cursor)}", script)
+        val r = ssh.execInput("$PYZ ${shq(agent)} ${shq(pane.cwd)} ${shq(cursor)}", z(script))
         if (r.exit != 0 || r.out.isBlank()) {
             val why = r.err.trim().lines().lastOrNull { it.isNotBlank() } ?: "the reader exited ${r.exit}"
             return TranscriptRead(false, why, "", false, false, null, emptyList())
@@ -257,7 +334,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
 
     /** One image inside an agent's log, fetched with the reader's image mode. */
     suspend fun logImage(file: String, offset: Long, index: String, script: ByteArray): ByteArray {
-        val r = ssh.execInput("$PY - __image__ ${shq(file)} $offset ${shq(index)}", script)
+        val r = ssh.execInput("$PYZ __image__ ${shq(file)} $offset ${shq(index)}", z(script))
         val o = runCatching { JSONObject(r.out) }.getOrNull() ?: throw HerdrError("The image couldn't be read.", r.exit)
         if (!o.optBoolean("ok")) throw HerdrError(o.optString("why").ifBlank { "The image couldn't be read." }, r.exit)
         return java.util.Base64.getMimeDecoder().decode(o.getString("data"))
@@ -265,7 +342,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
 
     /** One OpenCode blob (an attachment it stored in its database). */
     suspend fun blob(db: String, hash: String, script: ByteArray): ByteArray {
-        val r = ssh.execInput("$PY - __blob__ ${shq(db)} ${shq(hash)}", script)
+        val r = ssh.execInput("$PYZ __blob__ ${shq(db)} ${shq(hash)}", z(script))
         val o = runCatching { JSONObject(r.out) }.getOrNull() ?: throw HerdrError("The attachment couldn't be read.", r.exit)
         if (!o.optBoolean("ok")) throw HerdrError(o.optString("why").ifBlank { "The attachment couldn't be read." }, r.exit)
         return java.util.Base64.getMimeDecoder().decode(o.getString("data"))
@@ -321,6 +398,11 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
     suspend fun startAgent(kind: String, cwd: String, label: String, name: String, workspace: String?): String {
         ssh.exec("mkdir -p " + (if (cwd.startsWith("~/")) "\"\$HOME\"/" + shq(cwd.removePrefix("~/")) else shq(cwd)))
         val dir = if (cwd.startsWith("~/")) ssh.exec("printf %s \"\$HOME\"").out.trim() + "/" + cwd.removePrefix("~/") else cwd
+        if (core) {
+            // A new terminal named for the helper, running the agent; hc returns its address.
+            val o = JSONObject(run(hcCmd("run", "--bg", "--json", "--name", label, "--cwd", dir, kind)).trim().lines().last { it.startsWith("{") })
+            return o.getString("address")
+        }
         val args = mutableListOf("tab", "create", "--cwd", dir, "--label", label, "--no-focus")
         if (!workspace.isNullOrBlank()) args.addAll(listOf("--workspace", workspace))
         val created = JSONObject(run(cmd(*args.toTypedArray())))
@@ -331,7 +413,14 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
     }
 
     /** Closes a tab and everything in it (a helper made with [startAgent]). */
-    suspend fun closeTab(tabId: String) = run(cmd("tab", "close", tabId))
+    suspend fun closeTab(tabId: String) {
+        if (core) {
+            runCatching { run(hcCmd("kill", tabId)) }
+            run(hcCmd("rm", tabId))
+            return
+        }
+        run(cmd("tab", "close", tabId))
+    }
 
     /** A folder's entries, folders first, through the computer's python3 (names, kinds, sizes, times). */
     suspend fun listDir(path: String): List<DirEntry> {
@@ -348,7 +437,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
 
     /** Past sessions of [agent] in [cwd], newest first, from the reader's session-list mode. */
     suspend fun sessions(agent: String, cwd: String, script: ByteArray): List<PastSession> {
-        val r = ssh.execInput("$PY - __sessions__ ${shq(agent)} ${shq(cwd)}", script, timeoutSeconds = 60)
+        val r = ssh.execInput("$PYZ __sessions__ ${shq(agent)} ${shq(cwd)}", z(script), timeoutSeconds = 60)
         val o = runCatching { JSONObject(r.out) }.getOrNull() ?: throw HerdrError("The session list couldn't be read.", r.exit)
         if (!o.optBoolean("ok")) throw HerdrError(o.optString("why").ifBlank { "The session list couldn't be read." }, r.exit)
         return parseSessions(o.optJSONArray("sessions") ?: org.json.JSONArray())
@@ -437,7 +526,7 @@ print(json.dumps(out))
 
     /** The processes, subagents and background tasks under [pane]. Read-only. */
     suspend fun work(pane: Pane, script: ByteArray): WorkInfo {
-        val r = ssh.execInput("$PY - __work__ ${shq(pane.id)} ${shq(pane.agent.orEmpty())} ${shq(pane.cwd)}", script, timeoutSeconds = 30)
+        val r = ssh.execInput("$PYZ __work__ ${shq(pane.id)} ${shq(pane.agent.orEmpty())} ${shq(pane.cwd)}", z(script), timeoutSeconds = 30)
         if (r.out.isBlank()) throw HerdrError(r.err.trim().lines().lastOrNull { it.isNotBlank() } ?: "The work list couldn't be read.", r.exit)
         return parseWork(r.out)
     }
@@ -447,13 +536,13 @@ print(json.dumps(out))
         val list = panes.filter { it.agent == "claude" }
         if (list.isEmpty()) return emptyMap()
         val arg = org.json.JSONArray(list.map { org.json.JSONArray(listOf(it.id, it.agent.orEmpty(), it.cwd)) }).toString()
-        val r = ssh.execInput("$PY - __workcounts__ ${shq(arg)}", script, timeoutSeconds = 30)
+        val r = ssh.execInput("$PYZ __workcounts__ ${shq(arg)}", z(script), timeoutSeconds = 30)
         return runCatching { parseWorkCounts(r.out) }.getOrDefault(emptyMap())
     }
 
     /** A background task's output since [offset]; -1 starts from its last 64 KB. */
     suspend fun tail(file: String, offset: Long, script: ByteArray): TailRead {
-        val r = ssh.execInput("$PY - __tail__ ${shq(file)} $offset", script)
+        val r = ssh.execInput("$PYZ __tail__ ${shq(file)} $offset", z(script))
         if (r.out.isBlank()) throw HerdrError(r.err.trim().lines().lastOrNull { it.isNotBlank() } ?: "The output couldn't be read.", r.exit)
         return parseTail(r.out)
     }
@@ -463,7 +552,7 @@ print(json.dumps(out))
      * computer checks that the pid is still in that pane first, so a reused pid is never hit.
      */
     suspend fun stopProcess(paneId: String, pid: Int, force: Boolean, script: ByteArray): Int {
-        val r = ssh.execInput("$PY - __stop__ ${shq(paneId)} $pid ${if (force) "KILL" else "TERM"}", script)
+        val r = ssh.execInput("$PYZ __stop__ ${shq(paneId)} $pid ${if (force) "KILL" else "TERM"}", z(script))
         val o = runCatching { JSONObject(r.out.trim()) }.getOrNull() ?: throw HerdrError("Stop didn't answer.", r.exit)
         if (!o.optBoolean("ok")) throw HerdrError(o.optString("why").ifBlank { "Couldn't stop it." }, r.exit)
         return o.optInt("sent")
@@ -471,6 +560,11 @@ print(json.dumps(out))
 
     /** Confirms the command exists before the app shows any tabs. */
     suspend fun check() {
+        if (core) {
+            val c = ssh.exec("$hc --version")
+            if (c.exit != 0) throw HerdrError("Couldn't run herdr-core's hc on this computer.", c.exit)
+            return
+        }
         val r = ssh.exec("$herdr --version")
         if (r.exit != 0) {
             throw HerdrError(
@@ -549,17 +643,31 @@ data class Prompt(val question: String, val choices: List<Choice>)
  * means the agent is waiting even when no choices can be read from the screen.
  */
 fun detectPrompt(text: String, blocked: Boolean): Prompt? {
-    val lines = text.lines().map { it.trimEnd() }.filter { it.isNotBlank() }.takeLast(16)
+    val lines = text.lines().map { it.trimEnd() }.filter { it.isNotBlank() }.takeLast(30)
     if (lines.isEmpty()) return if (blocked) Prompt("This agent is waiting for you.", emptyList()) else null
 
-    val clean = { s: String -> s.trim().trim('│', '┃', '|', ' ').trim() }
-    val option = Regex("""^[\s│┃|]*(?:[❯›>▶➤]\s*)?(\d)[.)]\s+(.{1,70}?)[\s│┃|]*$""")
-    val numbered = lines.mapNotNull { l ->
-        option.find(l)?.let { m -> Choice(m.groupValues[2].trim(), m.groupValues[1], false) }
-    }.distinctBy { it.keys }
-    val question = lines.lastOrNull { clean(it).endsWith("?") }?.let(clean)
+    val clean = { s: String -> s.trim().trim('│', '┃', '|', '╭', '╰', '╮', '╯', '─', ' ').trim() }
+    // "❯ 1. Yes", "  2. Yes, and don't ask again for …" (labels can be long; up to 200 characters).
+    val option = Regex("""^[\s│┃|]*(?:[❯›>▶➤]\s*)?(\d)[.)]\s+(.{1,200}?)[\s│┃|]*$""")
+    val optionRows = lines.withIndex().mapNotNull { (i, l) -> option.find(l)?.let { m -> Triple(i, m.groupValues[1], m.groupValues[2].trim()) } }
+    // Keep the last run of consecutive numbers (1, 2, 3 …), so a numbered list earlier on the
+    // screen isn't mixed into the menu.
+    val run = mutableListOf<Triple<Int, String, String>>()
+    for (o in optionRows) {
+        if (run.isNotEmpty() && o.second.toInt() != run.last().second.toInt() + 1) run.clear()
+        run += o
+    }
+    val numbered = run.map { Choice(it.third, it.second, false) }.distinctBy { it.keys }
+    // The question: the text just above the first choice (up to four lines, skipping frame
+    // lines), or else the last line on screen that ends with "?".
+    val above = run.firstOrNull()?.first?.let { first ->
+        lines.subList(maxOf(0, first - 6), first).map(clean)
+            .filter { it.isNotEmpty() && it.any(Char::isLetterOrDigit) && !it.matches(Regex("""^[─━═\-_\s]+$""")) }
+            .takeLast(4).joinToString(" ").trim().takeIf { it.isNotEmpty() }
+    }
+    val question = above ?: lines.lastOrNull { clean(it).endsWith("?") }?.let(clean)
 
-    if (numbered.size in 2..6 && (blocked || question != null)) {
+    if (numbered.size in 2..9 && (blocked || question?.endsWith("?") == true)) {
         return Prompt(question ?: "Choose an option", numbered)
     }
 
@@ -599,4 +707,69 @@ fun canonicalAgent(name: String): String = when (val n = name.trim().lowercase()
     "oh-my-pi", "ohmypi" -> "omp"
     "pi-agent", "pi-coding-agent" -> "pi"
     else -> n
+}
+
+/** The agents the app knows by name; any other program in a herdr-core terminal is a plain shell. */
+private val KNOWN_AGENTS = setOf("claude", "codex", "pi", "omp", "grok", "agy", "copilot", "hermes", "opencode", "gemini", "cursor", "amp")
+
+/**
+ * herdr-core's terminal list (`hc ls --json`) as panes. Each terminal is its own tab; there are no
+ * workspaces. A program that reports its state (OSC 7501) gives the status; one that doesn't shows
+ * as unknown, and its "agent" is the program's name.
+ */
+fun corePanes(json: String): List<Pane> {
+    val text = json.trim()
+    val o = runCatching { JSONObject(text) }.getOrElse { JSONObject(text.lines().firstOrNull { it.trimStart().startsWith("{") } ?: "{}") }
+    val arr = o.optJSONArray("terminals") ?: org.json.JSONArray()
+    val list = (0 until arr.length()).mapNotNull { i ->
+        val t = arr.optJSONObject(i) ?: return@mapNotNull null
+        if (t.optString("state") == "finished") return@mapNotNull null
+        val id = t.optString("address").ifBlank { return@mapNotNull null }
+        val program = t.optString("agent")
+        val agent = canonicalAgent(program).takeIf { it in KNOWN_AGENTS }
+        Pane(
+            id = id,
+            tabId = id,
+            workspaceId = "core",
+            agent = agent,
+            status = when (t.optString("status")) {
+                "blocked" -> Status.NEEDS_YOU
+                "working" -> Status.WORKING
+                "done" -> Status.DONE
+                "idle" -> Status.IDLE
+                "error" -> Status.NEEDS_YOU
+                else -> Status.UNKNOWN
+            },
+            title = t.optString("title").ifBlank { if (agent == null) program else "" },
+            cwd = t.optString("cwd"),
+            tabLabel = t.optString("name"),
+        )
+    }
+    val order = listOf(Status.NEEDS_YOU, Status.WORKING, Status.DONE, Status.IDLE, Status.UNKNOWN)
+    return list.sortedWith(compareBy({ order.indexOf(it.status) }, { it.id }))
+}
+
+/**
+ * Finds which herdr a computer has, without starting anything: the TUI's `herdr status server`
+ * says whether its server runs, and herdr-core counts as running when its socket and process are
+ * both there (`hc server status` would start a core, so it isn't used).
+ */
+suspend fun detectBackend(ssh: HerdrSsh, herdrPath: String): Detected {
+    val h = herdrPath.trim().ifBlank { "herdr" }
+    val script = """
+h=${'$'}(command -v $h 2>/dev/null || command -v herdr 2>/dev/null || { [ -x "${'$'}HOME/.local/bin/herdr" ] && echo "${'$'}HOME/.local/bin/herdr"; })
+c=${'$'}(command -v hc 2>/dev/null || { [ -x "${'$'}HOME/.local/bin/hc" ] && echo "${'$'}HOME/.local/bin/hc"; })
+tr=0; [ -n "${'$'}h" ] && "${'$'}h" status server 2>/dev/null | grep -q "status: running" && tr=1
+cr=0; [ -S "${'$'}HOME/.local/state/herdr-core/default/default.sock" ] && pgrep -u "${'$'}(id -u)" -f herdr-core >/dev/null 2>&1 && cr=1
+echo "@@detect ${'$'}{h:+1} ${'$'}tr ${'$'}{c:+1} ${'$'}cr ${'$'}c"
+""".trimIndent()
+    val out = ssh.exec(script).out.lines().firstOrNull { it.startsWith("@@detect") } ?: return Detected(true, false, false, false, null)
+    return parseDetect(out)
+}
+
+fun parseDetect(line: String): Detected {
+    // "@@detect <1 or empty> <0|1> <1 or empty> <0|1> <hc path>"; empty fields collapse, so read by position.
+    val f = line.removePrefix("@@detect").split(' ')
+    fun at(i: Int) = f.getOrNull(i).orEmpty()
+    return Detected(at(1) == "1", at(2) == "1", at(3) == "1", at(4) == "1", at(5).ifBlank { null })
 }

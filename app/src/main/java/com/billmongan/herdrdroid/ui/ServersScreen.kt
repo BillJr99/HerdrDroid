@@ -1,5 +1,9 @@
 package com.billmongan.herdrdroid.ui
 
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material3.FilterChip
 import com.billmongan.herdrdroid.ssh.normalizeFingerprint
 import android.content.Intent
@@ -69,6 +73,14 @@ import java.util.UUID
 fun ServersScreen(vm: AppViewModel, unlock: (Server, (Boolean) -> Unit) -> Unit) {
     var askPasswordFor by remember { mutableStateOf<Server?>(null) }
 
+    // The status lights: every server checked now and about once a minute while this list shows.
+    LaunchedEffect(Unit) {
+        while (true) {
+            vm.checkServers()
+            kotlinx.coroutines.delay(60_000)
+        }
+    }
+
     fun start(server: Server) {
         // A WebSocket server signs in with its key only; there is never a password to ask for.
         if (server.overWebSocket && !(server.useKey && server.hasKey)) {
@@ -134,11 +146,34 @@ fun ServersScreen(vm: AppViewModel, unlock: (Server, (Boolean) -> Unit) -> Unit)
                         modifier = Modifier.fillMaxWidth().clickable(enabled = !vm.connecting) { start(s) },
                     ) {
                         Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                            AgentTile(s.label.take(1).uppercase(), com.billmongan.herdrdroid.herdr.Status.WORKING)
+                            // The server's light: yellow needs you, green up, red unreachable, grey unchecked.
+                            val h = vm.serverHealth[s.id]
+                            val tileStatus = when (h?.health) {
+                                AppViewModel.Health.NEEDS_YOU -> com.billmongan.herdrdroid.herdr.Status.NEEDS_YOU
+                                AppViewModel.Health.UP -> com.billmongan.herdrdroid.herdr.Status.DONE
+                                else -> com.billmongan.herdrdroid.herdr.Status.UNKNOWN
+                            }
+                            Box {
+                                AgentTile(s.label.take(1).uppercase(), tileStatus)
+                                val dot = when (h?.health) {
+                                    AppViewModel.Health.NEEDS_YOU -> Palette.Orange
+                                    AppViewModel.Health.UP -> Palette.Green
+                                    AppViewModel.Health.DOWN -> Palette.Red
+                                    else -> Palette.Muted
+                                }
+                                Box(Modifier.align(Alignment.BottomEnd).size(13.dp).background(Palette.Card, CircleShape).padding(2.dp).background(dot, CircleShape))
+                            }
                             Column(Modifier.weight(1f).padding(start = 12.dp)) {
                                 Text(s.label, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = Palette.Ink)
                                 // The WebSocket address is not shown in the list (it's a public endpoint).
                                 Text(if (s.overWebSocket) "${s.user} · SSH over WebSocket" else "${s.user}@${s.host}:${s.port}", color = Palette.Muted, fontSize = 13.sp)
+                                vm.serverHealth[s.id]?.let { h ->
+                                    Text(h.line, color = when (h.health) {
+                                        AppViewModel.Health.NEEDS_YOU -> Palette.OrangeInk
+                                        AppViewModel.Health.DOWN -> Palette.Red
+                                        else -> Palette.Muted
+                                    }, fontSize = 12.5.sp, fontWeight = if (h.health == AppViewModel.Health.NEEDS_YOU) FontWeight.SemiBold else FontWeight.Normal)
+                                }
                                 if (s.useKey && s.hasKey) {
                                     Text(
                                         if (s.passwordCipher != null) "Key, then password" else "Key",
@@ -183,6 +218,21 @@ fun ServersScreen(vm: AppViewModel, unlock: (Server, (Boolean) -> Unit) -> Unit)
                 vm.needPasswordFor = null
                 vm.connect(s, pw, rememberIt)
             },
+        )
+    }
+
+    vm.pendingBackendChoice?.let { p ->
+        AlertDialog(
+            onDismissRequest = { vm.dismissBackendChoice() },
+            title = { Text("Which herdr?") },
+            text = {
+                Text(
+                    "${p.server.label} runs both the herdr TUI and herdr-core (Herdr App). They keep separate agents. " +
+                        "Which one should this server show? The choice is saved; change it in the server's settings.",
+                )
+            },
+            confirmButton = { TextButton(onClick = { vm.chooseBackend(core = true) }) { Text("herdr-core") } },
+            dismissButton = { TextButton(onClick = { vm.chooseBackend(core = false) }) { Text("herdr (TUI)") } },
         )
     }
 
@@ -280,6 +330,7 @@ fun EditServerScreen(vm: AppViewModel, existing: Server?) {
     // A new WebSocket address starts with "wss://" typed in, which can be edited or removed.
     var wsUrl by remember { mutableStateOf(existing?.wsUrl ?: "wss://") }
     var pinned by remember { mutableStateOf(existing?.fingerprint ?: "") }
+    var backend by remember { mutableStateOf(existing?.backend) }
     var port by remember { mutableStateOf(existing?.port?.toString() ?: "") }
     var user by remember { mutableStateOf(existing?.user ?: "") }
     var herdrPath by remember { mutableStateOf(existing?.herdrPath ?: "") }
@@ -374,6 +425,20 @@ fun EditServerScreen(vm: AppViewModel, existing: Server?) {
             )
         }
         OutlinedTextField(user, { user = it.trim() }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        Text("herdr on that computer", fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = Palette.Ink)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
+            FilterChip(selected = backend == null, onClick = { backend = null }, label = { Text("Automatic", softWrap = false) })
+            FilterChip(selected = backend == "tui", onClick = { backend = "tui" }, label = { Text("herdr (TUI)", softWrap = false) })
+            FilterChip(selected = backend == "core", onClick = { backend = "core" }, label = { Text("herdr-core (Herdr App)", softWrap = false) })
+        }
+        Text(
+            when (backend) {
+                null -> "Uses whichever is running there. If both are, the app asks once and remembers."
+                "core" -> "Talks to herdr-core through its hc command (found on the computer's PATH or in ~/.local/bin)."
+                else -> "Talks to the herdr TUI's server through the herdr command below."
+            },
+            color = Palette.Muted, fontSize = 13.sp,
+        )
         OutlinedTextField(
             herdrPath, { herdrPath = it }, label = { Text("herdr command") }, singleLine = true,
             supportingText = { Text("The command that runs herdr on that computer, such as herdr or ~/.local/bin/herdr") },
@@ -471,6 +536,7 @@ fun EditServerScreen(vm: AppViewModel, existing: Server?) {
                         fingerprint = fp,
                         useKey = if (viaWs) true else useKey,
                         wsUrl = if (viaWs) url else null,
+                        backend = backend,
                         keyKind = keyKind,
                         keyCipher = if (keyKind == "imported") keyCipher else null,
                         keyPassCipher = if (keyKind == "imported") keyPassCipher else null,

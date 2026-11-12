@@ -1,5 +1,6 @@
 package com.billmongan.herdrdroid.ui
 
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.foundation.layout.heightIn
@@ -96,9 +97,13 @@ fun TabsScreen(vm: AppViewModel) {
     Column(Modifier.fillMaxSize().background(Palette.Ground).systemBarsPadding()) {
         Surface(color = Palette.Card, border = BorderStroke(1.dp, Palette.Line)) {
             Row(
-                Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 14.dp, bottom = 12.dp),
+                Modifier.fillMaxWidth().padding(start = 4.dp, end = 8.dp, top = 14.dp, bottom = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                // Back to the list of machines (disconnects, like the back gesture).
+                IconButton(onClick = { vm.disconnect() }) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to servers", tint = Palette.Ink)
+                }
                 Column(Modifier.weight(1f)) {
                     Text(vm.current?.label ?: "", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Palette.Ink)
                     LinkLabel(vm, " · ${panes.size} tabs · v${com.billmongan.herdrdroid.BuildConfig.VERSION_NAME}")
@@ -111,9 +116,7 @@ fun TabsScreen(vm: AppViewModel) {
                 IconButton(onClick = { vm.screen = Screen.Settings(Screen.Tabs) }) {
                     Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = Palette.Ink)
                 }
-                IconButton(onClick = { vm.disconnect() }) {
-                    Icon(Icons.Filled.Close, contentDescription = "Disconnect", tint = Palette.Ink)
-                }
+
             }
         }
         ServerBanners(vm)

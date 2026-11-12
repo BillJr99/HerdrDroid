@@ -263,6 +263,65 @@ class HerdrSsh(
         }
     }
 
+    /**
+     * Runs a short command on its own channel without waiting for other commands: the send lane.
+     * Only opening the connection takes the lock, so a message goes out while a read is running.
+     */
+    suspend fun execNow(command: String, timeoutSeconds: Long = 20): ExecResult = withContext(Dispatchers.IO) {
+        var attempt = 0
+        while (true) {
+            try {
+                val c = lock.withLock { open() }
+                c.startSession().use { session ->
+                    val cmd = session.exec(command)
+                    val out = cmd.inputStream.readBytes().toString(Charsets.UTF_8)
+                    val err = cmd.errorStream.readBytes().toString(Charsets.UTF_8)
+                    cmd.join(timeoutSeconds, TimeUnit.SECONDS)
+                    return@withContext ExecResult(cmd.exitStatus ?: -1, out, err)
+                }
+            } catch (e: UnconfirmedHostKey) {
+                throw e
+            } catch (e: HostKeyChanged) {
+                throw e
+            } catch (e: AuthRejected) {
+                throw e
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                lock.withLock { client?.runCatching { disconnect() }; client = null }
+                if (++attempt > 1) throw (e as? LinkDown ?: LinkDown(e))
+            }
+        }
+        @Suppress("UNREACHABLE_CODE")
+        ExecResult(-1, "", "")
+    }
+
+    /**
+     * Runs a command that keeps printing (the transcript reader's follow mode), handing each line
+     * to [onLine] as it arrives, on its own channel. Ends when the command exits; cancelling the
+     * calling coroutine closes the channel, which ends the command on the computer too.
+     */
+    suspend fun execStream(command: String, input: ByteArray, onLine: suspend (String) -> Unit): Int = withContext(Dispatchers.IO) {
+        val c = lock.withLock { open() }
+        val session = c.startSession()
+        val job = coroutineContext[kotlinx.coroutines.Job]
+        val handle = job?.invokeOnCompletion { runCatching { session.close() } }
+        try {
+            val cmd = session.exec(command)
+            cmd.outputStream.use { it.write(input); it.flush() }
+            val reader = cmd.inputStream.bufferedReader(Charsets.UTF_8)
+            while (true) {
+                val line = reader.readLine() ?: break
+                if (line.isNotBlank()) onLine(line)
+            }
+            cmd.join(5, TimeUnit.SECONDS)
+            cmd.exitStatus ?: -1
+        } finally {
+            handle?.dispose()
+            runCatching { session.close() }
+        }
+    }
+
     /** Runs a command and returns its standard output as bytes (for files fetched from the computer). */
     suspend fun execBytes(command: String, timeoutSeconds: Long = 120): Pair<Int, ByteArray> = withContext(Dispatchers.IO) {
         lock.withLock {

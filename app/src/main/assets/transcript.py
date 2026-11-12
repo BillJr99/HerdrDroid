@@ -282,8 +282,12 @@ SKIP_USER = ("<system-reminder>", "<environment_context>", "<user_instructions>"
              "<local-command-caveat>", "Caveat: ", "<task-notification>", "<turn_aborted>")
 
 
-def user_items(key, text, out):
-    text = (text or "").strip()
+PASTED_TAG = re.compile(r"</?pasted_content\b[^>]*>")
+
+
+def user_items(key, text, out, via=None):
+    # A pasted block arrives wrapped in <pasted_content id="..."> tags; show only what was pasted.
+    text = PASTED_TAG.sub("", text or "").strip()
     if not text:
         return
     m = re.match(r"<command-name>(.*?)</command-name>", text, re.S)
@@ -301,7 +305,10 @@ def user_items(key, text, out):
         return
     if text.startswith(SKIP_USER):
         return
-    out.append({"k": key, "t": "user", "text": text})
+    item = {"k": key, "t": "user", "text": text}
+    if via:
+        item["via"] = via
+    out.append(item)
 
 
 def claude(cwd, cur):
@@ -318,6 +325,12 @@ def claude(cwd, cur):
         if r.get("isSidechain") or r.get("isMeta"):
             continue
         t = r.get("type")
+        # A message sent while Claude was working (steering, or queued behind its turn) is not a
+        # user record: Claude logs it as a queued_command attachment when it takes it in.
+        att = r.get("attachment") if isinstance(r.get("attachment"), dict) else None
+        if t == "attachment" and att and att.get("type") == "queued_command":
+            user_items("q%d" % off, att.get("prompt") if isinstance(att.get("prompt"), str) else text_of(att.get("prompt")), items, via="while working")
+            continue
         m = r.get("message") if isinstance(r.get("message"), dict) else {}
         c = m.get("content")
         if t == "user":
@@ -891,8 +904,11 @@ def pane_of(pid):
     try:
         with open("/proc/%d/environ" % pid, "rb") as f:
             for kv in f.read().split(b"\0"):
+                # herdr's panes carry HERDR_PANE_ID; herdr-core's terminals carry HC_TERMINAL_ID.
                 if kv.startswith(b"HERDR_PANE_ID="):
                     return kv[14:].decode("utf-8", "replace")
+                if kv.startswith(b"HC_TERMINAL_ID="):
+                    return kv[15:].decode("utf-8", "replace")
     except Exception:
         pass
     return None
@@ -1147,6 +1163,12 @@ def main():
             done({"ok": True, "sessions": list_sessions(sys.argv[2].lower(), sys.argv[3].rstrip("/") or "/")})
         except Exception as e:
             done({"ok": False, "why": "%s: %s" % (type(e).__name__, str(e)[:200])})
+    # Follow mode: the same read, repeated about three times a second for a while, printing one
+    # JSON line whenever something changed (the app shows it at once instead of polling).
+    follow = 0
+    if len(sys.argv) > 1 and sys.argv[1] == "__follow__":
+        follow = int(sys.argv[5]) if len(sys.argv) > 5 and sys.argv[5].isdigit() else 120
+        sys.argv = [sys.argv[0]] + sys.argv[2:5]
     agent = (sys.argv[1] if len(sys.argv) > 1 else "").lower()
     cwd = sys.argv[2] if len(sys.argv) > 2 else ""
     try:
@@ -1160,6 +1182,35 @@ def main():
     reader = READERS.get(agent)
     if reader is None or not cwd:
         done({"ok": False, "why": "no log reader for this agent"})
+    if follow:
+        import time
+        end = time.time() + min(follow, 600)
+        first = True
+        while time.time() < end:
+            try:
+                res = reader(cwd.rstrip("/") or "/", cur)
+            except Exception as e:
+                res = {"ok": False, "why": "%s: %s" % (type(e).__name__, str(e)[:200])}
+            if res is None:
+                res = {"ok": False, "why": "no session log found for this folder"}
+            if res.get("ok") is False:
+                sys.stdout.write(json.dumps(res) + "\n")
+                sys.stdout.flush()
+                return
+            res.update({"ok": True, "src": agent})
+            if PIN and isinstance(res.get("cur"), dict):
+                res["cur"].update(PIN)
+            if first or res.get("items") or res.get("reset") or res.get("title"):
+                try:
+                    sys.stdout.write(json.dumps(res, ensure_ascii=False) + "\n")
+                    sys.stdout.flush()
+                except BrokenPipeError:
+                    return
+            if isinstance(res.get("cur"), dict):
+                cur = res["cur"]
+            first = False
+            time.sleep(0.3)
+        return
     try:
         res = reader(cwd.rstrip("/") or "/", cur)
     except Exception as e:

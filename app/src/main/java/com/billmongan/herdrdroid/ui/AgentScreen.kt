@@ -147,9 +147,15 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     LaunchedEffect(paneId) {
         vm.resetTranscript(paneId)
         var tick = 0
+        var streamFailures = 0
         while (true) {
-            if (!liveNow && vm.hasTranscriptReader(paneId) && (vm.transcriptState != TranscriptMode.OFF || tick % 10 == 0)) {
-                vm.readTranscript(paneId)
+            if (!liveNow && vm.hasTranscriptReader(paneId)) {
+                // Once the log is found, stream it (replies show within about a third of a
+                // second); if streaming doesn't work here, poll every 1.5 seconds instead.
+                if (vm.transcriptState == TranscriptMode.ON && streamFailures < 3) {
+                    if (vm.followTranscript(paneId)) { streamFailures = 0; continue } else streamFailures++
+                }
+                if (vm.transcriptState != TranscriptMode.OFF || tick % 10 == 0) vm.readTranscript(paneId)
             }
             tick++
             kotlinx.coroutines.delay(1_500)
@@ -328,17 +334,13 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
             }
         }
         // What the agent has running underneath: tap to drill in.
+        // One chip: how much is still active underneath (subagents, background tasks, processes the
+        // agent started). It drops as they finish; tap for active and finished.
         vm.work[paneId]?.let { w ->
-            val kids = w.childProcs(pane?.agent)
-            if (w.activeSubagents > 0 || w.runningTasks > 0 || kids > 0) {
-                Row(
-                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    val open = { vm.screen = Screen.Work(paneId) }
-                    if (w.activeSubagents > 0) ComposerChip("${w.activeSubagents} subagent${if (w.activeSubagents == 1) "" else "s"} running", true) { open() }
-                    if (w.runningTasks > 0) ComposerChip("${w.runningTasks} background task${if (w.runningTasks == 1) "" else "s"}", true) { open() }
-                    if (kids > 0) ComposerChip("$kids process${if (kids == 1) "" else "es"}", false) { open() }
+            val active = w.activeCount(pane?.agent)
+            if (active > 0) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
+                    ComposerChip("$active active underneath", true) { vm.screen = Screen.Work(paneId) }
                 }
             }
         }

@@ -54,6 +54,8 @@ object Palette {
     val OrangeEdge get() = pick(0xFFF2C9A8, 0xFF5C3A20)
     val Green get() = pick(0xFF1F7A4D, 0xFF5CCB8F)
     val GreenSoft get() = pick(0xFFE6F4EC, 0xFF15291F)
+    /** A server that can't be reached. */
+    val Red get() = pick(0xFFC0392B, 0xFFF2766B)
     val Gray get() = pick(0xFFEEF0F3, 0xFF22262E)
     val Key get() = pick(0xFFF7F8FA, 0xFF20242B)
     val KeyEdge get() = pick(0xFFD5DAE2, 0xFF353B46)

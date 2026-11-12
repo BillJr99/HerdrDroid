@@ -164,23 +164,12 @@ fun SettingsScreen(vm: AppViewModel, back: Screen) {
                 )
             }
             Section("Usage limits") {
-                Row(
-                    Modifier.fillMaxWidth().clickable { vm.setQuotasShown(!vm.showQuotas) },
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("Show usage limits", color = Palette.Ink, fontSize = 16.sp, modifier = Modifier.weight(1f))
-                    Switch(checked = vm.showQuotas, onCheckedChange = { vm.setQuotasShown(it) })
-                }
                 Text(
-                    if (vm.showQuotas) {
-                        "The app keeps each agent's limits up to date by itself, about every 30 minutes, using the " +
-                            "agent's own usage command (Claude Code, Codex, Copilot, Grok, Antigravity and Hermes). " +
-                            "None of these uses a model call. It only asks an agent that's idle, prefers a pane " +
-                            "that isn't in front at the computer, and never presses Enter if something is already " +
-                            "typed there. Agents with no usage command are left alone."
-                    } else {
-                        "Off. The app never asks any agent about usage."
-                    },
+                    "Every card shows its agent's limits, always. The app keeps them up to date by itself (Claude every 10 " +
+                        "minutes, Grok and Antigravity every 15, the rest every 30, and right away when a reading is due), " +
+                        "using the agent's own usage command (Claude Code, Codex, Copilot, Grok, Antigravity, Hermes, Oh My Pi). " +
+                        "None of these uses a model call. It only asks an agent that's idle, prefers a pane that isn't in " +
+                        "front at the computer, and never presses Enter if something is already typed there.",
                     color = Palette.Muted, fontSize = 13.sp,
                 )
             }

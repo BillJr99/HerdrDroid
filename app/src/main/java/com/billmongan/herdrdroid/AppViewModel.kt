@@ -32,6 +32,8 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.billmongan.herdrdroid.herdr.Herdr
+import com.billmongan.herdrdroid.herdr.Backend
+import com.billmongan.herdrdroid.herdr.detectBackend
 import com.billmongan.herdrdroid.herdr.HerdrError
 import com.billmongan.herdrdroid.herdr.Pane
 import com.billmongan.herdrdroid.herdr.QuotaProfile
@@ -167,7 +169,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     var themeMode by mutableStateOf(runCatching { ThemeMode.valueOf(prefs.theme) }.getOrDefault(ThemeMode.SYSTEM))
         private set
-    var showQuotas by mutableStateOf(prefs.showQuotas)
+    // Usage limits always show on the cards (Bill, 2026-11-12); the old switch is gone.
+    var showQuotas by mutableStateOf(true)
         private set
     var readingFont by mutableStateOf(runCatching { ReadingFont.valueOf(prefs.readingFont) }.getOrDefault(ReadingFont.SANS))
         private set
@@ -323,7 +326,28 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val s = HerdrSsh(server.host, server.port, server.user, creds, server.fingerprint, SshKeyVault::provider, server.wsUrl?.takeIf { server.overWebSocket })
             connectingSsh = s
             try {
-                val h = Herdr(s, server.herdrPath)
+                // Which herdr: the server's choice, or whichever one is running there.
+                val found = detectBackend(s, server.herdrPath)
+                val backend = when (server.backend) {
+                    "tui" -> Backend.TUI
+                    "core" -> Backend.CORE
+                    else -> when {
+                        found.tuiRunning && found.coreRunning -> {
+                            s.close()
+                            pendingBackendChoice = PendingBackend(server, password, remember)
+                            return@launch
+                        }
+                        found.coreRunning -> Backend.CORE
+                        found.tuiRunning -> Backend.TUI
+                        found.tuiInstalled -> Backend.TUI
+                        found.coreInstalled -> Backend.CORE
+                        else -> Backend.TUI
+                    }
+                }
+                com.billmongan.herdrdroid.diag.DiagLog.log("connect", "herdr on this computer: TUI ${if (found.tuiRunning) "running" else if (found.tuiInstalled) "installed" else "absent"}, " +
+                    "herdr-core ${if (found.coreRunning) "running" else if (found.coreInstalled) "installed" else "absent"}; using ${if (backend == Backend.CORE) "herdr-core" else "herdr"}")
+                activeBackend = backend
+                val h = Herdr(s, server.herdrPath, backend, found.hcPath)
                 // A WebSocket server may be asleep and take a while to answer, so a failed
                 // connection is tried again with growing waits before it is reported.
                 var wait = 2_000L
@@ -417,6 +441,76 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         connectNote = null
         pendingOpen = null
     }
+
+    // -- Server status lights ---------------------------------------------------------------------
+
+    enum class Health { NEEDS_YOU, UP, DOWN, LOCKED, CHECKING }
+
+    /** One server's light on the server list, and a short line saying why. */
+    data class ServerHealth(val health: Health, val line: String, val at: Long)
+
+    var serverHealth by mutableStateOf<Map<String, ServerHealth>>(emptyMap())
+        private set
+    private val healthLock = Mutex()
+
+    /**
+     * Checks every saved server once (the server list does this about once a minute while it is
+     * on screen): a short SSH connection, the agent list, then disconnect. Servers that would
+     * need a typed password or a fingerprint first are not contacted.
+     */
+    suspend fun checkServers() = healthLock.withLock {
+        val now = System.currentTimeMillis()
+        val jobs = servers.map { s ->
+            viewModelScope.launch {
+                if (s.fingerprint == null || !canSignInSilently(s) || (s.biometric && s.id !in unlockedThisSession)) {
+                    serverHealth = serverHealth + (s.id to ServerHealth(Health.LOCKED, if (s.fingerprint == null) "Not connected yet" else "Sign in to check", now))
+                    return@launch
+                }
+                val panes: List<Pane>? = if (s.id == current?.id && herdr != null) panes else runCatching {
+                    val ssh = HerdrSsh(s.host, s.port, s.user, credentialsFor(s, savedPassword(s)), s.fingerprint, SshKeyVault::provider, s.wsUrl?.takeIf { s.overWebSocket })
+                    try {
+                        val d = if (s.backend == null) detectBackend(ssh, s.herdrPath) else null
+                        val core = s.backend == "core" || (d != null && d.coreRunning && !d.tuiRunning)
+                        Herdr(ssh, s.herdrPath, if (core) Backend.CORE else Backend.TUI, d?.hcPath).panes()
+                    } finally {
+                        ssh.close()
+                    }
+                }.getOrNull()
+                val h = when {
+                    panes == null -> ServerHealth(Health.DOWN, "Can't reach it", now)
+                    panes.any { it.status == Status.NEEDS_YOU } ->
+                        ServerHealth(Health.NEEDS_YOU, "${panes.count { it.status == Status.NEEDS_YOU }} need you · ${panes.count { it.status == Status.WORKING }} working", now)
+                    else -> {
+                        val w = panes.count { it.status == Status.WORKING }
+                        ServerHealth(Health.UP, if (w > 0) "Up · $w working" else "Up · agents idle", now)
+                    }
+                }
+                serverHealth = serverHealth + (s.id to h)
+            }
+        }
+        jobs.forEach { it.join() }
+    }
+
+    /** Both herdr and herdr-core run on a server set to Automatic: the user picks one. */
+    data class PendingBackend(val server: Server, val password: String?, val remember: Boolean)
+
+    var pendingBackendChoice by mutableStateOf<PendingBackend?>(null)
+        private set
+    /** Which herdr the open server is driven through. */
+    var activeBackend by mutableStateOf(Backend.TUI)
+        private set
+
+    /** Saves the choice for that server and connects with it. */
+    fun chooseBackend(core: Boolean) {
+        val p = pendingBackendChoice ?: return
+        pendingBackendChoice = null
+        val saved = p.server.copy(backend = if (core) "core" else "tui")
+        store.save(saved)
+        reloadServers()
+        connect(saved, p.password, p.remember)
+    }
+
+    fun dismissBackendChoice() { pendingBackendChoice = null }
 
     /** Shown while a sleeping server is being retried. */
     var connectNote by mutableStateOf<String?>(null)
@@ -687,6 +781,30 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val p = pane(paneId) ?: return
         resetTranscript(paneId)
         val r = quietly { it.transcript(p, transcriptCursor, transcriptScript) } ?: return
+        applyTranscript(paneId, r)
+    }
+
+    /**
+     * Streams the open pane's log for up to two minutes (the reader's follow mode), applying each
+     * change as it arrives. Only while the app is in front. True when a stream ran; false when it
+     * couldn't start, so the caller polls instead.
+     */
+    suspend fun followTranscript(paneId: String): Boolean {
+        val p = pane(paneId) ?: return false
+        val h = herdr ?: return false
+        if (!foreground || link != Link.CONNECTED || transcriptPane != paneId) return false
+        val started = System.currentTimeMillis()
+        var got = false
+        val ok = runCatching {
+            h.followTranscript(p, transcriptCursor, transcriptScript, 120) { r ->
+                withContext(Dispatchers.Main) { if (transcriptPane == paneId) { got = true; applyTranscript(paneId, r) } }
+            }
+        }.isSuccess
+        // A stream that ended at once without any read didn't work here; poll instead.
+        return ok && (got || System.currentTimeMillis() - started > 5_000)
+    }
+
+    private fun applyTranscript(paneId: String, r: com.billmongan.herdrdroid.transcript.TranscriptRead) {
         if (transcriptPane != paneId) return
         if (!r.ok) {
             if (transcriptItems.isEmpty()) transcriptState = TranscriptMode.OFF
@@ -831,8 +949,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun answer(paneId: String, keys: String, pressEnter: Boolean) {
         act(paneId, "Couldn't answer") { h ->
-            h.sendText(paneId, keys)
-            if (pressEnter) h.sendKeys(paneId, "enter")
+            if (pressEnter) h.typeAndEnter(paneId, keys) else h.sendText(paneId, keys)
             readPane(paneId)
             refreshPanes()
         }
@@ -1081,10 +1198,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         runCatching {
-            if (a.isKey) h.sendKeys(a.paneId, a.keys) else {
-                h.sendText(a.paneId, a.keys)
-                if (a.pressEnter) h.sendKeys(a.paneId, "enter")
-            }
+            if (a.isKey) h.sendKeys(a.paneId, a.keys)
+            else if (a.pressEnter) h.typeAndEnter(a.paneId, a.keys)
+            else h.sendText(a.paneId, a.keys)
         }
     }
 
@@ -1280,8 +1396,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     suspend fun refreshWork(paneId: String) {
         val p = pane(paneId) ?: return
-        quietly { it.work(p, transcriptScript) }?.let { work = work + (paneId to it) }
+        quietly { it.work(p, transcriptScript) }?.let { fresh ->
+            // Processes that were active and are gone now are kept as finished (the last 30).
+            val before = work[paneId]?.activeProcs(p.agent).orEmpty()
+            val now = fresh.procs.map { it.pid }.toSet()
+            val gone = before.filter { it.pid !in now }.map { EndedProc(it, System.currentTimeMillis()) }
+            if (gone.isNotEmpty()) endedProcs = endedProcs + (paneId to (gone + endedProcs[paneId].orEmpty()).take(30))
+            work = work + (paneId to fresh)
+        }
     }
+
+    /** A process the agent started that has since ended, and when the app noticed. */
+    data class EndedProc(val proc: com.billmongan.herdrdroid.herdr.ProcInfo, val endedAt: Long)
+
+    var endedProcs by mutableStateOf<Map<String, List<EndedProc>>>(emptyMap())
+        private set
 
     suspend fun refreshWorkCounts() {
         quietly { it.workCounts(panes, transcriptScript) }?.let { workCounts = it }
