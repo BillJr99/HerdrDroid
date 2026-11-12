@@ -43,7 +43,13 @@ data class Server(
     val keyPassCipher: String? = null,
     /** Text size for the agent screen, set by pinching. */
     val textSize: Float = 12.5f,
+    /**
+     * "wss://..." when SSH goes over a WebSocket instead of a TCP connection to [host]:[port].
+     * Such a server signs in with its key only and is never held open in the background.
+     */
+    val wsUrl: String? = null,
 ) {
+    val overWebSocket: Boolean get() = !wsUrl.isNullOrBlank()
     val label: String get() = name.ifBlank { "$user@$host" }
     val keystoreAlias: String get() = "herdrdroid_ssh_$id"
     val hasKey: Boolean get() = keyKind == "keystore" || (keyKind == "imported" && keyCipher != null)
@@ -59,6 +65,7 @@ data class Server(
         .put("keyCipher", keyCipher ?: JSONObject.NULL)
         .put("keyPassCipher", keyPassCipher ?: JSONObject.NULL)
         .put("textSize", textSize.toDouble())
+        .put("wsUrl", wsUrl ?: JSONObject.NULL)
 
     companion object {
         private fun JSONObject.str(k: String) = optString(k).takeIf { !isNull(k) && it.isNotBlank() }
@@ -78,6 +85,7 @@ data class Server(
             keyCipher = o.str("keyCipher"),
             keyPassCipher = o.str("keyPassCipher"),
             textSize = o.optDouble("textSize", 12.5).toFloat(),
+            wsUrl = o.str("wsUrl"),
         )
     }
 }

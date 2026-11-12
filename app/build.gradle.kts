@@ -14,8 +14,8 @@ android {
         applicationId = "com.billmongan.herdrdroid"
         minSdk = 26
         targetSdk = 34
-        versionCode = 17
-        versionName = "0.4.1"
+        versionCode = 18
+        versionName = "0.4.2"
     }
 
     // A sideload signing key kept with the source, so later builds install over this one.
@@ -88,4 +88,5 @@ dependencies {
     implementation("org.slf4j:slf4j-nop:2.0.13")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 }

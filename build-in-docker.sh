@@ -5,6 +5,7 @@
 #                       with storePassword, keyAlias and keyPassword (git ignores that file)
 #   <work-folder>/.cache   SDK and Gradle caches (reused between builds; delete to clean)
 #   <work-folder>/out   the APK
+#   HD_DOCKER_ARGS     optional extra docker run options (see the end of this file)
 set -euo pipefail
 W="$(cd "$1" && pwd)"
 mkdir -p "$W/out" "$W/.cache"
@@ -44,6 +45,9 @@ cp app/build/outputs/apk/release/app-release.apk /w/out/HerdrDroid.apk
 "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs /w/out/HerdrDroid.apk | head -3
 chown -R "$HOST_UID:$HOST_GID" /w/src /w/out /w/.cache
 INNER
-sudo -n docker run --rm --name herdrdroid-build \
+# HD_DOCKER_ARGS adds docker run options, for example a network and HD_WS_* variables so the
+# SSH-over-WebSocket end-to-end test can reach a test server (it is skipped without them).
+# shellcheck disable=SC2086
+sudo -n docker run --rm --name herdrdroid-build ${HD_DOCKER_ARGS:-} \
   -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
   -v "$W":/w eclipse-temurin:17-jdk bash /w/.cache/inner.sh

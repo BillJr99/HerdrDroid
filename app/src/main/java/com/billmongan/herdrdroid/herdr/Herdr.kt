@@ -73,6 +73,12 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
 
     private fun cmd(vararg args: String) = herdr + " " + args.joinToString(" ") { shq(it) }
 
+    /**
+     * The system python3 by its absolute path when it is there: a non-interactive SSH command
+     * doesn't read ~/.bashrc, and `python3` on an interactive PATH may be a virtualenv's.
+     */
+    private val PY = "\"\$([ -x /usr/bin/python3 ] && echo /usr/bin/python3 || echo python3)\""
+
     private suspend fun run(command: String): String {
         val r = ssh.exec(command)
         if (r.exit != 0) {
@@ -241,7 +247,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
      */
     suspend fun transcript(pane: Pane, cursor: String, script: ByteArray): TranscriptRead? {
         val agent = pane.agent ?: return null
-        val r = ssh.execInput("python3 - ${shq(agent)} ${shq(pane.cwd)} ${shq(cursor)}", script)
+        val r = ssh.execInput("$PY - ${shq(agent)} ${shq(pane.cwd)} ${shq(cursor)}", script)
         if (r.exit != 0 || r.out.isBlank()) {
             val why = r.err.trim().lines().lastOrNull { it.isNotBlank() } ?: "the reader exited ${r.exit}"
             return TranscriptRead(false, why, "", false, false, null, emptyList())
@@ -251,7 +257,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
 
     /** One image inside an agent's log, fetched with the reader's image mode. */
     suspend fun logImage(file: String, offset: Long, index: String, script: ByteArray): ByteArray {
-        val r = ssh.execInput("python3 - __image__ ${shq(file)} $offset ${shq(index)}", script)
+        val r = ssh.execInput("$PY - __image__ ${shq(file)} $offset ${shq(index)}", script)
         val o = runCatching { JSONObject(r.out) }.getOrNull() ?: throw HerdrError("The image couldn't be read.", r.exit)
         if (!o.optBoolean("ok")) throw HerdrError(o.optString("why").ifBlank { "The image couldn't be read." }, r.exit)
         return java.util.Base64.getMimeDecoder().decode(o.getString("data"))
@@ -259,7 +265,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
 
     /** One OpenCode blob (an attachment it stored in its database). */
     suspend fun blob(db: String, hash: String, script: ByteArray): ByteArray {
-        val r = ssh.execInput("python3 - __blob__ ${shq(db)} ${shq(hash)}", script)
+        val r = ssh.execInput("$PY - __blob__ ${shq(db)} ${shq(hash)}", script)
         val o = runCatching { JSONObject(r.out) }.getOrNull() ?: throw HerdrError("The attachment couldn't be read.", r.exit)
         if (!o.optBoolean("ok")) throw HerdrError(o.optString("why").ifBlank { "The attachment couldn't be read." }, r.exit)
         return java.util.Base64.getMimeDecoder().decode(o.getString("data"))
@@ -335,14 +341,14 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String) {
             "  try:\n    st=e.stat()\n    out.append([e.name,e.is_dir(),st.st_size,int(st.st_mtime)])\n" +
             "  except Exception:\n    out.append([e.name,e.is_dir(),0,0])\n" +
             "print(json.dumps({'path':p,'entries':out[:2000]}))"
-        val r = ssh.execInput("python3 - $target", py.toByteArray())
+        val r = ssh.execInput("$PY - $target", py.toByteArray())
         if (r.exit != 0) throw HerdrError(r.err.trim().lines().lastOrNull() ?: "That folder couldn't be read.", r.exit)
         return parseDir(r.out)
     }
 
     /** Past sessions of [agent] in [cwd], newest first, from the reader's session-list mode. */
     suspend fun sessions(agent: String, cwd: String, script: ByteArray): List<PastSession> {
-        val r = ssh.execInput("python3 - __sessions__ ${shq(agent)} ${shq(cwd)}", script, timeoutSeconds = 60)
+        val r = ssh.execInput("$PY - __sessions__ ${shq(agent)} ${shq(cwd)}", script, timeoutSeconds = 60)
         val o = runCatching { JSONObject(r.out) }.getOrNull() ?: throw HerdrError("The session list couldn't be read.", r.exit)
         if (!o.optBoolean("ok")) throw HerdrError(o.optString("why").ifBlank { "The session list couldn't be read." }, r.exit)
         return parseSessions(o.optJSONArray("sessions") ?: org.json.JSONArray())

@@ -1,5 +1,7 @@
 package com.billmongan.herdrdroid.ui
 
+import androidx.compose.material3.FilterChip
+import com.billmongan.herdrdroid.ssh.normalizeFingerprint
 import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -68,6 +70,12 @@ fun ServersScreen(vm: AppViewModel, unlock: (Server, (Boolean) -> Unit) -> Unit)
     var askPasswordFor by remember { mutableStateOf<Server?>(null) }
 
     fun start(server: Server) {
+        // A WebSocket server signs in with its key only; there is never a password to ask for.
+        if (server.overWebSocket && !(server.useKey && server.hasKey)) {
+            vm.error = "This server connects over a WebSocket and signs in with a key only. Edit it, turn on " +
+                "\"Use an SSH key\" and make a key."
+            return
+        }
         if (!vm.canSignInSilently(server)) {
             askPasswordFor = server
             return
@@ -129,7 +137,8 @@ fun ServersScreen(vm: AppViewModel, unlock: (Server, (Boolean) -> Unit) -> Unit)
                             AgentTile(s.label.take(1).uppercase(), com.billmongan.herdrdroid.herdr.Status.WORKING)
                             Column(Modifier.weight(1f).padding(start = 12.dp)) {
                                 Text(s.label, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = Palette.Ink)
-                                Text("${s.user}@${s.host}:${s.port}", color = Palette.Muted, fontSize = 13.sp)
+                                // The WebSocket address is not shown in the list (it's a public endpoint).
+                                Text(if (s.overWebSocket) "${s.user} · SSH over WebSocket" else "${s.user}@${s.host}:${s.port}", color = Palette.Muted, fontSize = 13.sp)
                                 if (s.useKey && s.hasKey) {
                                     Text(
                                         if (s.passwordCipher != null) "Key, then password" else "Key",
@@ -148,7 +157,10 @@ fun ServersScreen(vm: AppViewModel, unlock: (Server, (Boolean) -> Unit) -> Unit)
         }
         if (vm.connecting) {
             Box(Modifier.fillMaxSize().background(Palette.Ground.copy(alpha = 0.6f)), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator()
+                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    CircularProgressIndicator()
+                    vm.connectNote?.let { Text(it, color = Palette.Ink, fontSize = 14.sp, modifier = Modifier.padding(horizontal = 32.dp)) }
+                }
             }
         }
         ExtendedFloatingActionButton(
@@ -254,7 +266,8 @@ private fun SwitchRow(title: String, detail: String?, checked: Boolean, onChange
     }
 }
 
-/** Add or edit a server. Every field is the user's; nothing is filled in for them. */
+/** Add or edit a server. Every field is the user's; only a new WebSocket address starts with "wss://". */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun EditServerScreen(vm: AppViewModel, existing: Server?) {
     val context = LocalContext.current
@@ -262,6 +275,10 @@ fun EditServerScreen(vm: AppViewModel, existing: Server?) {
     val draftId = remember { existing?.id ?: UUID.randomUUID().toString() }
     var name by remember { mutableStateOf(existing?.name ?: "") }
     var host by remember { mutableStateOf(existing?.host ?: "") }
+    var viaWs by remember { mutableStateOf(existing?.overWebSocket ?: false) }
+    // A new WebSocket address starts with "wss://" typed in, which can be edited or removed.
+    var wsUrl by remember { mutableStateOf(existing?.wsUrl ?: "wss://") }
+    var pinned by remember { mutableStateOf(existing?.fingerprint ?: "") }
     var port by remember { mutableStateOf(existing?.port?.toString() ?: "") }
     var user by remember { mutableStateOf(existing?.user ?: "") }
     var herdrPath by remember { mutableStateOf(existing?.herdrPath ?: "") }
@@ -297,8 +314,14 @@ fun EditServerScreen(vm: AppViewModel, existing: Server?) {
 
     val portNum = port.toIntOrNull()
     val keyReady = keyKind == "keystore" || (keyKind == "imported" && keyCipher != null)
-    val valid = host.isNotBlank() && user.isNotBlank() && portNum != null && portNum in 1..65535 &&
-        herdrPath.isNotBlank() && (!useKey || keyReady)
+    val wsOk = wsUrl.trim().let { (it.startsWith("wss://", true) || it.startsWith("ws://", true)) && it.substringAfter("://").isNotBlank() }
+    val pinOk = pinned.isBlank() || normalizeFingerprint(pinned) != null
+    val valid = if (viaWs) {
+        wsOk && user.isNotBlank() && herdrPath.isNotBlank() && useKey && keyReady && pinOk
+    } else {
+        host.isNotBlank() && user.isNotBlank() && portNum != null && portNum in 1..65535 &&
+            herdrPath.isNotBlank() && (!useKey || keyReady)
+    }
 
     Column(
         Modifier
@@ -312,7 +335,32 @@ fun EditServerScreen(vm: AppViewModel, existing: Server?) {
     ) {
         Text(if (existing == null) "Add a server" else "Edit server", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Palette.Ink)
         OutlinedTextField(name, { name = it }, label = { Text("Name (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text("Connect through", fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = Palette.Ink)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(selected = !viaWs, onClick = { viaWs = false }, label = { Text("SSH") })
+            FilterChip(selected = viaWs, onClick = { viaWs = true; useKey = true }, label = { Text("SSH over WebSocket") })
+        }
+        if (viaWs) {
+            OutlinedTextField(
+                wsUrl, { wsUrl = it.trim() }, label = { Text("WebSocket address") }, singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                supportingText = { Text("The full wss:// address of the WebSocket that carries SSH to that computer.") },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                pinned, { pinned = it.trim() }, label = { Text("Host key fingerprint") }, singleLine = true,
+                isError = !pinOk,
+                supportingText = {
+                    Text(
+                        if (!pinOk) "That isn't a SHA256 fingerprint (SHA256:… with 43 characters after the colon)."
+                        else "SHA256:… from ssh-keygen -lf on that computer's host key. Leave it empty to confirm it on the first connection.",
+                    )
+                },
+                textStyle = androidx.compose.ui.text.TextStyle(fontFamily = FontFamily.Monospace, fontSize = 13.sp),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        if (!viaWs) Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             OutlinedTextField(
                 host, { host = it.trim() }, label = { Text("Address") }, singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
@@ -332,7 +380,9 @@ fun EditServerScreen(vm: AppViewModel, existing: Server?) {
         )
 
         Text("Signing in", fontWeight = FontWeight.SemiBold, fontSize = 17.sp, color = Palette.Ink, modifier = Modifier.padding(top = 6.dp))
-        SwitchRow(
+        if (viaWs) {
+            Text("Over a WebSocket the app signs in with a key only; no password is ever sent.", color = Palette.Muted, fontSize = 13.sp)
+        } else SwitchRow(
             "Use an SSH key",
             if (useKey) "The key is tried first. If the server turns it down, the password is used."
             else "Off: this server never sees a key from the app, only the password.",
@@ -386,7 +436,7 @@ fun EditServerScreen(vm: AppViewModel, existing: Server?) {
                 Text("Forget the saved password", color = Palette.Ink)
             }
         }
-        if (existing?.fingerprint != null) {
+        if (existing?.fingerprint != null && !viaWs) {
             Column {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(checked = forgetFingerprint, onCheckedChange = { forgetFingerprint = it })
@@ -399,15 +449,27 @@ fun EditServerScreen(vm: AppViewModel, existing: Server?) {
         Button(
             onClick = {
                 val base = existing ?: Server(id = draftId, name = "", host = "", port = 0, user = "", herdrPath = "")
-                val changedTarget = existing != null && (existing.host != host || existing.port != portNum)
+                val url = wsUrl.trim()
+                val wsHost = url.substringAfter("://").substringBefore('/').substringBefore('?')
+                val newHost = if (viaWs) wsHost else host
+                val newPort = if (viaWs) 443 else portNum!!
+                val changedTarget = existing != null && (existing.host != newHost || existing.port != newPort ||
+                    existing.overWebSocket != viaWs || (viaWs && existing.wsUrl != url))
+                val fp = when {
+                    viaWs && pinned.isNotBlank() -> normalizeFingerprint(pinned)
+                    viaWs -> if (changedTarget) null else base.fingerprint
+                    forgetFingerprint || changedTarget -> null
+                    else -> base.fingerprint
+                }
                 if (keyKind != "keystore") vm.forgetGeneratedKey(draftId)
                 vm.saveServer(
                     base.copy(
-                        name = name.trim(), host = host, port = portNum!!, user = user, herdrPath = herdrPath.trim(),
+                        name = name.trim(), host = newHost, port = newPort, user = user, herdrPath = herdrPath.trim(),
                         biometric = biometric,
-                        passwordCipher = if (forgetPassword || (existing != null && existing.user != user)) null else base.passwordCipher,
-                        fingerprint = if (forgetFingerprint || changedTarget) null else base.fingerprint,
-                        useKey = useKey,
+                        passwordCipher = if (viaWs || forgetPassword || (existing != null && existing.user != user)) null else base.passwordCipher,
+                        fingerprint = fp,
+                        useKey = if (viaWs) true else useKey,
+                        wsUrl = if (viaWs) url else null,
                         keyKind = keyKind,
                         keyCipher = if (keyKind == "imported") keyCipher else null,
                         keyPassCipher = if (keyKind == "imported") keyPassCipher else null,
@@ -503,3 +565,4 @@ fun ErrorBanner(message: String, actionLabel: String = "Dismiss", onAction: () -
         }
     }
 }
+

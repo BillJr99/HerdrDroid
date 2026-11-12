@@ -132,7 +132,11 @@ fun readKeyFile(pem: String, passphrase: String?): PublicKey {
     return provider.public
 }
 
-/** One SSH connection, reused for every herdr command, one command at a time. */
+/**
+ * One SSH connection, reused for every herdr command, one command at a time. With [wsUrl] set,
+ * the SSH bytes travel over that WebSocket ([WsBridge]) instead of a TCP connection to
+ * [host]:[port]; everything else, host key pinning and sign-in included, is the same.
+ */
 class HerdrSsh(
     private val host: String,
     private val port: Int,
@@ -140,28 +144,40 @@ class HerdrSsh(
     private val credentials: Credentials,
     private val pinnedFingerprint: String?,
     private val keystoreKey: (String) -> KeyProvider?,
+    private val wsUrl: String? = null,
 ) {
     private val lock = Mutex()
     private var client: SSHClient? = null
+    private var bridge: WsBridge? = null
 
     private fun config() = DefaultConfig().apply {
         keyAlgorithms = keyAlgorithms.map { if (it.name == "ecdsa-sha2-nistp256") neutralEcdsa(it) else it }
     }
 
     private fun open(): SSHClient {
-        client?.let { if (it.isConnected && it.isAuthenticated) return it }
+        client?.let { if (it.isConnected && it.isAuthenticated && bridge?.isOpen != false) return it }
         client?.runCatching { disconnect() }
         client = null
+        bridge?.close()
+        bridge = null
         val verifier = PinnedVerifier(pinnedFingerprint)
         val c = SSHClient(config())
         c.connectTimeout = 8_000
         c.timeout = 15_000
         c.addHostKeyVerifier(verifier)
         try {
-            c.connect(host, port)
+            if (wsUrl != null) {
+                val b = WsBridge.open(wsUrl)
+                bridge = b
+                c.connect("127.0.0.1", b.port)
+            } else {
+                c.connect(host, port)
+            }
         } catch (e: Exception) {
             val seen = verifier.seen
             runCatching { c.disconnect() }
+            bridge?.close()
+            bridge = null
             when {
                 seen != null && pinnedFingerprint == null -> throw UnconfirmedHostKey(seen)
                 seen != null && pinnedFingerprint != seen -> throw HostKeyChanged(pinnedFingerprint!!, seen)
@@ -172,12 +188,15 @@ class HerdrSsh(
             c.auth(user, methods(c))
         } catch (e: UserAuthException) {
             runCatching { c.disconnect() }
+            bridge?.close(); bridge = null
             throw AuthRejected(e.message ?: "Sign-in was refused")
         } catch (e: AuthRejected) {
             runCatching { c.disconnect() }
+            bridge?.close(); bridge = null
             throw e
         } catch (e: Exception) {
             runCatching { c.disconnect() }
+            bridge?.close(); bridge = null
             throw LinkDown(e)
         }
         c.connection.keepAlive.keepAliveInterval = 15
@@ -198,8 +217,11 @@ class HerdrSsh(
             }
             null -> {}
         }
-        credentials.password?.let { list += AuthPassword(oneOff(it)) }
-        if (list.isEmpty()) throw AuthRejected("No key or password is set up for this server.")
+        // A WebSocket server signs in with the key only; no password is ever offered to it.
+        if (wsUrl == null) credentials.password?.let { list += AuthPassword(oneOff(it)) }
+        if (list.isEmpty()) {
+            throw AuthRejected(if (wsUrl != null) "This server signs in with a key only, and no key is set up for it." else "No key or password is set up for this server.")
+        }
         return list
     }
 
@@ -324,7 +346,23 @@ class HerdrSsh(
     fun reset() {
         client?.runCatching { disconnect() }
         client = null
+        bridge?.close()
+        bridge = null
     }
 
+    /** True when this connection goes over a WebSocket. */
+    val overWebSocket: Boolean get() = wsUrl != null
+
     fun close() = reset()
+}
+
+/**
+ * A host key fingerprint as typed or pasted ("SHA256:abc…", with or without the prefix, or a whole
+ * ssh-keygen line), in the app's form "SHA256:<43 base64 characters>"; null when it isn't one.
+ */
+fun normalizeFingerprint(text: String): String? {
+    val t = text.trim()
+    val after = if (t.contains("SHA256:")) t.substringAfter("SHA256:") else t
+    val m = Regex("""^([A-Za-z0-9+/]{43})=?(?=$|[^A-Za-z0-9+/=])""").find(after) ?: return null
+    return "SHA256:" + m.groupValues[1]
 }

@@ -188,7 +188,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var textSizeJob: Job? = null
 
     // Reads go on in the background only while the user has alerts ("Watching") turned on.
-    private val canPoll get() = herdr != null && (foreground || watching) && link == Link.CONNECTED
+    // A WebSocket server is read only while the app is in front: an open connection keeps it awake.
+    private val canPoll get() = herdr != null && (foreground || (watching && current?.overWebSocket != true)) && link == Link.CONNECTED
 
     // ---- Servers ----------------------------------------------------------------------------
 
@@ -313,10 +314,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         error = null
         viewModelScope.launch {
             val creds = credentialsFor(server, password)
-            val s = HerdrSsh(server.host, server.port, server.user, creds, server.fingerprint, SshKeyVault::provider)
+            val s = HerdrSsh(server.host, server.port, server.user, creds, server.fingerprint, SshKeyVault::provider, server.wsUrl?.takeIf { server.overWebSocket })
             try {
                 val h = Herdr(s, server.herdrPath)
-                h.check()
+                // A WebSocket server may be asleep and take a while to answer, so a failed
+                // connection is tried again with growing waits before it is reported.
+                var wait = 2_000L
+                var tries = 0
+                while (true) {
+                    try {
+                        h.check()
+                        break
+                    } catch (e: LinkDown) {
+                        if (!server.overWebSocket || ++tries > 4) throw e
+                        connectNote = "The server didn't answer yet (it may be waking up). Trying again in ${wait / 1000} s…"
+                        delay(wait)
+                        wait *= 2
+                    }
+                }
+                connectNote = null
                 var saved = server
                 if (remember && password != null) saved = saved.copy(passwordCipher = PasswordVault.encrypt(password))
                 if (saved != server) store.save(saved)
@@ -348,7 +364,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 error = hostKeyMessage(e)
             } catch (e: AuthRejected) {
                 s.close()
-                if (password == null && creds.key != null) {
+                if (server.overWebSocket) {
+                    // Key only: there is no password to fall back to.
+                    error = authMessage(server, creds, e)
+                } else if (password == null && creds.key != null) {
                     error = "The server didn't accept this phone's key. Enter the password to sign in, " +
                         "or add the key to authorized_keys (it's in the server's settings)."
                     needPasswordFor = server
@@ -360,9 +379,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 error = friendly(e)
             } finally {
                 connecting = false
+                connectNote = null
             }
         }
     }
+
+    /** Shown while a sleeping server is being retried. */
+    var connectNote by mutableStateOf<String?>(null)
+        private set
 
     fun acceptHostKey() {
         val p = pendingHostKey ?: return
@@ -420,6 +444,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun onBackground() {
         foreground = false
         backgroundAt = System.currentTimeMillis()
+        // Close a WebSocket connection right away: holding it open would keep that server awake.
+        if (current?.overWebSocket == true) {
+            hermes?.close()
+            hermes = null
+            ssh?.reset()
+        }
     }
 
     private fun linkLost(e: Exception?) {
@@ -886,7 +916,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The other servers that can be watched without asking for anything. */
     private fun watchable(): List<Server> = servers.filter {
-        it.id != current?.id && it.fingerprint != null && canSignInSilently(it) && (!it.biometric || it.id in unlockedThisSession)
+        it.id != current?.id && it.fingerprint != null && canSignInSilently(it) && (!it.biometric || it.id in unlockedThisSession) &&
+            !it.overWebSocket // never kept open in the background, so not watched from another server
     }
 
     /** Starts the other-server watcher and, with alerts on, the background loop and service. */
@@ -914,7 +945,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             while (isActive) {
                 delay(3_000)
                 // In front, the screens refresh panes themselves; behind, this keeps alerts coming.
-                if (!foreground && herdr != null) runCatching { refreshPanes() }
+                if (!foreground && herdr != null && current?.overWebSocket != true) runCatching { refreshPanes() }
             }
         }
     }
@@ -1271,7 +1302,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val usedKey = creds?.key != null || (server?.useKey == true && server.hasKey)
         val usedPw = creds?.password != null || server?.passwordCipher != null
         return when {
-            e.message?.startsWith("The imported key") == true || e.message?.startsWith("No key") == true -> e.message!!
+            e.message?.startsWith("The imported key") == true || e.message?.startsWith("No key") == true ||
+                e.message?.startsWith("This server signs in") == true -> e.message!!
+            server?.overWebSocket == true ->
+                "The server didn't accept this phone's key. Add the public key from this server's settings to " +
+                    "~/.ssh/authorized_keys for ${server.user} on that computer."
             usedKey && usedPw -> "The server didn't accept the key or the password."
             usedKey -> "The server didn't accept this phone's key."
             else -> "The username or password was not accepted."
@@ -1282,6 +1317,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val root = (e as? LinkDown)?.cause ?: e
         val m = root.message ?: root.javaClass.simpleName
         return when {
+            m.contains("WebSocket", false) -> m
             m.contains("timed out", true) || m.contains("timeout", true) ->
                 "The computer didn't answer. Check the address, the port, and that you're on the right network."
             m.contains("refused", true) -> "The computer refused the connection. Is SSH running on that port?"
