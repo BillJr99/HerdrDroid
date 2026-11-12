@@ -110,7 +110,8 @@ fun TranscriptChat(
     working: Boolean,
     workingLabel: String,
     agentName: String,
-    pending: String?,
+    /** Messages you sent that the agent's log doesn't show yet, oldest first. */
+    pending: List<String>,
     more: Boolean,
     size: Float,
     family: FontFamily,
@@ -139,7 +140,7 @@ fun TranscriptChat(
         if (first) {
             first = false
             state.scrollToItem(total - 1)
-        } else if (atBottom || pending != null) {
+        } else if (atBottom || pending.isNotEmpty()) {
             state.animateScrollToItem(total - 1)
             unseen = 0
         } else if (rows.size > lastCount) {
@@ -166,7 +167,7 @@ fun TranscriptChat(
                             textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                         )
                     }
-                    if (rows.isEmpty() && pending == null) {
+                    if (rows.isEmpty() && pending.isEmpty()) {
                         Text(
                             "No messages in this session yet.",
                             color = Palette.Muted, fontSize = 14.sp,
@@ -184,8 +185,17 @@ fun TranscriptChat(
                 }
             }
             item(key = "_pending") {
-                AnimatedVisibility(pending != null, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
-                    UserBubble(pending ?: "", size, sending = true, onQuote = actions.onQuote)
+                // Every message still on its way: queued behind the agent's turn, or steering it.
+                AnimatedVisibility(pending.isNotEmpty(), enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (pending.size > 1 || working) {
+                            Text(
+                                if (working) "${pending.size} waiting for ${agentName}" else "${pending.size} on the way",
+                                color = Palette.Muted, fontSize = 12.sp, textAlign = TextAlign.End, modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                        pending.forEach { UserBubble(it, size, sending = true, onQuote = actions.onQuote) }
+                    }
                 }
             }
             item(key = "_tail") {

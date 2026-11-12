@@ -75,6 +75,96 @@ The checks are careful with the pane:
 - **Passwords.** A saved password is encrypted with an AES key that stays in the Android Keystore. You can also ask for a fingerprint or the screen lock before the saved password or key is used. The password is sent only to the server it belongs to.
 - **What a login can do.** A password login is a full shell for that user. The app only runs `herdr` commands, but anyone who can use your unlocked phone and this app can type into every pane. Keep the phone locked, and prefer servers on your own network or a VPN.
 
+## SSH over a WebSocket
+
+Some computers can be reached only over HTTPS: no SSH port answers from outside, but a web address does. For those, set a server's **Connect through** to **SSH over WebSocket** and give it a `wss://` address. The app carries its ordinary SSH connection inside that WebSocket. Everything else is the same: the pinned host key, signing in with the phone's key, and the herdr commands.
+
+You run a small bridge on the computer that passes WebSocket bytes to its own SSH server. The bridge holds no credential and does no authentication of its own; SSH's handshake (the host key you pin and the key on your phone) is the only gate.
+
+### What the bridge has to do
+
+- **Accept a plain WebSocket upgrade over HTTP/1.1** at its address: RFC 6455, no subprotocol, no special headers, no query string, no HTTP authentication. The app always uses HTTP/1.1. If the bridge sits behind a proxy or CDN, that path must pass an HTTP/1.1 `Upgrade: websocket` through. A front end that answers over HTTP/2 instead replies `200` and never upgrades, and the app reports "The WebSocket upgrade was refused (HTTP 200)".
+- **Carry the raw SSH byte stream in binary frames**, both ways, in order. Frame boundaries mean nothing; the bridge may split or join bytes however it likes, but must never drop or reorder them. Text frames are not allowed.
+- **Connect each WebSocket to the SSH server** (usually `127.0.0.1:22`), and close one side when the other closes.
+- **Answer pings.** The app pings every 20 seconds and SSH sends keep-alives every 15, so an idle connection stays open.
+- **Use TLS** (`wss://`) for anything reachable from outside, either in the bridge itself or in a reverse proxy in front of it.
+
+### The SSH server behind it
+
+Because the address is public, set the SSH server to keys only:
+
+```
+# /etc/ssh/sshd_config.d/00-keys-only.conf
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+```
+
+Then `sudo sshd -t && sudo systemctl reload ssh`. Add the phone's key line (the server's settings in the app, **Copy** or **Share**) to `~/.ssh/authorized_keys` for the user the app signs in as, with `~/.ssh` at mode 700 and the file at 600. If sshd runs with `UsePAM no` and the account was made without a password, unlock it without giving it a usable one (`sudo usermod -p '*' <user>`); otherwise sshd refuses the locked account even with a valid key.
+
+Read the host key fingerprint on the computer, to type or paste into the app:
+
+```bash
+ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub     # prints SHA256:...
+```
+
+### Running the bridge
+
+Either tool works; keep it listening on localhost and put TLS in front.
+
+[websockify](https://github.com/novnc/websockify) (packaged in Debian and Ubuntu as `websockify`):
+
+```bash
+websockify 127.0.0.1:8080 127.0.0.1:22
+```
+
+[websocat](https://github.com/vi/websocat):
+
+```bash
+websocat --binary -E ws-l:127.0.0.1:8080 tcp:127.0.0.1:22
+```
+
+Run it under systemd (or your container's supervisor) so it starts again after a restart.
+
+A TLS front end with [Caddy](https://caddyserver.com/), which gets a certificate and passes WebSocket upgrades by itself:
+
+```
+ssh.example.org {
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+Or with nginx (inside an existing `server { listen 443 ssl; ... }` block):
+
+```
+location / {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 1h;
+    proxy_send_timeout 1h;
+}
+```
+
+A hosting platform that publishes a container port on an HTTPS address works the same way: publish the bridge's port, and the platform's address is the `wss://` address.
+
+### Checking it from a computer
+
+With `websocat` installed on a laptop, OpenSSH can go through the bridge exactly as the app does:
+
+```bash
+ssh -o ProxyCommand="websocat --binary wss://ssh.example.org/" <user>@bridge
+```
+
+The name after `@` is only a label here; the connection goes wherever the address points. If that signs in and `herdr --version` runs, the app will connect too. Use the full path to herdr in the app's settings (for example `/home/<user>/.local/bin/herdr`), since a non-interactive SSH command doesn't read `~/.bashrc`.
+
+### In the app
+
+Edit the server, choose **SSH over WebSocket**, and fill in the address (it starts with `wss://`), the username, the herdr command and the host key fingerprint. Then make or import a key and add its line on the computer. The connection is closed whenever the app goes to the background, so a host that sleeps when idle can sleep. If it doesn't answer at first, the app retries for about 30 seconds ("it may be waking up"), and **Cancel** stops that. Settings → **Diagnostics** shows each step of a connection (the upgrade, the first bytes each way, the SSH key exchange) without the address, keys or passwords.
+
+`tools/ws-test-server/` holds a throwaway sshd behind websockify that the end-to-end test uses; its Dockerfile shows a complete working setup.
+
 ## How each action maps to herdr
 
 | In the app | On the computer |
@@ -108,6 +198,8 @@ The key's passwords are read from `keystore/signing.properties` (`storePassword`
 | File | What it holds |
 |---|---|
 | `app/src/main/java/.../ssh/HerdrSsh.kt` | The SSH connection, host key pinning, and running one command at a time |
+| `app/src/main/java/.../ssh/WsBridge.kt` | SSH over a WebSocket: the local relay between sshj and the WebSocket |
+| `app/src/main/assets/transcript.py` | The reader sent to the computer's python3 for agent logs, history, and what runs under a pane |
 | `app/src/main/java/.../herdr/Herdr.kt` | The herdr commands, pane parsing, question detection, and the guarded usage check |
 | `app/src/main/java/.../herdr/Reflow.kt` | Turning a terminal screen into the chat view: rejoining wrapped paragraphs, tables, your messages, and the footer |
 | `app/src/main/java/.../herdr/Quota.kt` | The usage profile for each agent and the parser for their usage screens |

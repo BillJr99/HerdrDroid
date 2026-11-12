@@ -242,23 +242,26 @@ fun ServerBanners(vm: AppViewModel) {
  */
 @Composable
 fun QuotaLine(r: QuotaReading, modifier: Modifier = Modifier) {
-    val t = r.tightest ?: return
-    val more = r.items.size - 1
+    if (r.items.isEmpty()) return
+    // Every limit the agent reports (the 5-hour window, the weekly one, a weekly per-model one...),
+    // one row each in the agent's own order, then how old the reading is.
     Column(modifier, verticalArrangement = Arrangement.spacedBy(3.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                shortLabel(t.label),
-                color = Palette.Ink, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
-                maxLines = 1, overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false),
-            )
-            Box(Modifier.weight(1f)) { QuotaBar(t) }
-            Text("${t.usedPercent.fmt()}%", color = Palette.Ink, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        r.items.forEach { t ->
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    shortLabel(t.label),
+                    color = Palette.Ink, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1.1f),
+                )
+                Box(Modifier.weight(1f)) { QuotaBar(t) }
+                Text("${t.usedPercent.fmt()}%", color = Palette.Ink, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+                t.resets?.let {
+                    Text(it, color = Palette.Muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(0.9f))
+                }
+            }
         }
-        Text(
-            listOfNotNull(t.resets?.let { "resets $it" }, ago(r.at), if (more > 0) "+$more more" else null).joinToString(" · "),
-            color = Palette.Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-        )
+        Text(ago(r.at), color = Palette.Muted, fontSize = 11.5.sp, maxLines = 1)
     }
 }
 

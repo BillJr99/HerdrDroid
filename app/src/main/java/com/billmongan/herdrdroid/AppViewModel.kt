@@ -705,11 +705,38 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 lastSent = null
             }
         }
+        // Each message sent from the phone stays on screen until the agent's log has it.
+        val mine = pendingSends.filter { it.paneId == paneId }
+        if (mine.isNotEmpty()) {
+            val seen = mine.filter { p -> sameTextCount(p.text) > p.seenBefore }
+            if (seen.isNotEmpty()) pendingSends = pendingSends - seen.toSet()
+        }
     }
 
-    /** The message just sent from this phone, until it shows up in the agent's log (20 s at most). */
-    fun pendingFor(paneId: String): String? =
-        lastSent?.takeIf { it.first == paneId && System.currentTimeMillis() - lastSentAt < 20_000 }?.second
+    /** A message sent from this phone that the agent's log doesn't show yet (queued, or steering). */
+    data class PendingSend(val id: Long, val paneId: String, val text: String, val at: Long, val seenBefore: Int)
+
+    var pendingSends by mutableStateOf<List<PendingSend>>(emptyList())
+        private set
+
+    private fun norm(t: String) = t.filterNot { it.isWhitespace() }.take(60)
+
+    /** How many of your messages in the open conversation match [text]. */
+    private fun sameTextCount(text: String): Int {
+        val want = norm(text)
+        return transcriptItems.count { it is UserItem && norm(it.text) == want }
+    }
+
+    /**
+     * Every message sent from this phone that the agent's log doesn't show yet, oldest first. An
+     * agent that is working takes them in turn, so they stay up to 15 minutes; the screen view
+     * (agents without a log) shows only the last for 20 seconds.
+     */
+    fun pendingFor(paneId: String): List<String> {
+        val now = System.currentTimeMillis()
+        val hasLog = transcriptPane == paneId && transcriptState == TranscriptMode.ON
+        return pendingSends.filter { it.paneId == paneId && now - it.at < (if (hasLog) 15 * 60_000L else 20_000L) }.map { it.text }
+    }
 
     /** The Stop button: the key each agent's own program uses to interrupt a turn. */
     fun stopPane(pane: Pane) {
@@ -784,6 +811,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun sendMessage(pane: Pane, text: String) {
         lastSent = pane.id to text
         lastSentAt = System.currentTimeMillis()
+        pendingSends = pendingSends + PendingSend(
+            System.nanoTime(), pane.id, text, lastSentAt,
+            if (transcriptPane == pane.id) sameTextCount(text) else 0,
+        )
         act(pane.id, "Couldn't send") { h ->
             h.sendMessage(pane, text)
             readPane(pane.id)

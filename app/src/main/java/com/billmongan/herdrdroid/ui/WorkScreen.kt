@@ -264,7 +264,7 @@ private fun SubagentView(vm: AppViewModel, s: Screen.Work) {
             else -> ProvideAttachments(vm::attachmentBytes) {
                 TranscriptChat(
                     rows = remember(items) { rowsOf(items) },
-                    working = false, workingLabel = "", agentName = "Subagent", pending = null, more = more,
+                    working = false, workingLabel = "", agentName = "Subagent", pending = emptyList(), more = more,
                     size = vm.current?.textSize ?: 12.5f, family = vm.readingFont.family,
                     actions = ChatActions(onQuote = {}, onStop = null, onForward = null),
                     header = {}, footer = {}, state = rememberLazyListState(), modifier = Modifier.fillMaxSize(),

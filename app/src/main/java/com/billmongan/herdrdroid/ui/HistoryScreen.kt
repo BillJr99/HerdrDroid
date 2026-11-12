@@ -90,7 +90,7 @@ fun HistoryScreen(vm: AppViewModel, paneId: String, session: PastSession?) {
                     working = false,
                     workingLabel = "",
                     agentName = pane?.agentName ?: "The agent",
-                    pending = null,
+                    pending = emptyList(),
                     more = more,
                     size = vm.current?.textSize ?: 12.5f,
                     family = vm.readingFont.family,

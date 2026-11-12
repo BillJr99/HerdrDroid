@@ -184,7 +184,7 @@ private fun HermesConversation(vm: AppViewModel, chat: HermesChat, modifier: Mod
             working = chat.running,
             workingLabel = chat.status,
             agentName = "Hermes",
-            pending = null,
+            pending = emptyList(),
             more = false,
             size = vm.current?.textSize ?: 13.5f,
             family = vm.readingFont.family,
