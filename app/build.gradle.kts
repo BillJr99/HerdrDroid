@@ -14,8 +14,8 @@ android {
         applicationId = "com.billmongan.herdrdroid"
         minSdk = 26
         targetSdk = 34
-        versionCode = 28
-        versionName = "0.7.0"
+        versionCode = 29
+        versionName = "0.7.1"
     }
 
     // A sideload signing key kept with the source, so later builds install over this one.
@@ -24,6 +24,8 @@ android {
         val f = rootProject.file("keystore/signing.properties")
         if (f.exists()) f.inputStream().use { load(it) }
     }
+    // Without the key (a CI run with no signing secrets), the release APK is built unsigned.
+    val hasKey = rootProject.file("keystore/herdrdroid-sideload.jks").exists() && signing.getProperty("storePassword") != null
     signingConfigs {
         create("sideload") {
             storeFile = rootProject.file("keystore/herdrdroid-sideload.jks")
@@ -36,10 +38,10 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("sideload")
+            signingConfig = if (hasKey) signingConfigs.getByName("sideload") else null
         }
         debug {
-            signingConfig = signingConfigs.getByName("sideload")
+            if (hasKey) signingConfig = signingConfigs.getByName("sideload")
         }
     }
 

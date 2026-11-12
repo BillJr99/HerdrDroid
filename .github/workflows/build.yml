@@ -1,15 +1,20 @@
-# Tests HerdrDroid on every push and pull request, including the SSH-over-WebSocket end-to-end
-# test. Signed APKs are built on demo-box and committed to release/; CI holds no signing key.
-name: tests
+# Tests HerdrDroid on every push and pull request (with the SSH-over-WebSocket end-to-end test)
+# and builds the APK. With the signing secrets set it is signed with the sideload key, so it installs
+# over the app; without them it is built unsigned, with a warning. A v* tag attaches it to a release.
+#
+# The secrets (KEYSTORE_B64, SIGNING_PROPERTIES) come from keystore/push-signing-secrets.sh, run by
+# the owner from the folder that holds the key.
+name: build
 
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -29,6 +34,22 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
+      - name: Signing key
+        id: signing
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+          SIGNING_PROPERTIES: ${{ secrets.SIGNING_PROPERTIES }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ] && [ -n "$SIGNING_PROPERTIES" ]; then
+            mkdir -p keystore
+            printf '%s' "$KEYSTORE_B64" | base64 -d > keystore/herdrdroid-sideload.jks
+            printf '%s\n' "$SIGNING_PROPERTIES" > keystore/signing.properties
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No signing secrets: the APK is built unsigned (it won't install over the signed app)."
+          fi
+
       # A throwaway sshd behind websockify, for the SSH-over-WebSocket end-to-end test.
       - name: WebSocket test server
         run: |
@@ -46,6 +67,19 @@ jobs:
       - name: Tests
         run: ./gradlew --no-daemon --console=plain testReleaseUnitTest
 
+      - name: APK
+        run: |
+          ./gradlew --no-daemon --console=plain assembleRelease
+          v=$(sed -n 's/.*versionName = "\(.*\)".*/\1/p' app/build.gradle.kts | head -1)
+          mkdir -p out
+          if [ "${{ steps.signing.outputs.signed }}" = "true" ]; then
+            cp app/build/outputs/apk/release/app-release.apk "out/HerdrDroid-$v.apk"
+            "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "out/HerdrDroid-$v.apk" | head -2
+          else
+            cp app/build/outputs/apk/release/app-release-unsigned.apk "out/HerdrDroid-$v-unsigned.apk"
+          fi
+          sha256sum out/*.apk
+
       - name: Test reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -54,8 +88,19 @@ jobs:
           path: app/build/reports/tests/
           if-no-files-found: ignore
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HerdrDroid-apk
+          path: out/*.apk
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" out/*.apk --title "HerdrDroid ${GITHUB_REF_NAME#v}" --notes "Built by CI from $GITHUB_SHA."
+
       - name: Clean up
         if: always()
         run: |
           docker rm -f hdws-srv >/dev/null 2>&1 || true
-          rm -rf e2e
+          rm -rf e2e keystore/herdrdroid-sideload.jks keystore/signing.properties

@@ -1,5 +1,8 @@
 package com.billmongan.herdrdroid.ui
 
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.Spacer
 import android.app.Activity
 import android.content.Intent
 import android.net.Uri
@@ -204,10 +207,21 @@ fun ChatComposer(
                     }
                     val stopMode = working && onStop != null && value.isBlank()
                     val label = if (working && steerLabel != null && value.isNotBlank()) steerLabel else null
+                    Spacer(Modifier.width(8.dp))
+                    // While the agent works, a message steers it: the send button says so itself.
                     if (label != null) {
-                        Text(label, color = Palette.Blue, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(end = 6.dp))
-                    }
-                    FilledIconButton(
+                        androidx.compose.material3.Button(
+                            onClick = onSend,
+                            enabled = canSend,
+                            shape = RoundedCornerShape(20.dp),
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp),
+                            colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Palette.Blue, contentColor = Palette.OnBlue),
+                            modifier = Modifier.height(40.dp),
+                        ) {
+                            Text(label, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+                            Icon(Icons.Filled.KeyboardArrowUp, contentDescription = null, modifier = Modifier.size(18.dp))
+                        }
+                    } else FilledIconButton(
                         onClick = { if (stopMode) onStop?.invoke() else onSend() },
                         enabled = stopMode || canSend,
                         shape = CircleShape,

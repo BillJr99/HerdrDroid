@@ -1,5 +1,6 @@
 package com.billmongan.herdrdroid.ui
 
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -70,7 +71,7 @@ import java.util.UUID
 
 /** The saved herdr servers. Tap one to connect. */
 @Composable
-fun ServersScreen(vm: AppViewModel, unlock: (Server, (Boolean) -> Unit) -> Unit) {
+fun ServersScreen(vm: AppViewModel) {
     var askPasswordFor by remember { mutableStateOf<Server?>(null) }
 
     // The status lights: every server checked now and about once a minute while this list shows.
@@ -97,7 +98,7 @@ fun ServersScreen(vm: AppViewModel, unlock: (Server, (Boolean) -> Unit) -> Unit)
             if (pw == null && !(server.useKey && server.hasKey)) askPasswordFor = server
             else vm.connect(server, pw, remember = pw != null)
         }
-        if (server.biometric) unlock(server) { ok -> if (ok) go() } else go()
+        go()
     }
 
     Box(Modifier.fillMaxSize().background(Palette.Ground).systemBarsPadding()) {
@@ -179,6 +180,17 @@ fun ServersScreen(vm: AppViewModel, unlock: (Server, (Boolean) -> Unit) -> Unit)
                                         AppViewModel.Health.DOWN -> Palette.Red
                                         else -> Palette.Muted
                                     }, fontSize = 12.5.sp, fontWeight = if (h.health == AppViewModel.Health.NEEDS_YOU) FontWeight.SemiBold else FontWeight.Normal)
+                                }
+                                // Its agents, each with its tightest usage limit when there is one.
+                                vm.serverPanes[s.id]?.filter { it.agent != null }?.takeIf { it.isNotEmpty() }?.let { list ->
+                                    val q = vm.serverQuotas[s.id].orEmpty()
+                                    Text(
+                                        list.joinToString(" · ") { p ->
+                                            val t = com.billmongan.herdrdroid.herdr.QuotaProfiles.key(p.agent)?.let { q[it]?.tightest }
+                                            p.agentName + (t?.let { " " + it.usedPercent.toInt() + "%" } ?: "")
+                                        },
+                                        color = Palette.Muted, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                                    )
                                 }
                                 if (s.useKey && s.hasKey) {
                                     Text(
@@ -498,10 +510,6 @@ fun EditServerScreen(vm: AppViewModel, existing: Server?) {
                 }
             }
         }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Checkbox(checked = biometric, onCheckedChange = { biometric = it })
-            Text("Ask for my fingerprint before using the saved password or key", color = Palette.Ink)
-        }
         if (existing?.passwordCipher != null) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(checked = forgetPassword, onCheckedChange = { forgetPassword = it })
@@ -537,7 +545,7 @@ fun EditServerScreen(vm: AppViewModel, existing: Server?) {
                 vm.saveServer(
                     base.copy(
                         name = name.trim(), host = newHost, port = newPort, user = user, herdrPath = herdrPath.trim(),
-                        biometric = biometric,
+                        biometric = false,
                         passwordCipher = if (viaWs || forgetPassword || (existing != null && existing.user != user)) null else base.passwordCipher,
                         fingerprint = fp,
                         useKey = if (viaWs) true else useKey,

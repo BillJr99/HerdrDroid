@@ -1,5 +1,9 @@
 package com.billmongan.herdrdroid
 
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
+import androidx.compose.foundation.layout.padding
+import androidx.compose.runtime.LaunchedEffect
 import android.os.Bundle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -37,6 +41,7 @@ import com.billmongan.herdrdroid.ui.ThemeMode
 
 class MainActivity : FragmentActivity() {
     private val vm: AppViewModel by viewModels()
+    private var lockMessage by androidx.compose.runtime.mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -57,6 +62,12 @@ class MainActivity : FragmentActivity() {
                         isAppearanceLightStatusBars = !dark
                         isAppearanceLightNavigationBars = !dark
                     }
+                }
+                // The app lock: nothing shows and no server is contacted until it's unlocked.
+                if (vm.locked) {
+                    LaunchedEffect(Unit) { unlock { ok -> if (ok) vm.unlocked() } }
+                    LockScreen(lockMessage) { unlock { ok -> if (ok) vm.unlocked() } }
+                    return@HerdrTheme
                 }
                 // A tablet, an unfolded phone or a wide window shows the list and the open agent
                 // side by side; a phone shows one at a time.
@@ -79,7 +90,7 @@ class MainActivity : FragmentActivity() {
                         }
                     }
                 } else when (val s = vm.screen) {
-                    Screen.Servers -> ServersScreen(vm, ::unlock)
+                    Screen.Servers -> ServersScreen(vm)
                     is Screen.EditServer -> {
                         BackHandler { vm.screen = Screen.Servers }
                         EditServerScreen(vm, s.server)
@@ -156,8 +167,8 @@ class MainActivity : FragmentActivity() {
         super.onStop()
     }
 
-    /** Asks for a fingerprint (or the phone's screen lock) before a saved password or key is used. */
-    private fun unlock(server: Server, done: (Boolean) -> Unit) {
+    /** Asks for a fingerprint (or the phone's screen lock) when the app opens, if the app lock is on. */
+    private fun unlock(done: (Boolean) -> Unit) {
         val prompt = BiometricPrompt(
             this,
             ContextCompat.getMainExecutor(this),
@@ -167,16 +178,30 @@ class MainActivity : FragmentActivity() {
                     // Backing out of the prompt is not an error worth a banner.
                     val cancelled = errorCode == BiometricPrompt.ERROR_USER_CANCELED ||
                         errorCode == BiometricPrompt.ERROR_NEGATIVE_BUTTON || errorCode == BiometricPrompt.ERROR_CANCELED
-                    if (!cancelled) vm.error = errString.toString()
+                    if (!cancelled) lockMessage = errString.toString()
                     done(false)
                 }
             },
         )
         val info = BiometricPrompt.PromptInfo.Builder()
-            .setTitle("Unlock ${server.label}")
-            .setSubtitle("${server.user}@${server.host}")
+            .setTitle("Unlock HerdrDroid")
+            .setSubtitle("Your servers' saved passwords and keys")
             .setAllowedAuthenticators(BIOMETRIC_WEAK or DEVICE_CREDENTIAL)
             .build()
         prompt.authenticate(info)
+    }
+}
+
+@androidx.compose.runtime.Composable
+private fun LockScreen(message: String?, onUnlock: () -> Unit) {
+    androidx.compose.foundation.layout.Column(
+        Modifier.fillMaxSize().background(Palette.Ground).padding(32.dp),
+        verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text("HerdrDroid is locked", color = Palette.Ink, fontSize = 22.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+        Text("Unlock to see your servers and agents.", color = Palette.Muted, fontSize = 15.sp, modifier = Modifier.padding(top = 6.dp, bottom = 20.dp))
+        androidx.compose.material3.Button(onClick = onUnlock) { Text("Unlock") }
+        message?.let { Text(it, color = Palette.OrangeInk, fontSize = 13.sp, modifier = Modifier.padding(top = 12.dp)) }
     }
 }

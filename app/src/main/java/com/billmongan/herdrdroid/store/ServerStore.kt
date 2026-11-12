@@ -158,6 +158,14 @@ class AppPrefs(context: Context) {
         get() = prefs.getBoolean("autoCloseHelpers", true)
         set(v) = prefs.edit().putBoolean("autoCloseHelpers", v).apply()
 
+    /**
+     * Ask for the fingerprint (or screen lock) when the app opens. Unset at first: then it is on
+     * when any server used the old per-server fingerprint setting.
+     */
+    var appLock: Boolean?
+        get() = if (prefs.contains("appLock")) prefs.getBoolean("appLock", false) else null
+        set(v) { if (v == null) prefs.edit().remove("appLock").apply() else prefs.edit().putBoolean("appLock", v).apply() }
+
     var lightPalette: String
         get() = prefs.getString("lightPalette", "STANDARD") ?: "STANDARD"
         set(v) = prefs.edit().putString("lightPalette", v).apply()

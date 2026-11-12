@@ -464,20 +464,33 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val now = System.currentTimeMillis()
         val jobs = servers.map { s ->
             viewModelScope.launch {
-                if (s.fingerprint == null || !canSignInSilently(s) || (s.biometric && s.id !in unlockedThisSession)) {
-                    serverHealth = serverHealth + (s.id to ServerHealth(Health.LOCKED, if (s.fingerprint == null) "Not connected yet" else "Sign in to check", now))
+                if (s.fingerprint == null || !canSignInSilently(s)) {
+                    // It can't be signed in to without asking, but whether it answers at all can be
+                    // checked: a plain connection with no sign-in. Red when it doesn't answer.
+                    val answers = reachable(s)
+                    serverHealth = serverHealth + (s.id to when {
+                        !answers -> ServerHealth(Health.DOWN, "Can't reach it", now)
+                        s.fingerprint == null -> ServerHealth(Health.LOCKED, "Reachable · not connected yet", now)
+                        else -> ServerHealth(Health.LOCKED, "Reachable · sign in to see agents", now)
+                    })
                     return@launch
                 }
+                serverQuotas = serverQuotas + (s.id to prefs.quotas(s.id))
                 val panes: List<Pane>? = if (s.id == current?.id && herdr != null) panes else runCatching {
                     val ssh = HerdrSsh(s.host, s.port, s.user, credentialsFor(s, savedPassword(s)), s.fingerprint, SshKeyVault::provider, s.wsUrl?.takeIf { s.overWebSocket })
                     try {
                         val d = if (s.backend == null) detectBackend(ssh, s.herdrPath) else null
                         val core = s.backend == "core" || (d != null && d.coreRunning && !d.tuiRunning)
-                        Herdr(ssh, s.herdrPath, if (core) Backend.CORE else Backend.TUI, d?.hcPath).panes()
+                        val h = Herdr(ssh, s.herdrPath, if (core) Backend.CORE else Backend.TUI, d?.hcPath)
+                        val list = h.panes()
+                        // Once per app start: the usage readings that are due there.
+                        startupQuotas(s, h, list)
+                        list
                     } finally {
                         ssh.close()
                     }
                 }.getOrNull()
+                panes?.let { serverPanes = serverPanes + (s.id to it) }
                 val h = when {
                     panes == null -> ServerHealth(Health.DOWN, "Can't reach it", now)
                     panes.any { it.status == Status.NEEDS_YOU } ->
@@ -491,6 +504,83 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         jobs.forEach { it.join() }
+    }
+
+    // -- The app lock ------------------------------------------------------------------------------
+
+    /** Ask for the fingerprint when the app opens (one setting for the whole app). */
+    var appLock by mutableStateOf(prefs.appLock ?: servers.any { it.biometric })
+        private set
+    /** True until the fingerprint is given, when the lock is on. Nothing is contacted while locked. */
+    var locked by mutableStateOf(appLock)
+        private set
+
+    fun changeAppLock(on: Boolean) {
+        appLock = on
+        prefs.appLock = on
+    }
+
+    fun unlocked() {
+        locked = false
+        pendingNotification?.let { (s, p) -> pendingNotification = null; openFromNotification(s, p) }
+    }
+
+    private var pendingNotification: Pair<String, String>? = null
+
+    // -- Every server at startup: agents, models and usage ------------------------------------------
+
+    /** The agents last seen on each server, for the server list. */
+    var serverPanes by mutableStateOf<Map<String, List<Pane>>>(emptyMap())
+        private set
+    /** The usage readings saved for each server, for the server list. */
+    var serverQuotas by mutableStateOf<Map<String, Map<String, QuotaReading>>>(emptyMap())
+        private set
+    private val startupQuotasDone = mutableSetOf<String>()
+
+    /**
+     * The usage readings that are due on another server, checked once per app start: the same
+     * checks as the open server's (idle agents only; Enter only when the input line holds exactly
+     * the command; Oh My Pi from its command line). Readings are saved for when you open it.
+     */
+    private suspend fun startupQuotas(s: Server, h: Herdr, fresh: List<Pane>) {
+        if (!startupQuotasDone.add(s.id)) return
+        val stored = prefs.quotas(s.id).toMutableMap()
+        val now = System.currentTimeMillis()
+        val byAgent = fresh.mapNotNull { p -> QuotaProfiles.key(p.agent)?.let { it to p } }.groupBy({ it.first }, { it.second })
+        for ((agentKey, list) in byAgent) {
+            val profile = QuotaProfiles.forAgent(list.first().agent) ?: continue
+            val every = profile.everyMinutes * 60_000L
+            if ((stored[agentKey]?.at ?: 0L) > now - every) continue
+            val items = if (profile.cliCommand != null) {
+                runCatching { h.cliQuota(profile) }.getOrNull()
+            } else {
+                if (!h.canProbeScreens) continue
+                val target = list.filter { it.status == Status.IDLE || it.status == Status.DONE }.sortedBy { it.focused }.firstOrNull() ?: continue
+                runCatching { h.probeQuota(target.id, profile, working = false) }.getOrNull()?.items
+            }
+            if (!items.isNullOrEmpty()) {
+                val r = QuotaReading(System.currentTimeMillis(), items)
+                stored[agentKey] = r
+                recordQuota(s.id, agentKey, r)
+            }
+        }
+        prefs.saveQuotas(s.id, stored)
+        serverQuotas = serverQuotas + (s.id to stored.toMap())
+    }
+
+    /**
+     * Whether a server answers, without signing in: a TCP connection to its SSH port, or for a
+     * WebSocket server the upgrade (closed at once). Ten seconds at most.
+     */
+    private suspend fun reachable(s: Server): Boolean = withContext(Dispatchers.IO) {
+        runCatching {
+            if (s.overWebSocket) {
+                com.billmongan.herdrdroid.ssh.WsBridge.open(s.wsUrl!!, timeoutMs = 10_000).close("reachability check")
+            } else {
+                java.net.Socket().use { it.connect(java.net.InetSocketAddress(s.host, s.port), 10_000) }
+            }
+            true
+        }.getOrDefault(false)
     }
 
     /** Both herdr and herdr-core run on a server set to Automatic: the user picks one. */
@@ -1245,7 +1335,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The other servers that can be watched without asking for anything. */
     private fun watchable(): List<Server> = servers.filter {
-        it.id != current?.id && it.fingerprint != null && canSignInSilently(it) && (!it.biometric || it.id in unlockedThisSession) &&
+        it.id != current?.id && it.fingerprint != null && canSignInSilently(it) && true &&
             // A WebSocket server is watched only while the app is in front, so it can sleep otherwise.
             (!it.overWebSocket || foreground)
     }
@@ -1351,13 +1441,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** A notification was tapped: open that pane, switching servers if it is on another one. */
     fun openFromNotification(serverId: String, paneId: String) {
+        if (locked) { pendingNotification = serverId to paneId; return }
         if (serverId == current?.id) {
             openPane(paneId)
             return
         }
         val s = servers.firstOrNull { it.id == serverId } ?: return
         // A fingerprint-locked server opens only if it was already unlocked this session.
-        if (!canSignInSilently(s) || (s.biometric && s.id !in unlockedThisSession)) {
+        if (!canSignInSilently(s)) {
             screen = Screen.Servers
             return
         }
@@ -1370,7 +1461,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * asking, otherwise back to the server list to sign in there.
      */
     fun switchServer(s: Server) {
-        if (canSignInSilently(s) && (!s.biometric || s.id in unlockedThisSession) && s.fingerprint != null) switchTo(s.id, null)
+        if (canSignInSilently(s) && s.fingerprint != null) switchTo(s.id, null)
         else disconnect()
     }
 

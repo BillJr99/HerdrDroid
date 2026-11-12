@@ -77,6 +77,17 @@ fun SettingsScreen(vm: AppViewModel, back: Screen) {
                     }
                 }
             }
+            Section("App lock") {
+                Row(Modifier.fillMaxWidth().clickable { vm.changeAppLock(!vm.appLock) }, verticalAlignment = Alignment.CenterVertically) {
+                    Text("Ask for my fingerprint when HerdrDroid opens", color = Palette.Ink, fontSize = 16.sp, modifier = Modifier.weight(1f))
+                    Switch(checked = vm.appLock, onCheckedChange = { vm.changeAppLock(it) })
+                }
+                Text(
+                    "One unlock (fingerprint or the phone's screen lock) when the app starts, for every server. After it, " +
+                        "the app checks all your servers at once: whether each is up, its agents, and their usage limits.",
+                    color = Palette.Muted, fontSize = 13.sp,
+                )
+            }
             Section("Light palette") {
                 LightPalette.entries.forEach { p ->
                     Row(
