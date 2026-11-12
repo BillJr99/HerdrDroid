@@ -1,5 +1,7 @@
 package com.billmongan.herdrdroid.ui
 
+import androidx.compose.ui.platform.LocalClipboardManager
+import com.billmongan.herdrdroid.herdr.screenLinks
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.material.icons.filled.MoreVert
@@ -124,6 +126,9 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     var ctrl by remember { mutableStateOf(Hold.OFF) }
     var alt by remember { mutableStateOf(Hold.OFF) }
     var showUsage by rememberSaveable { mutableStateOf(false) }
+    /** The slash command whose screen is showing, until you go back to the chat. */
+    var commandScreen by rememberSaveable(paneId) { mutableStateOf<String?>(null) }
+    LaunchedEffect(fullTerminal) { if (!fullTerminal) commandScreen = null }
     var menu by remember { mutableStateOf(false) }
     var choosingModel by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -173,7 +178,11 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     val modifiersOn = ctrl != Hold.OFF || alt != Hold.OFF
     fun send() {
         if (message.isNotBlank() && pane != null) {
-            vm.sendMessage(pane, message.trim()); message = ""; typingAnswer = false
+            val text = message.trim()
+            vm.sendMessage(pane, text); message = ""; typingAnswer = false
+            // A slash command answers on the screen (a menu, a sign-in code), not in the agent's log,
+            // so show the screen and the keys to move through it.
+            if (text.startsWith("/") && !live) { fullTerminal = true; commandScreen = text.substringBefore(' ') }
         }
     }
     val quote: (String) -> Unit = { q -> message = q.lines().joinToString("\n") { "> $it" } + "\n\n" }
@@ -397,7 +406,30 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                     Text("Cancel", color = Palette.Blue, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.clickable { vm.cancelQueued(q) }.padding(start = 8.dp))
                 }
             }
-            if (vm.showKeys || modifiersOn) {
+            if (fullTerminal) {
+                val found = remember(vm.paneText) { screenLinks(vm.paneText) }
+                if (commandScreen != null || found.urls.isNotEmpty() || found.codes.isNotEmpty()) {
+                    val clipboard = LocalClipboardManager.current
+                    Row(
+                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        commandScreen?.let { c ->
+                            ComposerChip("Back to chat", false) { fullTerminal = false }
+                            Text("$c: use the keys to choose", color = Palette.Muted, fontSize = 12.5.sp, maxLines = 1, softWrap = false)
+                        }
+                        found.urls.forEach { u ->
+                            ComposerChip("Open " + u.substringAfter("://").take(40), false) {
+                                runCatching { context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(u))) }
+                            }
+                        }
+                        found.codes.forEach { c ->
+                            ComposerChip("Copy $c", false) { clipboard.setText(androidx.compose.ui.text.AnnotatedString(c)) }
+                        }
+                    }
+                }
+            }
+            if (vm.showKeys || modifiersOn || commandScreen != null) {
                 KeyPad(
                     ctrl = ctrl, alt = alt,
                     onCtrl = { ctrl = it }, onAlt = { alt = it },

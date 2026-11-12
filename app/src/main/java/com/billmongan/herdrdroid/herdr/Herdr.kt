@@ -535,3 +535,16 @@ fun detectPrompt(text: String, blocked: Boolean): Prompt? {
 
     return if (blocked) Prompt(question ?: "This agent is waiting for you.", emptyList()) else null
 }
+
+/** Links and sign-in codes on an agent's screen, for one-tap Open and Copy (a /login flow, say). */
+data class ScreenLinks(val urls: List<String>, val codes: List<String>)
+
+fun screenLinks(text: String): ScreenLinks {
+    val tail = text.lines().takeLast(60).joinToString("\n")
+    val urls = Regex("""https?://[A-Za-z0-9.-]+(?::\d+)?(?:/[^\s│┃|"'<>)\]]*)?""").findAll(tail)
+        .map { it.value.trimEnd('.', ',', ';', ':') }.distinct().toList().takeLast(3)
+    // Device codes such as "ABCD-1234" (GitHub, Microsoft) or "ABCD-EFGH-IJKL".
+    val codes = Regex("""(?<![A-Za-z0-9-])[A-Z0-9]{4}(?:-[A-Z0-9]{4}){1,2}(?![A-Za-z0-9-])""").findAll(tail)
+        .map { it.value }.filter { c -> c.any { it.isDigit() } || c.any { it.isLetter() } }.distinct().toList().takeLast(2)
+    return ScreenLinks(urls, codes)
+}
