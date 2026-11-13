@@ -186,7 +186,8 @@ fun ServersScreen(vm: AppViewModel) {
                                             val t = com.billmongan.herdrdroid.herdr.QuotaProfiles.key(p.agent)?.let { q[it]?.tightest }
                                             p.agentName + (t?.let { " " + it.usedPercent.toInt() + "%" } ?: "")
                                         },
-                                        color = Palette.Muted, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                                        // The whole list; a very long one ends with "…" after eight lines.
+                                        color = Palette.Muted, fontSize = 12.sp, maxLines = 8, overflow = TextOverflow.Ellipsis,
                                     )
                                 }
                                 if (s.useKey && s.hasKey) {

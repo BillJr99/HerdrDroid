@@ -95,7 +95,10 @@ fun TabsScreen(vm: AppViewModel) {
     }
 
     // Agents with subagents or background shells still running show as working.
+    // Done turns idle once opened here or after 30 minutes. Sorted: needs you, working, done, idle.
+    val order = listOf(Status.NEEDS_YOU, Status.WORKING, Status.DONE, Status.IDLE, Status.UNKNOWN)
     val panes = vm.panes.map { p -> vm.shownStatus(p).let { s -> if (s != p.status) p.copy(status = s) else p } }
+        .sortedWith(compareBy({ order.indexOf(it.status) }, { it.id }))
     var forwardingResult by remember { mutableStateOf<String?>(null) }
     var confirmStopAll by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
@@ -304,7 +307,7 @@ fun TabsScreen(vm: AppViewModel) {
 }
 
 @Composable
-private fun PaneCard(
+internal fun PaneCard(
     p: Pane, preview: String, model: String?, quota: QuotaReading?, checking: Boolean,
     underneath: Int = 0,
     git: com.billmongan.herdrdroid.herdr.GitInfo? = null,

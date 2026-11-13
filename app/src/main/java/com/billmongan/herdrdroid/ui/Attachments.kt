@@ -119,6 +119,14 @@ internal fun shareBytes(context: Context, bytes: ByteArray, name: String, mime: 
     runCatching { context.startActivity(Intent.createChooser(intent, null)) }
 }
 
+/**
+ * Images already drawn, kept decoded (about 48 MB at most), so reopening a chat or a row being
+ * recomposed draws them at once instead of flashing a spinner and changing height.
+ */
+private val drawn = object : android.util.LruCache<String, Bitmap>(48 * 1024 * 1024) {
+    override fun sizeOf(key: String, value: Bitmap) = value.byteCount
+}
+
 /** Decodes an image no larger than [maxSide] on its long side, so a big screenshot can't use much memory. */
 private fun decode(bytes: ByteArray, maxSide: Int): Bitmap? {
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -147,7 +155,7 @@ fun AttachmentView(item: ImageItem) {
         FileCard(item)
         return
     }
-    var bitmap by remember(item.key) { mutableStateOf<Bitmap?>(null) }
+    var bitmap by remember(item.key) { mutableStateOf<Bitmap?>(drawn.get(item.key)) }
     var bytes by remember(item.key) { mutableStateOf<ByteArray?>(null) }
     var problem by remember(item.key) { mutableStateOf<String?>(null) }
     var viewer by remember { mutableStateOf(false) }
@@ -155,7 +163,7 @@ fun AttachmentView(item: ImageItem) {
         host.load(item)
             .onSuccess { b ->
                 bytes = b
-                bitmap = withContext(Dispatchers.Default) { decode(b, 1600) }
+                if (bitmap == null) bitmap = withContext(Dispatchers.Default) { decode(b, 1600) }?.also { drawn.put(item.key, it) }
                 if (bitmap == null) problem = "This image couldn't be decoded."
             }
             .onFailure { problem = it.message ?: "The image couldn't be fetched." }

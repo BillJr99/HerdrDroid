@@ -40,7 +40,7 @@ if [ ! -f keystore/herdrdroid-sideload.jks ]; then
 fi
 [ -f gradlew ] || "$G" wrapper --gradle-version 8.9 -q
 echo "sdk.dir=$ANDROID_HOME" > local.properties
-"$G" --no-daemon --console=plain -q testReleaseUnitTest assembleRelease
+"$G" --no-daemon --console=plain -q testDebugUnitTest assembleRelease
 cp app/build/outputs/apk/release/app-release.apk /w/out/HerdrDroid.apk
 "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs /w/out/HerdrDroid.apk | head -3
 chown -R "$HOST_UID:$HOST_GID" /w/src /w/out /w/.cache

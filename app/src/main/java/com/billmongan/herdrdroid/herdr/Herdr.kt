@@ -140,6 +140,10 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
         return r.out
     }
 
+    /** The last pane list read, for a follow-up read on the same connection. */
+    @Volatile var panes0Cache: List<Pane> = emptyList()
+        private set
+
     suspend fun panes(): List<Pane> {
         if (core) return corePanes(run(hcCmd("ls", "--json")))
         // Panes and tab labels in one round trip; a tab list failure only loses the labels.
@@ -184,6 +188,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
             }
         }
         val order = listOf(Status.NEEDS_YOU, Status.WORKING, Status.DONE, Status.IDLE, Status.UNKNOWN)
+        panes0Cache = marked
         return marked.sortedWith(compareBy({ order.indexOf(it.status) }, { it.id }))
     }
 

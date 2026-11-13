@@ -150,18 +150,22 @@ fun TranscriptChat(
     // layout settling) pins it to the bottom again, unless the user has started scrolling.
     val openedAt = remember(state) { System.currentTimeMillis() }
     var userScrolled by remember(state) { mutableStateOf(false) }
-    LaunchedEffect(state.isScrollInProgress) { if (state.isScrollInProgress && !first && System.currentTimeMillis() - openedAt > 300) userScrolled = true }
+    // Only a drag by the user counts; the app's own jumps to the bottom don't.
+    LaunchedEffect(state) {
+        state.interactionSource.interactions.collect { if (it is androidx.compose.foundation.interaction.DragInteraction.Start) userScrolled = true }
+    }
     LaunchedEffect(state) {
         while (System.currentTimeMillis() - openedAt < 4_000) {
             kotlinx.coroutines.delay(250)
-            if (!userScrolled && rows.isNotEmpty() && !state.isScrollInProgress) state.scrollToItem(total - 1)
+            // Only when something below is out of view, so a settled chat is never moved.
+            if (!userScrolled && rows.isNotEmpty() && !state.isScrollInProgress && state.canScrollForward) state.scrollToItem(total - 1)
         }
     }
     LaunchedEffect(rows.size, lastKey, lastSig, pending, working) {
         if (rows.isEmpty()) return@LaunchedEffect
         if (first || (!userScrolled && System.currentTimeMillis() - openedAt < 4_000)) {
             first = false
-            state.scrollToItem(total - 1)
+            if (state.canScrollForward || state.layoutInfo.totalItemsCount == 0) state.scrollToItem(total - 1)
         } else if (atBottom || pending.isNotEmpty()) {
             state.animateScrollToItem(total - 1)
             unseen = 0

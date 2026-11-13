@@ -695,7 +695,7 @@ private fun ModifierKey(label: String, state: Hold, onChange: (Hold) -> Unit, mo
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun PromptCard(
+internal fun PromptCard(
     p: Prompt,
     agent: String,
     onChoice: (Choice) -> Unit,

@@ -1,5 +1,6 @@
-# Tests HerdrDroid on every push and pull request (with the SSH-over-WebSocket end-to-end test)
-# and builds the APK. With the signing secrets set it is signed with the sideload key, so it installs
+# Tests HerdrDroid on every push and pull request: the unit tests, the Compose UI tests under
+# Robolectric and the SSH-over-WebSocket end-to-end test in one job, and the same Compose UI tests
+# on an Android emulator in a second job. Then it builds the APK. With the signing secrets set it is signed with the sideload key, so it installs
 # over the app; without them it is built unsigned, with a warning. A v* tag attaches it to a release.
 #
 # The secrets (KEYSTORE_B64, SIGNING_PROPERTIES) come from keystore/push-signing-secrets.sh, run by
@@ -65,7 +66,8 @@ jobs:
           echo "HD_WS_FP=$(docker exec hdws-srv ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub | cut -d' ' -f2)" >> "$GITHUB_ENV"
 
       - name: Tests
-        run: ./gradlew --no-daemon --console=plain testReleaseUnitTest
+        # Unit tests and the Compose UI tests (src/sharedTest) under Robolectric.
+        run: ./gradlew --no-daemon --console=plain testDebugUnitTest
 
       - name: APK
         run: |
@@ -104,3 +106,40 @@ jobs:
         run: |
           docker rm -f hdws-srv >/dev/null 2>&1 || true
           rm -rf e2e keystore/herdrdroid-sideload.jks keystore/signing.properties
+
+  # The Compose UI tests again, on a real Android emulator (instrumented).
+  ui-emulator:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Instrumented UI tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: ./gradlew --no-daemon --console=plain connectedDebugAndroidTest
+
+      - name: Emulator test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: emulator-test-reports
+          path: app/build/reports/androidTests/
+          if-no-files-found: ignore

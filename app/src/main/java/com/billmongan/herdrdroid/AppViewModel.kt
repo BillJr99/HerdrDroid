@@ -488,7 +488,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         val d = if (s.backend == null) detectBackend(ssh, s.herdrPath) else null
                         val core = s.backend == "core" || (d != null && d.coreRunning && !d.tuiRunning)
                         val h = Herdr(ssh, s.herdrPath, if (core) Backend.CORE else Backend.TUI, d?.hcPath)
-                        val list = h.panes()
+                        // Agents whose subagents or background shells still run count as working
+                        // here too, so the server list says "working" before its cards are opened.
+                        val list = withBusy(h.panes(), runCatching { h.workCounts(h.panes0Cache, transcriptScript).second }.getOrDefault(emptyMap()))
                         // The light goes up now; the usage checks that are due follow in the
                         // background on this same connection, then it closes.
                         // Usage that is due there is checked on every background round, not only at
@@ -883,11 +885,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     p.copy(agent = was)
                 } else p
             }
-            panes = fresh
+            val tNow = System.currentTimeMillis()
+            fresh.forEach { p ->
+                val k = "${current?.id}|${p.id}"
+                if (p.status == Status.DONE) doneSince.getOrPut(k) { tNow } else doneSince.remove(k)
+                // An agent open on screen when it finishes has been seen.
+                if ((screen as? Screen.Agent)?.paneId == p.id && foreground) seenInApp[k] = tNow
+            }
+            panes = withBusy(fresh, busyCounts)
             current?.let { s -> noticeChanges(s.id, s.label, fresh) { herdr } }
             collectFinishedHelpers(fresh)
             updateWidget(fresh)
-            current?.let { serverPanes = serverPanes + (it.id to fresh) }
+            current?.let { serverPanes = serverPanes + (it.id to panes) }
         }
     }
 
@@ -963,6 +972,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val lastPromptSig = mutableMapOf<String, String>()
 
     fun openPane(paneId: String) {
+        seenInApp["${current?.id}|$paneId"] = System.currentTimeMillis()
         paneText = ""
         resetTranscript(paneId)
         screen = Screen.Agent(paneId)
@@ -1894,8 +1904,23 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * The status a card shows: an agent herdr calls idle or done while its subagents or background
      * shells still run is shown as working.
      */
-    fun shownStatus(p: Pane): Status =
-        if ((p.status == Status.IDLE || p.status == Status.DONE) && (busyCounts[p.id] ?: 0) > 0) Status.WORKING else p.status
+    fun shownStatus(p: Pane): Status {
+        if ((p.status == Status.IDLE || p.status == Status.DONE) && (busyCounts[p.id] ?: 0) > 0) return Status.WORKING
+        // herdr's "done" is idle but not yet seen at the computer. Opening the agent here counts as
+        // seeing it, and after 30 minutes it counts as idle anyway. (The app never marks it seen in
+        // herdr itself: that would switch the pane in front at the computer.)
+        if (p.status == Status.DONE) {
+            val since = doneSince["${current?.id}|${p.id}"] ?: return p.status
+            val seen = seenInApp["${current?.id}|${p.id}"] ?: 0L
+            if (seen >= since || System.currentTimeMillis() - since > 30 * 60_000L) return Status.IDLE
+        }
+        return p.status
+    }
+    private fun withBusy(list: List<Pane>, busy: Map<String, Int>): List<Pane> = list.map { p ->
+        if ((p.status == Status.IDLE || p.status == Status.DONE) && (busy[p.id] ?: 0) > 0) p.copy(status = Status.WORKING) else p
+    }
+    private val doneSince = mutableMapOf<String, Long>()
+    private val seenInApp = mutableMapOf<String, Long>()
 
     suspend fun refreshWork(paneId: String) {
         val p = pane(paneId) ?: return
