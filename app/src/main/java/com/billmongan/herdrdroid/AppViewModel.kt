@@ -468,6 +468,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val now = System.currentTimeMillis()
         val jobs = servers.map { s ->
             viewModelScope.launch {
+                // A server that just failed waits out its back-off; its last light stays.
+                if (s.id != current?.id && backingOff(s.id)) return@launch
                 if (s.fingerprint == null || !canSignInSilently(s)) {
                     // It can't be signed in to without asking, but whether it answers at all can be
                     // checked: a plain connection with no sign-in. Red when it doesn't answer.
@@ -503,6 +505,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }.getOrNull()
                 panes?.let { serverPanes = serverPanes + (s.id to it) }
+                if (s.id != current?.id) { if (panes == null) failed(s.id) else succeeded(s.id) }
                 val h = when {
                     panes == null -> ServerHealth(Health.DOWN, "Can't reach it", now)
                     panes.any { it.status == Status.NEEDS_YOU } ->
@@ -608,6 +611,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * Whether a server answers, without signing in: a TCP connection to its SSH port, or for a
      * WebSocket server the upgrade (closed at once). Ten seconds at most.
      */
+    /** Servers that failed recently, and when to try them again (1, 2, 4… up to 10 minutes). */
+    private val backoff = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, Long>>()
+
+    private fun backingOff(id: String) = (backoff[id]?.first ?: 0L) > System.currentTimeMillis()
+    private fun failed(id: String) {
+        val step = (backoff[id]?.second ?: 30_000L) * 2
+        val wait = step.coerceAtMost(10 * 60_000L)
+        backoff[id] = (System.currentTimeMillis() + wait) to wait
+        com.billmongan.herdrdroid.diag.DiagLog.log("check", "server ${servers.firstOrNull { it.id == id }?.label} unreachable; next try in ${wait / 1000} s")
+    }
+    private fun succeeded(id: String) { backoff.remove(id) }
+
     private suspend fun reachable(s: Server): Boolean = withContext(Dispatchers.IO) {
         runCatching {
             if (s.overWebSocket) {

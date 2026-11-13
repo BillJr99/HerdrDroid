@@ -269,26 +269,43 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
         paneId: String, command: String, waitMillis: Long, closeKeys: List<String>, openMarker: Regex?,
         working: Boolean, ready: (String) -> Boolean,
     ): String? {
+        // \u00A0 is listed because some prompts put a no-break space after the ❯ glyph. A hint the
+        // agent draws after the command ("/usage   Show usage") still counts.
+        val prompt = """^[\s\u00A0│┃|>❯›»$]*"""
+        val echo = Regex(prompt + Regex.escape(command) + """(\s.*)?$""")
+        // Leftovers from an earlier try ("❯ /usage/usage"): clear them before typing again.
+        val beforeLines = read(paneId, 40).lines()
+        val leftover = Regex(prompt + "((?:" + Regex.escape(command) + ")+)[\\s\u00A0│┃|]*$")
+        beforeLines.asReversed().firstNotNullOfOrNull { leftover.find(it)?.groupValues?.get(1) }?.let { junk ->
+            com.billmongan.herdrdroid.diag.DiagLog.log("usage", "clearing a leftover \"$junk\" in $paneId first")
+            sendKeys(paneId, *Array(junk.length) { "backspace" })
+            delay(300)
+        }
+        val markerBefore = openMarker?.containsMatchIn(beforeLines.takeLast(40).joinToString("\n")) == true
         sendText(paneId, command)
-        // \u00A0 is listed because some prompts put a no-break space after the ❯ glyph.
-        val echo = Regex("""^[\s\u00A0│┃|>❯›»$]*""" + Regex.escape(command) + """[\s\u00A0│┃|]*$""")
         // A slow host (a WebSocket server far away) can take seconds to draw what was typed: look
         // for it for up to 5 seconds before deciding it isn't there.
         var typed = emptyList<String>()
         val echoBy = System.currentTimeMillis() + 5_000
+        var openedAtOnce = false
         while (true) {
             delay(400)
-            typed = read(paneId, 24).lines()
-            if (typed.any { echo.matches(it) } || System.currentTimeMillis() > echoBy) break
+            typed = read(paneId, 40).lines()
+            if (typed.any { echo.matches(it) }) break
+            // Some agents (Grok) open the screen as soon as the command is typed, without Enter.
+            if (!markerBefore && openMarker != null && openMarker.containsMatchIn(typed.joinToString("\n"))) { openedAtOnce = true; break }
+            if (System.currentTimeMillis() > echoBy) break
         }
-        if (typed.none { echo.matches(it) }) {
+        if (openedAtOnce) {
+            com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$command in $paneId opened its screen without Enter")
+        } else if (typed.none { echo.matches(it) }) {
             // Which line was the input line, so the log shows why (cut short; nothing else kept).
             val inputLine = typed.lastOrNull { it.contains(command) || it.trimStart().startsWith("❯") || it.trimStart().startsWith(">") }?.trim()?.take(80)
             com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$command in $paneId wasn't echoed on its own; input line: \"${inputLine ?: "not found"}\"; erased it")
             sendKeys(paneId, *Array(command.length) { "backspace" })
             return null
         }
-        sendKeys(paneId, "enter")
+        if (!openedAtOnce) sendKeys(paneId, "enter")
         delay(waitMillis)
         // Some screens draw their frame first and their numbers a moment later (Antigravity, or any
         // agent on a slow host), so keep reading for up to 12 more seconds until the screen is open

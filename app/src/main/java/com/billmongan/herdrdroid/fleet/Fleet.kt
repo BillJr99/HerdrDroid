@@ -38,6 +38,8 @@ class Fleet(
     private var watched = mapOf<String, Server>()
     var everyMs = 15_000L
     private val detected = mutableSetOf<String>()
+    private val retryAt = mutableMapOf<String, Long>()
+    private val retryStep = mutableMapOf<String, Long>()
 
     /** Starts (or retargets) watching [servers]; the rest are dropped. */
     fun watch(servers: List<Server>) {
@@ -58,6 +60,8 @@ class Fleet(
                 while (isActive && clients.isNotEmpty()) {
                     for ((id, pair0) in clients.toMap()) {
                         val server = watched[id] ?: continue
+                        // A server that failed waits a growing time before the next try.
+                        if ((retryAt[id] ?: 0L) > System.currentTimeMillis()) continue
                         // An Automatic server is looked at once to see which herdr it runs.
                         var pair = pair0
                         if (server.backend == null && id !in detected) {
@@ -76,8 +80,12 @@ class Fleet(
                             throw c
                         } catch (e: Exception) {
                             pair.first.reset()
+                            val wait = ((retryStep[id] ?: 15_000L) * 2).coerceAtMost(10 * 60_000L)
+                            retryStep[id] = wait
+                            retryAt[id] = System.currentTimeMillis() + wait
                             FleetState(server, states[id]?.panes.orEmpty(), e.message ?: "unreachable", System.currentTimeMillis())
                         }
+                        if (st.error == null) { retryAt.remove(id); retryStep.remove(id) }
                         states = states + (id to st)
                         if (st.error == null) onSeen(st)
                     }
