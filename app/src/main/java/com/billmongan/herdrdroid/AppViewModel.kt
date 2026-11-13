@@ -678,9 +678,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         prefs.saveQuotas(s.id, stored)
-        // Models for the drawer: Claude's from its session logs (read only; nothing is typed).
-        runCatching { h.logModels(fresh) }.getOrNull()?.takeIf { it.isNotEmpty() }?.let { m ->
-            modelCache[s.id] = modelCache[s.id].orEmpty() + m
+        // Models for the drawer, read only (nothing is typed): every agent's from the footer it
+        // draws, and Claude's (whose footer has none) from its session log.
+        val withAgent = fresh.filter { it.agent != null }
+        val fromFooters = runCatching { h.previews(withAgent.map { it.id }) }.getOrNull().orEmpty()
+            .mapNotNull { (id, peek) -> footerModel(withAgent.firstOrNull { it.id == id }?.agent, peek.tail)?.let { id to it } }.toMap()
+        val fromLogs = runCatching { h.logModels(fresh) }.getOrNull().orEmpty()
+        if (fromFooters.isNotEmpty() || fromLogs.isNotEmpty()) {
+            modelCache[s.id] = modelCache[s.id].orEmpty() + fromFooters + fromLogs
             modelsVersion++
         }
         serverQuotas = serverQuotas + (s.id to stored.toMap())
@@ -1007,6 +1012,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             current?.id?.let { trackDone(it, fresh) }
             panes = withBusy(fresh, busyCounts)
             current?.let { s -> noticeChanges(s.id, s.label, fresh) { herdr } }
+            // Footers (each agent's model) every 30 seconds wherever you are in the app; before
+            // 1.1.5 only the tab list read them, which the agent-first app rarely shows.
+            if (System.currentTimeMillis() - lastPreviewsAt > 30_000L) {
+                lastPreviewsAt = System.currentTimeMillis()
+                viewModelScope.launch { runCatching { refreshPreviews() } }
+            }
             updateWidget(fresh)
             current?.let { serverPanes = serverPanes + (it.id to panes) }
         }
@@ -1033,6 +1044,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private val missingModelLogged = mutableSetOf<String>()
+    private var lastPreviewsAt = 0L
 
     suspend fun refreshPreviews() {
         val ids = panes.map { it.id }
