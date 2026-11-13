@@ -359,10 +359,12 @@ GEMINI 4 ARGON
         val now = java.time.ZonedDateTime.of(2026, 11, 13, 9, 0, 0, 0, ny) // a Friday
         assertEquals("Thu 11/19", shortReset("Nov 19, 7:59am (UTC)", now))
         assertEquals("Tue 11/17", shortReset("November 17, 12:44", now))
-        assertEquals("03:00p", shortReset("3pm (America/New_York)", now))
-        assertEquals("01:12p", shortReset("in 4h 12m", now))
+        assertEquals("3:00p", shortReset("3pm (America/New_York)", now))
+        assertEquals("1:12p", shortReset("in 4h 12m", now))
+        assertEquals("Sat 12/5", shortReset("Dec 5", now))
+        assertEquals("Sun 1/3", shortReset("Jan 3", now))
         assertEquals("Thu 11/19", shortReset("2026-11-19T12:59:00Z", now))
-        assertEquals("08:00a", shortReset("8am", now.withHour(20)))
+        assertEquals("8:00a", shortReset("8am", now.withHour(20)))
         assertEquals("next week", shortReset("next week", now))
     }
 }

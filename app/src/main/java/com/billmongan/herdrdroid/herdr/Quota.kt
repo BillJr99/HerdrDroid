@@ -414,7 +414,7 @@ fun screenShape(text: String): String {
 /**
  * A reset time as the agents print it ("Nov 19, 7:59am (UTC)", "November 17, 12:44",
  * "3pm (America/New_York)", "in 4h 12m", an ISO time) in one short form: "Thu 11/19", or just
- * the time when it is less than a day away ("03:00p"). A time zone in parentheses is
+ * the time when it is less than a day away ("3:00p"); no leading zeros ("Sat 12/5"). A time zone in parentheses is
  * honoured and shown in the phone's own zone. Anything unreadable is returned as it was.
  */
 fun shortReset(raw: String, now: java.time.ZonedDateTime = java.time.ZonedDateTime.now()): String {
@@ -427,9 +427,9 @@ fun shortReset(raw: String, now: java.time.ZonedDateTime = java.time.ZonedDateTi
     }
     fun out(t: java.time.ZonedDateTime): String {
         val local = t.withZoneSameInstant(here)
-        val day = local.format(java.time.format.DateTimeFormatter.ofPattern("EEE MM/dd", java.util.Locale.US))
+        val day = local.format(java.time.format.DateTimeFormatter.ofPattern("EEE M/d", java.util.Locale.US))
         if (java.time.Duration.between(now, local).toHours() >= 24 || local.isBefore(now)) return day
-        return local.format(java.time.format.DateTimeFormatter.ofPattern("hh:mm", java.util.Locale.US)) + if (local.hour < 12) "a" else "p"
+        return local.format(java.time.format.DateTimeFormatter.ofPattern("h:mm", java.util.Locale.US)) + if (local.hour < 12) "a" else "p"
     }
     // "in 4h 12m", "in 2 days", "3d 4h"
     Regex("""^(?:in\s+)?((?:\d+\s*(?:d|days?|h|hrs?|hours?|m|mins?|minutes?)\s*)+)$""", RegexOption.IGNORE_CASE).find(s)?.let { m ->
