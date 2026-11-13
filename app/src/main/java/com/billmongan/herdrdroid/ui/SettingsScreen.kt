@@ -138,16 +138,12 @@ fun SettingsScreen(vm: AppViewModel, back: Screen) {
                 }
                 Text(
                     "While connected, the app keeps watching in the background (a quiet \"Watching\" notification shows) " +
-                        "and alerts you when an agent starts waiting on you, with its first two choices and Esc as buttons. A " +
+                        "and alerts you when an agent starts waiting on you (only then; finishing doesn't notify), with its first two choices, Esc and Reply as buttons. A " +
                         "button answers only if the same question is still on screen. Agents are checked every 3 seconds. " +
                         "Alerts are made on the phone from what it reads over SSH; nothing is set up or left running on the " +
                         "computer. Watching uses some battery.",
                     color = Palette.Muted, fontSize = 13.sp,
                 )
-                Row(Modifier.fillMaxWidth().clickable { vm.changeAlertDone(!vm.alertDone) }, verticalAlignment = Alignment.CenterVertically) {
-                    Text("Also when an agent finishes", color = Palette.Ink, fontSize = 16.sp, modifier = Modifier.weight(1f))
-                    Switch(checked = vm.alertDone, onCheckedChange = { vm.changeAlertDone(it) })
-                }
                 Row(Modifier.fillMaxWidth().clickable { vm.changeWatchOthers(!vm.watchOthers) }, verticalAlignment = Alignment.CenterVertically) {
                     Text("Watch my other servers too", color = Palette.Ink, fontSize = 16.sp, modifier = Modifier.weight(1f))
                     Switch(checked = vm.watchOthers, onCheckedChange = { vm.changeWatchOthers(it) })

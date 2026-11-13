@@ -1576,8 +1576,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     val prompt = detectPrompt(text, blocked = true)
                     Notify.needsYou(app, serverId, serverLabel, p.id, p.agentName, prompt?.question ?: "Waiting for you.", prompt?.choices.orEmpty())
                 }
-                before == Status.WORKING && (p.status == Status.DONE || p.status == Status.IDLE) && alertDone ->
-                    Notify.done(app, serverId, serverLabel, p.id, p.agentName, if (serverId == current?.id) previews[p.id].orEmpty() else "")
+                // Only agents that need you notify (Bill, 2026-11-13); finishing doesn't.
                 before == Status.NEEDS_YOU -> Notify.clear(app, serverId, p.id)
             }
         }
