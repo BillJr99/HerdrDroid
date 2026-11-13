@@ -67,7 +67,8 @@ import kotlinx.coroutines.sync.withLock
 
 sealed interface Screen {
     data object Servers : Screen
-    data class EditServer(val server: Server?) : Screen
+    /** Add or edit a server; a new one can start with an address and name found on the network. */
+    data class EditServer(val server: Server?, val prefillHost: String? = null, val prefillName: String? = null) : Screen
     data object Tabs : Screen
     data class Agent(val paneId: String) : Screen
     data class Settings(val back: Screen) : Screen

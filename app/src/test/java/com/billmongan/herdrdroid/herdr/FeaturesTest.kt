@@ -51,4 +51,17 @@ class FeaturesTest {
         assertEquals("default", agentMode("claude", "❯ \n  ? for shortcuts"))
         assertNull(agentMode("codex", "› \n  100% context left"))
     }
+
+    @Test fun theNetworkFinderChecksOneSubnetAndReadsSshVersions() {
+        val hosts = com.billmongan.herdrdroid.net.subnetHosts("192.0.2.19", 24)
+        assertEquals(253, hosts.size)
+        assertTrue("192.0.2.26" in hosts)
+        assertFalse("192.0.2.19" in hosts)
+        assertFalse("192.0.2.0" in hosts || "192.0.2.255" in hosts)
+        // A wide network is checked only around the phone, never 65,000 addresses.
+        assertEquals(253, com.billmongan.herdrdroid.net.subnetHosts("198.51.100.7", 16).size)
+        assertEquals("OpenSSH 9.6p1, Ubuntu", com.billmongan.herdrdroid.net.sshVersion("SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.5"))
+        assertEquals("dropbear 2022.83", com.billmongan.herdrdroid.net.sshVersion("SSH-2.0-dropbear_2022.83"))
+        assertNull(com.billmongan.herdrdroid.net.sshVersion("HTTP/1.1 400 Bad Request"))
+    }
 }

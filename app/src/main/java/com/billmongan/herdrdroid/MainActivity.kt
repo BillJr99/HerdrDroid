@@ -118,7 +118,7 @@ class MainActivity : FragmentActivity() {
                     Screen.Servers -> ServersScreen(vm)
                     is Screen.EditServer -> {
                         BackHandler { vm.screen = Screen.Servers }
-                        EditServerScreen(vm, s.server)
+                        EditServerScreen(vm, s.server, s.prefillHost, s.prefillName)
                     }
                     Screen.Tabs -> {
                         BackHandler { vm.disconnect() }

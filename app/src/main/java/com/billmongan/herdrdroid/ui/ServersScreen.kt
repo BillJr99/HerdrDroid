@@ -3,6 +3,7 @@ package com.billmongan.herdrdroid.ui
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material3.FilterChip
@@ -72,6 +73,7 @@ import java.util.UUID
 /** The saved herdr servers. Tap one to connect. */
 @Composable
 fun ServersScreen(vm: AppViewModel) {
+    var finding by remember { mutableStateOf(false) }
     var askPasswordFor by remember { mutableStateOf<Server?>(null) }
 
     // The status lights: every server checked now and about once a minute while this list shows.
@@ -216,6 +218,11 @@ fun ServersScreen(vm: AppViewModel) {
                 }
             }
         }
+        // Find on this network: machines on the same Wi-Fi that answer SSH, to add in one tap.
+        androidx.compose.material3.OutlinedButton(
+            onClick = { finding = true },
+            modifier = Modifier.align(Alignment.BottomStart).padding(20.dp),
+        ) { Text("Find on this network") }
         ExtendedFloatingActionButton(
             onClick = { vm.screen = Screen.EditServer(null) },
             icon = { Icon(Icons.Filled.Add, contentDescription = null) },
@@ -225,6 +232,8 @@ fun ServersScreen(vm: AppViewModel) {
             modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp),
         )
     }
+
+    if (finding) LanFinderDialog(vm) { finding = false }
 
     (askPasswordFor ?: vm.needPasswordFor)?.let { s ->
         PasswordDialog(
@@ -337,12 +346,12 @@ private fun SwitchRow(title: String, detail: String?, checked: Boolean, onChange
 /** Add or edit a server. Every field is the user's; only a new WebSocket address starts with "wss://". */
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
-fun EditServerScreen(vm: AppViewModel, existing: Server?) {
+fun EditServerScreen(vm: AppViewModel, existing: Server?, prefillHost: String? = null, prefillName: String? = null) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val draftId = remember { existing?.id ?: UUID.randomUUID().toString() }
-    var name by remember { mutableStateOf(existing?.name ?: "") }
-    var host by remember { mutableStateOf(existing?.host ?: "") }
+    var name by remember { mutableStateOf(existing?.name ?: prefillName.orEmpty()) }
+    var host by remember { mutableStateOf(existing?.host ?: prefillHost.orEmpty()) }
     var viaWs by remember { mutableStateOf(existing?.overWebSocket ?: false) }
     // A new WebSocket address starts with "wss://" typed in, which can be edited or removed.
     var wsUrl by remember { mutableStateOf(existing?.wsUrl ?: "wss://") }
@@ -651,3 +660,59 @@ fun ErrorBanner(
     }
 }
 
+
+
+/**
+ * Lists the machines on this Wi-Fi that answer SSH, as they are found. Nothing signs in anywhere:
+ * each line is an address, the name it advertises if any, and the SSH version it reports. Tapping
+ * one opens Add server with the address filled in; herdr itself is checked on the first connection.
+ */
+@Composable
+private fun LanFinderDialog(vm: AppViewModel, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val found = remember { androidx.compose.runtime.mutableStateListOf<com.billmongan.herdrdroid.net.LanHost>() }
+    var checked by remember { mutableStateOf(0) }
+    var total by remember { mutableStateOf(0) }
+    var done by remember { mutableStateOf(false) }
+    val net = remember { com.billmongan.herdrdroid.net.LanScan.localNetwork(context) }
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        if (net == null) { done = true; return@LaunchedEffect }
+        com.billmongan.herdrdroid.net.LanScan.scan(context,
+            onProgress = { c, t -> checked = c; total = t },
+            onFound = { h -> if (found.none { it.ip == h.ip }) found += h })
+        done = true
+    }
+    val known = vm.servers.map { it.host }.toSet()
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Find on this network") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                when {
+                    net == null -> Text("Connect the phone to Wi-Fi first. The search only looks at the local network you're on.", color = Palette.Muted)
+                    !done -> Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Text("  Checking ${net.first.substringBeforeLast('.')}.x for SSH… $checked of $total", color = Palette.Muted, fontSize = 13.sp)
+                    }
+                    found.isEmpty() -> Text("No machine on this network answered SSH on port 22.", color = Palette.Muted)
+                    else -> Text("Machines that answer SSH. Tap one to add it; herdr is checked when you first connect.", color = Palette.Muted, fontSize = 13.sp)
+                }
+                androidx.compose.foundation.lazy.LazyColumn(Modifier.heightIn(max = 360.dp)) {
+                    items(found.sortedBy { h -> h.ip.split('.').map { it.toIntOrNull() ?: 0 }.fold(0L) { a, b -> a * 256 + b } }, key = { it.ip }) { h ->
+                        val already = h.ip in known || (h.name != null && h.name in known)
+                        Column(
+                            Modifier.fillMaxWidth().clickable(enabled = !already) {
+                                onDismiss()
+                                vm.screen = Screen.EditServer(null, prefillHost = h.ip, prefillName = h.name?.substringBefore('.') ?: h.ip)
+                            }.padding(vertical = 8.dp),
+                        ) {
+                            Text((h.name ?: h.ip) + if (already) "  (added)" else "", color = if (already) Palette.Muted else Palette.Ink, fontWeight = FontWeight.SemiBold)
+                            Text(listOfNotNull(h.ip.takeIf { h.name != null }, h.ssh).joinToString(" · "), color = Palette.Muted, fontSize = 12.5.sp)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { androidx.compose.material3.TextButton(onClick = onDismiss) { Text(if (done) "Close" else "Stop") } },
+    )
+}
