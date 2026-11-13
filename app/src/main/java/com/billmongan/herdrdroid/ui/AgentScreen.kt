@@ -309,18 +309,34 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                         else vm.transcriptTitle?.takeIf { structured } ?: (pane?.agentName ?: paneId)),
                         fontWeight = FontWeight.SemiBold, fontSize = 17.sp, color = Palette.Ink,
                         maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        modifier = if (isHermes) Modifier.clickable { hermesMenu = true } else Modifier,
+                        modifier = if (isHermes) Modifier.clickable { hermesMenu = true; vm.hermesChat()?.refreshSessions() } else Modifier,
                     )
                     if (isHermes) DropdownMenu(expanded = hermesMenu, onDismissRequest = { hermesMenu = false }) {
                         DropdownMenuItem(text = { Text((if (!live) "✓ " else "    ") + "This pane (the Hermes CLI)") }, onClick = { hermesMenu = false; hermesLive = false })
                         DropdownMenuItem(text = { Text((if (live) "✓ " else "    ") + "Live chat (streaming, approvals as buttons)") }, onClick = { hermesMenu = false; hermesLive = true })
                         HorizontalDivider(color = Palette.Line)
-                        DropdownMenuItem(text = { Text("Telegram conversation") }, onClick = {
-                            hermesMenu = false; hermesLive = true
-                            vm.hermesChat()?.openLatest("telegram", "Telegram")
-                        })
-                        DropdownMenuItem(text = { Text("All conversations…") }, onClick = { hermesMenu = false; hermesLive = true; vm.hermesChat()?.showPicker() })
-                        DropdownMenuItem(text = { Text("New chat") }, onClick = { hermesMenu = false; hermesLive = true; vm.hermesChat()?.newChat() })
+                        // Your Hermes conversations by name, newest first (Telegram, the CLI, earlier
+                        // chats); tap one to switch to it in live chat.
+                        val chat = vm.hermesChat()
+                        DropdownMenuItem(text = { Text("＋ New chat", fontWeight = FontWeight.SemiBold) }, onClick = { hermesMenu = false; hermesLive = true; chat?.newChat() })
+                        val list = chat?.sessions.orEmpty().take(10)
+                        if (list.isEmpty()) {
+                            DropdownMenuItem(text = { Text(if (chat?.loadingSessions == true) "Loading conversations…" else "No other conversations yet", color = Palette.Muted) }, onClick = {}, enabled = false)
+                        }
+                        list.forEach { sess ->
+                            val on = live && chat?.openId == sess.id
+                            DropdownMenuItem(
+                                text = {
+                                    Column {
+                                        Text((if (on) "✓ " else "") + sess.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal)
+                                        Text(listOfNotNull(sourceName(sess.source), sess.model, if (sess.running) "working" else null).joinToString(" · "),
+                                            color = Palette.Muted, fontSize = 12.sp, maxLines = 1)
+                                    }
+                                },
+                                onClick = { hermesMenu = false; hermesLive = true; chat?.open(sess) },
+                            )
+                        }
+                        DropdownMenuItem(text = { Text("All conversations…") }, onClick = { hermesMenu = false; hermesLive = true; chat?.showPicker() })
                         HorizontalDivider(color = Palette.Line)
                         DropdownMenuItem(text = { Text("Model and reasoning…") }, onClick = { hermesMenu = false; choosingModel = true })
                         if (quota != null) DropdownMenuItem(text = { Text(if (showUsage) "Hide usage" else "Usage") }, onClick = { hermesMenu = false; showUsage = !showUsage })
@@ -1019,4 +1035,14 @@ private fun FullMessage(text: String, size: Float, family: FontFamily, onQuote: 
             }
         }
     }
+}
+
+/** Where a Hermes conversation came from, in words. */
+private fun sourceName(source: String): String? = when (source.lowercase()) {
+    "" -> null
+    "telegram" -> "Telegram"
+    "cli" -> "Hermes CLI"
+    "tui", "local" -> "Hermes app"
+    "api_server" -> "API"
+    else -> source.replaceFirstChar { it.uppercase() }
 }

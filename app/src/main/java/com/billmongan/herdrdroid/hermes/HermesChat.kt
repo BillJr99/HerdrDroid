@@ -180,6 +180,9 @@ class HermesChat(ssh: HerdrSsh, private val scope: CoroutineScope) {
         }
     }
 
+    /** The stored id of the conversation open in live chat, if any. */
+    val openId: String? get() = if (phase == HermesPhase.CHAT) storedId ?: sessionId else null
+
     fun showPicker() {
         phase = HermesPhase.PICKER
         refreshSessions()
