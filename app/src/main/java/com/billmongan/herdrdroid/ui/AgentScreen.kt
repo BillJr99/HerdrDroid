@@ -412,7 +412,8 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                     com.billmongan.herdrdroid.herdr.agentMode(pane?.agent, screenText)?.takeIf { !live }?.let { mode ->
                         val cycles = pane?.agent?.lowercase() == "claude"
                         DropdownMenuItem(
-                            text = { Text("Mode: $mode" + if (cycles) "  (tap to switch)" else "") },
+                            // Shown, never set: the app has no way to turn on a bypass mode.
+                            text = { Text("Mode: " + (if (mode == "bypass") "bypass (approves every tool)" else mode) + if (cycles) "  (tap to switch)" else "") },
                             enabled = cycles,
                             onClick = { menu = false; vm.sendKeys(paneId, "shift+tab") },
                         )

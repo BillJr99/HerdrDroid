@@ -872,7 +872,7 @@ fun menuKeys(prompt: Prompt, choice: Choice): List<String>? {
  * means the agent is waiting even when no choices can be read from the screen.
  */
 /** The footer of Claude's question dialog ("Enter to select · ↑/↓ to navigate · Esc to cancel"). */
-private val QUESTION_FOOTER = Regex("""Enter to select.*(navigate|Esc to cancel)|Tab/Arrow keys to navigate|↑/↓ to navigate""", RegexOption.IGNORE_CASE)
+private val QUESTION_FOOTER = Regex("""Enter to select.*(navigate|Esc to cancel)|Tab/Arrow keys to navigate|↑/↓ to navigate|\b\d+/\d+:select\b""", RegexOption.IGNORE_CASE)
 
 fun showsQuestionDialog(text: String): Boolean =
     text.lines().filter { it.isNotBlank() }.takeLast(6).any { QUESTION_FOOTER.containsMatchIn(it) }
@@ -901,6 +901,7 @@ fun agentMode(agent: String?, screen: String): String? {
             }
         }
     }
+    if (agent?.lowercase() != "claude" && footerBypass(screen)) return "bypass"
     val m = Regex("""(plan mode|accept edits|auto mode|auto-accept edits|bypass permissions) on""", RegexOption.IGNORE_CASE).findAll(tail).lastOrNull()
     val mode = m?.groupValues?.get(1)?.lowercase()?.let {
         when {
@@ -912,6 +913,25 @@ fun agentMode(agent: String?, screen: String): String? {
     }
     return mode ?: if (agent?.lowercase() == "claude" && tail.isNotBlank()) "default" else null
 }
+
+/**
+ * Whether an agent's footer says every tool runs without asking: Grok's always-approve, Hermes's
+ * --yolo, Codex's full access, Copilot's allow-all, Antigravity's skipped permissions. Display only:
+ * the app never turns such a mode on (Bill, 2026-11-13). Only the bottom three lines are read, key
+ * hints such as "Ctrl+o:always-approve" are removed first, and an approval card's own options
+ * ("1 (○) Yes, and don't ask again ... (always-approve mode)") are skipped, so neither counts.
+ */
+private val BYPASS_WORDS = Regex(
+    """\b(always[- ]approve|yolo|full access|allow[- ]all|bypass(ing)? permissions|dangerously|skip(ping)? permissions|auto[- ]approve|approve all)\b""",
+    RegexOption.IGNORE_CASE,
+)
+private val KEY_HINT = Regex("""\b(ctrl|shift|alt|meta|cmd)\+[\w.]+\s*:\s*[\w-]+(\s+mode)?""", RegexOption.IGNORE_CASE)
+private val CARD_ROW = Regex("""^[\s│┃|]*([❯›>▶➤]\s*)?\d(?:[.)]|\s+\([○●◯◉]\))\s""")
+
+fun footerBypass(screen: String): Boolean =
+    screen.lines().filter { it.isNotBlank() }.takeLast(3)
+        .filterNot { CARD_ROW.containsMatchIn(it) }
+        .any { BYPASS_WORDS.containsMatchIn(KEY_HINT.replace(it, " ")) }
 
 /**
  * A menu without numbers, as Kiro's and Vibe's model pickers draw it: the current row marked with
@@ -962,10 +982,15 @@ fun detectPrompt(text: String, blocked: Boolean): Prompt? {
 
     val clean = { s: String -> s.trim().trim('│', '┃', '|', '╭', '╰', '╮', '╯', '─', ' ').trim() }
     // "❯ 1. Yes", "  2. Yes, and don't ask again for …" (labels can be long; up to 200 characters).
-    val option = Regex("""^[\s│┃|]*([❯›>▶➤]\s*)?(\d)[.)]\s+(.{1,200}?)[\s│┃|]*$""")
+    // Grok draws radio buttons instead: "1 (○) Yes, and don't ask again", "2 (●) Yes, proceed", with
+    // (●) on the highlighted option, which ↑/↓ move and Enter picks (checked in Grok 4.7, 2026-11-13).
+    val option = Regex("""^[\s│┃|]*([❯›>▶➤]\s*)?(\d)(?:[.)]|\s+(\([○●◯◉]\)))\s+(.{1,200}?)[\s│┃|]*$""")
     val marked = mutableSetOf<Int>()
     val optionRows = lines.withIndex().mapNotNull { (i, l) ->
-        option.find(l)?.let { m -> if (m.groupValues[1].isNotBlank()) marked += i; Triple(i, m.groupValues[2], m.groupValues[3].trim()) }
+        option.find(l)?.let { m ->
+            if (m.groupValues[1].isNotBlank() || m.groupValues[3] in setOf("(●)", "(◉)")) marked += i
+            Triple(i, m.groupValues[2], m.groupValues[4].trim())
+        }
     }
     // Keep the last run of consecutive numbers (1, 2, 3 …), so a numbered list earlier on the
     // screen isn't mixed into the menu.
@@ -980,7 +1005,7 @@ fun detectPrompt(text: String, blocked: Boolean): Prompt? {
     // The whole question: every line above the first choice up to a blank line, the top of the
     // question's box or a rule (at most 20 lines), so a long question isn't cut.
     val above = run.firstOrNull()?.let { (_, firstKey, firstLabel) ->
-        val at = raw.indexOfLast { option.find(it)?.let { m -> m.groupValues[2] == firstKey && m.groupValues[3].trim() == firstLabel } == true }
+        val at = raw.indexOfLast { option.find(it)?.let { m -> m.groupValues[2] == firstKey && m.groupValues[4].trim() == firstLabel } == true }
         if (at <= 0) null else {
             val got = mutableListOf<String>()
             var i = at - 1
@@ -989,7 +1014,8 @@ fun detectPrompt(text: String, blocked: Boolean): Prompt? {
                 val c = clean(l)
                 if (l.isBlank() || c.isEmpty()) { if (got.isNotEmpty()) break else { i--; continue } }
                 if (l.trimStart().startsWith("╭") || l.trimStart().startsWith("┌") || c.matches(Regex("""^[─━═\-_\s]+$"""))) break
-                if (c.any(Char::isLetterOrDigit)) got.add(0, c)
+                // Grok's "← → narrow scope" hint sits between the command and its options.
+                if (c.any(Char::isLetterOrDigit) && !c.contains("narrow scope")) got.add(0, c.trimStart('›', '❯', ' '))
                 i--
             }
             got.joinToString(" ").replace(Regex("\\s+"), " ").trim().takeIf { it.isNotEmpty() }
