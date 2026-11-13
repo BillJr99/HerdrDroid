@@ -180,16 +180,19 @@ class ComposeUiTest {
         var opened: String? = null
         val items = listOf(UserItem("u1", "Question"), TextItem("t1", "The whole answer"))
         rule.setContent {
-            Box(Modifier.fillMaxSize()) {
+            // A narrow phone: every reply button must show without scrolling sideways.
+            Box(Modifier.width(360.dp).height(600.dp)) {
                 TranscriptChat(
                     rows = rowsOf(items), working = false, workingLabel = "", agentName = "Claude",
                     pending = emptyList(), more = false, size = 12.5f, family = FontFamily.Default,
-                    actions = ChatActions(onQuote = {}, onStop = null, onOpen = { opened = it }, focusKey = "t1"),
+                    actions = ChatActions(onQuote = {}, onStop = null, onForward = {}, onOpen = { opened = it }, focusKey = "t1"),
                     state = rememberLazyListState(), modifier = Modifier.fillMaxSize(),
                 )
             }
         }
-        rule.onNodeWithText("Full screen").performClick()
+        listOf("Copy", "Share", "Quote", "Read").forEach { rule.onNodeWithText(it).assertIsDisplayed() }
+        rule.onNodeWithText("Forward").assertDoesNotExist()
+        rule.onNodeWithText("Expand").performClick()
         assertEquals("The whole answer", opened)
     }
 }

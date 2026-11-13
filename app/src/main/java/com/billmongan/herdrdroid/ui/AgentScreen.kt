@@ -122,7 +122,6 @@ private fun keyName(c: Char): String? = when {
 fun AgentScreen(vm: AppViewModel, paneId: String) {
     val pane = vm.pane(paneId)
     var message by rememberSaveable(paneId) { mutableStateOf(vm.takePrefill(paneId) ?: "") }
-    var forwarding by remember { mutableStateOf<String?>(null) }
     var fullTerminal by rememberSaveable { mutableStateOf(false) }
     var confirmCtrlC by remember { mutableStateOf(false) }
     var typingAnswer by remember { mutableStateOf(false) }
@@ -213,7 +212,8 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     }
     val quote: (String) -> Unit = { q -> message = q.lines().joinToString("\n") { "> $it" } + "\n\n" }
 
-    val status = pane?.status ?: Status.UNKNOWN
+    // As the list shows it: Done becomes Idle once you have opened it here.
+    val status = pane?.let { vm.shownStatus(it) } ?: Status.UNKNOWN
     val prompt: Prompt? = if (typingAnswer) null else detectPrompt(vm.paneText, status == Status.NEEDS_YOU)
     val scroll = rememberScrollState()
     LaunchedEffect(vm.paneText, structured) { if (!structured) scroll.animateScrollTo(scroll.maxValue) }
@@ -451,7 +451,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 size = liveSize,
                 family = family,
                 actions = ChatActions(
-                    onQuote = quote, onStop = pane?.let { p -> { vm.stopPane(p) } }, onForward = { t -> forwarding = t },
+                    onQuote = quote, onStop = pane?.let { p -> { vm.stopPane(p) } },
                     undelivered = vm.undeliveredFor(paneId), onResend = vm::resendPending, onDismissPending = vm::dismissPending,
                     onLoadEarlier = if (vm.canLoadEarlier) ({ vm.loadEarlier(paneId) }) else null, loadingEarlier = vm.loadingEarlier,
                     queuedNote = "Queued in ${pane?.agentName ?: "the agent"} · it reads these when its current step ends",
@@ -593,10 +593,6 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 },
             )
         }
-    }
-
-    forwarding?.let { t ->
-        ForwardPicker(vm, exclude = paneId, onPick = { to -> forwarding = null; vm.forward(t, pane, to) }, onDismiss = { forwarding = null })
     }
 
     if (showSnippets) {

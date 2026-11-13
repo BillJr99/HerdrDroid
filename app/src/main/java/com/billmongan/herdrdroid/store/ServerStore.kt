@@ -154,6 +154,11 @@ class AppPrefs(context: Context) {
         get() = prefs.getString("seenModels", "{}") ?: "{}"
         set(v) = prefs.edit().putString("seenModels", v).apply()
 
+    /** When each pane turned done and when it was last open in the app: {"done": {...}, "seen": {...}}. */
+    var seenPanes: String
+        get() = prefs.getString("seenPanes", "{}") ?: "{}"
+        set(v) = prefs.edit().putString("seenPanes", v).apply()
+
     /** Alerts when a usage limit passes 80% or 95%, and when it resets. */
     var alertUsage: Boolean
         get() = prefs.getBoolean("alertUsage", true)

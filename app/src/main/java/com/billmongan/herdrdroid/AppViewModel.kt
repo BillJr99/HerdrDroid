@@ -358,41 +358,59 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val s = HerdrSsh(server.host, server.port, server.user, creds, server.fingerprint, SshKeyVault::provider, server.wsUrl?.takeIf { server.overWebSocket })
             connectingSsh = s
             try {
-                // Which herdr: the server's choice, or whichever one is running there.
-                val found = detectBackend(s, server.herdrPath)
-                val backend = when (server.backend) {
-                    "tui" -> Backend.TUI
-                    "core" -> Backend.CORE
-                    else -> when {
-                        found.tuiRunning && found.coreRunning -> {
-                            s.close()
-                            pendingBackendChoice = PendingBackend(server, password, remember)
-                            return@launch
+                // Back to the server just left: its connection is kept open for a few minutes, so
+                // it is used again at once after one quick check, with no sign-in or detection.
+                val kept = parked?.takeIf { it.serverId == server.id && System.currentTimeMillis() - it.at < PARK_MILLIS }
+                parked = null
+                parkJob?.cancel()
+                val reused = kept != null && runCatching { kotlinx.coroutines.withTimeout(6_000) { kept.herdr.check() } }.isSuccess
+                if (kept != null && !reused) kept.ssh.close()
+                val sNow: HerdrSsh
+                val h: Herdr
+                if (reused) {
+                    com.billmongan.herdrdroid.diag.DiagLog.log("connect", "reusing the connection kept from a moment ago")
+                    s.close()
+                    sNow = kept!!.ssh
+                    h = kept.herdr
+                    activeBackend = kept.backend
+                } else {
+                    sNow = s
+                    // Which herdr: the server's choice, or whichever one is running there.
+                    val found = detectBackend(s, server.herdrPath)
+                    val backend = when (server.backend) {
+                        "tui" -> Backend.TUI
+                        "core" -> Backend.CORE
+                        else -> when {
+                            found.tuiRunning && found.coreRunning -> {
+                                s.close()
+                                pendingBackendChoice = PendingBackend(server, password, remember)
+                                return@launch
+                            }
+                            found.coreRunning -> Backend.CORE
+                            found.tuiRunning -> Backend.TUI
+                            found.tuiInstalled -> Backend.TUI
+                            found.coreInstalled -> Backend.CORE
+                            else -> Backend.TUI
                         }
-                        found.coreRunning -> Backend.CORE
-                        found.tuiRunning -> Backend.TUI
-                        found.tuiInstalled -> Backend.TUI
-                        found.coreInstalled -> Backend.CORE
-                        else -> Backend.TUI
                     }
-                }
-                com.billmongan.herdrdroid.diag.DiagLog.log("connect", "herdr on this computer: TUI ${if (found.tuiRunning) "running" else if (found.tuiInstalled) "installed" else "absent"}, " +
-                    "herdr-core ${if (found.coreRunning) "running" else if (found.coreInstalled) "installed" else "absent"}; using ${if (backend == Backend.CORE) "herdr-core" else "herdr"}")
-                activeBackend = backend
-                val h = Herdr(s, server.herdrPath, backend, found.hcPath)
-                // A WebSocket server may be asleep and take a while to answer, so a failed
-                // connection is tried again with growing waits before it is reported.
-                var wait = 2_000L
-                var tries = 0
-                while (true) {
-                    try {
-                        h.check()
-                        break
-                    } catch (e: LinkDown) {
-                        if (!server.overWebSocket || ++tries > 4) throw e
-                        connectNote = "The server didn't answer yet (it may be waking up). Trying again in ${wait / 1000} s…"
-                        delay(wait)
-                        wait *= 2
+                    com.billmongan.herdrdroid.diag.DiagLog.log("connect", "herdr on this computer: TUI ${if (found.tuiRunning) "running" else if (found.tuiInstalled) "installed" else "absent"}, " +
+                        "herdr-core ${if (found.coreRunning) "running" else if (found.coreInstalled) "installed" else "absent"}; using ${if (backend == Backend.CORE) "herdr-core" else "herdr"}")
+                    activeBackend = backend
+                    h = Herdr(s, server.herdrPath, backend, found.hcPath)
+                    // A WebSocket server may be asleep and take a while to answer, so a failed
+                    // connection is tried again with growing waits before it is reported.
+                    var wait = 2_000L
+                    var tries = 0
+                    while (true) {
+                        try {
+                            h.check()
+                            break
+                        } catch (e: LinkDown) {
+                            if (!server.overWebSocket || ++tries > 4) throw e
+                            connectNote = "The server didn't answer yet (it may be waking up). Trying again in ${wait / 1000} s…"
+                            delay(wait)
+                            wait *= 2
+                        }
                     }
                 }
                 connectNote = null
@@ -401,7 +419,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 if (saved != server) store.save(saved)
                 reloadServers()
                 closeSession()
-                ssh = s
+                ssh = sNow
                 herdr = h
                 current = saved
                 link = Link.CONNECTED
@@ -708,6 +726,28 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         pendingHostKey = null
     }
 
+    /** A connection kept open after leaving a server, so going back to it is quick. */
+    private class Parked(val serverId: String, val ssh: HerdrSsh, val herdr: Herdr, val backend: Backend, val at: Long)
+    private var parked: Parked? = null
+    private var parkJob: Job? = null
+    private val PARK_MILLIS = 5 * 60_000L
+
+    /** Keeps the open server's connection for [PARK_MILLIS], then closes it if unused. */
+    private fun park() {
+        val s = ssh ?: return
+        val h = herdr ?: return
+        val id = current?.id ?: return
+        parked?.ssh?.close()
+        parked = Parked(id, s, h, activeBackend, System.currentTimeMillis())
+        ssh = null
+        herdr = null
+        parkJob?.cancel()
+        parkJob = viewModelScope.launch {
+            delay(PARK_MILLIS)
+            parked?.let { if (it.serverId == id) { it.ssh.close(); parked = null } }
+        }
+    }
+
     private fun closeSession() {
         closeJob?.cancel()
         closeWatch.clear()
@@ -727,6 +767,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         fleet = null
         watchJob?.cancel()
         WatchService.stop(getApplication())
+        park()
         closeSession()
         current = null
         panes = emptyList()
@@ -920,12 +961,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 } else p
             }
             val tNow = System.currentTimeMillis()
+            var doneChanged = false
             fresh.forEach { p ->
                 val k = "${current?.id}|${p.id}"
-                if (p.status == Status.DONE) doneSince.getOrPut(k) { tNow } else doneSince.remove(k)
+                // A new "done" begins only after the agent works or asks again; a passing idle,
+                // unknown or shell reading in between keeps the one you already saw.
+                when (p.status) {
+                    Status.DONE -> if (!doneSince.containsKey(k)) { doneSince[k] = tNow; doneChanged = true }
+                    Status.WORKING, Status.NEEDS_YOU -> if (doneSince.remove(k) != null) doneChanged = true
+                    else -> {}
+                }
                 // An agent open on screen when it finishes has been seen.
-                if ((screen as? Screen.Agent)?.paneId == p.id && foreground) seenInApp[k] = tNow
+                if ((screen as? Screen.Agent)?.paneId == p.id && foreground) { seenInApp[k] = tNow; doneChanged = true }
             }
+            if (doneChanged) saveSeen()
             panes = withBusy(fresh, busyCounts)
             current?.let { s -> noticeChanges(s.id, s.label, fresh) { herdr } }
             updateWidget(fresh)
@@ -1006,6 +1055,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun openPane(paneId: String) {
         seenInApp["${current?.id}|$paneId"] = System.currentTimeMillis()
+        saveSeen()
         paneText = ""
         resetTranscript(paneId)
         screen = Screen.Agent(paneId)
@@ -1880,8 +1930,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun withBusy(list: List<Pane>, busy: Map<String, Int>): List<Pane> = list.map { p ->
         if ((p.status == Status.IDLE || p.status == Status.DONE) && (busy[p.id] ?: 0) > 0) p.copy(status = Status.WORKING) else p
     }
-    private val doneSince = mutableMapOf<String, Long>()
-    private val seenInApp = mutableMapOf<String, Long>()
+    // When each pane last turned done, and when you last had it open here ("server|pane"). Kept
+    // across launches and reconnects, so an agent you opened stays idle until it works again.
+    private val doneSince = loadSeen("done")
+    private val seenInApp = loadSeen("seen")
+
+    private fun loadSeen(part: String): MutableMap<String, Long> = runCatching {
+        val o = org.json.JSONObject(prefs.seenPanes).optJSONObject(part) ?: org.json.JSONObject()
+        o.keys().asSequence().associateWith { o.optLong(it) }.toMutableMap()
+    }.getOrDefault(mutableMapOf())
+
+    private fun saveSeen() {
+        val cutoff = System.currentTimeMillis() - 7L * 86_400_000
+        fun json(m: Map<String, Long>) = org.json.JSONObject(m.filterValues { it >= cutoff })
+        runCatching { prefs.seenPanes = org.json.JSONObject().put("done", json(doneSince)).put("seen", json(seenInApp)).toString() }
+    }
 
     suspend fun refreshWork(paneId: String) {
         val p = pane(paneId) ?: return

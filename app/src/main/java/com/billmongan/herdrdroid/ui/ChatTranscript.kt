@@ -321,8 +321,8 @@ private fun ItemView(item: Item, rows: List<ChatRow>, size: Float, family: FontF
                     MarkdownText(item.text, size * 1.12f, family)
                 }
                 MentionedFiles(files)
-                if (endsTurn) ReplyActions(item.text, actions.onQuote, actions.onForward, actions.onOpen)
-                else if (item.text.length > 700 && actions.onOpen != null) Pill("Full screen") { actions.onOpen.invoke(item.text) }
+                if (endsTurn) ReplyActions(item.text, actions.onQuote, actions.onOpen)
+                else if (item.text.length > 700 && actions.onOpen != null) Pill("Expand") { actions.onOpen.invoke(item.text) }
             }
         }
         is ThinkItem -> ThinkView(item, size)
@@ -387,18 +387,18 @@ private fun share(context: android.content.Context, text: String) {
 
 /** Copy, Share and Quote under a finished reply. */
 @Composable
-private fun ReplyActions(text: String, onQuote: (String) -> Unit, onForward: ((String) -> Unit)?, onOpen: ((String) -> Unit)? = null) {
+private fun ReplyActions(text: String, onQuote: (String) -> Unit, onOpen: ((String) -> Unit)? = null) {
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
     var copied by remember { mutableStateOf(false) }
     if (copied) LaunchedEffect(Unit) { delay(1500); copied = false }
-    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        if (onOpen != null) Pill("Full screen") { onOpen(text) }
+    // Short labels in one row that fits a phone's width, with no sideways scrolling.
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+        if (onOpen != null) Pill("Expand") { onOpen(text) }
         Pill(if (copied) "Copied" else "Copy") { clipboard.setText(AnnotatedString(text)); copied = true }
         Pill("Share") { share(context, text) }
         Pill("Quote") { onQuote(text) }
-        Pill(if (Speaker.speakingKey == text.hashCode().toString()) "Stop reading" else "Read") { Speaker.speak(context, text.hashCode().toString(), text) }
-        if (onForward != null) Pill("Forward") { onForward(text) }
+        Pill(if (Speaker.speakingKey == text.hashCode().toString()) "Stop" else "Read") { Speaker.speak(context, text.hashCode().toString(), text) }
     }
 }
 
@@ -410,7 +410,7 @@ private fun Pill(label: String, onClick: () -> Unit) {
         modifier = Modifier
             .clip(RoundedCornerShape(14.dp))
             .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 6.dp),
+            .padding(horizontal = 8.dp, vertical = 6.dp),
     )
 }
 
