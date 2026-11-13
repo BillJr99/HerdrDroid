@@ -364,17 +364,6 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                     LinkLabel(vm, "")
                 }
             }
-            // The agent's permission mode (plan, accept edits, auto). For Claude a tap cycles it with
-            // Shift+Tab, the same key as at the computer.
-            com.billmongan.herdrdroid.herdr.agentMode(pane?.agent, screenText)?.takeIf { !live }?.let { mode ->
-                val cycles = pane?.agent?.lowercase() == "claude"
-                Text(
-                    mode + if (cycles) " ⇄" else "",
-                    color = if (mode == "plan") Palette.OrangeInk else Palette.Ink, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
-                    modifier = Modifier.padding(end = 4.dp).clip(RoundedCornerShape(12.dp)).background(Palette.Gray)
-                        .clickable(enabled = cycles) { vm.sendKeys(paneId, "shift+tab") }.padding(horizontal = 8.dp, vertical = 4.dp),
-                )
-            }
             // Shells and subagents still running under the agent, as one small pill in the header
             // (a row of its own appeared and vanished as they started and finished, moving the chat).
             vm.work[paneId]?.let { w ->
@@ -387,11 +376,6 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                         modifier = Modifier.clip(RoundedCornerShape(12.dp)).background(Palette.BlueSoft)
                             .clickable { vm.screen = Screen.Work(paneId) }.padding(horizontal = 8.dp, vertical = 4.dp),
                     )
-                }
-            }
-            if (!live && vm.transcriptState == TranscriptMode.ON) {
-                TextButton(onClick = { fullTerminal = !fullTerminal }) {
-                    Text(if (fullTerminal) "Chat" else "Terminal", fontSize = 14.sp)
                 }
             }
             // Everything else lives in one menu, so the header stays readable on a phone.
@@ -415,8 +399,17 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                             vm.exportMarkdown(context, vm.transcriptTitle ?: "${pane?.agentName ?: "Agent"} in ${pane?.folder ?: ""}", pane?.agentName ?: "Agent", vm.transcriptItems)
                         })
                     }
-                    if (!live && vm.transcriptState != TranscriptMode.ON) {
-                        DropdownMenuItem(text = { Text(if (fullTerminal) "Chat view" else "Terminal view") }, onClick = { menu = false; fullTerminal = !fullTerminal })
+                    // Kept out of the header so the agent's name has the room.
+                    if (!live) DropdownMenuItem(text = { Text(if (fullTerminal) "Chat view" else "Terminal view") }, onClick = { menu = false; fullTerminal = !fullTerminal })
+                    // The permission mode (plan, accept edits, auto). For Claude this cycles it with
+                    // Shift+Tab, the same key as at the computer.
+                    com.billmongan.herdrdroid.herdr.agentMode(pane?.agent, screenText)?.takeIf { !live }?.let { mode ->
+                        val cycles = pane?.agent?.lowercase() == "claude"
+                        DropdownMenuItem(
+                            text = { Text("Mode: $mode" + if (cycles) "  (tap to switch)" else "") },
+                            enabled = cycles,
+                            onClick = { menu = false; vm.sendKeys(paneId, "shift+tab") },
+                        )
                     }
                 }
             }

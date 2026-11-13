@@ -1954,9 +1954,23 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (serverId == current?.id && herdr != null) { paneId?.let { openPane(it, "drawer") }; return }
         val s = servers.firstOrNull { it.id == serverId } ?: return
         if (!canSignInSilently(s)) { screen = Screen.Servers; return }
+        // If that server doesn't answer, come back to the agent you were on (its connection is
+        // parked, so this is quick) rather than leaving an empty screen or the server list.
+        val backServer = current
+        val backPane = (screen as? Screen.Agent)?.paneId
         pendingOpen = paneId
         if (current != null) disconnectQuietly()
         connect(s, savedPassword(s), remember = false, openAgent = true)
+        viewModelScope.launch {
+            connectJob?.join()
+            if (current == null && backServer != null && pendingHostKey == null && pendingBackendChoice == null) {
+                val why = error
+                pendingOpen = backPane
+                connect(backServer, savedPassword(backServer), remember = false, openAgent = true)
+                connectJob?.join()
+                error = "${s.label} didn't answer" + (why?.let { ": $it" } ?: ".")
+            }
+        }
     }
 
     // -- 1.1: every agent on every server, in one drawer ------------------------------------------
@@ -2088,13 +2102,48 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * At startup: no servers, the server screen; otherwise the last agent, on its server, when that
      * server signs in without asking; otherwise the server screen.
      */
+    /** True while startup is still looking for a server that answers; the app shows "Opening your agents". */
+    var starting by mutableStateOf(false)
+        private set
+    var startingOn by mutableStateOf<String?>(null)
+        private set
+
+    /** "Servers" pressed on the opening screen: stop trying and show the server list. */
+    fun cancelStarting() {
+        starting = false
+        connectJob?.cancel()
+        connecting = false
+    }
+
     fun autoOpen() {
-        if (servers.isEmpty() || current != null || connecting) return
+        if (servers.isEmpty() || current != null || connecting || starting) return
         val (sid, pid) = prefs.lastAgent.split("|", limit = 2).let { (it.getOrNull(0) ?: "") to it.getOrNull(1) }
-        val s = servers.firstOrNull { it.id == sid } ?: servers.firstOrNull { canSignInSilently(it) && it.fingerprint != null }
-        if (s == null || !canSignInSilently(s) || s.fingerprint == null) return
-        pendingOpen = pid?.takeIf { s.id == sid }
-        connect(s, savedPassword(s), remember = false, openAgent = true)
+        // The last agent's server first, then every other server that signs in without asking.
+        // One that is down (a WebSocket server that is off, say) just moves on to the next; the
+        // drawer still lists it as unreachable, and opening it later tries it again.
+        val silent = servers.filter { canSignInSilently(it) && it.fingerprint != null }
+        val order = silent.filter { it.id == sid } + silent.filter { it.id != sid }.sortedBy { it.overWebSocket }
+        if (order.isEmpty()) return
+        starting = true
+        viewModelScope.launch {
+            try {
+                for (s in order) {
+                    startingOn = s.label
+                    error = null
+                    pendingOpen = pid?.takeIf { s.id == sid }
+                    connect(s, savedPassword(s), remember = false, openAgent = true)
+                    connectJob?.join()
+                    // A server waiting on a choice (which herdr to use, a new host key) stops here.
+                    if (current != null || pendingBackendChoice != null || pendingHostKey != null) return@launch
+                    com.billmongan.herdrdroid.diag.DiagLog.log("start", "${s.label} didn't answer at startup; trying the next server")
+                }
+                // No server answered: only now the server screen, with the last error on it.
+                screen = Screen.Servers
+            } finally {
+                starting = false
+                startingOn = null
+            }
+        }
     }
 
     // -- Send when idle --------------------------------------------------------------------------

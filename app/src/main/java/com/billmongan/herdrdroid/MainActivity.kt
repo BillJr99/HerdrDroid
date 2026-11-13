@@ -104,6 +104,16 @@ class MainActivity : FragmentActivity() {
                             }
                         }
                     }
+                } else if (vm.starting && vm.screen == Screen.Servers) {
+                    // Startup is still finding a server that answers: not the server screen yet.
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        androidx.compose.foundation.layout.Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            androidx.compose.material3.CircularProgressIndicator(color = Palette.Blue)
+                            Text("Opening your agents…", color = Palette.Ink, fontSize = 17.sp, modifier = Modifier.padding(top = 16.dp))
+                            vm.startingOn?.let { Text(it, color = Palette.Muted, fontSize = 14.sp) }
+                            androidx.compose.material3.TextButton(onClick = { vm.screen = Screen.Servers; vm.cancelStarting() }) { Text("Servers") }
+                        }
+                    }
                 } else when (val s = vm.screen) {
                     Screen.Servers -> ServersScreen(vm)
                     is Screen.EditServer -> {
