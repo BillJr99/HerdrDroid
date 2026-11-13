@@ -3,6 +3,7 @@ package com.billmongan.herdrdroid.ui
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Text
@@ -62,7 +63,7 @@ class ComposeUiTest {
         rule.setContent { QuotaChips(r) }
         rule.onNodeWithText("24%").assertIsDisplayed()
         rule.onNodeWithText("12%").assertIsDisplayed()
-        rule.onNodeWithText("Nov 19, 7:59am").assertIsDisplayed()
+        rule.onNodeWithText(com.billmongan.herdrdroid.herdr.shortReset("Nov 19, 7:59am")).assertIsDisplayed()
     }
 
     @Test fun paneCardShowsTitleModelAndUsageAndOpens() {
@@ -139,5 +140,22 @@ class ComposeUiTest {
         items.value = items.value + (31..70).flatMap { listOf(UserItem("u$it", "Question $it"), TextItem("t$it", "Answer $it\n" + "more text\n".repeat(4))) }
         rule.waitForIdle()
         rule.onNodeWithText("Answer 70", substring = true).assertIsDisplayed()
+    }
+
+    /** A short label leaves room: the reset time must not be cut with "…". */
+    @Test fun quotaResetTimeIsNotCutWhenThereIsRoom() {
+        // An unreadable reset is shown as written, so this one stays long.
+        val long = "after the weekly cycle ends"
+        val r = QuotaReading(0, listOf(QuotaItem("Session", 12.0, long)))
+        rule.setContent { Box(Modifier.width(380.dp)) { QuotaChips(r) } }
+        rule.onNodeWithText(long).assertIsDisplayed()
+        assertTrue("reset time was cut", !overflows(long))
+        assertTrue("label was cut", !overflows("Session"))
+    }
+
+    private fun overflows(text: String): Boolean {
+        val results = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+        rule.onNodeWithText(text).fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult].action?.invoke(results)
+        return results.first().hasVisualOverflow
     }
 }

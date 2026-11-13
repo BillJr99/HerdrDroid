@@ -410,3 +410,67 @@ fun screenShape(text: String): String {
     return "$nonBlank lines, widest $widest cols, $bars bar line(s), more below: ${if (more) "yes" else "no"}; " +
         (if (hits.isEmpty()) "no percentages" else "percentages: " + hits.joinToString("; "))
 }
+
+/**
+ * A reset time as the agents print it ("Nov 19, 7:59am (UTC)", "November 17, 12:44",
+ * "3pm (America/New_York)", "in 4h 12m", an ISO time) in one short form: "Thu 11/19", or just
+ * the time when it is less than a day away ("03:00p"). A time zone in parentheses is
+ * honoured and shown in the phone's own zone. Anything unreadable is returned as it was.
+ */
+fun shortReset(raw: String, now: java.time.ZonedDateTime = java.time.ZonedDateTime.now()): String {
+    val here = now.zone
+    var s = raw.trim().removePrefix("Resets").removePrefix("resets").trim().removePrefix(":").removePrefix("at").trim()
+    var zone: java.time.ZoneId = here
+    Regex("""\(([^)]+)\)""").find(s)?.let { m ->
+        runCatching { java.time.ZoneId.of(m.groupValues[1].trim()) }.getOrNull()?.let { zone = it }
+        s = s.removeRange(m.range).trim()
+    }
+    fun out(t: java.time.ZonedDateTime): String {
+        val local = t.withZoneSameInstant(here)
+        val day = local.format(java.time.format.DateTimeFormatter.ofPattern("EEE MM/dd", java.util.Locale.US))
+        if (java.time.Duration.between(now, local).toHours() >= 24 || local.isBefore(now)) return day
+        return local.format(java.time.format.DateTimeFormatter.ofPattern("hh:mm", java.util.Locale.US)) + if (local.hour < 12) "a" else "p"
+    }
+    // "in 4h 12m", "in 2 days", "3d 4h"
+    Regex("""^(?:in\s+)?((?:\d+\s*(?:d|days?|h|hrs?|hours?|m|mins?|minutes?)\s*)+)$""", RegexOption.IGNORE_CASE).find(s)?.let { m ->
+        var secs = 0L
+        Regex("""(\d+)\s*([a-z]+)""", RegexOption.IGNORE_CASE).findAll(m.groupValues[1]).forEach { p ->
+            val n = p.groupValues[1].toLong()
+            secs += when (p.groupValues[2].lowercase().first()) { 'd' -> n * 86400; 'h' -> n * 3600; else -> n * 60 }
+        }
+        return out(now.plusSeconds(secs))
+    }
+    runCatching { return out(java.time.ZonedDateTime.parse(s)) }
+    runCatching { return out(java.time.OffsetDateTime.parse(s).toZonedDateTime()) }
+    // A time of day: "7:59am", "3pm", "12:44", "15:00".
+    fun time(t: String): java.time.LocalTime? {
+        val m = Regex("""^(\d{1,2})(?::(\d{2}))?\s*([ap]\.?m\.?)?$""", RegexOption.IGNORE_CASE).find(t.trim()) ?: return null
+        var h = m.groupValues[1].toInt()
+        val min = m.groupValues[2].ifEmpty { "0" }.toInt()
+        val ap = m.groupValues[3].lowercase().replace(".", "")
+        if (ap == "pm" && h < 12) h += 12
+        if (ap == "am" && h == 12) h = 0
+        if (h > 23 || min > 59 || (ap.isEmpty() && m.groupValues[2].isEmpty())) return null
+        return java.time.LocalTime.of(h, min)
+    }
+    val months = listOf("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+    // "Nov 19, 7:59am", "November 17, 12:44", "Nov 19 at 8am", "Nov 19 2026", "Thu, Nov 19"
+    Regex("""^(?:[A-Za-z]{3,9},?\s+)?([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?(?:,?\s*(?:at\s+)?(.+))?$""").find(s)?.let { m ->
+        val mi = months.indexOf(m.groupValues[1].lowercase().take(3))
+        if (mi >= 0) {
+            val today = now.withZoneSameInstant(zone).toLocalDate()
+            var date = runCatching { java.time.LocalDate.of(m.groupValues[3].ifEmpty { today.year.toString() }.toInt(), mi + 1, m.groupValues[2].toInt()) }.getOrNull()
+            if (date != null) {
+                if (m.groupValues[3].isEmpty() && date.isBefore(today.minusDays(30))) date = date.plusYears(1)
+                val t = m.groupValues[4].takeIf { it.isNotBlank() }?.let(::time) ?: java.time.LocalTime.MIDNIGHT
+                return out(java.time.ZonedDateTime.of(date, t, zone))
+            }
+        }
+    }
+    time(s)?.let { t ->
+        var at = java.time.ZonedDateTime.of(now.withZoneSameInstant(zone).toLocalDate(), t, zone)
+        if (at.isBefore(now)) at = at.plusDays(1)
+        return out(at)
+    }
+    return raw
+}

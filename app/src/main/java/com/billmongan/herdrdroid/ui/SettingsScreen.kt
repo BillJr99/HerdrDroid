@@ -273,7 +273,7 @@ fun QuotaLine(r: QuotaReading, modifier: Modifier = Modifier) {
                 Box(Modifier.weight(1f)) { QuotaBar(t) }
                 Text("${t.usedPercent.fmt()}%", color = Palette.Ink, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
                 t.resets?.let {
-                    Text(it, color = Palette.Muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(0.9f))
+                    Text(com.billmongan.herdrdroid.herdr.shortReset(it), color = Palette.Muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(0.9f))
                 }
             }
         }
@@ -314,7 +314,7 @@ fun QuotaDetails(r: QuotaReading, history: List<com.billmongan.herdrdroid.AppVie
                         Text("${i.usedPercent.fmt()}% used", color = Palette.Muted, fontSize = 13.sp)
                     }
                     QuotaBar(i)
-                    i.resets?.let { Text("Resets $it", color = Palette.Muted, fontSize = 12.sp) }
+                    i.resets?.let { Text("Resets ${com.billmongan.herdrdroid.herdr.shortReset(it)}", color = Palette.Muted, fontSize = 12.sp) }
                     val points = history.mapNotNull { pt -> pt.used[i.label]?.let { pt.at to it } }
                     if (points.size >= 2) UsageChart(points)
                 }
@@ -423,13 +423,53 @@ fun QuotaChips(r: QuotaReading, modifier: Modifier = Modifier) {
     if (r.items.isEmpty()) return
     Column(modifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {
         r.items.forEach { t ->
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                // The label takes the room it needs; the reset time gives way first.
-                Text(shortLabel(t.label), color = Palette.Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-                Box(Modifier.width(52.dp)) { QuotaBar(t) }
-                Text("${t.usedPercent.fmt()}%", color = if (t.usedPercent >= 90) Palette.OrangeInk else Palette.Ink, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
-                t.resets?.let { Text(it, color = Palette.Muted, fontSize = 11.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(0.8f, fill = false)) }
+            QuotaLine(
+                label = { Text(shortLabel(t.label), color = Palette.Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                bar = { Box(Modifier.width(52.dp)) { QuotaBar(t) } },
+                percent = { Text("${t.usedPercent.fmt()}%", color = if (t.usedPercent >= 90) Palette.OrangeInk else Palette.Ink, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false) },
+                reset = { Text(t.resets?.let { com.billmongan.herdrdroid.herdr.shortReset(it) }.orEmpty(), color = Palette.Muted, fontSize = 11.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            )
+        }
+    }
+}
+
+/**
+ * One usage line: label, bar, percent, reset time. The bar and percent keep their size; the label
+ * and the reset time both get their full width when they fit, and only when they don't is the
+ * longer one shortened (each keeps at least half of the room), so nothing is cut while there is room.
+ */
+@Composable
+private fun QuotaLine(
+    label: @Composable () -> Unit, bar: @Composable () -> Unit,
+    percent: @Composable () -> Unit, reset: @Composable () -> Unit,
+) {
+    val gap = with(androidx.compose.ui.platform.LocalDensity.current) { 8.dp.roundToPx() }
+    androidx.compose.ui.layout.Layout(contents = listOf(label, bar, percent, reset)) { (l, b, p, r), c ->
+        val loose = c.copy(minWidth = 0)
+        val bp = b.first().measure(loose)
+        val pp = p.first().measure(loose)
+        val room = (c.maxWidth - bp.width - pp.width - 3 * gap).coerceAtLeast(0)
+        val lw = l.first().maxIntrinsicWidth(c.maxHeight.coerceAtMost(10_000))
+        val rw = r.first().maxIntrinsicWidth(c.maxHeight.coerceAtMost(10_000))
+        val (la, ra) = if (lw + rw <= room) lw to rw else {
+            val half = room / 2
+            when {
+                lw <= half -> lw to room - lw
+                rw <= half -> room - rw to rw
+                else -> half to room - half
+            }
+        }
+        val lp = l.first().measure(loose.copy(maxWidth = la))
+        val rp = r.first().measure(loose.copy(maxWidth = ra))
+        val h = maxOf(lp.height, bp.height, pp.height, rp.height)
+        val w = if (c.hasBoundedWidth) c.maxWidth else lp.width + bp.width + pp.width + rp.width + 3 * gap
+        layout(w, h) {
+            var x = 0
+            for (pl in listOf(lp, bp, pp, rp)) {
+                pl.placeRelative(x, (h - pl.height) / 2)
+                x += pl.width + gap
             }
         }
     }
 }
+
