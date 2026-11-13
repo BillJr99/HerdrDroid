@@ -855,10 +855,18 @@ data class Choice(val label: String, val keys: String, val pressEnter: Boolean)
  * when there is one: answers then move the highlight with the arrow keys and press Enter instead
  * of typing a digit, which could land in an option's own text box.
  */
-data class Prompt(val question: String, val choices: List<Choice>, val selected: String? = null)
+data class Prompt(val question: String, val choices: List<Choice>, val selected: String? = null, val escRejects: Boolean = false)
+
+/** An option whose own label says Esc answers it: "No, and tell Codex what to do differently (esc)". */
+private val ESC_LABEL = Regex("""\((?:esc)\b[^)]*\)""", RegexOption.IGNORE_CASE)
+private val REJECT_LABEL = Regex("""^(deny|reject|no)\b""", RegexOption.IGNORE_CASE)
 
 /** The keys that pick [choice]: arrows from the highlighted option, then Enter; null to type it. */
 fun menuKeys(prompt: Prompt, choice: Choice): List<String>? {
+    // "No, and tell Copilot what to do differently (Esc to stop)": Enter on that row does nothing in
+    // Copilot, and in Codex and Claude it opens a feedback box; Esc answers it in all three. Vibe's
+    // card says "Esc reject", and Esc rejects wherever its (invisible) highlight is.
+    if (ESC_LABEL.containsMatchIn(choice.label) || (prompt.escRejects && REJECT_LABEL.containsMatchIn(choice.label))) return listOf("esc")
     val from = prompt.selected?.toIntOrNull() ?: return null
     val to = choice.keys.toIntOrNull() ?: return null
     if (prompt.choices.none { it.keys == choice.keys }) return null
@@ -872,7 +880,10 @@ fun menuKeys(prompt: Prompt, choice: Choice): List<String>? {
  * means the agent is waiting even when no choices can be read from the screen.
  */
 /** The footer of Claude's question dialog ("Enter to select · ↑/↓ to navigate · Esc to cancel"). */
-private val QUESTION_FOOTER = Regex("""Enter to select.*(navigate|Esc to cancel)|Tab/Arrow keys to navigate|↑/↓ to navigate|\b\d+/\d+:select\b""", RegexOption.IGNORE_CASE)
+private val QUESTION_FOOTER = Regex("""Enter to select.*(navigate|Esc to cancel)|Tab/Arrow keys to navigate|↑/↓ to navigate|\b\d+/\d+:select\b|↑/?↓(?:/jk)?\s+(?:to\s+)?navigate|press enter to confirm or esc""", RegexOption.IGNORE_CASE)
+
+/** Vibe's approval card: numbered rows, the highlight shown only by colour, "Esc reject" in its footer. */
+private val VIBE_CARD_FOOTER = Regex("""↑↓/jk navigate.*Esc reject""", RegexOption.IGNORE_CASE)
 
 fun showsQuestionDialog(text: String): Boolean =
     text.lines().filter { it.isNotBlank() }.takeLast(6).any { QUESTION_FOOTER.containsMatchIn(it) }
@@ -1024,8 +1035,10 @@ fun detectPrompt(text: String, blocked: Boolean): Prompt? {
     val question = above ?: lines.lastOrNull { clean(it).endsWith("?") }?.let(clean)
 
     if (numbered.size in 2..9 && (blocked || question?.endsWith("?") == true)) {
-        val selected = run.firstOrNull { it.first in marked }?.second
-        return Prompt(question ?: "Choose an option", numbered, selected)
+        val vibeCard = lines.takeLast(6).any { VIBE_CARD_FOOTER.containsMatchIn(it) }
+        // Vibe draws no marker on the highlighted row; a fresh card highlights the first one.
+        val selected = run.firstOrNull { it.first in marked }?.second ?: if (vibeCard) "1" else null
+        return Prompt(question ?: "Choose an option", numbered, selected, escRejects = vibeCard)
     }
 
     val yn = Regex("""[(\[]\s*[yY](?:es)?\s*/\s*[nN]o?\s*[)\]]""")
@@ -1033,6 +1046,10 @@ fun detectPrompt(text: String, blocked: Boolean): Prompt? {
     if (ynIndex >= 0 && ynIndex >= lines.size - 3) {
         return Prompt(clean(lines[ynIndex]), listOf(Choice("Yes", "y", true), Choice("No", "n", true)))
     }
+
+    // A menu without numbers, as Kiro draws its approval card ("❯ Yes, single permission" over
+    // "  Trust, always allow in this session" and "  No (Tab to edit)"); arrows and Enter answer it.
+    if (blocked) detectUnnumberedMenu(text)?.let { return it }
 
     return if (blocked) Prompt(question ?: "This agent is waiting for you.", emptyList()) else null
 }

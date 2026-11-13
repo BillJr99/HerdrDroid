@@ -136,8 +136,10 @@ Select model:   type to search
     }
 
     @Test fun kiroModelPickerReads() {
-        assertNull(detectPrompt(kiroModels, blocked = true)?.takeIf { it.choices.size >= 2 })
         val menu = detectUnnumberedMenu(kiroModels)!!
+        // Since 1.2.4 the question box reads Kiro's unnumbered menus too (its approval card is one),
+        // and gets the same choices as the model picker does.
+        assertEquals(menu, detectPrompt(kiroModels, blocked = true))
         assertEquals(listOf("auto", "claude-sonnet-4.5", "claude-haiku-4.5", "deepseek-3.2"), menu.choices.map { it.label.substringBefore(" · ") })
         assertEquals("1", menu.selected)
         assertEquals("Select model", menu.question)
