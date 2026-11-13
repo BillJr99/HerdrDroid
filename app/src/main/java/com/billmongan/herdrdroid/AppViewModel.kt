@@ -486,11 +486,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         val core = s.backend == "core" || (d != null && d.coreRunning && !d.tuiRunning)
                         val h = Herdr(ssh, s.herdrPath, if (core) Backend.CORE else Backend.TUI, d?.hcPath)
                         val list = h.panes()
-                        // Once per app start: the usage readings that are due there.
-                        startupQuotas(s, h, list)
+                        // The light goes up now; the usage checks that are due follow in the
+                        // background on this same connection, then it closes.
+                        val due = s.id !in startupQuotasDone
+                        if (due) viewModelScope.launch {
+                            try { runCatching { startupQuotas(s, h, list) } } finally { ssh.close() }
+                        }
+                        if (!due) ssh.close()
                         list
-                    } finally {
+                    } catch (e: Exception) {
                         ssh.close()
+                        throw e
                     }
                 }.getOrNull()
                 panes?.let { serverPanes = serverPanes + (s.id to it) }
@@ -798,6 +804,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun enqueue(q: Queued) {
+        com.billmongan.herdrdroid.diag.DiagLog.log("send", "queued until the link is back: ${q.label}")
         queue.addLast(q)
         queuedCount = queue.size
         if (herdr != null && link == Link.CONNECTED) linkLost(null)
@@ -998,14 +1005,31 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             // idle, so anything sent more than ten seconds ago is no longer waiting.
             val idle = pane(paneId)?.status.let { it == Status.IDLE || it == Status.DONE }
             val now = System.currentTimeMillis()
-            val stale = if (idle) mine.filter { it !in seen && now - it.at > 10_000 } else emptyList()
-            if (stale.isNotEmpty()) com.billmongan.herdrdroid.diag.DiagLog.log("pending", "${stale.size} sent message(s) cleared after the agent went idle without a matching log entry")
-            if (seen.isNotEmpty() || stale.isNotEmpty()) pendingSends = pendingSends - seen.toSet() - stale.toSet()
+            // An agent that is idle again has taken everything queued before; a message it still
+            // doesn't show more than ten seconds after it was sent was not delivered. It stays,
+            // marked, with Resend and Dismiss, instead of disappearing.
+            val stale = if (idle) mine.filter { it !in seen && !it.undelivered && now - it.at > 10_000 } else emptyList()
+            if (stale.isNotEmpty()) com.billmongan.herdrdroid.diag.DiagLog.log("pending", "${stale.size} sent message(s) not in the agent's log after it went idle: marked as not seen")
+            if (seen.isNotEmpty() || stale.isNotEmpty()) {
+                pendingSends = pendingSends.filter { it !in seen }.map { if (it in stale) it.copy(undelivered = true) else it }
+            }
         }
     }
 
     /** A message sent from this phone that the agent's log doesn't show yet (queued, or steering). */
-    data class PendingSend(val id: Long, val paneId: String, val text: String, val at: Long, val seenBefore: Int)
+    data class PendingSend(val id: Long, val paneId: String, val text: String, val at: Long, val seenBefore: Int, val undelivered: Boolean = false)
+
+    /** Messages the agent never showed in its log (see [applyTranscript]), for Resend and Dismiss. */
+    fun undeliveredFor(paneId: String): List<Pair<Long, String>> =
+        pendingSends.filter { it.paneId == paneId && it.undelivered }.map { it.id to it.text }
+
+    fun resendPending(id: Long) {
+        val p = pendingSends.firstOrNull { it.id == id } ?: return
+        pendingSends = pendingSends - p
+        pane(p.paneId)?.let { sendMessage(it, p.text) }
+    }
+
+    fun dismissPending(id: Long) { pendingSends = pendingSends.filterNot { it.id == id } }
 
     var pendingSends by mutableStateOf<List<PendingSend>>(emptyList())
         private set
@@ -1027,7 +1051,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun pendingFor(paneId: String): List<String> {
         val now = System.currentTimeMillis()
         val hasLog = transcriptPane == paneId && transcriptState == TranscriptMode.ON
-        return pendingSends.filter { it.paneId == paneId && now - it.at < (if (hasLog) 15 * 60_000L else 20_000L) }.map { it.text }
+        return pendingSends.filter { it.paneId == paneId && !it.undelivered && now - it.at < (if (hasLog) 15 * 60_000L else 20_000L) }.map { it.text }
     }
 
     /** The Stop button: the key each agent's own program uses to interrupt a turn. */
@@ -1107,8 +1131,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             System.nanoTime(), pane.id, text, lastSentAt,
             if (transcriptPane == pane.id) sameTextCount(text) else 0,
         )
+        com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${pane.id} (${pane.agent ?: "shell"}, ${pane.status}): ${text.length} chars; link ${link}, ${if (herdr == null) "no client" else "client ready"}")
         act(pane.id, "Couldn't send") { h ->
-            h.sendMessage(pane, text)
+            try {
+                h.sendMessage(pane, text)
+                com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${pane.id}: delivered to herdr (${h.lastSendRoute})")
+            } catch (e: Exception) {
+                com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${pane.id}: failed: ${com.billmongan.herdrdroid.diag.DiagLog.describe(e)}")
+                throw e
+            }
             readPane(pane.id)
         }
     }

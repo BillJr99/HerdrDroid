@@ -386,7 +386,10 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 more = vm.transcriptMore,
                 size = liveSize,
                 family = family,
-                actions = ChatActions(onQuote = quote, onStop = pane?.let { p -> { vm.stopPane(p) } }, onForward = { t -> forwarding = t }),
+                actions = ChatActions(
+                    onQuote = quote, onStop = pane?.let { p -> { vm.stopPane(p) } }, onForward = { t -> forwarding = t },
+                    undelivered = vm.undeliveredFor(paneId), onResend = vm::resendPending, onDismissPending = vm::dismissPending,
+                ),
                 header = { if (showUsage && quota != null) QuotaDetails(quota, vm.quotaHistoryFor(pane)) { showUsage = false } },
                 footer = promptCard,
                 state = listState,

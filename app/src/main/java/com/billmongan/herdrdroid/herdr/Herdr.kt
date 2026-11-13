@@ -209,7 +209,16 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
     }
 
     /** Sends a message the way an agent expects it; plain panes get the text and Enter. */
+    /** How the last message went out, for the diagnostic log. */
+    @Volatile var lastSendRoute = ""
+        private set
+
     suspend fun sendMessage(pane: Pane, text: String) {
+        lastSendRoute = when {
+            core -> "hc send"
+            pane.agent != null && pane.status != Status.NEEDS_YOU -> "herdr agent prompt"
+            else -> "herdr pane send-text + enter"
+        }
         if (core) {
             // hc send pastes and presses Enter; it refuses a terminal waiting on a question
             // unless forced, and a message sent then is meant as the answer.
@@ -222,6 +231,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
                 return
             } catch (_: HerdrError) {
                 // Fall through to typing it in, which works in any pane.
+                lastSendRoute = "agent prompt refused; typed with send-text + enter"
             }
         }
         runNow(cmd("pane", "send-text", pane.id, text))

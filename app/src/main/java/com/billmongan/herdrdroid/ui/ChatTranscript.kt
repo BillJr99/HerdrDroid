@@ -1,5 +1,6 @@
 package com.billmongan.herdrdroid.ui
 
+import androidx.compose.material3.TextButton
 import android.content.Intent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
@@ -96,6 +97,10 @@ class ChatActions(
     val onStop: (() -> Unit)?,
     /** Sends a reply on to another agent (opens it with the reply in its message box). */
     val onForward: ((String) -> Unit)? = null,
+    /** Messages the agent never showed, with Resend and Dismiss (id to text). */
+    val undelivered: List<Pair<Long, String>> = emptyList(),
+    val onResend: ((Long) -> Unit)? = null,
+    val onDismissPending: ((Long) -> Unit)? = null,
 )
 
 /**
@@ -195,6 +200,17 @@ fun TranscriptChat(
                             )
                         }
                         pending.forEach { UserBubble(it, size, sending = true, onQuote = actions.onQuote) }
+                    }
+                }
+                // Sent but never seen by the agent: say so, and offer to send it again.
+                if (actions.undelivered.isNotEmpty()) Column(Modifier.padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    actions.undelivered.forEach { (id, text) ->
+                        UserBubble(text, size, sending = true, onQuote = actions.onQuote)
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                            Text("Not seen by $agentName", color = Palette.OrangeInk, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
+                            actions.onResend?.let { r -> TextButton(onClick = { r(id) }) { Text("Resend") } }
+                            actions.onDismissPending?.let { d -> TextButton(onClick = { d(id) }) { Text("Dismiss") } }
+                        }
                     }
                 }
             }
