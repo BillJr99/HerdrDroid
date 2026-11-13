@@ -357,18 +357,19 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
         // What the agent has running underneath: tap to drill in.
         // One chip: how much is still active underneath (subagents, background tasks, processes the
         // agent started). It drops as they finish; tap for active and finished.
-        // The same subagent count as the card, and separately the shells the agent started
-        // (background tasks and other processes still running). Tap for active and finished.
+        // Two bubbles on their own row under the header: the shells the agent started that are
+        // still running, and its running subagents. Tap either for active and finished.
         vm.work[paneId]?.let { w ->
             val subs = w.activeSubagents
             val shells = w.activeProcs(pane?.agent).size
             if (subs > 0 || shells > 0) {
-                val parts = listOfNotNull(
-                    if (subs > 0) "$subs subagent${if (subs == 1) "" else "s"}" else null,
-                    if (shells > 0) "$shells shell${if (shells == 1) "" else "s"}" else null,
-                )
-                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
-                    ComposerChip(parts.joinToString(" · "), true) { vm.screen = Screen.Work(paneId) }
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    ComposerChip("$shells shell${if (shells == 1) "" else "s"}", shells > 0) { vm.screen = Screen.Work(paneId) }
+                    ComposerChip("$subs subagent${if (subs == 1) "" else "s"}", subs > 0) { vm.screen = Screen.Work(paneId) }
                 }
             }
         }

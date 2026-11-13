@@ -261,7 +261,7 @@ fun TabsScreen(vm: AppViewModel) {
                 items(list, key = { it.id }) { p ->
                     PaneCard(
                         p, vm.previews[p.id].orEmpty(), model = vm.modelLine(p.id), quota = vm.quotaFor(p),
-                        checking = vm.showQuotas && vm.probingPane == p.id,
+                        checking = false,
                         underneath = vm.workCounts[p.id] ?: 0,
                         git = vm.gitInfo[p.cwd],
                         onClose = if (p.tabLabel.startsWith("helper-")) ({ vm.closeHelper(p) }) else null,
@@ -315,29 +315,24 @@ private fun PaneCard(
         border = if (needs) BorderStroke(2.dp, Palette.Orange) else BorderStroke(1.dp, Palette.Line),
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
     ) {
-        // Four rows, always in this order, each only when it has something: who and how it is;
-        // where and with what; the last real line; usage as one line of chips.
+        // Just what matters at a glance: who and where (the title), how it is (the status), its
+        // model and reasoning (blue), and its usage limits, one per line.
         Row(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.Top) {
             AgentTile(p.initial, p.status, size = 40)
             Column(Modifier.weight(1f).padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(p.agentName, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = Palette.Ink, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                    if (underneath > 0) Badge("$underneath sub", Palette.Blue, Palette.BlueSoft)
+                    Text(
+                        if (p.folder.isNotBlank()) "${p.agentName} · ${p.folder}" else p.agentName,
+                        fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = Palette.Ink, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
                     StatusPill(p.status)
                     if (onClose != null && p.status != Status.WORKING) {
                         Text("✕", color = Palette.Muted, fontSize = 15.sp, modifier = Modifier.clickable { onClose() }.padding(start = 2.dp))
                     }
                 }
-                val where = buildList {
-                    if (p.folder.isNotBlank()) add(p.folder)
-                    git?.branch?.let { add("⎇ $it" + if (git.changed > 0) " •${git.changed}" else "") }
-                }.joinToString("  ")
-                if (where.isNotBlank()) Text(where, color = Palette.Muted, fontSize = 12.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                // The model and its effort on their own line, so neither is squeezed.
-                model?.let { Text(it, color = Palette.Blue, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                val line = cardLine(preview)
-                if (line.isNotBlank()) Text(line, color = Palette.Preview, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                quota?.let { QuotaChips(it, Modifier.padding(top = 3.dp)) }
+                model?.let { Text(it, color = Palette.Blue, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                quota?.let { QuotaChips(it, Modifier.padding(top = 2.dp)) }
             }
         }
     }

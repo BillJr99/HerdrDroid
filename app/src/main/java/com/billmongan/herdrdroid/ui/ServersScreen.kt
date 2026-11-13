@@ -75,12 +75,8 @@ fun ServersScreen(vm: AppViewModel) {
     var askPasswordFor by remember { mutableStateOf<Server?>(null) }
 
     // The status lights: every server checked now and about once a minute while this list shows.
-    LaunchedEffect(Unit) {
-        while (true) {
-            vm.checkServers()
-            kotlinx.coroutines.delay(60_000)
-        }
-    }
+    // The view model checks every server in the background; this only asks for a check now.
+    LaunchedEffect(Unit) { vm.startBackgroundChecks() }
 
     fun start(server: Server) {
         // A WebSocket server signs in with its key only; there is never a password to ask for.

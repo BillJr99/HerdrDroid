@@ -60,6 +60,7 @@ import com.billmongan.herdrdroid.ui.ReadingFont
 import com.billmongan.herdrdroid.ui.ThemeMode
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -193,7 +194,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val quotaLock = Mutex()
     private val lastQuotaTry = mutableMapOf<String, Long>()
     /** The pane whose usage is being checked right now, shown on its card as "Checking usage…". */
-    var probingPane by mutableStateOf<String?>(null)
+    var probingPanes by mutableStateOf<Set<String>>(emptySet())
         private set
     private var textSizeJob: Job? = null
 
@@ -531,10 +532,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun unlocked() {
         locked = false
+        startBackgroundChecks()
         pendingNotification?.let { (s, p) -> pendingNotification = null; openFromNotification(s, p) }
     }
 
     private var pendingNotification: Pair<String, String>? = null
+
+    private var backgroundChecks: Job? = null
+
+    /**
+     * Every server's agents, read in the background about once a minute while the app is in
+     * front, and kept: the server list, the machine menu and each server's cards show them at once.
+     */
+    fun startBackgroundChecks() {
+        if (backgroundChecks?.isActive == true || locked) return
+        backgroundChecks = viewModelScope.launch {
+            while (isActive) {
+                if (foreground) runCatching { checkServers() }
+                delay(60_000)
+            }
+        }
+    }
 
     // -- Every server at startup: agents, models and usage ------------------------------------------
 
@@ -786,8 +804,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         var waited = 0
         // A usage check types into the pane and closes its screen with Esc: a message typed then
         // would be lost, so it waits for the check to finish completely.
-        if (q.paneId != null && probingPane == q.paneId) com.billmongan.herdrdroid.diag.DiagLog.log("send", "waiting for a usage check in ${q.paneId} to finish")
-        while (q.paneId != null && probingPane == q.paneId && waited < 60_000) {
+        if (q.paneId != null && q.paneId in probingPanes) com.billmongan.herdrdroid.diag.DiagLog.log("send", "waiting for a usage check in ${q.paneId} to finish")
+        while (q.paneId != null && q.paneId in probingPanes && waited < 60_000) {
             delay(200); waited += 200
         }
         try {
@@ -1264,61 +1282,67 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         // Agents with no reading yet first, then the oldest readings.
         val byAgent = fresh.mapNotNull { p -> QuotaProfiles.key(p.agent)?.let { it to p } }.groupBy({ it.first }, { it.second })
             .entries.sortedBy { quotas[it.key]?.at ?: 0L }
+        // Every agent is checked at once, each in its own pane, so all usage shows in about
+        // the time one check takes.
+        val jobs = mutableListOf<Job>()
         for ((agentKey, list) in byAgent) {
-            // Due by the newest of: the last try here, and the saved reading (a startup check or
-            // an earlier session counts), so a fresh reading is never asked for again.
-            val last = maxOf(lastQuotaTry[agentKey] ?: 0L, quotas[agentKey]?.at ?: 0L)
-            val every = (QuotaProfiles.forAgent(list.first().agent)?.everyMinutes ?: 30) * 60_000L
-            val due = if (force) now - last > 2 * 60_000 else now - last > every
-            if (!due) continue
-            // Prefer a pane that is not in front at the computer, but use that one if it is the only
-            // choice: the check presses Enter only when the input line holds exactly its command.
-            // Idle panes first; a working pane only for an agent that answers while working (Claude).
-            val profile0 = QuotaProfiles.forAgent(list.first().agent) ?: continue
-            if (profile0.cliCommand != null) {
-                // Asked from the command line, not the pane: no pane to choose and nothing typed.
-                if (!canPoll) return@withLock
-                val items = quietly { it.cliQuota(profile0) }
-                lastQuotaTry[agentKey] = now
-                if (!items.isNullOrEmpty()) {
-                    quotas = quotas + (agentKey to QuotaReading(now, items))
-                    prefs.saveQuotas(serverId, quotas)
-                    recordQuota(serverId, agentKey, QuotaReading(now, items))
-                }
-                continue
-            }
-            // Never an agent open on screen or sent to in the last two minutes: you may be typing to it.
-            val openNow = (screen as? Screen.Agent)?.paneId
-            val target = list.filter {
-                (it.status == Status.IDLE || it.status == Status.DONE || (profile0.whileWorking && it.status == Status.WORKING)) &&
-                    it.id != openNow && (lastSentTo[it.id] ?: 0L) < now - 120_000
-            }
-                .sortedWith(compareBy({ it.status == Status.WORKING }, { it.focused }))
-                .firstOrNull() ?: continue
-            val profile = QuotaProfiles.forAgent(target.agent) ?: continue
-            if (!canPoll) return@withLock
-            probingPane = target.id
-            val result = try {
-                quietly { it.probeQuota(target.id, profile, working = target.status == Status.WORKING) }
-            } finally {
-                probingPane = null
-            }
-            if (result != null) watchForLeftoverScreen(target.id, profile)
-            result?.model?.let { models = models + (target.id to it) }
-            result?.effort?.let { efforts = efforts + (target.id to it) }
-            val items = result?.items
-            when {
-                // Someone had text in that agent's input line, or the screen had no limits on it this
-                // time (a Hermes session that hasn't made a call yet). Try again in 5 minutes.
-                items.isNullOrEmpty() -> lastQuotaTry[agentKey] = now - (every - 5 * 60_000L).coerceAtLeast(0)
-                else -> {
+            jobs += viewModelScope.launch {
+                // Due by the newest of: the last try here, and the saved reading (a startup check or
+                // an earlier session counts), so a fresh reading is never asked for again.
+                val last = maxOf(lastQuotaTry[agentKey] ?: 0L, quotas[agentKey]?.at ?: 0L)
+                val every = (QuotaProfiles.forAgent(list.first().agent)?.everyMinutes ?: 30) * 60_000L
+                val due = if (force) now - last > 2 * 60_000 else now - last > every
+                if (!due) return@launch
+                // Prefer a pane that is not in front at the computer, but use that one if it is the only
+                // choice: the check presses Enter only when the input line holds exactly its command.
+                // Idle panes first; a working pane only for an agent that answers while working (Claude).
+                val profile0 = QuotaProfiles.forAgent(list.first().agent) ?: return@launch
+                if (profile0.cliCommand != null) {
+                    // Asked from the command line, not the pane: no pane to choose and nothing typed.
+                    if (!canPoll) return@launch
+                    val items = quietly { it.cliQuota(profile0) }
                     lastQuotaTry[agentKey] = now
-                    quotas = quotas + (agentKey to QuotaReading(now, items))
-                    prefs.saveQuotas(serverId, quotas)
-                    recordQuota(serverId, agentKey, QuotaReading(now, items))
+                    if (!items.isNullOrEmpty()) {
+                        quotas = quotas + (agentKey to QuotaReading(now, items))
+                        prefs.saveQuotas(serverId, quotas)
+                        recordQuota(serverId, agentKey, QuotaReading(now, items))
+                    }
+                    return@launch
+                }
+                // Never an agent open on screen or sent to in the last two minutes: you may be typing to it.
+                val openNow = (screen as? Screen.Agent)?.paneId
+                val target = list.filter {
+                    (it.status == Status.IDLE || it.status == Status.DONE || (profile0.whileWorking && it.status == Status.WORKING)) &&
+                        it.id != openNow && (lastSentTo[it.id] ?: 0L) < now - 120_000
+                }
+                    .sortedWith(compareBy({ it.status == Status.WORKING }, { it.focused }))
+                    .firstOrNull() ?: return@launch
+                val profile = QuotaProfiles.forAgent(target.agent) ?: return@launch
+                if (!canPoll) return@launch
+                probingPanes = probingPanes + target.id
+                val result = try {
+                    quietly { it.probeQuota(target.id, profile, working = target.status == Status.WORKING) }
+                } finally {
+                    probingPanes = probingPanes - target.id
+                }
+                if (result != null) watchForLeftoverScreen(target.id, profile)
+                result?.model?.let { models = models + (target.id to it) }
+                result?.effort?.let { efforts = efforts + (target.id to it) }
+                val items = result?.items
+                when {
+                    // Someone had text in that agent's input line, or the screen had no limits on it this
+                    // time (a Hermes session that hasn't made a call yet). Try again in 5 minutes.
+                    items.isNullOrEmpty() -> lastQuotaTry[agentKey] = now - (every - 5 * 60_000L).coerceAtLeast(0)
+                    else -> {
+                        lastQuotaTry[agentKey] = now
+                        quotas = quotas + (agentKey to QuotaReading(now, items))
+                        prefs.saveQuotas(serverId, quotas)
+                        recordQuota(serverId, agentKey, QuotaReading(now, items))
+                    }
                 }
             }
         }
+        jobs.joinAll()
     }
 
     private val closeWatch = mutableMapOf<String, Pair<QuotaProfile, Long>>()
@@ -1341,7 +1365,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val now = System.currentTimeMillis()
                 closeWatch.entries.removeAll { it.value.second < now }
                 for ((id, pair) in closeWatch.toMap()) {
-                    if (probingPane == id) continue
+                    if (id in probingPanes) continue
                     val screen = quietly { it.read(id, 60) } ?: continue
                     if (pair.first.screenOpen(screen)) {
                         quietly { it.sendKeys(id, *pair.first.closeKeys.toTypedArray()) }
@@ -1561,6 +1585,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         viewModelScope.launch { AppBus.actions.collect { a -> answerFromNotification(a) } }
+        if (!locked) startBackgroundChecks()
     }
 
     /** A notification button: answer only if the same question is still on screen. */
