@@ -241,10 +241,9 @@ fun ChatComposer(
             ) {
                 Row(Modifier.padding(start = 2.dp, end = 6.dp, top = 2.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                     Box {
-                        RoundTool(if (attachBusy) "…" else "⋯", "More: attach, dictate, commands, keys") { showMenu = true }
+                        RoundTool(if (attachBusy) "…" else "⋯", "More: attach, commands, keys") { showMenu = true }
                         androidx.compose.material3.DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
                             if (onAttach != null) androidx.compose.material3.DropdownMenuItem(text = { Text("Attach a file") }, enabled = !attachBusy, onClick = { showMenu = false; picker.launch("*/*") })
-                            androidx.compose.material3.DropdownMenuItem(text = { Text("Dictate") }, onClick = { showMenu = false; dictate() })
                             if (commands.isNotEmpty()) androidx.compose.material3.DropdownMenuItem(text = { Text("Commands") }, onClick = { showMenu = false; showCommands = !showCommands })
                             menuItems.forEach { (label, act) ->
                                 androidx.compose.material3.DropdownMenuItem(text = { Text(label) }, onClick = { showMenu = false; act() })
@@ -252,6 +251,8 @@ fun ChatComposer(
                         }
                     }
                     field(Modifier.weight(1f), 5)
+                    // Dictation stays one tap away, in the box itself.
+                    RoundTool("🎙", "Dictate") { dictate() }
                     sendButton()
                 }
             }

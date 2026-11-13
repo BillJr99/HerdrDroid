@@ -170,8 +170,8 @@ class ComposeUiTest {
             }
         }
         rule.onNodeWithText("Snippets").assertDoesNotExist()
+        rule.onNodeWithText("🎙").assertIsDisplayed()
         rule.onNodeWithText("⋯").performClick()
-        rule.onNodeWithText("Dictate").assertIsDisplayed()
         rule.onNodeWithText("Reading mode").performClick()
         assertEquals("Reading", picked)
     }
