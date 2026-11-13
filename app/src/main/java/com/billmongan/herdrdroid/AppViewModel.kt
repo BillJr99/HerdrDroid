@@ -168,6 +168,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
     var paneText by mutableStateOf("")
         private set
+    /** The pane [paneText] was read from: a read still on its way when you switch agents is dropped. */
+    var paneTextPane by mutableStateOf<String?>(null)
+        private set
     var lastSent by mutableStateOf<Pair<String, String>?>(null)
         private set
     private var lastSentAt = 0L
@@ -439,6 +442,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 prefetchChats()
                 if (showQuotas) startQuotaChecks()
                 startWatching()
+                pollHermes()
                 pendingOpen?.let { p -> pendingOpen = null; if (panes.any { it.id == p }) openPane(p, "after connecting") }
             } catch (e: UnconfirmedHostKey) {
                 s.close()
@@ -749,6 +753,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun closeSession() {
+        hermesPoll?.cancel()
+        hermesState = null
         closeJob?.cancel()
         closeWatch.clear()
         hermes?.close()
@@ -1037,7 +1043,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     suspend fun readPane(paneId: String) {
         quietly { it.read(paneId) }?.let { text ->
+            // Switched to another agent while this read was on its way: it isn't that agent's screen.
+            if ((screen as? Screen.Agent)?.paneId != paneId) return
             paneText = text
+            paneTextPane = paneId
             // What the question card sees, logged when it changes (sizes only, no question text).
             val status = panes.firstOrNull { it.id == paneId }?.status
             val p = com.billmongan.herdrdroid.herdr.detectPrompt(text, status == Status.NEEDS_YOU)
@@ -1059,6 +1068,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         seenInApp["${current?.id}|$paneId"] = System.currentTimeMillis()
         saveSeen()
         paneText = ""
+        paneTextPane = paneId
         resetTranscript(paneId)
         screen = Screen.Agent(paneId)
     }
@@ -1115,11 +1125,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun prefetchChats() {
         prefetchJob?.cancel()
         prefetchJob = viewModelScope.launch {
+            // Read for this server only: a read finishing after a switch must not land under the new one.
+            val sid = current?.id
             val order = listOf(Status.NEEDS_YOU, Status.WORKING, Status.DONE, Status.IDLE, Status.UNKNOWN)
             for (p in panes.filter { hasTranscriptReader(it.id) }.sortedBy { order.indexOf(it.status) }) {
                 if (transcriptCache.containsKey(ck(p.id)) || transcriptPane == p.id) continue
                 val r = quietly { it.transcript(p, "", transcriptScript) } ?: continue
                 if (!r.ok || transcriptPane == p.id) continue
+                if (current?.id != sid) return@launch
                 val cj = runCatching { org.json.JSONObject(r.cursor) }.getOrNull()
                 transcriptCache[ck(p.id)] = CachedChat(Transcript.merge(emptyList(), r.items, true), r.cursor, r.more, r.title,
                     cj?.optLong("start", -1L) ?: -1L, cj?.optString("file")?.ifBlank { null })
@@ -1129,6 +1142,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Reads what the pane's agent added to its session log since the last read. */
     suspend fun readTranscript(paneId: String) {
+        // Only the agent on screen: a loop left over from the agent you just left must not switch
+        // the chat back to it (that showed its history, and its title, on the new agent).
+        if ((screen as? Screen.Agent)?.paneId != paneId) return
         val p = pane(paneId) ?: return
         resetTranscript(paneId)
         val r = quietly { it.transcript(p, transcriptCursor, transcriptScript) } ?: return
@@ -1143,12 +1159,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun followTranscript(paneId: String): Boolean {
         val p = pane(paneId) ?: return false
         val h = herdr ?: return false
-        if (!foreground || link != Link.CONNECTED || transcriptPane != paneId) return false
+        if (!foreground || link != Link.CONNECTED || transcriptPane != paneId || (screen as? Screen.Agent)?.paneId != paneId) return false
         val started = System.currentTimeMillis()
         var got = false
         val ok = runCatching {
             h.followTranscript(p, transcriptCursor, transcriptScript, 120) { r ->
-                withContext(Dispatchers.Main) { if (transcriptPane == paneId) { got = true; applyTranscript(paneId, r) } }
+                withContext(Dispatchers.Main) {
+                    // Switched away: end this stream now rather than let it run on for minutes.
+                    if (transcriptPane != paneId || (screen as? Screen.Agent)?.paneId != paneId) throw kotlinx.coroutines.CancellationException("switched agents")
+                    got = true
+                    applyTranscript(paneId, r)
+                }
             }
         }.isSuccess
         // A stream that ended at once without any read didn't work here; poll instead.
@@ -1333,6 +1354,39 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // ---- Hermes through its gateway ------------------------------------------------------------
 
     /** The native Hermes chat for this server, made and connected on first use. */
+    /**
+     * What Hermes's conversations are doing, from its gateway (Telegram, the CLI, the app): any one
+     * working makes the Hermes pane show Working, any one waiting on you makes it Needs you.
+     * Asked every 15 seconds while a server with a Hermes pane is open.
+     */
+    var hermesState by mutableStateOf<Status?>(null)
+        private set
+    private var hermesPoll: Job? = null
+
+    private fun pollHermes() {
+        if (hermesPoll?.isActive == true) return
+        hermesPoll = viewModelScope.launch {
+            while (isActive) {
+                val hasHermes = panes.any { it.agent?.lowercase() == "hermes" }
+                if (hasHermes && foreground && herdr != null) {
+                    val states = hermesChat()?.liveStates()
+                    val next = when {
+                        states == null -> null
+                        states.any { it.second == "waiting" } -> Status.NEEDS_YOU
+                        states.any { it.second in setOf("working", "streaming", "starting") } -> Status.WORKING
+                        else -> null
+                    }
+                    if (next != hermesState) {
+                        com.billmongan.herdrdroid.diag.DiagLog.log("hermes", "conversations: " +
+                            (states?.joinToString { "${it.second}" } ?: "gateway not answering") + " -> ${next ?: "pane status"}")
+                        hermesState = next
+                    }
+                } else hermesState = null
+                delay(15_000)
+            }
+        }
+    }
+
     fun hermesChat(): HermesChat? {
         hermes?.let { return it }
         val s = ssh ?: return null
@@ -1918,6 +1972,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * shells still run is shown as working.
      */
     fun shownStatus(p: Pane): Status {
+        // Hermes: a conversation elsewhere (Telegram, its app) working or waiting counts here too.
+        if (p.agent?.lowercase() == "hermes" && p.status != Status.NEEDS_YOU) hermesState?.let { return it }
         if ((p.status == Status.IDLE || p.status == Status.DONE) && (busyCounts[p.id] ?: 0) > 0) return Status.WORKING
         // herdr's "done" is idle but not yet seen at the computer. Opening the agent here counts as
         // seeing it, and after 30 minutes it counts as idle anyway. (The app never marks it seen in

@@ -216,9 +216,11 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
 
     // As the list shows it: Done becomes Idle once you have opened it here.
     val status = pane?.let { vm.shownStatus(it) } ?: Status.UNKNOWN
-    val prompt: Prompt? = if (typingAnswer) null else detectPrompt(vm.paneText, status == Status.NEEDS_YOU)
+    // Only this agent's screen: never one read from the agent you just left.
+    val screenText = if (vm.paneTextPane == paneId) vm.paneText else ""
+    val prompt: Prompt? = if (typingAnswer) null else detectPrompt(screenText, status == Status.NEEDS_YOU)
     val scroll = rememberScrollState()
-    LaunchedEffect(vm.paneText, structured) { if (!structured) scroll.animateScrollTo(scroll.maxValue) }
+    LaunchedEffect(screenText, structured) { if (!structured) scroll.animateScrollTo(scroll.maxValue) }
     val quota = vm.quotaFor(pane)
     val onZoom by rememberUpdatedState<(Float) -> Unit> { z -> pinch = (pinch * z) }
     val onZoomEnd by rememberUpdatedState<() -> Unit> {
@@ -350,9 +352,6 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                         }
                         DropdownMenuItem(text = { Text("All conversations…") }, onClick = { hermesMenu = false; hermesLive = true; chat?.showPicker() })
                         HorizontalDivider(color = Palette.Line)
-                        DropdownMenuItem(text = { Text("Model and reasoning…") }, onClick = { hermesMenu = false; choosingModel = true })
-                        if (quota != null) DropdownMenuItem(text = { Text(if (showUsage) "Hide usage" else "Usage") }, onClick = { hermesMenu = false; showUsage = !showUsage })
-                        HorizontalDivider(color = Palette.Line)
                         Text("Other agents", color = Palette.Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
                         agentRows { hermesMenu = false }
                     }
@@ -383,7 +382,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 val shells = w.activeProcs(pane?.agent).size
                 if (subs > 0 || shells > 0) {
                     Text(
-                        listOfNotNull(shells.takeIf { it > 0 }?.let { "$it sh" }, subs.takeIf { it > 0 }?.let { "$it sub" }).joinToString(" · "),
+                        "$shells sh - $subs sub",
                         color = Palette.Blue, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
                         modifier = Modifier.clip(RoundedCornerShape(12.dp)).background(Palette.BlueSoft)
                             .clickable { vm.screen = Screen.Work(paneId) }.padding(horizontal = 8.dp, vertical = 4.dp),
@@ -503,7 +502,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 if (showUsage && quota != null) QuotaDetails(quota, vm.quotaHistoryFor(pane)) { showUsage = false }
-                val text = vm.paneText
+                val text = screenText
                 if (text.isBlank()) {
                     Text("Loading…", color = Palette.Muted, fontSize = 15.sp)
                 } else if (fullTerminal) {
@@ -561,7 +560,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 }
             }
             if (fullTerminal) {
-                val found = remember(vm.paneText) { screenLinks(vm.paneText) }
+                val found = remember(screenText) { screenLinks(screenText) }
                 if (commandScreen != null || found.urls.isNotEmpty() || found.codes.isNotEmpty()) {
                     val clipboard = LocalClipboardManager.current
                     Row(

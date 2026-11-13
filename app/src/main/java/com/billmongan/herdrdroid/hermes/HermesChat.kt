@@ -183,6 +183,17 @@ class HermesChat(ssh: HerdrSsh, private val scope: CoroutineScope) {
     /** The stored id of the conversation open in live chat, if any. */
     val openId: String? get() = if (phase == HermesPhase.CHAT) storedId ?: sessionId else null
 
+    /**
+     * Every live Hermes conversation's state ("working", "waiting", "idle", ...), from the gateway's
+     * session.active_list. Null when the gateway can't be asked.
+     */
+    suspend fun liveStates(): List<Pair<String, String>>? = runCatching {
+        if (phase == HermesPhase.CONNECTING || phase == HermesPhase.OFFLINE) return null
+        val r = gw.request("session.active_list", JSONObject(), timeoutMs = 15_000)
+        val arr = r.optJSONArray("sessions") ?: JSONArray()
+        (0 until arr.length()).map { arr.getJSONObject(it) }.map { it.optString("title").ifBlank { it.optString("source") } to it.optString("status") }
+    }.getOrNull()
+
     fun showPicker() {
         phase = HermesPhase.PICKER
         refreshSessions()
@@ -433,11 +444,14 @@ class HermesChat(ssh: HerdrSsh, private val scope: CoroutineScope) {
             val m = arr.optJSONObject(i) ?: continue
             if (m.optString("display_kind") == "hidden") continue
             val key = "h" + (if (m.has("row_id")) m.optLong("row_id").toString() else "i$i")
+            // The words are in "text" on some paths and in "content" on others (a string, or a list
+            // of parts): a stored conversation such as the Telegram one has only "content".
+            val words = hermesMessageText(m)
             when (m.optString("role")) {
-                "user" -> m.optString("text").takeIf { it.isNotBlank() }?.let { out += UserItem(key, it) }
+                "user" -> words.takeIf { it.isNotBlank() }?.let { out += UserItem(key, it) }
                 "assistant" -> {
                     m.optString("reasoning").takeIf { it.isNotBlank() }?.let { out += ThinkItem(key + "r", it, null) }
-                    m.optString("text").takeIf { it.isNotBlank() }?.let { out += TextItem(key, it) }
+                    words.takeIf { it.isNotBlank() }?.let { out += TextItem(key, it) }
                 }
                 "tool" -> {
                     val name = m.optString("name").ifBlank { "tool" }
@@ -448,7 +462,7 @@ class HermesChat(ssh: HerdrSsh, private val scope: CoroutineScope) {
                         args?.toString(1)?.take(4000), diffOf(args), null, content?.take(6000), ToolState.OK,
                     )
                 }
-                else -> m.optString("text").takeIf { it.isNotBlank() }?.let { out += NoteItem(key, it.lines().first().take(160)) }
+                else -> words.takeIf { it.isNotBlank() }?.let { out += NoteItem(key, it.lines().first().take(160)) }
             }
         }
         return out
@@ -496,5 +510,21 @@ class HermesChat(ssh: HerdrSsh, private val scope: CoroutineScope) {
         val new = args.optString("new_string").ifBlank { args.optString("new_text") }
         if (old.isBlank() && new.isBlank()) return null
         return DiffData(args.optString("path").ifBlank { args.optString("file_path") }.ifBlank { null }, old.take(4000), new.take(4000))
+    }
+}
+
+/** A transcript row's words: "text", else "content" as a string or as a list of text parts. */
+fun hermesMessageText(m: JSONObject): String {
+    m.optString("text").takeIf { m.has("text") && !m.isNull("text") && it.isNotBlank() }?.let { return it }
+    return when (val c = m.opt("content")) {
+        is String -> c
+        is JSONArray -> (0 until c.length()).mapNotNull { k ->
+            when (val part = c.opt(k)) {
+                is String -> part
+                is JSONObject -> part.optString("text").ifBlank { null }
+                else -> null
+            }
+        }.joinToString("\n")
+        else -> ""
     }
 }

@@ -239,7 +239,8 @@ fun TranscriptChat(
             }
             items(rows, key = { it.key }) { row ->
                 val focused = row.key == actions.focusKey
-                Box(Modifier.animateItem().then(
+                // Rows slide into place but never fade: a re-read that rebuilt a row made it blink.
+                Box(Modifier.animateItem(fadeInSpec = null, fadeOutSpec = null).then(
                     if (focused) Modifier.border(BorderStroke(2.dp, Palette.Blue), RoundedCornerShape(12.dp)).padding(6.dp) else Modifier,
                 )) {
                     when (row) {

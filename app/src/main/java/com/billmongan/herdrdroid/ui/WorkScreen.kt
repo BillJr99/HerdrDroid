@@ -137,16 +137,25 @@ private fun WorkList(vm: AppViewModel, paneId: String) {
         PullRefresh({ vm.refreshWork(paneId) }, Modifier.fillMaxSize()) {
         LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             item { Spacer(Modifier.height(6.dp)) }
-            // ---- Active ----------------------------------------------------------------------
-            item { SectionTitle("Active", "${w.activeCount(pane?.agent)} still running") }
+            // Three groups, matching the header's "N sh / K ag": shells, subagents, then finished.
             if (w.activeCount(pane?.agent) == 0) item { Text("Nothing is running underneath right now.", color = Palette.Muted, fontSize = 13.sp) }
-            items(w.subagents.filter { it.active }, key = { "s:" + it.id }) { a ->
-                WorkRow(Palette.Blue, a.title, "Subagent · running · updated ${ago(a.updated)} · ${a.kb} KB") { vm.screen = Screen.Work(paneId, "sub", a.file, a.title) }
+            // ---- Shells ----------------------------------------------------------------------
+            val runningTasks = w.tasks.filter { it.running }
+            if (runningTasks.isNotEmpty() || activeProcs.isNotEmpty()) {
+                item { SectionTitle("Shells", "${activeProcs.size} running") }
+                items(runningTasks, key = { "t:" + it.id }) { t ->
+                    WorkRow(Palette.Blue, t.title, "Background task · running · output ${t.kb} KB") { vm.screen = Screen.Work(paneId, "task", t.file, t.title) }
+                }
+                items(activeProcs, key = { "ap:" + it.pid }) { p -> ProcRow(p, keep, pane?.agent) { asking = p } }
             }
-            items(w.tasks.filter { it.running }, key = { "t:" + it.id }) { t ->
-                WorkRow(Palette.Blue, t.title, "Background task · running · output ${t.kb} KB") { vm.screen = Screen.Work(paneId, "task", t.file, t.title) }
+            // ---- Subagents -------------------------------------------------------------------
+            val runningSubs = w.subagents.filter { it.active }
+            if (runningSubs.isNotEmpty()) {
+                item { SectionTitle("Subagents", "${runningSubs.size} running") }
+                items(runningSubs, key = { "s:" + it.id }) { a ->
+                    WorkRow(Palette.Blue, a.title, "Subagent · running · updated ${ago(a.updated)} · ${a.kb} KB") { vm.screen = Screen.Work(paneId, "sub", a.file, a.title) }
+                }
             }
-            items(activeProcs, key = { "ap:" + it.pid }) { p -> ProcRow(p, keep, pane?.agent) { asking = p } }
             // ---- Finished --------------------------------------------------------------------
             if (doneSubs.isNotEmpty() || doneTasks.isNotEmpty() || ended.isNotEmpty()) {
                 item { SectionTitle("Finished", "${doneSubs.size + doneTasks.size + ended.size} in this session") }

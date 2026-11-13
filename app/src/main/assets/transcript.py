@@ -683,10 +683,13 @@ def hermes(cwd, cur):
     if not os.path.isfile(db):
         return None
     c = ro(db)
+    # The pane's own conversation: one started in its folder first. A session with no folder (Hermes's
+    # "Bot Chat", or one from its app) is taken only when none was started there, so the pane never
+    # shows another conversation just because that one was busier lately.
     row = c.execute(
         "select id, title from sessions where source in ('cli', 'tui', 'local') and coalesce(archived, 0) = 0 "
         "and coalesce(hidden, 0) = 0 and (cwd = ? or cwd is null) "
-        "order by coalesce(last_activity_at, started_at) desc limit 1", (cwd,)).fetchone()
+        "order by (cwd = ?) desc, coalesce(last_activity_at, started_at) desc limit 1", (cwd, cwd)).fetchone()
     if PIN.get("pin_sid"):
         row = (PIN["pin_sid"], None)
     if not row:

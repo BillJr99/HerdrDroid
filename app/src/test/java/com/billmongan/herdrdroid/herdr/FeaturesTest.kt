@@ -1,5 +1,6 @@
 package com.billmongan.herdrdroid.herdr
 
+import com.billmongan.herdrdroid.hermes.hermesMessageText
 import com.billmongan.herdrdroid.ui.ModelPresets
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -32,5 +33,14 @@ class FeaturesTest {
         assertTrue(p.noSession!!.containsMatchIn("(._.) No active agent -- send a message first."))
         assertTrue(p.startSession!!.isNotBlank())
         assertNull(QuotaProfiles.forAgent("claude")!!.startSession)
+    }
+
+    @Test fun hermesMessagesReadTheirWordsFromContentToo() {
+        val f: (org.json.JSONObject) -> String = { hermesMessageText(it) }
+        assertEquals("hi", f(org.json.JSONObject().put("role", "user").put("text", "hi")))
+        assertEquals("from content", f(org.json.JSONObject().put("role", "user").put("content", "from content")))
+        assertEquals("a\nb", f(org.json.JSONObject().put("role", "assistant")
+            .put("content", org.json.JSONArray().put(org.json.JSONObject().put("type", "text").put("text", "a")).put("b"))))
+        assertEquals("from content", f(org.json.JSONObject().put("text", org.json.JSONObject.NULL).put("content", "from content")))
     }
 }
