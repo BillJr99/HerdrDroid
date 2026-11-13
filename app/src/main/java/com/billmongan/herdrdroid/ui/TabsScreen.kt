@@ -147,6 +147,7 @@ fun TabsScreen(vm: AppViewModel) {
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                         DropdownMenuItem(text = { Text("Files") }, onClick = { menu = false; vm.openFiles("~") })
                         DropdownMenuItem(text = { Text("Search conversations") }, onClick = { menu = false; vm.screen = Screen.Search })
+                        DropdownMenuItem(text = { Text("Usage") }, onClick = { menu = false; vm.screen = Screen.Usage })
                         DropdownMenuItem(
                             text = { Text("Stop everything…", color = Palette.OrangeInk) },
                             enabled = panes.any { it.status == Status.WORKING && it.agent != null },

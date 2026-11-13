@@ -73,6 +73,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.TextStyle
@@ -115,6 +117,7 @@ private fun keyName(c: Char): String? = when {
     else -> null
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun AgentScreen(vm: AppViewModel, paneId: String) {
     val pane = vm.pane(paneId)
@@ -132,6 +135,15 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     var menu by remember { mutableStateOf(false) }
     var choosingModel by remember { mutableStateOf(false) }
     var showSnippets by remember { mutableStateOf(false) }
+    /** Reading mode: the message box and extra rows step aside; a Reply button brings them back. */
+    var reading by rememberSaveable(paneId) { mutableStateOf(false) }
+    /** Find in chat: what to look for, and which match is showing. */
+    var finding by rememberSaveable(paneId) { mutableStateOf(false) }
+    var findText by rememberSaveable(paneId) { mutableStateOf("") }
+    var findAt by remember(paneId) { mutableStateOf(0) }
+    /** A message open full screen. */
+    var opened by remember { mutableStateOf<String?>(null) }
+    val keyboardUp = androidx.compose.foundation.layout.WindowInsets.isImeVisible
     val context = LocalContext.current
     val textSize = vm.current?.textSize ?: 12.5f
     var pinch by remember { mutableFloatStateOf(1f) }
@@ -269,7 +281,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
         // Swipe the header left or right to move to the next or previous agent.
         var swipe by remember { mutableFloatStateOf(0f) }
         Row(
-            Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, top = 6.dp, bottom = 6.dp)
+            Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, top = if (keyboardUp) 0.dp else 6.dp, bottom = if (keyboardUp) 0.dp else 6.dp)
                 .pointerInput(paneId) {
                     detectHorizontalDragGestures(
                         onDragStart = { swipe = 0f },
@@ -292,8 +304,14 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                     fontWeight = FontWeight.SemiBold, fontSize = 17.sp, color = Palette.Ink,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
-                if (vm.link == Link.CONNECTED) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                if (keyboardUp) {
+                    // Keyboard up: the name line only, so the chat keeps the room.
+                } else if (vm.link == Link.CONNECTED) {
+                    // Tap the model line to choose another model (or effort).
+                    Row(
+                        Modifier.clickable(enabled = pane?.agent != null) { choosingModel = true },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
                         Box(Modifier.size(7.dp).background(look(status).ink, CircleShape))
                         Text(
                             "  " + look(status).label + " · " + (vm.modelLine(paneId) ?: pane?.folder ?: paneId),
@@ -315,11 +333,14 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More", tint = Palette.Ink) }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                     if (quota != null) DropdownMenuItem(text = { Text(if (showUsage) "Hide usage" else "Usage") }, onClick = { menu = false; showUsage = !showUsage })
+                    DropdownMenuItem(text = { Text("Usage history, all agents") }, onClick = { menu = false; vm.screen = Screen.Usage })
                     if (pane != null) DropdownMenuItem(text = { Text("Files") }, onClick = { menu = false; vm.openFiles(pane.cwd.ifBlank { "~" }) })
                     if (pane?.agent != null && vm.hasTranscriptReader(paneId)) {
                         DropdownMenuItem(text = { Text("History") }, onClick = { menu = false; vm.screen = Screen.History(paneId) })
                     }
                     if (pane?.agent != null) DropdownMenuItem(text = { Text("Model…") }, onClick = { menu = false; choosingModel = true })
+                    if (structured && vm.transcriptItems.isNotEmpty()) DropdownMenuItem(text = { Text("Find in chat") }, onClick = { menu = false; finding = true })
+                    if (!live) DropdownMenuItem(text = { Text(if (reading) "Leave reading mode" else "Reading mode") }, onClick = { menu = false; reading = !reading })
                     DropdownMenuItem(text = { Text("Running underneath") }, onClick = { menu = false; vm.screen = Screen.Work(paneId) })
                     if (structured && vm.transcriptItems.isNotEmpty()) {
                         DropdownMenuItem(text = { Text("Export as Markdown") }, onClick = {
@@ -333,7 +354,10 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 }
             }
         }
-        if (isHermes) {
+        // The extra rows step aside while you type, read, or scroll back through the chat.
+        val scrolledBack = structured && listState.canScrollForward
+        val roomy = !keyboardUp && !reading && !scrolledBack
+        if (isHermes && roomy) {
             // Hermes can be driven two ways: its CLI session in this pane, or a live chat through
             // its gateway with streaming, tool progress and approvals as buttons.
             Row(
@@ -359,7 +383,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
         // agent started). It drops as they finish; tap for active and finished.
         // Two bubbles on their own row under the header: the shells the agent started that are
         // still running, and its running subagents. Tap either for active and finished.
-        vm.work[paneId]?.let { w ->
+        if (roomy) vm.work[paneId]?.let { w ->
             val subs = w.activeSubagents
             val shells = w.activeProcs(pane?.agent).size
             if (subs > 0 || shells > 0) {
@@ -375,12 +399,47 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
         }
         HorizontalDivider(color = Palette.Line)
         ServerBanners(vm)
+        val rowsNow = remember(vm.transcriptItems) { rowsOf(vm.transcriptItems) }
+        val matches = remember(rowsNow, findText, finding) {
+            if (!finding || findText.trim().length < 2) emptyList() else rowsNow.withIndex().filter { (_, r) ->
+                val it = (r as? com.billmongan.herdrdroid.transcript.OneRow)?.item
+                val t = when (it) {
+                    is com.billmongan.herdrdroid.transcript.UserItem -> it.text
+                    is com.billmongan.herdrdroid.transcript.TextItem -> it.text
+                    else -> null
+                }
+                t?.contains(findText.trim(), ignoreCase = true) == true
+            }.map { it.index to it.value.key }
+        }
+        LaunchedEffect(matches) { findAt = (matches.size - 1).coerceAtLeast(0) }
+        LaunchedEffect(findAt, matches) { matches.getOrNull(findAt)?.let { (i, _) -> listState.animateScrollToItem(i + 1) } }
+        if (finding && structured) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                TextField(
+                    findText, { findText = it }, singleLine = true,
+                    placeholder = { Text("Find in this chat", color = Palette.Muted) },
+                    colors = TextFieldDefaults.colors(focusedContainerColor = Palette.Card, unfocusedContainerColor = Palette.Card),
+                    modifier = Modifier.weight(1f).height(52.dp),
+                )
+                Text(
+                    if (findText.trim().length < 2) "" else if (matches.isEmpty()) "None" else "${findAt + 1} of ${matches.size}",
+                    color = Palette.Muted, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 8.dp),
+                )
+                IconButton(onClick = { if (matches.isNotEmpty()) findAt = (findAt - 1 + matches.size) % matches.size }, enabled = matches.isNotEmpty()) {
+                    Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "Earlier match", tint = Palette.Ink)
+                }
+                IconButton(onClick = { if (matches.isNotEmpty()) findAt = (findAt + 1) % matches.size }, enabled = matches.isNotEmpty()) {
+                    Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "Later match", tint = Palette.Ink, modifier = Modifier.graphicsLayer(rotationZ = 180f))
+                }
+                TextButton(onClick = { finding = false; findText = "" }) { Text("Done") }
+            }
+        }
 
         // ---- The conversation ---------------------------------------------------------------
         if (live) {
             HermesLiveChat(vm, Modifier.weight(1f).fillMaxWidth())
         } else if (structured) {
-            val rows = remember(vm.transcriptItems) { rowsOf(vm.transcriptItems) }
+            val rows = rowsNow
             val family: FontFamily = vm.readingFont.family
             Box(Modifier.weight(1f).fillMaxWidth()) { ProvideAttachments(vm::attachmentBytes) { androidx.compose.runtime.CompositionLocalProvider(LocalChatZoom provides liveSize / 12.5f) { TranscriptChat(
                 rows = rows,
@@ -396,6 +455,8 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                     undelivered = vm.undeliveredFor(paneId), onResend = vm::resendPending, onDismissPending = vm::dismissPending,
                     onLoadEarlier = if (vm.canLoadEarlier) ({ vm.loadEarlier(paneId) }) else null, loadingEarlier = vm.loadingEarlier,
                     queuedNote = "Queued in ${pane?.agentName ?: "the agent"} · it reads these when its current step ends",
+                    onOpen = { t -> opened = t },
+                    focusKey = matches.getOrNull(findAt)?.second,
                 ),
                 header = { if (showUsage && quota != null) QuotaDetails(quota, vm.quotaHistoryFor(pane)) { showUsage = false } },
                 footer = promptCard,
@@ -441,8 +502,13 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
         }
 
         // ---- Keys and the message box -------------------------------------------------------
-        if (!live) Column(
-            Modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, top = 6.dp, bottom = 10.dp),
+        if (reading && !live) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp), horizontalArrangement = Arrangement.End) {
+                Button(onClick = { reading = false }, shape = RoundedCornerShape(20.dp)) { Text("Reply") }
+            }
+        }
+        if (!live && !reading) Column(
+            Modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, top = if (keyboardUp) 2.dp else 6.dp, bottom = if (keyboardUp) 4.dp else 10.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             if (modifiersOn) {
@@ -488,7 +554,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                     }
                 }
             }
-            if (vm.showKeys || modifiersOn || commandScreen != null) {
+            if ((vm.showKeys && !keyboardUp) || modifiersOn || commandScreen != null) {
                 KeyPad(
                     ctrl = ctrl, alt = alt,
                     onCtrl = { ctrl = it }, onAlt = { alt = it },
@@ -517,12 +583,13 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 onAttach = { uri -> vm.attach(uri) { path -> message = (message.trimEnd() + " " + path).trim() + " " } },
                 attachBusy = vm.uploading,
                 commands = SlashCommands.forAgent(pane?.agent),
-                leading = {
-                    ComposerChip(if (vm.showKeys) "Keys ▾" else "Keys ▴", vm.showKeys) { vm.setKeysShown(!vm.showKeys) }
-                    ComposerChip("Snippets", false) { showSnippets = true }
-                    if (status == Status.WORKING && message.isNotBlank()) {
-                        ComposerChip("When idle", false) { vm.enqueue(paneId, message.trim()); message = "" }
-                    }
+                // One row: Keys, Snippets and When idle live in the "⋯" menu with attach and dictate.
+                compact = true,
+                menuItems = buildList {
+                    add((if (vm.showKeys) "Hide keys" else "Show keys") to { vm.setKeysShown(!vm.showKeys) })
+                    add("Snippets" to { showSnippets = true })
+                    if (status == Status.WORKING && message.isNotBlank()) add("Send when idle" to { vm.enqueue(paneId, message.trim()); message = "" })
+                    add("Reading mode" to { reading = true })
                 },
             )
         }
@@ -536,27 +603,53 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
         SnippetsDialog(vm, onInsert = { t -> message = if (message.isBlank()) t else message.trimEnd() + "\n" + t }, onDismiss = { showSnippets = false })
     }
 
+    opened?.let { t ->
+        FullMessage(t, liveSize, vm.readingFont.family, onQuote = { quote(t); opened = null; reading = false }, onClose = { opened = null })
+    }
+
     if (choosingModel && pane != null) {
         val presets = ModelPresets.forAgent(pane.agent)
+        val seen = if (ModelPresets.takesName(pane.agent)) vm.knownModels(pane.agent) else emptyList()
+        val efforts = ModelPresets.efforts(pane.agent)
+        val now = vm.models[paneId]
+        val idle = status != Status.WORKING
         AlertDialog(
             onDismissRequest = { choosingModel = false },
             title = { Text("Model for ${pane.agentName}") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    if (status == Status.WORKING) {
+                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Now: " + (vm.modelLine(paneId) ?: "not known yet"), color = Palette.Muted, fontSize = 13.sp)
+                    if (!idle) {
                         Text("${pane.agentName} is working. The model can be changed once it's done.", color = Palette.OrangeInk, fontSize = 14.sp)
                     }
-                    presets.forEach { (label, cmd) ->
+                    val choice: @Composable (String, String, Boolean) -> Unit = { label, cmd, current ->
                         Surface(
-                            shape = RoundedCornerShape(12.dp), color = Palette.Card, border = BorderStroke(1.dp, Palette.Line),
-                            modifier = Modifier.fillMaxWidth().clickable(enabled = status != Status.WORKING) {
+                            shape = RoundedCornerShape(12.dp), color = if (current) Palette.BlueSoft else Palette.Card,
+                            border = BorderStroke(1.dp, if (current) Palette.Blue else Palette.Line),
+                            modifier = Modifier.fillMaxWidth().clickable(enabled = idle) {
                                 choosingModel = false
                                 vm.runCommand(paneId, cmd)
                             },
                         ) {
                             Column(Modifier.padding(horizontal = 12.dp, vertical = 9.dp)) {
-                                Text(label, color = Palette.Ink, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                                Text(label + if (current) "  (now)" else "", color = Palette.Ink, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
                                 Text(cmd, color = Palette.Muted, fontFamily = Fonts.Mono, fontSize = 12.sp)
+                            }
+                        }
+                    }
+                    presets.forEach { (label, cmd) -> choice(label, cmd, now?.contains(label, ignoreCase = true) == true) }
+                    val extra = seen.filter { m -> presets.none { m.equals(it.first, ignoreCase = true) } }
+                    if (extra.isNotEmpty()) {
+                        Text("Used before", color = Palette.Muted, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 4.dp))
+                        extra.forEach { m -> choice(m, "/model $m", m == now) }
+                    }
+                    if (efforts.isNotEmpty()) {
+                        Text("Reasoning effort", color = Palette.Muted, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 4.dp))
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            efforts.forEach { (label, cmd) ->
+                                ComposerChip(label, vm.efforts[paneId].equals(label, ignoreCase = true)) {
+                                    if (idle) { choosingModel = false; vm.runCommand(paneId, cmd) }
+                                }
                             }
                         }
                     }
@@ -567,7 +660,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 }
             },
             confirmButton = {
-                TextButton(enabled = status != Status.WORKING, onClick = {
+                TextButton(enabled = idle, onClick = {
                     choosingModel = false
                     vm.runCommand(paneId, ModelPresets.pickerCommand(pane.agent))
                     fullTerminal = true
@@ -897,6 +990,39 @@ private fun EditPreview(t: com.billmongan.herdrdroid.transcript.ToolItem, size: 
         else SelectionContainer {
             Text(t.patch.orEmpty().take(20_000), fontFamily = Fonts.Mono, fontSize = 11.5.sp, color = Palette.Ink,
                 modifier = Modifier.fillMaxWidth().background(Palette.Code, RoundedCornerShape(10.dp)).horizontalScroll(rememberScrollState()).padding(10.dp))
+        }
+    }
+}
+
+/** One message on the whole screen, to read in peace, with Copy, Quote and Share. */
+@Composable
+private fun FullMessage(text: String, size: Float, family: FontFamily, onQuote: () -> Unit, onClose: () -> Unit) {
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = onClose,
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Surface(color = Palette.Ground, modifier = Modifier.fillMaxSize()) {
+            Column(Modifier.fillMaxSize().systemBarsPadding()) {
+                Row(Modifier.fillMaxWidth().padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onClose) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Close", tint = Palette.Ink) }
+                    Spacer(Modifier.weight(1f))
+                    TextButton(onClick = { clipboard.setText(androidx.compose.ui.text.AnnotatedString(text)) }) { Text("Copy") }
+                    TextButton(onClick = onQuote) { Text("Quote") }
+                    TextButton(onClick = {
+                        val i = android.content.Intent(android.content.Intent.ACTION_SEND).setType("text/plain").putExtra(android.content.Intent.EXTRA_TEXT, text)
+                        runCatching { context.startActivity(android.content.Intent.createChooser(i, "Share")) }
+                    }) { Text("Share") }
+                }
+                HorizontalDivider(color = Palette.Line)
+                SelectionContainer(Modifier.weight(1f)) {
+                    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 14.dp)) {
+                        MarkdownText(text, size * 1.2f, family)
+                        Spacer(Modifier.height(40.dp))
+                    }
+                }
+            }
         }
     }
 }

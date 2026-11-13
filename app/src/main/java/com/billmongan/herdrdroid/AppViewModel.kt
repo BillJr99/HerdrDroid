@@ -79,6 +79,8 @@ sealed interface Screen {
     data class Work(val paneId: String, val kind: String? = null, val file: String? = null, val title: String? = null) : Screen
     /** Search every agent's past conversations on this server. */
     data object Search : Screen
+    /** Every agent's usage on this server, with a week of history. */
+    data object Usage : Screen
     /** The pane's past sessions; with [session] set, that one session, read-only. */
     data class History(val paneId: String, val session: PastSession? = null) : Screen
 }
@@ -130,6 +132,29 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Reasoning effort read by command where the footer has none (Claude, Hermes). */
     var efforts by mutableStateOf<Map<String, String>>(emptyMap())
         private set
+
+    /** Models seen in this agent's panes, now and before (newest first), for the model menu. */
+    fun knownModels(agent: String?): List<String> {
+        val a = agent?.lowercase() ?: return emptyList()
+        val stored = runCatching { org.json.JSONObject(prefs.seenModels).optJSONArray(a) }.getOrNull()
+        val before = (0 until (stored?.length() ?: 0)).map { stored!!.getString(it) }
+        val now = panes.filter { it.agent?.lowercase() == a }.mapNotNull { models[it.id] }
+        return (now + before).filter { it.isNotBlank() && !it.contains(' ') }.distinct().take(8)
+    }
+
+    private fun noteModels() {
+        runCatching {
+            val all = org.json.JSONObject(prefs.seenModels)
+            for (p in panes) {
+                val m = models[p.id]?.takeIf { it.isNotBlank() && !it.contains(' ') } ?: continue
+                val a = p.agent?.lowercase() ?: continue
+                val arr = all.optJSONArray(a) ?: org.json.JSONArray()
+                val list = listOf(m) + (0 until arr.length()).map { arr.getString(it) }.filter { it != m }
+                all.put(a, org.json.JSONArray(list.take(8)))
+            }
+            prefs.seenModels = all.toString()
+        }
+    }
 
     /** The model line for a card: the model, plus the effort when it isn't already part of it. */
     fun modelLine(paneId: String): String? {
@@ -952,10 +977,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 m?.let { id to it }
             }
-            if (seen.isNotEmpty()) models = models + seen
+            if (seen.isNotEmpty()) { models = models + seen; noteModels() }
         }
         // Claude's footer has no model, so its cards take it from Claude's own session log.
-        quietly { it.logModels(panes) }?.let { fromLog -> if (fromLog.isNotEmpty()) models = models + fromLog }
+        quietly { it.logModels(panes) }?.let { fromLog -> if (fromLog.isNotEmpty()) { models = models + fromLog; noteModels() } }
         refreshWorkCounts()
         refreshGit()
         current?.let { previewCache[it.id] = previews; modelCache[it.id] = models }
@@ -1412,7 +1437,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     typingInto.remove(typingKey)
                 }
                 if (result != null) watchForLeftoverScreen(target.id, profile)
-                result?.model?.let { models = models + (target.id to it) }
+                result?.model?.let { models = models + (target.id to it); noteModels() }
                 result?.effort?.let { efforts = efforts + (target.id to it) }
                 val items = result?.items
                 com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$agentKey on ${current?.label}: ${when {
@@ -1507,11 +1532,59 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val all = org.json.JSONObject(prefs.quotaHistory)
             val k = "$serverId|$agentKey"
             val arr = all.optJSONArray(k) ?: org.json.JSONArray()
+            val prev = if (arr.length() > 0) arr.getJSONObject(arr.length() - 1).optJSONObject("used") else null
+            if (prev != null) usageAlerts(serverId, agentKey, prev, r)
             arr.put(org.json.JSONObject().put("at", r.at).put("used", org.json.JSONObject(r.items.associate { it.label to it.usedPercent })))
             val cutoff = r.at - 8L * 24 * 3600 * 1000
             val kept = (0 until arr.length()).map { arr.getJSONObject(it) }.filter { it.optLong("at") >= cutoff }.takeLast(400)
             all.put(k, org.json.JSONArray(kept))
             prefs.quotaHistory = all.toString()
+        }
+    }
+
+    var alertUsage by mutableStateOf(prefs.alertUsage)
+        private set
+
+    fun changeAlertUsage(on: Boolean) {
+        alertUsage = on
+        prefs.alertUsage = on
+    }
+
+    /**
+     * Compares a new reading with the one before for the same agent: a limit that went past 80% or
+     * 95% since, or that dropped back (a reset), gets one notification.
+     */
+    private fun usageAlerts(serverId: String, agentKey: String, prev: org.json.JSONObject, r: QuotaReading) {
+        if (!alertUsage) return
+        val server = servers.firstOrNull { it.id == serverId }?.label ?: ""
+        val name = Pane("", "", "", agentKey, Status.UNKNOWN, "", "").agentName
+        for (i in r.items) {
+            if (!prev.has(i.label)) continue
+            val was = prev.optDouble(i.label)
+            val now = i.usedPercent
+            when (com.billmongan.herdrdroid.herdr.usageChange(was, now)) {
+                is com.billmongan.herdrdroid.herdr.UsageChange.Crossed -> Notify.usage(getApplication(), serverId, agentKey, i.label,
+                    "$name is at ${now.toInt()}% · $server", "${i.label}: ${now.toInt()}% used" + (i.resets?.let { ", resets ${com.billmongan.herdrdroid.herdr.shortReset(it)}" } ?: ""))
+                com.billmongan.herdrdroid.herdr.UsageChange.Reset -> Notify.usage(getApplication(), serverId, agentKey, i.label,
+                    "$name's limit reset · $server", "${i.label}: back to ${now.toInt()}% used (was ${was.toInt()}%)")
+                null -> {}
+            }
+        }
+    }
+
+    /** Every agent with readings on the open server: its latest reading and its history. */
+    fun usageOverview(): List<Triple<String, QuotaReading, List<QuotaPoint>>> {
+        val sid = current?.id ?: return emptyList()
+        return quotas.entries.sortedBy { it.key }.map { (k, r) ->
+            val hist = runCatching {
+                val arr = org.json.JSONObject(prefs.quotaHistory).optJSONArray("$sid|$k") ?: org.json.JSONArray()
+                (0 until arr.length()).map { n ->
+                    val o = arr.getJSONObject(n)
+                    val u = o.getJSONObject("used")
+                    QuotaPoint(o.optLong("at"), u.keys().asSequence().associateWith { u.optDouble(it) })
+                }
+            }.getOrDefault(emptyList())
+            Triple(k, r, hist)
         }
     }
 

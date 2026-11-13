@@ -158,4 +158,38 @@ class ComposeUiTest {
         rule.onNodeWithText(text).fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult].action?.invoke(results)
         return results.first().hasVisualOverflow
     }
+
+    @Test fun compactComposerKeepsItsToolsInOneMenu() {
+        var picked = ""
+        rule.setContent {
+            Box(Modifier.width(380.dp)) {
+                ChatComposer(
+                    value = "", onValueChange = {}, placeholder = "Message Claude", canSend = false, onSend = {},
+                    compact = true, menuItems = listOf("Snippets" to { picked = "Snippets" }, "Reading mode" to { picked = "Reading" }),
+                )
+            }
+        }
+        rule.onNodeWithText("Snippets").assertDoesNotExist()
+        rule.onNodeWithText("⋯").performClick()
+        rule.onNodeWithText("Dictate").assertIsDisplayed()
+        rule.onNodeWithText("Reading mode").performClick()
+        assertEquals("Reading", picked)
+    }
+
+    @Test fun aReplyOpensFullScreen() {
+        var opened: String? = null
+        val items = listOf(UserItem("u1", "Question"), TextItem("t1", "The whole answer"))
+        rule.setContent {
+            Box(Modifier.fillMaxSize()) {
+                TranscriptChat(
+                    rows = rowsOf(items), working = false, workingLabel = "", agentName = "Claude",
+                    pending = emptyList(), more = false, size = 12.5f, family = FontFamily.Default,
+                    actions = ChatActions(onQuote = {}, onStop = null, onOpen = { opened = it }, focusKey = "t1"),
+                    state = rememberLazyListState(), modifier = Modifier.fillMaxSize(),
+                )
+            }
+        }
+        rule.onNodeWithText("Full screen").performClick()
+        assertEquals("The whole answer", opened)
+    }
 }

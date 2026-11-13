@@ -46,15 +46,25 @@ object AppBus {
 object Notify {
     const val ATTENTION = "attention"
     const val WATCHING = "watching"
+    const val USAGE = "usage"
     const val EXTRA_SERVER = "herdrdroid.server"
     const val EXTRA_PANE = "herdrdroid.pane"
     const val KEY_REPLY = "herdrdroid.reply"
 
     /** A Reply action with a text box: what you type goes to the agent (Android's inline reply). */
-    private fun replyAction(ctx: Context, serverId: String, paneId: String, agent: String): NotificationCompat.Action {
-        val input = androidx.core.app.RemoteInput.Builder(KEY_REPLY).setLabel("Reply to $agent").build()
+    private fun replyAction(
+        ctx: Context, serverId: String, paneId: String, agent: String,
+        /** Shown as one-tap quick replies above the keyboard; a choice's label answers with its keys. */
+        quick: List<String> = emptyList(), choices: List<Choice> = emptyList(), question: String = "",
+    ): NotificationCompat.Action {
+        val input = androidx.core.app.RemoteInput.Builder(KEY_REPLY).setLabel("Reply to $agent")
+            .apply { if (quick.isNotEmpty()) setChoices(quick.map { it.take(40) }.toTypedArray()) }.build()
         val i = Intent(ctx, ActionReceiver::class.java)
             .putExtra(EXTRA_SERVER, serverId).putExtra(EXTRA_PANE, paneId).putExtra("reply", true)
+            .putExtra("question", question)
+            .putExtra("cLabels", choices.map { it.label.take(40) }.toTypedArray())
+            .putExtra("cKeys", choices.map { it.keys }.toTypedArray())
+            .putExtra("cEnter", choices.map { it.pressEnter }.toBooleanArray())
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0)
         val pi = PendingIntent.getBroadcast(ctx, id(serverId, paneId) * 4 + 2, i, flags)
         return NotificationCompat.Action.Builder(0, "Reply", pi).addRemoteInput(input).setAllowGeneratedReplies(false).build()
@@ -66,6 +76,11 @@ object Notify {
         nm.createNotificationChannel(
             NotificationChannel(ATTENTION, "Agents that need you or finished", NotificationManager.IMPORTANCE_HIGH).apply {
                 description = "An agent is waiting on a question, or finished its work."
+            },
+        )
+        nm.createNotificationChannel(
+            NotificationChannel(USAGE, "Usage limits", NotificationManager.IMPORTANCE_DEFAULT).apply {
+                description = "An agent's usage limit passed 80% or 95%, or reset."
             },
         )
         nm.createNotificationChannel(
@@ -111,7 +126,8 @@ object Notify {
             .putExtra(EXTRA_SERVER, serverId).putExtra(EXTRA_PANE, paneId)
             .putExtra("keys", "esc").putExtra("isKey", true).putExtra("question", question)
         b.addAction(0, "Esc", PendingIntent.getBroadcast(ctx, id(serverId, paneId) * 4 + 3, esc, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
-        b.addAction(replyAction(ctx, serverId, paneId, agent))
+        // Reply offers every choice as a quick reply (Android shows the first three buttons only).
+        b.addAction(replyAction(ctx, serverId, paneId, agent, choices.map { it.label }, choices, question))
         runCatching { NotificationManagerCompat.from(ctx).notify(id(serverId, paneId), b.build()) }
     }
 
@@ -124,9 +140,25 @@ object Notify {
             .setContentText(preview.ifBlank { "Ready for your next message." })
             .setContentIntent(openIntent(ctx, serverId, paneId))
             .setAutoCancel(true)
-            .addAction(replyAction(ctx, serverId, paneId, agent))
+            .addAction(replyAction(ctx, serverId, paneId, agent, listOf("Continue", "Yes", "No", "Thanks, that's all")))
             .build()
         runCatching { NotificationManagerCompat.from(ctx).notify(id(serverId, paneId), n) }
+    }
+
+    /** A usage limit passed 80% or 95%, or reset. One notification per agent and limit. */
+    fun usage(ctx: Context, serverId: String, agentKey: String, label: String, title: String, text: String) {
+        if (!allowed(ctx)) return
+        val open = PendingIntent.getActivity(ctx, ("usage|$serverId").hashCode(), Intent(ctx, MainActivity::class.java)
+            .putExtra(EXTRA_SERVER, serverId).putExtra("usage", true)
+            .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val n = NotificationCompat.Builder(ctx, USAGE)
+            .setSmallIcon(R.drawable.ic_notify)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .build()
+        runCatching { NotificationManagerCompat.from(ctx).notify(("usage|$serverId|$agentKey|$label").hashCode(), n) }
     }
 
     fun clear(ctx: Context, serverId: String, paneId: String) {
@@ -141,7 +173,14 @@ class ActionReceiver : BroadcastReceiver() {
         val pane = intent.getStringExtra(Notify.EXTRA_PANE) ?: return
         if (intent.getBooleanExtra("reply", false)) {
             val text = androidx.core.app.RemoteInput.getResultsFromIntent(intent)?.getCharSequence(Notify.KEY_REPLY)?.toString()?.trim()
-            if (!text.isNullOrEmpty()) AppBus.emit(NotifyAction(server, pane, text, true, "", isReply = true))
+            val labels = intent.getStringArrayExtra("cLabels").orEmpty()
+            val at = labels.indexOf(text)
+            if (at >= 0) {
+                // A quick reply that is one of the agent's choices: answer with that choice's keys,
+                // checked against the same question, like the choice buttons.
+                AppBus.emit(NotifyAction(server, pane, intent.getStringArrayExtra("cKeys")?.getOrNull(at).orEmpty(),
+                    intent.getBooleanArrayExtra("cEnter")?.getOrNull(at) ?: false, intent.getStringExtra("question").orEmpty()))
+            } else if (!text.isNullOrEmpty()) AppBus.emit(NotifyAction(server, pane, text, true, "", isReply = true))
             Notify.clear(context, server, pane)
             return
         }

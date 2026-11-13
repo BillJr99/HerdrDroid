@@ -1,5 +1,7 @@
 package com.billmongan.herdrdroid.ui
 
+import androidx.compose.foundation.border
+
 import androidx.compose.material3.TextButton
 import android.content.Intent
 import androidx.compose.animation.AnimatedVisibility
@@ -106,6 +108,10 @@ class ChatActions(
     val loadingEarlier: Boolean = false,
     /** Shown above pending messages while the agent works: they wait in its own queue. */
     val queuedNote: String? = null,
+    /** Opens a message full screen, to read, copy, quote or share. */
+    val onOpen: ((String) -> Unit)? = null,
+    /** The row "Find in chat" is on: drawn with an outline. */
+    val focusKey: String? = null,
 )
 
 /**
@@ -232,7 +238,10 @@ fun TranscriptChat(
                 }
             }
             items(rows, key = { it.key }) { row ->
-                Box(Modifier.animateItem()) {
+                val focused = row.key == actions.focusKey
+                Box(Modifier.animateItem().then(
+                    if (focused) Modifier.border(BorderStroke(2.dp, Palette.Blue), RoundedCornerShape(12.dp)).padding(6.dp) else Modifier,
+                )) {
                     when (row) {
                         is OneRow -> ItemView(row.item, rows, size, family, actions)
                         is ActivityRow -> ActivityView(row, live = working && row.key == lastKey, size)
@@ -312,7 +321,8 @@ private fun ItemView(item: Item, rows: List<ChatRow>, size: Float, family: FontF
                     MarkdownText(item.text, size * 1.12f, family)
                 }
                 MentionedFiles(files)
-                if (endsTurn) ReplyActions(item.text, actions.onQuote, actions.onForward)
+                if (endsTurn) ReplyActions(item.text, actions.onQuote, actions.onForward, actions.onOpen)
+                else if (item.text.length > 700 && actions.onOpen != null) Pill("Full screen") { actions.onOpen.invoke(item.text) }
             }
         }
         is ThinkItem -> ThinkView(item, size)
@@ -377,12 +387,13 @@ private fun share(context: android.content.Context, text: String) {
 
 /** Copy, Share and Quote under a finished reply. */
 @Composable
-private fun ReplyActions(text: String, onQuote: (String) -> Unit, onForward: ((String) -> Unit)?) {
+private fun ReplyActions(text: String, onQuote: (String) -> Unit, onForward: ((String) -> Unit)?, onOpen: ((String) -> Unit)? = null) {
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
     var copied by remember { mutableStateOf(false) }
     if (copied) LaunchedEffect(Unit) { delay(1500); copied = false }
     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        if (onOpen != null) Pill("Full screen") { onOpen(text) }
         Pill(if (copied) "Copied" else "Copy") { clipboard.setText(AnnotatedString(text)); copied = true }
         Pill("Share") { share(context, text) }
         Pill("Quote") { onQuote(text) }

@@ -77,6 +77,13 @@ data class QuotaProfile(
      * When set, [command] is not typed anywhere and [parseCli] reads the command's output.
      */
     val cliCommand: String? = null,
+    /**
+     * What the usage screen says when the agent has no session yet (Hermes: "No active agent --
+     * send a message first"). Then [startSession] is sent once, as a message, and usage is read
+     * again after the agent answers.
+     */
+    val noSession: Regex? = null,
+    val startSession: String? = null,
     val parseCli: ((String) -> List<QuotaItem>)? = null,
 )
 
@@ -171,6 +178,9 @@ object QuotaProfiles {
         QuotaProfile(
             setOf("hermes"), "/usage", emptyList(), 2_500,
             infoCommand = "/reasoning",
+            noSession = Regex("""No active agent""", RegexOption.IGNORE_CASE),
+            startSession = "Hi! HerdrDroid is starting this session so it can read your usage. Just reply OK.",
+            everyMinutes = 30,
             parseInfo = { screen -> PaneInfo(null, Regex("""Reasoning effort:\s+(\S+)""").findAll(screen).lastOrNull()?.groupValues?.get(1)) },
         ),
     )
@@ -473,4 +483,16 @@ fun shortReset(raw: String, now: java.time.ZonedDateTime = java.time.ZonedDateTi
         return out(at)
     }
     return raw
+}
+
+/** What changed between two readings of one limit, for alerts: a line it crossed, a reset, or nothing. */
+sealed interface UsageChange {
+    data class Crossed(val line: Int) : UsageChange
+    data object Reset : UsageChange
+}
+
+fun usageChange(was: Double, now: Double): UsageChange? {
+    listOf(95, 80).firstOrNull { was < it && now >= it }?.let { return UsageChange.Crossed(it) }
+    if (was >= 50 && now <= was - 40) return UsageChange.Reset
+    return null
 }

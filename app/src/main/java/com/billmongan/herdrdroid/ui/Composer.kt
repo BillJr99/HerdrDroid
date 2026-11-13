@@ -125,8 +125,15 @@ fun ChatComposer(
     attachBusy: Boolean = false,
     commands: List<SlashCommand> = emptyList(),
     leading: (@Composable () -> Unit)? = null,
+    /**
+     * One row instead of three: a "⋯" menu (attach, dictate, commands and [menuItems]), the box,
+     * and the send button, so the chat keeps more of the screen.
+     */
+    compact: Boolean = false,
+    menuItems: List<Pair<String, () -> Unit>> = emptyList(),
 ) {
     var showCommands by remember { mutableStateOf(false) }
+    var showMenu by remember { mutableStateOf(false) }
     val speech = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
         if (r.resultCode == Activity.RESULT_OK) {
             val said = r.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()
@@ -137,6 +144,67 @@ fun ChatComposer(
     val typedSlash = value.startsWith("/") && !value.contains(' ')
     val matches = commands.filter { typedSlash && it.name.startsWith(value, ignoreCase = true) }
 
+    val sendButton: @Composable () -> Unit = {
+        val stopMode = working && onStop != null && value.isBlank()
+        val label = if (working && steerLabel != null && value.isNotBlank()) steerLabel else null
+        Spacer(Modifier.width(if (compact) 4.dp else 8.dp))
+        // While the agent works, a message steers it: the send button says so itself.
+        if (label != null) {
+            androidx.compose.material3.Button(
+                onClick = onSend,
+                enabled = canSend,
+                shape = RoundedCornerShape(20.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp),
+                colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Palette.Blue, contentColor = Palette.OnBlue),
+                modifier = Modifier.height(40.dp),
+            ) {
+                Text(label, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+                Icon(Icons.Filled.KeyboardArrowUp, contentDescription = null, modifier = Modifier.size(18.dp))
+            }
+        } else FilledIconButton(
+            onClick = { if (stopMode) onStop?.invoke() else onSend() },
+            enabled = stopMode || canSend,
+            shape = CircleShape,
+            colors = IconButtonDefaults.filledIconButtonColors(
+                containerColor = if (stopMode) Palette.Ink else Palette.Blue,
+                disabledContainerColor = Palette.Gray,
+            ),
+            modifier = Modifier.size(40.dp),
+        ) {
+            if (stopMode) {
+                Box(Modifier.size(12.dp).background(Palette.Ground, RoundedCornerShape(2.dp)))
+            } else {
+                Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "Send", tint = if (canSend) Palette.OnBlue else Palette.Muted)
+            }
+        }
+    }
+    val field: @Composable (Modifier, Int) -> Unit = { m, lines ->
+        TextField(
+            value = value,
+            onValueChange = onValueChange,
+            placeholder = { Text(placeholder, color = Palette.Muted, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            textStyle = TextStyle(fontFamily = Fonts.Sans, fontSize = 16.sp, color = Palette.Ink, lineHeight = 22.sp),
+            maxLines = lines,
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+            colors = TextFieldDefaults.colors(
+                focusedContainerColor = Color.Transparent,
+                unfocusedContainerColor = Color.Transparent,
+                disabledContainerColor = Color.Transparent,
+                focusedIndicatorColor = Color.Transparent,
+                unfocusedIndicatorColor = Color.Transparent,
+                disabledIndicatorColor = Color.Transparent,
+                cursorColor = Palette.Blue,
+            ),
+            modifier = m,
+        )
+    }
+    val dictate = {
+        val i = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+            .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            .putExtra(RecognizerIntent.EXTRA_PROMPT, "Say your message")
+        runCatching { speech.launch(i) }
+        Unit
+    }
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         AnimatedVisibility(showCommands || matches.isNotEmpty()) {
             val list = if (matches.isNotEmpty()) matches else commands
@@ -164,6 +232,31 @@ fun ChatComposer(
         }
         // The chips (Keys, Snippets, When idle…) get their own row above the box, so the bottom row
         // holds only the round tools and the send button and nothing can overlap.
+        if (compact) {
+            Surface(
+                shape = RoundedCornerShape(24.dp),
+                color = Palette.Composer,
+                border = BorderStroke(1.dp, Palette.Line),
+                shadowElevation = 2.dp,
+            ) {
+                Row(Modifier.padding(start = 2.dp, end = 6.dp, top = 2.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box {
+                        RoundTool(if (attachBusy) "…" else "⋯", "More: attach, dictate, commands, keys") { showMenu = true }
+                        androidx.compose.material3.DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                            if (onAttach != null) androidx.compose.material3.DropdownMenuItem(text = { Text("Attach a file") }, enabled = !attachBusy, onClick = { showMenu = false; picker.launch("*/*") })
+                            androidx.compose.material3.DropdownMenuItem(text = { Text("Dictate") }, onClick = { showMenu = false; dictate() })
+                            if (commands.isNotEmpty()) androidx.compose.material3.DropdownMenuItem(text = { Text("Commands") }, onClick = { showMenu = false; showCommands = !showCommands })
+                            menuItems.forEach { (label, act) ->
+                                androidx.compose.material3.DropdownMenuItem(text = { Text(label) }, onClick = { showMenu = false; act() })
+                            }
+                        }
+                    }
+                    field(Modifier.weight(1f), 5)
+                    sendButton()
+                }
+            }
+            return@Column
+        }
         if (leading != null) {
             Row(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 4.dp),
@@ -178,24 +271,7 @@ fun ChatComposer(
             shadowElevation = 3.dp,
         ) {
             Column(Modifier.padding(start = 4.dp, end = 8.dp, bottom = 8.dp)) {
-                TextField(
-                    value = value,
-                    onValueChange = onValueChange,
-                    placeholder = { Text(placeholder, color = Palette.Muted, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                    textStyle = TextStyle(fontFamily = Fonts.Sans, fontSize = 16.sp, color = Palette.Ink, lineHeight = 22.sp),
-                    maxLines = 6,
-                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = Color.Transparent,
-                        unfocusedContainerColor = Color.Transparent,
-                        disabledContainerColor = Color.Transparent,
-                        focusedIndicatorColor = Color.Transparent,
-                        unfocusedIndicatorColor = Color.Transparent,
-                        disabledIndicatorColor = Color.Transparent,
-                        cursorColor = Palette.Blue,
-                    ),
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                field(Modifier.fillMaxWidth(), 6)
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 6.dp)) {
                     Row(
                         Modifier.weight(1f).horizontalScroll(rememberScrollState()),
@@ -205,46 +281,10 @@ fun ChatComposer(
                         if (onAttach != null) {
                             RoundTool(if (attachBusy) "…" else "+", "Attach a file") { if (!attachBusy) picker.launch("*/*") }
                         }
-                        RoundTool("🎙", "Dictate") {
-                            val i = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
-                                .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                                .putExtra(RecognizerIntent.EXTRA_PROMPT, "Say your message")
-                            runCatching { speech.launch(i) }
-                        }
+                        RoundTool("🎙", "Dictate") { dictate() }
                         if (commands.isNotEmpty()) RoundTool("/", "Commands") { showCommands = !showCommands }
                     }
-                    val stopMode = working && onStop != null && value.isBlank()
-                    val label = if (working && steerLabel != null && value.isNotBlank()) steerLabel else null
-                    Spacer(Modifier.width(8.dp))
-                    // While the agent works, a message steers it: the send button says so itself.
-                    if (label != null) {
-                        androidx.compose.material3.Button(
-                            onClick = onSend,
-                            enabled = canSend,
-                            shape = RoundedCornerShape(20.dp),
-                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp),
-                            colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Palette.Blue, contentColor = Palette.OnBlue),
-                            modifier = Modifier.height(40.dp),
-                        ) {
-                            Text(label, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
-                            Icon(Icons.Filled.KeyboardArrowUp, contentDescription = null, modifier = Modifier.size(18.dp))
-                        }
-                    } else FilledIconButton(
-                        onClick = { if (stopMode) onStop?.invoke() else onSend() },
-                        enabled = stopMode || canSend,
-                        shape = CircleShape,
-                        colors = IconButtonDefaults.filledIconButtonColors(
-                            containerColor = if (stopMode) Palette.Ink else Palette.Blue,
-                            disabledContainerColor = Palette.Gray,
-                        ),
-                        modifier = Modifier.size(40.dp),
-                    ) {
-                        if (stopMode) {
-                            Box(Modifier.size(12.dp).background(Palette.Ground, RoundedCornerShape(2.dp)))
-                        } else {
-                            Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "Send", tint = if (canSend) Palette.OnBlue else Palette.Muted)
-                        }
-                    }
+                    sendButton()
                 }
             }
         }
@@ -288,7 +328,16 @@ fun ComposerChip(label: String, on: Boolean, onClick: () -> Unit) {
  */
 object ModelPresets {
     fun forAgent(agent: String?): List<Pair<String, String>> = when (agent?.lowercase()) {
-        "claude" -> listOf("Opus" to "/model opus", "Sonnet" to "/model sonnet", "Haiku" to "/model haiku", "Default" to "/model default")
+        "claude" -> listOf("Fable" to "/model fable", "Opus" to "/model opus", "Sonnet" to "/model sonnet", "Haiku" to "/model haiku", "Default" to "/model default")
+        else -> emptyList()
+    }
+
+    /** Agents whose model command takes a model name, so a model seen before can be one tap. */
+    fun takesName(agent: String?): Boolean = agent?.lowercase() in setOf("claude", "hermes")
+
+    /** Reasoning effort as one-tap commands, where the agent has a command for it (label to command). */
+    fun efforts(agent: String?): List<Pair<String, String>> = when (agent?.lowercase()) {
+        "hermes" -> listOf("low", "medium", "high", "xhigh", "max").map { it to "/reasoning $it" }
         else -> emptyList()
     }
 

@@ -149,6 +149,16 @@ class AppPrefs(context: Context) {
         get() = prefs.getBoolean("watchOthers", true)
         set(v) = prefs.edit().putBoolean("watchOthers", v).apply()
 
+    /** Models seen in each agent's panes, newest first: {"claude": ["claude-opus-5-5", ...]}. */
+    var seenModels: String
+        get() = prefs.getString("seenModels", "{}") ?: "{}"
+        set(v) = prefs.edit().putString("seenModels", v).apply()
+
+    /** Alerts when a usage limit passes 80% or 95%, and when it resets. */
+    var alertUsage: Boolean
+        get() = prefs.getBoolean("alertUsage", true)
+        set(v) = prefs.edit().putBoolean("alertUsage", v).apply()
+
     /** "Done" alerts too, not only "needs you". */
     var alertDone: Boolean
         get() = prefs.getBoolean("alertDone", true)

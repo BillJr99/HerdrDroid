@@ -156,6 +156,16 @@ fun SettingsScreen(vm: AppViewModel, back: Screen) {
                     color = Palette.Muted, fontSize = 13.sp,
                 )
             }
+            Section("Usage alerts") {
+                Row(Modifier.fillMaxWidth().clickable { vm.changeAlertUsage(!vm.alertUsage) }, verticalAlignment = Alignment.CenterVertically) {
+                    Text("Tell me when a limit passes 80% or 95%, or resets", color = Palette.Ink, fontSize = 16.sp, modifier = Modifier.weight(1f))
+                    Switch(checked = vm.alertUsage, onCheckedChange = { vm.changeAlertUsage(it) })
+                }
+                Text(
+                    "Checked each time the app reads an agent's usage, on this server and the others it watches.",
+                    color = Palette.Muted, fontSize = 13.sp,
+                )
+            }
             Section("Diagnostics") { Diagnostics() }
             Section("Reading font") {
                 ReadingFont.entries.forEach { f ->

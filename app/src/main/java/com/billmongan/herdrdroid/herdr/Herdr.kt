@@ -76,6 +76,9 @@ enum class Backend { TUI, CORE }
 /** What a computer has: which herdr is installed and which one's server is running. */
 data class Detected(val tuiInstalled: Boolean, val tuiRunning: Boolean, val coreInstalled: Boolean, val coreRunning: Boolean, val hcPath: String?)
 
+/** When a usage check last started a session in each pane (Hermes), so it happens rarely. */
+private val sessionStartedAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
 class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend = Backend.TUI, hcPath: String? = null) {
     // The path is the user's setting; "~" stays unquoted so the remote shell expands it.
     private val herdr = herdrPath.trim().ifBlank { "herdr" }
@@ -395,7 +398,34 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
         val shown = guardedCommand(paneId, profile.command, profile.waitMillis, profile.closeKeys, profile.openMarker, working, profile.scrollKeys) {
             parseQuota(it, profile.bareMeansLeft).isNotEmpty()
         } ?: return null
-        val items = parseQuota(shown, profile.bareMeansLeft)
+        var items = parseQuota(shown, profile.bareMeansLeft)
+        // No session yet (Hermes): start one with a short message, wait for the answer, read again.
+        // Only on an idle pane, and at most once every six hours per pane.
+        val start = profile.startSession
+        if (items.isEmpty() && !working && start != null && profile.noSession?.containsMatchIn(shown.lines().takeLast(15).joinToString("\n")) == true) {
+            val key = paneId
+            val last = sessionStartedAt[key] ?: 0L
+            if (System.currentTimeMillis() - last > 6 * 3_600_000L) {
+                sessionStartedAt[key] = System.currentTimeMillis()
+                com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$paneId has no session yet; sending one short message to start it")
+                typeAndEnter(paneId, start)
+                // Wait for the turn: working, then idle again (up to two minutes).
+                val began = System.currentTimeMillis()
+                var sawWork = false
+                while (System.currentTimeMillis() - began < 120_000) {
+                    delay(2_000)
+                    val st = runCatching { panes().firstOrNull { it.id == paneId }?.status }.getOrNull()
+                    if (st == Status.WORKING) sawWork = true
+                    else if ((sawWork || System.currentTimeMillis() - began > 20_000) && (st == Status.IDLE || st == Status.DONE)) break
+                }
+                delay(1_000)
+                val again = guardedCommand(paneId, profile.command, profile.waitMillis, profile.closeKeys, profile.openMarker, false, profile.scrollKeys) {
+                    parseQuota(it, profile.bareMeansLeft).isNotEmpty()
+                }
+                if (again != null) items = parseQuota(again, profile.bareMeansLeft)
+                com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$paneId after starting the session: ${items.size} limit(s)")
+            }
+        }
         com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$paneId read " +
             (if (items.isEmpty()) "no limits" else items.joinToString(prefix = "${items.size} limit(s): ") { "${it.label} ${it.usedPercent.toInt()}%${if (it.resets != null) " resets ${it.resets}" else ""}" }) +
             "; screen: " + screenShape(shown))
