@@ -663,7 +663,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val target = list.filter { it.status == Status.IDLE || it.status == Status.DONE }.sortedBy { it.focused }.firstOrNull() ?: continue
                 val typingKey = "${s.id}/${target.id}"
                 if (!typingInto.add(typingKey)) continue
-                try { runCatching { h.probeQuota(target.id, profile, working = false) }.getOrNull()?.items } finally { typingInto.remove(typingKey) }
+                probedAt["${s.id}|${target.id}"] = System.currentTimeMillis()
+                try { runCatching { h.probeQuota(target.id, profile, working = false) }.getOrNull()?.items } finally {
+                    typingInto.remove(typingKey)
+                    probedAt["${s.id}|${target.id}"] = System.currentTimeMillis()
+                }
             }
             if (!items.isNullOrEmpty()) {
                 val r = QuotaReading(System.currentTimeMillis(), items)
@@ -993,21 +997,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     p.copy(agent = was)
                 } else p
             }
-            val tNow = System.currentTimeMillis()
-            var doneChanged = false
-            fresh.forEach { p ->
-                val k = "${current?.id}|${p.id}"
-                // A new "done" begins only after the agent works or asks again; a passing idle,
-                // unknown or shell reading in between keeps the one you already saw.
-                when (p.status) {
-                    Status.DONE -> if (!doneSince.containsKey(k)) { doneSince[k] = tNow; doneChanged = true }
-                    Status.WORKING, Status.NEEDS_YOU -> if (doneSince.remove(k) != null) doneChanged = true
-                    else -> {}
-                }
-                // An agent open on screen when it finishes has been seen.
-                if ((screen as? Screen.Agent)?.paneId == p.id && foreground) { seenInApp[k] = tNow; doneChanged = true }
-            }
-            if (doneChanged) saveSeen()
+            current?.id?.let { trackDone(it, fresh) }
             panes = withBusy(fresh, busyCounts)
             current?.let { s -> noticeChanges(s.id, s.label, fresh) { herdr } }
             updateWidget(fresh)
@@ -1564,11 +1554,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     return@launch
                 }
                 probingPanes = probingPanes + target.id
+                probedAt["$serverId|${target.id}"] = System.currentTimeMillis()
                 val result = try {
                     quietly { it.probeQuota(target.id, profile, working = target.status == Status.WORKING) }
                 } finally {
                     probingPanes = probingPanes - target.id
                     typingInto.remove(typingKey)
+                    probedAt["$serverId|${target.id}"] = System.currentTimeMillis()
                 }
                 if (result != null) watchForLeftoverScreen(target.id, profile)
                 result?.model?.let { models = models + (target.id to it); noteModels() }
@@ -1832,7 +1824,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             viewModelScope,
             credentials = { s -> credentialsFor(s, savedPassword(s)) },
             keystoreKey = SshKeyVault::provider,
-            onSeen = { st -> noticeChanges(st.server.id, st.server.label, st.panes) { fleet?.herdr(st.server.id) } },
+            onSeen = { st ->
+                trackDone(st.server.id, st.panes)
+                noticeChanges(st.server.id, st.server.label, st.panes) { fleet?.herdr(st.server.id) }
+            },
         ).also { fleet = it }
         f.everyMs = if (watching) 5_000L else 10_000L
         f.watch(watchable())
@@ -2005,7 +2000,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         for (s in servers) {
             if (s.id == cur?.id) continue
             val list = fleetStates[s.id]?.panes ?: serverPanes[s.id].orEmpty()
-            list.filter { it.agent != null }.forEach { p -> out += Session(s, p, p.status, "${s.id}|${p.tabLabel}" in pins, false) }
+            list.filter { it.agent != null }.forEach { p -> out += Session(s, p, shownStatus(p, s.id), "${s.id}|${p.tabLabel}" in pins, false) }
         }
         return out.sortedWith(compareBy({ statusOrder.indexOf(it.status) }, { !it.pinned }, { it.server.label.lowercase() }, { it.pane.tabLabel.lowercase() }))
     }
@@ -2192,16 +2187,49 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * The status a card shows: an agent herdr calls idle or done while its subagents or background
      * shells still run is shown as working.
      */
-    fun shownStatus(p: Pane): Status {
+    /**
+     * Remembers, per server and pane, when it last turned done and when you last had it open, for
+     * every server (the open one and the watched ones). A new "done" begins only after real work:
+     * the app's own usage check (it types /usage into an idle agent) makes it busy for a moment,
+     * and that never counts, so an agent you already opened stays idle.
+     */
+    private fun trackDone(serverId: String, list: List<Pane>) {
+        val tNow = System.currentTimeMillis()
+        var changed = false
+        list.forEach { p ->
+            val k = "$serverId|${p.id}"
+            val ownCheck = tNow - (probedAt[k] ?: 0L) < 60_000L
+            when (p.status) {
+                Status.DONE -> if (!doneSince.containsKey(k)) { doneSince[k] = tNow; changed = true }
+                Status.WORKING, Status.NEEDS_YOU -> if (!ownCheck && doneSince.remove(k) != null) changed = true
+                else -> {}
+            }
+            // An agent open on screen when it finishes has been seen.
+            if (serverId == current?.id && (screen as? Screen.Agent)?.paneId == p.id && foreground) { seenInApp[k] = tNow; changed = true }
+        }
+        if (changed) saveSeen()
+    }
+
+    /** When the app last typed a usage check into each pane ("server|pane"). */
+    private val probedAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    fun shownStatus(p: Pane, serverId: String? = current?.id): Status {
+        val here = serverId == current?.id
         // Hermes: a conversation elsewhere (Telegram, its app) working or waiting counts here too.
-        if (p.agent?.lowercase() == "hermes" && p.status != Status.NEEDS_YOU) hermesState?.let { return it }
-        if ((p.status == Status.IDLE || p.status == Status.DONE) && (busyCounts[p.id] ?: 0) > 0) return Status.WORKING
+        if (here && p.agent?.lowercase() == "hermes" && p.status != Status.NEEDS_YOU) hermesState?.let { return it }
+        if (here && (p.status == Status.IDLE || p.status == Status.DONE) && (busyCounts[p.id] ?: 0) > 0) return Status.WORKING
+        // The app's own usage check made it look busy for a moment: show what it was before.
+        val k0 = "$serverId|${p.id}"
+        // (The check only types into agents that are idle or done, so it was one or the other.)
+        if (p.status == Status.WORKING && System.currentTimeMillis() - (probedAt[k0] ?: 0L) < 60_000L) {
+            return if (doneSince.containsKey(k0)) shownStatus(p.copy(status = Status.DONE), serverId) else Status.IDLE
+        }
         // herdr's "done" is idle but not yet seen at the computer. Opening the agent here counts as
         // seeing it, and after 30 minutes it counts as idle anyway. (The app never marks it seen in
         // herdr itself: that would switch the pane in front at the computer.)
         if (p.status == Status.DONE) {
-            val since = doneSince["${current?.id}|${p.id}"] ?: return p.status
-            val seen = seenInApp["${current?.id}|${p.id}"] ?: 0L
+            val since = doneSince["$serverId|${p.id}"] ?: return p.status
+            val seen = seenInApp["$serverId|${p.id}"] ?: 0L
             if (seen >= since || System.currentTimeMillis() - since > 30 * 60_000L) return Status.IDLE
         }
         return p.status
