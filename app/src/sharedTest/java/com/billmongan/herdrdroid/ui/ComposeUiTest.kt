@@ -114,4 +114,23 @@ class ComposeUiTest {
         rule.onNodeWithText("Answer 60").assertIsDisplayed()
         rule.onNodeWithText("Question 1").assertDoesNotExist()
     }
+
+    @Test fun chatStaysAtTheBottomWhenMoreArrives() {
+        val items = androidx.compose.runtime.mutableStateOf((1..30).flatMap { listOf(UserItem("u$it", "Question $it"), TextItem("t$it", "Answer $it")) })
+        rule.setContent {
+            Box(Modifier.fillMaxSize()) {
+                TranscriptChat(
+                    rows = rowsOf(items.value), working = false, workingLabel = "", agentName = "Claude",
+                    pending = emptyList(), more = false, size = 12.5f, family = FontFamily.Default,
+                    actions = ChatActions(onQuote = {}, onStop = null),
+                    state = rememberLazyListState(), modifier = Modifier.fillMaxSize(),
+                )
+            }
+        }
+        rule.waitForIdle()
+        // A fresh read adds a long stretch at once, as after the cached chat on opening.
+        items.value = items.value + (31..70).flatMap { listOf(UserItem("u$it", "Question $it"), TextItem("t$it", "Answer $it\n" + "more text\n".repeat(4))) }
+        rule.waitForIdle()
+        rule.onNodeWithText("Answer 70", substring = true).assertIsDisplayed()
+    }
 }

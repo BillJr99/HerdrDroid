@@ -145,28 +145,50 @@ fun TranscriptChat(
     var first by remember(state) { mutableStateOf(true) }
     val lastKey = rows.lastOrNull()?.key
     val lastSig = rows.lastOrNull()?.let { r -> if (r is ActivityRow) r.items.size.toString() + r.running else (r as OneRow).item.hashCode().toString() }
-    // Opening an agent always lands at the bottom: the cached chat shows first, then the fresh read
-    // and its images arrive and grow the list, so for the first few seconds every change (and the
-    // layout settling) pins it to the bottom again, unless the user has started scrolling.
-    val openedAt = remember(state) { System.currentTimeMillis() }
-    var userScrolled by remember(state) { mutableStateOf(false) }
-    // Only a drag by the user counts; the app's own jumps to the bottom don't.
+    // The chat sticks to the bottom: on opening, on coming back to the app, and while anything
+    // below grows (the fresh read after the cached chat, images, a long reply), until the user drags
+    // it up. Dragging back down to the bottom sticks it again. The app's own jumps never count.
+    var stick by remember(state) { mutableStateOf(true) }
     LaunchedEffect(state) {
-        state.interactionSource.interactions.collect { if (it is androidx.compose.foundation.interaction.DragInteraction.Start) userScrolled = true }
+        state.interactionSource.interactions.collect {
+            when (it) {
+                is androidx.compose.foundation.interaction.DragInteraction.Start -> stick = false
+                is androidx.compose.foundation.interaction.DragInteraction.Stop,
+                is androidx.compose.foundation.interaction.DragInteraction.Cancel -> {
+                    kotlinx.coroutines.delay(400) // let a fling settle
+                    if (!state.canScrollForward) stick = true
+                }
+            }
+        }
     }
     LaunchedEffect(state) {
-        while (System.currentTimeMillis() - openedAt < 4_000) {
-            kotlinx.coroutines.delay(250)
-            // Only when something below is out of view, so a settled chat is never moved.
-            if (!userScrolled && rows.isNotEmpty() && !state.isScrollInProgress && state.canScrollForward) state.scrollToItem(total - 1)
+        androidx.compose.runtime.snapshotFlow { Triple(state.layoutInfo.totalItemsCount, state.canScrollForward, stick) }
+            .collect { (count, more, s) ->
+                if (s && count > 0 && more && !state.isScrollInProgress) {
+                    state.scrollToItem(count - 1)
+                    unseen = 0
+                }
+            }
+    }
+    // Back in front (from another app, or the screen turned on): to the bottom again.
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    androidx.compose.runtime.DisposableEffect(lifecycle, state) {
+        val obs = androidx.lifecycle.LifecycleEventObserver { _, e ->
+            if (e == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                stick = true
+                scope.launch { val n = state.layoutInfo.totalItemsCount; if (n > 0) state.scrollToItem(n - 1) }
+            }
         }
+        lifecycle.addObserver(obs)
+        onDispose { lifecycle.removeObserver(obs) }
     }
     LaunchedEffect(rows.size, lastKey, lastSig, pending, working) {
         if (rows.isEmpty()) return@LaunchedEffect
-        if (first || (!userScrolled && System.currentTimeMillis() - openedAt < 4_000)) {
+        if (first) {
             first = false
-            if (state.canScrollForward || state.layoutInfo.totalItemsCount == 0) state.scrollToItem(total - 1)
-        } else if (atBottom || pending.isNotEmpty()) {
+            state.scrollToItem(total - 1)
+        } else if (stick || atBottom || pending.isNotEmpty()) {
+            if (pending.isNotEmpty()) stick = true
             state.animateScrollToItem(total - 1)
             unseen = 0
         } else if (rows.size > lastCount) {
@@ -261,7 +283,7 @@ fun TranscriptChat(
                 color = Palette.Card,
                 border = BorderStroke(1.dp, Palette.Line),
                 shadowElevation = 4.dp,
-                modifier = Modifier.clickable { scope.launch { state.animateScrollToItem(total - 1) } },
+                modifier = Modifier.clickable { stick = true; scope.launch { state.animateScrollToItem(total - 1) } },
             ) {
                 Row(Modifier.padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Jump to the latest", tint = Palette.Blue, modifier = Modifier.size(18.dp))
