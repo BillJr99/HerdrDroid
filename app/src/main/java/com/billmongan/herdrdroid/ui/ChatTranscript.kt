@@ -101,6 +101,11 @@ class ChatActions(
     val undelivered: List<Pair<Long, String>> = emptyList(),
     val onResend: ((Long) -> Unit)? = null,
     val onDismissPending: ((Long) -> Unit)? = null,
+    /** Reads the part of the log before what is shown, and adds it at the top. */
+    val onLoadEarlier: (() -> Unit)? = null,
+    val loadingEarlier: Boolean = false,
+    /** Shown above pending messages while the agent works: they wait in its own queue. */
+    val queuedNote: String? = null,
 )
 
 /**
@@ -166,7 +171,14 @@ fun TranscriptChat(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     header?.invoke()
                     if (more) {
-                        Text(
+                        val load = actions.onLoadEarlier
+                        if (load != null) {
+                            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                                TextButton(onClick = load, enabled = !actions.loadingEarlier) {
+                                    Text(if (actions.loadingEarlier) "Loading earlier messages…" else "Load earlier messages")
+                                }
+                            }
+                        } else Text(
                             "Showing the latest part of this conversation",
                             color = Palette.Muted, fontSize = 12.sp,
                             textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
@@ -195,7 +207,7 @@ fun TranscriptChat(
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (pending.size > 1 || working) {
                             Text(
-                                if (working) "${pending.size} waiting for ${agentName}" else "${pending.size} on the way",
+                                if (working) actions.queuedNote ?: "${pending.size} waiting for ${agentName}" else "${pending.size} on the way",
                                 color = Palette.Muted, fontSize = 12.sp, textAlign = TextAlign.End, modifier = Modifier.fillMaxWidth(),
                             )
                         }

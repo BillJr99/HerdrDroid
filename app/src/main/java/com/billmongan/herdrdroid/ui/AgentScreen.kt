@@ -393,6 +393,8 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 actions = ChatActions(
                     onQuote = quote, onStop = pane?.let { p -> { vm.stopPane(p) } }, onForward = { t -> forwarding = t },
                     undelivered = vm.undeliveredFor(paneId), onResend = vm::resendPending, onDismissPending = vm::dismissPending,
+                    onLoadEarlier = if (vm.canLoadEarlier) ({ vm.loadEarlier(paneId) }) else null, loadingEarlier = vm.loadingEarlier,
+                    queuedNote = "Queued in ${pane?.agentName ?: "the agent"} · it reads these when its current step ends",
                 ),
                 header = { if (showUsage && quota != null) QuotaDetails(quota, vm.quotaHistoryFor(pane)) { showUsage = false } },
                 footer = promptCard,

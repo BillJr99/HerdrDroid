@@ -234,8 +234,28 @@ def image_item(key, path, off, idx, b):
 # ---- JSONL logs ----------------------------------------------------------------------------------
 
 def read_jsonl(path, cur):
-    """New complete lines since the cursor, as (line offset, record) pairs."""
+    """New complete lines since the cursor, as (line offset, record) pairs. With "earlier" in the
+    cursor, the 1.5 MB before that offset instead (Load earlier messages)."""
     size = os.path.getsize(path)
+    if cur.get("file") == path and isinstance(cur.get("earlier"), int):
+        end_at = min(cur["earlier"], size)
+        start = max(0, end_at - TAIL_BYTES)
+        with open(path, "rb") as f:
+            f.seek(start)
+            data = f.read(end_at - start)
+        if start > 0:
+            nl = data.find(b"\n")
+            data = data[nl + 1:] if nl >= 0 else b""
+            start += nl + 1 if nl >= 0 else 0
+        recs, pos = [], 0
+        for line in data.split(b"\n"):
+            if line.strip():
+                try:
+                    recs.append((start + pos, json.loads(line)))
+                except Exception:
+                    pass
+            pos += len(line) + 1
+        return recs, {"file": path, "start": start, "earlier": True}, False, start > 0
     off = cur.get("off") if cur.get("file") == path else None
     reset = off is None or off > size
     if reset:
@@ -261,7 +281,10 @@ def read_jsonl(path, cur):
             except Exception:
                 pass
         pos += len(line) + 1
-    return recs, {"file": path, "off": off + end + 1}, reset, more
+    ncur = {"file": path, "off": off + end + 1}
+    if reset:
+        ncur["start"] = off  # where this read began, for Load earlier messages
+    return recs, ncur, reset, more
 
 
 def newest(paths):

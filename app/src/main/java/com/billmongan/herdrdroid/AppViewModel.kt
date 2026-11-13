@@ -904,7 +904,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (transcriptPane == paneId) return
         // Keep the chat being left, so going back to it is instant.
         transcriptPane?.let { old ->
-            if (transcriptState == TranscriptMode.ON) transcriptCache[ck(old)] = CachedChat(transcriptItems, transcriptCursor, transcriptMore, transcriptTitle)
+            if (transcriptState == TranscriptMode.ON) transcriptCache[ck(old)] = CachedChat(transcriptItems, transcriptCursor, transcriptMore, transcriptTitle, transcriptStart, transcriptFile)
         }
         transcriptPane = paneId
         val c = transcriptCache[ck(paneId)]
@@ -914,6 +914,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             transcriptItems = c.items
             transcriptMore = c.more
             transcriptTitle = c.title
+            transcriptStart = c.start
+            transcriptFile = c.file
             transcriptState = TranscriptMode.ON
             return
         }
@@ -921,11 +923,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         transcriptItems = emptyList()
         transcriptMore = false
         transcriptTitle = null
+        transcriptStart = -1L
+        transcriptFile = null
         transcriptState = if (hasTranscriptReader(paneId)) TranscriptMode.UNKNOWN else TranscriptMode.OFF
     }
 
     /** One agent's chat kept in memory: what it showed and where its log was read up to. */
-    private data class CachedChat(val items: List<Item>, val cursor: String, val more: Boolean, val title: String?)
+    private data class CachedChat(val items: List<Item>, val cursor: String, val more: Boolean, val title: String?, val start: Long = -1L, val file: String? = null)
 
     /** Every chat read so far, per server and pane; kept until the app exits. */
     private val transcriptCache = java.util.concurrent.ConcurrentHashMap<String, CachedChat>()
@@ -947,7 +951,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 if (transcriptCache.containsKey(ck(p.id)) || transcriptPane == p.id) continue
                 val r = quietly { it.transcript(p, "", transcriptScript) } ?: continue
                 if (!r.ok || transcriptPane == p.id) continue
-                transcriptCache[ck(p.id)] = CachedChat(Transcript.merge(emptyList(), r.items, true), r.cursor, r.more, r.title)
+                val cj = runCatching { org.json.JSONObject(r.cursor) }.getOrNull()
+                transcriptCache[ck(p.id)] = CachedChat(Transcript.merge(emptyList(), r.items, true), r.cursor, r.more, r.title,
+                    cj?.optLong("start", -1L) ?: -1L, cj?.optString("file")?.ifBlank { null })
             }
         }
     }
@@ -990,7 +996,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (r.reset || r.items.isNotEmpty()) {
             transcriptItems = Transcript.merge(transcriptItems, r.items, r.reset)
         }
-        if (r.reset) transcriptMore = r.more
+        if (r.reset) {
+            transcriptMore = r.more
+            transcriptStart = runCatching { org.json.JSONObject(r.cursor).optLong("start", -1L) }.getOrDefault(-1L)
+            transcriptFile = runCatching { org.json.JSONObject(r.cursor).optString("file").ifBlank { null } }.getOrNull()
+        }
         r.title?.let { transcriptTitle = it }
         transcriptState = TranscriptMode.ON
         lastSent?.let { (pid, text) ->
@@ -1020,6 +1030,39 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             if (stale.isNotEmpty()) com.billmongan.herdrdroid.diag.DiagLog.log("pending", "${stale.size} sent message(s) not in the agent's log after it went idle: marked as not seen")
             if (seen.isNotEmpty() || stale.isNotEmpty()) {
                 pendingSends = pendingSends.filter { it !in seen }.map { if (it in stale) it.copy(undelivered = true) else it }
+            }
+        }
+    }
+
+    // -- Earlier history ---------------------------------------------------------------------------
+
+    /** Where the shown part of the log begins (a byte offset in [transcriptFile]); -1 when unknown. */
+    private var transcriptStart = -1L
+    private var transcriptFile: String? = null
+    var loadingEarlier by mutableStateOf(false)
+        private set
+
+    /** True when the open chat's log can be read further back (logs kept as files). */
+    val canLoadEarlier: Boolean get() = transcriptMore && transcriptStart > 0 && transcriptFile != null
+
+    /** Reads the 1.5 MB of the log before what is shown and adds it at the top of the chat. */
+    fun loadEarlier(paneId: String) {
+        val p = pane(paneId) ?: return
+        val file = transcriptFile ?: return
+        if (loadingEarlier || transcriptStart <= 0) return
+        loadingEarlier = true
+        viewModelScope.launch {
+            try {
+                val cur = org.json.JSONObject().put("file", file).put("earlier", transcriptStart).toString()
+                val r = quietly { it.transcript(p, cur, transcriptScript) } ?: return@launch
+                if (!r.ok || transcriptPane != paneId) return@launch
+                val older = Transcript.merge(emptyList(), r.items, true)
+                val have = transcriptItems.map { it.key }.toSet()
+                transcriptItems = older.filter { it.key !in have } + transcriptItems
+                transcriptStart = runCatching { org.json.JSONObject(r.cursor).optLong("start", 0L) }.getOrDefault(0L)
+                transcriptMore = r.more
+            } finally {
+                loadingEarlier = false
             }
         }
     }

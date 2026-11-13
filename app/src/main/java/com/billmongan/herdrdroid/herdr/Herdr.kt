@@ -315,6 +315,16 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
             parseQuota(it, profile.bareMeansLeft).isNotEmpty()
         } ?: return null
         val items = parseQuota(shown, profile.bareMeansLeft)
+        // Still showing usage numbers at the bottom of an idle agent's screen? Then the screen is
+        // open with a close hint the app didn't recognise: one more press of the close keys.
+        if (!working && profile.closeKeys.isNotEmpty()) {
+            delay(500)
+            val after = read(paneId, 30).lines().takeLast(25).joinToString("\n")
+            if (parseQuota(after, profile.bareMeansLeft).isNotEmpty()) {
+                com.billmongan.herdrdroid.diag.DiagLog.log("usage", "usage screen still open in $paneId after closing; pressing ${profile.closeKeys.joinToString("+")} again")
+                sendKeys(paneId, *profile.closeKeys.toTypedArray())
+            }
+        }
         var info: PaneInfo? = null
         val cmd = profile.infoCommand
         val parse = profile.parseInfo

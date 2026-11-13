@@ -142,7 +142,8 @@ object QuotaProfiles {
             // (2026-11-12, twice). Claude's model now comes from its own session log
             // (Herdr.logModels), so nothing but /usage is ever typed into a Claude pane.
             setOf("claude"), "/usage", listOf("esc"), 3_000,
-            openMarker = Regex("Esc to cancel", RegexOption.IGNORE_CASE),
+            // Newer Claude Code versions word the close hint differently.
+            openMarker = Regex("""esc to (cancel|close|exit|dismiss|go back)|press esc|esc ·""", RegexOption.IGNORE_CASE),
             // Kept only to recognize a model picker left open (and close it); never typed.
             parseInfo = ::claudeModelScreen,
             everyMinutes = 10,
