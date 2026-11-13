@@ -381,7 +381,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 previews = previewCache[saved.id].orEmpty()
                 models = modelCache[saved.id].orEmpty()
                 efforts = emptyMap()
-                quotas = prefs.quotas(saved.id)
+                quotas = prefs.quotas(saved.id).let { q -> q + serverQuotas[saved.id].orEmpty().filter { (k, r) -> (q[k]?.at ?: 0L) < r.at } }
                 lastQuotaTry.clear()
                 unlockedThisSession += saved.id
                 lastStatus.clear()
@@ -575,6 +575,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         prefs.saveQuotas(s.id, stored)
         serverQuotas = serverQuotas + (s.id to stored.toMap())
+        // The open server's cards take the new readings at once.
+        if (s.id == current?.id) quotas = quotas + stored.filter { (k, r) -> (quotas[k]?.at ?: 0L) < r.at }
     }
 
     /**
@@ -1182,7 +1184,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun startQuotaChecks() {
         if (quotaJob?.isActive == true) return
         quotaJob = viewModelScope.launch {
-            delay(1_500)
+            delay(300)
             while (isActive) {
                 if (showQuotas && canPoll) runCatching { quotaRound(force = false) }
                 delay(30_000)
@@ -1206,9 +1208,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val fresh = quietly { it.panes() } ?: return@withLock
         panes = fresh
         val now = System.currentTimeMillis()
+        // Agents with no reading yet first, then the oldest readings.
         val byAgent = fresh.mapNotNull { p -> QuotaProfiles.key(p.agent)?.let { it to p } }.groupBy({ it.first }, { it.second })
+            .entries.sortedBy { quotas[it.key]?.at ?: 0L }
         for ((agentKey, list) in byAgent) {
-            val last = lastQuotaTry[agentKey] ?: 0L
+            // Due by the newest of: the last try here, and the saved reading (a startup check or
+            // an earlier session counts), so a fresh reading is never asked for again.
+            val last = maxOf(lastQuotaTry[agentKey] ?: 0L, quotas[agentKey]?.at ?: 0L)
             val every = (QuotaProfiles.forAgent(list.first().agent)?.everyMinutes ?: 30) * 60_000L
             val due = if (force) now - last > 2 * 60_000 else now - last > every
             if (!due) continue
