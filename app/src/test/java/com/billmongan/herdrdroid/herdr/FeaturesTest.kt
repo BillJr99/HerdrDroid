@@ -41,4 +41,27 @@ class FeaturesTest {
     @Test fun speechSkipsMarkdown() {
         assertEquals("Run it now (code) see docs", Speaker.speakable("**Run** it `now`\n```sh\nls\n```\nsee [docs](https://x)"))
     }
+
+    @Test fun longQuestionsAreKeptWhole() {
+        val screen = """
+╭──────────────────────────────────────────╮
+│ Bash command                             │
+│   rm -rf build && ./gradlew assemble     │
+│ This will delete the build folder and    │
+│ rebuild everything. Do you want to       │
+│ proceed with this command?               │
+│ ❯ 1. Yes                                 │
+│   2. No, and tell Claude what to do      │
+╰──────────────────────────────────────────╯
+"""
+        val p = detectPrompt(screen, blocked = true)!!
+        assertEquals("Bash command rm -rf build && ./gradlew assemble This will delete the build folder and rebuild everything. Do you want to proceed with this command?", p.question)
+    }
+
+    @Test fun cardLinesSkipMoreChrome() {
+        assertEquals("", cardLine("✔ Update installed · /restart to apply"))
+        assertEquals("", cardLine("──────────────── Demo-box2 ─"))
+        assertEquals("", cardLine("❯"))
+        assertEquals("All tests pass.", cardLine("│ All tests pass. │"))
+    }
 }

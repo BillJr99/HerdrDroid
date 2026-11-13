@@ -682,7 +682,8 @@ fun menuKeys(prompt: Prompt, choice: Choice): List<String>? {
  * means the agent is waiting even when no choices can be read from the screen.
  */
 fun detectPrompt(text: String, blocked: Boolean): Prompt? {
-    val lines = text.lines().map { it.trimEnd() }.filter { it.isNotBlank() }.takeLast(30)
+    val raw = text.lines().map { it.trimEnd() }.takeLast(80)
+    val lines = raw.filter { it.isNotBlank() }.takeLast(40)
     if (lines.isEmpty()) return if (blocked) Prompt("This agent is waiting for you.", emptyList()) else null
 
     val clean = { s: String -> s.trim().trim('│', '┃', '|', '╭', '╰', '╮', '╯', '─', ' ').trim() }
@@ -702,10 +703,23 @@ fun detectPrompt(text: String, blocked: Boolean): Prompt? {
     val numbered = run.map { Choice(it.third, it.second, false) }.distinctBy { it.keys }
     // The question: the text just above the first choice (up to four lines, skipping frame
     // lines), or else the last line on screen that ends with "?".
-    val above = run.firstOrNull()?.first?.let { first ->
-        lines.subList(maxOf(0, first - 6), first).map(clean)
-            .filter { it.isNotEmpty() && it.any(Char::isLetterOrDigit) && !it.matches(Regex("""^[─━═\-_\s]+$""")) }
-            .takeLast(4).joinToString(" ").trim().takeIf { it.isNotEmpty() }
+    // The whole question: every line above the first choice up to a blank line, the top of the
+    // question's box or a rule (at most 20 lines), so a long question isn't cut.
+    val above = run.firstOrNull()?.let { (_, firstKey, firstLabel) ->
+        val at = raw.indexOfLast { option.find(it)?.let { m -> m.groupValues[2] == firstKey && m.groupValues[3].trim() == firstLabel } == true }
+        if (at <= 0) null else {
+            val got = mutableListOf<String>()
+            var i = at - 1
+            while (i >= 0 && got.size < 20) {
+                val l = raw[i]
+                val c = clean(l)
+                if (l.isBlank() || c.isEmpty()) { if (got.isNotEmpty()) break else { i--; continue } }
+                if (l.trimStart().startsWith("╭") || l.trimStart().startsWith("┌") || c.matches(Regex("""^[─━═\-_\s]+$"""))) break
+                if (c.any(Char::isLetterOrDigit)) got.add(0, c)
+                i--
+            }
+            got.joinToString(" ").replace(Regex("\\s+"), " ").trim().takeIf { it.isNotEmpty() }
+        }
     }
     val question = above ?: lines.lastOrNull { clean(it).endsWith("?") }?.let(clean)
 

@@ -358,10 +358,16 @@ fun cardLine(preview: String): String {
     val t = preview.trim()
     if (t.isEmpty()) return ""
     val chrome = listOf(
-        Regex("""^[✶✳✻✽✢✺✹✸✷·*•◐◓◑◒⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s*\S+…"""),
-        Regex("""(?i)esc to (interrupt|cancel)|for shortcuts|ctrl\+[a-z] to|shift\+tab|auto mode|bypass permissions|accept edits on"""),
+        Regex("""^[✶✳✻✽✢✺✹✸✷·*•◐◓◑◒⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⎿⏺]\s*\S+…"""),
+        Regex("""(?i)esc to (interrupt|cancel)|for shortcuts|ctrl\+[a-z] to|shift\+tab|auto mode|bypass permissions|accept edits on|plan mode"""),
+        Regex("""(?i)update installed|/restart|restart to (apply|update)|remote control|tip:|press .* to|tab to |context left|auto-compact|tokens\b|↓ ?[\d.]+k?"""),
         Regex("""(?i)^\(?\d+s\s*·"""),
-        Regex("""^[»›‖■]"""),
+        Regex("""^[»›‖■❯>$%#]\s*$"""),
+        Regex("""^[»›‖■⏵]"""),
+        Regex("""^[\s─━═│┃╭╮╰╯┌┐└┘├┤┬┴┼\-_|]+(\S{0,20})?[\s─━═│┃╭╮╰╯┌┐└┘\-_|]*$"""),
     )
-    return if (chrome.any { it.containsMatchIn(t) }) "" else t
+    // Box-drawn frames ("│ text │") keep only the text.
+    val inner = t.trim('│', '┃', '|', ' ').trim()
+    if (inner.isEmpty()) return ""
+    return if (chrome.any { it.containsMatchIn(inner) } || inner.count { it.isLetterOrDigit() } < 3) "" else inner
 }

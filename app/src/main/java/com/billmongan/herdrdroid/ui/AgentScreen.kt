@@ -238,22 +238,26 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 p,
                 agent = pane?.agentName ?: "The agent",
                 onChoice = { c -> vm.answerChoice(paneId, p, c) },
-                // The edit waiting for approval: the last tool call in the log, still running.
-                preview = (vm.transcriptItems.lastOrNull { it is com.billmongan.herdrdroid.transcript.ToolItem } as? com.billmongan.herdrdroid.transcript.ToolItem)
-                    ?.takeIf { structured && it.state == com.billmongan.herdrdroid.transcript.ToolState.RUNNING && (it.diff != null || !it.patch.isNullOrBlank()) }
-                    ?.let { t ->
-                        {
-                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Text("Proposed change" + (t.path?.let { " · " + it.substringAfterLast('/') } ?: ""), color = Palette.Muted, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
-                                val d = t.diff
-                                if (d != null) DiffCard(d, liveSize)
-                                else SelectionContainer {
-                                    Text(t.patch.orEmpty().take(20_000), fontFamily = Fonts.Mono, fontSize = 11.5.sp, color = Palette.Ink,
-                                        modifier = Modifier.fillMaxWidth().background(Palette.Code, RoundedCornerShape(10.dp)).horizontalScroll(rememberScrollState()).padding(10.dp))
-                                }
-                            }
+                // What the agent said since your last message (in full, with its images and files),
+                // and the edit waiting for approval: the last tool call in the log, still running.
+                preview = run {
+                    val items = if (structured) vm.transcriptItems else emptyList()
+                    val since = items.drop(items.indexOfLast { it is com.billmongan.herdrdroid.transcript.UserItem } + 1)
+                    val said = since.filterIsInstance<com.billmongan.herdrdroid.transcript.TextItem>().takeLast(2)
+                    val media = since.filterIsInstance<com.billmongan.herdrdroid.transcript.ImageItem>() +
+                        since.filterIsInstance<com.billmongan.herdrdroid.transcript.ToolItem>().flatMap { t ->
+                            t.attach.map { path -> com.billmongan.herdrdroid.transcript.ImageItem("att:$path", path = path, mime = com.billmongan.herdrdroid.transcript.mimeFor(path), name = path.substringAfterLast('/')) }
                         }
-                    },
+                    val edit = (items.lastOrNull { it is com.billmongan.herdrdroid.transcript.ToolItem } as? com.billmongan.herdrdroid.transcript.ToolItem)
+                        ?.takeIf { it.state == com.billmongan.herdrdroid.transcript.ToolState.RUNNING && (it.diff != null || !it.patch.isNullOrBlank()) }
+                    if (said.isEmpty() && media.isEmpty() && edit == null) null else ({
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            said.forEach { MarkdownText(it.text, liveSize, vm.readingFont.family) }
+                            media.forEach { AttachmentView(it) }
+                            edit?.let { t -> EditPreview(t, liveSize) }
+                        }
+                    })
+                },
                 onKey = { k -> vm.sendKeys(paneId, k) },
                 onTypeAnswer = { typingAnswer = true },
             )
@@ -877,5 +881,19 @@ private fun YouBubble(text: String, size: Float, sending: Boolean = false) {
                 .background(Palette.Bubble, RoundedCornerShape(20.dp, 20.dp, 6.dp, 20.dp))
                 .padding(horizontal = 14.dp, vertical = 10.dp),
         )
+    }
+}
+
+/** The edit an agent asks to make: its diff, or its patch text, above the question. */
+@Composable
+private fun EditPreview(t: com.billmongan.herdrdroid.transcript.ToolItem, size: Float) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text("Proposed change" + (t.path?.let { " · " + it.substringAfterLast('/') } ?: ""), color = Palette.Muted, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
+        val d = t.diff
+        if (d != null) DiffCard(d, size)
+        else SelectionContainer {
+            Text(t.patch.orEmpty().take(20_000), fontFamily = Fonts.Mono, fontSize = 11.5.sp, color = Palette.Ink,
+                modifier = Modifier.fillMaxWidth().background(Palette.Code, RoundedCornerShape(10.dp)).horizontalScroll(rememberScrollState()).padding(10.dp))
+        }
     }
 }
