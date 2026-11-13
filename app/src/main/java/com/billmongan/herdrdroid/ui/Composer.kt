@@ -101,6 +101,20 @@ object SlashCommands {
         "grok" -> listOf("/model" to "Choose the model", "/new" to "Start a new chat", "/compact" to "Summarize", "/usage" to "Show usage")
         "copilot" -> listOf("/model" to "Choose the model", "/clear" to "Clear the conversation", "/usage" to "Show usage", "/session" to "Session info")
         "agy", "antigravity" -> listOf("/model" to "Choose the model", "/usage" to "Show usage", "/clear" to "Clear the conversation")
+        // From Kiro CLI 3.3.0's /help (2026-11-13).
+        "kiro" -> listOf(
+            "/model" to "Choose the model", "/usage" to "Plan usage and credits", "/plan" to "Plan mode",
+            "/compact" to "Summarize the conversation", "/clear" to "Start a fresh session", "/context" to "Show context use",
+            "/effort" to "Reasoning effort", "/sessions" to "Browse sessions", "/rewind" to "Fork at an earlier turn",
+            "/tools" to "List tools", "/mcp" to "MCP servers", "/help" to "All commands",
+        )
+        // From Mistral Vibe 3.1.2's /help (2026-11-13).
+        "vibe" -> listOf(
+            "/model" to "Choose the model", "/thinking" to "Thinking level", "/status" to "Tokens, cost and model",
+            "/whoami" to "Account and plan", "/resume" to "Resume a session", "/rename" to "Rename this session",
+            "/retry" to "Retry the last response", "/rewind" to "Rewind to an earlier message", "/context" to "Show context use",
+            "/copy" to "Copy the last reply", "/mcp" to "MCP servers", "/help" to "All commands",
+        )
         else -> emptyList()
     }.map { SlashCommand(it.first, it.second) }
 }

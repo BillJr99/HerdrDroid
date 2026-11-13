@@ -659,6 +659,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             backgroundTry["${s.id}/$agentKey"] = now
             val items = if (profile.cliCommand != null) {
                 runCatching { h.cliQuota(profile) }.getOrNull()
+            } else if (profile.screenUsage != null) {
+                // Read off the screen (Vibe's footer): nothing typed, any status will do.
+                list.firstNotNullOfOrNull { p -> runCatching { h.screenQuota(p.id, profile) }.getOrNull()?.takeIf { it.isNotEmpty() } }
             } else {
                 if (!h.canProbeScreens) continue
                 val target = list.filter { it.status == Status.IDLE || it.status == Status.DONE }.sortedBy { it.focused }.firstOrNull() ?: continue
@@ -1131,7 +1134,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- Structured conversations ------------------------------------------------------------
 
-    private val readers = setOf("claude", "codex", "pi", "omp", "grok", "opencode", "hermes", "copilot")
+    private val readers = setOf("claude", "codex", "pi", "omp", "grok", "opencode", "hermes", "copilot", "vibe")
 
     fun hasTranscriptReader(paneId: String) = pane(paneId)?.agent?.lowercase() in readers
 
@@ -1554,6 +1557,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 // choice: the check presses Enter only when the input line holds exactly its command.
                 // Idle panes first; a working pane only for an agent that answers while working (Claude).
                 val profile0 = QuotaProfiles.forAgent(list.first().agent) ?: return@launch
+                if (profile0.screenUsage != null) {
+                    // Shown on the agent's own screen: read it, type nothing, whatever the status.
+                    if (!canPoll) return@launch
+                    val items = list.firstNotNullOfOrNull { p -> quietly { it.screenQuota(p.id, profile0) }?.takeIf { it.isNotEmpty() } }
+                    lastQuotaTry[agentKey] = now
+                    if (!items.isNullOrEmpty()) {
+                        quotas = quotas + (agentKey to QuotaReading(now, items))
+                        prefs.saveQuotas(serverId, quotas)
+                        recordQuota(serverId, agentKey, QuotaReading(now, items))
+                    }
+                    return@launch
+                }
                 if (profile0.cliCommand != null) {
                     // Asked from the command line, not the pane: no pane to choose and nothing typed.
                     if (!canPoll) return@launch

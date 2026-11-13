@@ -392,6 +392,12 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                     if (structured && vm.transcriptItems.isNotEmpty()) DropdownMenuItem(text = { Text("Find in chat") }, onClick = { menu = false; finding = true })
                     if (!live) DropdownMenuItem(text = { Text(if (reading) "Leave reading mode" else "Reading mode") }, onClick = { menu = false; reading = !reading })
                     DropdownMenuItem(text = { Text("Running underneath") }, onClick = { menu = false; vm.screen = Screen.Work(paneId) })
+                    // The agent's own key for moving a running command to the background (Ctrl+B),
+                    // offered only for agents where that is what the key does.
+                    if (com.billmongan.herdrdroid.herdr.Backgrounding.supported(pane?.agent)) DropdownMenuItem(
+                        text = { Text("Background task (Ctrl+B)") },
+                        onClick = { menu = false; vm.sendKeys(paneId, com.billmongan.herdrdroid.herdr.Backgrounding.KEY) },
+                    )
                     if (pane?.agent != null) DropdownMenuItem(text = { Text("Close session…", color = Palette.OrangeInk) }, onClick = { menu = false; closingSession = true })
                     if (structured && vm.transcriptItems.isNotEmpty()) {
                         DropdownMenuItem(text = { Text("Export as Markdown") }, onClick = {
@@ -583,6 +589,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                     onCtrl = { ctrl = it }, onAlt = { alt = it },
                     onKey = ::press,
                     onCtrlC = { confirmCtrlC = true },
+                    background = com.billmongan.herdrdroid.herdr.Backgrounding.supported(pane?.agent),
                 )
             }
             ChatComposer(
@@ -698,6 +705,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
             kotlinx.coroutines.delay(500)
             vm.readPane(paneId)
             found = detectPrompt(vm.paneText, blocked = true)?.takeIf { it.choices.size >= 2 }
+                ?: com.billmongan.herdrdroid.herdr.detectUnnumberedMenu(vm.paneText)
             if (found != null) return@repeat
         }
         readingPicker = false
@@ -766,6 +774,8 @@ private fun KeyPad(
     onAlt: (Hold) -> Unit,
     onKey: (String) -> Unit,
     onCtrlC: () -> Unit,
+    /** The agent backgrounds a running command with Ctrl+B: show that key as its own button. */
+    background: Boolean = false,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -778,6 +788,7 @@ private fun KeyPad(
             KeyButton("Tab", Modifier.weight(1f)) { onKey("tab") }
             KeyButton("⌫", Modifier.weight(1f)) { onKey("backspace") }
             KeyButton("Enter", Modifier.weight(1.3f)) { onKey("enter") }
+            if (background) KeyButton("Ctrl+B", Modifier.weight(1.3f)) { onKey("ctrl+b") }
             KeyButton("Ctrl+C", Modifier.weight(1.4f), danger = true) { onCtrlC() }
         }
     }

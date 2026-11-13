@@ -33,6 +33,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -143,6 +144,9 @@ private fun WorkList(vm: AppViewModel, paneId: String) {
             val runningTasks = w.tasks.filter { it.running }
             if (runningTasks.isNotEmpty() || activeProcs.isNotEmpty()) {
                 item { SectionTitle("Shells", "${activeProcs.size} running") }
+                if (activeProcs.isNotEmpty() && com.billmongan.herdrdroid.herdr.Backgrounding.supported(pane?.agent)) item {
+                    BackgroundButton(vm, paneId, pane?.agentName ?: "The agent")
+                }
                 items(runningTasks, key = { "t:" + it.id }) { t ->
                     WorkRow(Palette.Blue, t.title, "Background task · running · output ${t.kb} KB") { vm.screen = Screen.Work(paneId, "task", t.file, t.title) }
                 }
@@ -209,6 +213,26 @@ private fun WorkRow(dot: androidx.compose.ui.graphics.Color, title: String, deta
             }
             Text("›", color = Palette.Muted, fontSize = 20.sp)
         }
+    }
+}
+
+/**
+ * Moves the command the agent is running in the foreground to the background, with the agent's own
+ * key (Ctrl+B), so the agent can carry on while it runs. Only for agents where Ctrl+B does that.
+ */
+@Composable
+private fun BackgroundButton(vm: AppViewModel, paneId: String, agentName: String) {
+    var sent by remember { mutableStateOf(false) }
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        OutlinedButton(
+            onClick = { vm.sendKeys(paneId, com.billmongan.herdrdroid.herdr.Backgrounding.KEY); sent = true },
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("Background it") }
+        Text(
+            if (sent) "Sent Ctrl+B. If a command was running in the foreground, $agentName moved it to the background."
+            else "Sends Ctrl+B, $agentName's key for moving the command it is running in the foreground to the background, so it can go on with other work.",
+            color = Palette.Muted, fontSize = 12.sp,
+        )
     }
 }
 

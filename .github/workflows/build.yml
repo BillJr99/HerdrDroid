@@ -79,6 +79,9 @@ jobs:
           echo "HD_HC_KEY=$PWD/e2e/hckeys/id" >> "$GITHUB_ENV"
           echo "HD_HC_USER=dev" >> "$GITHUB_ENV"
 
+      - name: Transcript reader tests
+        run: python3 -I tools/transcript-tests/test_vibe_reader.py
+
       - name: Tests
         # Unit tests and the Compose UI tests (src/sharedTest) under Robolectric.
         run: ./gradlew --no-daemon --console=plain testDebugUnitTest

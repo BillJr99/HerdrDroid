@@ -85,7 +85,23 @@ data class QuotaProfile(
     val noSession: Regex? = null,
     val startSession: String? = null,
     val parseCli: ((String) -> List<QuotaItem>)? = null,
+    /**
+     * Usage the agent always shows on its own screen (Mistral Vibe's footer gauge). When set, the
+     * pane's screen is only read, nothing is typed, and the agent's status doesn't matter.
+     */
+    val screenUsage: ((String) -> List<QuotaItem>)? = null,
 )
+
+/**
+ * Mistral Vibe's footer: "~/agents/vibe      usage ▏      0% · ctx ▎   9.81k/202k". The gauge is
+ * the plan's usage; the context gauge after it is not a limit.
+ */
+fun vibeFooterUsage(screen: String): List<QuotaItem> {
+    val line = screen.lines().lastOrNull { Regex("""\busage\s""").containsMatchIn(it) && it.contains("ctx") } ?: return emptyList()
+    val m = Regex("""\busage\s*[▏▎▍▌▋▊▉█\s]*?(\d{1,3}(?:\.\d+)?)\s*%""").find(line) ?: return emptyList()
+    val pct = m.groupValues[1].toDoubleOrNull() ?: return emptyList()
+    return listOf(QuotaItem("Vibe usage", pct.coerceIn(0.0, 100.0), null))
+}
 
 /**
  * `omp usage --json`: `{reports: [{provider, limits: [{label, window: {label, resetLabel, resetsAt},
@@ -176,6 +192,14 @@ object QuotaProfiles {
             setOf("omp"), "", emptyList(), 0,
             cliCommand = "omp usage --json", parseCli = ::ompUsage,
         ),
+        // Kiro's /usage opens a panel ("Credits (0.06 of 50 covered in plan)" over a bar and a
+        // percentage) that closes with Esc; its hint is "esc to close". Checked 2026-11-13.
+        QuotaProfile(
+            setOf("kiro"), "/usage", listOf("esc"), 3_000,
+            openMarker = Regex("esc to close", RegexOption.IGNORE_CASE), everyMinutes = 30,
+        ),
+        // Vibe keeps its usage gauge in the footer, so it is read off the screen, never typed for.
+        QuotaProfile(setOf("vibe"), "", emptyList(), 0, screenUsage = ::vibeFooterUsage, everyMinutes = 10),
         QuotaProfile(
             setOf("hermes"), "/usage", emptyList(), 2_500,
             infoCommand = "/reasoning",
@@ -380,6 +404,11 @@ fun footerModel(agent: String?, screen: String): String? {
         "omp" -> lastMatch(Regex("""⬢\s+(\S+)"""))
         // "0.0%/128k (auto)          (compat-llmproxy) llmproxy/flagship__free"
         "pi" -> lastMatch(Regex("""\)\s+(\S+/\S+)\s*$""")) ?: lastMatch(Regex("""%/\S+.*\s{3,}(\S+)\s*$"""))
+        // "Default · auto · ◔ 2%        ~/agents/kiro": the mode, then the model.
+        "kiro" -> lastMatch(Regex("""^\s*(?:Default|Plan|\w+)\s+·\s+(\S[^·]*?)\s+·\s+◔"""))
+        // "──── Mistral Medium 3.5[high] · auto approve ─": the model and its thinking level.
+        "vibe" -> lastMatch(Regex("""─\s+([^─·]+?)\s+·\s+[^─]+─\s*$"""))
+            ?.replace(Regex("""\[(\w+)]$"""), " · $1")
         else -> null
     }
     return found?.takeIf { it.length in 2..48 }

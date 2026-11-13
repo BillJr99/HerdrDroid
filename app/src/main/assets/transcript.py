@@ -738,12 +738,97 @@ def hermes(cwd, cur):
     return {"cur": {"sid": sid, "id": last}, "reset": reset, "more": more, "items": items, "title": title}
 
 
+def vibe_sessions(cwd):
+    """Mistral Vibe's sessions started in [cwd], newest first, as their meta.json paths."""
+    out = []
+    for meta in glob.glob(os.path.join(HOME, ".vibe", "logs", "session", "unified", "*", "meta.json")):
+        try:
+            with open(meta) as fh:
+                m = json.load(fh)
+        except Exception:
+            continue
+        if (m.get("environment") or {}).get("working_directory") == cwd or m.get("origin_directory") == cwd:
+            out.append(meta)
+    return sorted(out, key=os.path.getmtime, reverse=True)
+
+
+def vibe_entries(meta):
+    """The conversation Vibe shows for one session: the projection named by its current snapshot
+    (CURRENT -> generations/<n>/manifest.json -> projection_state chunks). Returns (generation, entries)."""
+    d = os.path.dirname(meta)
+    with open(os.path.join(d, "CURRENT")) as fh:
+        gen = json.load(fh)["generation"]
+    with open(os.path.join(d, "generations", gen, "manifest.json")) as fh:
+        man = json.load(fh)
+    entries = []
+    for c in (man.get("projection_state") or {}).get("chunks") or []:
+        with open(os.path.join(d, "chunks", c + ".json")) as fh:
+            part = json.load(fh)
+        if isinstance(part, list):
+            entries.extend(part)
+    return gen, entries
+
+
+def vibe_items(entries, start):
+    items = []
+    for e in entries[start:]:
+        k = "v" + str(e.get("id"))
+        t = e.get("type")
+        if t == "message" and e.get("role") == "user":
+            user_items(k, text_of(e.get("content")), items)
+        elif t == "message" and e.get("role") == "assistant":
+            txt = text_of(e.get("content"))
+            if txt.strip():
+                items.append({"k": k, "t": "text", "text": txt})
+        elif t == "reasoning":
+            if str(e.get("text") or "").strip():
+                items.append({"k": k, "t": "think", "text": str(e["text"])})
+        elif t == "effect" and (e.get("detail") or {}).get("kind") == "tool":
+            det, st = e.get("detail") or {}, e.get("state") or {}
+            res = (st.get("output") or {})
+            sc = res.get("structured_content") if isinstance(res.get("structured_content"), dict) else {}
+            out = None
+            if st.get("status") == "completed":
+                out = sc.get("stdout") if "stdout" in sc else (st.get("outputText") or text_of(res.get("content")) or "")
+                if sc.get("stderr"):
+                    out = (out or "") + ("\n" if out else "") + sc["stderr"]
+            err = res.get("type") not in (None, "success") or (sc.get("returncode") not in (None, 0))
+            items.append(tool_item(k, e.get("id"), det.get("toolName"), det.get("input"), out=out, err=err))
+    return items
+
+
+def vibe(cwd, cur):
+    sessions = vibe_sessions(cwd)
+    meta = pinned(sessions[0] if sessions else None)
+    if not meta:
+        return None
+    try:
+        gen, entries = vibe_entries(meta)
+    except Exception:
+        return None
+    reset = cur.get("file") != meta
+    if not reset and cur.get("gen") == gen:
+        return {"cur": cur, "reset": False, "more": False, "items": [], "title": None}
+    start = 0 if reset else min(cur.get("n", 0), len(entries))
+    more = False
+    if reset and len(entries) > FIRST_ROWS:
+        start, more = len(entries) - FIRST_ROWS, True
+    # A snapshot can rewrite earlier entries (a tool finishing); re-send from the first one that changed.
+    if not reset and start and cur.get("last") and (start > len(entries) or str(entries[start - 1].get("id")) != cur["last"]):
+        start = 0
+        reset = True
+    items = vibe_items(entries, start)
+    last = str(entries[-1].get("id")) if entries else None
+    return {"cur": {"file": meta, "gen": gen, "n": len(entries), "last": last}, "reset": reset, "more": more,
+            "items": items, "title": None}
+
+
 def omp(cwd, cur):
     return pi(cwd, cur, root=(".omp", "agent"))
 
 
 READERS = {"claude": claude, "codex": codex, "pi": pi, "omp": omp, "grok": grok, "copilot": copilot,
-           "opencode": opencode, "hermes": hermes}
+           "opencode": opencode, "hermes": hermes, "vibe": vibe}
 
 
 def fetch_image(path, off, idx):
@@ -855,6 +940,14 @@ def list_sessions(agent, cwd):
                 c.close()
             except Exception:
                 pass
+    elif agent == "vibe":
+        for meta in vibe_sessions(cwd)[:60]:
+            try:
+                _, ents = vibe_entries(meta)
+            except Exception:
+                continue
+            first = next((text_of(e.get("content")) for e in ents if e.get("type") == "message" and e.get("role") == "user"), "")
+            out.append({"ref": meta, "when": int(os.path.getmtime(meta)), "kb": 0, "title": first_line(first or "(empty)", 90)})
     elif agent == "hermes":
         db = os.path.join(HOME, ".hermes", "state.db")
         if os.path.isfile(db):

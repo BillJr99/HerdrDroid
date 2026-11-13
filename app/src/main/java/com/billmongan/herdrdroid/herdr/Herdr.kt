@@ -529,6 +529,13 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
      * `omp usage --json`), so nothing is typed into the pane and it can run while the agent works.
      * Null when the command isn't there or failed.
      */
+    /** Usage read off the pane's own screen ([QuotaProfile.screenUsage]); nothing is typed. */
+    suspend fun screenQuota(paneId: String, profile: QuotaProfile): List<QuotaItem>? {
+        val parse = profile.screenUsage ?: return null
+        if (core) return null
+        return runCatching { parse(read(paneId, 30)) }.getOrNull()
+    }
+
     suspend fun cliQuota(profile: QuotaProfile): List<QuotaItem>? {
         val cmd = profile.cliCommand ?: return null
         val parse = profile.parseCli ?: return null
@@ -876,6 +883,24 @@ fun showsQuestionDialog(text: String): Boolean =
  */
 fun agentMode(agent: String?, screen: String): String? {
     val tail = screen.lines().filter { it.isNotBlank() }.takeLast(8).joinToString("\n")
+    when (agent?.lowercase()) {
+        // Vibe's footer names its mode: "Mistral Medium 3.5[high] · auto approve ─" (Shift+Tab
+        // cycles ask, accept edits, smart approve, auto approve). Auto approve runs every tool.
+        "vibe" -> return Regex("""·\s+(ask|accept edits|smart approve|auto approve)\b""", RegexOption.IGNORE_CASE)
+            .findAll(tail).lastOrNull()?.groupValues?.get(1)?.lowercase()?.let {
+                when (it) { "ask" -> "default"; "accept edits" -> "accept edits"; "smart approve" -> "auto"; else -> "bypass" }
+            }
+        // Kiro: "Plan · auto · ◔ 2%" in plan mode (Shift+Tab toggles it), "Default · …" otherwise;
+        // "Trust All Tools active" means every tool runs without asking.
+        "kiro" -> {
+            val foot = tail.lines().lastOrNull { Regex("""^\s*\w+\s+·\s+.*◔""").containsMatchIn(it) } ?: return null
+            return when {
+                foot.trimStart().startsWith("Plan") -> "plan"
+                screen.lines().takeLast(12).any { it.contains("Trust All Tools active") } -> "bypass"
+                else -> "default"
+            }
+        }
+    }
     val m = Regex("""(plan mode|accept edits|auto mode|auto-accept edits|bypass permissions) on""", RegexOption.IGNORE_CASE).findAll(tail).lastOrNull()
     val mode = m?.groupValues?.get(1)?.lowercase()?.let {
         when {
@@ -886,6 +911,46 @@ fun agentMode(agent: String?, screen: String): String? {
         }
     }
     return mode ?: if (agent?.lowercase() == "claude" && tail.isNotBlank()) "default" else null
+}
+
+/**
+ * A menu without numbers, as Kiro's and Vibe's model pickers draw it: the current row marked with
+ * ❯ or ›, the other rows indented to the same column ("❯ auto  1.00x credits" over
+ * "  claude-sonnet-4.5  1.30x credits"; "│  › Mistral Medium 3.5" under "│    Default"). Each row
+ * gets its position as its number, so [menuKeys] reaches it with the arrows and Enter.
+ */
+fun detectUnnumberedMenu(text: String): Prompt? {
+    val raw = text.lines().map { it.trimEnd() }.takeLast(60)
+    val border = "│┃|"
+    val marker = Regex("""^([\s$border]*)([❯›▶➤])\s+(\S.*)$""")
+    val at = raw.indexOfLast { marker.matches(it) }
+    if (at < 0) return null
+    val m = marker.find(raw[at])!!
+    val col = raw[at].length - m.groupValues[3].length
+    fun row(l: String): String? {
+        // The marked row's text starts after its marker; the others are indented to the same column.
+        if (l == raw[at]) return m.groupValues[3].trimEnd { it.isWhitespace() || it in border }
+        if (l.length <= col) return null
+        val head = l.substring(0, col)
+        if (head.any { !it.isWhitespace() && it !in border }) return null
+        if (l[col].isWhitespace() || l[col] in "─━═") return null
+        if (marker.matches(l) && l != raw[at]) return null
+        return l.substring(col).trimEnd { it.isWhitespace() || it in border }
+    }
+    var top = at
+    while (top - 1 >= 0 && row(raw[top - 1]) != null) top--
+    var bottom = at
+    while (bottom + 1 < raw.size && row(raw[bottom + 1]) != null) bottom++
+    var rows = (top..bottom).map { it to row(raw[it])!! }
+    // A table's header ("Model   Credit usage   Description") is not a choice.
+    if (rows.size > 1 && rows.first().first != at && Regex("""^(Model|Name)(\s{2,}|$)""").containsMatchIn(rows.first().second)) rows = rows.drop(1)
+    if (rows.size !in 2..30) return null
+    val labels = rows.map { (_, r) -> r.split(Regex("""\s{2,}""")).filter { it.isNotBlank() }.joinToString(" · ").take(90) }
+    val question = (top - 1 downTo maxOf(0, top - 4)).map { raw[it].trim().trim { c -> c in border || c.isWhitespace() } }
+        .firstOrNull { it.any(Char::isLetter) && !it.all { c -> c in "─━═ " } }
+        ?.substringBefore("  ")?.trimEnd(':')?.ifBlank { null } ?: "Choose"
+    val selected = rows.indexOfFirst { it.first == at } + 1
+    return Prompt(question, labels.mapIndexed { i, l -> Choice(l, (i + 1).toString(), false) }, selected.toString())
 }
 
 fun detectPrompt(text: String, blocked: Boolean): Prompt? {
@@ -975,6 +1040,20 @@ fun canonicalAgent(name: String): String = when (val n = name.trim().lowercase()
     "kiro-cli", "kiro-cli-chat" -> "kiro"
     "vibe-rs", "mistral-vibe", "vibe-acp" -> "vibe"
     else -> n
+}
+
+/**
+ * Agents whose own key moves a running command to the background, and that key. Checked in each
+ * program on 2026-11-13: Claude Code (task:background, Ctrl+B), OpenCode (session.background, "Background
+ * blocking session tools", Ctrl+B), Grok ("Ctrl+B sends the running foreground command to the
+ * background") and Antigravity ("Press ctrl+b to send a long task to the background"). Not offered
+ * elsewhere: in pi and Oh My Pi Ctrl+B moves the cursor left, in Hermes it is push-to-talk, and
+ * Codex, Copilot, Kiro and Vibe have no such key.
+ */
+object Backgrounding {
+    private val agents = setOf("claude", "opencode", "grok", "agy")
+    const val KEY = "ctrl+b"
+    fun supported(agent: String?): Boolean = agent?.lowercase() in agents
 }
 
 /** The program that runs an agent kind, where it differs from the kind's name. */
