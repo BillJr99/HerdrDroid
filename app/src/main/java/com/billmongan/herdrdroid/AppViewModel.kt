@@ -1316,9 +1316,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         it.id != openNow && (lastSentTo[it.id] ?: 0L) < now - 120_000
                 }
                     .sortedWith(compareBy({ it.status == Status.WORKING }, { it.focused }))
-                    .firstOrNull() ?: return@launch
+                    .firstOrNull()
+                if (target == null) {
+                    com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$agentKey on ${current?.label}: no pane to check (" +
+                        list.joinToString { "${it.id} ${it.status}${if (it.id == openNow) " open" else ""}${if ((lastSentTo[it.id] ?: 0L) >= now - 120_000) " sent-to" else ""}" } + ")")
+                    return@launch
+                }
                 val profile = QuotaProfiles.forAgent(target.agent) ?: return@launch
                 if (!canPoll) return@launch
+                if (herdr?.canProbeScreens == false) {
+                    com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$agentKey on ${current?.label}: herdr-core, usage screens aren't checked")
+                    return@launch
+                }
+                com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$agentKey on ${current?.label}: checking ${target.id} (${target.status})")
                 probingPanes = probingPanes + target.id
                 val result = try {
                     quietly { it.probeQuota(target.id, profile, working = target.status == Status.WORKING) }
@@ -1329,6 +1339,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 result?.model?.let { models = models + (target.id to it) }
                 result?.effort?.let { efforts = efforts + (target.id to it) }
                 val items = result?.items
+                com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$agentKey on ${current?.label}: ${when {
+                    result == null -> "nothing read (command not echoed, or the pane was busy)"
+                    items.isNullOrEmpty() -> "screen read, no limits found on it"
+                    else -> "${items.size} limit(s) read"
+                }}")
                 when {
                     // Someone had text in that agent's input line, or the screen had no limits on it this
                     // time (a Hermes session that hasn't made a call yet). Try again in 5 minutes.

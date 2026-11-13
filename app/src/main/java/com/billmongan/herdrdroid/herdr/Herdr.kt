@@ -273,7 +273,11 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
         delay(600)
         // \u00A0 is listed because some prompts put a no-break space after the ❯ glyph.
         val echo = Regex("""^[\s\u00A0│┃|>❯›»$]*""" + Regex.escape(command) + """[\s\u00A0│┃|]*$""")
-        if (read(paneId, 24).lines().none { echo.matches(it) }) {
+        val typed = read(paneId, 24).lines()
+        if (typed.none { echo.matches(it) }) {
+            // Which line was the input line, so the log shows why (cut short; nothing else kept).
+            val inputLine = typed.lastOrNull { it.contains(command) || it.trimStart().startsWith("❯") || it.trimStart().startsWith(">") }?.trim()?.take(80)
+            com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$command in $paneId wasn't echoed on its own; input line: \"${inputLine ?: "not found"}\"; erased it")
             sendKeys(paneId, *Array(command.length) { "backspace" })
             return null
         }
