@@ -12,6 +12,8 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.text.font.FontFamily
@@ -80,9 +82,14 @@ class ComposeUiTest {
         val long = "Which of these should the deploy use? " + "It decides where the build runs and what it costs. ".repeat(6)
         val p = Prompt(long.trim(), listOf(Choice("Staging", "1", false), Choice("Production", "2", false), Choice("Skip it", "3", false)), selected = "1")
         val picked = mutableListOf<String>()
-        rule.setContent { PromptCard(p, agent = "Claude", onChoice = { picked += it.keys }, onKey = {}, onTypeAnswer = {}) }
+        // In a scrolling column, as on the agent screen: a small screen puts the buttons below the fold.
+        rule.setContent {
+            androidx.compose.foundation.layout.Column(Modifier.fillMaxSize().verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+                PromptCard(p, agent = "Claude", onChoice = { picked += it.keys }, onKey = {}, onTypeAnswer = {})
+            }
+        }
         rule.onNodeWithText(long.trim()).assertExists()
-        rule.onNodeWithText("Production").performClick()
+        rule.onNodeWithText("Production").performScrollTo().performClick()
         assertEquals(listOf("2"), picked)
     }
 
