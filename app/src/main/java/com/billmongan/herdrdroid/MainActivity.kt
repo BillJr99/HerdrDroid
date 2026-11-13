@@ -51,6 +51,8 @@ class MainActivity : FragmentActivity() {
         // old intent again, which used to jump to the notification's agent long after.
         val fromHistory = (intent.flags and android.content.Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0
         if (savedInstanceState == null && !fromHistory) openFrom(intent)
+        // Straight to the last agent (or the server screen when there are no servers yet).
+        if (!vm.locked) vm.autoOpen()
         setContent {
             val dark = when (vm.themeMode) {
                 ThemeMode.SYSTEM -> isSystemInDarkTheme()
@@ -78,8 +80,17 @@ class MainActivity : FragmentActivity() {
                 BoxWithConstraints(Modifier.fillMaxSize().background(Palette.Ground)) {
                 val wide = maxWidth >= 840.dp
                 val s0 = vm.screen
-                if (wide && (s0 == Screen.Tabs || s0 is Screen.Agent)) {
-                    BackHandler { if (s0 is Screen.Agent) vm.screen = Screen.Tabs else vm.disconnect() }
+                if (wide && s0 is Screen.Agent) {
+                    // Wide: the drawer stays out beside the agent.
+                    Row(Modifier.fillMaxSize()) {
+                        com.billmongan.herdrdroid.ui.SessionDrawer(vm)
+                        VerticalDivider(color = Palette.Line)
+                        Box(Modifier.weight(1f).fillMaxHeight()) {
+                            androidx.compose.runtime.key(s0.paneId) { AgentScreen(vm, s0.paneId) }
+                        }
+                    }
+                } else if (wide && s0 == Screen.Tabs) {
+                    BackHandler { vm.disconnect() }
                     Row(Modifier.fillMaxSize()) {
                         Box(Modifier.weight(0.42f).fillMaxHeight()) { TabsScreen(vm) }
                         VerticalDivider(color = Palette.Line)
@@ -104,11 +115,22 @@ class MainActivity : FragmentActivity() {
                         TabsScreen(vm)
                     }
                     is Screen.Agent -> {
-                        BackHandler { vm.screen = Screen.Tabs }
-                        AgentScreen(vm, s.paneId)
+                        // The drawer is the way around: Back closes it, or opens it.
+                        val drawer = androidx.compose.material3.rememberDrawerState(androidx.compose.material3.DrawerValue.Closed)
+                        LaunchedEffect(vm.drawerOpen) { if (vm.drawerOpen) drawer.open() else drawer.close() }
+                        LaunchedEffect(drawer) {
+                            androidx.compose.runtime.snapshotFlow { drawer.currentValue }.collect { vm.drawerOpen = it == androidx.compose.material3.DrawerValue.Open }
+                        }
+                        BackHandler { vm.drawerOpen = !vm.drawerOpen }
+                        androidx.compose.material3.ModalNavigationDrawer(
+                            drawerState = drawer,
+                            drawerContent = { androidx.compose.material3.ModalDrawerSheet(drawerContainerColor = Palette.Ground) { com.billmongan.herdrdroid.ui.SessionDrawer(vm) } },
+                        ) {
+                            AgentScreen(vm, s.paneId)
+                        }
                     }
                     Screen.Usage -> {
-                        BackHandler { vm.screen = Screen.Tabs }
+                        BackHandler { vm.goHome() }
                         com.billmongan.herdrdroid.ui.UsageScreen(vm)
                     }
                     is Screen.Files -> {
@@ -120,7 +142,7 @@ class MainActivity : FragmentActivity() {
                         SettingsScreen(vm, s.back)
                     }
                     Screen.Search -> {
-                        BackHandler { vm.screen = Screen.Tabs }
+                        BackHandler { vm.goHome() }
                         com.billmongan.herdrdroid.ui.SearchScreen(vm)
                     }
                     is Screen.Work -> {

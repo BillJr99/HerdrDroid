@@ -43,4 +43,12 @@ class FeaturesTest {
             .put("content", org.json.JSONArray().put(org.json.JSONObject().put("type", "text").put("text", "a")).put("b"))))
         assertEquals("from content", f(org.json.JSONObject().put("text", org.json.JSONObject.NULL).put("content", "from content")))
     }
+
+    @Test fun theModeChipReadsTheFooter() {
+        assertEquals("plan", agentMode("claude", "❯ \n  ⏸ plan mode on (shift+tab to cycle)"))
+        assertEquals("accept edits", agentMode("claude", "❯ \n  ⏵⏵ accept edits on (shift+tab to cycle)"))
+        assertEquals("auto", agentMode("claude", "❯ \n  » auto mode on (shift+tab to cycle) · esc to interrupt"))
+        assertEquals("default", agentMode("claude", "❯ \n  ? for shortcuts"))
+        assertNull(agentMode("codex", "› \n  100% context left"))
+    }
 }

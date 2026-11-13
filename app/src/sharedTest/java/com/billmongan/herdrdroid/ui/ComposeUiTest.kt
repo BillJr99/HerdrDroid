@@ -195,4 +195,24 @@ class ComposeUiTest {
         rule.onNodeWithText("Expand").performClick()
         assertEquals("The whole answer", opened)
     }
+
+    /** Closing a working session asks twice; the folder is never mentioned as deleted. */
+    @Test fun closingABusySessionAsksTwice() {
+        val server = com.billmongan.herdrdroid.store.Server(name = "demo-box2", host = "h", port = 22, user = "u", herdrPath = "herdr")
+        val p = Pane("w1:p2", "w1:t2", "w1", "opencode", Status.WORKING, "", "/home/user/cs357", tabLabel = "cs357-tutorial")
+        var closed = false
+        rule.setContent {
+            CloseSessionDialog(com.billmongan.herdrdroid.AppViewModel.Session(server, p, Status.WORKING, false, false), onDismiss = {}) { closed = true }
+        }
+        rule.onNodeWithText("Files in /home/user/cs357 are not touched", substring = true).assertIsDisplayed()
+        rule.onNodeWithText("Close session").performClick()
+        assertEquals(false, closed)
+        rule.onNodeWithText("Close it anyway").performClick()
+        assertEquals(true, closed)
+    }
+
+    @Test fun aSessionIsNamedByItsTabWhenThatSaysMore() {
+        assertEquals("OpenCode · cs357-tutorial", sessionName(Pane("1", "t", "w", "opencode", Status.IDLE, "", "/x", tabLabel = "cs357-tutorial")))
+        assertEquals("Claude", sessionName(Pane("1", "t", "w", "claude", Status.IDLE, "", "/x", tabLabel = "claude")))
+    }
 }

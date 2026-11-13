@@ -132,7 +132,7 @@ class AppPrefs(context: Context) {
         set(v) = prefs.edit().putString("readingFont", v).apply()
 
     var showKeys: Boolean
-        get() = prefs.getBoolean("showKeys", true)
+        get() = prefs.getBoolean("showKeys", false)
         set(v) = prefs.edit().putBoolean("showKeys", v).apply()
 
     var showQuotas: Boolean
@@ -153,6 +153,16 @@ class AppPrefs(context: Context) {
     var seenModels: String
         get() = prefs.getString("seenModels", "{}") ?: "{}"
         set(v) = prefs.edit().putString("seenModels", v).apply()
+
+    /** The last agent opened, "serverId|paneId", which the app opens again at startup. */
+    var lastAgent: String
+        get() = prefs.getString("lastAgent", "") ?: ""
+        set(v) = prefs.edit().putString("lastAgent", v).apply()
+
+    /** Pinned sessions, one "serverId|tab label" per line, kept at the top of their group. */
+    var pinnedSessions: String
+        get() = prefs.getString("pinnedSessions", "") ?: ""
+        set(v) = prefs.edit().putString("pinnedSessions", v).apply()
 
     /** When each pane turned done and when it was last open in the app: {"done": {...}, "seen": {...}}. */
     var seenPanes: String

@@ -82,7 +82,7 @@ fun SearchScreen(vm: AppViewModel) {
     }
     Column(Modifier.fillMaxSize().background(Palette.Ground).systemBarsPadding().imePadding()) {
         Row(Modifier.fillMaxWidth().padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = { vm.screen = Screen.Tabs }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = Palette.Ink) }
+            IconButton(onClick = { vm.goHome() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = Palette.Ink) }
             Text("Search conversations", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Palette.Ink)
         }
         HorizontalDivider(color = Palette.Line)

@@ -5,6 +5,7 @@ import com.billmongan.herdrdroid.herdr.screenLinks
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.ui.platform.LocalContext
@@ -135,7 +136,10 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     var choosingModel by remember { mutableStateOf(false) }
     var showSnippets by remember { mutableStateOf(false) }
     var hermesMenu by remember { mutableStateOf(false) }
-    var agentMenu by remember { mutableStateOf(false) }
+    var closingSession by remember { mutableStateOf(false) }
+    /** The agent's own model menu, read off its screen, while it is open. */
+    var readingPicker by remember { mutableStateOf(false) }
+    var pickerMenu by remember { mutableStateOf<Prompt?>(null) }
     /** Reading mode: the message box and extra rows step aside; a Reply button brings them back. */
     var reading by rememberSaveable(paneId) { mutableStateOf(false) }
     /** Find in chat: what to look for, and which match is showing. */
@@ -266,9 +270,14 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                         }
                     val edit = (items.lastOrNull { it is com.billmongan.herdrdroid.transcript.ToolItem } as? com.billmongan.herdrdroid.transcript.ToolItem)
                         ?.takeIf { it.state == com.billmongan.herdrdroid.transcript.ToolState.RUNNING && (it.diff != null || !it.patch.isNullOrBlank()) }
-                    if (said.isEmpty() && media.isEmpty() && edit == null) null else ({
+                    // A plan waiting for approval (Claude's ExitPlanMode): show the plan itself in the card.
+                    val plan = (items.lastOrNull { it is com.billmongan.herdrdroid.transcript.ToolItem && it.name == "ExitPlanMode" } as? com.billmongan.herdrdroid.transcript.ToolItem)
+                        ?.takeIf { it.state == com.billmongan.herdrdroid.transcript.ToolState.RUNNING }
+                        ?.input?.let { runCatching { org.json.JSONObject(it).optString("plan") }.getOrNull() }?.takeIf { it.isNotBlank() }
+                    if (said.isEmpty() && media.isEmpty() && edit == null && plan == null) null else ({
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            said.forEach { MarkdownText(it.text, liveSize, vm.readingFont.family) }
+                            plan?.let { Text("The plan", color = Palette.Muted, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold); MarkdownText(it, liveSize, vm.readingFont.family) }
+                            if (plan == null) said.forEach { MarkdownText(it.text, liveSize, vm.readingFont.family) }
                             media.forEach { AttachmentView(it) }
                             edit?.let { t -> EditPreview(t, liveSize) }
                         }
@@ -288,8 +297,9 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
             Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, top = if (keyboardUp) 0.dp else 6.dp, bottom = if (keyboardUp) 0.dp else 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(onClick = { vm.screen = Screen.Tabs }) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to all tabs", tint = Palette.Ink)
+            // The drawer holds every agent on every server (or swipe in from the left edge).
+            IconButton(onClick = { vm.drawerOpen = true }) {
+                Icon(Icons.Filled.Menu, contentDescription = "All agents", tint = Palette.Ink)
             }
             AgentTile(pane?.initial ?: "?", status, size = 34)
             Column(Modifier.weight(1f).padding(start = 10.dp)) {
@@ -298,33 +308,13 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 Box {
                     Text(
                         (if (isHermes) (if (live) "Hermes · live chat" else "Hermes · this pane") + "  ▾"
-                        else (vm.transcriptTitle?.takeIf { structured } ?: (pane?.agentName ?: paneId)) + "  ▾"),
+                        else pane?.let { sessionName(it) } ?: paneId),
                         fontWeight = FontWeight.SemiBold, fontSize = 17.sp, color = Palette.Ink,
                         maxLines = 1, overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.clickable {
-                            if (isHermes) { hermesMenu = true; vm.hermesChat()?.refreshSessions() } else agentMenu = true
+                            if (isHermes) { hermesMenu = true; vm.hermesChat()?.refreshSessions() } else vm.drawerOpen = true
                         },
                     )
-                    val agentRows: @Composable (() -> Unit) -> Unit = { close ->
-                        vm.panes.filter { it.agent != null }.map { it to vm.shownStatus(it) }
-                            .sortedWith(compareBy({ listOf(Status.NEEDS_YOU, Status.WORKING, Status.DONE, Status.IDLE, Status.UNKNOWN).indexOf(it.second) }, { it.first.id }))
-                            .forEach { (p, st) ->
-                                DropdownMenuItem(
-                                    leadingIcon = { Box(Modifier.size(9.dp).background(look(st).ink, CircleShape)) },
-                                    text = {
-                                        Column {
-                                            Text((if (p.id == paneId) "✓ " else "") + p.agentName + (p.folder.takeIf { it.isNotBlank() }?.let { " · $it" } ?: ""),
-                                                maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = if (p.id == paneId) FontWeight.SemiBold else FontWeight.Normal)
-                                            Text(look(st).label + (vm.modelLine(p.id)?.let { " · $it" } ?: ""), color = Palette.Muted, fontSize = 12.sp, maxLines = 1)
-                                        }
-                                    },
-                                    onClick = { close(); if (p.id != paneId) vm.openPane(p.id, "header menu") },
-                                )
-                            }
-                    }
-                    if (!isHermes) DropdownMenu(expanded = agentMenu, onDismissRequest = { agentMenu = false }) {
-                        agentRows { agentMenu = false }
-                    }
                     if (isHermes) DropdownMenu(expanded = hermesMenu, onDismissRequest = { hermesMenu = false }) {
                         DropdownMenuItem(text = { Text((if (!live) "✓ " else "    ") + "This pane (the Hermes CLI)") }, onClick = { hermesMenu = false; hermesLive = false })
                         DropdownMenuItem(text = { Text((if (live) "✓ " else "    ") + "Live chat (streaming, approvals as buttons)") }, onClick = { hermesMenu = false; hermesLive = true })
@@ -352,8 +342,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                         }
                         DropdownMenuItem(text = { Text("All conversations…") }, onClick = { hermesMenu = false; hermesLive = true; chat?.showPicker() })
                         HorizontalDivider(color = Palette.Line)
-                        Text("Other agents", color = Palette.Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
-                        agentRows { hermesMenu = false }
+                        DropdownMenuItem(text = { Text("All agents…") }, onClick = { hermesMenu = false; vm.drawerOpen = true })
                     }
                 }
                 if (keyboardUp) {
@@ -374,6 +363,17 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 } else {
                     LinkLabel(vm, "")
                 }
+            }
+            // The agent's permission mode (plan, accept edits, auto). For Claude a tap cycles it with
+            // Shift+Tab, the same key as at the computer.
+            com.billmongan.herdrdroid.herdr.agentMode(pane?.agent, screenText)?.takeIf { !live }?.let { mode ->
+                val cycles = pane?.agent?.lowercase() == "claude"
+                Text(
+                    mode + if (cycles) " ⇄" else "",
+                    color = if (mode == "plan") Palette.OrangeInk else Palette.Ink, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
+                    modifier = Modifier.padding(end = 4.dp).clip(RoundedCornerShape(12.dp)).background(Palette.Gray)
+                        .clickable(enabled = cycles) { vm.sendKeys(paneId, "shift+tab") }.padding(horizontal = 8.dp, vertical = 4.dp),
+                )
             }
             // Shells and subagents still running under the agent, as one small pill in the header
             // (a row of its own appeared and vanished as they started and finished, moving the chat).
@@ -408,6 +408,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                     if (structured && vm.transcriptItems.isNotEmpty()) DropdownMenuItem(text = { Text("Find in chat") }, onClick = { menu = false; finding = true })
                     if (!live) DropdownMenuItem(text = { Text(if (reading) "Leave reading mode" else "Reading mode") }, onClick = { menu = false; reading = !reading })
                     DropdownMenuItem(text = { Text("Running underneath") }, onClick = { menu = false; vm.screen = Screen.Work(paneId) })
+                    if (pane?.agent != null) DropdownMenuItem(text = { Text("Close session…", color = Palette.OrangeInk) }, onClick = { menu = false; closingSession = true })
                     if (structured && vm.transcriptItems.isNotEmpty()) {
                         DropdownMenuItem(text = { Text("Export as Markdown") }, onClick = {
                             menu = false
@@ -582,7 +583,8 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                     }
                 }
             }
-            if ((vm.showKeys && !keyboardUp) || modifiersOn || commandScreen != null) {
+            // Shown whenever you ask for them, keyboard up or not.
+            if (vm.showKeys || modifiersOn || commandScreen != null) {
                 KeyPad(
                     ctrl = ctrl, alt = alt,
                     onCtrl = { ctrl = it }, onAlt = { alt = it },
@@ -678,7 +680,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                         }
                     }
                     Text(
-                        "\"Open the picker\" sends the agent's own model command and shows the terminal, where you choose with the keys.",
+                        "\"Open the picker\" sends the agent's own model command, reads its menu, and lists it here; your choice is sent as the keys.",
                         color = Palette.Muted, fontSize = 12.5.sp,
                     )
                 }
@@ -687,12 +689,59 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 TextButton(enabled = idle, onClick = {
                     choosingModel = false
                     vm.runCommand(paneId, ModelPresets.pickerCommand(pane.agent))
-                    fullTerminal = true
-                    vm.setKeysShown(true)
+                    readingPicker = true
                 }) { Text("Open the picker") }
             },
             dismissButton = { TextButton(onClick = { choosingModel = false }) { Text("Cancel") } },
         )
+    }
+
+    // After "Open the picker": read the agent's menu off its screen for a few seconds and list it.
+    // If no menu can be read, fall back to the terminal view and the keys.
+    LaunchedEffect(readingPicker) {
+        if (!readingPicker) return@LaunchedEffect
+        var found: Prompt? = null
+        repeat(12) {
+            kotlinx.coroutines.delay(500)
+            vm.readPane(paneId)
+            found = detectPrompt(vm.paneText, blocked = true)?.takeIf { it.choices.size >= 2 }
+            if (found != null) return@repeat
+        }
+        readingPicker = false
+        if (found != null) pickerMenu = found else { fullTerminal = true; vm.setKeysShown(true) }
+    }
+    pickerMenu?.let { menuNow ->
+        AlertDialog(
+            onDismissRequest = { pickerMenu = null; vm.sendKeys(paneId, "esc") },
+            title = { Text(menuNow.question.lines().firstOrNull()?.take(80)?.ifBlank { null } ?: "Choose a model") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    menuNow.choices.forEach { c ->
+                        val now = menuNow.selected == c.keys
+                        Surface(
+                            shape = RoundedCornerShape(12.dp), color = if (now) Palette.BlueSoft else Palette.Card,
+                            border = BorderStroke(1.dp, if (now) Palette.Blue else Palette.Line),
+                            modifier = Modifier.fillMaxWidth().clickable { pickerMenu = null; vm.answerChoice(paneId, menuNow, c) },
+                        ) {
+                            Text(c.label, color = Palette.Ink, fontSize = 15.sp, modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp))
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = { pickerMenu = null; vm.sendKeys(paneId, "esc") }) { Text("Cancel") } },
+        )
+    }
+    if (readingPicker) {
+        AlertDialog(onDismissRequest = {}, title = { Text("Reading the model menu…") }, text = { Text("Sent ${ModelPresets.pickerCommand(pane?.agent)}.") }, confirmButton = {})
+    }
+
+    if (closingSession && pane != null) {
+        val srv = vm.current
+        if (srv != null) CloseSessionDialog(
+            AppViewModel.Session(srv, pane, status, false, true),
+            onDismiss = { closingSession = false },
+        ) { closingSession = false; vm.closeSession(srv.id, pane) }
     }
 
     if (confirmCtrlC) {

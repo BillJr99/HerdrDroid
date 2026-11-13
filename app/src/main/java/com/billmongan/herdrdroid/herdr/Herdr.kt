@@ -524,6 +524,57 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
         return runCatching { parse(r.out) }.getOrNull()
     }
 
+    /**
+     * Starts an agent in a new tab: makes the tab in [workspace] at [cwd] (created if missing),
+     * then `herdr agent start` in its pane, which returns once the agent is ready for input.
+     * Returns the new pane's id. Agents started this way are not in the boot launcher.
+     */
+    suspend fun startAgent(kind: String, cwd: String, label: String, name: String, workspace: String?): String {
+        ssh.exec("mkdir -p " + (if (cwd.startsWith("~/")) "\"\$HOME\"/" + shq(cwd.removePrefix("~/")) else shq(cwd)))
+        val dir = if (cwd.startsWith("~/")) ssh.exec("printf %s \"\$HOME\"").out.trim() + "/" + cwd.removePrefix("~/") else cwd
+        if (core) {
+            // A new terminal named for the helper, running the agent; hc returns its address.
+            val o = JSONObject(run(hcCmd("run", "--bg", "--json", "--name", label, "--cwd", dir, kind)).trim().lines().last { it.startsWith("{") })
+            return o.getString("address")
+        }
+        val args = mutableListOf("tab", "create", "--cwd", dir, "--label", label, "--no-focus")
+        if (!workspace.isNullOrBlank()) args.addAll(listOf("--workspace", workspace))
+        val created = JSONObject(run(cmd(*args.toTypedArray())))
+        val pane = created.getJSONObject("result").getJSONObject("root_pane").getString("pane_id")
+        delay(800)
+        run(cmd("agent", "start", name, "--kind", kind, "--pane", pane, "--timeout", "90000"))
+        return pane
+    }
+
+    /** Closes a tab and everything in it (a helper made with [startAgent]). */
+    suspend fun closeTab(tabId: String) {
+        if (core) {
+            runCatching { run(hcCmd("kill", tabId)) }
+            run(hcCmd("rm", tabId))
+            return
+        }
+        run(cmd("tab", "close", tabId))
+    }
+
+    /** Renames a tab: in the app it is the session's name. */
+    suspend fun renameTab(tabId: String, label: String) {
+        if (core) return
+        run(cmd("tab", "rename", tabId, label))
+    }
+
+    /**
+     * Which agent programs this computer has, by `command -v` in a login shell: what the New
+     * session sheet offers. Nothing is installed or changed.
+     */
+    suspend fun installedAgents(): List<String> {
+        val names = listOf("claude", "codex", "opencode", "omp", "pi", "hermes", "grok", "copilot", "agy", "gemini")
+        // A login shell finds most; the usual per-user install folders catch the rest.
+        val r = ssh.exec("bash -lc " + shq(names.joinToString("; ") {
+            "{ command -v $it || test -x \"\$HOME/.local/bin/$it\" || test -x \"\$HOME/.$it/bin/$it\"; } >/dev/null 2>&1 && echo $it"
+        }))
+        return r.out.lines().map { it.trim() }.filter { it in names }
+    }
+
     /** A folder's entries, folders first, through the computer's python3 (names, kinds, sizes, times). */
     suspend fun listDir(path: String): List<DirEntry> {
         val target = if (path.startsWith("~")) "\"\$HOME\"" + shq(path.removePrefix("~")) else shq(path)
@@ -779,6 +830,24 @@ private val QUESTION_FOOTER = Regex("""Enter to select.*(navigate|Esc to cancel)
 
 fun showsQuestionDialog(text: String): Boolean =
     text.lines().filter { it.isNotBlank() }.takeLast(6).any { QUESTION_FOOTER.containsMatchIn(it) }
+
+/**
+ * The permission mode an agent shows in its footer: "plan", "accept edits", "auto" or "bypass".
+ * Claude in its default mode shows none, which reads as "default"; other agents return null.
+ */
+fun agentMode(agent: String?, screen: String): String? {
+    val tail = screen.lines().filter { it.isNotBlank() }.takeLast(8).joinToString("\n")
+    val m = Regex("""(plan mode|accept edits|auto mode|auto-accept edits|bypass permissions) on""", RegexOption.IGNORE_CASE).findAll(tail).lastOrNull()
+    val mode = m?.groupValues?.get(1)?.lowercase()?.let {
+        when {
+            it.startsWith("plan") -> "plan"
+            it.startsWith("bypass") -> "bypass"
+            it.contains("edits") -> "accept edits"
+            else -> "auto"
+        }
+    }
+    return mode ?: if (agent?.lowercase() == "claude" && tail.isNotBlank()) "default" else null
+}
 
 fun detectPrompt(text: String, blocked: Boolean): Prompt? {
     // A question dialog on screen means the agent waits, whatever herdr reported.

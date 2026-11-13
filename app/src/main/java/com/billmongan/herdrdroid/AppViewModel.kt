@@ -351,7 +351,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return Credentials(key, password)
     }
 
-    fun connect(server: Server, password: String?, remember: Boolean) {
+    fun connect(server: Server, password: String?, remember: Boolean, openAgent: Boolean = false) {
         if (connecting) return
         connecting = true
         error = null
@@ -363,7 +363,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 // Back to the server just left: its connection is kept open for a few minutes, so
                 // it is used again at once after one quick check, with no sign-in or detection.
+                // Or the watcher's own live connection to it, so switching servers from the drawer
+                // is quick too.
                 val kept = parked?.takeIf { it.serverId == server.id && System.currentTimeMillis() - it.at < PARK_MILLIS }
+                    ?: fleet?.take(server.id)?.let { (fs, fh) -> Parked(server.id, fs, fh, fh.backend, System.currentTimeMillis()) }
                 parked = null
                 parkJob?.cancel()
                 val reused = kept != null && runCatching { kotlinx.coroutines.withTimeout(6_000) { kept.herdr.check() } }.isSuccess
@@ -436,14 +439,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 lastQuotaTry.clear()
                 unlockedThisSession += saved.id
                 lastStatus.clear()
-                screen = Screen.Tabs
+                // From the drawer or at startup the agent opens directly, with no stop on the tab list.
+                if (!openAgent) screen = Screen.Tabs
                 transcriptPane = null
                 refreshPanes()
                 prefetchChats()
                 if (showQuotas) startQuotaChecks()
                 startWatching()
                 pollHermes()
-                pendingOpen?.let { p -> pendingOpen = null; if (panes.any { it.id == p }) openPane(p, "after connecting") }
+                val want = pendingOpen
+                pendingOpen = null
+                when {
+                    want != null && panes.any { it.id == want } -> openPane(want, "after connecting")
+                    // From the drawer or at startup: straight to an agent, the one most worth seeing.
+                    openAgent -> bestAgent()?.let { openPane(it, "after connecting") } ?: run { screen = Screen.Tabs; drawerOpen = true }
+                }
             } catch (e: UnconfirmedHostKey) {
                 s.close()
                 pendingHostKey = PendingHostKey(server, password, remember, e.fingerprint)
@@ -591,6 +601,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun unlocked() {
         locked = false
         startBackgroundChecks()
+        autoOpen()
         pendingNotification?.let { (s, p) -> pendingNotification = null; openFromNotification(s, p) }
     }
 
@@ -604,6 +615,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun startBackgroundChecks() {
         if (backgroundChecks?.isActive == true || locked) return
+        ensureFleet()
         backgroundChecks = viewModelScope.launch {
             while (isActive) {
                 if (foreground) runCatching { checkServers() }
@@ -766,6 +778,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         ssh?.close()
         ssh = null
         herdr = null
+    }
+
+    /**
+     * Leaves the open server without going back to the server list (switching to an agent on
+     * another server): its connection is parked for a quick return and the watcher takes it over.
+     */
+    private fun disconnectQuietly() {
+        watchJob?.cancel()
+        park()
+        closeSession()
+        current = null
+        panes = emptyList()
+        quotas = emptyMap()
+        link = Link.CONNECTED
+        linkProblem = null
     }
 
     fun disconnect() {
@@ -1063,6 +1090,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val lastPromptSig = mutableMapOf<String, String>()
 
     fun openPane(paneId: String, why: String = "tap") {
+        current?.id?.let { prefs.lastAgent = "$it|$paneId" }
         val from = (screen as? Screen.Agent)?.paneId
         if (from != null && from != paneId) com.billmongan.herdrdroid.diag.DiagLog.log("nav", "agent view $from -> $paneId ($why)")
         seenInApp["${current?.id}|$paneId"] = System.currentTimeMillis()
@@ -1794,22 +1822,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Starts the other-server watcher and, with alerts on, the background loop and service. */
+    /**
+     * The watcher for every other server, which fills the drawer. It runs whether or not a server
+     * is open: every 5 seconds while alerts are on, 10 otherwise.
+     */
+    private fun ensureFleet() {
+        if (!watchOthers) { fleet?.stop(); fleet = null; return }
+        val f = fleet ?: Fleet(
+            viewModelScope,
+            credentials = { s -> credentialsFor(s, savedPassword(s)) },
+            keystoreKey = SshKeyVault::provider,
+            onSeen = { st -> noticeChanges(st.server.id, st.server.label, st.panes) { fleet?.herdr(st.server.id) } },
+        ).also { fleet = it }
+        f.everyMs = if (watching) 5_000L else 10_000L
+        f.watch(watchable())
+    }
+
     private fun startWatching() {
         if (herdr == null) return
-        if (watchOthers) {
-            val f = fleet ?: Fleet(
-                viewModelScope,
-                credentials = { s -> credentialsFor(s, savedPassword(s)) },
-                keystoreKey = SshKeyVault::provider,
-                onSeen = { st -> noticeChanges(st.server.id, st.server.label, st.panes) { fleet?.herdr(st.server.id) } },
-            ).also { fleet = it }
-            // Other servers are read every 5 seconds while alerts are on, 15 when only listed.
-            f.everyMs = if (watching) 5_000L else 15_000L
-            f.watch(watchable())
-        } else {
-            fleet?.stop()
-            fleet = null
-        }
+        ensureFleet()
         if (!watching) return
         Notify.channels(getApplication())
         WatchService.start(getApplication(), "Watching ${current?.label ?: "your server"}" + if (watchOthers && watchable().isNotEmpty()) " and ${watchable().size} more" else "")
@@ -1920,9 +1951,150 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Switches to another watched server from the "needs you" list. */
     fun switchTo(serverId: String, paneId: String?) {
+        if (serverId == current?.id && herdr != null) { paneId?.let { openPane(it, "drawer") }; return }
         val s = servers.firstOrNull { it.id == serverId } ?: return
+        if (!canSignInSilently(s)) { screen = Screen.Servers; return }
         pendingOpen = paneId
-        connect(s, savedPassword(s), remember = false)
+        if (current != null) disconnectQuietly()
+        connect(s, savedPassword(s), remember = false, openAgent = true)
+    }
+
+    // -- 1.1: every agent on every server, in one drawer ------------------------------------------
+
+    /** One agent in the drawer: the server it is on, and the status the drawer shows. */
+    data class Session(val server: Server, val pane: Pane, val status: Status, val pinned: Boolean, val current: Boolean)
+
+    /** Back to the agent last open on this server, or its tab list when there is none. */
+    fun goHome() {
+        val last = prefs.lastAgent.split("|", limit = 2)
+        screen = if (last.getOrNull(0) == current?.id && panes.any { it.id == last.getOrNull(1) }) Screen.Agent(last[1])
+            else if (current != null) Screen.Tabs else Screen.Servers
+    }
+
+    /** Whether the drawer is pulled out. */
+    var drawerOpen by mutableStateOf(false)
+
+    private val statusOrder = listOf(Status.NEEDS_YOU, Status.WORKING, Status.DONE, Status.IDLE, Status.UNKNOWN)
+
+    /**
+     * Every agent on every server, sorted needs you, working, done, idle; pinned ones first in
+     * each group. The open server's agents are live; the others come from the watcher, or the last
+     * startup check when the watcher has not reached that server yet.
+     */
+    fun sessions(): List<Session> {
+        val pins = prefs.pinnedSessions.lines().toSet()
+        val out = mutableListOf<Session>()
+        val cur = current
+        if (cur != null) panes.filter { it.agent != null }.forEach { p ->
+            out += Session(cur, p, shownStatus(p), "${cur.id}|${p.tabLabel}" in pins, true)
+        }
+        for (s in servers) {
+            if (s.id == cur?.id) continue
+            val list = fleetStates[s.id]?.panes ?: serverPanes[s.id].orEmpty()
+            list.filter { it.agent != null }.forEach { p -> out += Session(s, p, p.status, "${s.id}|${p.tabLabel}" in pins, false) }
+        }
+        return out.sortedWith(compareBy({ statusOrder.indexOf(it.status) }, { !it.pinned }, { it.server.label.lowercase() }, { it.pane.tabLabel.lowercase() }))
+    }
+
+    /** Each server's state for the drawer: reachable or not, how long ago it was seen, how many agents. */
+    data class ServerState(val server: Server, val reachable: Boolean?, val sessions: Int, val seenAt: Long?)
+
+    fun serverStates(): List<ServerState> = servers.map { s ->
+        when {
+            s.id == current?.id -> ServerState(s, link == Link.CONNECTED, panes.count { it.agent != null }, System.currentTimeMillis())
+            fleetStates[s.id] != null -> fleetStates[s.id]!!.let { st -> ServerState(s, st.error == null, st.panes.count { it.agent != null }, st.at) }
+            serverPanes[s.id] != null -> ServerState(s, null, serverPanes[s.id]!!.count { it.agent != null }, null)
+            else -> ServerState(s, null, 0, null)
+        }
+    }
+
+    fun togglePin(server: Server, pane: Pane) {
+        val key = "${server.id}|${pane.tabLabel}"
+        val pins = prefs.pinnedSessions.lines().filter { it.isNotBlank() }.toMutableSet()
+        if (!pins.add(key)) pins.remove(key)
+        prefs.pinnedSessions = pins.joinToString("\n")
+        pinVersion++
+    }
+    /** Bumped when pins change, so the drawer redraws. */
+    var pinVersion by mutableStateOf(0)
+        private set
+
+    /** The agent most worth opening: one waiting on you, then working, then the rest. */
+    private fun bestAgent(): String? = panes.filter { it.agent != null }.minByOrNull { statusOrder.indexOf(shownStatus(it)) }?.id
+
+    /** The herdr client for any server: the open one, or the watcher's. */
+    private fun clientFor(serverId: String): Herdr? = if (serverId == current?.id) herdr else fleet?.herdr(serverId)
+
+    /** Which agent programs a server has, for the New session sheet. */
+    suspend fun installedAgents(serverId: String): List<String> =
+        runCatching { clientFor(serverId)?.installedAgents() }.getOrNull() ?: emptyList()
+
+    var sessionBusy by mutableStateOf<String?>(null)
+        private set
+
+    /**
+     * Starts [kind] in a new tab named [label] at [folder] on a server, sends [firstMessage] once it
+     * is ready, and opens it. Nothing is installed and no folder is deleted, ever.
+     */
+    fun newSession(serverId: String, kind: String, folder: String, label: String, firstMessage: String?) {
+        if (sessionBusy != null) return
+        sessionBusy = "Starting $label…"
+        viewModelScope.launch {
+            try {
+                val h = clientFor(serverId) ?: run { error = "Not connected to that server yet."; return@launch }
+                val name = label.lowercase().replace(Regex("[^a-z0-9_-]"), "-").trim('-').take(32).let { if (it.firstOrNull()?.isLetter() == true) it else "a$it" }
+                val ws = if (serverId == current?.id) mainWorkspace() else null
+                val pane = h.startAgent(kind, folder.ifBlank { "~" }, label, name, ws)
+                com.billmongan.herdrdroid.diag.DiagLog.log("session", "started $kind as \"$label\" on ${servers.firstOrNull { it.id == serverId }?.label}")
+                if (!firstMessage.isNullOrBlank()) {
+                    val p = h.panes().firstOrNull { it.id == pane }
+                    if (p != null) h.sendMessage(p, firstMessage)
+                }
+                drawerOpen = false
+                if (serverId == current?.id) { refreshPanes(); openPane(pane, "new session") } else switchTo(serverId, pane)
+            } catch (e: Exception) {
+                error = "Couldn't start the session: ${e.message}"
+            } finally {
+                sessionBusy = null
+            }
+        }
+    }
+
+    private fun mainWorkspace(): String? = panes.groupingBy { it.workspaceId }.eachCount().maxByOrNull { it.value }?.key
+
+    /** Closes a session's tab (ending its agent). Its folder and files are never touched. */
+    fun closeSession(serverId: String, pane: Pane) {
+        viewModelScope.launch {
+            val h = clientFor(serverId) ?: return@launch
+            runCatching { h.closeTab(pane.tabId) }
+                .onSuccess { com.billmongan.herdrdroid.diag.DiagLog.log("session", "closed \"${pane.tabLabel}\"") }
+                .onFailure { error = "Couldn't close it: ${it.message}" }
+            if (serverId == current?.id) {
+                refreshPanes()
+                if ((screen as? Screen.Agent)?.paneId == pane.id) bestAgent()?.let { openPane(it, "after closing") } ?: run { screen = Screen.Tabs; drawerOpen = true }
+            }
+        }
+    }
+
+    fun renameSession(serverId: String, pane: Pane, label: String) {
+        viewModelScope.launch {
+            val h = clientFor(serverId) ?: return@launch
+            runCatching { h.renameTab(pane.tabId, label) }.onFailure { error = "Couldn't rename it: ${it.message}" }
+            if (serverId == current?.id) refreshPanes()
+        }
+    }
+
+    /**
+     * At startup: no servers, the server screen; otherwise the last agent, on its server, when that
+     * server signs in without asking; otherwise the server screen.
+     */
+    fun autoOpen() {
+        if (servers.isEmpty() || current != null || connecting) return
+        val (sid, pid) = prefs.lastAgent.split("|", limit = 2).let { (it.getOrNull(0) ?: "") to it.getOrNull(1) }
+        val s = servers.firstOrNull { it.id == sid } ?: servers.firstOrNull { canSignInSilently(it) && it.fingerprint != null }
+        if (s == null || !canSignInSilently(s) || s.fingerprint == null) return
+        pendingOpen = pid?.takeIf { s.id == sid }
+        connect(s, savedPassword(s), remember = false, openAgent = true)
     }
 
     // -- Send when idle --------------------------------------------------------------------------

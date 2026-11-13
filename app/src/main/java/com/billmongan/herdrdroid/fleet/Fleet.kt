@@ -95,6 +95,12 @@ class Fleet(
         }
     }
 
+    /**
+     * Hands over a watched server's live connection (the app is about to open that server), so
+     * opening it needs no new sign-in. The watcher makes a fresh one if it watches it again.
+     */
+    fun take(serverId: String): Pair<HerdrSsh, Herdr>? = clients.remove(serverId)
+
     /** The herdr client for a watched server, to answer a question there. */
     fun herdr(serverId: String): Herdr? = clients[serverId]?.second
 
