@@ -60,6 +60,7 @@ fun SessionDrawer(vm: AppViewModel) {
     var closing by remember { mutableStateOf<AppViewModel.Session?>(null) }
     var renaming by remember { mutableStateOf<AppViewModel.Session?>(null) }
     @Suppress("UNUSED_VARIABLE") val pins = vm.pinVersion
+    @Suppress("UNUSED_VARIABLE") val models = vm.modelsVersion
     val all = vm.sessions()
     val shown = all.filter { s ->
         (onlyServer == null || s.server.id == onlyServer) &&
@@ -94,7 +95,7 @@ fun SessionDrawer(vm: AppViewModel) {
                 item(key = "h:$title") { GroupLabel(title) }
                 items(rows, key = { it.server.id + "|" + it.pane.id }) { s ->
                     SessionRow(
-                        s, open = s.current && s.pane.id == openId,
+                        s, open = s.current && s.pane.id == openId, model = vm.modelFor(s.server.id, s.pane.id),
                         onOpen = { vm.drawerOpen = false; vm.switchTo(s.server.id, s.pane.id) },
                         onRename = { renaming = s }, onPin = { vm.togglePin(s.server, s.pane) }, onClose = { closing = s },
                     )
@@ -158,7 +159,7 @@ internal fun sessionName(p: Pane): String {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun SessionRow(s: AppViewModel.Session, open: Boolean, onOpen: () -> Unit, onRename: () -> Unit, onPin: () -> Unit, onClose: () -> Unit) {
+private fun SessionRow(s: AppViewModel.Session, open: Boolean, model: String?, onOpen: () -> Unit, onRename: () -> Unit, onPin: () -> Unit, onClose: () -> Unit) {
     var menu by remember { mutableStateOf(false) }
     Box {
         Row(
@@ -175,7 +176,7 @@ private fun SessionRow(s: AppViewModel.Session, open: Boolean, onOpen: () -> Uni
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    listOf(s.server.label, s.pane.folder).filter { it.isNotBlank() }.joinToString(" · "),
+                    listOfNotNull(s.server.label, model, s.pane.folder).filter { it.isNotBlank() }.joinToString(" · "),
                     color = Palette.Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
             }

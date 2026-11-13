@@ -664,7 +664,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val typingKey = "${s.id}/${target.id}"
                 if (!typingInto.add(typingKey)) continue
                 probedAt["${s.id}|${target.id}"] = System.currentTimeMillis()
-                try { runCatching { h.probeQuota(target.id, profile, working = false) }.getOrNull()?.items } finally {
+                try { runCatching { h.probeQuota(target.id, profile, working = false) }.getOrNull()?.also { r ->
+                    r.model?.let { m -> modelCache[s.id] = modelCache[s.id].orEmpty() + (target.id to m) }
+                }?.items } finally {
                     typingInto.remove(typingKey)
                     probedAt["${s.id}|${target.id}"] = System.currentTimeMillis()
                 }
@@ -676,6 +678,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         prefs.saveQuotas(s.id, stored)
+        // Models for the drawer: Claude's from its session logs (read only; nothing is typed).
+        runCatching { h.logModels(fresh) }.getOrNull()?.takeIf { it.isNotEmpty() }?.let { m ->
+            modelCache[s.id] = modelCache[s.id].orEmpty() + m
+            modelsVersion++
+        }
         serverQuotas = serverQuotas + (s.id to stored.toMap())
         // The open server's cards take the new readings at once.
         if (s.id == current?.id) quotas = quotas + stored.filter { (k, r) -> (quotas[k]?.at ?: 0L) < r.at }
@@ -2016,6 +2023,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             else -> ServerState(s, null, 0, null)
         }
     }
+
+    /** The model an agent last used, on any server, when the app knows it. */
+    fun modelFor(serverId: String, paneId: String): String? =
+        if (serverId == current?.id) modelLine(paneId) else modelCache[serverId]?.get(paneId)
+
+    /** Bumped when another server's models are read, so the drawer redraws. */
+    var modelsVersion by mutableStateOf(0)
+        private set
 
     fun togglePin(server: Server, pane: Pane) {
         val key = "${server.id}|${pane.tabLabel}"
