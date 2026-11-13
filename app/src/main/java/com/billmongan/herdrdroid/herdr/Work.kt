@@ -29,12 +29,22 @@ data class WorkInfo(val procs: List<ProcInfo>, val subagents: List<SubagentInfo>
     fun activeProcs(agent: String?): List<ProcInfo> {
         val keep = protectedPids(this, agent)
         val agentAge = procs.filter { it.pid in keep }.minOfOrNull { if (it.depth == 0) Long.MAX_VALUE else it.ageSec } ?: Long.MAX_VALUE
-        return procs.filter { it.pid !in keep && (agentAge == Long.MAX_VALUE || it.ageSec < agentAge - 120) }
+        // Helpers started on demand (language servers, MCP servers) and their children are not work.
+        val helpers = mutableSetOf<Int>()
+        procs.forEach { if (it.pid !in keep && (it.ppid in helpers || HELPER.containsMatchIn(it.cmd))) helpers += it.pid }
+        return procs.filter { it.pid !in keep && it.pid !in helpers && (agentAge == Long.MAX_VALUE || it.ageSec < agentAge - 120) }
     }
 
     /** What is still active: running subagents, running background tasks, and active processes. */
     fun activeCount(agent: String?): Int = activeSubagents + runningTasks + activeProcs(agent).size
 }
+
+/** Long-lived helpers an agent starts on demand. Kept in step with HELPER_RE in transcript.py. */
+val HELPER = Regex(
+    "language[-_ ]?server|langserver|\\blsp\\b|pyright|pylsp|gopls|rust-analyzer|clangd|jdtls|tsserver|" +
+        "eslint_d|biome|\\bmcp\\b|mcp[-_]|[-_]mcp\\b|mcpproxy|watchman|ssh-agent|gpg-agent|dbus-|app-server|daemon",
+    RegexOption.IGNORE_CASE,
+)
 
 /** New output of a background task since a byte offset. */
 data class TailRead(val text: String, val next: Long, val size: Long, val cut: Boolean)
@@ -84,11 +94,14 @@ fun parseTail(json: String): TailRead {
  */
 fun protectedPids(work: WorkInfo, agent: String?): Set<Int> {
     val byPid = work.procs.associateBy { it.pid }
-    val roots = work.procs.filter { it.depth == 0 }.map { it.pid }.toMutableSet()
+    // The pane's shell and any launcher (agent-startup.py) are never work.
+    val roots = work.procs.filter { it.depth == 0 || it.cmd.contains("agent-startup") }.map { it.pid }.toMutableSet()
     if (agent.isNullOrBlank()) return roots
     val a = agent.lowercase()
-    val agentProc = work.procs.filter { it.name.lowercase().contains(a) }.minByOrNull { it.depth }
-        ?: work.procs.filter { it.cmd.lowercase().contains(a) && !it.cmd.contains("agent-startup") }.minByOrNull { it.depth }
+    // A helper the agent left running (Codex's app server, say) is never taken for the agent itself.
+    val ok = work.procs.filter { !HELPER.containsMatchIn(it.cmd) }
+    val agentProc = ok.filter { it.name.lowercase().contains(a) }.minByOrNull { it.depth }
+        ?: ok.filter { it.cmd.lowercase().contains(a) && !it.cmd.contains("agent-startup") }.minByOrNull { it.depth }
         ?: return roots
     var cur: ProcInfo? = agentProc
     while (cur != null) {

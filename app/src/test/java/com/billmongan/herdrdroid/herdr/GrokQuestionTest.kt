@@ -108,3 +108,33 @@ class BypassModeTest {
         assertEquals("default", agentMode("claude", "> \n  ? for shortcuts"))
     }
 }
+
+/** 1.2.5: commands an agent started count as work, and helpers it left running do not. */
+class WorkSweepTest {
+    private fun p(pid: Int, ppid: Int, depth: Int, name: String, cmd: String, age: Long) =
+        ProcInfo(pid, ppid, depth, name, cmd, age, 0.0, 0)
+
+    @Test fun codexAppServerIsAHelperNotTheAgent() {
+        // Codex after a restart: an app-server daemon left from the last run sits beside the launcher.
+        val w = WorkInfo(listOf(
+            p(1, 0, 0, "bash", "bash", 50_000),
+            p(2, 1, 1, "python3", "/usr/bin/python3 /home/user/.config/herdr/agent-startup.py agent codex", 300),
+            p(3, 2, 2, "codex", "codex resume --last", 300),
+            p(4, 1, 1, "codex", "/home/user/.codex/packages/app-server-daemon/bin/codex app-server --listen", 48_000),
+            p(5, 4, 2, "codex-code-mode-host", "codex-code-mode-host", 29_000),
+        ), emptyList(), emptyList())
+        assertEquals(emptyList<ProcInfo>(), w.activeProcs("codex"))
+        assertTrue(setOf(1, 2, 3).all { it in protectedPids(w, "codex") })
+    }
+
+    @Test fun aRunningCommandCountsAndAnMcpServerDoesNot() {
+        val w = WorkInfo(listOf(
+            p(1, 0, 0, "bash", "bash", 9_000),
+            p(2, 1, 1, "kiro-cli", "kiro-cli chat --resume", 9_000),
+            p(3, 2, 2, "node", "node /usr/lib/node_modules/some-mcp-server/index.js", 600),
+            p(4, 2, 2, "bash", "bash -c make test", 30),
+            p(5, 4, 3, "make", "make test", 29),
+        ), emptyList(), emptyList())
+        assertEquals(listOf(4, 5), w.activeProcs("kiro").map { it.pid })
+    }
+}

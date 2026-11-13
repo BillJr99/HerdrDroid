@@ -733,7 +733,8 @@ print(json.dumps(out))
     /** For the cards: active subagents plus running background tasks, per pane. */
     /** Running subagents per pane, and subagents plus running background tasks ("busy"). */
     suspend fun workCounts(panes: List<Pane>, script: ByteArray): Pair<Map<String, Int>, Map<String, Int>> {
-        val list = panes.filter { it.agent == "claude" }
+        // Every agent: its running commands count as work too (1.2.5), not only Claude's subagents.
+        val list = panes.filter { !it.agent.isNullOrBlank() }
         if (list.isEmpty()) return emptyMap<String, Int>() to emptyMap()
         val arg = org.json.JSONArray(list.map { org.json.JSONArray(listOf(it.id, it.agent.orEmpty(), it.cwd)) }).toString()
         val r = ssh.execInput("$PYZ __workcounts__ ${shq(arg)}", z(script), timeoutSeconds = 30)
@@ -882,6 +883,9 @@ fun menuKeys(prompt: Prompt, choice: Choice): List<String>? {
 /** The footer of Claude's question dialog ("Enter to select · ↑/↓ to navigate · Esc to cancel"). */
 private val QUESTION_FOOTER = Regex("""Enter to select.*(navigate|Esc to cancel)|Tab/Arrow keys to navigate|↑/↓ to navigate|\b\d+/\d+:select\b|↑/?↓(?:/jk)?\s+(?:to\s+)?navigate|press enter to confirm or esc""", RegexOption.IGNORE_CASE)
 
+/** A line of the agent's own activity log, above a card: "● Ran …", "• Running …", "◆ …", "> prompt". */
+private val ACTIVITY = Regex("""^([●○•◆◈⏵✓✗└▸⠀-⣿]|> |❯ )""")
+
 /** Vibe's approval card: numbered rows, the highlight shown only by colour, "Esc reject" in its footer. */
 private val VIBE_CARD_FOOTER = Regex("""↑↓/jk navigate.*Esc reject""", RegexOption.IGNORE_CASE)
 
@@ -977,9 +981,16 @@ fun detectUnnumberedMenu(text: String): Prompt? {
     if (rows.size > 1 && rows.first().first != at && Regex("""^(Model|Name)(\s{2,}|$)""").containsMatchIn(rows.first().second)) rows = rows.drop(1)
     if (rows.size !in 2..30) return null
     val labels = rows.map { (_, r) -> r.split(Regex("""\s{2,}""")).filter { it.isNotBlank() }.joinToString(" · ").take(90) }
-    val question = (top - 1 downTo maxOf(0, top - 4)).map { raw[it].trim().trim { c -> c in border || c.isWhitespace() } }
+    var question = (top - 1 downTo maxOf(0, top - 4)).map { raw[it].trim().trim { c -> c in border || c.isWhitespace() } }
         .firstOrNull { it.any(Char::isLetter) && !it.all { c -> c in "─━═ " } }
         ?.substringBefore("  ")?.trimEnd(':')?.ifBlank { null } ?: "Choose"
+    // Kiro: "shell requires approval" under a rule, with the tool and command just above the rule
+    // ("↓ Shell mkdir -p sub && date > sub/now.txt"). The question carries the command too.
+    if (question.endsWith("requires approval")) {
+        (top - 1 downTo maxOf(0, top - 8)).map { raw[it].trim() }
+            .firstNotNullOfOrNull { Regex("""^[↓•●▸]?\s*(Shell|Write|Edit|Read|Fetch|Web\w*|\w+Tool)\s+(.+)$""").find(it) }
+            ?.let { m -> question = "$question: ${m.groupValues[2].trim()}" }
+    }
     val selected = rows.indexOfFirst { it.first == at } + 1
     return Prompt(question, labels.mapIndexed { i, l -> Choice(l, (i + 1).toString(), false) }, selected.toString())
 }
@@ -1020,11 +1031,23 @@ fun detectPrompt(text: String, blocked: Boolean): Prompt? {
         if (at <= 0) null else {
             val got = mutableListOf<String>()
             var i = at - 1
+            // Blank lines inside a card are crossed (Antigravity puts one between "Requesting
+            // permission for:", the command, and "Run this command?"), up to two of them; a rule, the
+            // top of a box, or the agent's own activity lines above the card end the question.
+            var gaps = 0
+            var gap = false
             while (i >= 0 && got.size < 20) {
                 val l = raw[i]
                 val c = clean(l)
-                if (l.isBlank() || c.isEmpty()) { if (got.isNotEmpty()) break else { i--; continue } }
+                // A rule on its own line ("──────") ends the question; clean() would empty it.
+                if (got.isNotEmpty() && l.trim().matches(Regex("""^[─━═]{3,}$"""))) break
+                if (l.isBlank() || c.isEmpty()) {
+                    if (got.isNotEmpty() && !gap) { gap = true; gaps++; if (gaps > 2) break }
+                    i--; continue
+                }
                 if (l.trimStart().startsWith("╭") || l.trimStart().startsWith("┌") || c.matches(Regex("""^[─━═\-_\s]+$"""))) break
+                if (gap && got.isNotEmpty() && ACTIVITY.containsMatchIn(c)) break
+                gap = false
                 // Grok's "← → narrow scope" hint sits between the command and its options.
                 if (c.any(Char::isLetterOrDigit) && !c.contains("narrow scope")) got.add(0, c.trimStart('›', '❯', ' '))
                 i--

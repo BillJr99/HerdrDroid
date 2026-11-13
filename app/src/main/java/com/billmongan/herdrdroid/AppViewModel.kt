@@ -1036,6 +1036,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             current?.let { s -> noticeChanges(s.id, s.label, fresh) { herdr } }
             // Footers (each agent's model) every 30 seconds wherever you are in the app; before
             // 1.1.5 only the tab list read them, which the agent-first app rarely shows.
+            // What runs under each agent (subagents, background tasks, commands it started) every
+            // 6 seconds wherever you are, so an agent whose shell is still busy shows as working.
+            if (System.currentTimeMillis() - lastWorkAt > 6_000L) {
+                lastWorkAt = System.currentTimeMillis()
+                viewModelScope.launch { runCatching { refreshWorkCounts() } }
+            }
             if (System.currentTimeMillis() - lastPreviewsAt > 30_000L) {
                 lastPreviewsAt = System.currentTimeMillis()
                 viewModelScope.launch { runCatching { refreshPreviews() } }
@@ -1067,6 +1073,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val missingModelLogged = mutableSetOf<String>()
     private var lastPreviewsAt = 0L
+    private var lastWorkAt = 0L
 
     suspend fun refreshPreviews() {
         val ids = panes.map { it.id }
@@ -2282,7 +2289,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val here = serverId == current?.id
         // Hermes: a conversation elsewhere (Telegram, its app) working or waiting counts here too.
         if (here && p.agent?.lowercase() == "hermes" && p.status != Status.NEEDS_YOU) hermesState?.let { return it }
-        if (here && (p.status == Status.IDLE || p.status == Status.DONE) && (busyCounts[p.id] ?: 0) > 0) return Status.WORKING
+        if (here && (p.status == Status.IDLE || p.status == Status.DONE || p.status == Status.UNKNOWN) && (busyCounts[p.id] ?: 0) > 0) return Status.WORKING
         // The app's own usage check made it look busy for a moment: show what it was before.
         val k0 = "$serverId|${p.id}"
         // (The check only types into agents that are idle or done, so it was one or the other.)
@@ -2300,7 +2307,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return p.status
     }
     private fun withBusy(list: List<Pane>, busy: Map<String, Int>): List<Pane> = list.map { p ->
-        if ((p.status == Status.IDLE || p.status == Status.DONE) && (busy[p.id] ?: 0) > 0) p.copy(status = Status.WORKING) else p
+        if ((p.status == Status.IDLE || p.status == Status.DONE || p.status == Status.UNKNOWN) && (busy[p.id] ?: 0) > 0) p.copy(status = Status.WORKING) else p
     }
     // When each pane last turned done, and when you last had it open here ("server|pane"). Kept
     // across launches and reconnects, so an agent you opened stays idle until it works again.

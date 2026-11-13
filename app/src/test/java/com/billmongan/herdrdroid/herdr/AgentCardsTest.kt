@@ -120,7 +120,9 @@ esc to cancel                                                       Gemini 4 Arg
         val p = detectPrompt(copilot, blocked = false)!!
         assertEquals(3, p.choices.size)
         assertEquals("1", p.selected)
-        assertEquals("Do you want to run this command?", p.question)
+        // 1.2.5: the command in the box above is part of the question.
+        assertTrue(p.question, p.question.endsWith("Do you want to run this command?"))
+        assertTrue(p.question, p.question.contains("mkdir -p sub && date > sub/now.txt"))
         // Enter on "No, and tell Copilot ... (Esc to stop)" does nothing in Copilot; Esc cancels.
         assertEquals(listOf("esc"), menuKeys(p, p.choices[2]))
         assertEquals(listOf("enter"), menuKeys(p, p.choices[0]))
@@ -136,9 +138,43 @@ esc to cancel                                                       Gemini 4 Arg
     @Test fun kiroCardHasNoNumbers() {
         val p = detectPrompt(kiro, blocked = false)!!
         assertEquals(listOf("Yes, single permission", "Trust, always allow in this session", "No (Tab to edit)"), p.choices.map { it.label })
-        assertEquals("shell requires approval", p.question)
+        assertEquals("shell requires approval: mkdir -p sub && date > sub/now.txt", p.question)
         // Checked in Kiro 3.3: Down, Down, Enter rejected the command.
         assertEquals(listOf("down", "down", "enter"), menuKeys(p, p.choices[2]))
+    }
+
+    // Antigravity's command card, live on 2026-11-13: blank lines separate the command from the
+    // question, which before 1.2.5 left the question box with only "Run this command?".
+    private val agyCommand = """
+● Ran 3 commands (bill-pane-send.py --list | head -1 · bill-agent-tasks.py list · ssh bill
+○ Exploring 1 file (AGENTS.md) (ctrl+o to expand)
+
+Command
+──────────
+
+Requesting permission for:
+   ssh bill@192.0.2.26 true
+
+Run this command?
+> 1. Yes, run command
+  2. Yes, and always allow in this conversation for commands that start with 'ssh bill@192.0.2.26 true'
+  3. Yes, and always allow for commands that start with 'ssh bill@192.0.2.26 true' (Persist to settings.json)
+  4. No, cancel
+
+  ↑/↓ Navigate · tab Amend · ctrl+g edit/expand command
+esc to cancel
+""".trimIndent()
+
+    @Test fun antigravityCommandCardShowsTheCommand() {
+        val p = detectPrompt(agyCommand, blocked = false)!!
+        assertEquals(4, p.choices.size)
+        assertEquals("Requesting permission for: ssh bill@192.0.2.26 true Run this command?", p.question)
+        assertEquals(listOf("down", "down", "down", "enter"), menuKeys(p, p.choices[3]))
+    }
+
+    @Test fun activityAboveACardIsNotPartOfTheQuestion() {
+        val p = detectPrompt(codex.replace("  Would you like", "• Running bill-pane-send.py --list\n\n  Would you like"), blocked = true)!!
+        assertTrue(p.question, p.question.startsWith("Would you like to run the following command?"))
     }
 
     @Test fun vibeCardHasNoMarker() {

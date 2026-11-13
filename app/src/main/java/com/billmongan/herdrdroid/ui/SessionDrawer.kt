@@ -180,7 +180,8 @@ private fun SessionRow(s: AppViewModel.Session, open: Boolean, model: String?, o
                     color = Palette.Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
             }
-            if (open) Text("✓", color = Palette.Blue, fontWeight = FontWeight.Bold)
+            // The session on screen now (Bill asked what the old blue check meant: it read as "done").
+            if (open) Text("open", color = Palette.Blue, fontWeight = FontWeight.Bold, fontSize = 12.sp)
         }
         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
             // herdr-core can't rename, so the item is only there where it works.

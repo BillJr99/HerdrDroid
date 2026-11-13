@@ -1043,11 +1043,15 @@ def pane_of(pid):
     return None
 
 
-def pane_procs(pane, table=None):
-    """The processes running in a herdr pane (they all carry HERDR_PANE_ID), as a tree."""
+def pane_procs(pane, table=None, pids=None):
+    """The processes running in a herdr pane (they all carry HERDR_PANE_ID), as a tree.
+    [pids], when the caller already knows which processes are in the pane, skips that lookup."""
     table = table if table is not None else proc_table()
     me = {os.getpid(), os.getppid()}
-    mine = {pid: v for pid, v in table.items() if pid not in me and pane_of(pid) == pane}
+    if pids is not None:
+        mine = {pid: table[pid] for pid in pids if pid in table and pid not in me}
+    else:
+        mine = {pid: v for pid, v in table.items() if pid not in me and pane_of(pid) == pane}
     hz = os.sysconf("SC_CLK_TCK")
     with open("/proc/uptime") as f:
         up = float(f.read().split()[0])
@@ -1242,6 +1246,55 @@ def pane_work(pane, agent, cwd):
     return work
 
 
+# Long-lived helpers an agent starts on demand, which are not work in progress: language servers,
+# MCP servers, file watchers and key agents. Matched on the masked command line. Kept in step with
+# HELPER in Work.kt.
+HELPER_RE = re.compile(
+    r"language[-_ ]?server|langserver|\blsp\b|pyright|pylsp|gopls|rust-analyzer|clangd|jdtls|tsserver|"
+    r"eslint_d|biome|\bmcp\b|mcp[-_]|[-_]mcp\b|mcpproxy|watchman|ssh-agent|gpg-agent|dbus-|app-server|daemon",
+    re.I)
+
+
+def protected_pids(procs, agent):
+    """The pane's shell, any launcher and the agent's own process: never "work". As in Work.kt.
+    A helper (an app server or daemon the agent left running, say) is never taken for the agent."""
+    by_pid = {p["pid"]: p for p in procs}
+    roots = {p["pid"] for p in procs if p["depth"] == 0 or "agent-startup" in p["cmd"]}
+    if not agent:
+        return roots
+    a = agent.lower()
+    ok = [p for p in procs if not HELPER_RE.search(p["cmd"])]
+    cand = [p for p in ok if a in p["name"].lower()] or \
+        [p for p in ok if a in p["cmd"].lower() and "agent-startup" not in p["cmd"]]
+    if not cand:
+        return roots
+    cur = min(cand, key=lambda p: p["depth"])
+    while cur is not None:
+        roots.add(cur["pid"])
+        cur = by_pid.get(cur["ppid"])
+    return roots
+
+
+def active_shells(procs, agent):
+    """Commands the agent started that are still running: not the shell, launcher or agent, not a
+    helper (or a helper's child), and started more than two minutes after the agent, so what it
+    started with itself does not count. As WorkInfo.activeProcs in Work.kt."""
+    keep = protected_pids(procs, agent)
+    ages = [p["age"] for p in procs if p["pid"] in keep and p["depth"] > 0]
+    agent_age = min(ages) if ages else None
+    helpers, out = set(), []
+    for p in procs:  # tree order: a parent comes before its children
+        if p["pid"] in keep:
+            continue
+        if p["ppid"] in helpers or HELPER_RE.search(p["cmd"]):
+            helpers.add(p["pid"])
+            continue
+        if agent_age is not None and p["age"] >= agent_age - 120:
+            continue
+        out.append(p)
+    return out
+
+
 def work_counts(panes):
     """For the cards: running subagents per pane (cheap)."""
     import time
@@ -1254,11 +1307,18 @@ def work_counts(panes):
             by_pane.setdefault(p, set()).add(pid)
     out = {}
     busy = {}
+    shells = {}
     for pane, agent, cwd in panes:
         # The card's count: subagents still running (shells are counted on the agent's own screen).
-        # "busy" adds the background tasks still running, so a card can show the agent as working.
+        # "busy" adds the background tasks and the commands the agent started that still run, for
+        # every agent, so an agent herdr calls idle shows as working while any of them is active.
         n = 0
         tasks = 0
+        try:
+            procs, _ = pane_procs(pane, table, by_pane.get(pane, set()))
+            shells[pane] = len(active_shells(procs, agent))
+        except Exception:
+            shells[pane] = 0
         if agent == "claude" and cwd:
             n += sum(1 for s in claude_subagents(cwd, now) if s["active"])
             try:
@@ -1266,8 +1326,8 @@ def work_counts(panes):
             except Exception:
                 tasks = 0
         out[pane] = n
-        busy[pane] = n + tasks
-    return {"ok": True, "counts": out, "busy": busy}
+        busy[pane] = n + tasks + shells[pane]
+    return {"ok": True, "counts": out, "busy": busy, "shells": shells}
 
 
 def tail_file(path, offset):

@@ -29,8 +29,8 @@ class WorkTest {
     @Test fun neverOffersStopOnTheShellLauncherOrAgent() {
         val w = parseWork(json)
         assertEquals(setOf(1654, 5426, 5475), protectedPids(w, "claude"))
-        // A pane without an agent protects only its shell.
-        assertEquals(setOf(1654), protectedPids(w, null))
+        // A pane without an agent protects its shell and, since 1.2.5, any launcher (agent-startup.py).
+        assertEquals(setOf(1654, 5426), protectedPids(w, null))
     }
 
     @Test fun countsAndTailParse() {
