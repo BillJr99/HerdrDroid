@@ -46,7 +46,11 @@ class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         com.billmongan.herdrdroid.notify.Notify.channels(this)
-        openFrom(intent)
+        // Only a fresh launch acts on the notification or share that started the app. A rebuilt
+        // screen (theme change, rotation, back from the background or from Recents) gets that same
+        // old intent again, which used to jump to the notification's agent long after.
+        val fromHistory = (intent.flags and android.content.Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0
+        if (savedInstanceState == null && !fromHistory) openFrom(intent)
         setContent {
             val dark = when (vm.themeMode) {
                 ThemeMode.SYSTEM -> isSystemInDarkTheme()

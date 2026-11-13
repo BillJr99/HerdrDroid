@@ -16,7 +16,6 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateZoom
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -136,6 +135,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     var choosingModel by remember { mutableStateOf(false) }
     var showSnippets by remember { mutableStateOf(false) }
     var hermesMenu by remember { mutableStateOf(false) }
+    var agentMenu by remember { mutableStateOf(false) }
     /** Reading mode: the message box and extra rows step aside; a Reply button brings them back. */
     var reading by rememberSaveable(paneId) { mutableStateOf(false) }
     /** Find in chat: what to look for, and which match is showing. */
@@ -280,20 +280,10 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
 
     Column(Modifier.fillMaxSize().background(Palette.Ground).systemBarsPadding().imePadding()) {
         // ---- Header: the agent, what it's doing, and its model -----------------------------
-        // Swipe the header left or right to move to the next or previous agent.
-        var swipe by remember { mutableFloatStateOf(0f) }
+        // Tap the agent's name to switch to another agent on this server (no swipe: a sideways
+        // drag on the header switched agents by accident).
         Row(
-            Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, top = if (keyboardUp) 0.dp else 6.dp, bottom = if (keyboardUp) 0.dp else 6.dp)
-                .pointerInput(paneId) {
-                    detectHorizontalDragGestures(
-                        onDragStart = { swipe = 0f },
-                        onDragEnd = {
-                            if (kotlin.math.abs(swipe) > 120f) vm.neighbor(paneId, if (swipe < 0) 1 else -1)?.let { vm.openPane(it) }
-                            swipe = 0f
-                        },
-                        onHorizontalDrag = { _, d -> swipe += d },
-                    )
-                },
+            Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, top = if (keyboardUp) 0.dp else 6.dp, bottom = if (keyboardUp) 0.dp else 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(onClick = { vm.screen = Screen.Tabs }) {
@@ -306,11 +296,33 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 Box {
                     Text(
                         (if (isHermes) (if (live) "Hermes · live chat" else "Hermes · this pane") + "  ▾"
-                        else vm.transcriptTitle?.takeIf { structured } ?: (pane?.agentName ?: paneId)),
+                        else (vm.transcriptTitle?.takeIf { structured } ?: (pane?.agentName ?: paneId)) + "  ▾"),
                         fontWeight = FontWeight.SemiBold, fontSize = 17.sp, color = Palette.Ink,
                         maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        modifier = if (isHermes) Modifier.clickable { hermesMenu = true; vm.hermesChat()?.refreshSessions() } else Modifier,
+                        modifier = Modifier.clickable {
+                            if (isHermes) { hermesMenu = true; vm.hermesChat()?.refreshSessions() } else agentMenu = true
+                        },
                     )
+                    val agentRows: @Composable (() -> Unit) -> Unit = { close ->
+                        vm.panes.filter { it.agent != null }.map { it to vm.shownStatus(it) }
+                            .sortedWith(compareBy({ listOf(Status.NEEDS_YOU, Status.WORKING, Status.DONE, Status.IDLE, Status.UNKNOWN).indexOf(it.second) }, { it.first.id }))
+                            .forEach { (p, st) ->
+                                DropdownMenuItem(
+                                    leadingIcon = { Box(Modifier.size(9.dp).background(look(st).ink, CircleShape)) },
+                                    text = {
+                                        Column {
+                                            Text((if (p.id == paneId) "✓ " else "") + p.agentName + (p.folder.takeIf { it.isNotBlank() }?.let { " · $it" } ?: ""),
+                                                maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = if (p.id == paneId) FontWeight.SemiBold else FontWeight.Normal)
+                                            Text(look(st).label + (vm.modelLine(p.id)?.let { " · $it" } ?: ""), color = Palette.Muted, fontSize = 12.sp, maxLines = 1)
+                                        }
+                                    },
+                                    onClick = { close(); if (p.id != paneId) vm.openPane(p.id, "header menu") },
+                                )
+                            }
+                    }
+                    if (!isHermes) DropdownMenu(expanded = agentMenu, onDismissRequest = { agentMenu = false }) {
+                        agentRows { agentMenu = false }
+                    }
                     if (isHermes) DropdownMenu(expanded = hermesMenu, onDismissRequest = { hermesMenu = false }) {
                         DropdownMenuItem(text = { Text((if (!live) "✓ " else "    ") + "This pane (the Hermes CLI)") }, onClick = { hermesMenu = false; hermesLive = false })
                         DropdownMenuItem(text = { Text((if (live) "✓ " else "    ") + "Live chat (streaming, approvals as buttons)") }, onClick = { hermesMenu = false; hermesLive = true })
@@ -340,6 +352,9 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                         HorizontalDivider(color = Palette.Line)
                         DropdownMenuItem(text = { Text("Model and reasoning…") }, onClick = { hermesMenu = false; choosingModel = true })
                         if (quota != null) DropdownMenuItem(text = { Text(if (showUsage) "Hide usage" else "Usage") }, onClick = { hermesMenu = false; showUsage = !showUsage })
+                        HorizontalDivider(color = Palette.Line)
+                        Text("Other agents", color = Palette.Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+                        agentRows { hermesMenu = false }
                     }
                 }
                 if (keyboardUp) {

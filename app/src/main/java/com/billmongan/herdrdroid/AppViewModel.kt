@@ -439,7 +439,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 prefetchChats()
                 if (showQuotas) startQuotaChecks()
                 startWatching()
-                pendingOpen?.let { p -> pendingOpen = null; if (panes.any { it.id == p }) openPane(p) }
+                pendingOpen?.let { p -> pendingOpen = null; if (panes.any { it.id == p }) openPane(p, "after connecting") }
             } catch (e: UnconfirmedHostKey) {
                 s.close()
                 pendingHostKey = PendingHostKey(server, password, remember, e.fingerprint)
@@ -1053,7 +1053,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
     private val lastPromptSig = mutableMapOf<String, String>()
 
-    fun openPane(paneId: String) {
+    fun openPane(paneId: String, why: String = "tap") {
+        val from = (screen as? Screen.Agent)?.paneId
+        if (from != null && from != paneId) com.billmongan.herdrdroid.diag.DiagLog.log("nav", "agent view $from -> $paneId ($why)")
         seenInApp["${current?.id}|$paneId"] = System.currentTimeMillis()
         saveSeen()
         paneText = ""
@@ -1840,7 +1842,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun openFromNotification(serverId: String, paneId: String) {
         if (locked) { pendingNotification = serverId to paneId; return }
         if (serverId == current?.id) {
-            openPane(paneId)
+            openPane(paneId, "notification")
             return
         }
         val s = servers.firstOrNull { it.id == serverId } ?: return
