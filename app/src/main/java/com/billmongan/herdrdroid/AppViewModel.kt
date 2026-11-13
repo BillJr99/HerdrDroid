@@ -376,16 +376,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 current = saved
                 link = Link.CONNECTED
                 linkProblem = null
-                panes = emptyList()
-                previews = emptyMap()
-                models = emptyMap()
+                // What was last seen on this server shows at once; fresh reads replace it.
+                panes = serverPanes[saved.id].orEmpty()
+                previews = previewCache[saved.id].orEmpty()
+                models = modelCache[saved.id].orEmpty()
                 efforts = emptyMap()
                 quotas = prefs.quotas(saved.id)
                 lastQuotaTry.clear()
                 unlockedThisSession += saved.id
                 lastStatus.clear()
                 screen = Screen.Tabs
+                transcriptPane = null
                 refreshPanes()
+                prefetchChats()
                 if (showQuotas) startQuotaChecks()
                 startWatching()
                 pendingOpen?.let { p -> pendingOpen = null; if (panes.any { it.id == p }) openPane(p) }
@@ -816,6 +819,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             current?.let { s -> noticeChanges(s.id, s.label, fresh) { herdr } }
             collectFinishedHelpers(fresh)
             updateWidget(fresh)
+            current?.let { serverPanes = serverPanes + (it.id to fresh) }
         }
     }
 
@@ -862,6 +866,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         quietly { it.logModels(panes) }?.let { fromLog -> if (fromLog.isNotEmpty()) models = models + fromLog }
         refreshWorkCounts()
         refreshGit()
+        current?.let { previewCache[it.id] = previews; modelCache[it.id] = models }
     }
 
     suspend fun readPane(paneId: String) {
@@ -882,12 +887,54 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun resetTranscript(paneId: String) {
         if (transcriptPane == paneId) return
+        // Keep the chat being left, so going back to it is instant.
+        transcriptPane?.let { old ->
+            if (transcriptState == TranscriptMode.ON) transcriptCache[ck(old)] = CachedChat(transcriptItems, transcriptCursor, transcriptMore, transcriptTitle)
+        }
         transcriptPane = paneId
+        val c = transcriptCache[ck(paneId)]
+        if (c != null) {
+            // Read ahead on connect (or kept from before): shown at once, then caught up from its cursor.
+            transcriptCursor = c.cursor
+            transcriptItems = c.items
+            transcriptMore = c.more
+            transcriptTitle = c.title
+            transcriptState = TranscriptMode.ON
+            return
+        }
         transcriptCursor = ""
         transcriptItems = emptyList()
         transcriptMore = false
         transcriptTitle = null
         transcriptState = if (hasTranscriptReader(paneId)) TranscriptMode.UNKNOWN else TranscriptMode.OFF
+    }
+
+    /** One agent's chat kept in memory: what it showed and where its log was read up to. */
+    private data class CachedChat(val items: List<Item>, val cursor: String, val more: Boolean, val title: String?)
+
+    /** Every chat read so far, per server and pane; kept until the app exits. */
+    private val transcriptCache = java.util.concurrent.ConcurrentHashMap<String, CachedChat>()
+    private fun ck(paneId: String) = "${current?.id}|$paneId"
+    /** Each server's last previews and models, so its cards show at once when it's opened again. */
+    private val previewCache = java.util.concurrent.ConcurrentHashMap<String, Map<String, String>>()
+    private val modelCache = java.util.concurrent.ConcurrentHashMap<String, Map<String, String>>()
+    private var prefetchJob: Job? = null
+
+    /**
+     * Reads every agent's chat in the background right after connecting, newest-status first, so
+     * opening an agent shows its conversation at once. Memory only; cleared on a server switch.
+     */
+    private fun prefetchChats() {
+        prefetchJob?.cancel()
+        prefetchJob = viewModelScope.launch {
+            val order = listOf(Status.NEEDS_YOU, Status.WORKING, Status.DONE, Status.IDLE, Status.UNKNOWN)
+            for (p in panes.filter { hasTranscriptReader(it.id) }.sortedBy { order.indexOf(it.status) }) {
+                if (transcriptCache.containsKey(ck(p.id)) || transcriptPane == p.id) continue
+                val r = quietly { it.transcript(p, "", transcriptScript) } ?: continue
+                if (!r.ok || transcriptPane == p.id) continue
+                transcriptCache[ck(p.id)] = CachedChat(Transcript.merge(emptyList(), r.items, true), r.cursor, r.more, r.title)
+            }
+        }
     }
 
     /** Reads what the pane's agent added to its session log since the last read. */

@@ -332,12 +332,9 @@ private fun PaneCard(
                     if (p.folder.isNotBlank()) add(p.folder)
                     git?.branch?.let { add("⎇ $it" + if (git.changed > 0) " •${git.changed}" else "") }
                 }.joinToString("  ")
-                if (where.isNotBlank() || model != null) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (where.isNotBlank()) Text(where, color = Palette.Muted, fontSize = 12.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-                        model?.let { Text(it, color = Palette.Blue, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false)) }
-                    }
-                }
+                if (where.isNotBlank()) Text(where, color = Palette.Muted, fontSize = 12.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                // The model and its effort on their own line, so neither is squeezed.
+                model?.let { Text(it, color = Palette.Blue, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 val line = cardLine(preview)
                 if (line.isNotBlank()) Text(line, color = Palette.Preview, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 quota?.let { QuotaChips(it, Modifier.padding(top = 3.dp)) }
