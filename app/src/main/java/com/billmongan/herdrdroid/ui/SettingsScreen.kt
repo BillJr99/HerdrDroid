@@ -421,20 +421,17 @@ fun UsageChart(points: List<Pair<Long, Double>>) {
     }
 }
 
-/**
- * Every usage limit on one line, for the cards: a short name, a small bar and the percent used,
- * wrapping to a second line only on a narrow screen.
- */
-@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+/** Every usage limit for the cards, one per line: short name, a bar, the percent used, when it resets. */
 @Composable
 fun QuotaChips(r: QuotaReading, modifier: Modifier = Modifier) {
     if (r.items.isEmpty()) return
-    androidx.compose.foundation.layout.FlowRow(modifier, horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {
         r.items.forEach { t ->
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(shortLabel(t.label), color = Palette.Muted, fontSize = 11.5.sp, maxLines = 1, softWrap = false)
-                Box(Modifier.width(28.dp)) { QuotaBar(t) }
-                Text("${t.usedPercent.fmt()}%", color = if (t.usedPercent >= 90) Palette.OrangeInk else Palette.Ink, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(shortLabel(t.label), color = Palette.Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.width(92.dp))
+                Box(Modifier.width(56.dp)) { QuotaBar(t) }
+                Text("${t.usedPercent.fmt()}%", color = if (t.usedPercent >= 90) Palette.OrangeInk else Palette.Ink, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false, modifier = Modifier.width(40.dp))
+                t.resets?.let { Text(it, color = Palette.Muted, fontSize = 11.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)) }
             }
         }
     }
