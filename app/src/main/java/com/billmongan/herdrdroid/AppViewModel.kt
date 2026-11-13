@@ -861,8 +861,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val ids = panes.map { it.id }
         quietly { it.previews(ids) }?.let { peeks ->
             // The last line of real output on each card, looking back past status chrome.
-            previews = peeks.mapValues { (_, peek) ->
-                peek.tail.lines().asReversed().map { com.billmongan.herdrdroid.ui.cardLine(it) }.firstOrNull { it.isNotBlank() } ?: ""
+            previews = peeks.mapValues { (id, peek) ->
+                val agent = panes.firstOrNull { it.id == id }?.agent
+                // Skip the agent's own footer too (the line its model is read from).
+                peek.tail.lines().asReversed()
+                    .filter { footerModel(agent, it) == null }
+                    .map { com.billmongan.herdrdroid.ui.cardLine(it) }.firstOrNull { it.isNotBlank() } ?: ""
             }
             val seen = peeks.mapNotNull { (id, peek) ->
                 val agent = panes.firstOrNull { it.id == id }?.agent

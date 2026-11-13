@@ -365,7 +365,15 @@ fun cardLine(preview: String): String {
         Regex("""^[»›‖■❯>$%#]\s*$"""),
         Regex("""^[»›‖■⏵]"""),
         Regex("""^[\s─━═│┃╭╮╰╯┌┐└┘├┤┬┴┼\-_|]+(\S{0,20})?[\s─━═│┃╭╮╰╯┌┐└┘\-_|]*$"""),
+        // Status lines: context bars and percentages, update notices, agents' own footers.
+        Regex("""[█▓▒░▏▎▍▌▋▊▉■□▪▫]{2,}"""),
+        Regex("""(?i)\b(context|ctx)\b\s*[:=]?\s*[\d~\-]|\d+(\.\d+)?%\s*(context|ctx|used|left|of)|~?\d+(\.\d+)?[kKmM]\s*/\s*\d+(\.\d+)?[kKmM]|\d+(\.\d+)?%/\d"""),
+        Regex("""(?i)update available|new version|version \d+\.\d+.* available|upgrade (available|to)|run .*update|\bv\d+\.\d+\.\d+\b"""),
+        Regex("""^\s*(π\s*>|☤|⬢|\?\s)"""),
+        Regex("""(?i)/ commands|@ files|! shell|\(auto\)\s*$"""),
     )
+    // A line made of three or more "·"-separated short parts is a status bar, not output.
+    if (t.count { it == '·' } >= 2 && t.split('·').all { it.trim().length <= 28 }) return ""
     // Box-drawn frames ("│ text │") keep only the text.
     val inner = t.trim('│', '┃', '|', ' ').trim()
     if (inner.isEmpty()) return ""

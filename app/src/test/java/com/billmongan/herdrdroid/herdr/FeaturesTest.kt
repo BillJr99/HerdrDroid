@@ -64,4 +64,15 @@ class FeaturesTest {
         assertEquals("", cardLine("❯"))
         assertEquals("All tests pass.", cardLine("│ All tests pass. │"))
     }
+
+    @Test fun cardLinesSkipStatusLines() {
+        for (s in listOf(
+            "[░░░░░░░░░░] 34% context", "ctx 45% · 12k tokens", "~124K/500K", "0.0%/128k (auto)",
+            "Update available! Run npm i -g @openai/codex", "✔ Update installed · /restart to apply",
+            " ☤ gpt-6.1-sol · ctx -- · [░░░░] -- · 13h 44m", " π > ⬢ llmproxy/flagship > 📁 ~/agents/omp",
+            "Opus 5.5 · high · main · 2 changed", "  / commands · @ files · ! shell",
+        )) assertEquals(s, "", cardLine(s))
+        assertEquals("Fixed the failing test in Quota.kt.", cardLine("Fixed the failing test in Quota.kt."))
+        assertEquals("Built 0.8.3 · all 76 tests pass and the APK is signed with the same key", cardLine("Built 0.8.3 · all 76 tests pass and the APK is signed with the same key"))
+    }
 }
