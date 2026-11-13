@@ -134,6 +134,7 @@ private fun WorkList(vm: AppViewModel, paneId: String) {
         val doneTasks = w.tasks.filter { !it.running }
         val other = w.procs.filter { it.pid !in activePids }
         var showOther by remember { mutableStateOf(false) }
+        PullRefresh({ vm.refreshWork(paneId) }, Modifier.fillMaxSize()) {
         LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             item { Spacer(Modifier.height(6.dp)) }
             // ---- Active ----------------------------------------------------------------------
@@ -171,6 +172,7 @@ private fun WorkList(vm: AppViewModel, paneId: String) {
             }
             if (showOther) items(other, key = { "p:" + it.pid }) { p -> ProcRow(p, keep, pane?.agent) { asking = p } }
             item { Spacer(Modifier.height(24.dp)) }
+        }
         }
     }
     asking?.let { p -> ProcessDialog(vm, paneId, p, canStop = w != null && p.pid !in protectedPids(w, pane?.agent)) { asking = null } }

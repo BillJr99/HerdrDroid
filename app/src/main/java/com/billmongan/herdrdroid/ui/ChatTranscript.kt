@@ -142,12 +142,24 @@ fun TranscriptChat(
     }
     var unseen by remember { mutableStateOf(0) }
     var lastCount by remember { mutableStateOf(rows.size) }
-    var first by remember { mutableStateOf(true) }
+    var first by remember(state) { mutableStateOf(true) }
     val lastKey = rows.lastOrNull()?.key
     val lastSig = rows.lastOrNull()?.let { r -> if (r is ActivityRow) r.items.size.toString() + r.running else (r as OneRow).item.hashCode().toString() }
+    // Opening an agent always lands at the bottom: the cached chat shows first, then the fresh read
+    // and its images arrive and grow the list, so for the first few seconds every change (and the
+    // layout settling) pins it to the bottom again, unless the user has started scrolling.
+    val openedAt = remember(state) { System.currentTimeMillis() }
+    var userScrolled by remember(state) { mutableStateOf(false) }
+    LaunchedEffect(state.isScrollInProgress) { if (state.isScrollInProgress && !first && System.currentTimeMillis() - openedAt > 300) userScrolled = true }
+    LaunchedEffect(state) {
+        while (System.currentTimeMillis() - openedAt < 4_000) {
+            kotlinx.coroutines.delay(250)
+            if (!userScrolled && rows.isNotEmpty() && !state.isScrollInProgress) state.scrollToItem(total - 1)
+        }
+    }
     LaunchedEffect(rows.size, lastKey, lastSig, pending, working) {
         if (rows.isEmpty()) return@LaunchedEffect
-        if (first) {
+        if (first || (!userScrolled && System.currentTimeMillis() - openedAt < 4_000)) {
             first = false
             state.scrollToItem(total - 1)
         } else if (atBottom || pending.isNotEmpty()) {

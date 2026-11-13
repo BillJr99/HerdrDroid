@@ -335,4 +335,22 @@ GEMINI 4 ARGON
         assertEquals("gpt-6.1-sol", footerModel("hermes", now))
         assertEquals("gpt-6.1-sol", footerModel("hermes", " ☤ gpt-6.1-sol │ ~124K/500K │ 3m"))
     }
+
+    @Test fun claudeUsageOnANarrowPane() {
+        val screen = """
+   Settings  Status   Config   Usage   Stats
+   Session
+   Total cost:            ${'$'}1018.22
+   Current week (all models) · Resets Nov 19, 7:59am
+   (UTC)
+   ████████████▋
+   24% used
+                                                     ↓
+"""
+        val items = parseQuota(screen)
+        assertEquals(1, items.size)
+        assertEquals("Current week (all models)", items[0].label)
+        assertEquals(24.0, items[0].usedPercent, 0.01)
+        assertEquals("Nov 19, 7:59am", items[0].resets)
+    }
 }

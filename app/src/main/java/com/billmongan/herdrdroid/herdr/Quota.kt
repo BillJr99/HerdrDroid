@@ -61,6 +61,11 @@ data class QuotaProfile(
      * /reasoning (effort). [parseInfo] reads its screen.
      */
     val infoCommand: String? = null,
+    /**
+     * Keys that scroll the usage screen when it shows a ↓ marker (more limits below, as on a narrow
+     * pane); the screen is read again after them, before it is closed.
+     */
+    val scrollKeys: List<String> = emptyList(),
     val parseInfo: ((String) -> PaneInfo)? = null,
     /**
      * How often to check. Agents whose usage screen closes without a trace are checked more often;
@@ -144,6 +149,7 @@ object QuotaProfiles {
             setOf("claude"), "/usage", listOf("esc"), 3_000,
             // Newer Claude Code versions word the close hint differently.
             openMarker = Regex("""esc to (cancel|close|exit|dismiss|go back)|press esc|esc ·""", RegexOption.IGNORE_CASE),
+            scrollKeys = List(12) { "down" },
             // Kept only to recognize a model picker left open (and close it); never typed.
             parseInfo = ::claudeModelScreen,
             everyMinutes = 10,
@@ -237,11 +243,28 @@ fun parseQuota(text: String, bareMeansLeft: Boolean = false): List<QuotaItem> {
             val cut = b.indexOfFirst { BAR.matches(it.toString()) || it == '[' }
             (if (cut >= 0) b.substring(0, cut) else b).trim().trimEnd(':').trim()
         }
+        // A narrow screen wraps the label over lines above the bar ("Current week (all models) ·
+        // Resets Nov 19, 7:59am" then "(UTC)"): join up to four lines back, skipping bar lines,
+        // stopping at a blank line or another percentage.
+        var wrapped: String? = null
         val label = before.ifBlank {
-            (i - 1 downTo maxOf(0, i - 2)).map { column(raw[it]) }
-                .firstOrNull { it.isNotBlank() && !PERCENT.containsMatchIn(it) && !BAR.containsMatchIn(it) }
-                ?.trimEnd(':')
-                ?.takeIf { it.length <= 48 && !it.endsWith(".") }
+            val parts = mutableListOf<String>()
+            var k = i - 1
+            while (k >= maxOf(0, i - 4)) {
+                val c = column(raw[k])
+                if (PERCENT.containsMatchIn(c)) break
+                if (c.isBlank()) { if (parts.isNotEmpty()) break; k--; continue }
+                if (!BAR.containsMatchIn(c) || c.any { it.isLetter() }) parts.add(0, c)
+                k--
+            }
+            // Nearest line first; join the one above it only when the nearest is a wrapped tail
+            // ("(UTC)", a lower-case continuation).
+            val near = parts.lastOrNull().orEmpty().trim()
+            val fragment = near.startsWith("(") || near.firstOrNull()?.isLowerCase() == true
+            val joined = (if (fragment && parts.size > 1) parts[parts.size - 2] + " " + near else near).replace(Regex("\\s+"), " ").trim()
+            wrapped = joined
+            joined.substringBefore(" · Resets").substringBefore(" Resets ").substringBefore(" · resets").trim().trimEnd(':', '·', ' ')
+                .takeIf { it.isNotBlank() && it.length <= 60 && !it.endsWith(".") }
         } ?: continue
         // Context-window gauges are not usage limits.
         if (label.length > 60 || label.contains("context", true)) continue
@@ -255,6 +278,7 @@ fun parseQuota(text: String, bareMeansLeft: Boolean = false): List<QuotaItem> {
         val used = (if (remaining) 100.0 - pct else pct).coerceIn(0.0, 100.0)
 
         val reset = RESET_INLINE.find(seg)?.groupValues?.get(1)?.trim()
+            ?: wrapped?.let { RESET_INLINE.find(it)?.groupValues?.get(1)?.trim() }
             ?: (i + 1..minOf(raw.lastIndex, i + 2)).map { column(raw[it]) }
                 .firstOrNull { it.startsWith("resets", true) || it.contains("· resets", true) }
                 ?.let { RESET_INLINE.find(it)?.groupValues?.get(1)?.trim() }
@@ -348,4 +372,41 @@ fun footerModel(agent: String?, screen: String): String? {
         else -> null
     }
     return found?.takeIf { it.length in 2..48 }
+}
+
+
+private val LIMIT_WORDS = Regex("""(?i)week|session|day|hour|month|limit|model|opus|sonnet|fable|haiku|token|request|credit|premium|quota|usage|context|plan|all models""")
+
+/**
+ * A safe outline of a usage screen for the diagnostic log: its size, and for each percentage the
+ * app saw, whether a bar, a "used/left" word and a label were near it. A label is shown only when
+ * it reads like a limit name; any other text is given as its length, so nothing from a
+ * conversation reaches the log.
+ */
+fun screenShape(text: String): String {
+    val lines = text.lines()
+    val nonBlank = lines.count { it.isNotBlank() }
+    val widest = lines.maxOfOrNull { it.trimEnd().length } ?: 0
+    val bars = lines.count { BAR.containsMatchIn(it) }
+    val more = lines.takeLast(30).any { it.trim().endsWith("↓") || it.trim() == "↓" }
+    fun safe(t: String): String {
+        val c = t.trim()
+        return if (c.length <= 60 && LIMIT_WORDS.containsMatchIn(c) && c.none { it == '/' || it == '@' || it == '=' }) "\"$c\"" else "(${c.length} chars of other text)"
+    }
+    val hits = lines.withIndex().filter { PERCENT.containsMatchIn(it.value) }.take(10).map { (i, l) ->
+        val m = PERCENT.find(l)!!
+        val after = l.substring(m.range.last + 1).trim().take(12).takeWhile { it.isLetter() || it == ' ' }.trim()
+        val bar = BAR.containsMatchIn(l) || (i > 0 && BAR.containsMatchIn(lines[i - 1])) || (i + 1 < lines.size && BAR.containsMatchIn(lines[i + 1]))
+        val word = Regex("(?i)used|left|remaining").containsMatchIn(l)
+        val before = l.substring(0, m.range.first).replace(BAR, "").trim()
+        val above = (i - 1 downTo maxOf(0, i - 3)).map { lines[it] }.firstOrNull { it.isNotBlank() && !PERCENT.containsMatchIn(it) && !(BAR.containsMatchIn(it) && it.none { c -> c.isLetter() }) }
+        val label = when {
+            before.any { it.isLetter() } -> "label on its line " + safe(before)
+            above != null -> "label above " + safe(above)
+            else -> "no label"
+        }
+        "${m.value}${if (after.isNotEmpty()) " $after" else ""} (bar ${if (bar) "yes" else "no"}, used/left ${if (word) "yes" else "no"}, $label)"
+    }
+    return "$nonBlank lines, widest $widest cols, $bars bar line(s), more below: ${if (more) "yes" else "no"}; " +
+        (if (hits.isEmpty()) "no percentages" else "percentages: " + hits.joinToString("; "))
 }

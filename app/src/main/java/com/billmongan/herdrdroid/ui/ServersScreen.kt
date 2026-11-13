@@ -137,6 +137,7 @@ fun ServersScreen(vm: AppViewModel) {
                     )
                 }
             }
+            PullRefresh({ vm.checkServers() }, Modifier.fillMaxSize()) {
             LazyColumn(
                 Modifier.fillMaxSize().padding(horizontal = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -202,6 +203,7 @@ fun ServersScreen(vm: AppViewModel) {
                     }
                 }
                 item { Spacer(Modifier.height(96.dp)) }
+            }
             }
         }
         if (vm.connecting) {

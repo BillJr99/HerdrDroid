@@ -929,8 +929,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     suspend fun readPane(paneId: String) {
-        quietly { it.read(paneId) }?.let { paneText = it }
+        quietly { it.read(paneId) }?.let { text ->
+            paneText = text
+            // What the question card sees, logged when it changes (sizes only, no question text).
+            val status = panes.firstOrNull { it.id == paneId }?.status
+            val p = com.billmongan.herdrdroid.herdr.detectPrompt(text, status == Status.NEEDS_YOU)
+            val dialog = com.billmongan.herdrdroid.herdr.showsQuestionDialog(text)
+            val sig = if (p == null && !dialog) "none" else
+                "dialog ${if (dialog) "open" else "not seen"}, herdr ${status?.name?.lowercase()}, " +
+                    (p?.let { "${it.choices.size} choice(s) [${it.choices.joinToString(",") { c -> c.keys }}], question ${it.question.length} chars${if (it.question.endsWith("?")) " ending in ?" else ""}, highlighted ${it.selected ?: "none"}" } ?: "no card")
+            if (lastPromptSig[paneId] != sig) {
+                lastPromptSig[paneId] = sig
+                if (sig != "none" || p == null && lastPromptSig.containsKey(paneId)) com.billmongan.herdrdroid.diag.DiagLog.log("prompt", "$paneId: $sig")
+            }
+        }
     }
+    private val lastPromptSig = mutableMapOf<String, String>()
 
     fun openPane(paneId: String) {
         paneText = ""

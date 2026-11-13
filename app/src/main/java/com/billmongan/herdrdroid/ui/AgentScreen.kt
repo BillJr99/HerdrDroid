@@ -141,7 +141,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     val live = isHermes && hermesLive
     val liveNow by rememberUpdatedState(live)
     val structured = vm.transcriptState == TranscriptMode.ON && !fullTerminal
-    val listState = rememberLazyListState()
+    val listState = androidx.compose.runtime.key(paneId) { rememberLazyListState() }
 
     // The agent's own session log, every 1.5 seconds, where there is one to read. When there
     // isn't, the screen view below is used and the log is looked for again every 15 seconds.

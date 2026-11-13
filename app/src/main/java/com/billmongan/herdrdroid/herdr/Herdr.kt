@@ -171,8 +171,20 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
                 tabLabel = labels[p.optString("tab_id")].orEmpty(),
             )
         }
+        // herdr doesn't always mark a Claude question dialog (AskUserQuestion) as blocked, so the
+        // bottom of each Claude pane that isn't already waiting is checked for the dialog's footer.
+        val askable = list.filter { it.agent == "claude" && it.status != Status.NEEDS_YOU }
+        val marked = if (askable.isEmpty()) list else {
+            val tails = runCatching { previews(askable.map { it.id }) }.getOrDefault(emptyMap())
+            list.map { p ->
+                if (p in askable && tails[p.id]?.let { showsQuestionDialog(it.tail) } == true) {
+                    com.billmongan.herdrdroid.diag.DiagLog.log("prompt", "${p.id}: a question dialog is open while herdr says ${p.status.name.lowercase()}; treating it as needs you")
+                    p.copy(status = Status.NEEDS_YOU)
+                } else p
+            }
+        }
         val order = listOf(Status.NEEDS_YOU, Status.WORKING, Status.DONE, Status.IDLE, Status.UNKNOWN)
-        return list.sortedWith(compareBy({ order.indexOf(it.status) }, { it.id }))
+        return marked.sortedWith(compareBy({ order.indexOf(it.status) }, { it.id }))
     }
 
     suspend fun read(paneId: String, lines: Int = 200): String =
@@ -267,7 +279,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
      */
     private suspend fun guardedCommand(
         paneId: String, command: String, waitMillis: Long, closeKeys: List<String>, openMarker: Regex?,
-        working: Boolean, ready: (String) -> Boolean,
+        working: Boolean, scrollKeys: List<String> = emptyList(), ready: (String) -> Boolean,
     ): String? {
         // \u00A0 is listed because some prompts put a no-break space after the ❯ glyph. A hint the
         // agent draws after the command ("/usage   Show usage") still counts.
@@ -286,6 +298,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
         // A slow host (a WebSocket server far away) can take seconds to draw what was typed: look
         // for it for up to 5 seconds before deciding it isn't there.
         var typed = emptyList<String>()
+        val t0 = System.currentTimeMillis()
         val echoBy = System.currentTimeMillis() + 5_000
         var openedAtOnce = false
         while (true) {
@@ -305,7 +318,9 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
             sendKeys(paneId, *Array(command.length) { "backspace" })
             return null
         }
+        val echoMs = System.currentTimeMillis() - t0
         if (!openedAtOnce) sendKeys(paneId, "enter")
+        val t1 = System.currentTimeMillis()
         delay(waitMillis)
         // Some screens draw their frame first and their numbers a moment later (Antigravity, or any
         // agent on a slow host), so keep reading for up to 12 more seconds until the screen is open
@@ -317,6 +332,20 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
             delay(700)
             shown = read(paneId, 120)
         }
+        val readyMs = System.currentTimeMillis() - t1
+        val wasReady = done(shown)
+        val markerSeen = openMarker?.containsMatchIn(shown)
+        var scrolled = false
+        // More limits below the fold (a ↓ marker on a narrow pane): scroll and read again first.
+        if (scrollKeys.isNotEmpty() && shown.lines().takeLast(30).any { it.trim().endsWith("↓") || it.trim() == "↓" }) {
+            sendKeys(paneId, *scrollKeys.toTypedArray())
+            delay(900)
+            shown = shown + "\n" + read(paneId, 120)
+            scrolled = true
+        }
+        com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$command in $paneId: echoed in ${echoMs / 100 / 10.0}s, " +
+            (if (wasReady) "screen ready in ${readyMs / 100 / 10.0}s" else "not ready after ${readyMs / 100 / 10.0}s (close hint ${when (markerSeen) { true -> "seen"; false -> "not seen"; null -> "not needed" }}, wanted numbers ${if (ready(shown)) "found" else "not found"})") +
+            (if (scrolled) ", scrolled for more" else "") + (if (working) ", agent working" else ""))
         // Close keys go out when the screen shows it is open. Without that sign, only an idle agent
         // gets them: there an Esc can't interrupt anything, while a working agent could be stopped.
         val open = openMarker?.containsMatchIn(shown) ?: true
@@ -340,10 +369,13 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
     /** One usage check: the limits, and where the agent needs it, the model and effort. Null when skipped. */
     suspend fun probeQuota(paneId: String, profile: QuotaProfile, working: Boolean): ProbeResult? {
         if (core) return null
-        val shown = guardedCommand(paneId, profile.command, profile.waitMillis, profile.closeKeys, profile.openMarker, working) {
+        val shown = guardedCommand(paneId, profile.command, profile.waitMillis, profile.closeKeys, profile.openMarker, working, profile.scrollKeys) {
             parseQuota(it, profile.bareMeansLeft).isNotEmpty()
         } ?: return null
         val items = parseQuota(shown, profile.bareMeansLeft)
+        com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$paneId read " +
+            (if (items.isEmpty()) "no limits" else items.joinToString(prefix = "${items.size} limit(s): ") { "${it.label} ${it.usedPercent.toInt()}%${if (it.resets != null) " resets ${it.resets}" else ""}" }) +
+            "; screen: " + screenShape(shown))
         // Still showing usage numbers at the bottom of an idle agent's screen? Then the screen is
         // open with a close hint the app didn't recognise: one more press of the close keys.
         if (!working && profile.closeKeys.isNotEmpty()) {
@@ -720,7 +752,15 @@ fun menuKeys(prompt: Prompt, choice: Choice): List<String>? {
  * a numbered menu ("1. Yes"), or a "(y/n)" prompt. herdr's own "blocked" status
  * means the agent is waiting even when no choices can be read from the screen.
  */
+/** The footer of Claude's question dialog ("Enter to select · ↑/↓ to navigate · Esc to cancel"). */
+private val QUESTION_FOOTER = Regex("""Enter to select.*(navigate|Esc to cancel)|Tab/Arrow keys to navigate|↑/↓ to navigate""", RegexOption.IGNORE_CASE)
+
+fun showsQuestionDialog(text: String): Boolean =
+    text.lines().filter { it.isNotBlank() }.takeLast(6).any { QUESTION_FOOTER.containsMatchIn(it) }
+
 fun detectPrompt(text: String, blocked: Boolean): Prompt? {
+    // A question dialog on screen means the agent waits, whatever herdr reported.
+    @Suppress("NAME_SHADOWING") val blocked = blocked || showsQuestionDialog(text)
     val raw = text.lines().map { it.trimEnd() }.takeLast(80)
     val lines = raw.filter { it.isNotBlank() }.takeLast(40)
     if (lines.isEmpty()) return if (blocked) Prompt("This agent is waiting for you.", emptyList()) else null

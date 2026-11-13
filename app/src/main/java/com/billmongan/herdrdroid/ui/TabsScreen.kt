@@ -178,6 +178,7 @@ fun TabsScreen(vm: AppViewModel) {
                 )
             }
         }
+        PullRefresh({ vm.refreshPanes(); vm.refreshPreviews(); vm.refreshQuotasSoon() }, Modifier.weight(1f)) {
         LazyColumn(
             Modifier.fillMaxSize().padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -269,6 +270,7 @@ fun TabsScreen(vm: AppViewModel) {
                 }
             }
             item { Spacer(Modifier.height(96.dp)) }
+        }
         }
     }
     // Hand out work: the main action, as a button that never crowds the server's name.
