@@ -947,7 +947,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 sameTextCount(p.text) > p.seenBefore ||
                     (p.text.startsWith("/") && notes.any { n -> n.startsWith(norm(p.text.removePrefix("/").substringBefore(' '))) })
             }
-            if (seen.isNotEmpty()) pendingSends = pendingSends - seen.toSet()
+            // Safety net: an agent that is idle again has taken every message queued before it went
+            // idle, so anything sent more than ten seconds ago is no longer waiting.
+            val idle = pane(paneId)?.status.let { it == Status.IDLE || it == Status.DONE }
+            val now = System.currentTimeMillis()
+            val stale = if (idle) mine.filter { it !in seen && now - it.at > 10_000 } else emptyList()
+            if (stale.isNotEmpty()) com.billmongan.herdrdroid.diag.DiagLog.log("pending", "${stale.size} sent message(s) cleared after the agent went idle without a matching log entry")
+            if (seen.isNotEmpty() || stale.isNotEmpty()) pendingSends = pendingSends - seen.toSet() - stale.toSet()
         }
     }
 
@@ -957,7 +963,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var pendingSends by mutableStateOf<List<PendingSend>>(emptyList())
         private set
 
-    private fun norm(t: String) = t.filterNot { it.isWhitespace() }.take(60)
+    /** Letters and digits only, lower case, first 60: so spacing or punctuation can't hide a match. */
+    private fun norm(t: String) = t.filter { it.isLetterOrDigit() }.lowercase().take(60)
 
     /** How many of your messages in the open conversation match [text]. */
     private fun sameTextCount(text: String): Int {

@@ -14,8 +14,8 @@ android {
         applicationId = "com.billmongan.herdrdroid"
         minSdk = 26
         targetSdk = 34
-        versionCode = 33
-        versionName = "0.7.5"
+        versionCode = 34
+        versionName = "0.7.6"
     }
 
     // A sideload signing key kept with the source, so later builds install over this one.
