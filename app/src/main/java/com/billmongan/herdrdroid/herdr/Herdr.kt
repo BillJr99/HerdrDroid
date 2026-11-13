@@ -37,6 +37,8 @@ data class Pane(
             "omp" -> "Oh My Pi"
             "copilot" -> "Copilot"
             "gemini" -> "Gemini"
+            "kiro" -> "Kiro"
+            "vibe" -> "Vibe"
             else -> agent.replaceFirstChar { it.uppercase() }
         }
 
@@ -170,7 +172,8 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
                 id = p.getString("pane_id"),
                 tabId = p.optString("tab_id"),
                 workspaceId = p.optString("workspace_id"),
-                agent = p.optString("agent").takeIf { !p.isNull("agent") && it.isNotBlank() }?.let(::canonicalAgent),
+                agent = p.optString("agent").takeIf { !p.isNull("agent") && it.isNotBlank() }?.let(::canonicalAgent)
+                    ?: titleAgent(p.optString("terminal_title_stripped")),
                 status = when (p.optString("agent_status")) {
                     "blocked" -> Status.NEEDS_YOU
                     "working" -> Status.WORKING
@@ -544,7 +547,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
         val dir = if (cwd.startsWith("~/")) ssh.exec("printf %s \"\$HOME\"").out.trim() + "/" + cwd.removePrefix("~/") else cwd
         if (core) {
             // A new terminal named for the helper, running the agent; hc returns its address.
-            val o = JSONObject(run(hcCmd("run", "--bg", "--json", "--name", label, "--cwd", dir, kind)).trim().lines().last { it.startsWith("{") })
+            val o = JSONObject(run(hcCmd("run", "--bg", "--json", "--name", label, "--cwd", dir, agentExecutable(kind))).trim().lines().last { it.startsWith("{") })
             return o.getString("address")
         }
         // A herdr server with no workspace yet (nobody has opened the TUI there) can't make a tab:
@@ -556,7 +559,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
                 val made = JSONObject(run(cmd("workspace", "create", "--cwd", dir, "--label", label)))
                 val pane = made.getJSONObject("result").getJSONObject("root_pane").getString("pane_id")
                 delay(800)
-                run(cmd("agent", "start", name, "--kind", kind, "--pane", pane, "--timeout", "90000"))
+                launchIn(pane, kind, name)
                 return pane
             }
             ws = list.getJSONObject(0).optString("workspace_id").ifBlank { null }
@@ -566,8 +569,17 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
         val created = JSONObject(run(cmd(*args.toTypedArray())))
         val pane = created.getJSONObject("result").getJSONObject("root_pane").getString("pane_id")
         delay(800)
-        run(cmd("agent", "start", name, "--kind", kind, "--pane", pane, "--timeout", "90000"))
+        launchIn(pane, kind, name)
         return pane
+    }
+
+    /**
+     * Starts an agent in a fresh pane.  herdr starts the kinds it knows (`agent start` waits until
+     * the agent is ready); Vibe isn't one of them, so its command is typed into the pane's shell.
+     */
+    private suspend fun launchIn(pane: String, kind: String, name: String) {
+        if (kind in HERDR_KINDS) run(cmd("agent", "start", name, "--kind", kind, "--pane", pane, "--timeout", "90000"))
+        else run(cmd("pane", "run", pane, agentExecutable(kind)))
     }
 
     /** Closes a tab and everything in it (a helper made with [startAgent]). */
@@ -592,10 +604,12 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
      * session sheet offers. Nothing is installed or changed.
      */
     suspend fun installedAgents(): List<String> {
-        val names = listOf("claude", "codex", "opencode", "omp", "pi", "hermes", "grok", "copilot", "agy", "gemini")
-        // A login shell finds most; the usual per-user install folders catch the rest.
+        val names = listOf("claude", "codex", "opencode", "omp", "pi", "hermes", "grok", "copilot", "agy", "gemini", "kiro", "vibe")
+        // A login shell finds most; the usual per-user install folders catch the rest.  The check
+        // is by program name (Kiro's is kiro-cli); what comes back is the agent's name.
         val r = ssh.exec("bash -lc " + shq(names.joinToString("; ") {
-            "{ command -v $it || test -x \"\$HOME/.local/bin/$it\" || test -x \"\$HOME/.$it/bin/$it\"; } >/dev/null 2>&1 && echo $it"
+            val exe = agentExecutable(it)
+            "{ command -v $exe || test -x \"\$HOME/.local/bin/$exe\" || test -x \"\$HOME/.$it/bin/$exe\"; } >/dev/null 2>&1 && echo $it"
         }))
         return r.out.lines().map { it.trim() }.filter { it in names }
     }
@@ -958,11 +972,29 @@ fun canonicalAgent(name: String): String = when (val n = name.trim().lowercase()
     "copilot-cli", "github-copilot", "gh-copilot" -> "copilot"
     "oh-my-pi", "ohmypi" -> "omp"
     "pi-agent", "pi-coding-agent" -> "pi"
+    "kiro-cli", "kiro-cli-chat" -> "kiro"
+    "vibe-rs", "mistral-vibe", "vibe-acp" -> "vibe"
     else -> n
 }
 
+/** The program that runs an agent kind, where it differs from the kind's name. */
+fun agentExecutable(kind: String): String = when (kind) {
+    "kiro" -> "kiro-cli"
+    else -> kind
+}
+
+/** The agent kinds `herdr agent start --kind` accepts among those the app can start. */
+val HERDR_KINDS = setOf("claude", "codex", "opencode", "omp", "pi", "hermes", "grok", "copilot", "agy", "gemini", "kiro")
+
+/**
+ * An agent herdr doesn't recognize, known by the title its program gives the terminal.  Mistral
+ * Vibe has no herdr integration and isn't detected, but it titles its terminal "Vibe".
+ */
+fun titleAgent(title: String): String? =
+    if (Regex("""^vibe(\b|$)""", RegexOption.IGNORE_CASE).containsMatchIn(title.trim())) "vibe" else null
+
 /** The agents the app knows by name; any other program in a herdr-core terminal is a plain shell. */
-private val KNOWN_AGENTS = setOf("claude", "codex", "pi", "omp", "grok", "agy", "copilot", "hermes", "opencode", "gemini", "cursor", "amp")
+private val KNOWN_AGENTS = setOf("claude", "codex", "pi", "omp", "grok", "agy", "copilot", "hermes", "opencode", "gemini", "cursor", "amp", "kiro", "vibe")
 
 /**
  * herdr-core's terminal list (`hc ls --json`) as panes. Each terminal is its own tab; there are no
