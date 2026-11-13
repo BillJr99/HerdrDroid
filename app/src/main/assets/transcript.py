@@ -1028,8 +1028,51 @@ def claude_subagents(cwd, now):
         except Exception:
             pass
         out.append({"id": os.path.basename(f)[6:-6], "file": f, "title": title or "Subagent",
-                    "updated": int(st.st_mtime), "active": now - st.st_mtime < 120, "kb": st.st_size // 1024})
+                    "updated": int(st.st_mtime), "active": subagent_active(f, st, now), "kb": st.st_size // 1024})
     return out
+
+
+def subagent_active(f, st, now):
+    """A subagent is working when its log changed in the last two minutes, or when its last step is
+    a tool call still waiting on its result (a long build, a CI wait, a test run writes nothing to
+    the log until it returns). One whose turn has ended is not, however recently it wrote."""
+    # Claude records a finished subagent in the meta file beside its log; that is final.
+    try:
+        with open(f[:-len(".jsonl")] + ".meta.json") as mf:
+            if json.load(mf).get("finished"):
+                return False
+    except Exception:
+        pass
+    pending = set()
+    ended = False
+    try:
+        with open(f, "rb") as h:
+            h.seek(max(0, st.st_size - 262144))
+            for line in h:
+                try:
+                    r = json.loads(line)
+                except Exception:
+                    continue
+                m = r.get("message") if isinstance(r.get("message"), dict) else None
+                if not m:
+                    continue
+                if m.get("role") == "assistant":
+                    ended = m.get("stop_reason") == "end_turn"
+                if isinstance(m.get("content"), list):
+                    for b in m["content"]:
+                        if not isinstance(b, dict):
+                            continue
+                        if b.get("type") == "tool_use" and b.get("id"):
+                            pending.add(b["id"])
+                            ended = False
+                        elif b.get("type") == "tool_result":
+                            pending.discard(b.get("tool_use_id"))
+    except Exception:
+        return now - st.st_mtime < 120
+    if pending:
+        # A call that has waited more than six hours is a stale log, not work.
+        return now - st.st_mtime < 6 * 3600
+    return (not ended) and now - st.st_mtime < 120
 
 
 def claude_tasks(cwd, now, open_files):
