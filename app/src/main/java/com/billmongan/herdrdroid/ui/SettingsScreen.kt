@@ -1,5 +1,6 @@
 package com.billmongan.herdrdroid.ui
 
+import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -94,7 +95,8 @@ fun SettingsScreen(vm: AppViewModel, back: Screen) {
                     color = Palette.Muted, fontSize = 13.sp,
                 )
             }
-            Section("Light palette") {
+            // Only the palettes for the look in use now (with System, whichever the phone shows).
+            if (!Palette.dark) Section("Light palette") {
                 LightPalette.entries.forEach { p ->
                     Row(
                         Modifier.fillMaxWidth().clickable { vm.chooseLightPalette(p) }.padding(vertical = 2.dp),
@@ -104,9 +106,9 @@ fun SettingsScreen(vm: AppViewModel, back: Screen) {
                         Text(p.label, color = Palette.Ink, fontSize = 16.sp)
                     }
                 }
-                Text("Used whenever the app is light (the phone's light mode, or Light above).", color = Palette.Muted, fontSize = 13.sp)
+                Text("Switch to Dark above (or the phone's dark mode) to choose a dark palette.", color = Palette.Muted, fontSize = 13.sp)
             }
-            Section("Dark palette") {
+            if (Palette.dark) Section("Dark palette") {
                 DarkPalette.entries.forEach { p ->
                     Row(
                         Modifier.fillMaxWidth().clickable { vm.chooseDarkPalette(p) }.padding(vertical = 2.dp),
@@ -116,7 +118,7 @@ fun SettingsScreen(vm: AppViewModel, back: Screen) {
                         Text(p.label, color = Palette.Ink, fontSize = 16.sp)
                     }
                 }
-                Text("Used whenever the app is dark (the phone's dark mode, or Dark above).", color = Palette.Muted, fontSize = 13.sp)
+                Text("Switch to Light above (or the phone's light mode) to choose a light palette.", color = Palette.Muted, fontSize = 13.sp)
             }
             Section("Alerts") {
                 Row(
@@ -416,5 +418,24 @@ fun UsageChart(points: List<Pair<Long, Double>>) {
             if (days >= 1) "Last %.1f days".format(days) else "Last %d hours".format(((t1 - t0) / 3_600_000).coerceAtLeast(1)),
             color = Palette.Muted, fontSize = 11.sp,
         )
+    }
+}
+
+/**
+ * Every usage limit on one line, for the cards: a short name, a small bar and the percent used,
+ * wrapping to a second line only on a narrow screen.
+ */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+fun QuotaChips(r: QuotaReading, modifier: Modifier = Modifier) {
+    if (r.items.isEmpty()) return
+    androidx.compose.foundation.layout.FlowRow(modifier, horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        r.items.forEach { t ->
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(shortLabel(t.label), color = Palette.Muted, fontSize = 11.5.sp, maxLines = 1, softWrap = false)
+                Box(Modifier.width(28.dp)) { QuotaBar(t) }
+                Text("${t.usedPercent.fmt()}%", color = if (t.usedPercent >= 90) Palette.OrangeInk else Palette.Ink, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+            }
+        }
     }
 }

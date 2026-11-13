@@ -162,6 +162,15 @@ fun ChatComposer(
                 }
             }
         }
+        // The chips (Keys, Snippets, When idle…) get their own row above the box, so the bottom row
+        // holds only the round tools and the send button and nothing can overlap.
+        if (leading != null) {
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) { leading() }
+        }
         Surface(
             shape = RoundedCornerShape(26.dp),
             color = Palette.Composer,
@@ -203,7 +212,6 @@ fun ChatComposer(
                             runCatching { speech.launch(i) }
                         }
                         if (commands.isNotEmpty()) RoundTool("/", "Commands") { showCommands = !showCommands }
-                        leading?.invoke()
                     }
                     val stopMode = working && onStop != null && value.isBlank()
                     val label = if (working && steerLabel != null && value.isNotBlank()) steerLabel else null

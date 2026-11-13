@@ -99,6 +99,7 @@ fun TabsScreen(vm: AppViewModel) {
     var confirmStopAll by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
 
+    Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().background(Palette.Ground).systemBarsPadding()) {
         Surface(color = Palette.Card, border = BorderStroke(1.dp, Palette.Line)) {
             Row(
@@ -135,8 +136,6 @@ fun TabsScreen(vm: AppViewModel) {
                     }
                     LinkLabel(vm, " · ${panes.size} tabs · v${com.billmongan.herdrdroid.BuildConfig.VERSION_NAME}")
                 }
-                TextButton(onClick = { vm.screen = Screen.Dispatch }) { Text("Hand out", fontWeight = FontWeight.SemiBold) }
-                TextButton(onClick = { vm.openFiles("~") }) { Text("Files") }
                 IconButton(onClick = { scope.launch { vm.refreshPanes(); vm.refreshPreviews() }; vm.refreshQuotasSoon() }) {
                     Icon(Icons.Filled.Refresh, contentDescription = "Refresh", tint = Palette.Ink)
                 }
@@ -144,6 +143,7 @@ fun TabsScreen(vm: AppViewModel) {
                     var menu by remember { mutableStateOf(false) }
                     IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More", tint = Palette.Ink) }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                        DropdownMenuItem(text = { Text("Files") }, onClick = { menu = false; vm.openFiles("~") })
                         DropdownMenuItem(text = { Text("Search conversations") }, onClick = { menu = false; vm.screen = Screen.Search })
                         DropdownMenuItem(
                             text = { Text("Stop everything…", color = Palette.OrangeInk) },
@@ -268,8 +268,17 @@ fun TabsScreen(vm: AppViewModel) {
                     ) { vm.openPane(p.id) }
                 }
             }
-            item { Spacer(Modifier.height(24.dp)) }
+            item { Spacer(Modifier.height(96.dp)) }
         }
+    }
+    // Hand out work: the main action, as a button that never crowds the server's name.
+    androidx.compose.material3.ExtendedFloatingActionButton(
+        onClick = { vm.screen = Screen.Dispatch },
+        text = { Text("Hand out", fontWeight = FontWeight.SemiBold) },
+        icon = { Text("↗", fontSize = 18.sp) },
+        containerColor = Palette.Blue, contentColor = Palette.OnBlue,
+        modifier = Modifier.align(Alignment.BottomEnd).systemBarsPadding().padding(18.dp),
+    )
     }
     if (confirmStopAll) {
         val working = panes.filter { it.status == Status.WORKING && it.agent != null }
@@ -306,50 +315,41 @@ private fun PaneCard(
         border = if (needs) BorderStroke(2.dp, Palette.Orange) else BorderStroke(1.dp, Palette.Line),
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
     ) {
-        // Every card has the same rows in the same order, each only when it has something:
-        // name and status; folder, model and git; the last real line; usage; extras.
-        Row(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
-            AgentTile(p.initial, p.status)
-            Column(Modifier.weight(1f).padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        p.agentName, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = Palette.Ink,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
-                    )
-                    StatusPill(p.status)
-                }
+        // Four rows, always in this order, each only when it has something: who and how it is;
+        // where and with what; the last real line; usage as one line of chips.
+        Row(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.Top) {
+            AgentTile(p.initial, p.status, size = 40)
+            Column(Modifier.weight(1f).padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    if (p.folder.isNotBlank()) Text(p.folder, color = Palette.Muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-                    model?.let { Text(it, color = Palette.Blue, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false)) }
+                    Text(p.agentName, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = Palette.Ink, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                    if (underneath > 0) Badge("$underneath sub", Palette.Blue, Palette.BlueSoft)
+                    StatusPill(p.status)
+                    if (onClose != null && p.status != Status.WORKING) {
+                        Text("✕", color = Palette.Muted, fontSize = 15.sp, modifier = Modifier.clickable { onClose() }.padding(start = 2.dp))
+                    }
                 }
-                git?.let { g ->
-                    val bits = listOfNotNull(
-                        g.branch?.let { "⎇ $it" },
-                        if (g.changed > 0) "${g.changed} changed" else "clean",
-                        if (g.ahead > 0) "↑${g.ahead}" else null,
-                        if (g.behind > 0) "↓${g.behind}" else null,
-                    )
-                    Text(bits.joinToString(" · "), color = Palette.Muted, fontSize = 12.sp, fontFamily = Fonts.Mono, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                val where = buildList {
+                    if (p.folder.isNotBlank()) add(p.folder)
+                    git?.branch?.let { add("⎇ $it" + if (git.changed > 0) " •${git.changed}" else "") }
+                }.joinToString("  ")
+                if (where.isNotBlank() || model != null) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (where.isNotBlank()) Text(where, color = Palette.Muted, fontSize = 12.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                        model?.let { Text(it, color = Palette.Blue, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false)) }
+                    }
                 }
                 val line = cardLine(preview)
                 if (line.isNotBlank()) Text(line, color = Palette.Preview, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                quota?.let { QuotaLine(it, Modifier.padding(top = 2.dp)) }
-                if (underneath > 0 || checking || onClose != null) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                        if (underneath > 0) Text("$underneath subagent${if (underneath == 1) "" else "s"} running", color = Palette.Blue, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
-                        if (checking) Text("Checking usage…", color = Palette.Muted, fontSize = 12.sp, maxLines = 1)
-                        if (onClose != null) {
-                            Text(
-                                if (p.status == Status.WORKING) "Helper · working" else "Close helper",
-                                color = Palette.Blue, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
-                                modifier = Modifier.clickable(enabled = p.status != Status.WORKING) { onClose() },
-                            )
-                        }
-                    }
-                }
+                quota?.let { QuotaChips(it, Modifier.padding(top = 3.dp)) }
             }
         }
     }
+}
+
+@Composable
+private fun Badge(text: String, ink: androidx.compose.ui.graphics.Color, bg: androidx.compose.ui.graphics.Color) {
+    Text(text, color = ink, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false,
+        modifier = Modifier.background(bg, RoundedCornerShape(8.dp)).padding(horizontal = 6.dp, vertical = 1.dp))
 }
 
 /**
