@@ -154,9 +154,6 @@ class AppPrefs(context: Context) {
         get() = prefs.getBoolean("alertDone", true)
         set(v) = prefs.edit().putBoolean("alertDone", v).apply()
 
-    var autoCloseHelpers: Boolean
-        get() = prefs.getBoolean("autoCloseHelpers", true)
-        set(v) = prefs.edit().putBoolean("autoCloseHelpers", v).apply()
 
     /**
      * Ask for the fingerprint (or screen lock) when the app opens. Unset at first: then it is on

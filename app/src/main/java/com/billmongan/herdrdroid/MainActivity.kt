@@ -107,14 +107,6 @@ class MainActivity : FragmentActivity() {
                         BackHandler { vm.screen = s.back }
                         com.billmongan.herdrdroid.ui.FilesScreen(vm, s.path, s.back)
                     }
-                    Screen.Dispatch -> {
-                        BackHandler { vm.screen = Screen.Tabs }
-                        com.billmongan.herdrdroid.ui.DispatchScreen(vm)
-                    }
-                    Screen.Compare -> {
-                        BackHandler { vm.screen = Screen.Tabs }
-                        com.billmongan.herdrdroid.ui.CompareScreen(vm)
-                    }
                     is Screen.Settings -> {
                         BackHandler { vm.screen = s.back }
                         SettingsScreen(vm, s.back)

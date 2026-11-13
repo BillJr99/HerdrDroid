@@ -3,7 +3,6 @@ package com.billmongan.herdrdroid.transcript
 import com.billmongan.herdrdroid.herdr.PastSession
 import com.billmongan.herdrdroid.herdr.parseSessions
 import com.billmongan.herdrdroid.herdr.safeName
-import com.billmongan.herdrdroid.ui.judgePrompt
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -60,12 +59,5 @@ class ExportTest {
         assertEquals("/h/opencode.db", o.getString("db"))
         assertNull(s[1].title)
         assertEquals(PastSession("r", null, 0, null, 0).db, null)
-    }
-
-    @Test fun judgeLabelsEachAnswer() {
-        val p = judgePrompt("Pick a name", listOf("Claude" to "Alpha", "Codex" to "Beta"))
-        assertTrue(p.contains("Task:\nPick a name"))
-        assertTrue(p.contains("--- Answer 1 (Claude) ---\nAlpha"))
-        assertTrue(p.contains("--- Answer 2 (Codex) ---\nBeta"))
     }
 }

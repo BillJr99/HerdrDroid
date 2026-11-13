@@ -99,9 +99,7 @@ fun TabsScreen(vm: AppViewModel) {
     val order = listOf(Status.NEEDS_YOU, Status.WORKING, Status.DONE, Status.IDLE, Status.UNKNOWN)
     val panes = vm.panes.map { p -> vm.shownStatus(p).let { s -> if (s != p.status) p.copy(status = s) else p } }
         .sortedWith(compareBy({ order.indexOf(it.status) }, { it.id }))
-    var forwardingResult by remember { mutableStateOf<String?>(null) }
     var confirmStopAll by remember { mutableStateOf(false) }
-    val clipboard = LocalClipboardManager.current
 
     Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().background(Palette.Ground).systemBarsPadding()) {
@@ -207,28 +205,6 @@ fun TabsScreen(vm: AppViewModel) {
                     if (picking) ForwardPicker(vm, exclude = null, onPick = { to -> picking = false; vm.sendShareTo(to) }, onDismiss = { picking = false })
                 }
             }
-            // Helpers that finished and were closed: their last reply, kept until dismissed.
-            if (vm.helperResults.isNotEmpty()) {
-                item(key = "_helpers") {
-                    Text("Helper results", color = Palette.Blue, fontSize = 13.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 4.dp))
-                }
-                items(vm.helperResults.reversed(), key = { "h:" + it.id }) { r ->
-                    Surface(shape = RoundedCornerShape(16.dp), color = Palette.Card, border = BorderStroke(1.dp, Palette.Blue)) {
-                        Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text("${r.agent} · ${r.label}", color = Palette.Ink, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text("Task: " + r.task.lines().first(), color = Palette.Muted, fontSize = 12.5.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                            Column(Modifier.heightIn(max = 260.dp).verticalScroll(rememberScrollState())) {
-                                MarkdownText(r.reply.ifBlank { "The helper finished without a written reply." }, 14f, vm.readingFont.family)
-                            }
-                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                TextButton(onClick = { clipboard.setText(AnnotatedString(r.reply)) }) { Text("Copy") }
-                                TextButton(onClick = { forwardingResult = "${r.agent} (${r.label}) answered \"${r.task.lines().first().take(80)}\":\n\n${r.reply}" }) { Text("Send to…") }
-                                TextButton(onClick = { vm.dismissHelperResult(r) }) { Text("Dismiss") }
-                            }
-                        }
-                    }
-                }
-            }
             // Agents on the other watched servers that are waiting on you.
             val elsewhere = vm.fleetStates.values.flatMap { st -> st.panes.filter { it.status == Status.NEEDS_YOU }.map { st.server to it } }
             if (elsewhere.isNotEmpty() && filter != Filter.IDLE && filter != Filter.WORKING) {
@@ -269,7 +245,6 @@ fun TabsScreen(vm: AppViewModel) {
                         checking = false,
                         underneath = vm.workCounts[p.id] ?: 0,
                         git = vm.gitInfo[p.cwd],
-                        onClose = if (p.tabLabel.startsWith("helper-")) ({ vm.closeHelper(p) }) else null,
                     ) { vm.openPane(p.id) }
                 }
             }
@@ -277,14 +252,6 @@ fun TabsScreen(vm: AppViewModel) {
         }
         }
     }
-    // Hand out work: the main action, as a button that never crowds the server's name.
-    androidx.compose.material3.ExtendedFloatingActionButton(
-        onClick = { vm.screen = Screen.Dispatch },
-        text = { Text("Hand out", fontWeight = FontWeight.SemiBold) },
-        icon = { Text("↗", fontSize = 18.sp) },
-        containerColor = Palette.Blue, contentColor = Palette.OnBlue,
-        modifier = Modifier.align(Alignment.BottomEnd).systemBarsPadding().padding(18.dp),
-    )
     }
     if (confirmStopAll) {
         val working = panes.filter { it.status == Status.WORKING && it.agent != null }
@@ -300,9 +267,6 @@ fun TabsScreen(vm: AppViewModel) {
             },
             dismissButton = { TextButton(onClick = { confirmStopAll = false }) { Text("Cancel") } },
         )
-    }
-    forwardingResult?.let { t ->
-        ForwardPicker(vm, exclude = null, onPick = { to -> forwardingResult = null; vm.forward(t, null, to) }, onDismiss = { forwardingResult = null })
     }
 }
 

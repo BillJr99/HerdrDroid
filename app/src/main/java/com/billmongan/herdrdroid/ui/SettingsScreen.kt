@@ -157,18 +157,6 @@ fun SettingsScreen(vm: AppViewModel, back: Screen) {
                 )
             }
             Section("Diagnostics") { Diagnostics() }
-            Section("Helpers") {
-                Row(Modifier.fillMaxWidth().clickable { vm.changeAutoCloseHelpers(!vm.autoCloseHelpers) }, verticalAlignment = Alignment.CenterVertically) {
-                    Text("Close helpers when they finish", color = Palette.Ink, fontSize = 16.sp, modifier = Modifier.weight(1f))
-                    Switch(checked = vm.autoCloseHelpers, onCheckedChange = { vm.changeAutoCloseHelpers(it) })
-                }
-                Text(
-                    "A helper started from Hand out with a task closes its tab once it has worked and gone quiet. Its last " +
-                        "reply is kept under \"Helper results\" at the top of the tab list, to copy or send on. A helper " +
-                        "that asks you something stays open.",
-                    color = Palette.Muted, fontSize = 13.sp,
-                )
-            }
             Section("Reading font") {
                 ReadingFont.entries.forEach { f ->
                     Row(

@@ -21,7 +21,7 @@ data class Pane(
     val cwd: String,
     /** herdr's own window has this pane in front, so someone may be typing in it at the computer. */
     val focused: Boolean = false,
-    /** The label of the tab the pane is in ("opencode-scoped", "helper-codex-2", …). */
+    /** The label of the tab the pane is in ("claude", "opencode-2", …). */
     val tabLabel: String = "",
 ) {
     val agentName: String
@@ -290,10 +290,25 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
         // agent draws after the command ("/usage   Show usage") still counts.
         val prompt = """^[\s\u00A0│┃|>❯›»$]*"""
         val echo = Regex(prompt + Regex.escape(command) + """(\s.*)?$""")
-        // Leftovers from an earlier try ("❯ /usage/usage"): clear them before typing again.
+        // The input line, where it can be told apart: the lowest line that starts with a prompt
+        // glyph. Only it counts as the echo, so a menu of commands drawn under it ("/reasoning  Set
+        // reasoning effort", Hermes) or an old line above it can't pass for what was typed.
+        val promptLead = Regex("""^[\s\u00A0│┃|]*[>❯›»$][\s\u00A0]*""")
+        fun inputText(line: String) = line.replace(promptLead, "").trimEnd(' ', '\u00A0', '│', '┃', '|')
+        fun echoed(lines: List<String>): Boolean {
+            val input = lines.lastOrNull { promptLead.containsMatchIn(it) && it.contains(command) }
+            return if (input != null) echo.matches(input) else lines.any { echo.matches(it) }
+        }
+        // Leftovers from an earlier try ("❯ /usage/usage", "❯ /usage/reasoning"): clear them
+        // before typing again. Only the app's own check commands are cleared, never other text.
+        val ours = QuotaProfiles.builtIn.flatMap { listOf(it.command, it.infoCommand) }.filterNotNull().filter { it.isNotEmpty() }
+        val oursOnly = Regex("^(?:" + ours.joinToString("|") { Regex.escape(it) } + ")+$")
         val beforeLines = read(paneId, 40).lines()
         val leftover = Regex(prompt + "((?:" + Regex.escape(command) + ")+)[\\s\u00A0│┃|]*$")
-        beforeLines.asReversed().firstNotNullOfOrNull { leftover.find(it)?.groupValues?.get(1) }?.let { junk ->
+        val inputBefore = beforeLines.takeLast(12).lastOrNull { promptLead.containsMatchIn(it) }?.let(::inputText)
+        val junkBefore = inputBefore?.takeIf { oursOnly.matches(it) }
+            ?: beforeLines.asReversed().firstNotNullOfOrNull { leftover.find(it)?.groupValues?.get(1) }
+        junkBefore?.let { junk ->
             com.billmongan.herdrdroid.diag.DiagLog.log("usage", "clearing a leftover \"$junk\" in $paneId first")
             sendKeys(paneId, *Array(junk.length) { "backspace" })
             delay(300)
@@ -309,18 +324,21 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
         while (true) {
             delay(400)
             typed = read(paneId, 40).lines()
-            if (typed.any { echo.matches(it) }) break
+            if (echoed(typed)) break
             // Some agents (Grok) open the screen as soon as the command is typed, without Enter.
             if (!markerBefore && openMarker != null && openMarker.containsMatchIn(typed.joinToString("\n"))) { openedAtOnce = true; break }
             if (System.currentTimeMillis() > echoBy) break
         }
         if (openedAtOnce) {
             com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$command in $paneId opened its screen without Enter")
-        } else if (typed.none { echo.matches(it) }) {
+        } else if (!echoed(typed)) {
             // Which line was the input line, so the log shows why (cut short; nothing else kept).
             val inputLine = typed.lastOrNull { it.contains(command) || it.trimStart().startsWith("❯") || it.trimStart().startsWith(">") }?.trim()?.take(80)
             com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$command in $paneId wasn't echoed on its own; input line: \"${inputLine ?: "not found"}\"; erased it")
-            sendKeys(paneId, *Array(command.length) { "backspace" })
+            // Glued to another check command ("/usage/reasoning"): erase all of it. Glued to
+            // anything else (someone's half-typed message): erase only what was typed here.
+            val glued = typed.lastOrNull { promptLead.containsMatchIn(it) && it.contains(command) }?.let(::inputText)?.takeIf { oursOnly.matches(it) }
+            sendKeys(paneId, *Array(glued?.length ?: command.length) { "backspace" })
             return null
         }
         val echoMs = System.currentTimeMillis() - t0
@@ -474,38 +492,6 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
         val r = ssh.exec("PATH=\"\$HOME/.local/bin:\$PATH\" $cmd", timeoutSeconds = 60)
         if (r.exit != 0) return null
         return runCatching { parse(r.out) }.getOrNull()
-    }
-
-    /**
-     * Starts an agent in a new tab: makes the tab in [workspace] at [cwd] (created if missing),
-     * then `herdr agent start` in its pane, which returns once the agent is ready for input.
-     * Returns the new pane's id. Agents started this way are not in the boot launcher.
-     */
-    suspend fun startAgent(kind: String, cwd: String, label: String, name: String, workspace: String?): String {
-        ssh.exec("mkdir -p " + (if (cwd.startsWith("~/")) "\"\$HOME\"/" + shq(cwd.removePrefix("~/")) else shq(cwd)))
-        val dir = if (cwd.startsWith("~/")) ssh.exec("printf %s \"\$HOME\"").out.trim() + "/" + cwd.removePrefix("~/") else cwd
-        if (core) {
-            // A new terminal named for the helper, running the agent; hc returns its address.
-            val o = JSONObject(run(hcCmd("run", "--bg", "--json", "--name", label, "--cwd", dir, kind)).trim().lines().last { it.startsWith("{") })
-            return o.getString("address")
-        }
-        val args = mutableListOf("tab", "create", "--cwd", dir, "--label", label, "--no-focus")
-        if (!workspace.isNullOrBlank()) args.addAll(listOf("--workspace", workspace))
-        val created = JSONObject(run(cmd(*args.toTypedArray())))
-        val pane = created.getJSONObject("result").getJSONObject("root_pane").getString("pane_id")
-        delay(800)
-        run(cmd("agent", "start", name, "--kind", kind, "--pane", pane, "--timeout", "90000"))
-        return pane
-    }
-
-    /** Closes a tab and everything in it (a helper made with [startAgent]). */
-    suspend fun closeTab(tabId: String) {
-        if (core) {
-            runCatching { run(hcCmd("kill", tabId)) }
-            run(hcCmd("rm", tabId))
-            return
-        }
-        run(cmd("tab", "close", tabId))
     }
 
     /** A folder's entries, folders first, through the computer's python3 (names, kinds, sizes, times). */

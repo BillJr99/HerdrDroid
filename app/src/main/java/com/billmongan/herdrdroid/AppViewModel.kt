@@ -5,14 +5,12 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import com.billmongan.herdrdroid.fleet.Fleet
 import com.billmongan.herdrdroid.fleet.FleetState
-import com.billmongan.herdrdroid.herdr.Candidate
 import com.billmongan.herdrdroid.herdr.DirEntry
 import com.billmongan.herdrdroid.herdr.PastSession
 import com.billmongan.herdrdroid.herdr.forPhone
 import com.billmongan.herdrdroid.transcript.lastReply
 import com.billmongan.herdrdroid.transcript.toMarkdown
 import com.billmongan.herdrdroid.herdr.detectPrompt
-import com.billmongan.herdrdroid.herdr.rankCandidates
 import com.billmongan.herdrdroid.hermes.HermesChat
 import com.billmongan.herdrdroid.notify.AppBus
 import com.billmongan.herdrdroid.notify.Notify
@@ -74,8 +72,6 @@ sealed interface Screen {
     data class Agent(val paneId: String) : Screen
     data class Settings(val back: Screen) : Screen
     data class Files(val path: String, val back: Screen) : Screen
-    data object Dispatch : Screen
-    data object Compare : Screen
     /**
      * What runs under a pane: processes, subagents and background tasks. With [kind] "sub" or
      * "task", one subagent's conversation or one task's output ([file]), read-only.
@@ -193,6 +189,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val queue = ArrayDeque<Queued>()
     private val quotaLock = Mutex()
     private val lastQuotaTry = mutableMapOf<String, Long>()
+    /**
+     * Panes a usage check is typing into right now ("server/pane"), shared by the open server's
+     * round and the background server checks, so two checks never type into one pane at once
+     * (that sent "/usage/reasoning" to Hermes as one message, 2026-11-13).
+     */
+    private val typingInto = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    /** When a background check last tried each agent ("server/agent"), read or not, so a screen with no limits on it isn't asked again every round. */
+    private val backgroundTry = java.util.concurrent.ConcurrentHashMap<String, Long>()
     /** The pane whose usage is being checked right now, shown on its card as "Checking usage…". */
     var probingPanes by mutableStateOf<Set<String>>(emptySet())
         private set
@@ -589,13 +593,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         for ((agentKey, list) in byAgent) {
             val profile = QuotaProfiles.forAgent(list.first().agent) ?: continue
             val every = profile.everyMinutes * 60_000L
-            if ((stored[agentKey]?.at ?: 0L) > now - every) continue
+            if (maxOf(stored[agentKey]?.at ?: 0L, backgroundTry["${s.id}/$agentKey"] ?: 0L) > now - every) continue
+            // The open server's own round handles its agents; a check from here too could type into the same pane.
+            if (s.id == current?.id && profile.cliCommand == null) continue
+            backgroundTry["${s.id}/$agentKey"] = now
             val items = if (profile.cliCommand != null) {
                 runCatching { h.cliQuota(profile) }.getOrNull()
             } else {
                 if (!h.canProbeScreens) continue
                 val target = list.filter { it.status == Status.IDLE || it.status == Status.DONE }.sortedBy { it.focused }.firstOrNull() ?: continue
-                runCatching { h.probeQuota(target.id, profile, working = false) }.getOrNull()?.items
+                val typingKey = "${s.id}/${target.id}"
+                if (!typingInto.add(typingKey)) continue
+                try { runCatching { h.probeQuota(target.id, profile, working = false) }.getOrNull()?.items } finally { typingInto.remove(typingKey) }
             }
             if (!items.isNullOrEmpty()) {
                 val r = QuotaReading(System.currentTimeMillis(), items)
@@ -894,7 +903,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             panes = withBusy(fresh, busyCounts)
             current?.let { s -> noticeChanges(s.id, s.label, fresh) { herdr } }
-            collectFinishedHelpers(fresh)
             updateWidget(fresh)
             current?.let { serverPanes = serverPanes + (it.id to panes) }
         }
@@ -1391,11 +1399,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     return@launch
                 }
                 com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$agentKey on ${current?.label}: checking ${target.id} (${target.status})")
+                val typingKey = "$serverId/${target.id}"
+                if (!typingInto.add(typingKey)) {
+                    com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$agentKey on ${current?.label}: ${target.id} is already being checked")
+                    return@launch
+                }
                 probingPanes = probingPanes + target.id
                 val result = try {
                     quietly { it.probeQuota(target.id, profile, working = target.status == Status.WORKING) }
                 } finally {
                     probingPanes = probingPanes - target.id
+                    typingInto.remove(typingKey)
                 }
                 if (result != null) watchForLeftoverScreen(target.id, profile)
                 result?.model?.let { models = models + (target.id to it) }
@@ -1455,7 +1469,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun quotaFor(pane: Pane?): QuotaReading? =
         if (!showQuotas) null else QuotaProfiles.key(pane?.agent)?.let { quotas[it] }
 
-    // ---- 0.4.0: alerts, other servers, dispatch, compare, queue, helpers, files ------------------
+    // ---- 0.4.0: alerts, other servers, queue, files ------------------
 
     var watching by mutableStateOf(prefs.watching)
         private set
@@ -1732,39 +1746,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         connect(s, savedPassword(s), remember = false)
     }
 
-    // -- Dispatch and compare --------------------------------------------------------------------
-
-    fun candidates(sensitive: Boolean): List<Candidate> = rankCandidates(panes, ::quotaFor, sensitive)
-
-    /** Sends one task to each target, or queues it for a busy one when [whenIdle] is on. */
-    fun dispatch(text: String, targets: List<Pane>, whenIdle: Boolean) {
-        for (p in targets) {
-            if (whenIdle && p.status == Status.WORKING) enqueue(p.id, text) else sendMessage(p, text)
-        }
-        if (targets.size > 1) {
-            compareTargets = targets.map { it.id }
-            compareItems.clear()
-            compareCursors.clear()
-            screen = Screen.Compare
-        } else targets.firstOrNull()?.let { openPane(it.id) }
-    }
-
-    var compareTargets by mutableStateOf<List<String>>(emptyList())
-        private set
-    val compareItems = mutableStateMapOf<String, List<Item>>()
-    private val compareCursors = mutableMapOf<String, String>()
-
-    /** Reads each compared pane's log since the last read (each with its own cursor). */
-    suspend fun refreshCompare() {
-        for (id in compareTargets) {
-            val p = pane(id) ?: continue
-            val r = quietly { it.transcript(p, compareCursors[id].orEmpty(), transcriptScript) } ?: continue
-            if (!r.ok) continue
-            compareCursors[id] = r.cursor
-            if (r.reset || r.items.isNotEmpty()) compareItems[id] = Transcript.merge(compareItems[id].orEmpty(), r.items, r.reset)
-        }
-    }
-
     // -- Send when idle --------------------------------------------------------------------------
 
     data class QueuedPrompt(val id: Long, val paneId: String, val text: String)
@@ -1795,99 +1776,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun cancelQueued(q: QueuedPrompt) {
         queued = queued - q
-    }
-
-    // -- New agents and helpers ------------------------------------------------------------------
-
-    var starting by mutableStateOf<String?>(null)
-        private set
-
-    private fun mainWorkspace(): String? = panes.groupingBy { it.workspaceId }.eachCount().maxByOrNull { it.value }?.key
-
-    /**
-     * Starts an agent of [kind] in a new tab at [cwd]. A [task] is sent once it is ready. Helpers
-     * get a "helper-" label so the list can offer to close them when they are finished.
-     */
-    fun startAgent(kind: String, cwd: String, label: String, task: String?) {
-        if (starting != null) return
-        starting = label
-        act(null, "Couldn't start $kind") { h ->
-            try {
-                val name = label.lowercase().replace(Regex("[^a-z0-9_-]"), "-").trim('-').take(32).let { if (it.firstOrNull()?.isLetter() == true) it else "a$it" }
-                val pane = h.startAgent(kind, cwd, label, name, mainWorkspace())
-                refreshPanes()
-                if (!task.isNullOrBlank()) pane(pane)?.let {
-                    sendMessage(it, task)
-                    if (label.startsWith("helper-") && autoCloseHelpers) helperWatch[pane] = HelperRun(label, task, false)
-                }
-                openPane(pane)
-            } finally {
-                starting = null
-            }
-        }
-    }
-
-    fun nextHelperLabel(kind: String): String {
-        val n = panes.count { it.tabLabel.startsWith("helper-") } + 1
-        return "helper-$kind-$n"
-    }
-
-    fun closeHelper(p: Pane) {
-        act(p.id, "Couldn't close the helper") { h ->
-            h.closeTab(p.tabId)
-            refreshPanes()
-        }
-    }
-
-    // -- Helpers that finish -----------------------------------------------------------------------
-
-    private data class HelperRun(val label: String, val task: String, val sawWork: Boolean)
-
-    /** A finished helper's last reply, kept after its tab is closed. */
-    data class HelperResult(val id: Long, val label: String, val agent: String, val task: String, val reply: String)
-
-    private val helperWatch = mutableMapOf<String, HelperRun>()
-    var helperResults by mutableStateOf<List<HelperResult>>(emptyList())
-        private set
-    var autoCloseHelpers by mutableStateOf(prefs.autoCloseHelpers)
-        private set
-
-    fun changeAutoCloseHelpers(on: Boolean) {
-        autoCloseHelpers = on
-        prefs.autoCloseHelpers = on
-        if (!on) helperWatch.clear()
-    }
-
-    /**
-     * A helper started with a task is closed once it has worked and gone quiet: its last reply is
-     * read from its log into "Helper results" first. One that asks a question is left open.
-     */
-    private fun collectFinishedHelpers(fresh: List<Pane>) {
-        for ((id, run) in helperWatch.toMap()) {
-            val p = fresh.firstOrNull { it.id == id }
-            if (p == null) { helperWatch.remove(id); continue }
-            when {
-                p.status == Status.WORKING -> if (!run.sawWork) helperWatch[id] = run.copy(sawWork = true)
-                run.sawWork && (p.status == Status.DONE || p.status == Status.IDLE) -> {
-                    helperWatch.remove(id)
-                    viewModelScope.launch {
-                        val h = herdr ?: return@launch
-                        val r = runCatching { h.transcript(p, "", transcriptScript) }.getOrNull()
-                        val items = if (r?.ok == true) Transcript.merge(emptyList(), r.items, true) else emptyList()
-                        val reply = lastReply(items).ifBlank {
-                            runCatching { forPhone(h.read(p.id, 60)) }.getOrDefault("").trim()
-                        }
-                        helperResults = helperResults + HelperResult(System.nanoTime(), run.label, p.agentName, run.task, reply)
-                        runCatching { h.closeTab(p.tabId) }
-                        refreshPanes()
-                    }
-                }
-            }
-        }
-    }
-
-    fun dismissHelperResult(r: HelperResult) {
-        helperResults = helperResults - r
     }
 
     // -- Work under a pane ---------------------------------------------------------------------------
