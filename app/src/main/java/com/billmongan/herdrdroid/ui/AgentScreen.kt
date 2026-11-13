@@ -72,6 +72,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.layout.isImeVisible
@@ -134,6 +135,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     var menu by remember { mutableStateOf(false) }
     var choosingModel by remember { mutableStateOf(false) }
     var showSnippets by remember { mutableStateOf(false) }
+    var hermesMenu by remember { mutableStateOf(false) }
     /** Reading mode: the message box and extra rows step aside; a Reply button brings them back. */
     var reading by rememberSaveable(paneId) { mutableStateOf(false) }
     /** Find in chat: what to look for, and which match is showing. */
@@ -299,11 +301,31 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
             }
             AgentTile(pane?.initial ?: "?", status, size = 34)
             Column(Modifier.weight(1f).padding(start = 10.dp)) {
-                Text(
-                    vm.transcriptTitle?.takeIf { structured } ?: (pane?.agentName ?: paneId),
-                    fontWeight = FontWeight.SemiBold, fontSize = 17.sp, color = Palette.Ink,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis,
-                )
+                // On Hermes the name opens the Hermes menu: this pane or live chat, your Telegram
+                // conversation, all conversations, a new chat, model and usage.
+                Box {
+                    Text(
+                        (if (isHermes) (if (live) "Hermes · live chat" else "Hermes · this pane") + "  ▾"
+                        else vm.transcriptTitle?.takeIf { structured } ?: (pane?.agentName ?: paneId)),
+                        fontWeight = FontWeight.SemiBold, fontSize = 17.sp, color = Palette.Ink,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        modifier = if (isHermes) Modifier.clickable { hermesMenu = true } else Modifier,
+                    )
+                    if (isHermes) DropdownMenu(expanded = hermesMenu, onDismissRequest = { hermesMenu = false }) {
+                        DropdownMenuItem(text = { Text((if (!live) "✓ " else "    ") + "This pane (the Hermes CLI)") }, onClick = { hermesMenu = false; hermesLive = false })
+                        DropdownMenuItem(text = { Text((if (live) "✓ " else "    ") + "Live chat (streaming, approvals as buttons)") }, onClick = { hermesMenu = false; hermesLive = true })
+                        HorizontalDivider(color = Palette.Line)
+                        DropdownMenuItem(text = { Text("Telegram conversation") }, onClick = {
+                            hermesMenu = false; hermesLive = true
+                            vm.hermesChat()?.openLatest("telegram", "Telegram")
+                        })
+                        DropdownMenuItem(text = { Text("All conversations…") }, onClick = { hermesMenu = false; hermesLive = true; vm.hermesChat()?.showPicker() })
+                        DropdownMenuItem(text = { Text("New chat") }, onClick = { hermesMenu = false; hermesLive = true; vm.hermesChat()?.newChat() })
+                        HorizontalDivider(color = Palette.Line)
+                        DropdownMenuItem(text = { Text("Model and reasoning…") }, onClick = { hermesMenu = false; choosingModel = true })
+                        if (quota != null) DropdownMenuItem(text = { Text(if (showUsage) "Hide usage" else "Usage") }, onClick = { hermesMenu = false; showUsage = !showUsage })
+                    }
+                }
                 if (keyboardUp) {
                     // Keyboard up: the name line only, so the chat keeps the room.
                 } else if (vm.link == Link.CONNECTED) {
@@ -321,6 +343,20 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                     }
                 } else {
                     LinkLabel(vm, "")
+                }
+            }
+            // Shells and subagents still running under the agent, as one small pill in the header
+            // (a row of its own appeared and vanished as they started and finished, moving the chat).
+            vm.work[paneId]?.let { w ->
+                val subs = w.activeSubagents
+                val shells = w.activeProcs(pane?.agent).size
+                if (subs > 0 || shells > 0) {
+                    Text(
+                        listOfNotNull(shells.takeIf { it > 0 }?.let { "$it sh" }, subs.takeIf { it > 0 }?.let { "$it sub" }).joinToString(" · "),
+                        color = Palette.Blue, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
+                        modifier = Modifier.clip(RoundedCornerShape(12.dp)).background(Palette.BlueSoft)
+                            .clickable { vm.screen = Screen.Work(paneId) }.padding(horizontal = 8.dp, vertical = 4.dp),
+                    )
                 }
             }
             if (!live && vm.transcriptState == TranscriptMode.ON) {
@@ -354,49 +390,11 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 }
             }
         }
-        // The extra rows step aside while you type, read, or scroll back through the chat.
-        val scrolledBack = structured && listState.canScrollForward
-        val roomy = !keyboardUp && !reading && !scrolledBack
-        if (isHermes && roomy) {
-            // Hermes can be driven two ways: its CLI session in this pane, or a live chat through
-            // its gateway with streaming, tool progress and approvals as buttons.
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)
-                    .background(Palette.Gray, RoundedCornerShape(12.dp)).padding(3.dp),
-            ) {
-                listOf(false to "This pane", true to "Live chat").forEach { (value, label) ->
-                    val on = hermesLive == value
-                    Box(
-                        Modifier.weight(1f)
-                            .background(if (on) Palette.Card else Color.Transparent, RoundedCornerShape(10.dp))
-                            .clickable { hermesLive = value }
-                            .padding(vertical = 7.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(label, color = if (on) Palette.Ink else Palette.Muted, fontSize = 14.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Medium)
-                    }
-                }
-            }
-        }
         // What the agent has running underneath: tap to drill in.
         // One chip: how much is still active underneath (subagents, background tasks, processes the
         // agent started). It drops as they finish; tap for active and finished.
         // Two bubbles on their own row under the header: the shells the agent started that are
         // still running, and its running subagents. Tap either for active and finished.
-        if (roomy) vm.work[paneId]?.let { w ->
-            val subs = w.activeSubagents
-            val shells = w.activeProcs(pane?.agent).size
-            if (subs > 0 || shells > 0) {
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    ComposerChip("$shells shell${if (shells == 1) "" else "s"}", shells > 0) { vm.screen = Screen.Work(paneId) }
-                    ComposerChip("$subs subagent${if (subs == 1) "" else "s"}", subs > 0) { vm.screen = Screen.Work(paneId) }
-                }
-            }
-        }
         HorizontalDivider(color = Palette.Line)
         ServerBanners(vm)
         val rowsNow = remember(vm.transcriptItems) { rowsOf(vm.transcriptItems) }

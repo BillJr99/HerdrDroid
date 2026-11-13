@@ -155,6 +155,31 @@ class HermesChat(ssh: HerdrSsh, private val scope: CoroutineScope) {
         }
     }
 
+    /**
+     * Opens the newest conversation that came from [source] ("telegram": the chat you have with
+     * Hermes in Telegram), once the gateway is connected. Messages sent here continue that same
+     * conversation; Telegram itself shows only what is sent there.
+     */
+    fun openLatest(source: String, label: String) {
+        scope.launch {
+            problem = null
+            var waited = 0
+            while (phase == HermesPhase.CONNECTING && waited < 30_000) { kotlinx.coroutines.delay(300); waited += 300 }
+            if (phase == HermesPhase.OFFLINE) return@launch
+            try {
+                val r = gw.request("session.list", JSONObject().put("picker", true).put("limit", 200))
+                val arr = r.optJSONArray("sessions") ?: JSONArray()
+                val hit = (0 until arr.length()).map { arr.getJSONObject(it) }
+                    .filter { it.optString("source").equals(source, ignoreCase = true) }
+                    .maxByOrNull { it.optDouble("last_active_at", it.optDouble("started_at", 0.0)) }
+                if (hit == null) { problem = "No $label conversation with Hermes yet."; return@launch }
+                resume(hit.optString("id"), hit.optString("title").ifBlank { label })
+            } catch (e: Exception) {
+                problem = "Couldn't open the $label conversation: ${e.message}"
+            }
+        }
+    }
+
     fun showPicker() {
         phase = HermesPhase.PICKER
         refreshSessions()
