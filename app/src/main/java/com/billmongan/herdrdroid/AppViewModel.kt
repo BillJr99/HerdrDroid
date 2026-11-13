@@ -489,6 +489,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         val list = h.panes()
                         // The light goes up now; the usage checks that are due follow in the
                         // background on this same connection, then it closes.
+                        // Usage that is due there is checked on every background round, not only at
+                        // startup, so every server's cards have current usage ready.
                         val due = s.id !in startupQuotasDone
                         if (due) viewModelScope.launch {
                             try { runCatching { startupQuotas(s, h, list) } } finally { ssh.close() }
@@ -565,12 +567,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val startupQuotasDone = mutableSetOf<String>()
 
     /**
-     * The usage readings that are due on another server, checked once per app start: the same
+     * The usage readings that are due on another server, checked on each background round: the same
      * checks as the open server's (idle agents only; Enter only when the input line holds exactly
      * the command; Oh My Pi from its command line). Readings are saved for when you open it.
      */
     private suspend fun startupQuotas(s: Server, h: Herdr, fresh: List<Pane>) {
+        // One check at a time per server; each reading is asked for again only when it is due.
         if (!startupQuotasDone.add(s.id)) return
+        try { startupQuotasRun(s, h, fresh) } finally { startupQuotasDone.remove(s.id) }
+    }
+
+    private suspend fun startupQuotasRun(s: Server, h: Herdr, fresh: List<Pane>) {
         val stored = prefs.quotas(s.id).toMutableMap()
         val now = System.currentTimeMillis()
         val byAgent = fresh.mapNotNull { p -> QuotaProfiles.key(p.agent)?.let { it to p } }.groupBy({ it.first }, { it.second })
