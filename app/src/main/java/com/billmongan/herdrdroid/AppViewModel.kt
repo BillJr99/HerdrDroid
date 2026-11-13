@@ -784,7 +784,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val h = herdr ?: return
         // Never type into a pane while the app is checking that agent's usage.
         var waited = 0
-        while (q.paneId != null && probingPane == q.paneId && waited < 15_000) {
+        // A usage check types into the pane and closes its screen with Esc: a message typed then
+        // would be lost, so it waits for the check to finish completely.
+        if (q.paneId != null && probingPane == q.paneId) com.billmongan.herdrdroid.diag.DiagLog.log("send", "waiting for a usage check in ${q.paneId} to finish")
+        while (q.paneId != null && probingPane == q.paneId && waited < 60_000) {
             delay(200); waited += 200
         }
         try {
@@ -1129,7 +1132,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun pane(id: String): Pane? = panes.firstOrNull { it.id == id }
 
+    private val lastSentTo = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
     fun sendMessage(pane: Pane, text: String) {
+        lastSentTo[pane.id] = System.currentTimeMillis()
         lastSent = pane.id to text
         lastSentAt = System.currentTimeMillis()
         pendingSends = pendingSends + PendingSend(
@@ -1234,8 +1240,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 continue
             }
+            // Never an agent open on screen or sent to in the last two minutes: you may be typing to it.
+            val openNow = (screen as? Screen.Agent)?.paneId
             val target = list.filter {
-                it.status == Status.IDLE || it.status == Status.DONE || (profile0.whileWorking && it.status == Status.WORKING)
+                (it.status == Status.IDLE || it.status == Status.DONE || (profile0.whileWorking && it.status == Status.WORKING)) &&
+                    it.id != openNow && (lastSentTo[it.id] ?: 0L) < now - 120_000
             }
                 .sortedWith(compareBy({ it.status == Status.WORKING }, { it.focused }))
                 .firstOrNull() ?: continue

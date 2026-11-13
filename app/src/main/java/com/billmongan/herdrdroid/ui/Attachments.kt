@@ -76,6 +76,9 @@ class AttachmentHost(
 
 val LocalAttachments = staticCompositionLocalOf<AttachmentHost?> { null }
 
+/** The chat's pinch zoom (text size ÷ the default), which images in the chat follow too. */
+val LocalChatZoom = androidx.compose.runtime.compositionLocalOf { 1f }
+
 /**
  * Sets up "Download" (Android's own Save as picker, so it needs no storage permission and the
  * file goes wherever you choose) and Share/Open (through a FileProvider copy in the app's cache).
@@ -165,14 +168,14 @@ fun AttachmentView(item: ImageItem) {
             shape = RoundedCornerShape(14.dp),
             color = Palette.Code,
             border = BorderStroke(1.dp, Palette.Line),
-            modifier = Modifier.widthIn(max = 340.dp).clickable(enabled = bitmap != null) { viewer = true },
+            modifier = Modifier.widthIn(max = (340 * LocalChatZoom.current).coerceIn(160f, 1200f).dp).clickable(enabled = bitmap != null) { viewer = true },
         ) {
             val b = bitmap
             when {
                 b != null -> Image(
                     b.asImageBitmap(), contentDescription = item.label,
                     contentScale = ContentScale.Fit,
-                    modifier = Modifier.heightIn(max = 300.dp).clip(RoundedCornerShape(14.dp)),
+                    modifier = Modifier.heightIn(max = (300 * LocalChatZoom.current).coerceIn(140f, 1100f).dp).clip(RoundedCornerShape(14.dp)),
                 )
                 problem != null -> Text(problem!!, color = Palette.Muted, fontSize = 13.sp, modifier = Modifier.padding(12.dp))
                 else -> Box(Modifier.size(160.dp, 110.dp), contentAlignment = Alignment.Center) {
