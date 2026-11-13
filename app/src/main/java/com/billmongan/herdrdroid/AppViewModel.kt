@@ -865,8 +865,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- Panes ------------------------------------------------------------------------------
 
+    private val agentSeenAt = mutableMapOf<String, Long>()
+
     suspend fun refreshPanes() {
-        quietly { it.panes() }?.let { fresh ->
+        quietly { it.panes() }?.let { fresh0 ->
+            // herdr sometimes reports a pane's agent as missing for a moment (while it redraws, or
+            // just after a screen closes). Keep the agent last seen in that pane, so its card keeps
+            // its usage and model instead of going blank until the next read.
+            val before = panes.associateBy { it.id }
+            val t = System.currentTimeMillis()
+            fresh0.forEach { p -> if (p.agent != null) agentSeenAt[p.id] = t }
+            val fresh = fresh0.map { p ->
+                val was = before[p.id]?.agent
+                // Only for a minute: an agent that really quit leaves a plain shell behind.
+                if (p.agent == null && was != null && t - (agentSeenAt[p.id] ?: 0L) < 60_000) {
+                    com.billmongan.herdrdroid.diag.DiagLog.log("pane", "${p.id}: herdr reported no agent; keeping $was")
+                    p.copy(agent = was)
+                } else p
+            }
             panes = fresh
             current?.let { s -> noticeChanges(s.id, s.label, fresh) { herdr } }
             collectFinishedHelpers(fresh)
@@ -1872,6 +1888,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** For the cards: active subagents plus running background tasks, per pane. */
     var workCounts by mutableStateOf<Map<String, Int>>(emptyMap())
         private set
+    var busyCounts by mutableStateOf<Map<String, Int>>(emptyMap())
+
+    /**
+     * The status a card shows: an agent herdr calls idle or done while its subagents or background
+     * shells still run is shown as working.
+     */
+    fun shownStatus(p: Pane): Status =
+        if ((p.status == Status.IDLE || p.status == Status.DONE) && (busyCounts[p.id] ?: 0) > 0) Status.WORKING else p.status
 
     suspend fun refreshWork(paneId: String) {
         val p = pane(paneId) ?: return
@@ -1922,7 +1946,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     suspend fun refreshWorkCounts() {
-        quietly { it.workCounts(panes, transcriptScript) }?.let { workCounts = it }
+        quietly { it.workCounts(panes, transcriptScript) }?.let { (c, b) -> workCounts = c; busyCounts = b }
     }
 
     /** One Claude subagent's log since [cursor] (its file is pinned in the cursor). */

@@ -613,12 +613,13 @@ print(json.dumps(out))
     }
 
     /** For the cards: active subagents plus running background tasks, per pane. */
-    suspend fun workCounts(panes: List<Pane>, script: ByteArray): Map<String, Int> {
+    /** Running subagents per pane, and subagents plus running background tasks ("busy"). */
+    suspend fun workCounts(panes: List<Pane>, script: ByteArray): Pair<Map<String, Int>, Map<String, Int>> {
         val list = panes.filter { it.agent == "claude" }
-        if (list.isEmpty()) return emptyMap()
+        if (list.isEmpty()) return emptyMap<String, Int>() to emptyMap()
         val arg = org.json.JSONArray(list.map { org.json.JSONArray(listOf(it.id, it.agent.orEmpty(), it.cwd)) }).toString()
         val r = ssh.execInput("$PYZ __workcounts__ ${shq(arg)}", z(script), timeoutSeconds = 30)
-        return runCatching { parseWorkCounts(r.out) }.getOrDefault(emptyMap())
+        return runCatching { parseWorkCounts(r.out) to parseBusyCounts(r.out) }.getOrDefault(emptyMap<String, Int>() to emptyMap())
     }
 
     /** A background task's output since [offset]; -1 starts from its last 64 KB. */

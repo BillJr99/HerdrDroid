@@ -58,10 +58,15 @@ fun parseWork(json: String): WorkInfo {
     )
 }
 
-fun parseWorkCounts(json: String): Map<String, Int> {
+fun parseWorkCounts(json: String): Map<String, Int> = parseCounts(json, "counts")
+
+/** Subagents plus background tasks still running, per pane. */
+fun parseBusyCounts(json: String): Map<String, Int> = parseCounts(json, "busy")
+
+private fun parseCounts(json: String, key: String): Map<String, Int> {
     val o = JSONObject(json.trim())
     if (!o.optBoolean("ok")) return emptyMap()
-    val c = o.optJSONObject("counts") ?: return emptyMap()
+    val c = o.optJSONObject(key) ?: return emptyMap()
     return c.keys().asSequence().associateWith { c.optInt(it) }
 }
 

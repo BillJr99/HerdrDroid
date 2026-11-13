@@ -94,7 +94,8 @@ fun TabsScreen(vm: AppViewModel) {
         }
     }
 
-    val panes = vm.panes
+    // Agents with subagents or background shells still running show as working.
+    val panes = vm.panes.map { p -> vm.shownStatus(p).let { s -> if (s != p.status) p.copy(status = s) else p } }
     var forwardingResult by remember { mutableStateOf<String?>(null) }
     var confirmStopAll by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current

@@ -1114,13 +1114,21 @@ def work_counts(panes):
         if p:
             by_pane.setdefault(p, set()).add(pid)
     out = {}
+    busy = {}
     for pane, agent, cwd in panes:
         # The card's count: subagents still running (shells are counted on the agent's own screen).
+        # "busy" adds the background tasks still running, so a card can show the agent as working.
         n = 0
+        tasks = 0
         if agent == "claude" and cwd:
             n += sum(1 for s in claude_subagents(cwd, now) if s["active"])
+            try:
+                tasks = sum(1 for t in claude_tasks(cwd, now, open_files_of(by_pane.get(pane, set()))) if t.get("running"))
+            except Exception:
+                tasks = 0
         out[pane] = n
-    return {"ok": True, "counts": out}
+        busy[pane] = n + tasks
+    return {"ok": True, "counts": out, "busy": busy}
 
 
 def tail_file(path, offset):
