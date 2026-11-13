@@ -81,7 +81,11 @@ private val sessionStartedAt = java.util.concurrent.ConcurrentHashMap<String, Lo
 
 class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend = Backend.TUI, hcPath: String? = null) {
     // The path is the user's setting; "~" stays unquoted so the remote shell expands it.
-    private val herdr = herdrPath.trim().ifBlank { "herdr" }
+    // Left at the default, herdr is looked up the way hc is: on the PATH, else in ~/.local/bin, where
+    // its installer puts it (a non-interactive SSH shell often lacks ~/.local/bin on the PATH).
+    private val herdr = herdrPath.trim().let { p ->
+        if (p.isBlank() || p == "herdr") "\"\$(command -v herdr || echo \"\$HOME/.local/bin/herdr\")\"" else p
+    }
     private val hc = hcPath?.takeIf { it.isNotBlank() }?.let(::shq) ?: "\"\$(command -v hc || echo \"\$HOME/.local/bin/hc\")\""
     private val core get() = backend == Backend.CORE
 
@@ -90,6 +94,8 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
 
     /** herdr-core's usage checks can't type a command without pressing Enter, so they are skipped. */
     val canProbeScreens: Boolean get() = !core
+    /** herdr-core has no way to rename a terminal, so the app hides Rename there. */
+    val canRename: Boolean get() = !core
 
     /**
      * The system python3 by its absolute path when it is there: a non-interactive SSH command
@@ -537,8 +543,22 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
             val o = JSONObject(run(hcCmd("run", "--bg", "--json", "--name", label, "--cwd", dir, kind)).trim().lines().last { it.startsWith("{") })
             return o.getString("address")
         }
+        // A herdr server with no workspace yet (nobody has opened the TUI there) can't make a tab:
+        // make the first workspace instead and start the agent in its pane.
+        var ws = workspace
+        if (ws.isNullOrBlank()) {
+            val list = runCatching { JSONObject(run(cmd("workspace", "list"))).getJSONObject("result").optJSONArray("workspaces") }.getOrNull()
+            if (list == null || list.length() == 0) {
+                val made = JSONObject(run(cmd("workspace", "create", "--cwd", dir, "--label", label)))
+                val pane = made.getJSONObject("result").getJSONObject("root_pane").getString("pane_id")
+                delay(800)
+                run(cmd("agent", "start", name, "--kind", kind, "--pane", pane, "--timeout", "90000"))
+                return pane
+            }
+            ws = list.getJSONObject(0).optString("workspace_id").ifBlank { null }
+        }
         val args = mutableListOf("tab", "create", "--cwd", dir, "--label", label, "--no-focus")
-        if (!workspace.isNullOrBlank()) args.addAll(listOf("--workspace", workspace))
+        if (!ws.isNullOrBlank()) args.addAll(listOf("--workspace", ws))
         val created = JSONObject(run(cmd(*args.toTypedArray())))
         val pane = created.getJSONObject("result").getJSONObject("root_pane").getString("pane_id")
         delay(800)
@@ -558,7 +578,8 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
 
     /** Renames a tab: in the app it is the session's name. */
     suspend fun renameTab(tabId: String, label: String) {
-        if (core) return
+        // herdr-core keeps a terminal's name from `hc run --name`; `hc label name=` only adds a label.
+        if (core) throw HerdrError("herdr-core can't rename a session.", 0)
         run(cmd("tab", "rename", tabId, label))
     }
 

@@ -252,13 +252,19 @@ fun ServersScreen(vm: AppViewModel) {
             onDismissRequest = { vm.dismissBackendChoice() },
             title = { Text("Which herdr?") },
             text = {
-                Text(
-                    "${p.server.label} runs both the herdr TUI and herdr-core (Herdr App). They keep separate agents. " +
-                        "Which one should this server show? The choice is saved; change it in the server's settings.",
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "${p.server.label} runs both the herdr TUI and the Herdr App's server (herdr-core). They keep separate " +
+                            "agents. Show one, the other, or both (both adds a second entry for the same computer; the drawer lists " +
+                            "the agents of each). The choice is saved and can be changed in the server's settings.",
+                    )
+                    Button(onClick = { vm.chooseBackend(core = false) }, modifier = Modifier.fillMaxWidth()) { Text("herdr (TUI)") }
+                    Button(onClick = { vm.chooseBackend(core = true) }, modifier = Modifier.fillMaxWidth()) { Text("Herdr App (herdr-core)") }
+                    OutlinedButton(onClick = { vm.chooseBothBackends() }, modifier = Modifier.fillMaxWidth()) { Text("Both, as two entries") }
+                }
             },
-            confirmButton = { TextButton(onClick = { vm.chooseBackend(core = true) }) { Text("herdr-core") } },
-            dismissButton = { TextButton(onClick = { vm.chooseBackend(core = false) }) { Text("herdr (TUI)") } },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = { vm.dismissBackendChoice() }) { Text("Cancel") } },
         )
     }
 

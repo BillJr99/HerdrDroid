@@ -97,7 +97,7 @@ fun SessionDrawer(vm: AppViewModel) {
                     SessionRow(
                         s, open = s.current && s.pane.id == openId, model = vm.modelFor(s.server.id, s.pane.id),
                         onOpen = { vm.drawerOpen = false; vm.switchTo(s.server.id, s.pane.id) },
-                        onRename = { renaming = s }, onPin = { vm.togglePin(s.server, s.pane) }, onClose = { closing = s },
+                        onRename = if (vm.canRename(s.server.id)) ({ renaming = s }) else null, onPin = { vm.togglePin(s.server, s.pane) }, onClose = { closing = s },
                     )
                 }
             }
@@ -159,7 +159,7 @@ internal fun sessionName(p: Pane): String {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun SessionRow(s: AppViewModel.Session, open: Boolean, model: String?, onOpen: () -> Unit, onRename: () -> Unit, onPin: () -> Unit, onClose: () -> Unit) {
+private fun SessionRow(s: AppViewModel.Session, open: Boolean, model: String?, onOpen: () -> Unit, onRename: (() -> Unit)?, onPin: () -> Unit, onClose: () -> Unit) {
     var menu by remember { mutableStateOf(false) }
     Box {
         Row(
@@ -183,7 +183,8 @@ private fun SessionRow(s: AppViewModel.Session, open: Boolean, model: String?, o
             if (open) Text("✓", color = Palette.Blue, fontWeight = FontWeight.Bold)
         }
         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-            DropdownMenuItem(text = { Text("Rename") }, onClick = { menu = false; onRename() })
+            // herdr-core can't rename, so the item is only there where it works.
+            if (onRename != null) DropdownMenuItem(text = { Text("Rename") }, onClick = { menu = false; onRename() })
             DropdownMenuItem(text = { Text(if (s.pinned) "Unpin" else "Pin to the top") }, onClick = { menu = false; onPin() })
             DropdownMenuItem(text = { Text("Close session…", color = Palette.OrangeInk) }, onClick = { menu = false; onClose() })
         }

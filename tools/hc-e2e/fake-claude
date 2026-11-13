@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# A stand-in "claude" for the backend tests: a prompt, and every line typed comes back.
+printf 'Claude Code (test stand-in)\n'
+while true; do
+  printf '\n❯ '
+  IFS= read -r line || exit 0
+  printf '\nyou said: %s\n' "$line"
+done

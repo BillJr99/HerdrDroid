@@ -740,6 +740,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         connect(saved, p.password, p.remember)
     }
 
+    /**
+     * Both: the server stays as the herdr (TUI) entry, and a second entry for the same computer
+     * shows its Herdr App (herdr-core) agents. Each keeps its own agents; the drawer lists both.
+     */
+    fun chooseBothBackends() {
+        val p = pendingBackendChoice ?: return
+        pendingBackendChoice = null
+        val tui = p.server.copy(backend = "tui", name = p.server.name.ifBlank { p.server.host })
+        val core = tui.copy(
+            id = java.util.UUID.randomUUID().toString(), backend = "core",
+            name = tui.name.removeSuffix(" (herdr)") + " (Herdr App)",
+        )
+        store.save(tui)
+        store.save(core)
+        reloadServers()
+        connect(tui, p.password, p.remember)
+    }
+
     fun dismissBackendChoice() { pendingBackendChoice = null }
 
     /** Shown while a sleeping server is being retried. */
@@ -2112,6 +2130,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
     }
+
+    /** Whether a session on that server can be renamed (herdr-core cannot). */
+    fun canRename(serverId: String): Boolean =
+        clientFor(serverId)?.canRename ?: (servers.firstOrNull { it.id == serverId }?.backend != "core")
 
     fun renameSession(serverId: String, pane: Pane, label: String) {
         viewModelScope.launch {

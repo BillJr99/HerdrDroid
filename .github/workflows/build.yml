@@ -65,6 +65,20 @@ jobs:
           echo "HD_WS_BADKEY=$PWD/e2e/bad" >> "$GITHUB_ENV"
           echo "HD_WS_FP=$(docker exec hdws-srv ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub | cut -d' ' -f2)" >> "$GITHUB_ENV"
 
+      # A throwaway SSH server running both the herdr TUI and herdr-core (the Herdr App's server),
+      # for the backend end-to-end test.
+      - name: herdr test server
+        run: |
+          docker build -q -t hc-e2e tools/hc-e2e
+          mkdir -p e2e/hckeys && chmod 777 e2e/hckeys
+          docker run -d --name hc-e2e-srv -p 2222:22 -v "$PWD/e2e/hckeys:/keys" hc-e2e
+          for i in $(seq 1 30); do docker logs hc-e2e-srv 2>&1 | grep -q ready && break; sleep 2; done
+          sleep 5
+          echo "HD_HC_HOST=127.0.0.1" >> "$GITHUB_ENV"
+          echo "HD_HC_PORT=2222" >> "$GITHUB_ENV"
+          echo "HD_HC_KEY=$PWD/e2e/hckeys/id" >> "$GITHUB_ENV"
+          echo "HD_HC_USER=dev" >> "$GITHUB_ENV"
+
       - name: Tests
         # Unit tests and the Compose UI tests (src/sharedTest) under Robolectric.
         run: ./gradlew --no-daemon --console=plain testDebugUnitTest
