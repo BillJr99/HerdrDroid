@@ -369,7 +369,11 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
         val markerSeen = openMarker?.containsMatchIn(shown)
         var scrolled = false
         // More limits below the fold (a ↓ marker on a narrow pane): scroll and read again first.
-        if (scrollKeys.isNotEmpty() && shown.lines().takeLast(30).any { it.trim().endsWith("↓") || it.trim() == "↓" }) {
+        // Only while the usage screen itself is on screen (its close hint shows): the same arrow
+        // keys in the agent's input box would step through your earlier prompts instead. herdr has
+        // no Page Down key, so the arrows are the only way to scroll that screen.
+        val screenOpen = openMarker == null || openMarker.containsMatchIn(shown.lines().takeLast(40).joinToString("\n"))
+        if (scrollKeys.isNotEmpty() && screenOpen && shown.lines().takeLast(30).any { it.trim().endsWith("↓") || it.trim() == "↓" }) {
             sendKeys(paneId, *scrollKeys.toTypedArray())
             delay(900)
             shown = shown + "\n" + read(paneId, 120)

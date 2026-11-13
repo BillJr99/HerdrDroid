@@ -156,6 +156,7 @@ object QuotaProfiles {
             setOf("claude"), "/usage", listOf("esc"), 3_000,
             // Newer Claude Code versions word the close hint differently.
             openMarker = Regex("""esc to (cancel|close|exit|dismiss|go back)|press esc|esc ·""", RegexOption.IGNORE_CASE),
+            // Arrows, because herdr accepts no Page Down; sent only while the usage screen is open.
             scrollKeys = List(12) { "down" },
             // Kept only to recognize a model picker left open (and close it); never typed.
             parseInfo = ::claudeModelScreen,
