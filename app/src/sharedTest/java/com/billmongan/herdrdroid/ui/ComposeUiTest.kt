@@ -10,6 +10,7 @@ import androidx.compose.material3.Text
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
@@ -140,6 +141,51 @@ class ComposeUiTest {
         items.value = items.value + (31..70).flatMap { listOf(UserItem("u$it", "Question $it"), TextItem("t$it", "Answer $it\n" + "more text\n".repeat(4))) }
         rule.waitForIdle()
         rule.onNodeWithText("Answer 70", substring = true).assertIsDisplayed()
+    }
+
+    /**
+     * The jump-to-latest pill ("↓ N new" / "↓ Latest") shows only away from the bottom, and its
+     * count clears as soon as the list is back at the bottom (Bill, 2026-11-13: "it says 4 new or
+     * latest with a down arrow even though I am at the bottom").
+     */
+    @Test fun latestPillOnlyAwayFromTheBottom() {
+        val items = androidx.compose.runtime.mutableStateOf((1..40).flatMap { listOf(UserItem("u$it", "Question $it"), TextItem("t$it", "Answer $it")) })
+        lateinit var state: androidx.compose.foundation.lazy.LazyListState
+        rule.setContent {
+            state = rememberLazyListState()
+            Box(Modifier.width(380.dp).height(640.dp)) {
+                TranscriptChat(
+                    rows = rowsOf(items.value), working = false, workingLabel = "", agentName = "Claude",
+                    pending = emptyList(), more = false, size = 12.5f, family = FontFamily.Default,
+                    actions = ChatActions(onQuote = {}, onStop = null),
+                    state = state, modifier = Modifier.fillMaxSize(),
+                )
+            }
+        }
+        val pill = "Jump to the latest"
+        rule.waitForIdle()
+        rule.onNodeWithContentDescription(pill).assertDoesNotExist()
+        // New messages while at the bottom: still no pill.
+        items.value = items.value + listOf(UserItem("u41", "Question 41"), TextItem("t41", "Answer 41"))
+        rule.waitForIdle()
+        rule.onNodeWithText("Answer 41").assertIsDisplayed()
+        rule.onNodeWithContentDescription(pill).assertDoesNotExist()
+        // Drag up: the pill shows; new messages are counted.
+        rule.onRoot().performTouchInput { swipeDown(durationMillis = 300) }
+        rule.waitForIdle()
+        rule.onNodeWithContentDescription(pill).assertIsDisplayed()
+        items.value = items.value + listOf(UserItem("u42", "Question 42"), TextItem("t42", "Answer 42"))
+        rule.waitForIdle()
+        rule.onNodeWithText("new", substring = true).assertIsDisplayed()
+        // Back at the bottom: the pill goes and the count clears.
+        rule.runOnIdle { kotlinx.coroutines.runBlocking { state.scrollToItem(state.layoutInfo.totalItemsCount - 1) } }
+        rule.waitForIdle()
+        rule.onNodeWithContentDescription(pill).assertDoesNotExist()
+        // Up again: "Latest", not the old count.
+        rule.onRoot().performTouchInput { swipeDown(durationMillis = 300) }
+        rule.waitForIdle()
+        rule.onNodeWithText("Latest", substring = true).assertIsDisplayed()
+        rule.onNodeWithText("new", substring = true).assertDoesNotExist()
     }
 
     /** A short label leaves room: the reset time must not be cut with "…". */

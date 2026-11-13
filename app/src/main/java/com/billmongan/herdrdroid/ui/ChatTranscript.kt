@@ -139,11 +139,19 @@ fun TranscriptChat(
 ) {
     val scope = rememberCoroutineScope()
     val total = rows.size + 3
-    val atBottom by remember {
+    // At the bottom when the list can't scroll further, or its last item ends within a few pixels
+    // of the end. Going by the last visible item's index alone left the "N new" pill up at the very
+    // bottom (2026-11-13): the trailing items (unsent messages, the working line) can be empty and
+    // then don't count as visible.
+    val slackPx = with(androidx.compose.ui.platform.LocalDensity.current) { 8.dp.roundToPx() }
+    val atBottom by remember(state, slackPx) {
         derivedStateOf {
             val info = state.layoutInfo
+            if (info.totalItemsCount == 0 || !state.canScrollForward) return@derivedStateOf true
             val last = info.visibleItemsInfo.lastOrNull() ?: return@derivedStateOf true
-            last.index >= info.totalItemsCount - 2
+            if (last.index >= info.totalItemsCount - 2) return@derivedStateOf true
+            last.index == info.totalItemsCount - 1 &&
+                last.offset + last.size <= info.viewportEndOffset - info.afterContentPadding + slackPx
         }
     }
     var unseen by remember { mutableStateOf(0) }
@@ -200,9 +208,14 @@ fun TranscriptChat(
         } else if (rows.size > lastCount) {
             unseen += rows.size - lastCount
         }
+        if (atBottom) unseen = 0
         lastCount = rows.size
     }
-    LaunchedEffect(atBottom) { if (atBottom) unseen = 0 }
+    // Whenever the list is at the bottom, nothing is unseen: after you scroll down, after new items
+    // land while you are there, and after the chat reloads.
+    LaunchedEffect(state) {
+        androidx.compose.runtime.snapshotFlow { atBottom }.collect { if (it) unseen = 0 }
+    }
 
     Box(modifier) {
         LazyColumn(
@@ -284,7 +297,7 @@ fun TranscriptChat(
             }
         }
         AnimatedVisibility(
-            !atBottom,
+            !atBottom && rows.isNotEmpty(),
             enter = fadeIn(), exit = fadeOut(),
             modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp),
         ) {
