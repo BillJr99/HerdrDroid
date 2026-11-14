@@ -93,12 +93,14 @@ class ChatCacheTest {
         assertNull(s.load("srv-2", "w1:p2"))
     }
 
-    @Test fun aDamagedFileIsDroppedNotShown() {
+    @Test fun aDamagedFileIsSetAsideNotShown() {
         val s = store()
         s.save("srv-1", "w1:p2", chat)
         tmp.root.listFiles()!!.single().writeBytes(byteArrayOf(1, 2, 3))
         assertNull(s.load("srv-1", "w1:p2"))
-        assertTrue(tmp.root.listFiles()!!.isEmpty())
+        // Out of the chat folder (1.3.2), never deleted: only the unreadable/ folder is left.
+        assertEquals(listOf("unreadable"), tmp.root.listFiles()!!.map { it.name })
+        assertEquals(1, java.io.File(tmp.root, "unreadable").listFiles()!!.size)
     }
 
     @Test fun closedPanesAndForgottenServersAreRemoved() {

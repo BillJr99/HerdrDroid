@@ -47,10 +47,15 @@ class Migrator(
         var files = 0
         var aside = 0
         val deadSecrets = mutableSetOf<String>()
-        // A copy left beside its file by a pass that stopped is not the only copy (the file is):
-        // it goes to the unreadable/ folder's sibling, out of the way, never over the file.
-        dir.listFiles()?.filter { it.isFile && it.name.endsWith(".mig") }?.forEach { stale ->
-            runCatching { stale.renameTo(File(dir, stale.name + ".stale")) }
+        // No folder means no kept chats; a folder that can't be listed stops the pass (keys kept).
+        if (dir.exists() && dir.listFiles() == null) return Result(false, stoppedAt = "listing ${dir.name}")
+        // A copy left by a pass that stopped: beside its file it is only a leftover and goes out of the
+        // way; with its file gone (1.3.1 deleted the file before the rename) it is the only copy and
+        // becomes the file again. A copy cut short then fails its seal and is set aside below.
+        dir.listFiles()?.filter { it.isFile && it.name.endsWith(".mig") }?.forEach { mig ->
+            val real = File(dir, mig.name.removeSuffix(".mig"))
+            val ok = if (real.exists()) mig.renameTo(File(dir, mig.name + ".stale")) else mig.renameTo(real)
+            if (!ok) return Result(false, stoppedAt = "recovering ${mig.name}")
         }
         for (srv in servers()) {
             fun re(c: String?): String? {
@@ -97,7 +102,9 @@ class Migrator(
         val oldSecretLeft = servers().any { s ->
             listOfNotNull(s.passwordCipher, s.keyCipher, s.keyPassCipher).any { !isNewSecret(it) && it !in deadSecrets }
         }
-        val oldFileLeft = dir.listFiles()?.filter(::kept)?.any { f -> runCatching { !isNewFile(f.readBytes()) }.getOrDefault(true) } ?: false
+        val listed = dir.listFiles()
+        if (dir.exists() && listed == null) return Result(false, secrets, files, aside, "listing ${dir.name} again")
+        val oldFileLeft = listed.orEmpty().any { f -> (kept(f) && runCatching { !isNewFile(f.readBytes()) }.getOrDefault(true)) || (f.isFile && f.name.endsWith(".mig")) }
         if (oldSecretLeft || oldFileLeft) return Result(false, secrets, files, aside, "second pass found data still under the old keys")
         return Result(true, secrets, files, aside)
     }

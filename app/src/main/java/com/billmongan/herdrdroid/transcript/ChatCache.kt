@@ -1,5 +1,6 @@
 package com.billmongan.herdrdroid.transcript
 
+import com.billmongan.herdrdroid.diag.DiagLog
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -151,12 +152,22 @@ class ChatStore(
     private fun <T> openKept(f: File, decode: (String) -> T?): T? {
         if (!f.isFile) return null
         val plain = try { open(f.readBytes()) } catch (e: Exception) {
-            if (com.billmongan.herdrdroid.store.Vaults.badSeal(e)) f.delete()
+            if (com.billmongan.herdrdroid.store.Vaults.badSeal(e)) setAside(f)
             return null
         }
         val v = runCatching { decode(String(plain, Charsets.UTF_8)) }.getOrNull()
-        if (v == null) f.delete()
+        if (v == null) setAside(f)
         return v
+    }
+
+    /**
+     * A file that can't be opened goes to unreadable/, never deleted (1.3.2): a key replaced after
+     * the old one was invalidated can't open it, but it is still the user's only copy. Removing the
+     * server clears that folder with the rest.
+     */
+    private fun setAside(f: File) {
+        val bin = File(dir, "unreadable").apply { mkdirs() }
+        if (!f.renameTo(File(bin, f.name))) DiagLog.log("chat", "a file that can't be opened stays where it is")
     }
 
     @Synchronized fun load(serverId: String, paneId: String): CachedChat? = openKept(file(serverId, paneId)) { ChatCodec.decode(it) }
@@ -185,6 +196,7 @@ class ChatStore(
 
     @Synchronized fun removeServer(serverId: String) {
         dir.listFiles()?.filter { it.name.startsWith(prefix(serverId)) }?.forEach { it.delete() }
+        File(dir, "unreadable").listFiles()?.filter { it.name.startsWith(prefix(serverId)) }?.forEach { it.delete() }
     }
 
     /** Removes the server's files for every pane not in [keep] (closed panes). */

@@ -181,13 +181,13 @@ object QuestionLog {
 
     /**
      * The same question (1.3.2, from a code review: any shared step title, a contained string or
-     * equal Yes/No options merged different questions): the same question text, or the same full
+     * equal Yes/No options merged different questions): the same full set of question texts, or the same full
      * set of step titles; the same options only where one side has no question text.
      */
-    private fun sameQuestion(a: QuestionItem, b: QuestionItem): Boolean {
+    internal fun sameQuestion(a: QuestionItem, b: QuestionItem): Boolean {
         val qa = a.parts.map { norm(it.question) }.filter { it.isNotEmpty() }
         val qb = b.parts.map { norm(it.question) }.filter { it.isNotEmpty() }
-        if (qa.isNotEmpty() && qb.isNotEmpty()) return qa.any { it in qb }
+        if (qa.isNotEmpty() && qb.isNotEmpty()) return qa.toSet() == qb.toSet()
         val ta = a.parts.mapNotNull { it.title?.let(::norm) }.toSet()
         val tb = b.parts.mapNotNull { it.title?.let(::norm) }.toSet()
         if (ta.size >= 2 && ta == tb) return true

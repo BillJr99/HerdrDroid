@@ -106,22 +106,26 @@ class ServerStore(context: Context) {
 
     fun get(id: String): Server? = all().firstOrNull { it.id == id }
 
-    @Synchronized fun save(server: Server) {
+    /**
+     * Saves [server]. Under the vault's read lock, so no save or delete lands in the middle of a
+     * migration pass (which holds the write lock and saves through [saveNow] itself); the lock is
+     * always taken before this store's own, in that order, so the two can't deadlock.
+     */
+    fun save(server: Server) = Vaults.reading { synchronized(this) {
         val old = get(server.id)
         // A record still holding a secret sealed the old way never overwrites one already re-sealed
         // (1.3.2, from a code review: the app's copy of a server from before the migration, saved
-        // again, put back a secret whose key the migration then deleted). A new secret the user
-        // typed is sealed the new way once the migration is done, so it is never held back.
-        write(all().filterNot { it.id == server.id } + keepResealed(server, old))
-    }
+        // again, put back a secret whose key the migration then deleted). A different secret the
+        // user typed while the migration is unfinished is kept, and the next pass re-seals it.
+        write(all().filterNot { it.id == server.id } + keepResealed(server, old, Vaults.migrated()) { a, b ->
+            runCatching { PasswordVault.decrypt(a) == PasswordVault.decrypt(b) }.getOrDefault(false)
+        })
+    } }
 
-    /** As [save], written to disk before it returns (the migration saves this way before it may delete a key). */
-    @Synchronized fun saveNow(server: Server) {
-        save(server)
-        prefs.edit().commit()
-    }
+    /** As [save]; every write is committed to disk before it returns (the migration relies on it). */
+    fun saveNow(server: Server) = save(server)
 
-    @Synchronized fun delete(id: String) = write(all().filterNot { it.id == id })
+    fun delete(id: String) = Vaults.reading { synchronized(this) { write(all().filterNot { it.id == id }) } }
 
     private fun write(list: List<Server>) {
         val arr = JSONArray()
@@ -131,14 +135,17 @@ class ServerStore(context: Context) {
 }
 
 /**
- * [incoming] with each secret the store already holds re-sealed ("v2:") kept over a stale one sealed
- * the old way (1.3.2): a copy of a server from before the migration, saved again, must not put back a
- * secret whose key the migration deletes. A secret typed after the migration is "v2:" itself, and
- * clearing one (null) is kept.
+ * [incoming] with each secret the store already holds re-sealed ("v2:") kept over one sealed the old
+ * way (1.3.2): a copy of a server from before the migration, saved again, must not put back a secret
+ * whose key the migration deletes. Once the old keys are gone ([oldKeysGone]) an old-way secret can
+ * only be such a stale copy. Before that, the stored one is kept only when [same] says both hold the
+ * same secret; a different one the user just typed wins, and the next migration pass re-seals it.
+ * A secret typed after the migration is "v2:" itself, and clearing one (null) is kept.
  */
-fun keepResealed(incoming: Server, stored: Server?): Server {
+fun keepResealed(incoming: Server, stored: Server?, oldKeysGone: Boolean = true, same: (String, String) -> Boolean = { _, _ -> true }): Server {
     if (stored == null) return incoming
-    fun keep(new: String?, old: String?) = if (new != null && old != null && !new.startsWith(Vaults.PW_PREFIX) && old.startsWith(Vaults.PW_PREFIX)) old else new
+    fun keep(new: String?, old: String?) =
+        if (new != null && old != null && !new.startsWith(Vaults.PW_PREFIX) && old.startsWith(Vaults.PW_PREFIX) && (oldKeysGone || same(new, old))) old else new
     return incoming.copy(
         passwordCipher = keep(incoming.passwordCipher, stored.passwordCipher),
         keyCipher = keep(incoming.keyCipher, stored.keyCipher),
@@ -443,11 +450,11 @@ object Vaults {
             ).run()
             if (!r.complete) return "not finished (${r.stoppedAt}); the old keys stay and it runs again at the next unlock"
             // Everything is under the new keys, checked twice: only now do the old ones go.
-            runCatching { ks().deleteEntry(PW_OLD) }
-            runCatching { ks().deleteEntry(CH_OLD) }
+            val gone = listOf(PW_OLD, CH_OLD).all { a -> runCatching { ks().deleteEntry(a) }.isSuccess && !has(a) }
             justUnlocked()
             return "re-sealed ${r.secrets} secret(s) and ${r.files} chat file(s)" +
-                (if (r.setAside > 0) ", set aside ${r.setAside} the old key couldn't open" else "") + "; old keys removed"
+                (if (r.setAside > 0) ", set aside ${r.setAside} the old key couldn't open" else "") +
+                (if (gone) "; old keys removed" else "; an old key could not be removed yet (nothing is sealed with it now)")
         } catch (e: Exception) {
             return "not finished (${e.javaClass.simpleName}); the old keys stay and it runs again at the next unlock"
         } finally {

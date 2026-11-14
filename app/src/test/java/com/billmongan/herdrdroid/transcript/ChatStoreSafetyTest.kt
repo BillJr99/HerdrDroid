@@ -36,19 +36,32 @@ class ChatStoreSafetyTest {
         assertEquals(q, s.loadQuestions("s", "p"))
     }
 
-    @Test fun aSealThatFailsToAuthenticateIsDeleted() {
+    @Test fun aSealThatFailsToAuthenticateIsSetAsideNotDeleted() {
         val s = store()
+        val before = tmp.root.listFiles()!!.first { it.name.endsWith(".chat") }.readBytes()
         failWith = javax.crypto.AEADBadTagException("tag mismatch")
         assertNull(s.load("s", "p"))
         assertFalse(tmp.root.listFiles()!!.any { it.name.endsWith(".chat") })
+        val aside = java.io.File(tmp.root, "unreadable").listFiles()!!.single { it.name.endsWith(".chat") }
+        assertTrue(before.contentEquals(aside.readBytes()))
         assertTrue(s.hasQuestions("s", "p"))
+        // Removing the server clears the set-aside copy with the rest.
+        s.removeServer("s")
+        assertEquals(0, java.io.File(tmp.root, "unreadable").listFiles()!!.size)
     }
 
-    @Test fun aFileThatOpensButDoesntDecodeIsDeleted() {
+    @Test fun aFileThatOpensButDoesntDecodeIsSetAside() {
         val s = ChatStore(tmp.root, seal, { _: ByteArray -> "not json".toByteArray() })
         s.save("s", "p", chat)
         assertNull(s.load("s", "p"))
         assertEquals(0, tmp.root.listFiles()!!.count { it.name.endsWith(".chat") })
+        assertEquals(1, java.io.File(tmp.root, "unreadable").listFiles()!!.count { it.name.endsWith(".chat") })
+    }
+
+    @Test fun questionsThatShareOneStepAreDifferentQuestions() {
+        fun item(k: String, vararg qs: String) = QuestionItem(k, qs.map { QPart(question = it, options = listOf("Yes", "No")) })
+        assertFalse(QuestionLog.sameQuestion(item("a", "Delete the branch?", "Are you sure?"), item("b", "Drop the table?", "Are you sure?")))
+        assertTrue(QuestionLog.sameQuestion(item("a", "Delete the branch?", "Are you sure?"), item("b", "Are you sure?", "Delete the branch?")))
     }
 
     @Test fun anEmptyQuestionSaveNeverClearsAHistory() {

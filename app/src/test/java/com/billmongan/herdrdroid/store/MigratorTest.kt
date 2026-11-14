@@ -167,4 +167,43 @@ class MigratorTest {
         assertFalse(r.complete)
         assertNothingLost()
     }
+    @Test fun aCopyLeftByA131CrashIsTheFileAgainNotSetAside() {
+        setUp()
+        // 1.3.1 could stop after deleting a.chat and before renaming its new copy over it.
+        File(dir, "a.chat").delete()
+        File(dir, "a.chat.mig").writeText("HDv2chat A")
+        // A leftover beside a file that is still there goes out of the way.
+        File(dir, "b.chat.mig").writeText("HDv2half")
+        val r = migrator().run()
+        assertTrue(r.stoppedAt, r.complete)
+        assertNothingLost()
+        assertFalse(File(dir, "a.chat.mig").exists())
+        assertTrue(File(dir, "b.chat.mig.stale").exists())
+    }
+
+    @Test fun aFolderThatCantBeListedStopsWithTheKeysKept() {
+        setUp()
+        val unlisted = object : File(dir.path) { override fun listFiles(): Array<File>? = null }
+        val r = Migrator(
+            servers = { servers.toList() }, saveServer = { s -> servers.replaceAll { if (it.id == s.id) s else it } },
+            isNewSecret = { it.startsWith("v2:") }, resealSecret = { "v2:" + it.removePrefix("old:") },
+            dir = unlisted, isNewFile = { String(it).startsWith("HDv2") }, resealFile = { it }, unreadable = { false },
+        ).run()
+        assertFalse(r.complete)
+        assertNothingLost()
+        // No folder at all is no chats: complete.
+        val none = Migrator({ emptyList() }, {}, { true }, { it }, File(dir, "missing"), { true }, { it }, { false }).run()
+        assertTrue(none.complete)
+    }
+
+    @Test fun aDifferentSecretTypedBeforeTheMigrationFinishesIsKept() {
+        val stored = server("s1", "v2:old password")
+        val typed = server("s1", "old:new password")
+        val same = { a: String, b: String -> plainSecret(a) == plainSecret(b) }
+        assertEquals("old:new password", keepResealed(typed, stored, oldKeysGone = false, same = same).passwordCipher)
+        // The same secret, from a stale copy, keeps the re-sealed one.
+        assertEquals("v2:old password", keepResealed(server("s1", "old:old password"), stored, oldKeysGone = false, same = same).passwordCipher)
+        // With the old keys gone, an old-way secret can only be stale.
+        assertEquals("v2:old password", keepResealed(typed, stored, oldKeysGone = true, same = same).passwordCipher)
+    }
 }
