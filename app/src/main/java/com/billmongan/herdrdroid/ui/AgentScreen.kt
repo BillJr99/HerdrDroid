@@ -213,8 +213,9 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     fun send() {
         if (message.isNotBlank() && pane != null) {
             val text = message.trim()
-            if (typingAnswer) vm.noteAnswer(paneId, answering, text)
-            vm.sendMessage(pane, text); message = ""; typingAnswer = false; answering = null
+            // The typed answer goes into the question's history once it was delivered (1.3.2).
+            val q = answering
+            if (typingAnswer) vm.sendMessage(pane, text) { vm.noteAnswer(paneId, q, text) } else vm.sendMessage(pane, text); message = ""; typingAnswer = false; answering = null
             // A slash command answers on the screen (a menu, a sign-in code), not in the agent's log,
             // so show the screen and the keys to move through it.
             if (text.startsWith("/") && !live) { fullTerminal = true; commandScreen = text.substringBefore(' ') }
@@ -317,8 +318,8 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 agent = pane?.agentName ?: "The agent",
                 onChoice = { c -> vm.answerChoice(paneId, p, c) },
                 onKey = { k ->
-                    vm.noteAnswer(paneId, p, "Pressed " + when (k) { "esc" -> "Esc"; "tab" -> "Tab"; "shift+tab" -> "Shift+Tab"; "ctrl+c" -> "Ctrl+C"; else -> k })
-                    vm.sendKeys(paneId, k)
+                    val label = "Pressed " + when (k) { "esc" -> "Esc"; "tab" -> "Tab"; "shift+tab" -> "Shift+Tab"; "ctrl+c" -> "Ctrl+C"; else -> k }
+                    vm.sendKeysThen(paneId, listOf(k)) { vm.noteAnswer(paneId, p, label) }
                 },
                 onTypeAnswer = { answering = p; typingAnswer = true },
             )

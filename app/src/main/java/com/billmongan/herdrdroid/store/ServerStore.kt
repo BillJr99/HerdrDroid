@@ -106,18 +106,44 @@ class ServerStore(context: Context) {
 
     fun get(id: String): Server? = all().firstOrNull { it.id == id }
 
-    fun save(server: Server) {
-        val list = all().filterNot { it.id == server.id } + server
-        write(list)
+    @Synchronized fun save(server: Server) {
+        val old = get(server.id)
+        // A record still holding a secret sealed the old way never overwrites one already re-sealed
+        // (1.3.2, from a code review: the app's copy of a server from before the migration, saved
+        // again, put back a secret whose key the migration then deleted). A new secret the user
+        // typed is sealed the new way once the migration is done, so it is never held back.
+        write(all().filterNot { it.id == server.id } + keepResealed(server, old))
     }
 
-    fun delete(id: String) = write(all().filterNot { it.id == id })
+    /** As [save], written to disk before it returns (the migration saves this way before it may delete a key). */
+    @Synchronized fun saveNow(server: Server) {
+        save(server)
+        prefs.edit().commit()
+    }
+
+    @Synchronized fun delete(id: String) = write(all().filterNot { it.id == id })
 
     private fun write(list: List<Server>) {
         val arr = JSONArray()
         list.forEach { arr.put(it.toJson()) }
-        prefs.edit().putString("list", arr.toString()).apply()
+        prefs.edit().putString("list", arr.toString()).commit()
     }
+}
+
+/**
+ * [incoming] with each secret the store already holds re-sealed ("v2:") kept over a stale one sealed
+ * the old way (1.3.2): a copy of a server from before the migration, saved again, must not put back a
+ * secret whose key the migration deletes. A secret typed after the migration is "v2:" itself, and
+ * clearing one (null) is kept.
+ */
+fun keepResealed(incoming: Server, stored: Server?): Server {
+    if (stored == null) return incoming
+    fun keep(new: String?, old: String?) = if (new != null && old != null && !new.startsWith(Vaults.PW_PREFIX) && old.startsWith(Vaults.PW_PREFIX)) old else new
+    return incoming.copy(
+        passwordCipher = keep(incoming.passwordCipher, stored.passwordCipher),
+        keyCipher = keep(incoming.keyCipher, stored.keyCipher),
+        keyPassCipher = keep(incoming.keyPassCipher, stored.keyPassCipher),
+    )
 }
 
 /** App-wide choices, and the last usage reading for each agent on each server. */
@@ -274,16 +300,29 @@ object Vaults {
     val CHAT_MAGIC = byteArrayOf('H'.code.toByte(), 'D'.code.toByte(), 'v'.code.toByte(), '2'.code.toByte())
     const val PW_PREFIX = "v2:"
 
+    /**
+     * Every seal and open takes the read side; [migrate] takes the write side for its whole run
+     * (1.3.2), so nothing is sealed under a key the migration is about to delete, and no file it
+     * is re-sealing is written meanwhile.
+     */
+    val lock = java.util.concurrent.locks.ReentrantReadWriteLock()
+    inline fun <T> reading(block: () -> T): T { val l = lock.readLock(); l.lock(); try { return block() } finally { l.unlock() } }
+
     private fun ks() = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-    private fun has(alias: String) = runCatching { ks().containsAlias(alias) }.getOrDefault(false)
+    internal fun has(alias: String) = runCatching { ks().containsAlias(alias) }.getOrDefault(false)
     internal fun existing(alias: String): SecretKey? = runCatching { ks().getKey(alias, null) as? SecretKey }.getOrNull()
 
-    /** The 1.3.0 key (no authentication), made only if no data of any kind exists yet under either key. */
-    internal fun oldKey(alias: String): SecretKey = existing(alias) ?: KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").run {
-        init(KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
-            .setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build())
-        generateKey()
-    }
+    /**
+     * The 1.3.0 key (no authentication). Made only on a phone that never had the new keys (1.3.2,
+     * from a code review: one minted after the migration deleted the old key sealed data under a
+     * key nothing could find again). With a new key present, callers seal with it instead.
+     */
+    internal fun oldKey(alias: String, newAlias: String): SecretKey? = existing(alias) ?: if (has(newAlias)) null else
+        KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").run {
+            init(KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build())
+            generateKey()
+        }
 
     /** A key that needs the user: strong biometric or screen lock, valid [WINDOW_SECONDS] after it. */
     internal fun newKey(alias: String): SecretKey {
@@ -301,6 +340,12 @@ object Vaults {
         return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").run { init(b.build()); generateKey() }
     }
 
+    /**
+     * A new key Android has invalidated for good (the screen lock was removed): what it sealed can't
+     * be opened again by anyone, so a fresh key replaces it for what is saved from now on (1.3.2).
+     */
+    internal fun renew(alias: String): SecretKey { runCatching { ks().deleteEntry(alias) }; return newKey(alias) }
+
     /** True once [migrate] finished: the new keys exist and the old ones are gone. */
     fun migrated(): Boolean = has(PW_NEW) && has(CH_NEW) && !has(PW_OLD) && !has(CH_OLD)
 
@@ -310,14 +355,16 @@ object Vaults {
     fun deviceSecure(ctx: Context): Boolean =
         runCatching { (ctx.getSystemService(Context.KEYGUARD_SERVICE) as android.app.KeyguardManager).isDeviceSecure }.getOrDefault(false)
 
-    @Volatile private var lockedAt = 0L
     @Volatile private var checkedAt = 0L
     @Volatile private var lastLocked = false
+    /** The new password key was invalidated for good (1.3.2): saved passwords must be typed again. */
+    @Volatile var invalidated = false
+        private set
 
     /**
      * True when the new keys can't be used now (the window has passed). False before migration
-     * (the old keys need nobody). Checked by starting an encryption, which reveals nothing; kept
-     * for 15 seconds.
+     * (the old keys need nobody), and for a key invalidated for good, which no unlock can fix
+     * ([invalidated] says so instead). Fails closed on anything unexpected. Kept for 15 seconds.
      */
     fun locked(): Boolean {
         if (!has(PW_NEW)) return false
@@ -327,13 +374,11 @@ object Vaults {
             aesGcm().init(Cipher.ENCRYPT_MODE, existing(PW_NEW) ?: return@runCatching false)
             false
         }
-        // Fail closed: anything but a key that can never be used again counts as locked, so an
-        // unexpected refusal asks for the fingerprint instead of letting the app run unlocked.
-        lastLocked = r.getOrElse { it !is android.security.keystore.KeyPermanentlyInvalidatedException }
-        // The lock state and, on a refusal, its kind only (no key material, no data).
-        android.util.Log.i("HerdrDroidVault", "lock check: ${if (lastLocked) "locked" else "open"}" + (r.exceptionOrNull()?.let { " (${it.javaClass.simpleName})" } ?: ""))
+        val e = r.exceptionOrNull()
+        invalidated = e is android.security.keystore.KeyPermanentlyInvalidatedException
+        lastLocked = e != null && !invalidated
         checkedAt = now
-        if (lastLocked) lockedAt = now
+        android.util.Log.i("HerdrDroidVault", "lock check: ${if (lastLocked) "locked" else if (invalidated) "key invalidated" else "open"}" + (e?.let { " (${it.javaClass.simpleName})" } ?: ""))
         return lastLocked
     }
 
@@ -352,75 +397,98 @@ object Vaults {
     }
     internal fun aesGcm(): Cipher = keystoreProvider?.let { Cipher.getInstance("AES/GCM/NoPadding", it) } ?: Cipher.getInstance("AES/GCM/NoPadding")
 
+    /**
+     * A cipher ready to use; a key that needs the user outside its window, or one invalidated for
+     * good, is [VaultLocked] (1.3.2: invalidation too, so the data it sealed is kept, not deleted).
+     */
     internal fun cipher(mode: Int, key: SecretKey, iv: ByteArray? = null): Cipher = try {
         aesGcm().apply { if (iv == null) init(mode, key) else init(mode, key, GCMParameterSpec(128, iv)) }
     } catch (e: android.security.keystore.UserNotAuthenticatedException) {
         checkedAt = System.currentTimeMillis(); lastLocked = true
         throw VaultLocked(e)
+    } catch (e: android.security.keystore.KeyPermanentlyInvalidatedException) {
+        invalidated = true
+        throw VaultLocked(e, permanent = true)
+    }
+
+    /** True for "this seal can't be opened with its key": AES-GCM authentication failed. */
+    fun badSeal(e: Throwable): Boolean {
+        var t: Throwable? = e
+        while (t != null) { if (t is javax.crypto.AEADBadTagException) return true; t = t.cause.takeIf { it !== t } }
+        return false
     }
 
     /**
-     * Re-seals every saved secret and kept chat under the new keys; deletes the old keys only when
-     * all of them were re-sealed. Run right after an authenticated unlock. Returns what happened.
+     * Re-seals every saved secret and kept chat under the new keys with [Migrator], holding the
+     * write lock throughout, and deletes the old keys only when its second pass found nothing left
+     * under them. Run right after an authenticated unlock. Returns what happened.
      */
     fun migrate(ctx: Context, store: ServerStore, chatDir: java.io.File): String {
         if (!deviceSecure(ctx)) return "no secure screen lock; the old keys stay"
         if (migrated()) return "already done"
-        return runCatching {
+        val w = lock.writeLock()
+        w.lock()
+        try {
+            if (migrated()) return "already done"
             newKey(PW_NEW); newKey(CH_NEW)
-            var secrets = 0
-            for (srv in store.all()) {
-                fun re(c: String?): String? = c?.let { if (it.startsWith(PW_PREFIX)) it else PasswordVault.sealNew(PasswordVault.decrypt(it)).also { secrets++ } }
-                val upd = srv.copy(passwordCipher = re(srv.passwordCipher), keyCipher = re(srv.keyCipher), keyPassCipher = re(srv.keyPassCipher))
-                if (upd != srv) store.save(upd)
-            }
-            var files = 0
-            chatDir.listFiles()?.filter { it.isFile && (it.name.endsWith(".chat") || it.name.endsWith(".q")) }?.forEach { f ->
-                val bytes = f.readBytes()
-                if (!ChatVault.isNew(bytes)) {
-                    val plain = ChatVault.open(bytes)
-                    val tmp = java.io.File(chatDir, f.name + ".mig")
-                    tmp.writeBytes(ChatVault.sealNew(plain))
-                    if (!tmp.renameTo(f)) { f.delete(); tmp.renameTo(f) }
-                    files++
-                }
-            }
-            // Everything is under the new keys: only now do the old ones go.
-            ks().deleteEntry(PW_OLD)
-            ks().deleteEntry(CH_OLD)
+            val r = Migrator(
+                servers = { store.all() },
+                saveServer = { store.saveNow(it) },
+                isNewSecret = { it.startsWith(PW_PREFIX) },
+                resealSecret = { PasswordVault.sealNew(PasswordVault.decrypt(it)) },
+                dir = chatDir,
+                isNewFile = { ChatVault.isNew(it) },
+                resealFile = { ChatVault.sealNew(ChatVault.open(it)) },
+                unreadable = ::badSeal,
+            ).run()
+            if (!r.complete) return "not finished (${r.stoppedAt}); the old keys stay and it runs again at the next unlock"
+            // Everything is under the new keys, checked twice: only now do the old ones go.
+            runCatching { ks().deleteEntry(PW_OLD) }
+            runCatching { ks().deleteEntry(CH_OLD) }
             justUnlocked()
-            "re-sealed $secrets secret(s) and $files chat file(s); old keys removed"
-        }.getOrElse { "not finished (${it.javaClass.simpleName}: ${it.message}); the old keys stay and it runs again at the next unlock" }
+            return "re-sealed ${r.secrets} secret(s) and ${r.files} chat file(s)" +
+                (if (r.setAside > 0) ", set aside ${r.setAside} the old key couldn't open" else "") + "; old keys removed"
+        } catch (e: Exception) {
+            return "not finished (${e.javaClass.simpleName}); the old keys stay and it runs again at the next unlock"
+        } finally {
+            w.unlock()
+        }
     }
 }
 
-/** A Keystore key that needs the fingerprint, used outside its window: locked, not damaged (1.3.1). */
-class VaultLocked(cause: Throwable) : Exception("HerdrDroid is locked: unlock it to read", cause)
+/**
+ * A Keystore key that can't be used now: outside its fingerprint window (1.3.1), or [permanent]ly
+ * invalidated (1.3.2). Either way the data it sealed is kept, never deleted as damaged.
+ */
+class VaultLocked(cause: Throwable, val permanent: Boolean = false) : Exception("HerdrDroid is locked: unlock it to read", cause)
 
 /** Encrypts saved passwords and key files with an AES key that never leaves the Android Keystore (see [Vaults]). */
 object PasswordVault {
-    /** New data: the new key once migration is done, else the old one (no prompt before the first unlock). */
-    fun encrypt(password: String): String =
-        if (Vaults.migrated()) sealNew(password) else sealOld(password)
+    /** New data: the new key once migration is done (or once the new key exists), else the old one. */
+    fun encrypt(password: String): String = Vaults.reading {
+        val old = if (Vaults.migrated()) null else Vaults.oldKey(Vaults.PW_OLD, Vaults.PW_NEW)
+        if (old == null) sealNew(password) else {
+            val c = Vaults.cipher(Cipher.ENCRYPT_MODE, old)
+            Base64.encodeToString(c.iv + c.doFinal(password.toByteArray(Charsets.UTF_8)), Base64.NO_WRAP)
+        }
+    }
 
     internal fun sealNew(password: String): String {
-        val c = Vaults.cipher(Cipher.ENCRYPT_MODE, Vaults.newKey(Vaults.PW_NEW))
+        val c = try { Vaults.cipher(Cipher.ENCRYPT_MODE, Vaults.newKey(Vaults.PW_NEW)) } catch (e: VaultLocked) {
+            if (!e.permanent) throw e
+            Vaults.cipher(Cipher.ENCRYPT_MODE, Vaults.renew(Vaults.PW_NEW))
+        }
         return Vaults.PW_PREFIX + Base64.encodeToString(c.iv + c.doFinal(password.toByteArray(Charsets.UTF_8)), Base64.NO_WRAP)
     }
 
-    private fun sealOld(password: String): String {
-        val c = Vaults.cipher(Cipher.ENCRYPT_MODE, Vaults.oldKey(Vaults.PW_OLD))
-        return Base64.encodeToString(c.iv + c.doFinal(password.toByteArray(Charsets.UTF_8)), Base64.NO_WRAP)
-    }
-
     /** Throws [VaultLocked] outside the window for data under the new key. */
-    fun decrypt(blob: String): String {
+    fun decrypt(blob: String): String = Vaults.reading {
         val isNew = blob.startsWith(Vaults.PW_PREFIX)
         val bytes = Base64.decode(blob.removePrefix(Vaults.PW_PREFIX), Base64.NO_WRAP)
         val key = if (isNew) Vaults.existing(Vaults.PW_NEW) else Vaults.existing(Vaults.PW_OLD)
         key ?: throw IllegalStateException("the key for this saved secret is gone")
         val c = Vaults.cipher(Cipher.DECRYPT_MODE, key, bytes.copyOfRange(0, 12))
-        return String(c.doFinal(bytes, 12, bytes.size - 12), Charsets.UTF_8)
+        String(c.doFinal(bytes, 12, bytes.size - 12), Charsets.UTF_8)
     }
 }
 
@@ -428,24 +496,30 @@ object PasswordVault {
 object ChatVault {
     fun isNew(sealed: ByteArray): Boolean = sealed.size > 4 && sealed.copyOfRange(0, 4).contentEquals(Vaults.CHAT_MAGIC)
 
-    fun seal(plain: ByteArray): ByteArray = if (Vaults.migrated()) sealNew(plain) else {
-        val c = Vaults.cipher(Cipher.ENCRYPT_MODE, Vaults.oldKey(Vaults.CH_OLD))
-        c.iv + c.doFinal(plain)
+    fun seal(plain: ByteArray): ByteArray = Vaults.reading {
+        val old = if (Vaults.migrated()) null else Vaults.oldKey(Vaults.CH_OLD, Vaults.CH_NEW)
+        if (old == null) sealNew(plain) else {
+            val c = Vaults.cipher(Cipher.ENCRYPT_MODE, old)
+            c.iv + c.doFinal(plain)
+        }
     }
 
     internal fun sealNew(plain: ByteArray): ByteArray {
-        val c = Vaults.cipher(Cipher.ENCRYPT_MODE, Vaults.newKey(Vaults.CH_NEW))
+        val c = try { Vaults.cipher(Cipher.ENCRYPT_MODE, Vaults.newKey(Vaults.CH_NEW)) } catch (e: VaultLocked) {
+            if (!e.permanent) throw e
+            Vaults.cipher(Cipher.ENCRYPT_MODE, Vaults.renew(Vaults.CH_NEW))
+        }
         return Vaults.CHAT_MAGIC + c.iv + c.doFinal(plain)
     }
 
     /** Throws [VaultLocked] outside the window for a file under the new key. */
-    fun open(sealed: ByteArray): ByteArray {
+    fun open(sealed: ByteArray): ByteArray = Vaults.reading {
         val isNew = isNew(sealed)
         val body = if (isNew) sealed.copyOfRange(4, sealed.size) else sealed
         val key = (if (isNew) Vaults.existing(Vaults.CH_NEW) else Vaults.existing(Vaults.CH_OLD))
             ?: throw IllegalStateException("the key for this chat file is gone")
         val c = Vaults.cipher(Cipher.DECRYPT_MODE, key, body.copyOfRange(0, 12))
-        return c.doFinal(body, 12, body.size - 12)
+        c.doFinal(body, 12, body.size - 12)
     }
 }
 

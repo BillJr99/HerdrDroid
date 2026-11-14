@@ -68,7 +68,10 @@ class QuietGate(val quietMs: Long = 45_000, val minGapMs: Long = 5 * 60_000) {
         fun sameBottom(visible: String, recent: String): Boolean {
             fun tail(s: String) = s.lines().map { it.trimEnd() }.filter { it.isNotBlank() }.takeLast(3)
             val v = tail(visible)
-            return v.isEmpty() || v == tail(recent)
+            val r = tail(recent)
+            // A blank visible screen over output that has lines is not "at the bottom" (1.3.2, from a code review).
+            if (v.isEmpty()) return r.isEmpty()
+            return v == r
         }
     }
 }

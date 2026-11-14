@@ -1234,9 +1234,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val keptIds = java.util.concurrent.ConcurrentHashMap<String, Set<String>>()
 
     /** Writes a chat to the phone's storage, off the main thread. */
+    /** Saves of kept chats and questions, one at a time in the order they were asked (1.3.2). */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private val saveLane = Dispatchers.IO.limitedParallelism(1)
+    /** The newest save asked for, per file: an older one still waiting is dropped (1.3.2, from a code review). */
+    private val saveGen = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val saveCounter = java.util.concurrent.atomic.AtomicLong()
+
     private fun persistChat(serverId: String, paneId: String, chat: CachedChat) {
         persistedAt["$serverId|$paneId"] = System.currentTimeMillis()
-        viewModelScope.launch(Dispatchers.IO) { chatStore?.save(serverId, paneId, chat) }
+        val key = "chat|$serverId|$paneId"
+        val gen = saveCounter.incrementAndGet().also { saveGen[key] = it }
+        viewModelScope.launch(saveLane) { if (saveGen[key] == gen) chatStore?.save(serverId, paneId, chat) }
     }
 
     // ---- Question history (1.3.0) -----------------------------------------------------------------
@@ -1251,17 +1260,29 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         questionLogs["${current?.id}|$paneId"] ?: emptyList()
 
     /** The pane's question history, loaded from the phone the first time. */
-    private fun questions(serverId: String, paneId: String): List<com.billmongan.herdrdroid.transcript.QuestionItem> {
+    private fun questions(serverId: String, paneId: String): List<com.billmongan.herdrdroid.transcript.QuestionItem> =
+        loadedQuestions(serverId, paneId) ?: emptyList()
+
+    /**
+     * The pane's question history as it is on the phone: loaded (and kept in memory) when it opens,
+     * an empty one when there is none yet, and null when a history exists but can't be opened now
+     * (locked, or a Keystore or disk error). Null is never cached, so an empty list is never saved
+     * over a real history (1.3.2, from a code review: a stale lock check let that happen).
+     */
+    private fun loadedQuestions(serverId: String, paneId: String): List<com.billmongan.herdrdroid.transcript.QuestionItem>? {
         val k = "$serverId|$paneId"
         questionLogs[k]?.let { return it }
-        // Locked (1.3.1): don't cache an empty history, which would later be saved over the real one.
-        if (com.billmongan.herdrdroid.store.Vaults.locked()) return emptyList()
-        return (chatStore?.loadQuestions(serverId, paneId).orEmpty()).also { questionLogs[k] = it }
+        val store = chatStore ?: return null
+        val got = store.loadQuestions(serverId, paneId)
+        if (got == null && store.hasQuestions(serverId, paneId)) return null
+        return (got ?: emptyList()).also { questionLogs[k] = it }
     }
 
     private fun putQuestions(serverId: String, paneId: String, qs: List<com.billmongan.herdrdroid.transcript.QuestionItem>) {
         questionLogs["$serverId|$paneId"] = qs
-        viewModelScope.launch(Dispatchers.IO) { chatStore?.saveQuestions(serverId, paneId, qs) }
+        val key = "q|$serverId|$paneId"
+        val gen = saveCounter.incrementAndGet().also { saveGen[key] = it }
+        viewModelScope.launch(saveLane) { if (saveGen[key] == gen) chatStore?.saveQuestions(serverId, paneId, qs) }
     }
 
     /** The newest log item of the pane's chat, which a question seen now is shown after. */
@@ -1275,9 +1296,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun observeQuestion(serverId: String, paneId: String, p: com.billmongan.herdrdroid.herdr.Prompt?, status: Status?, agent: String?) {
         val k = "$serverId|$paneId"
-        // While locked the history can't be read or written; questions then aren't recorded (1.3.1).
-        if (questionLogs[k] == null && com.billmongan.herdrdroid.store.Vaults.locked()) return
-        val log = questions(serverId, paneId)
+        // While the history can't be read (locked, or unreadable now), questions aren't recorded (1.3.1, 1.3.2).
+        val log = loadedQuestions(serverId, paneId) ?: return
         val now = System.currentTimeMillis()
         // Only a card with options is a question to keep; "This agent is waiting for you." with none is not.
         val card = p?.takeIf { it.choices.isNotEmpty() }
@@ -1296,8 +1316,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Records the answer the app sent to the pane's open question: an option, typed text, or a key. */
     fun noteAnswer(paneId: String, p: com.billmongan.herdrdroid.herdr.Prompt?, answer: String, serverId: String? = current?.id) {
         val sid = serverId ?: return
-        if (questionLogs["$sid|$paneId"] == null && com.billmongan.herdrdroid.store.Vaults.locked()) return
-        val log = questions(sid, paneId)
+        val log = loadedQuestions(sid, paneId) ?: return
         val next = com.billmongan.herdrdroid.transcript.QuestionLog.answered(log, p, answer)
         if (next != log) putQuestions(sid, paneId, next)
     }
@@ -1694,7 +1713,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         quietGate.sent("${current?.id}|$paneId", System.currentTimeMillis())
     }
 
-    fun sendMessage(pane: Pane, text: String) {
+    fun sendMessage(pane: Pane, text: String, delivered: () -> Unit = {}) {
         noteSent(pane.id)
         lastSent = pane.id to text
         lastSentAt = System.currentTimeMillis()
@@ -1707,6 +1726,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 h.sendMessage(pane, text)
                 com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${pane.id}: delivered to herdr (${h.lastSendRoute})")
+                delivered()
             } catch (e: Exception) {
                 com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${pane.id}: failed: ${com.billmongan.herdrdroid.diag.DiagLog.describe(e)}")
                 throw e
@@ -1715,11 +1735,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun sendKeys(paneId: String, vararg keys: String) {
+    fun sendKeys(paneId: String, vararg keys: String) = sendKeysThen(paneId, keys.toList()) {}
+
+    /** Sends keys, then runs [sent] once they went out (1.3.2: a key answer is recorded only then). */
+    fun sendKeysThen(paneId: String, keys: List<String>, sent: () -> Unit) {
         noteSent(paneId)
-        val k = keys.toList()
         act(paneId, "Couldn't send the key") { h ->
-            h.sendKeys(paneId, *k.toTypedArray())
+            h.sendKeys(paneId, *keys.toTypedArray())
+            sent()
             readPane(paneId)
         }
     }
@@ -1730,19 +1753,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun answerChoice(paneId: String, prompt: com.billmongan.herdrdroid.herdr.Prompt, choice: com.billmongan.herdrdroid.herdr.Choice) {
         noteSent(paneId)
-        noteAnswer(paneId, prompt, choice.label)
+        // The answer goes into the history only once it was sent (1.3.2, from a code review).
         if (choice.keys.startsWith("grok-privacy:")) {
             act(paneId, "Couldn't answer") { h ->
                 answerGrokPrivacy(h, paneId, optIn = choice.keys == com.billmongan.herdrdroid.herdr.GROK_PRIVACY_IN)?.let { throw IllegalStateException(it) }
+                noteAnswer(paneId, prompt, choice.label)
                 readPane(paneId)
                 refreshPanes()
             }
             return
         }
         val keys = com.billmongan.herdrdroid.herdr.menuKeys(prompt, choice)
-        if (keys == null) { answer(paneId, choice.keys, choice.pressEnter); return }
+        if (keys == null) { answer(paneId, choice.keys, choice.pressEnter) { noteAnswer(paneId, prompt, choice.label) }; return }
         act(paneId, "Couldn't answer") { h ->
             h.sendKeys(paneId, *keys.toTypedArray())
+            noteAnswer(paneId, prompt, choice.label)
             readPane(paneId)
             refreshPanes()
         }
@@ -1780,10 +1805,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return null
     }
 
-    fun answer(paneId: String, keys: String, pressEnter: Boolean) {
+    fun answer(paneId: String, keys: String, pressEnter: Boolean, sent: () -> Unit = {}) {
         noteSent(paneId)
         act(paneId, "Couldn't answer") { h ->
             if (pressEnter) h.typeAndEnter(paneId, keys) else h.sendText(paneId, keys)
+            sent()
             readPane(paneId)
             refreshPanes()
         }
@@ -2215,7 +2241,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     Notify.clear(app, serverId, p.id)
                     // The question was answered (or dropped) away from this screen: settle its record.
                     viewModelScope.launch(Dispatchers.Main) {
-                        val log = questions(serverId, p.id)
+                        val log = loadedQuestions(serverId, p.id) ?: return@launch
                         val next = com.billmongan.herdrdroid.transcript.QuestionLog.gone(log, p.status == Status.WORKING, System.currentTimeMillis())
                         if (next != log) putQuestions(serverId, p.id, next)
                     }
@@ -2239,7 +2265,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             runCatching {
                 val p = h.panes().firstOrNull { it.id == a.paneId } ?: return
                 h.sendMessage(p, a.keys)
-                withContext(Dispatchers.Main) { noteAnswer(a.paneId, null, a.keys, a.serverId) }
+                withContext(Dispatchers.Main) { noteAnswer(a.paneId, null, a.keys, a.serverId) }  // after the send
                 if (a.serverId == current?.id && transcriptPane == a.paneId) lastSent = a.paneId to a.keys
             }.onFailure {
                 Notify.needsYou(app, a.serverId, servers.firstOrNull { it.id == a.serverId }?.label ?: "", a.paneId, "The agent",
@@ -2258,9 +2284,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         runCatching {
             val label = now?.choices?.firstOrNull { it.keys == a.keys }?.label ?: if (a.isKey) "Pressed ${a.keys}" else a.keys
-            withContext(Dispatchers.Main) { noteAnswer(a.paneId, now, label, a.serverId) }
             if (a.keys.startsWith("grok-privacy:")) {
-                answerGrokPrivacy(h, a.paneId, optIn = a.keys == com.billmongan.herdrdroid.herdr.GROK_PRIVACY_IN)
+                if (answerGrokPrivacy(h, a.paneId, optIn = a.keys == com.billmongan.herdrdroid.herdr.GROK_PRIVACY_IN) == null)
+                    withContext(Dispatchers.Main) { noteAnswer(a.paneId, now, label, a.serverId) }
                 return@runCatching
             }
             val nav = if (!a.isKey) now?.let { p -> p.choices.firstOrNull { it.keys == a.keys }?.let { c -> com.billmongan.herdrdroid.herdr.menuKeys(p, c) } } else null
@@ -2268,6 +2294,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             else if (a.isKey) h.sendKeys(a.paneId, a.keys)
             else if (a.pressEnter) h.typeAndEnter(a.paneId, a.keys)
             else h.sendText(a.paneId, a.keys)
+            // Recorded once it was sent (1.3.2).
+            withContext(Dispatchers.Main) { noteAnswer(a.paneId, now, label, a.serverId) }
         }
     }
 

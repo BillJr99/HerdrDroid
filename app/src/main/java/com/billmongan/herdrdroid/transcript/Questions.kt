@@ -179,17 +179,20 @@ object QuestionLog {
         return QuestionItem(key = "ask:" + t.key, parts = parts, state = state, agent = "Claude", recorded = if (t.state == ToolState.OK) raw else null)
     }
 
+    /**
+     * The same question (1.3.2, from a code review: any shared step title, a contained string or
+     * equal Yes/No options merged different questions): the same question text, or the same full
+     * set of step titles; the same options only where one side has no question text.
+     */
     private fun sameQuestion(a: QuestionItem, b: QuestionItem): Boolean {
-        val ta = a.parts.mapNotNull { it.title?.let(::norm) }.toSet()
-        val tb = b.parts.mapNotNull { it.title?.let(::norm) }.toSet()
-        if (ta.isNotEmpty() && ta.intersect(tb).isNotEmpty()) return true
         val qa = a.parts.map { norm(it.question) }.filter { it.isNotEmpty() }
         val qb = b.parts.map { norm(it.question) }.filter { it.isNotEmpty() }
-        if (qa.any { x -> qb.any { y -> x == y || (x.length >= 12 && y.contains(x)) || (y.length >= 12 && x.contains(y)) } }) return true
-        // The same options (Claude adds "Type something." on screen): the screen's heading can differ from the log's text.
+        if (qa.isNotEmpty() && qb.isNotEmpty()) return qa.any { it in qb }
+        val ta = a.parts.mapNotNull { it.title?.let(::norm) }.toSet()
+        val tb = b.parts.mapNotNull { it.title?.let(::norm) }.toSet()
+        if (ta.size >= 2 && ta == tb) return true
         fun opts(q: QuestionItem) = q.parts.map { p -> p.options.map(::norm).filter { it.isNotEmpty() && it != "typesomething" }.toSet() }.filter { it.size >= 2 }
-        val oa = opts(a); val ob = opts(b)
-        return oa.any { x -> ob.any { y -> x == y } }
+        return opts(a).any { x -> opts(b).any { y -> x == y } }
     }
 
     /** A log question merged with the recorded one: the log's text, and each answer from whichever has it. */

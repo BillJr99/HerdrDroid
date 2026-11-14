@@ -70,7 +70,9 @@ private class Capped(private val cap: Int) {
                 val n = s.read(b)
                 if (n < 0) break
                 synchronized(buf) {
-                    if (buf.size() + n > cap) { if (isErr) return@runCatching; over = true; return@runCatching }
+                    // stderr past its cap is read on and dropped, so the command never stalls on a
+                    // full pipe (1.3.2, from a code review); stdout past its cap stops the command.
+                    if (buf.size() + n > cap) { if (isErr) return@synchronized; over = true; return@runCatching }
                     buf.write(b, 0, n)
                 }
             }
@@ -279,7 +281,10 @@ class HerdrSsh(
      */
     private fun runOn(c: SSHClient, command: String, input: ByteArray?, timeoutSeconds: Long, maxOut: Int): Triple<Int, ByteArray, ByteArray> {
         val session = c.startSession()
-        val cmd = try { session.exec(command) } catch (e: Exception) { runCatching { session.close() }; throw e }
+        // A failure from exec itself may come after the computer accepted the command (1.3.2,
+        // from a code review), so it is reported, never retried; only a session that wouldn't
+        // open is retried.
+        val cmd = try { session.exec(command) } catch (e: Exception) { runCatching { session.close() }; throw AfterStart(e) }
         try {
             input?.let { b -> cmd.outputStream.use { it.write(b); it.flush() } }
             val out = Capped(maxOut)
@@ -294,6 +299,10 @@ class HerdrSsh(
                 runCatching { session.close() }
                 t1.join(2_000); t2.join(2_000)
                 if (out.over) throw OutputTooLarge(maxOut)
+                // Closing often lets both readers finish (a stream that was slow to close): then the
+                // command's own result stands (1.3.2, from a code review).
+                val exit = cmd.exitStatus
+                if (!t1.isAlive && !t2.isAlive && exit != null) return Triple(exit, out.bytes(), err.bytes())
                 throw CommandTimeout(timeoutSeconds)
             }
             cmd.join(5, TimeUnit.SECONDS)

@@ -6,6 +6,7 @@ import com.billmongan.herdrdroid.transcript.ChatStore
 import com.billmongan.herdrdroid.transcript.QuestionLog
 import com.billmongan.herdrdroid.transcript.TextItem
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -82,7 +83,9 @@ class QuietGateTest {
 
     @Test fun bottomComparison() {
         assertTrue(QuietGate.sameBottom(screen, "earlier\n" + screen))
-        assertTrue(QuietGate.sameBottom("", screen))
+        // A blank visible screen over output with lines is not the bottom (1.3.2); both blank is.
+        assertFalse(QuietGate.sameBottom("", screen))
+        assertTrue(QuietGate.sameBottom("", ""))
     }
 
     @Test fun aLockedChatOrQuestionFileIsKept() {

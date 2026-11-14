@@ -126,45 +126,56 @@ class ChatStore(
         runCatching {
             dir.mkdirs()
             val f = file(serverId, paneId)
-            val tmp = File(dir, f.name + ".tmp")
-            tmp.writeBytes(seal(ChatCodec.encode(chat).toByteArray(Charsets.UTF_8)))
-            if (!tmp.renameTo(f)) { f.delete(); tmp.renameTo(f) }
+            replace(f, seal(ChatCodec.encode(chat).toByteArray(Charsets.UTF_8)))
             trim()
-        }
+        }.onFailure { com.billmongan.herdrdroid.diag.DiagLog.log("chat", "a kept chat wasn't saved (${it.javaClass.simpleName}); the previous copy stays") }
     }
 
-    @Synchronized fun load(serverId: String, paneId: String): CachedChat? {
-        val f = file(serverId, paneId)
-        if (!f.isFile) return null
-        val r = runCatching { ChatCodec.decode(String(open(f.readBytes()), Charsets.UTF_8)) }
-        // Locked (1.3.1: the fingerprint window has passed) is not damage: the file stays.
-        if (r.exceptionOrNull() is com.billmongan.herdrdroid.store.VaultLocked) return null
-        val c = r.getOrNull()
-        if (c == null) f.delete()
-        return c
+    /**
+     * Writes [bytes] as [f]: beside it first, then one atomic rename over it (1.3.2, from a code
+     * review: deleting the file before a rename that then failed left the only copy as .tmp).
+     * When the rename fails the previous file stays and the save is reported as failed.
+     */
+    private fun replace(f: File, bytes: ByteArray) {
+        val tmp = File(dir, f.name + ".tmp")
+        tmp.writeBytes(bytes)
+        java.nio.file.Files.move(tmp.toPath(), f.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
     }
+
+    /**
+     * Opens and decodes a kept file. The file is deleted only when it is damaged for certain: its
+     * seal failed to authenticate, or it opened but didn't decode (1.3.2, from a code review: any
+     * failure deleted it before, a Keystore or disk error included). Locked, invalidated, a missing
+     * key or a read error keep it.
+     */
+    private fun <T> openKept(f: File, decode: (String) -> T?): T? {
+        if (!f.isFile) return null
+        val plain = try { open(f.readBytes()) } catch (e: Exception) {
+            if (com.billmongan.herdrdroid.store.Vaults.badSeal(e)) f.delete()
+            return null
+        }
+        val v = runCatching { decode(String(plain, Charsets.UTF_8)) }.getOrNull()
+        if (v == null) f.delete()
+        return v
+    }
+
+    @Synchronized fun load(serverId: String, paneId: String): CachedChat? = openKept(file(serverId, paneId)) { ChatCodec.decode(it) }
+
+    /** True when the pane has a question history on the phone, whether or not it can be opened now (1.3.2). */
+    @Synchronized fun hasQuestions(serverId: String, paneId: String): Boolean = qfile(serverId, paneId).isFile
 
     @Synchronized fun saveQuestions(serverId: String, paneId: String, qs: List<QuestionItem>) {
         runCatching {
             dir.mkdirs()
             val f = qfile(serverId, paneId)
-            if (qs.isEmpty()) { f.delete(); return@runCatching }
-            val tmp = File(dir, f.name + ".tmp")
-            tmp.writeBytes(seal(QuestionLog.encode(qs).toByteArray(Charsets.UTF_8)))
-            if (!tmp.renameTo(f)) { f.delete(); tmp.renameTo(f) }
+            // Never an empty list over a history (1.3.2): clearing one is remove()'s job, not a save's.
+            if (qs.isEmpty()) return@runCatching
+            replace(f, seal(QuestionLog.encode(qs).toByteArray(Charsets.UTF_8)))
             trim()
-        }
+        }.onFailure { com.billmongan.herdrdroid.diag.DiagLog.log("chat", "a question history wasn't saved (${it.javaClass.simpleName}); the previous copy stays") }
     }
 
-    @Synchronized fun loadQuestions(serverId: String, paneId: String): List<QuestionItem>? {
-        val f = qfile(serverId, paneId)
-        if (!f.isFile) return null
-        val r = runCatching { QuestionLog.decode(String(open(f.readBytes()), Charsets.UTF_8)) }
-        if (r.exceptionOrNull() is com.billmongan.herdrdroid.store.VaultLocked) return null
-        val q = r.getOrNull()
-        if (q == null) f.delete()
-        return q
-    }
+    @Synchronized fun loadQuestions(serverId: String, paneId: String): List<QuestionItem>? = openKept(qfile(serverId, paneId)) { QuestionLog.decode(it) }
 
     /** Removes the pane's chat. Its question history goes too, unless [questions] is false (the agent's log was only re-read). */
     @Synchronized fun remove(serverId: String, paneId: String, questions: Boolean = true) {

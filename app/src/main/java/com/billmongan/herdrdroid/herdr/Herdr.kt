@@ -523,12 +523,14 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
         val p = if (path.startsWith("~/")) "\"\$HOME\"/" + shq(path.removePrefix("~/")) else shq(path)
         // The type too (1.3.0, from a code review): /dev/zero, /dev/urandom or a pipe has size 0 and
         // would be read forever, so only a regular file is fetched, and never more than [maxBytes].
-        val (kind, size) = ssh.exec("stat -L -c '%F|%s' -- $p").let { r ->
+        // The mode bits (%f, hex), not %F, whose words are translated on a host in another language
+        // (1.3.2, from a code review): a regular file has 0x8000 in S_IFMT (0xF000).
+        val (mode, size) = ssh.exec("stat -L -c '%f|%s' -- $p").let { r ->
             if (r.exit != 0) throw HerdrError("That file isn't there (${path.substringAfterLast('/')}).", r.exit)
             val f = r.out.trim().split('|')
-            f.getOrNull(0).orEmpty() to (f.getOrNull(1)?.toLongOrNull() ?: 0L)
+            (f.getOrNull(0)?.toLongOrNull(16) ?: -1L) to (f.getOrNull(1)?.toLongOrNull() ?: 0L)
         }
-        if (!kind.startsWith("regular")) throw HerdrError("That isn't a regular file (${kind.ifBlank { "unknown type" }}), so it isn't fetched.", 0)
+        if (mode < 0 || (mode and 0xF000L) != 0x8000L) throw HerdrError("That isn't a regular file, so it isn't fetched.", 0)
         if (size > maxBytes) throw HerdrError("That file is ${size / (1024 * 1024)} MB, over the ${maxBytes / (1024 * 1024)} MB limit.", 0)
         val (exit, bytes) = ssh.execBytes("head -c ${maxBytes} -- $p", maxBytes = (maxBytes + 1).coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
         if (exit != 0) throw HerdrError("That file couldn't be read.", exit)
