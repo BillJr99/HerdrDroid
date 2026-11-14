@@ -1914,6 +1914,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 trackDone(st.server.id, st.panes)
                 noticeChanges(st.server.id, st.server.label, st.panes) { fleet?.herdr(st.server.id) }
             },
+            // 1.2.8: watched servers get the same work sweep as the open one, so an agent with a
+            // running shell there shows as working in the drawer, cards and notifications.
+            busyOf = { h -> h.workCounts(h.panes0Cache, transcriptScript).second },
         ).also { fleet = it }
         f.everyMs = if (watching) 5_000L else 10_000L
         f.watch(watchable())
@@ -2336,9 +2339,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         return p.status
     }
-    private fun withBusy(list: List<Pane>, busy: Map<String, Int>): List<Pane> = list.map { p ->
-        if ((p.status == Status.IDLE || p.status == Status.DONE || p.status == Status.UNKNOWN) && (busy[p.id] ?: 0) > 0) p.copy(status = Status.WORKING) else p
-    }
+    private fun withBusy(list: List<Pane>, busy: Map<String, Int>): List<Pane> = com.billmongan.herdrdroid.herdr.withBusy(list, busy)
     // When each pane last turned done, and when you last had it open here ("server|pane"). Kept
     // across launches and reconnects, so an agent you opened stays idle until it works again.
     private val doneSince = loadSeen("done")

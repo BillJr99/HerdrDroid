@@ -1279,3 +1279,13 @@ fun parseDetect(line: String): Detected {
     fun at(i: Int) = f.getOrNull(i).orEmpty()
     return Detected(at(1) == "1", at(2) == "1", at(3) == "1", at(4) == "1", at(5).ifBlank { null })
 }
+
+/**
+ * The status a pane shows once what runs under it is known: an agent herdr calls idle, done or
+ * unknown (Vibe) while its subagents, background tasks or shells still run is working. Used for
+ * the open server and, since 1.2.8, every watched one (Bill: "showing an agent as idle when it has
+ * active shells running", the Claude pane on another server).
+ */
+fun withBusy(list: List<Pane>, busy: Map<String, Int>): List<Pane> = list.map { p ->
+    if ((p.status == Status.IDLE || p.status == Status.DONE || p.status == Status.UNKNOWN) && (busy[p.id] ?: 0) > 0) p.copy(status = Status.WORKING) else p
+}

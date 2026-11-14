@@ -16,8 +16,12 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import net.schmizz.sshj.userauth.keyprovider.KeyProvider
 
-/** What one other server's agents are doing, as last seen. */
-data class FleetState(val server: Server, val panes: List<Pane>, val error: String?, val at: Long)
+/**
+ * What one other server's agents are doing, as last seen. [panes] already carry the busy
+ * override: an agent herdr calls idle, done or unknown while its subagents, background tasks or
+ * shells still run shows as working ([busy] is that count per pane).
+ */
+data class FleetState(val server: Server, val panes: List<Pane>, val error: String?, val at: Long, val busy: Map<String, Int> = emptyMap())
 
 /**
  * Watches the servers other than the open one, so one "needs you" list can cover all of them.
@@ -30,6 +34,11 @@ class Fleet(
     private val credentials: (Server) -> Credentials,
     private val keystoreKey: (String) -> KeyProvider?,
     private val onSeen: (FleetState) -> Unit,
+    /**
+     * Reads what runs under each agent there (the same sweep as the open server). Any failure
+     * (no /proc, an old python, a slow host) falls back to herdr's own status (1.2.8).
+     */
+    private val busyOf: (suspend (Herdr) -> Map<String, Int>)? = null,
 ) {
     var states by mutableStateOf<Map<String, FleetState>>(emptyMap())
         private set
@@ -75,7 +84,11 @@ class Fleet(
                             }
                         }
                         val st = try {
-                            FleetState(server, pair.second.panes(), null, System.currentTimeMillis())
+                            val raw = pair.second.panes()
+                            val busy = busyOf?.let { f ->
+                                try { Result.success(f(pair.second)) } catch (c: CancellationException) { throw c } catch (e: Exception) { Result.failure(e) }
+                            } ?: Result.success(emptyMap())
+                            FleetState(server, sweptPanes(raw, busy), null, System.currentTimeMillis(), busy.getOrDefault(emptyMap()))
                         } catch (c: CancellationException) {
                             throw c
                         } catch (e: Exception) {
@@ -111,3 +124,7 @@ class Fleet(
         states = emptyMap()
     }
 }
+
+/** A watched server's panes after its work sweep; a failed sweep leaves herdr's status as it is. */
+internal fun sweptPanes(raw: List<Pane>, busy: Result<Map<String, Int>>): List<Pane> =
+    com.billmongan.herdrdroid.herdr.withBusy(raw, busy.getOrDefault(emptyMap()))

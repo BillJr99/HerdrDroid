@@ -12,6 +12,8 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
@@ -80,19 +82,74 @@ class ComposeUiTest {
         assertEquals(1, opened)
     }
 
-    @Test fun promptCardShowsTheWholeQuestionAndSendsTheChoiceTapped() {
+    /**
+     * 1.2.8: the question sits in the conversation, scrolling with it; the orange card holds only
+     * the answers (Bill: "the question boxes show too much text").
+     */
+    @Test fun questionInTheChatAnswersInTheCard() {
         val long = "Which of these should the deploy use? " + "It decides where the build runs and what it costs. ".repeat(6)
         val p = Prompt(long.trim(), listOf(Choice("Staging", "1", false), Choice("Production", "2", false), Choice("Skip it", "3", false)), selected = "1")
         val picked = mutableListOf<String>()
-        // In a scrolling column, as on the agent screen: a small screen puts the buttons below the fold.
         rule.setContent {
             androidx.compose.foundation.layout.Column(Modifier.fillMaxSize().verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+                PromptQuestion(p, agent = "Claude")
                 PromptCard(p, agent = "Claude", onChoice = { picked += it.keys }, onKey = {}, onTypeAnswer = {})
             }
         }
-        rule.onNodeWithText(long.trim()).assertExists()
+        // The question appears once, as the agent's message, and the card says only "Your answer".
+        rule.onAllNodesWithText(long.trim()).assertCountEquals(1)
+        rule.onNodeWithText("Claude asks").assertExists()
+        rule.onNodeWithText("Your answer").assertExists()
         rule.onNodeWithText("Production").performScrollTo().performClick()
         assertEquals(listOf("2"), picked)
+    }
+
+    @Test fun cardAloneHasNoQuestionBody() {
+        val p = Prompt("Do you want to proceed with this very particular question?", listOf(Choice("Yes", "1", false), Choice("No", "2", false)), selected = "1")
+        rule.setContent { PromptCard(p, agent = "Codex", onChoice = {}, onKey = {}, onTypeAnswer = {}) }
+        rule.onNodeWithText("Do you want to proceed with this very particular question?").assertDoesNotExist()
+        rule.onNodeWithText("Yes").assertExists()
+    }
+
+    /**
+     * 1.2.8 (Bill: "it snap scrolls when I try to scroll up to read back to the bottom"): once you
+     * scroll up, steady new output and a question card at the end must not move the chat.
+     */
+    @Test fun scrolledUpChatHoldsWhileOutputContinues() {
+        val items = androidx.compose.runtime.mutableStateOf((1..40).flatMap { listOf(UserItem("u$it", "Question $it"), TextItem("t$it", "Answer $it")) })
+        lateinit var state: androidx.compose.foundation.lazy.LazyListState
+        val p = Prompt("Run this command?", listOf(Choice("Yes", "1", false), Choice("No", "2", false)), selected = "1")
+        rule.setContent {
+            state = rememberLazyListState()
+            Box(Modifier.width(380.dp).height(640.dp)) {
+                TranscriptChat(
+                    rows = rowsOf(items.value), working = true, workingLabel = "Working", agentName = "Claude",
+                    pending = emptyList(), more = false, size = 12.5f, family = FontFamily.Default,
+                    actions = ChatActions(onQuote = {}, onStop = null),
+                    footer = {
+                        androidx.compose.foundation.layout.Column {
+                            PromptQuestion(p, agent = "Claude")
+                            PromptCard(p, agent = "Claude", onChoice = {}, onKey = {}, onTypeAnswer = {})
+                        }
+                    },
+                    state = state, modifier = Modifier.fillMaxSize(),
+                )
+            }
+        }
+        rule.waitForIdle()
+        // Scroll up twice, as a reader would.
+        rule.onRoot().performTouchInput { swipeDown(durationMillis = 300) }
+        rule.waitForIdle()
+        rule.onRoot().performTouchInput { swipeDown(durationMillis = 300) }
+        rule.waitForIdle()
+        val held = state.firstVisibleItemIndex to state.firstVisibleItemScrollOffset
+        // Output keeps arriving: ten updates, each with a new exchange.
+        for (n in 41..50) {
+            items.value = items.value + listOf(UserItem("u$n", "Question $n"), TextItem("t$n", "Answer $n"))
+            rule.waitForIdle()
+            assertEquals("the chat moved on update $n", held, state.firstVisibleItemIndex to state.firstVisibleItemScrollOffset)
+        }
+        rule.onNodeWithContentDescription("Jump to the latest").assertIsDisplayed()
     }
 
     @Test fun pullingDownRefreshes() {

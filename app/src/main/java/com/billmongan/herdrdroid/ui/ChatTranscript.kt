@@ -160,7 +160,9 @@ fun TranscriptChat(
             val info = state.layoutInfo
             if (info.totalItemsCount == 0 || !state.canScrollForward) return@derivedStateOf true
             val last = info.visibleItemsInfo.lastOrNull() ?: return@derivedStateOf true
-            if (last.index >= info.totalItemsCount - 2) return@derivedStateOf true
+            // 1.2.8: only the true end counts. Before, seeing either of the last two items counted
+            // as the bottom, so reading a tall question card (or the message above it) and then any
+            // update snapped the chat down (Bill: "it snap scrolls when I try to scroll up").
             last.index == info.totalItemsCount - 1 &&
                 last.offset + last.size <= info.viewportEndOffset - info.afterContentPadding + slackPx
         }
@@ -207,13 +209,18 @@ fun TranscriptChat(
         lifecycle.addObserver(obs)
         onDispose { lifecycle.removeObserver(obs) }
     }
+    // A message you just sent takes the chat to the bottom once; one that stays unsent does not
+    // pull it down again on every update (1.2.8).
+    var lastPending by remember(state) { mutableStateOf(pending.size) }
     LaunchedEffect(rows.size, lastKey, lastSig, pending, working) {
         if (rows.isEmpty()) return@LaunchedEffect
+        val pendingGrew = pending.size > lastPending
+        lastPending = pending.size
         if (first) {
             first = false
             state.scrollToItem(total - 1)
-        } else if (stick || atBottom || pending.isNotEmpty()) {
-            if (pending.isNotEmpty()) stick = true
+        } else if (!state.isScrollInProgress && (stick || atBottom || pendingGrew)) {
+            if (pendingGrew) stick = true
             state.animateScrollToItem(total - 1)
             unseen = 0
         } else if (rows.size > lastCount) {

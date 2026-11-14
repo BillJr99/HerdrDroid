@@ -231,12 +231,23 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     val termScope = androidx.compose.runtime.rememberCoroutineScope()
     var termFollow by androidx.compose.runtime.key(paneId) { remember { mutableStateOf(true) } }
     val chatFollow = androidx.compose.runtime.key(paneId) { remember { ChatFollow() } }
+    // Following stops the moment your finger starts dragging (not when it lifts, which let new
+    // output pull the view down mid-drag) and resumes only if you let go at the bottom (1.2.8).
     LaunchedEffect(scroll) {
-        androidx.compose.runtime.snapshotFlow { scroll.isScrollInProgress }.collect { moving ->
-            if (!moving) termFollow = scroll.value >= scroll.maxValue - 24
+        scroll.interactionSource.interactions.collect {
+            when (it) {
+                is androidx.compose.foundation.interaction.DragInteraction.Start -> termFollow = false
+                is androidx.compose.foundation.interaction.DragInteraction.Stop,
+                is androidx.compose.foundation.interaction.DragInteraction.Cancel -> {
+                    kotlinx.coroutines.delay(400) // let a fling settle
+                    termFollow = scroll.value >= scroll.maxValue - 24
+                }
+            }
         }
     }
-    LaunchedEffect(screenText, structured, termFollow) { if (!structured && termFollow) scroll.scrollTo(scroll.maxValue) }
+    LaunchedEffect(screenText, structured, termFollow) {
+        if (!structured && termFollow && !scroll.isScrollInProgress) scroll.scrollTo(scroll.maxValue)
+    }
     val onZoom by rememberUpdatedState<(Float) -> Unit> { z -> pinch = (pinch * z) }
     val onZoomEnd by rememberUpdatedState<() -> Unit> {
         if (pinch != 1f) {
@@ -263,12 +274,14 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
             if (zoomed) onZoomEnd()
         }
     }
+    // 1.2.8 (Bill: "show the question and text in the chat area ... so I can scroll to read it,
+    // and just the answer buttons in the card"): the question, and what the agent said before it,
+    // sit in the chat or terminal as the agent's message; the orange card below holds the answers.
     val promptCard: @Composable () -> Unit = {
         prompt?.let { p ->
-            PromptCard(
+            PromptQuestion(
                 p,
                 agent = pane?.agentName ?: "The agent",
-                onChoice = { c -> vm.answerChoice(paneId, p, c) },
                 // What the agent said since your last message (in full, with its images and files),
                 // and the edit waiting for approval: the last tool call in the log, still running.
                 preview = run {
@@ -294,6 +307,12 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                         }
                     })
                 },
+            )
+            Spacer(Modifier.height(10.dp))
+            PromptCard(
+                p,
+                agent = pane?.agentName ?: "The agent",
+                onChoice = { c -> vm.answerChoice(paneId, p, c) },
                 onKey = { k -> vm.sendKeys(paneId, k) },
                 onTypeAnswer = { typingAnswer = true },
             )
@@ -888,6 +907,27 @@ private fun ModifierKey(label: String, state: Hold, onChange: (Hold) -> Unit, mo
 
 // ---- The prompt card --------------------------------------------------------------------------
 
+/**
+ * The agent's question as part of the conversation (1.2.8): what it said just before (an edit's
+ * diff, a plan, its last words) and the question itself, selectable and scrolling with the chat or
+ * terminal. The orange [PromptCard] below it holds only the answers.
+ */
+@Composable
+internal fun PromptQuestion(
+    p: Prompt,
+    agent: String,
+    /** What the agent said or wants to change, shown above the question. */
+    preview: (@Composable () -> Unit)? = null,
+) {
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("$agent asks", color = Palette.OrangeInk, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
+        preview?.invoke()
+        SelectionContainer {
+            Text(p.question, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, lineHeight = 24.sp, color = Palette.Ink)
+        }
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun PromptCard(
@@ -896,8 +936,6 @@ internal fun PromptCard(
     onChoice: (Choice) -> Unit,
     onKey: (String) -> Unit,
     onTypeAnswer: () -> Unit,
-    /** The change the agent asks to make (an edit's diff), shown above the question. */
-    preview: (@Composable () -> Unit)? = null,
 ) {
     Surface(
         shape = RoundedCornerShape(18.dp),
@@ -907,17 +945,12 @@ internal fun PromptCard(
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Icon(Icons.Filled.Warning, contentDescription = null, tint = Palette.OrangeInk, modifier = Modifier.size(18.dp))
-                Text("$agent is asking".uppercase(), color = Palette.OrangeInk, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                // One line only; the question itself is just above the card, in the chat (1.2.8).
+                Text(if (p.choices.isEmpty()) "$agent is waiting for you" else "Your answer", color = Palette.OrangeInk,
+                    fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1)
             }
-            // The question and its choices scroll inside the card when they don't all fit, so the
-            // keys below stay in reach. Each choice grows to fit its whole label.
-            val maxHeight = (LocalConfiguration.current.screenHeightDp * 0.55f).dp
-            Column(
-                Modifier.fillMaxWidth().heightIn(max = maxHeight).verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                preview?.invoke()
-                Text(p.question, fontSize = 19.sp, fontWeight = FontWeight.SemiBold, lineHeight = 25.sp, color = Palette.Ink)
+            // Each choice grows to fit its whole label; the page scrolls, the card has no scroll of its own.
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 p.choices.forEachIndexed { i, c ->
                     // Say what tapping really sends: arrows and Enter for a menu with a highlighted row,
                     // Esc for a "(esc)" option, otherwise the key itself (1.2.7; it always said "sends N").
