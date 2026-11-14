@@ -132,6 +132,43 @@ class ChatStoreBindingTest {
         val store = ChatStore(tmp.root, seal, { b, ad -> reads++; if (reads == 2) "{}".toByteArray() else open(b, ad) })
         assertEquals(chat.items, store.load("s1", "w1:p1")!!.items)
         assertTrue(old.isFile)
+        // The copy that read back wrong is set aside, so the next load reads the old file again
+        // instead of trusting it (1.4.1, from a second review).
+        assertTrue(File(tmp.root, "unreadable/" + newName("s1", "w1:p1", ".chat")).isFile)
+        assertEquals(chat.items, store.load("s1", "w1:p1")!!.items)
+    }
+
+    @Test fun aNewFileThatCantBeOpenedNowFallsBackToTheOldOneAndKeepsBoth() {
+        val old = legacy()
+        val f = File(tmp.root, newName("s1", "w1:p1", ".chat")).apply { writeBytes(seal("x".toByteArray(), "herdrdroid|chat|s1|w1:p1".toByteArray())) }
+        // Not a bad seal: a Keystore or read error, which keeps the file where it is.
+        val store = ChatStore(tmp.root, seal, { b, ad -> if (ad != null) throw java.security.ProviderException("keystore busy") else open(b, ad) })
+        assertEquals(chat.items, store.load("s1", "w1:p1")!!.items)
+        assertTrue(old.isFile); assertTrue(f.isFile)
+    }
+
+    @Test fun aSaveRemovesTheOldFileOnlyWhenTheNewOneReadsBack() {
+        val old = legacy()
+        val newer = chat.copy(items = listOf(TextItem("t9", "newer")))
+        // The new file can't be read back (say, the window closed): the old one stays.
+        ChatStore(tmp.root, seal, { b, ad -> if (ad != null) throw com.billmongan.herdrdroid.store.VaultLocked(Exception("window")) else open(b, ad) })
+            .save("s1", "w1:p1", newer)
+        assertTrue(old.isFile)
+        // It reads back: now the old one goes.
+        val store = ChatStore(tmp.root, seal, open)
+        store.save("s1", "w1:p1", newer)
+        assertFalse(old.exists())
+        assertEquals(newer.items, store.load("s1", "w1:p1")!!.items)
+    }
+
+    @Test fun anOldCopyThatDiffersAndIsNewerStays() {
+        val store = ChatStore(tmp.root, seal, open)
+        store.save("s1", "w1:p1", chat.copy(items = listOf(TextItem("t2", "from the new file"))))
+        val f = File(tmp.root, newName("s1", "w1:p1", ".chat"))
+        f.setLastModified(System.currentTimeMillis() - 60_000)
+        val old = legacy()
+        assertEquals("from the new file", (store.load("s1", "w1:p1")!!.items.single() as TextItem).text)
+        assertTrue(old.isFile)
     }
 
     @Test fun aDamagedNewFileFallsBackToTheOldOne() {

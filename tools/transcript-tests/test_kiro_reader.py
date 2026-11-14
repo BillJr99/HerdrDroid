@@ -60,7 +60,29 @@ class KiroReader(unittest.TestCase):
             res = [i for i in r["items"] if i["t"] == "result"][0]
             self.assertEqual(res["ref"], "t1")
             self.assertFalse(res.get("err"))
+            # The output itself, from the text blocks' "data" (1.4.1, from a code review).
+            self.assertEqual(res["out"], "a\nb")
             self.assertEqual(r["title"], "ls")
+
+    def test_the_session_whose_log_was_written_last(self):
+        # Two sessions in one folder: the one being written to wins, even when the other's .json
+        # is newer (1.4.1, from a code review).
+        with tempfile.TemporaryDirectory() as home:
+            d = os.path.join(home, ".kiro", "sessions", "cli")
+            session(home, "old", "/w/kiro", RECORDS[:1], title="old")
+            session(home, "live", "/w/kiro", RECORDS, title="live")
+            now = time.time()
+            os.utime(os.path.join(d, "old.jsonl"), (now - 600, now - 600))
+            os.utime(os.path.join(d, "live.jsonl"), (now, now))
+            os.utime(os.path.join(d, "old.json"), (now + 60, now + 60))
+            os.utime(os.path.join(d, "live.json"), (now - 900, now - 900))
+            t = load(home)
+            self.assertEqual(t.kiro("/w/kiro", {})["title"], "live")
+
+    def test_a_file_removed_while_sorting_counts_as_oldest(self):
+        with tempfile.TemporaryDirectory() as home:
+            t = load(home)
+            self.assertEqual(t.mtime(os.path.join(home, "gone")), 0)
 
     def test_only_this_folders_newest_session_and_deltas(self):
         with tempfile.TemporaryDirectory() as home:

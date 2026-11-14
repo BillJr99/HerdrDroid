@@ -973,10 +973,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 // A second at a time, so coming back to the front ends a long background wait at once
                 // (1.4.1, from a code review: the 15 or 60 s gap went on after the app was opened).
-                val wasBehind = !foreground
+                // Checked each second (1.4.1, from a second review: also when the app came to the
+                // front during the attempt itself, before the wait began).
                 var waited = 0L
-                while (waited < wait && !(wasBehind && foreground)) { delay(1_000); waited += 1_000 }
-                wait = if (wasBehind && foreground) 1_000L else (wait * 2).coerceAtMost(8_000)
+                var cutShort = false
+                while (waited < wait) {
+                    if (foreground && wait > 8_000) { cutShort = true; break }
+                    delay(1_000); waited += 1_000
+                }
+                wait = if (cutShort) 1_000L else (wait * 2).coerceAtMost(8_000)
             }
         }
     }
@@ -1813,6 +1818,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun holdReason(paneId: String, screen: String): String? {
         val now = com.billmongan.herdrdroid.herdr.inputLineOf(screen) ?: return null
+        // The row taken for the input line is the highlighted option of a menu (Kiro's unnumbered
+        // approval card, "❯ Yes, single permission"): a question, not text typed at the computer.
+        // Still not typed into, but said as it is (1.4.1, from a code review).
+        if (now.isNotEmpty() && com.billmongan.herdrdroid.herdr.detectUnnumberedMenu(screen)?.choices?.any { it.label.trim() == now } == true)
+            return "a question is open in it (\"${now.take(40)}\"); answer it first"
         if (now.isNotEmpty()) return "something is already typed in its input line at the computer (\"${now.take(40)}\")"
         val at = typedAt[paneId]
         if (at != null && System.currentTimeMillis() - at < 4_000) return "someone was typing in it a moment ago"

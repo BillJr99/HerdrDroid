@@ -850,6 +850,20 @@ def omp(cwd, cur):
     return pi(cwd, cur, root=(".omp", "agent"))
 
 
+def kiro_text(content):
+    """A Kiro tool result's text: its content is a string, or a list of {"kind", "data"} blocks whose
+    text blocks hold the text in "data" (1.4.1, from a code review); other shapes as text_of reads them."""
+    if isinstance(content, list) and any(isinstance(b, dict) and "kind" in b for b in content):
+        parts = []
+        for b in content:
+            if isinstance(b, dict) and b.get("kind") == "text" and isinstance(b.get("data"), str):
+                parts.append(b["data"])
+            elif isinstance(b, dict) and b.get("kind") == "json":
+                parts.append(json.dumps(b.get("data"), ensure_ascii=False))
+        return "\n".join(parts)
+    return text_of(content)
+
+
 def kiro(cwd, cur):
     """Kiro CLI (1.4.1): ~/.kiro/sessions/cli/<id>.json names the session's folder; <id>.jsonl holds
     its records, each {"version", "kind", "data": {"message_id", "content": [...], ...}}: kind Prompt
@@ -858,11 +872,13 @@ def kiro(cwd, cur):
     "toolResult" {"toolUseId", "content", "status"})."""
     d = os.path.join(HOME, ".kiro", "sessions", "cli")
     best = None
-    metas = glob.glob(os.path.join(d, "*.json"))
-    for m in sorted(metas, key=mtime, reverse=True):
+    # The session whose log was written last (1.4.1, from a code review: sorting by the .json
+    # switched a pane to another session in the same folder whose .json happened to be newer).
+    logs = glob.glob(os.path.join(d, "*.jsonl"))
+    for f in sorted(logs, key=mtime, reverse=True):
         try:
-            if json.load(open(m)).get("cwd") == cwd and os.path.isfile(m[:-5] + ".jsonl"):
-                best = m[:-5] + ".jsonl"
+            if json.load(open(f[:-6] + ".json")).get("cwd") == cwd:
+                best = f
                 break
         except Exception:
             continue
@@ -886,7 +902,7 @@ def kiro(cwd, cur):
             elif ck == "toolUse" and isinstance(cd, dict):
                 items.append(tool_item(k, cd.get("toolUseId"), cd.get("name"), cd.get("input")))
             elif ck == "toolResult" and isinstance(cd, dict):
-                items.append(result_item(k, cd.get("toolUseId"), text_of(cd.get("content")),
+                items.append(result_item(k, cd.get("toolUseId"), kiro_text(cd.get("content")),
                                          str(cd.get("status") or "").lower() not in ("", "success", "ok")))
     title = None
     try:

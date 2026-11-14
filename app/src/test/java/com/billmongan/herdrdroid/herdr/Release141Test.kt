@@ -48,4 +48,12 @@ class Release141Test {
         assertTrue(s.contains(") &"))
         assertEquals(mapOf("codex" to "0.60.1"), AgentVersions.parse("@@ver codex codex-cli 0.60.1\nnoise\n"))
     }
+    @Test fun kirosApprovalRowIsSeenAsAQuestionNotTyping() {
+        // What holdReason checks (1.4.1, from a second review): the row taken as the input line is
+        // the highlighted option of the open menu, so the send is held as "a question is open".
+        val screen = javaClass.getResource("/screens/kiro/captured-2026-11-13/shell-approval.txt")!!.readText()
+        val row = inputLineOf(screen)
+        assertEquals("Yes, single permission", row)
+        assertTrue(detectUnnumberedMenu(screen)!!.choices.any { it.label.trim() == row })
+    }
 }

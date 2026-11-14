@@ -146,9 +146,11 @@ class ChatStore(
     @Synchronized fun save(serverId: String, paneId: String, chat: CachedChat) {
         runCatching {
             dir.mkdirs()
-            replace(file(serverId, paneId), seal(ChatCodec.encode(chat).toByteArray(Charsets.UTF_8), aad(serverId, paneId, "chat")))
-            // The new file holds the newest chat now; the one under the old name is out of date.
-            oldFile(serverId, paneId, ".chat").delete()
+            val plain = ChatCodec.encode(chat).toByteArray(Charsets.UTF_8)
+            replace(file(serverId, paneId), seal(plain, aad(serverId, paneId, "chat")))
+            // The new file holds the newest chat now; the one under the old name goes only once the
+            // new one reads back the same (1.4.1, from a code review).
+            dropOldIfReadsBack(file(serverId, paneId), oldFile(serverId, paneId, ".chat"), plain, aad(serverId, paneId, "chat"))
             trim()
         }.onFailure { DiagLog.log("chat", "a kept chat wasn't saved (${it.javaClass.simpleName}); the previous copy stays") }
     }
@@ -162,6 +164,12 @@ class ChatStore(
         val tmp = File(dir, f.name + ".tmp")
         tmp.writeBytes(bytes)
         java.nio.file.Files.move(tmp.toPath(), f.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+    }
+
+    /** Removes [old] only when [f] opens to exactly [plain]; anything else keeps it. */
+    private fun dropOldIfReadsBack(f: File, old: File, plain: ByteArray, ad: ByteArray) {
+        if (!old.exists()) return
+        if (runCatching { open(f.readBytes(), ad).contentEquals(plain) }.getOrDefault(false)) old.delete()
     }
 
     /**
@@ -185,17 +193,27 @@ class ChatStore(
         val ad = aad(serverId, paneId, kind)
         val legacy = oldFile(serverId, paneId, ext)
         if (f.isFile) {
-            val bytes = runCatching { f.readBytes() }.getOrNull() ?: return null
-            val plain = openPlain(f, ad)
-            if (plain != null) {
-                val v = runCatching { decode(String(plain, Charsets.UTF_8)) }.getOrNull()
-                if (v == null) { setAside(f); return null }
-                if (legacy.isFile) legacy.delete()
-                if (!bound(bytes)) runCatching { replace(f, seal(plain, ad)) }
+            val bytes = runCatching { f.readBytes() }.getOrNull()
+            val plain = bytes?.let { openPlain(f, ad) }
+            val v = plain?.let { p -> runCatching { decode(String(p, Charsets.UTF_8)) }.getOrNull() }
+            if (plain != null && v == null) setAside(f)
+            if (v != null) {
+                // An old copy is removed only when it opens and holds the same, or something older
+                // than the new file (1.4.1, from a code review: a guard that lasted one call).
+                if (legacy.isFile) {
+                    val o = openPlain(legacy, null)
+                    if (o != null && (o.contentEquals(plain) || legacy.lastModified() <= f.lastModified())) legacy.delete()
+                }
+                if (!bound(bytes!!)) runCatching { replace(f, seal(plain, ad)) }
                 return v
             }
-            if (f.isFile) return null   // kept: locked or unreadable for now
-            // It was set aside as damaged: an old copy, if there is one, is next.
+            // The new file can't be used now (locked, a read error, damaged): an old copy, if there
+            // is one, is read instead, and nothing is removed (1.4.1, from a code review).
+            if (f.isFile) {
+                if (!legacy.isFile) return null
+                val o = openPlain(legacy, null) ?: return null
+                return runCatching { decode(String(o, Charsets.UTF_8)) }.getOrNull()
+            }
         }
         if (!legacy.isFile) return null
         val plain = openPlain(legacy, null) ?: return null
@@ -204,7 +222,9 @@ class ChatStore(
         runCatching {
             dir.mkdirs()
             replace(f, seal(plain, ad))
-            if (open(f.readBytes(), ad).contentEquals(plain)) legacy.delete()
+            // Read back: only a copy that opens to the same text replaces the old one; one that
+            // doesn't is set aside, so the next load reads the old file again.
+            if (open(f.readBytes(), ad).contentEquals(plain)) legacy.delete() else setAside(f)
         }.onFailure { DiagLog.log("chat", "a kept chat wasn't moved to its new name yet (${it.javaClass.simpleName}); the old copy stays") }
         return v
     }
@@ -231,8 +251,9 @@ class ChatStore(
             // Never an empty list over a history (1.3.2): clearing one is remove()'s job, not a save's.
             if (qs.isEmpty()) return@runCatching
             dir.mkdirs()
-            replace(qfile(serverId, paneId), seal(QuestionLog.encode(qs).toByteArray(Charsets.UTF_8), aad(serverId, paneId, "q")))
-            oldFile(serverId, paneId, ".q").delete()
+            val plain = QuestionLog.encode(qs).toByteArray(Charsets.UTF_8)
+            replace(qfile(serverId, paneId), seal(plain, aad(serverId, paneId, "q")))
+            dropOldIfReadsBack(qfile(serverId, paneId), oldFile(serverId, paneId, ".q"), plain, aad(serverId, paneId, "q"))
             trim()
         }.onFailure { DiagLog.log("chat", "a question history wasn't saved (${it.javaClass.simpleName}); the previous copy stays") }
     }

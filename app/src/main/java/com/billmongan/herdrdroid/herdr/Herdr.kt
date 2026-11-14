@@ -248,9 +248,14 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
             "( $herdr agent wait ${shq(p.id)} $until --timeout $timeoutMs >/dev/null 2>&1 && echo ${shq("@@chg " + p.id)} ) & pids=\"\$pids \$!\"; "
         }
         val script = "pids=; ${body}wait -n 2>/dev/null; kill \$pids 2>/dev/null; true"
+        val started = System.currentTimeMillis()
         val r = runCatching { ssh.execNow("bash -c " + shq(script), timeoutSeconds = timeoutMs / 1000 + 20) }.getOrNull() ?: return null
         if (r.exit != 0) return null
-        return r.out.lines().firstOrNull { it.startsWith("@@chg ") }?.removePrefix("@@chg ")?.trim() ?: ""
+        r.out.lines().firstOrNull { it.startsWith("@@chg ") }?.let { return it.removePrefix("@@chg ").trim() }
+        // No change reported: a real timeout took about [timeoutMs]; back much sooner means the
+        // waits failed (herdr without agent wait, say), and the caller polls instead of looping
+        // straight into another wait (1.4.1, from a code review).
+        return if (System.currentTimeMillis() - started >= timeoutMs * 3 / 4) "" else null
     }
 
     /** Each agent's program version here (1.4.0): agent kind to version, for the parsers and the debug bundle. */
