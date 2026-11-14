@@ -9,3 +9,4 @@ keystore/signing.properties
 .kotlin/
 keystore/*.jks
 keystore/*.keystore
+__pycache__/
