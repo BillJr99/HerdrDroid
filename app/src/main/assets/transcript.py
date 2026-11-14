@@ -295,10 +295,18 @@ def read_jsonl(path, cur):
 
 def newest(paths):
     paths = [p for p in paths if os.path.isfile(p)]
-    return max(paths, key=os.path.getmtime) if paths else None
+    return max(paths, key=mtime) if paths else None
 
 
 PIN = {}  # set by main(): {"pin": file} or {"pin_sid": id, "db": path} to read a past session
+
+
+def mtime(path):
+    """A file's modification time; one removed while sorting counts as oldest (1.4.1, from a code review)."""
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0
 
 
 def pinned(default):
@@ -417,7 +425,7 @@ def claude(cwd, cur):
 
 def codex(cwd, cur):
     files = glob.glob(os.path.join(HOME, ".codex", "sessions", "*", "*", "*", "*.jsonl"))
-    files.sort(key=os.path.getmtime, reverse=True)
+    files.sort(key=mtime, reverse=True)
     path = None
     if cur.get("file") in files[:40]:
         files = [cur["file"]] + [f for f in files[:40] if f != cur["file"]]
@@ -430,7 +438,7 @@ def codex(cwd, cur):
                 break
         except Exception:
             continue
-    if path is None or (cur.get("file") and cur["file"] != path and os.path.getmtime(cur["file"]) > os.path.getmtime(path)):
+    if path is None or (cur.get("file") and cur["file"] != path and mtime(cur["file"]) > mtime(path)):
         path = path or cur.get("file")
     path = pinned(path)
     if not path:
@@ -564,7 +572,7 @@ def copilot(cwd, cur):
     # read, follow ticks included, opened the first line of every events.jsonl there was).
     best = None
     files = glob.glob(os.path.join(HOME, ".copilot", "session-state", "*", "events.jsonl"))
-    for f in sorted(files, key=lambda x: os.path.getmtime(x) if os.path.exists(x) else 0, reverse=True):
+    for f in sorted(files, key=mtime, reverse=True):
         try:
             with open(f, "rb") as fh:
                 head = json.loads(fh.readline() or b"{}")
@@ -764,7 +772,7 @@ def vibe_sessions(cwd):
             continue
         if (m.get("environment") or {}).get("working_directory") == cwd or m.get("origin_directory") == cwd:
             out.append(meta)
-    return sorted(out, key=os.path.getmtime, reverse=True)
+    return sorted(out, key=mtime, reverse=True)
 
 
 def vibe_entries(meta):
@@ -842,8 +850,54 @@ def omp(cwd, cur):
     return pi(cwd, cur, root=(".omp", "agent"))
 
 
+def kiro(cwd, cur):
+    """Kiro CLI (1.4.1): ~/.kiro/sessions/cli/<id>.json names the session's folder; <id>.jsonl holds
+    its records, each {"version", "kind", "data": {"message_id", "content": [...], ...}}: kind Prompt
+    (your message, content of kind "text"), AssistantMessage (content of kind "text", "thinking"
+    {"text"} or "toolUse" {"toolUseId", "name", "input"}) and ToolResults (content of kind
+    "toolResult" {"toolUseId", "content", "status"})."""
+    d = os.path.join(HOME, ".kiro", "sessions", "cli")
+    best = None
+    metas = glob.glob(os.path.join(d, "*.json"))
+    for m in sorted(metas, key=mtime, reverse=True):
+        try:
+            if json.load(open(m)).get("cwd") == cwd and os.path.isfile(m[:-5] + ".jsonl"):
+                best = m[:-5] + ".jsonl"
+                break
+        except Exception:
+            continue
+    best = pinned(best)
+    if not best:
+        return None
+    recs, ncur, reset, more = read_jsonl(best, cur)
+    items = []
+    for off, r in recs:
+        kind = r.get("kind")
+        data = r.get("data") or {}
+        for i, c in enumerate(data.get("content") or []):
+            k = "k%d.%d" % (off, i)
+            ck, cd = c.get("kind"), c.get("data")
+            if kind == "Prompt" and ck == "text" and isinstance(cd, str):
+                user_items(k, cd, items)
+            elif kind == "AssistantMessage" and ck == "text" and isinstance(cd, str) and cd.strip():
+                items.append({"k": k, "t": "text", "text": cd})
+            elif ck == "thinking" and isinstance(cd, dict) and str(cd.get("text") or "").strip():
+                items.append({"k": k, "t": "think", "text": str(cd["text"])})
+            elif ck == "toolUse" and isinstance(cd, dict):
+                items.append(tool_item(k, cd.get("toolUseId"), cd.get("name"), cd.get("input")))
+            elif ck == "toolResult" and isinstance(cd, dict):
+                items.append(result_item(k, cd.get("toolUseId"), text_of(cd.get("content")),
+                                         str(cd.get("status") or "").lower() not in ("", "success", "ok")))
+    title = None
+    try:
+        title = json.load(open(best[:-6] + ".json")).get("title") or None
+    except Exception:
+        pass
+    return {"cur": ncur, "reset": reset, "more": more, "items": items, "title": title}
+
+
 READERS = {"claude": claude, "codex": codex, "pi": pi, "omp": omp, "grok": grok, "copilot": copilot,
-           "opencode": opencode, "hermes": hermes, "vibe": vibe}
+           "opencode": opencode, "hermes": hermes, "vibe": vibe, "kiro": kiro}
 
 
 def fetch_image(path, off, idx):
@@ -922,7 +976,7 @@ def list_sessions(agent, cwd):
     elif agent == "grok":
         files(glob.glob(os.path.join(HOME, ".grok", "sessions", urllib.parse.quote(cwd, safe=""), "*", "chat_history.jsonl")))
     elif agent == "codex":
-        fs = sorted(glob.glob(os.path.join(HOME, ".codex", "sessions", "*", "*", "*", "*.jsonl")), key=os.path.getmtime, reverse=True)[:300]
+        fs = sorted(glob.glob(os.path.join(HOME, ".codex", "sessions", "*", "*", "*", "*.jsonl")), key=mtime, reverse=True)[:300]
         mine = []
         for f in fs:
             try:
@@ -1104,7 +1158,7 @@ def claude_session_dir(cwd):
     fs = glob.glob(os.path.join(d, "*.jsonl"))
     if not fs:
         return None, None
-    f = max(fs, key=os.path.getmtime)
+    f = max(fs, key=mtime)
     return f, os.path.splitext(f)[0]
 
 
@@ -1113,7 +1167,7 @@ def claude_subagents(cwd, now):
     out = []
     if not sdir:
         return out
-    fs = sorted(glob.glob(os.path.join(sdir, "subagents", "agent-*.jsonl")), key=os.path.getmtime, reverse=True)[:30]
+    fs = sorted(glob.glob(os.path.join(sdir, "subagents", "agent-*.jsonl")), key=mtime, reverse=True)[:30]
     for f in fs:
         st = os.stat(f)
         title = None
@@ -1194,7 +1248,7 @@ def claude_tasks(cwd, now, open_files):
     sid = os.path.basename(sdir)
     slug = re.sub(r"[^A-Za-z0-9]", "-", cwd)
     tdir = os.path.join("/tmp", "claude-%d" % os.getuid(), slug, sid, "tasks")
-    fs = sorted(glob.glob(os.path.join(tdir, "*.output")), key=os.path.getmtime, reverse=True)[:20]
+    fs = sorted(glob.glob(os.path.join(tdir, "*.output")), key=mtime, reverse=True)[:20]
     if not fs:
         return []
     # What each task is, from the session log: a background tool call and the id its result names.
@@ -1463,7 +1517,7 @@ def search_sessions(query, limit=60):
              ("copilot", os.path.join(HOME, ".copilot", "session-state", "*", "events.jsonl"))]
     deadline = time.time() + 25
     for agent, pattern in roots:
-        for f in sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)[:400]:
+        for f in sorted(glob.glob(pattern), key=mtime, reverse=True)[:400]:
             if time.time() > deadline:
                 break
             scan(agent, f)

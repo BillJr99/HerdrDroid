@@ -1,0 +1,12 @@
+────────────────────────────────────────────────────────────────────────
+ Bash command
+
+   mkdir -p sub && date > sub/now.txt
+   Create the folder and write the date
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and don't ask again for mkdir commands in /tmp/t
+   3. No, and tell Claude what to do differently (esc)
+
+ Esc to cancel · Tab to amend

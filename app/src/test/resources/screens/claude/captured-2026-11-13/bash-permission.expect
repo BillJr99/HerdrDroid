@@ -1,0 +1,5 @@
+card: options
+blocked: true
+heading: Do you want to proceed?
+options: Yes | Yes, and don't ask again for mkdir commands in /tmp/t | No, and tell Claude what to do differently (esc)
+source: captured on demo-box2, 2026-11-13 (the 1.2.7 to 1.2.9 question-format tests)

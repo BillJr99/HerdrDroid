@@ -107,29 +107,50 @@ object ChatCodec {
 /**
  * The chats kept in the app's private storage, one sealed file per server and pane (sealed with a
  * key in the Android Keystore; nothing is ever written on the computer). The oldest files go once
- * all of them pass [maxTotal] bytes. Any file that can't be opened is removed and read afresh.
+ * all of them pass [maxTotal] bytes. A file that can't be opened is kept or set aside, never deleted (1.3.2).
  */
 class ChatStore(
     private val dir: File,
-    private val seal: (ByteArray) -> ByteArray,
-    private val open: (ByteArray) -> ByteArray,
+    private val seal: (ByteArray, ByteArray?) -> ByteArray,
+    private val open: (ByteArray, ByteArray?) -> ByteArray,
+    /** True for a file already bound to its pane (ChatVault's "HDv3"); others are bound at their next load. */
+    private val bound: (ByteArray) -> Boolean = { true },
     private val maxTotal: Long = 8L * 1024 * 1024,
 ) {
-    private fun part(s: String) = s.map { if (it.isLetterOrDigit() || it == '-') it else '_' }.joinToString("").take(40) +
-        "-" + Integer.toHexString(s.hashCode())
+    /** For callers (and tests) whose seal takes no associated data. */
+    constructor(dir: File, seal: (ByteArray) -> ByteArray, open: (ByteArray) -> ByteArray, maxTotal: Long = 8L * 1024 * 1024) :
+        this(dir, { b: ByteArray, _: ByteArray? -> seal(b) }, { b: ByteArray, _: ByteArray? -> open(b) }, { true }, maxTotal)
+
+    // 1.4.1 (from a code review): names end in a SHA-256 prefix of the ids, not a 32-bit hash two ids
+    // could share, and each seal carries the server id, pane id and kind as associated data, so a
+    // file put in another pane's place fails to open instead of showing that pane's chat.
+    private fun clean(s: String) = s.map { if (it.isLetterOrDigit() || it == '-') it else '_' }.joinToString("")
+    private fun sha(s: String) = java.security.MessageDigest.getInstance("SHA-256").digest(s.toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }.take(16)
+    private fun part(s: String) = clean(s).take(24) + "-" + sha(s)
     private fun prefix(serverId: String) = part(serverId) + "__"
     private fun file(serverId: String, paneId: String) = File(dir, prefix(serverId) + part(paneId) + ".chat")
     /** A pane's question history (1.3.0), beside its chat, sealed the same way and counted in the same total. */
     private fun qfile(serverId: String, paneId: String) = File(dir, prefix(serverId) + part(paneId) + ".q")
-    private fun kept(f: File) = f.name.endsWith(".chat") || f.name.endsWith(".q")
+    private fun aad(serverId: String, paneId: String, kind: String) = "herdrdroid|$kind|$serverId|$paneId".toByteArray(Charsets.UTF_8)
+
+    // The 1.2.9 to 1.4.0 names (no associated data): read, moved to the new name, and removed only
+    // after the new copy was read back.
+    private fun oldPart(s: String) = clean(s).take(40) + "-" + Integer.toHexString(s.hashCode())
+    private fun oldPrefix(serverId: String) = oldPart(serverId) + "__"
+    private fun oldFile(serverId: String, paneId: String, ext: String) = File(dir, oldPrefix(serverId) + oldPart(paneId) + ext)
+    private fun ofServer(f: File, serverId: String) = f.name.startsWith(prefix(serverId)) || f.name.startsWith(oldPrefix(serverId))
+
+    private fun kept(f: File) = f.isFile && (f.name.endsWith(".chat") || f.name.endsWith(".q"))
 
     @Synchronized fun save(serverId: String, paneId: String, chat: CachedChat) {
         runCatching {
             dir.mkdirs()
-            val f = file(serverId, paneId)
-            replace(f, seal(ChatCodec.encode(chat).toByteArray(Charsets.UTF_8)))
+            replace(file(serverId, paneId), seal(ChatCodec.encode(chat).toByteArray(Charsets.UTF_8), aad(serverId, paneId, "chat")))
+            // The new file holds the newest chat now; the one under the old name is out of date.
+            oldFile(serverId, paneId, ".chat").delete()
             trim()
-        }.onFailure { com.billmongan.herdrdroid.diag.DiagLog.log("chat", "a kept chat wasn't saved (${it.javaClass.simpleName}); the previous copy stays") }
+        }.onFailure { DiagLog.log("chat", "a kept chat wasn't saved (${it.javaClass.simpleName}); the previous copy stays") }
     }
 
     /**
@@ -144,19 +165,47 @@ class ChatStore(
     }
 
     /**
-     * Opens and decodes a kept file. The file is deleted only when it is damaged for certain: its
-     * seal failed to authenticate, or it opened but didn't decode (1.3.2, from a code review: any
-     * failure deleted it before, a Keystore or disk error included). Locked, invalidated, a missing
-     * key or a read error keep it.
+     * Opens a kept file. Null when it can't be opened now. Only a file that is damaged for certain
+     * (its seal fails to authenticate) is moved to unreadable/ (1.3.2); locked, invalidated, a missing
+     * key or a read error keep it where it is.
      */
-    private fun <T> openKept(f: File, decode: (String) -> T?): T? {
-        if (!f.isFile) return null
-        val plain = try { open(f.readBytes()) } catch (e: Exception) {
-            if (com.billmongan.herdrdroid.store.Vaults.badSeal(e)) setAside(f)
-            return null
+    private fun openPlain(f: File, ad: ByteArray?): ByteArray? = try { open(f.readBytes(), ad) } catch (e: Exception) {
+        if (com.billmongan.herdrdroid.store.Vaults.badSeal(e)) setAside(f)
+        null
+    }
+
+    /**
+     * A pane's file, decoded. The new name first: when it opens, a leftover under the old name is
+     * removed (the new one is newer or the same), and a file not yet bound to its pane is sealed
+     * again with its data. Otherwise the old name: it is opened without associated data, written
+     * under the new name and seal, read back, and only then removed. A failure at any step keeps
+     * the old file, so the next load tries again.
+     */
+    private fun <T> loadPane(serverId: String, paneId: String, kind: String, ext: String, f: File, decode: (String) -> T?): T? {
+        val ad = aad(serverId, paneId, kind)
+        val legacy = oldFile(serverId, paneId, ext)
+        if (f.isFile) {
+            val bytes = runCatching { f.readBytes() }.getOrNull() ?: return null
+            val plain = openPlain(f, ad)
+            if (plain != null) {
+                val v = runCatching { decode(String(plain, Charsets.UTF_8)) }.getOrNull()
+                if (v == null) { setAside(f); return null }
+                if (legacy.isFile) legacy.delete()
+                if (!bound(bytes)) runCatching { replace(f, seal(plain, ad)) }
+                return v
+            }
+            if (f.isFile) return null   // kept: locked or unreadable for now
+            // It was set aside as damaged: an old copy, if there is one, is next.
         }
+        if (!legacy.isFile) return null
+        val plain = openPlain(legacy, null) ?: return null
         val v = runCatching { decode(String(plain, Charsets.UTF_8)) }.getOrNull()
-        if (v == null) setAside(f)
+        if (v == null) { setAside(legacy); return null }
+        runCatching {
+            dir.mkdirs()
+            replace(f, seal(plain, ad))
+            if (open(f.readBytes(), ad).contentEquals(plain)) legacy.delete()
+        }.onFailure { DiagLog.log("chat", "a kept chat wasn't moved to its new name yet (${it.javaClass.simpleName}); the old copy stays") }
         return v
     }
 
@@ -170,39 +219,42 @@ class ChatStore(
         if (!f.renameTo(File(bin, f.name))) DiagLog.log("chat", "a file that can't be opened stays where it is")
     }
 
-    @Synchronized fun load(serverId: String, paneId: String): CachedChat? = openKept(file(serverId, paneId)) { ChatCodec.decode(it) }
+    @Synchronized fun load(serverId: String, paneId: String): CachedChat? =
+        loadPane(serverId, paneId, "chat", ".chat", file(serverId, paneId)) { ChatCodec.decode(it) }
 
     /** True when the pane has a question history on the phone, whether or not it can be opened now (1.3.2). */
-    @Synchronized fun hasQuestions(serverId: String, paneId: String): Boolean = qfile(serverId, paneId).isFile
+    @Synchronized fun hasQuestions(serverId: String, paneId: String): Boolean =
+        qfile(serverId, paneId).isFile || oldFile(serverId, paneId, ".q").isFile
 
     @Synchronized fun saveQuestions(serverId: String, paneId: String, qs: List<QuestionItem>) {
         runCatching {
-            dir.mkdirs()
-            val f = qfile(serverId, paneId)
             // Never an empty list over a history (1.3.2): clearing one is remove()'s job, not a save's.
             if (qs.isEmpty()) return@runCatching
-            replace(f, seal(QuestionLog.encode(qs).toByteArray(Charsets.UTF_8)))
+            dir.mkdirs()
+            replace(qfile(serverId, paneId), seal(QuestionLog.encode(qs).toByteArray(Charsets.UTF_8), aad(serverId, paneId, "q")))
+            oldFile(serverId, paneId, ".q").delete()
             trim()
-        }.onFailure { com.billmongan.herdrdroid.diag.DiagLog.log("chat", "a question history wasn't saved (${it.javaClass.simpleName}); the previous copy stays") }
+        }.onFailure { DiagLog.log("chat", "a question history wasn't saved (${it.javaClass.simpleName}); the previous copy stays") }
     }
 
-    @Synchronized fun loadQuestions(serverId: String, paneId: String): List<QuestionItem>? = openKept(qfile(serverId, paneId)) { QuestionLog.decode(it) }
+    @Synchronized fun loadQuestions(serverId: String, paneId: String): List<QuestionItem>? =
+        loadPane(serverId, paneId, "q", ".q", qfile(serverId, paneId)) { QuestionLog.decode(it) }
 
     /** Removes the pane's chat. Its question history goes too, unless [questions] is false (the agent's log was only re-read). */
     @Synchronized fun remove(serverId: String, paneId: String, questions: Boolean = true) {
-        file(serverId, paneId).delete()
-        if (questions) qfile(serverId, paneId).delete()
+        file(serverId, paneId).delete(); oldFile(serverId, paneId, ".chat").delete()
+        if (questions) { qfile(serverId, paneId).delete(); oldFile(serverId, paneId, ".q").delete() }
     }
 
     @Synchronized fun removeServer(serverId: String) {
-        dir.listFiles()?.filter { it.name.startsWith(prefix(serverId)) }?.forEach { it.delete() }
-        File(dir, "unreadable").listFiles()?.filter { it.name.startsWith(prefix(serverId)) }?.forEach { it.delete() }
+        dir.listFiles()?.filter { ofServer(it, serverId) }?.forEach { it.delete() }
+        File(dir, "unreadable").listFiles()?.filter { ofServer(it, serverId) }?.forEach { it.delete() }
     }
 
     /** Removes the server's files for every pane not in [keep] (closed panes). */
     @Synchronized fun keepOnly(serverId: String, keep: Collection<String>) {
-        val names = keep.flatMap { listOf(file(serverId, it).name, qfile(serverId, it).name) }.toSet()
-        dir.listFiles()?.filter { it.name.startsWith(prefix(serverId)) && kept(it) && it.name !in names }?.forEach { it.delete() }
+        val names = keep.flatMap { listOf(file(serverId, it).name, qfile(serverId, it).name, oldFile(serverId, it, ".chat").name, oldFile(serverId, it, ".q").name) }.toSet()
+        dir.listFiles()?.filter { ofServer(it, serverId) && kept(it) && it.name !in names }?.forEach { it.delete() }
     }
 
     private fun trim() {

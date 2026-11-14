@@ -17,9 +17,9 @@ object AgentVersions {
     )
 
     /** One shell script that prints "@@ver <agent> <first line of --version>" for every program found. */
-    fun script(): String = programs.entries.joinToString("; ") { (agent, prog) ->
-        "p=\$(command -v $prog 2>/dev/null || { [ -x \"\$HOME/.local/bin/$prog\" ] && echo \"\$HOME/.local/bin/$prog\"; }); " +
-            "[ -n \"\$p\" ] && printf '@@ver $agent %s\\n' \"\$(timeout 5 \"\$p\" --version </dev/null 2>/dev/null | head -1)\""
+    fun script(): String = programs.entries.joinToString(" ", postfix = " wait") { (agent, prog) ->
+        "( p=\$(command -v $prog 2>/dev/null || { [ -x \"\$HOME/.local/bin/$prog\" ] && echo \"\$HOME/.local/bin/$prog\"; }); " +
+            "[ -n \"\$p\" ] && printf '@@ver $agent %s\\n' \"\$(timeout 5 \"\$p\" --version </dev/null 2>/dev/null | head -1)\" ) &"
     }
 
     /** The versions from [script]'s output: agent to the first version number found in its line. */
@@ -31,13 +31,33 @@ object AgentVersions {
         agent to v
     }.toMap()
 
-    /** Compares dotted versions numerically ("1.10.0" > "1.9.3"); a missing part counts as 0. */
+    /**
+     * Compares dotted versions numerically ("1.10.0" > "1.9.3"); a missing part counts as 0. With
+     * equal numbers, a prerelease ("2.0.0-rc1") comes before the release (1.4.1, from a code review),
+     * prereleases compare part by part as semantic versioning does, and build data ("+abc") is ignored.
+     */
     fun compare(a: String, b: String): Int {
-        fun core(v: String) = v.substringBefore('-').substringBefore('+')
+        fun core(v: String) = v.substringBefore('+').substringBefore('-')
+        fun pre(v: String) = v.substringBefore('+').substringAfter('-', "")
         val pa = core(a).split('.').map { it.toIntOrNull() ?: 0 }
         val pb = core(b).split('.').map { it.toIntOrNull() ?: 0 }
         for (i in 0 until maxOf(pa.size, pb.size)) {
             val d = (pa.getOrElse(i) { 0 }).compareTo(pb.getOrElse(i) { 0 })
+            if (d != 0) return d
+        }
+        val ra = pre(a); val rb = pre(b)
+        if (ra.isEmpty() || rb.isEmpty()) return rb.length.coerceAtMost(1) - ra.length.coerceAtMost(1)
+        val xa = ra.split('.'); val xb = rb.split('.')
+        for (i in 0 until maxOf(xa.size, xb.size)) {
+            val p = xa.getOrNull(i) ?: return -1
+            val q = xb.getOrNull(i) ?: return 1
+            val np = p.toIntOrNull(); val nq = q.toIntOrNull()
+            val d = when {
+                np != null && nq != null -> np.compareTo(nq)
+                np != null -> -1
+                nq != null -> 1
+                else -> p.compareTo(q)
+            }
             if (d != 0) return d
         }
         return 0

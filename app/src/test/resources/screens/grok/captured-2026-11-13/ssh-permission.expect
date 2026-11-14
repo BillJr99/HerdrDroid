@@ -1,0 +1,4 @@
+card: options
+blocked: true
+heading: Check SSH to demo-box in batch mode
+source: captured on demo-box2, 2026-11-13 (the 1.2.7 to 1.2.9 question-format tests)

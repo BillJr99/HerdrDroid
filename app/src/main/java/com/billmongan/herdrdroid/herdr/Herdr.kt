@@ -231,8 +231,35 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
         if (core) forPhone(run(hcCmd("read", paneId, "--lines", lines.toString())))
         else forPhone(run(cmd("pane", "read", paneId, "--source", "recent", "--lines", lines.toString())))
 
+    /**
+     * Waits until any agent pane in [panes] changes state, or [timeoutMs] passes (1.4.1, "fewer
+     * polls"): one command that runs `herdr agent wait <pane> --until <each other state>` for every
+     * agent pane at once, prints the first that changed and stops the rest. It runs on the send
+     * lane, so it never holds up reads or answers. Returns the pane that changed, "" on a timeout,
+     * or null when it can't wait here (herdr-core, no agent panes, or an error), so the caller polls.
+     */
+    suspend fun waitForChange(panes: List<Pane>, timeoutMs: Long): String? {
+        if (core) return null
+        val agents = panes.filter { it.agent != null }
+        if (agents.isEmpty()) return null
+        val names = mapOf(Status.IDLE to "idle", Status.WORKING to "working", Status.NEEDS_YOU to "blocked", Status.DONE to "done")
+        val body = agents.joinToString("") { p ->
+            val until = names.filterKeys { it != p.status }.values.joinToString(" ") { "--until $it" }
+            "( $herdr agent wait ${shq(p.id)} $until --timeout $timeoutMs >/dev/null 2>&1 && echo ${shq("@@chg " + p.id)} ) & pids=\"\$pids \$!\"; "
+        }
+        val script = "pids=; ${body}wait -n 2>/dev/null; kill \$pids 2>/dev/null; true"
+        val r = runCatching { ssh.execNow("bash -c " + shq(script), timeoutSeconds = timeoutMs / 1000 + 20) }.getOrNull() ?: return null
+        if (r.exit != 0) return null
+        return r.out.lines().firstOrNull { it.startsWith("@@chg ") }?.removePrefix("@@chg ")?.trim() ?: ""
+    }
+
     /** Each agent's program version here (1.4.0): agent kind to version, for the parsers and the debug bundle. */
-    suspend fun agentVersions(): Map<String, String> = runCatching { AgentVersions.parse(ssh.exec(AgentVersions.script(), timeoutSeconds = 60).out) }.getOrDefault(emptyMap())
+    /**
+     * The agents' versions (1.4.0). On the send lane, so no read waits for it, and every agent's
+     * --version at once under one 10-second cap (1.4.1, from a code review: one at a time on the
+     * connection's lock, pane reads waited up to a minute).
+     */
+    suspend fun agentVersions(): Map<String, String> = runCatching { AgentVersions.parse(ssh.execNow(AgentVersions.script(), timeoutSeconds = 10).out) }.getOrDefault(emptyMap())
 
     /** The last few lines of every pane, fetched in one round trip. */
     suspend fun previews(ids: List<String>): Map<String, Peek> {
@@ -1051,13 +1078,27 @@ fun inputLineOf(screen: String): String? {
     val lead = Regex("""^[\s\u00A0│┃|]*[>❯›»][\s\u00A0]*""")
     // Not an input line (from a review): a menu row ("❯ 1. Yes"), a ">>" or ">>>" prompt or nested quote.
     val notInput = Regex("""^[\s\u00A0│┃|]*(?:[>❯›»]\s*\d{1,2}[.)]\s|>>)""")
-    val line = screen.lines().takeLast(14).lastOrNull { lead.containsMatchIn(it) && !notInput.containsMatchIn(it) } ?: return null
-    return line.replace(lead, "").trimEnd(' ', '\u00A0', '│', '┃', '|').trim()
+    // 1.4.1 (from a code review): colour codes taken out first, and only the composer's own row
+    // counts: one between two rule lines (the box agents draw around it), else one inside a
+    // "│ ... │" frame, else one with at most a three-line footer under it. A quoted or diff "> " row in the output above is not typing.
+    val ansi = Regex("""\u001B\[[0-9;?]*[ -/]*[@-~]|\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)""")
+    val rows = screen.lines().map { it.replace(ansi, "") }.takeLast(14)
+    val rule = Regex("""^[\s\u00A0╭╰├└┌]*[─━═╌┄-]{4,}""")
+    fun isRule(i: Int) = i in rows.indices && rule.containsMatchIn(rows[i])
+    val candidates = rows.indices.filter { lead.containsMatchIn(rows[it]) && !notInput.containsMatchIn(rows[it]) }
+    val framed = Regex("""^[\s\u00A0]*[│┃|].*[│┃|][\s\u00A0]*$""")
+    val i = candidates.lastOrNull { isRule(it - 1) && isRule(it + 1) }
+        ?: candidates.lastOrNull { framed.matches(rows[it]) }
+        ?: candidates.lastOrNull { c -> rows.drop(c + 1).count { it.isNotBlank() && !rule.containsMatchIn(it) } <= 3 }
+        ?: return null
+    return rows[i].replace(lead, "").trimEnd(' ', '\u00A0', '│', '┃', '|').trim()
 }
 
 /** A choice that grants standing permission ("always allow", "don't ask again"); the card adds a caution (1.4.0). */
 private val ALWAYS_LABEL = Regex("""\balways\b|don'?t ask again|\btrust\b|remainder of this session|always-approve|for this (session|conversation)""", RegexOption.IGNORE_CASE)
-fun grantsStandingPermission(label: String): Boolean = ALWAYS_LABEL.containsMatchIn(label)
+// 1.4.1 (from a code review): a refusal ("No, don't trust this", "Never allow") grants nothing.
+private val REFUSAL_LABEL = Regex("""^\W*(no|deny|reject|cancel|never|don'?t (trust|allow))\b|\b(don'?t|do not|not|never) (trust|always)\b""", RegexOption.IGNORE_CASE)
+fun grantsStandingPermission(label: String): Boolean = ALWAYS_LABEL.containsMatchIn(label) && !REFUSAL_LABEL.containsMatchIn(label)
 
 /** A choice that means "I'll type my own answer" ("Type something.", "Other", "Something else"), 1.4.0. */
 private val OTHER_LABEL = Regex("""^(type something\.?|other\b.*|something else.*|chat about this|type your own.*|enter (a |your )?custom.*)$""", RegexOption.IGNORE_CASE)

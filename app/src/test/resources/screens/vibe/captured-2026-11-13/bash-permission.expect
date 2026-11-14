@@ -1,0 +1,4 @@
+card: options
+blocked: false
+heading: Permission for the file_system.bash tool (shell syntax requiring approval: redirection)
+source: captured on demo-box2, 2026-11-13 (the 1.2.7 to 1.2.9 question-format tests)

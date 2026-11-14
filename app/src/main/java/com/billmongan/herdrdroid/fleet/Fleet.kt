@@ -91,11 +91,13 @@ class Fleet(
                             val raw = pair.second.panes()
                             val gap = if (screenOn()) 30_000L else 90_000L
                             val sweepDue = System.currentTimeMillis() - (sweptAt[id] ?: 0L) >= gap
-                            val busy = if (!sweepDue) Result.success(states[id]?.busy ?: emptyMap()) else busyOf?.let { f ->
-                                sweptAt[id] = System.currentTimeMillis()
-                                try { Result.success(f(pair.second)) } catch (c: CancellationException) { throw c } catch (e: Exception) { Result.failure(e) }
+                            val last = states[id]?.busy ?: emptyMap()
+                            val busy = if (!sweepDue) Result.success(last) else busyOf?.let { f ->
+                                // Counted as swept only once it worked (1.4.1, from a code review): a failed
+                                // sweep keeps the last list and is tried again on the next tick.
+                                try { Result.success(f(pair.second)).also { sweptAt[id] = System.currentTimeMillis() } } catch (c: CancellationException) { throw c } catch (e: Exception) { Result.failure(e) }
                             } ?: Result.success(emptyMap())
-                            FleetState(server, sweptPanes(raw, busy), null, System.currentTimeMillis(), busy.getOrDefault(emptyMap()))
+                            FleetState(server, sweptPanes(raw, Result.success(busy.getOrDefault(last))), null, System.currentTimeMillis(), busy.getOrDefault(last))
                         } catch (c: CancellationException) {
                             throw c
                         } catch (e: Exception) {

@@ -501,31 +501,50 @@ object PasswordVault {
 
 /** Seals the chats kept on the phone with an AES key that never leaves the Android Keystore (1.2.9; see [Vaults]). */
 object ChatVault {
-    fun isNew(sealed: ByteArray): Boolean = sealed.size > 4 && sealed.copyOfRange(0, 4).contentEquals(Vaults.CHAT_MAGIC)
+    private val V3 = byteArrayOf('H'.code.toByte(), 'D'.code.toByte(), 'v'.code.toByte(), '3'.code.toByte())
+    private fun header(b: ByteArray, h: ByteArray) = b.size > 4 && b.copyOfRange(0, 4).contentEquals(h)
 
-    fun seal(plain: ByteArray): ByteArray = Vaults.reading {
+    /** Sealed under the new key, with or without associated data ("HDv3" or "HDv2"). */
+    fun isNew(sealed: ByteArray): Boolean = header(sealed, Vaults.CHAT_MAGIC) || header(sealed, V3)
+
+    /** Sealed with associated data (1.4.1): it opens only for the pane it was written for. */
+    fun isBound(sealed: ByteArray): Boolean = header(sealed, V3)
+
+    /**
+     * Seals [plain]. With [aad] (1.4.1: the chat store passes the server id, pane id and kind) and the
+     * new key, under the "HDv3" header bound to that data. Before the key migration is done, under
+     * the old key without it; the migration and then the next load bind it.
+     */
+    fun seal(plain: ByteArray, aad: ByteArray? = null): ByteArray = Vaults.reading {
         val old = if (Vaults.migrated()) null else Vaults.oldKey(Vaults.CH_OLD, Vaults.CH_NEW)
-        if (old == null) sealNew(plain) else {
+        if (old == null) sealNew(plain, aad) else {
             val c = Vaults.cipher(Cipher.ENCRYPT_MODE, old)
             c.iv + c.doFinal(plain)
         }
     }
 
-    internal fun sealNew(plain: ByteArray): ByteArray {
+    internal fun sealNew(plain: ByteArray, aad: ByteArray? = null): ByteArray {
         val c = try { Vaults.cipher(Cipher.ENCRYPT_MODE, Vaults.newKey(Vaults.CH_NEW)) } catch (e: VaultLocked) {
             if (!e.permanent) throw e
             Vaults.cipher(Cipher.ENCRYPT_MODE, Vaults.renew(Vaults.CH_NEW))
         }
-        return Vaults.CHAT_MAGIC + c.iv + c.doFinal(plain)
+        if (aad == null) return Vaults.CHAT_MAGIC + c.iv + c.doFinal(plain)
+        c.updateAAD(aad)
+        return V3 + c.iv + c.doFinal(plain)
     }
 
-    /** Throws [VaultLocked] outside the window for a file under the new key. */
-    fun open(sealed: ByteArray): ByteArray = Vaults.reading {
-        val isNew = isNew(sealed)
+    /**
+     * Opens a sealed file. Throws [VaultLocked] outside the window for a file under the new key. A
+     * bound ("HDv3") file needs the same [aad] it was sealed with: other data fails to authenticate.
+     */
+    fun open(sealed: ByteArray, aad: ByteArray? = null): ByteArray = Vaults.reading {
+        val v3 = header(sealed, V3)
+        val isNew = v3 || header(sealed, Vaults.CHAT_MAGIC)
         val body = if (isNew) sealed.copyOfRange(4, sealed.size) else sealed
         val key = (if (isNew) Vaults.existing(Vaults.CH_NEW) else Vaults.existing(Vaults.CH_OLD))
             ?: throw IllegalStateException("the key for this chat file is gone")
         val c = Vaults.cipher(Cipher.DECRYPT_MODE, key, body.copyOfRange(0, 12))
+        if (v3) c.updateAAD(aad ?: throw IllegalStateException("this chat file belongs to a pane and needs its ids"))
         c.doFinal(body, 12, body.size - 12)
     }
 }

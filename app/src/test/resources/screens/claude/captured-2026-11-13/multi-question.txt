@@ -1,0 +1,13 @@
+────────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Close 537  ☐ Stop hook  ☐ Revise 329  ☐ Markup line  ✔ Submit  →
+
+Close residue 537 (the duplicate stop hook entry)? Both differences were repaired in the
+working copy, so closing it only updates the tracker.
+
+❯ 1. Close it
+     Mark 537 resolved now.
+  2. Keep it open
+     Leave it for a later pass.
+  3. Type something.
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel

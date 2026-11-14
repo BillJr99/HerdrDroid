@@ -1,0 +1,9 @@
+↓ Shell mkdir -p sub && date > sub/now.txt
+
+──────────────────────────────────────────────────────────────────────────
+ shell requires approval
+ ❯ Yes, single permission
+   Trust, always allow in this session
+   No (Tab to edit)
+──────────────────────────────────────────────────────────────────────────
+ esc to close · ↑↓ to navigate · ↵ to select · Tab to edit

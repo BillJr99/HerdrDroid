@@ -949,7 +949,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 // isn't held open in the background; then no faster than every 15 s (60 s, screen off).
                 if (!foreground) {
                     if (!watching || current?.overWebSocket == true) { delay(1_000); continue }
-                    wait = maxOf(wait, if (screenOn()) 15_000L else 60_000L)
+                    wait = if (screenOn()) 15_000L else 60_000L
                 }
                 try {
                     ssh?.reset()
@@ -971,8 +971,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     linkProblem = friendly(e)
                     if (System.currentTimeMillis() - downSince > 15_000) link = Link.OFFLINE
                 }
-                delay(wait)
-                wait = (wait * 2).coerceAtMost(8_000)
+                // A second at a time, so coming back to the front ends a long background wait at once
+                // (1.4.1, from a code review: the 15 or 60 s gap went on after the app was opened).
+                val wasBehind = !foreground
+                var waited = 0L
+                while (waited < wait && !(wasBehind && foreground)) { delay(1_000); waited += 1_000 }
+                wait = if (wasBehind && foreground) 1_000L else (wait * 2).coerceAtMost(8_000)
             }
         }
     }
@@ -1202,7 +1206,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- Structured conversations ------------------------------------------------------------
 
-    private val readers = setOf("claude", "codex", "pi", "omp", "grok", "opencode", "hermes", "copilot", "vibe")
+    private val readers = setOf("claude", "codex", "pi", "omp", "grok", "opencode", "hermes", "copilot", "vibe", "kiro")
 
     fun hasTranscriptReader(paneId: String) = pane(paneId)?.agent?.lowercase() in readers
 
@@ -1240,7 +1244,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val chatStore: com.billmongan.herdrdroid.transcript.ChatStore? by lazy {
         runCatching {
             com.billmongan.herdrdroid.transcript.ChatStore(java.io.File(getApplication<Application>().noBackupFilesDir, "chats"),
-                com.billmongan.herdrdroid.store.ChatVault::seal, com.billmongan.herdrdroid.store.ChatVault::open)
+                { b, ad -> com.billmongan.herdrdroid.store.ChatVault.seal(b, ad) }, { b, ad -> com.billmongan.herdrdroid.store.ChatVault.open(b, ad) },
+                { com.billmongan.herdrdroid.store.ChatVault.isBound(it) })
         }.getOrNull()
     }
     private val persistedAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
@@ -1588,11 +1593,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun resendPending(id: Long) {
         val p = pendingSends.firstOrNull { it.id == id } ?: return
         pendingSends = pendingSends - p
+        // What the held send was to do once delivered (1.4.1, from a code review: a typed answer
+        // that was held was never recorded in the question history after Resend).
+        val then = heldThen.remove(id) ?: {}
         // Resend is a deliberate "send it anyway", so a send held for typing isn't held again.
-        pane(p.paneId)?.let { sendMessage(it, p.text, force = true) }
+        pane(p.paneId)?.let { sendMessage(it, p.text, force = true, delivered = then) }
     }
 
-    fun dismissPending(id: Long) { pendingSends = pendingSends.filterNot { it.id == id } }
+    /** For each held send, what to do once it is delivered (see [resendPending]). */
+    private val heldThen = java.util.concurrent.ConcurrentHashMap<Long, () -> Unit>()
+
+    fun dismissPending(id: Long) { heldThen.remove(id); pendingSends = pendingSends.filterNot { it.id == id } }
 
     var pendingSends by mutableStateOf<List<PendingSend>>(emptyList())
         private set
@@ -1818,10 +1829,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         act(pane.id, "Couldn't send") { h ->
             if (!force && pane.status != Status.NEEDS_YOU) {
                 val screenNow = runCatching { h.read(pane.id, 40) }.getOrNull()
-                val why = screenNow?.let { holdReason(pane.id, it) }
+                // A pane that can't be read first is not typed into blind (1.4.1, from a code review).
+                val why = if (screenNow == null) "its screen couldn't be read first, so the app can't tell whether someone is typing there" else holdReason(pane.id, screenNow)
                 if (why != null) {
                     com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${pane.id}: held, $why")
                     pendingSends = pendingSends.map { if (it.id == pendingId) it.copy(undelivered = true, held = why) else it }
+                    heldThen[pendingId] = delivered
                     error = "Not sent to ${pane.agentName}: $why. Tap Resend to send it anyway."
                     return@act
                 }
@@ -2331,10 +2344,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (watchJob?.isActive == true) return
         watchJob = viewModelScope.launch {
             while (isActive) {
-                // Every 3 s, or every 12 s with the screen off (1.4.0: fewer polls when nobody looks).
-                delay(if (screenOn()) 3_000 else 12_000)
                 // In front, the screens refresh panes themselves; behind, this keeps alerts coming.
-                if (!foreground && herdr != null && current?.overWebSocket != true) runCatching { refreshPanes() }
+                val h = herdr
+                if (foreground || h == null || current?.overWebSocket == true) { delay(3_000); continue }
+                // Behind (1.4.1): wait on herdr for any agent to change state, up to 60 s, instead of
+                // asking every few seconds; where herdr can't wait, poll every 3 s (12 s, screen off).
+                val changed = runCatching { h.waitForChange(panes, 60_000) }.getOrNull()
+                if (changed == null) delay(if (screenOn()) 3_000 else 12_000)
+                if (!foreground && herdr === h) runCatching { refreshPanes() }
             }
         }
     }
