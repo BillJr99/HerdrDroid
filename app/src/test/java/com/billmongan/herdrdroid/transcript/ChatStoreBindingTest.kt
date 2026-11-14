@@ -132,9 +132,10 @@ class ChatStoreBindingTest {
         val store = ChatStore(tmp.root, seal, { b, ad -> reads++; if (reads == 2) "{}".toByteArray() else open(b, ad) })
         assertEquals(chat.items, store.load("s1", "w1:p1")!!.items)
         assertTrue(old.isFile)
-        // The copy that read back wrong is set aside, so the next load reads the old file again
-        // instead of trusting it (1.4.1, from a second review).
-        assertTrue(File(tmp.root, "unreadable/" + newName("s1", "w1:p1", ".chat")).isFile)
+        // The copy that read back wrong never took the new name, so the next load reads the old
+        // file again instead of trusting it (1.4.1, from code review).
+        assertFalse(File(tmp.root, newName("s1", "w1:p1", ".chat")).exists())
+        assertFalse(tmp.root.listFiles()!!.any { it.name.endsWith(".tmp") })
         assertEquals(chat.items, store.load("s1", "w1:p1")!!.items)
     }
 
@@ -265,5 +266,22 @@ class ChatStoreBindingTest {
         val old = legacy()   // newer, and different
         store.save("s1", "w1:p1", chat.copy(items = listOf(TextItem("t3", "saved again"))))
         assertTrue(old.isFile)
+    }
+    @Test fun theSizeCapTrimsOnlyChatsThatCanBeReadAgain() {
+        val one = ChatCodec.encode(chat).length.toLong()
+        val store = ChatStore(tmp.root, seal, open, { true }, one / 2)   // a cap smaller than one chat
+        val old = legacy()
+        val q = QuestionLog.seen(emptyList(), com.billmongan.herdrdroid.herdr.Prompt("Go?", listOf(com.billmongan.herdrdroid.herdr.Choice("Yes", "1", false))), "Codex", null, 1)
+        store.saveQuestions("s1", "w1:p9", q)
+        store.save("s1", "w1:p2", chat)
+        // The chat just saved stays even though it alone is over the cap; the question history and
+        // the 1.4.0 file are never trimmed.
+        assertTrue(File(tmp.root, newName("s1", "w1:p2", ".chat")).isFile)
+        assertTrue(File(tmp.root, newName("s1", "w1:p9", ".q")).isFile)
+        assertTrue(old.isFile)
+        // Saving another pane trims the older chat, which can be read again from the agent's log.
+        store.save("s1", "w1:p3", chat)
+        assertFalse(File(tmp.root, newName("s1", "w1:p2", ".chat")).exists())
+        assertTrue(File(tmp.root, newName("s1", "w1:p3", ".chat")).isFile)
     }
 }

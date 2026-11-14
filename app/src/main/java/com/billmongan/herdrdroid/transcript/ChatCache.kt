@@ -150,16 +150,6 @@ class ChatStore(
         }.onFailure { DiagLog.log("chat", "a kept chat wasn't saved (${it.javaClass.simpleName}); the previous copy stays") }
     }
 
-    /**
-     * Writes [bytes] as [f]: beside it first, then one atomic rename over it (1.3.2, from a code
-     * review: deleting the file before a rename that then failed left the only copy as .tmp).
-     * When the rename fails the previous file stays and the save is reported as failed.
-     */
-    private fun replace(f: File, bytes: ByteArray) {
-        val tmp = File(dir, f.name + ".tmp")
-        tmp.writeBytes(bytes)
-        java.nio.file.Files.move(tmp.toPath(), f.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
-    }
 
     /**
      * The kept files whose contents this process loaded (returned to the app) or wrote and read back
@@ -185,18 +175,9 @@ class ChatStore(
             return
         }
         val before = if (existed) f.lastModified() else 0L
-        dir.mkdirs()
-        val tmp = File(dir, f.name + ".tmp")
-        try {
-            tmp.writeBytes(seal(plain, ad))
-            val back = runCatching { open(tmp.readBytes(), ad) }.getOrNull()
-            if (back == null || !back.contentEquals(plain)) {
-                DiagLog.log("chat", "a save didn't read back the same; the kept file stays as it was")
-                return
-            }
-            java.nio.file.Files.move(tmp.toPath(), f.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
-        } finally {
-            if (tmp.exists()) tmp.delete()   // the app's own unused temporary copy
+        if (!swapIn(f, plain, ad)) {
+            DiagLog.log("chat", "a save didn't read back the same; the kept file stays as it was")
+            return
         }
         trusted += f.name
         if (old.isFile) {
@@ -205,7 +186,26 @@ class ChatStore(
                 old.delete(); trusted -= old.name
             }
         }
-        trim()
+        trim(keep = f)
+    }
+
+    /**
+     * Seals [plain] into a temporary file beside [f], reads it back there, and only when it opens to
+     * [plain] moves it onto [f] in one atomic step (1.4.1, from code review). False, with [f] as it
+     * was, otherwise. The temporary file is the app's own and goes either way.
+     */
+    private fun swapIn(f: File, plain: ByteArray, ad: ByteArray): Boolean {
+        dir.mkdirs()
+        val tmp = File(dir, f.name + ".tmp")
+        try {
+            tmp.writeBytes(seal(plain, ad))
+            val back = runCatching { open(tmp.readBytes(), ad) }.getOrNull()
+            if (back == null || !back.contentEquals(plain)) return false
+            java.nio.file.Files.move(tmp.toPath(), f.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+            return true
+        } finally {
+            if (tmp.exists()) tmp.delete()
+        }
     }
 
     /**
@@ -241,7 +241,8 @@ class ChatStore(
                     val o = openPlain(legacy, null)
                     if (o != null && (o.contentEquals(plain) || legacy.lastModified() <= f.lastModified())) legacy.delete()
                 }
-                if (!bound(bytes!!)) runCatching { replace(f, seal(plain, ad)) }
+                // Bound to its pane through the same read-back swap (1.4.1, from code review).
+                if (!bound(bytes!!)) runCatching { swapIn(f, plain, ad) }
                 return v
             }
             // The new file can't be used now (locked, a read error, damaged): an old copy, if there
@@ -258,11 +259,9 @@ class ChatStore(
         if (v == null) { setAside(legacy); return null }
         trusted += legacy.name
         runCatching {
-            dir.mkdirs()
-            replace(f, seal(plain, ad))
-            // Read back: only a copy that opens to the same text replaces the old one; one that
-            // doesn't is set aside, so the next load reads the old file again.
-            if (open(f.readBytes(), ad).contentEquals(plain)) { trusted += f.name; legacy.delete(); trusted -= legacy.name } else setAside(f)
+            // Read back before it takes the new name: only a copy that opens to the same text
+            // replaces the old one, and the old one goes only after that.
+            if (swapIn(f, plain, ad)) { trusted += f.name; legacy.delete(); trusted -= legacy.name }
         }.onFailure { DiagLog.log("chat", "a kept chat wasn't moved to its new name yet (${it.javaClass.simpleName}); the old copy stays") }
         return v
     }
@@ -313,12 +312,21 @@ class ChatStore(
         dir.listFiles()?.filter { ofServer(it, serverId) && kept(it) && it.name !in names }?.forEach { it.delete() }
     }
 
-    private fun trim() {
+    /**
+     * Keeps the kept chats under [maxTotal], oldest first. Only chat files under the current names
+     * go: a chat can be read again from the agent's log. Question histories (only on the phone),
+     * files under the 1.4.0 names and the file just saved ([keep]) are never trimmed (1.4.1, from
+     * code review).
+     */
+    private fun trim(keep: File? = null) {
         val files = dir.listFiles()?.filter { kept(it) }?.sortedByDescending { it.lastModified() } ?: return
         var total = 0L
         for (f in files) {
             total += f.length()
-            if (total > maxTotal) f.delete()
+            if (total > maxTotal && f.name.endsWith(".chat") && f.name != keep?.name && !isOldName(f.name)) f.delete()
         }
     }
+
+    /** A name in the 1.2.9 to 1.4.0 form: its parts end in a short hex hash, not a 16-digit SHA-256 prefix. */
+    private fun isOldName(name: String) = !Regex("""-[0-9a-f]{16}__.*-[0-9a-f]{16}\.(chat|q)$""").containsMatchIn(name)
 }
