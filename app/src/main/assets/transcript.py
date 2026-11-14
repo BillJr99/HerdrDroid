@@ -311,6 +311,12 @@ PASTED_TAG = re.compile(r"</?pasted_content\b[^>]*>")
 def user_items(key, text, out, via=None):
     # A pasted block arrives wrapped in <pasted_content id="..."> tags; show only what was pasted.
     text = PASTED_TAG.sub("", text or "").strip()
+    # Grok logs what you typed as "<user_query>\n...\n</user_query>" (sometimes after other context).
+    # Show, and match against what the phone sent, only the query itself (HerdrDroid 1.2.6: before,
+    # every message to Grok looked undelivered and was offered for resending).
+    q = re.search(r"<user_query>\s*(.*?)\s*</user_query>", text, re.S)
+    if q:
+        text = q.group(1).strip()
     if not text:
         return
     m = re.match(r"<command-name>(.*?)</command-name>", text, re.S)
