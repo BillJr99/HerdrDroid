@@ -23,6 +23,11 @@ data class Pane(
     val focused: Boolean = false,
     /** The label of the tab the pane is in ("claude", "opencode-2", …). */
     val tabLabel: String = "",
+    /**
+     * How many rows the pane is scrolled back from the bottom at the computer (herdr's
+     * `scroll.offset_from_bottom`); 0 at the bottom, null when herdr doesn't say (1.3.1).
+     */
+    val scrollOffset: Int? = null,
 ) {
     val agentName: String
         get() = when (agent?.lowercase()) {
@@ -193,6 +198,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
                 cwd = p.optString("foreground_cwd", p.optString("cwd")),
                 focused = p.optBoolean("focused", false),
                 tabLabel = labels[p.optString("tab_id")].orEmpty(),
+                scrollOffset = p.optJSONObject("scroll")?.takeIf { it.has("offset_from_bottom") }?.optInt("offset_from_bottom"),
             )
         }
         // herdr doesn't always mark a Claude question dialog (AskUserQuestion) as blocked, so the
@@ -211,6 +217,15 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
         panes0Cache = marked
         return marked.sortedWith(compareBy({ order.indexOf(it.status) }, { it.id }))
     }
+
+    /**
+     * The pane's screen as it is shown at the computer (`--source visible`), which moves nothing
+     * (1.3.1). Compared with [read] (the bottom of its output) it tells whether someone has
+     * scrolled the pane back. herdr-core has one view only.
+     */
+    suspend fun readVisible(paneId: String, lines: Int = 60): String =
+        if (core) read(paneId, lines)
+        else forPhone(run(cmd("pane", "read", paneId, "--source", "visible", "--lines", lines.toString())))
 
     suspend fun read(paneId: String, lines: Int = 200): String =
         if (core) forPhone(run(hcCmd("read", paneId, "--lines", lines.toString())))

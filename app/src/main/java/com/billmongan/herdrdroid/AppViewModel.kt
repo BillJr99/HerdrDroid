@@ -263,7 +263,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun savedPassword(server: Server): String? =
-        server.passwordCipher?.let { runCatching { PasswordVault.decrypt(it) }.getOrNull() }
+        server.passwordCipher?.let { c -> runCatching { PasswordVault.decrypt(c) }.onFailure { lockedFor(server, it) }.getOrNull() }
+
+    /** Servers already told "unlock to keep watching" since the last unlock. */
+    private val lockedNoticeSent = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>())
+
+    /**
+     * A saved secret couldn't be read because the fingerprint window passed (1.3.1): in the
+     * background, one notification per server says to unlock, instead of watching failing silently.
+     */
+    private fun lockedFor(server: Server, e: Throwable) {
+        if (e !is com.billmongan.herdrdroid.store.VaultLocked) return
+        com.billmongan.herdrdroid.diag.DiagLog.log("vault", "${server.label}: saved secret locked (fingerprint window passed)")
+        if (!foreground && lockedNoticeSent.add(server.id)) Notify.locked(getApplication(), server.id, server.label)
+    }
 
     /** True when the server can be opened without typing anything: a key in use, or a saved password. */
     fun canSignInSilently(server: Server) = (server.useKey && server.hasKey) || server.passwordCipher != null
@@ -351,7 +364,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             "imported" -> server.keyCipher?.let { c ->
                 runCatching {
                     KeySource.Imported(PasswordVault.decrypt(c), server.keyPassCipher?.let { PasswordVault.decrypt(it) })
-                }.getOrNull()
+                }.onFailure { lockedFor(server, it) }.getOrNull()
             }
             else -> null
         }
@@ -596,9 +609,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Ask for the fingerprint when the app opens (one setting for the whole app). */
     var appLock by mutableStateOf(prefs.appLock ?: servers.any { it.biometric })
         private set
-    /** True until the fingerprint is given, when the lock is on. Nothing is contacted while locked. */
-    var locked by mutableStateOf(appLock)
+    /**
+     * True until the fingerprint is given, when the lock is on, and (1.3.1) whenever the saved
+     * secrets' 4-hour fingerprint window has passed or they still need re-sealing under the new
+     * keys. Nothing is contacted while locked.
+     */
+    var locked by mutableStateOf(appLock || vaultNeedsUnlock())
         private set
+
+    /** The saved passwords, keys and chats can't be read now, or still need their one-time re-seal. */
+    private fun vaultNeedsUnlock(): Boolean = runCatching {
+        com.billmongan.herdrdroid.store.Vaults.migrationPending(getApplication()) || com.billmongan.herdrdroid.store.Vaults.locked()
+    }.getOrDefault(false)
 
     fun changeAppLock(on: Boolean) {
         appLock = on
@@ -606,6 +628,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun unlocked() {
+        com.billmongan.herdrdroid.store.Vaults.justUnlocked()
+        lockedNoticeSent.clear()
+        // The first unlock after 1.3.0 re-seals the saved secrets and chats under the new keys.
+        if (com.billmongan.herdrdroid.store.Vaults.migrationPending(getApplication())) viewModelScope.launch(Dispatchers.IO) {
+            val r = com.billmongan.herdrdroid.store.Vaults.migrate(getApplication(), store, java.io.File(getApplication<Application>().noBackupFilesDir, "chats"))
+            com.billmongan.herdrdroid.diag.DiagLog.log("vault", "migration: $r")
+            withContext(Dispatchers.Main) { reloadServers() }
+        }
         locked = false
         startBackgroundChecks()
         autoOpen()
@@ -862,6 +892,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      *  so it is replaced before any poll can stall on it. */
     fun onForeground() {
         foreground = true
+        // The fingerprint window passed while the app was away: ask again before showing anything.
+        if (!locked && vaultNeedsUnlock()) locked = true
         if (watchOthers && herdr != null) fleet?.watch(watchable())
         if (herdr != null && backgroundAt > 0 && System.currentTimeMillis() - backgroundAt > 8_000) {
             ssh?.reset()
@@ -1221,7 +1253,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** The pane's question history, loaded from the phone the first time. */
     private fun questions(serverId: String, paneId: String): List<com.billmongan.herdrdroid.transcript.QuestionItem> {
         val k = "$serverId|$paneId"
-        return questionLogs[k] ?: (chatStore?.loadQuestions(serverId, paneId).orEmpty()).also { questionLogs[k] = it }
+        questionLogs[k]?.let { return it }
+        // Locked (1.3.1): don't cache an empty history, which would later be saved over the real one.
+        if (com.billmongan.herdrdroid.store.Vaults.locked()) return emptyList()
+        return (chatStore?.loadQuestions(serverId, paneId).orEmpty()).also { questionLogs[k] = it }
     }
 
     private fun putQuestions(serverId: String, paneId: String, qs: List<com.billmongan.herdrdroid.transcript.QuestionItem>) {
@@ -1240,6 +1275,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun observeQuestion(serverId: String, paneId: String, p: com.billmongan.herdrdroid.herdr.Prompt?, status: Status?, agent: String?) {
         val k = "$serverId|$paneId"
+        // While locked the history can't be read or written; questions then aren't recorded (1.3.1).
+        if (questionLogs[k] == null && com.billmongan.herdrdroid.store.Vaults.locked()) return
         val log = questions(serverId, paneId)
         val now = System.currentTimeMillis()
         // Only a card with options is a question to keep; "This agent is waiting for you." with none is not.
@@ -1259,6 +1296,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Records the answer the app sent to the pane's open question: an option, typed text, or a key. */
     fun noteAnswer(paneId: String, p: com.billmongan.herdrdroid.herdr.Prompt?, answer: String, serverId: String? = current?.id) {
         val sid = serverId ?: return
+        if (questionLogs["$sid|$paneId"] == null && com.billmongan.herdrdroid.store.Vaults.locked()) return
         val log = questions(sid, paneId)
         val next = com.billmongan.herdrdroid.transcript.QuestionLog.answered(log, p, answer)
         if (next != log) putQuestions(sid, paneId, next)
@@ -1647,8 +1685,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val lastSentTo = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
+    /** When the app may type a usage check into a pane on its own: only a quiet one (1.3.1). */
+    private val quietGate = com.billmongan.herdrdroid.herdr.QuietGate()
+
+    /** Anything the app sends a pane (a message, a key, an answer) makes it not quiet for a while. */
+    private fun noteSent(paneId: String) {
+        lastSentTo[paneId] = System.currentTimeMillis()
+        quietGate.sent("${current?.id}|$paneId", System.currentTimeMillis())
+    }
+
     fun sendMessage(pane: Pane, text: String) {
-        lastSentTo[pane.id] = System.currentTimeMillis()
+        noteSent(pane.id)
         lastSent = pane.id to text
         lastSentAt = System.currentTimeMillis()
         pendingSends = pendingSends + PendingSend(
@@ -1669,6 +1716,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun sendKeys(paneId: String, vararg keys: String) {
+        noteSent(paneId)
         val k = keys.toList()
         act(paneId, "Couldn't send the key") { h ->
             h.sendKeys(paneId, *k.toTypedArray())
@@ -1681,6 +1729,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * highlighted option is known, so a digit is never typed into an option's text box.
      */
     fun answerChoice(paneId: String, prompt: com.billmongan.herdrdroid.herdr.Prompt, choice: com.billmongan.herdrdroid.herdr.Choice) {
+        noteSent(paneId)
         noteAnswer(paneId, prompt, choice.label)
         if (choice.keys.startsWith("grok-privacy:")) {
             act(paneId, "Couldn't answer") { h ->
@@ -1732,6 +1781,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun answer(paneId: String, keys: String, pressEnter: Boolean) {
+        noteSent(paneId)
         act(paneId, "Couldn't answer") { h ->
             if (pressEnter) h.typeAndEnter(paneId, keys) else h.sendText(paneId, keys)
             readPane(paneId)
@@ -1811,18 +1861,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     return@launch
                 }
                 // Never an agent open on screen or sent to in the last two minutes: you may be typing to it.
+                // And (1.3.1) only a quiet pane: not working, its screen unchanged and nothing sent to
+                // it for 45 s, not scrolled back, and not checked in the last 5 minutes (QuietGate).
                 val openNow = (screen as? Screen.Agent)?.paneId
-                val target = list.filter {
-                    (it.status == Status.IDLE || it.status == Status.DONE || (profile0.whileWorking && it.status == Status.WORKING)) &&
-                        it.id != openNow && (lastSentTo[it.id] ?: 0L) < now - 120_000
+                val candidates = list.filter {
+                    (it.status == Status.IDLE || it.status == Status.DONE) && it.id != openNow && (lastSentTo[it.id] ?: 0L) < now - 120_000
                 }
-                    .sortedWith(compareBy({ it.status == Status.WORKING }, { it.focused }))
-                    .firstOrNull()
+                for (c in candidates) {
+                    val vis = quietly { it.readVisible(c.id, 40) } ?: continue
+                    val rec = quietly { it.read(c.id, 40) } ?: continue
+                    quietGate.observe("$serverId|${c.id}", vis, rec, System.currentTimeMillis(), c.scrollOffset)
+                }
+                val why = candidates.associate { it.id to quietGate.verdict("$serverId|${it.id}", it.status, System.currentTimeMillis()) }
+                val target = candidates.filter { why[it.id] == null }.sortedWith(compareBy { it.focused }).firstOrNull()
                 if (target == null) {
-                    com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$agentKey on ${current?.label}: no pane to check (" +
-                        list.joinToString { "${it.id} ${it.status}${if (it.id == openNow) " open" else ""}${if ((lastSentTo[it.id] ?: 0L) >= now - 120_000) " sent-to" else ""}" } + ")")
+                    com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$agentKey on ${current?.label}: no quiet pane to check (" +
+                        list.joinToString { "${it.id} ${it.status}${if (it.id == openNow) " open" else ""}${if ((lastSentTo[it.id] ?: 0L) >= now - 120_000) " sent-to" else ""}${why[it.id]?.let { w -> ", $w" } ?: ""}" } + ")")
+                    // Not counted as a try: it is asked for again on the next round, once a pane is quiet.
                     return@launch
                 }
+                quietGate.checked("$serverId|${target.id}", System.currentTimeMillis())
                 val profile = QuotaProfiles.forAgent(target.agent) ?: return@launch
                 if (!canPoll) return@launch
                 if (herdr?.canProbeScreens == false) {
@@ -1837,12 +1895,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 probingPanes = probingPanes + target.id
                 probedAt["$serverId|${target.id}"] = System.currentTimeMillis()
+                val before = quietly { it.readVisible(target.id, 40) }
                 val result = try {
                     quietly { it.probeQuota(target.id, profile, working = target.status == Status.WORKING) }
                 } finally {
                     probingPanes = probingPanes - target.id
                     typingInto.remove(typingKey)
                     probedAt["$serverId|${target.id}"] = System.currentTimeMillis()
+                }
+                // Back where it was (1.3.1): the pane's visible screen should match what it showed before.
+                if (before != null) {
+                    kotlinx.coroutines.delay(1_500)
+                    val after = quietly { it.readVisible(target.id, 40) }
+                    val same = after != null && com.billmongan.herdrdroid.herdr.QuietGate.norm(after) == com.billmongan.herdrdroid.herdr.QuietGate.norm(before)
+                    com.billmongan.herdrdroid.diag.DiagLog.log("usage", "${target.id} after the check: ${if (same) "back as it was" else "screen differs from before (the check's echo or a new line)"}")
                 }
                 if (result != null) watchForLeftoverScreen(target.id, profile)
                 result?.model?.let { models = models + (target.id to it); noteModels() }
@@ -2207,6 +2273,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** A notification was tapped: open that pane, switching servers if it is on another one. */
     fun openFromNotification(serverId: String, paneId: String) {
+        // The "isn't being watched" notice names no pane: opening the app (and unlocking it) is all it asks.
+        if (paneId.isBlank()) return
         if (locked) { pendingNotification = serverId to paneId; return }
         if (serverId == current?.id) {
             openPane(paneId, "notification")

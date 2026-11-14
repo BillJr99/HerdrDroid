@@ -215,10 +215,14 @@ class MainActivity : FragmentActivity() {
                 }
             },
         )
+        // The saved secrets' keys (1.3.1) open only after a strong biometric or the screen lock, so the
+        // prompt asks for one of those (Android 11 and later; before that, any fingerprint or the lock).
+        val kinds = if (android.os.Build.VERSION.SDK_INT >= 30) androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG or DEVICE_CREDENTIAL
+            else BIOMETRIC_WEAK or DEVICE_CREDENTIAL
         val info = BiometricPrompt.PromptInfo.Builder()
             .setTitle("Unlock HerdrDroid")
-            .setSubtitle("Your servers' saved passwords and keys")
-            .setAllowedAuthenticators(BIOMETRIC_WEAK or DEVICE_CREDENTIAL)
+            .setSubtitle("Your servers' saved passwords and keys, and the chats kept on this phone, for the next 4 hours")
+            .setAllowedAuthenticators(kinds)
             .build()
         prompt.authenticate(info)
     }

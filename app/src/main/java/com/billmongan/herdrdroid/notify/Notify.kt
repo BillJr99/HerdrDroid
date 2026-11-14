@@ -106,6 +106,20 @@ object Notify {
     /** An agent is waiting on a question; [choices] become up to two buttons, plus Esc to decline. */
     fun needsYou(ctx: Context, serverId: String, serverLabel: String, paneId: String, agent: String, question: String, choices: List<Choice>) {
         if (!allowed(ctx)) return
+        // Past the fingerprint window (1.3.1): the alert still comes, without the question or the
+        // answer buttons; opening it asks for the fingerprint first.
+        if (com.billmongan.herdrdroid.store.Vaults.locked()) {
+            val n = NotificationCompat.Builder(ctx, ATTENTION)
+                .setSmallIcon(R.drawable.ic_notify)
+                .setContentTitle("$agent needs you · $serverLabel")
+                .setContentText(LOCKED_TEXT)
+                .setContentIntent(openIntent(ctx, serverId, paneId))
+                .setAutoCancel(true)
+                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+                .build()
+            runCatching { NotificationManagerCompat.from(ctx).notify(id(serverId, paneId), n) }
+            return
+        }
         val b = NotificationCompat.Builder(ctx, ATTENTION)
             .setSmallIcon(R.drawable.ic_notify)
             .setContentTitle("$agent needs you · $serverLabel")
@@ -131,13 +145,30 @@ object Notify {
         runCatching { NotificationManagerCompat.from(ctx).notify(id(serverId, paneId), b.build()) }
     }
 
+    /** What an alert says instead of its text once the fingerprint window has passed (1.3.1). */
+    const val LOCKED_TEXT = "Unlock HerdrDroid to read"
+
+    /** A watched server can't be reached because its saved password or key is locked (1.3.1). Once per server per unlock. */
+    fun locked(ctx: Context, serverId: String, serverLabel: String) {
+        if (!allowed(ctx)) return
+        val n = NotificationCompat.Builder(ctx, ATTENTION)
+            .setSmallIcon(R.drawable.ic_notify)
+            .setContentTitle("$serverLabel isn't being watched")
+            .setContentText("$LOCKED_TEXT: its saved password or key is locked until you unlock the app.")
+            .setStyle(NotificationCompat.BigTextStyle().bigText("$LOCKED_TEXT: its saved password or key is locked until you unlock the app."))
+            .setContentIntent(openIntent(ctx, serverId, ""))
+            .setAutoCancel(true)
+            .build()
+        runCatching { NotificationManagerCompat.from(ctx).notify(id(serverId, "__locked__"), n) }
+    }
+
     /** An agent finished its work. */
     fun done(ctx: Context, serverId: String, serverLabel: String, paneId: String, agent: String, preview: String) {
         if (!allowed(ctx)) return
         val n = NotificationCompat.Builder(ctx, ATTENTION)
             .setSmallIcon(R.drawable.ic_notify)
             .setContentTitle("$agent finished · $serverLabel")
-            .setContentText(preview.ifBlank { "Ready for your next message." })
+            .setContentText(if (com.billmongan.herdrdroid.store.Vaults.locked()) LOCKED_TEXT else preview.ifBlank { "Ready for your next message." })
             .setContentIntent(openIntent(ctx, serverId, paneId))
             .setAutoCancel(true)
             .addAction(replyAction(ctx, serverId, paneId, agent, listOf("Continue", "Yes", "No", "Thanks, that's all")))

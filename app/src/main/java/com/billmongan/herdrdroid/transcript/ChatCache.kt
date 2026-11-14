@@ -136,7 +136,10 @@ class ChatStore(
     @Synchronized fun load(serverId: String, paneId: String): CachedChat? {
         val f = file(serverId, paneId)
         if (!f.isFile) return null
-        val c = runCatching { ChatCodec.decode(String(open(f.readBytes()), Charsets.UTF_8)) }.getOrNull()
+        val r = runCatching { ChatCodec.decode(String(open(f.readBytes()), Charsets.UTF_8)) }
+        // Locked (1.3.1: the fingerprint window has passed) is not damage: the file stays.
+        if (r.exceptionOrNull() is com.billmongan.herdrdroid.store.VaultLocked) return null
+        val c = r.getOrNull()
         if (c == null) f.delete()
         return c
     }
@@ -156,7 +159,9 @@ class ChatStore(
     @Synchronized fun loadQuestions(serverId: String, paneId: String): List<QuestionItem>? {
         val f = qfile(serverId, paneId)
         if (!f.isFile) return null
-        val q = runCatching { QuestionLog.decode(String(open(f.readBytes()), Charsets.UTF_8)) }.getOrNull()
+        val r = runCatching { QuestionLog.decode(String(open(f.readBytes()), Charsets.UTF_8)) }
+        if (r.exceptionOrNull() is com.billmongan.herdrdroid.store.VaultLocked) return null
+        val q = r.getOrNull()
         if (q == null) f.delete()
         return q
     }

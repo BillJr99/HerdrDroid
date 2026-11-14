@@ -14,8 +14,8 @@ android {
         applicationId = "com.billmongan.herdrdroid"
         minSdk = 26
         targetSdk = 34
-        versionCode = 82
-        versionName = "1.3.0"
+        versionCode = 83
+        versionName = "1.3.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -51,10 +51,14 @@ android {
 
     buildTypes {
         release {
+            // The saved secrets' fingerprint window (1.3.1): 4 hours.
+            buildConfigField("int", "VAULT_WINDOW_SECONDS", "14400")
             isMinifyEnabled = false
             signingConfig = if (hasKey) signingConfigs.getByName("sideload") else null
         }
         debug {
+            // A short window, so the emulator test can see it expire. Never shipped.
+            buildConfigField("int", "VAULT_WINDOW_SECONDS", "180")
             if (hasKey) signingConfig = signingConfigs.getByName("sideload")
         }
     }
