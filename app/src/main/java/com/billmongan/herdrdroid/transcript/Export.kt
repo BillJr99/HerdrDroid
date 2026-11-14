@@ -38,6 +38,7 @@ fun toMarkdown(title: String, agent: String, items: List<Item>): String = buildS
             }
             is ImageItem -> { heading(if (it.user) "You" else agent); append("*Attachment: ").append(it.label).append("*\n\n") }
             is NoteItem -> { append("> ").append(it.text.trim().replace("\n", "\n> ")).append("\n\n"); last = null }
+            is QuestionItem -> { append(QuestionLog.plain(it).lines().joinToString("\n") { l -> "> $l" }).append("\n\n"); last = null }
             is ThinkItem -> Unit
         }
     }

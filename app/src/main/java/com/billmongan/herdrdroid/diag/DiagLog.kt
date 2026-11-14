@@ -37,6 +37,7 @@ object DiagLog {
 
     /** A WebSocket address as it may appear in the log: the scheme only. */
     fun hideUrl(url: String): String = url.substringBefore("://", "?") + "://<address hidden>"
+    private val URL_IN_TEXT = Regex("""\b(?:wss?|https?)://\S+""", RegexOption.IGNORE_CASE)
 
     /** Up to [max] bytes as text, with \r, \n and anything unprintable escaped. */
     fun preview(bytes: ByteArray, max: Int = 64): String = buildString {
@@ -59,7 +60,9 @@ object DiagLog {
         var e: Throwable? = t
         var depth = 0
         while (e != null && depth < 4) {
-            parts += e.javaClass.name + ": " + (e.message ?: "")
+            // Any web address in a message is hidden, as [hideUrl] does for the bridge's own address
+            // (1.3.0, from a code review: an OkHttp failure message carried the WebSocket address).
+            parts += e.javaClass.name + ": " + URL_IN_TEXT.replace(e.message ?: "") { m -> hideUrl(m.value) }
             e = e.cause.takeIf { it !== e }
             depth++
         }

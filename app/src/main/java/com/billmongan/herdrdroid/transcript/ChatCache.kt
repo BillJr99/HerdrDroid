@@ -45,6 +45,8 @@ object ChatCodec {
         is UserItem -> if (item.sending) null else JSONObject().put("t", "user").put("k", item.key).put("text", item.text)
         is TextItem -> JSONObject().put("t", "text").put("k", item.key).put("text", item.text)
         is NoteItem -> JSONObject().put("t", "note").put("k", item.key).put("text", item.text)
+        // Questions are kept in their own file beside the chat (ChatStore.saveQuestions), not among the log's items.
+        is QuestionItem -> null
         is ThinkItem -> JSONObject().put("t", "think").put("k", item.key).put("text", item.text).putOpt("ms", item.ms)
         is ImageItem -> {
             val src = JSONObject().putOpt("file", item.logFile).put("off", item.logOffset)
@@ -116,6 +118,9 @@ class ChatStore(
         "-" + Integer.toHexString(s.hashCode())
     private fun prefix(serverId: String) = part(serverId) + "__"
     private fun file(serverId: String, paneId: String) = File(dir, prefix(serverId) + part(paneId) + ".chat")
+    /** A pane's question history (1.3.0), beside its chat, sealed the same way and counted in the same total. */
+    private fun qfile(serverId: String, paneId: String) = File(dir, prefix(serverId) + part(paneId) + ".q")
+    private fun kept(f: File) = f.name.endsWith(".chat") || f.name.endsWith(".q")
 
     @Synchronized fun save(serverId: String, paneId: String, chat: CachedChat) {
         runCatching {
@@ -136,7 +141,31 @@ class ChatStore(
         return c
     }
 
-    @Synchronized fun remove(serverId: String, paneId: String) { file(serverId, paneId).delete() }
+    @Synchronized fun saveQuestions(serverId: String, paneId: String, qs: List<QuestionItem>) {
+        runCatching {
+            dir.mkdirs()
+            val f = qfile(serverId, paneId)
+            if (qs.isEmpty()) { f.delete(); return@runCatching }
+            val tmp = File(dir, f.name + ".tmp")
+            tmp.writeBytes(seal(QuestionLog.encode(qs).toByteArray(Charsets.UTF_8)))
+            if (!tmp.renameTo(f)) { f.delete(); tmp.renameTo(f) }
+            trim()
+        }
+    }
+
+    @Synchronized fun loadQuestions(serverId: String, paneId: String): List<QuestionItem>? {
+        val f = qfile(serverId, paneId)
+        if (!f.isFile) return null
+        val q = runCatching { QuestionLog.decode(String(open(f.readBytes()), Charsets.UTF_8)) }.getOrNull()
+        if (q == null) f.delete()
+        return q
+    }
+
+    /** Removes the pane's chat. Its question history goes too, unless [questions] is false (the agent's log was only re-read). */
+    @Synchronized fun remove(serverId: String, paneId: String, questions: Boolean = true) {
+        file(serverId, paneId).delete()
+        if (questions) qfile(serverId, paneId).delete()
+    }
 
     @Synchronized fun removeServer(serverId: String) {
         dir.listFiles()?.filter { it.name.startsWith(prefix(serverId)) }?.forEach { it.delete() }
@@ -144,12 +173,12 @@ class ChatStore(
 
     /** Removes the server's files for every pane not in [keep] (closed panes). */
     @Synchronized fun keepOnly(serverId: String, keep: Collection<String>) {
-        val names = keep.map { file(serverId, it).name }.toSet()
-        dir.listFiles()?.filter { it.name.startsWith(prefix(serverId)) && it.name.endsWith(".chat") && it.name !in names }?.forEach { it.delete() }
+        val names = keep.flatMap { listOf(file(serverId, it).name, qfile(serverId, it).name) }.toSet()
+        dir.listFiles()?.filter { it.name.startsWith(prefix(serverId)) && kept(it) && it.name !in names }?.forEach { it.delete() }
     }
 
     private fun trim() {
-        val files = dir.listFiles()?.filter { it.name.endsWith(".chat") }?.sortedByDescending { it.lastModified() } ?: return
+        val files = dir.listFiles()?.filter { kept(it) }?.sortedByDescending { it.lastModified() } ?: return
         var total = 0L
         for (f in files) {
             total += f.length()

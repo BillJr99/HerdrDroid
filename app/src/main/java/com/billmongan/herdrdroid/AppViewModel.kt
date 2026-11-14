@@ -254,6 +254,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         // Its kept chats go with it, from memory and from the phone (1.2.9).
         transcriptCache.keys.filter { it.startsWith("${server.id}|") }.forEach { transcriptCache.remove(it) }
         viewModelScope.launch(Dispatchers.IO) { chatStore?.removeServer(server.id) }
+        questionLogs.keys.filter { it.startsWith("${server.id}|") }.forEach { questionLogs.remove(it) }
         store.delete(server.id)
         SshKeyVault.delete(server.keystoreAlias)
         prefs.forgetQuotas(server.id)
@@ -1127,6 +1128,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             // What the question card sees, logged when it changes (sizes only, no question text).
             val status = panes.firstOrNull { it.id == paneId }?.status
             val p = com.billmongan.herdrdroid.herdr.detectPrompt(text, status == Status.NEEDS_YOU)
+            current?.id?.let { sid -> observeQuestion(sid, paneId, p, status, pane(paneId)?.agentName) }
             val dialog = com.billmongan.herdrdroid.herdr.showsQuestionDialog(text)
             val sig = if (p == null && !dialog) "none" else
                 "dialog ${if (dialog) "open" else "not seen"}, herdr ${status?.name?.lowercase()}, " +
@@ -1147,6 +1149,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         saveSeen()
         paneText = ""
         paneTextPane = paneId
+        current?.id?.let { questions(it, paneId) }
         resetTranscript(paneId)
         screen = Screen.Agent(paneId)
     }
@@ -1204,6 +1207,63 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO) { chatStore?.save(serverId, paneId, chat) }
     }
 
+    // ---- Question history (1.3.0) -----------------------------------------------------------------
+
+    /** Each pane's questions, "server|pane" to oldest first; kept on the phone beside its chat. */
+    private val questionLogs = androidx.compose.runtime.mutableStateMapOf<String, List<com.billmongan.herdrdroid.transcript.QuestionItem>>()
+    /** Reads in a row that showed no question while one was open (one miss can be the screen redrawing). */
+    private val questionMisses = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    /** The open server's question history for [paneId], for the chat (read only; [openPane] loads it). */
+    fun questionsFor(paneId: String): List<com.billmongan.herdrdroid.transcript.QuestionItem> =
+        questionLogs["${current?.id}|$paneId"] ?: emptyList()
+
+    /** The pane's question history, loaded from the phone the first time. */
+    private fun questions(serverId: String, paneId: String): List<com.billmongan.herdrdroid.transcript.QuestionItem> {
+        val k = "$serverId|$paneId"
+        return questionLogs[k] ?: (chatStore?.loadQuestions(serverId, paneId).orEmpty()).also { questionLogs[k] = it }
+    }
+
+    private fun putQuestions(serverId: String, paneId: String, qs: List<com.billmongan.herdrdroid.transcript.QuestionItem>) {
+        questionLogs["$serverId|$paneId"] = qs
+        viewModelScope.launch(Dispatchers.IO) { chatStore?.saveQuestions(serverId, paneId, qs) }
+    }
+
+    /** The newest log item of the pane's chat, which a question seen now is shown after. */
+    private fun questionAnchor(serverId: String, paneId: String): String? =
+        if (serverId == current?.id && transcriptPane == paneId) transcriptItems.lastOrNull()?.key
+        else transcriptCache["$serverId|$paneId"]?.items?.lastOrNull()?.key
+
+    /**
+     * Records what a read of the pane's screen showed: a question card adds or updates its record;
+     * no card twice in a row while one is open settles it (answered, answered elsewhere, dismissed).
+     */
+    private fun observeQuestion(serverId: String, paneId: String, p: com.billmongan.herdrdroid.herdr.Prompt?, status: Status?, agent: String?) {
+        val k = "$serverId|$paneId"
+        val log = questions(serverId, paneId)
+        val now = System.currentTimeMillis()
+        // Only a card with options is a question to keep; "This agent is waiting for you." with none is not.
+        val card = p?.takeIf { it.choices.isNotEmpty() }
+        if (card != null) {
+            questionMisses[k] = 0
+            val next = com.billmongan.herdrdroid.transcript.QuestionLog.seen(log, card, agent, questionAnchor(serverId, paneId), now)
+            if (next != log) putQuestions(serverId, paneId, next)
+            return
+        }
+        if (log.lastOrNull()?.state != com.billmongan.herdrdroid.transcript.QState.OPEN) return
+        val misses = (questionMisses[k] ?: 0) + 1
+        questionMisses[k] = misses
+        if (misses >= 2) putQuestions(serverId, paneId, com.billmongan.herdrdroid.transcript.QuestionLog.gone(log, status == Status.WORKING, now))
+    }
+
+    /** Records the answer the app sent to the pane's open question: an option, typed text, or a key. */
+    fun noteAnswer(paneId: String, p: com.billmongan.herdrdroid.herdr.Prompt?, answer: String, serverId: String? = current?.id) {
+        val sid = serverId ?: return
+        val log = questions(sid, paneId)
+        val next = com.billmongan.herdrdroid.transcript.QuestionLog.answered(log, p, answer)
+        if (next != log) putQuestions(sid, paneId, next)
+    }
+
     /**
      * The chat kept for [paneId] on the open server: in memory, or else from the phone's storage.
      * A copy made for another agent than the one now in the pane is dropped.
@@ -1221,6 +1281,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun forgetChat(serverId: String, paneId: String) {
         transcriptCache.remove("$serverId|$paneId")
+        questionLogs.remove("$serverId|$paneId")
         viewModelScope.launch(Dispatchers.IO) { chatStore?.remove(serverId, paneId) }
     }
 
@@ -1425,7 +1486,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         loadingEarlier = true
         viewModelScope.launch {
             try {
-                val cur = org.json.JSONObject().put("file", file).put("earlier", transcriptStart).toString()
+                // The same session as on screen (1.3.0, from a code review): pin the shown file and keep the
+                // live cursor's pin fields, or the reader opens the newest session for the folder instead.
+                val live = runCatching { org.json.JSONObject(transcriptCursor) }.getOrNull()
+                val cur = org.json.JSONObject().put("file", file).put("earlier", transcriptStart).put("pin", live?.optString("pin")?.ifBlank { null } ?: file)
+                    .apply { for (k in listOf("pin_sid", "db")) live?.optString(k)?.ifBlank { null }?.let { put(k, it) } }.toString()
                 val r = quietly { it.transcript(p, cur, transcriptScript) } ?: return@launch
                 if (!r.ok || transcriptPane != paneId) return@launch
                 val older = Transcript.merge(emptyList(), r.items, true)
@@ -1616,6 +1681,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * highlighted option is known, so a digit is never typed into an option's text box.
      */
     fun answerChoice(paneId: String, prompt: com.billmongan.herdrdroid.herdr.Prompt, choice: com.billmongan.herdrdroid.herdr.Choice) {
+        noteAnswer(paneId, prompt, choice.label)
         if (choice.keys.startsWith("grok-privacy:")) {
             act(paneId, "Couldn't answer") { h ->
                 answerGrokPrivacy(h, paneId, optIn = choice.keys == com.billmongan.herdrdroid.herdr.GROK_PRIVACY_IN)?.let { throw IllegalStateException(it) }
@@ -2075,10 +2141,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 p.status == Status.NEEDS_YOU -> viewModelScope.launch {
                     val text = runCatching { client()?.read(p.id, 40) }.getOrNull().orEmpty()
                     val prompt = detectPrompt(text, blocked = true)
+                    withContext(Dispatchers.Main) { if (prompt != null && prompt.choices.isNotEmpty()) observeQuestion(serverId, p.id, prompt, p.status, p.agentName) }
                     Notify.needsYou(app, serverId, serverLabel, p.id, p.agentName, prompt?.question ?: "Waiting for you.", prompt?.choices.orEmpty())
                 }
                 // Only agents that need you notify (Bill, 2026-11-13); finishing doesn't.
-                before == Status.NEEDS_YOU -> Notify.clear(app, serverId, p.id)
+                before == Status.NEEDS_YOU -> {
+                    Notify.clear(app, serverId, p.id)
+                    // The question was answered (or dropped) away from this screen: settle its record.
+                    viewModelScope.launch(Dispatchers.Main) {
+                        val log = questions(serverId, p.id)
+                        val next = com.billmongan.herdrdroid.transcript.QuestionLog.gone(log, p.status == Status.WORKING, System.currentTimeMillis())
+                        if (next != log) putQuestions(serverId, p.id, next)
+                    }
+                }
             }
         }
     }
@@ -2098,6 +2173,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             runCatching {
                 val p = h.panes().firstOrNull { it.id == a.paneId } ?: return
                 h.sendMessage(p, a.keys)
+                withContext(Dispatchers.Main) { noteAnswer(a.paneId, null, a.keys, a.serverId) }
                 if (a.serverId == current?.id && transcriptPane == a.paneId) lastSent = a.paneId to a.keys
             }.onFailure {
                 Notify.needsYou(app, a.serverId, servers.firstOrNull { it.id == a.serverId }?.label ?: "", a.paneId, "The agent",
@@ -2115,6 +2191,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         runCatching {
+            val label = now?.choices?.firstOrNull { it.keys == a.keys }?.label ?: if (a.isKey) "Pressed ${a.keys}" else a.keys
+            withContext(Dispatchers.Main) { noteAnswer(a.paneId, now, label, a.serverId) }
             if (a.keys.startsWith("grok-privacy:")) {
                 answerGrokPrivacy(h, a.paneId, optIn = a.keys == com.billmongan.herdrdroid.herdr.GROK_PRIVACY_IN)
                 return@runCatching

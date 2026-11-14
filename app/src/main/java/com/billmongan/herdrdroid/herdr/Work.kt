@@ -100,8 +100,10 @@ fun protectedPids(work: WorkInfo, agent: String?): Set<Int> {
     val a = agent.lowercase()
     // A helper the agent left running (Codex's app server, say) is never taken for the agent itself.
     val ok = work.procs.filter { !HELPER.containsMatchIn(it.cmd) }
-    val agentProc = ok.filter { it.name.lowercase().contains(a) }.minByOrNull { it.depth }
-        ?: ok.filter { it.cmd.lowercase().contains(a) && !it.cmd.contains("agent-startup") }.minByOrNull { it.depth }
+    // A whole word, as in transcript.py (1.3.0): "pi" is not pip or pigz; "kiro-cli" still matches kiro.
+    val word = Regex("(?<![a-z0-9])" + Regex.escape(a) + "(?![a-z0-9])")
+    val agentProc = ok.filter { word.containsMatchIn(it.name.lowercase()) }.minByOrNull { it.depth }
+        ?: ok.filter { word.containsMatchIn(it.cmd.lowercase()) && !it.cmd.contains("agent-startup") }.minByOrNull { it.depth }
         ?: return roots
     var cur: ProcInfo? = agentProc
     while (cur != null) {

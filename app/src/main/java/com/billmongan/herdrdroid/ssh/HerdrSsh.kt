@@ -45,6 +45,40 @@ class LinkDown(cause: Throwable) : Exception(cause.message ?: cause.javaClass.si
 
 data class ExecResult(val exit: Int, val out: String, val err: String)
 
+/** A command still running when its time was up; its channel was closed (1.3.0). */
+class CommandTimeout(seconds: Long) : Exception("the command did not finish within $seconds s")
+/** A command that printed more than the app takes; its channel was closed (1.3.0). */
+class OutputTooLarge(max: Int) : Exception("the command printed more than ${max / (1024 * 1024)} MB")
+/** A failure after the command reached the computer: reported, never retried. */
+private class AfterStart(cause: Exception) : Exception(cause.message, cause)
+
+/** The most a command's stdout may print (files fetched have their own, larger cap), and stderr. */
+private const val MAX_OUT = 16 * 1024 * 1024
+private const val MAX_BYTES = 64 * 1024 * 1024
+private const val MAX_ERR = 256 * 1024
+
+/** A stream read into memory up to [cap] bytes; [over] once more arrived. Stderr past its cap is dropped, not an error. */
+private class Capped(private val cap: Int) {
+    private val buf = java.io.ByteArrayOutputStream()
+    @Volatile var over = false
+        private set
+    private val isErr = cap == MAX_ERR
+    fun drain(s: java.io.InputStream) {
+        runCatching {
+            val b = ByteArray(16 * 1024)
+            while (true) {
+                val n = s.read(b)
+                if (n < 0) break
+                synchronized(buf) {
+                    if (buf.size() + n > cap) { if (isErr) return@runCatching; over = true; return@runCatching }
+                    buf.write(b, 0, n)
+                }
+            }
+        }
+    }
+    fun bytes(): ByteArray = synchronized(buf) { buf.toByteArray() }
+}
+
 /** A local port forwarded over SSH; [close] stops it. */
 class Forward(val localPort: Int, private val stop: () -> Unit) {
     fun close() = stop()
@@ -232,53 +266,56 @@ class HerdrSsh(
         return list
     }
 
-    suspend fun exec(command: String, timeoutSeconds: Long = 20): ExecResult = withContext(Dispatchers.IO) {
-        lock.withLock {
-            var attempt = 0
-            while (true) {
-                try {
-                    val c = open()
-                    c.startSession().use { session ->
-                        val cmd = session.exec(command)
-                        val out = cmd.inputStream.readBytes().toString(Charsets.UTF_8)
-                        val err = cmd.errorStream.readBytes().toString(Charsets.UTF_8)
-                        cmd.join(timeoutSeconds, TimeUnit.SECONDS)
-                        return@withLock ExecResult(cmd.exitStatus ?: -1, out, err)
-                    }
-                } catch (e: UnconfirmedHostKey) {
-                    throw e
-                } catch (e: HostKeyChanged) {
-                    throw e
-                } catch (e: AuthRejected) {
-                    throw e
-                } catch (e: Exception) {
-                    // A dropped connection gets one fresh retry; after that it is reported as a link failure.
-                    client?.runCatching { disconnect() }
-                    client = null
-                    if (++attempt > 1) throw (e as? LinkDown ?: LinkDown(e))
-                }
+    /**
+     * Runs [command] on a channel of its own (1.3.0, from a code review: before, stdout was read to
+     * the end, then stderr, and only then was the timeout applied, so a command that kept writing
+     * never timed out and held the connection lock, and a full stderr could stall it).
+     *
+     * Both streams are read at once, each up to its cap, and the channel is closed when
+     * [timeoutSeconds] pass or stdout passes [maxOut] bytes ([CommandTimeout], [OutputTooLarge]).
+     * A failure before the command reaches the computer (a dropped connection, a session that won't
+     * open) gets one fresh retry; one after it started is reported and never retried, so a message
+     * or a key press is never sent twice.
+     */
+    private fun runOn(c: SSHClient, command: String, input: ByteArray?, timeoutSeconds: Long, maxOut: Int): Triple<Int, ByteArray, ByteArray> {
+        val session = c.startSession()
+        val cmd = try { session.exec(command) } catch (e: Exception) { runCatching { session.close() }; throw e }
+        try {
+            input?.let { b -> cmd.outputStream.use { it.write(b); it.flush() } }
+            val out = Capped(maxOut)
+            val err = Capped(MAX_ERR)
+            val t1 = kotlin.concurrent.thread(isDaemon = true, name = "ssh-out") { out.drain(cmd.inputStream) }
+            val t2 = kotlin.concurrent.thread(isDaemon = true, name = "ssh-err") { err.drain(cmd.errorStream) }
+            val deadline = System.currentTimeMillis() + timeoutSeconds * 1000
+            while ((t1.isAlive || t2.isAlive) && System.currentTimeMillis() < deadline && !out.over) {
+                t1.join(100); if (!t1.isAlive) t2.join(100)
             }
-            @Suppress("UNREACHABLE_CODE")
-            ExecResult(-1, "", "")
+            if (out.over || t1.isAlive || t2.isAlive) {
+                runCatching { session.close() }
+                t1.join(2_000); t2.join(2_000)
+                if (out.over) throw OutputTooLarge(maxOut)
+                throw CommandTimeout(timeoutSeconds)
+            }
+            cmd.join(5, TimeUnit.SECONDS)
+            return Triple(cmd.exitStatus ?: -1, out.bytes(), err.bytes())
+        } catch (e: CommandTimeout) {
+            throw e
+        } catch (e: OutputTooLarge) {
+            throw e
+        } catch (e: Exception) {
+            throw AfterStart(e)
+        } finally {
+            runCatching { session.close() }
         }
     }
 
-    /**
-     * Runs a short command on its own channel without waiting for other commands: the send lane.
-     * Only opening the connection takes the lock, so a message goes out while a read is running.
-     */
-    suspend fun execNow(command: String, timeoutSeconds: Long = 20): ExecResult = withContext(Dispatchers.IO) {
+    /** One command, retried once on a fresh connection only if it never reached the computer. */
+    private suspend fun runRetrying(command: String, input: ByteArray?, timeoutSeconds: Long, maxOut: Int, locked: Boolean): Triple<Int, ByteArray, ByteArray> {
         var attempt = 0
         while (true) {
             try {
-                val c = lock.withLock { open() }
-                c.startSession().use { session ->
-                    val cmd = session.exec(command)
-                    val out = cmd.inputStream.readBytes().toString(Charsets.UTF_8)
-                    val err = cmd.errorStream.readBytes().toString(Charsets.UTF_8)
-                    cmd.join(timeoutSeconds, TimeUnit.SECONDS)
-                    return@withContext ExecResult(cmd.exitStatus ?: -1, out, err)
-                }
+                return if (locked) lock.withLock { runOn(open(), command, input, timeoutSeconds, maxOut) }
+                else runOn(lock.withLock { open() }, command, input, timeoutSeconds, maxOut)
             } catch (e: UnconfirmedHostKey) {
                 throw e
             } catch (e: HostKeyChanged) {
@@ -287,13 +324,44 @@ class HerdrSsh(
                 throw e
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
+            } catch (e: CommandTimeout) {
+                throw e
+            } catch (e: OutputTooLarge) {
+                throw e
+            } catch (e: AfterStart) {
+                // It reached the computer: the connection is suspect, but the command is not sent again.
+                lock.withLock { client?.runCatching { disconnect() }; client = null }
+                throw LinkDown(e.cause ?: e)
             } catch (e: Exception) {
                 lock.withLock { client?.runCatching { disconnect() }; client = null }
                 if (++attempt > 1) throw (e as? LinkDown ?: LinkDown(e))
             }
         }
-        @Suppress("UNREACHABLE_CODE")
-        ExecResult(-1, "", "")
+    }
+
+    /** A command that ran out of time or printed too much: a failed command (exit -2), not a lost connection. */
+    private inline fun capped(block: () -> ExecResult): ExecResult = try { block() } catch (e: CommandTimeout) {
+        ExecResult(-2, "", e.message.orEmpty())
+    } catch (e: OutputTooLarge) {
+        ExecResult(-2, "", e.message.orEmpty())
+    }
+
+    suspend fun exec(command: String, timeoutSeconds: Long = 30): ExecResult = withContext(Dispatchers.IO) {
+        capped {
+            val (exit, out, err) = runRetrying(command, null, timeoutSeconds, MAX_OUT, locked = true)
+            ExecResult(exit, out.toString(Charsets.UTF_8), err.toString(Charsets.UTF_8))
+        }
+    }
+
+    /**
+     * Runs a short command on its own channel without waiting for other commands: the send lane.
+     * Only opening the connection takes the lock, so a message goes out while a read is running.
+     */
+    suspend fun execNow(command: String, timeoutSeconds: Long = 30): ExecResult = withContext(Dispatchers.IO) {
+        capped {
+            val (exit, out, err) = runRetrying(command, null, timeoutSeconds, MAX_OUT, locked = false)
+            ExecResult(exit, out.toString(Charsets.UTF_8), err.toString(Charsets.UTF_8))
+        }
     }
 
     /**
@@ -309,6 +377,8 @@ class HerdrSsh(
         try {
             val cmd = session.exec(command)
             cmd.outputStream.use { it.write(input); it.flush() }
+            // Drain stderr too, so a reader that writes warnings can't fill that pipe and stall (1.3.0).
+            kotlin.concurrent.thread(isDaemon = true, name = "ssh-follow-err") { Capped(MAX_ERR).drain(cmd.errorStream) }
             val reader = cmd.inputStream.bufferedReader(Charsets.UTF_8)
             while (true) {
                 val line = reader.readLine() ?: break
@@ -322,34 +392,15 @@ class HerdrSsh(
         }
     }
 
-    /** Runs a command and returns its standard output as bytes (for files fetched from the computer). */
-    suspend fun execBytes(command: String, timeoutSeconds: Long = 120): Pair<Int, ByteArray> = withContext(Dispatchers.IO) {
-        lock.withLock {
-            var attempt = 0
-            while (true) {
-                try {
-                    val c = open()
-                    c.startSession().use { session ->
-                        val cmd = session.exec(command)
-                        val out = cmd.inputStream.readBytes()
-                        cmd.errorStream.readBytes()
-                        cmd.join(timeoutSeconds, TimeUnit.SECONDS)
-                        return@withLock (cmd.exitStatus ?: -1) to out
-                    }
-                } catch (e: UnconfirmedHostKey) {
-                    throw e
-                } catch (e: HostKeyChanged) {
-                    throw e
-                } catch (e: AuthRejected) {
-                    throw e
-                } catch (e: Exception) {
-                    client?.runCatching { disconnect() }
-                    client = null
-                    if (++attempt > 1) throw (e as? LinkDown ?: LinkDown(e))
-                }
-            }
-            @Suppress("UNREACHABLE_CODE")
-            -1 to ByteArray(0)
+    /** Runs a command and returns its standard output as bytes (for files fetched from the computer), up to [maxBytes]. */
+    suspend fun execBytes(command: String, timeoutSeconds: Long = 120, maxBytes: Int = MAX_BYTES): Pair<Int, ByteArray> = withContext(Dispatchers.IO) {
+        try {
+            val (exit, out, _) = runRetrying(command, null, timeoutSeconds, maxBytes, locked = true)
+            exit to out
+        } catch (e: CommandTimeout) {
+            -2 to ByteArray(0)
+        } catch (e: OutputTooLarge) {
+            -2 to ByteArray(0)
         }
     }
 
@@ -357,34 +408,10 @@ class HerdrSsh(
      * Runs a command with [input] on its standard input: how the transcript reader script and an
      * uploaded file reach the computer without anything being installed there.
      */
-    suspend fun execInput(command: String, input: ByteArray, timeoutSeconds: Long = 30): ExecResult = withContext(Dispatchers.IO) {
-        lock.withLock {
-            var attempt = 0
-            while (true) {
-                try {
-                    val c = open()
-                    c.startSession().use { session ->
-                        val cmd = session.exec(command)
-                        cmd.outputStream.use { it.write(input); it.flush() }
-                        val out = cmd.inputStream.readBytes().toString(Charsets.UTF_8)
-                        val err = cmd.errorStream.readBytes().toString(Charsets.UTF_8)
-                        cmd.join(timeoutSeconds, TimeUnit.SECONDS)
-                        return@withLock ExecResult(cmd.exitStatus ?: -1, out, err)
-                    }
-                } catch (e: UnconfirmedHostKey) {
-                    throw e
-                } catch (e: HostKeyChanged) {
-                    throw e
-                } catch (e: AuthRejected) {
-                    throw e
-                } catch (e: Exception) {
-                    client?.runCatching { disconnect() }
-                    client = null
-                    if (++attempt > 1) throw (e as? LinkDown ?: LinkDown(e))
-                }
-            }
-            @Suppress("UNREACHABLE_CODE")
-            ExecResult(-1, "", "")
+    suspend fun execInput(command: String, input: ByteArray, timeoutSeconds: Long = 60): ExecResult = withContext(Dispatchers.IO) {
+        capped {
+            val (exit, out, err) = runRetrying(command, input, timeoutSeconds, MAX_OUT, locked = true)
+            ExecResult(exit, out.toString(Charsets.UTF_8), err.toString(Charsets.UTF_8))
         }
     }
 

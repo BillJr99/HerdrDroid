@@ -128,6 +128,8 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     var fullTerminal by rememberSaveable { mutableStateOf(false) }
     var confirmCtrlC by remember { mutableStateOf(false) }
     var typingAnswer by remember { mutableStateOf(false) }
+    // The question a typed answer is for (the card is hidden while you type it), so the history records it there.
+    var answering by remember { mutableStateOf<Prompt?>(null) }
     var ctrl by remember { mutableStateOf(Hold.OFF) }
     var alt by remember { mutableStateOf(Hold.OFF) }
     /** The slash command whose screen is showing, until you go back to the chat. */
@@ -211,7 +213,8 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     fun send() {
         if (message.isNotBlank() && pane != null) {
             val text = message.trim()
-            vm.sendMessage(pane, text); message = ""; typingAnswer = false
+            if (typingAnswer) vm.noteAnswer(paneId, answering, text)
+            vm.sendMessage(pane, text); message = ""; typingAnswer = false; answering = null
             // A slash command answers on the screen (a menu, a sign-in code), not in the agent's log,
             // so show the screen and the keys to move through it.
             if (text.startsWith("/") && !live) { fullTerminal = true; commandScreen = text.substringBefore(' ') }
@@ -313,8 +316,11 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 p,
                 agent = pane?.agentName ?: "The agent",
                 onChoice = { c -> vm.answerChoice(paneId, p, c) },
-                onKey = { k -> vm.sendKeys(paneId, k) },
-                onTypeAnswer = { typingAnswer = true },
+                onKey = { k ->
+                    vm.noteAnswer(paneId, p, "Pressed " + when (k) { "esc" -> "Esc"; "tab" -> "Tab"; "shift+tab" -> "Shift+Tab"; "ctrl+c" -> "Ctrl+C"; else -> k })
+                    vm.sendKeys(paneId, k)
+                },
+                onTypeAnswer = { answering = p; typingAnswer = true },
             )
         }
     }
@@ -434,7 +440,8 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                     if (structured && vm.transcriptItems.isNotEmpty()) {
                         DropdownMenuItem(text = { Text("Export as Markdown") }, onClick = {
                             menu = false
-                            vm.exportMarkdown(context, vm.transcriptTitle ?: "${pane?.agentName ?: "Agent"} in ${pane?.folder ?: ""}", pane?.agentName ?: "Agent", vm.transcriptItems)
+                            vm.exportMarkdown(context, vm.transcriptTitle ?: "${pane?.agentName ?: "Agent"} in ${pane?.folder ?: ""}", pane?.agentName ?: "Agent",
+                                com.billmongan.herdrdroid.transcript.QuestionLog.withQuestions(vm.transcriptItems, vm.questionsFor(paneId)))
                         })
                     }
                     // Kept out of the header so the agent's name has the room.
@@ -460,7 +467,15 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
         // still running, and its running subagents. Tap either for active and finished.
         HorizontalDivider(color = Palette.Line)
         ServerBanners(vm)
-        val rowsNow = remember(vm.transcriptItems) { rowsOf(vm.transcriptItems) }
+        // The chat with its question history in place (1.3.0). A question still open is left out
+        // while its card is showing, so it isn't on screen twice.
+        val questionsNow = vm.questionsFor(paneId)
+        val cardUp = prompt != null
+        val chatItems = remember(vm.transcriptItems, questionsNow, cardUp) {
+            com.billmongan.herdrdroid.transcript.QuestionLog.withQuestions(vm.transcriptItems, questionsNow)
+                .filter { !cardUp || (it as? com.billmongan.herdrdroid.transcript.QuestionItem)?.state != com.billmongan.herdrdroid.transcript.QState.OPEN }
+        }
+        val rowsNow = remember(chatItems) { rowsOf(chatItems) }
         val matches = remember(rowsNow, findText, finding) {
             if (!finding || findText.trim().length < 2) emptyList() else rowsNow.withIndex().filter { (_, r) ->
                 val it = (r as? com.billmongan.herdrdroid.transcript.OneRow)?.item
@@ -554,6 +569,9 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                         )
                     }
                 } else {
+                    // Agents without a readable log (Antigravity, Kiro) keep their question history here (1.3.0).
+                    vm.questionsFor(paneId).filter { prompt == null || it.state != com.billmongan.herdrdroid.transcript.QState.OPEN }
+                        .forEach { QuestionView(it, liveSize) }
                     val pending = vm.lastSent?.takeIf { it.first == paneId }?.second
                     ChatView(text, pending, liveSize, vm.readingFont)
                 }

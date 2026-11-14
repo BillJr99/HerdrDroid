@@ -49,6 +49,14 @@ data class Pane(
 /** Single-quotes a value for the remote shell. */
 fun shq(s: String): String = "'" + s.replace("'", "'\"'\"'") + "'"
 
+/**
+ * A program path from the server settings as one shell word (1.3.0, from a code review: it went
+ * into every command unquoted, so a space or a ";" in it broke or ran as a command). "~/" stays
+ * the home folder.
+ */
+fun programPath(p: String): String =
+    if (p == "~") "\"\$HOME\"" else if (p.startsWith("~/")) "\"\$HOME\"/" + shq(p.removePrefix("~/")) else shq(p)
+
 private val ANSI = Regex("\u001B\\[[0-9;?]*[ -/]*[@-~]|\u001B\\][^\u0007]*\u0007|\u001B[()][A-Z0-9]")
 fun stripAnsi(s: String): String = ANSI.replace(s, "")
 
@@ -86,7 +94,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
     // Left at the default, herdr is looked up the way hc is: on the PATH, else in ~/.local/bin, where
     // its installer puts it (a non-interactive SSH shell often lacks ~/.local/bin on the PATH).
     private val herdr = herdrPath.trim().let { p ->
-        if (p.isBlank() || p == "herdr") "\"\$(command -v herdr || echo \"\$HOME/.local/bin/herdr\")\"" else p
+        if (p.isBlank() || p == "herdr") "\"\$(command -v herdr || echo \"\$HOME/.local/bin/herdr\")\"" else programPath(p)
     }
     private val hc = hcPath?.takeIf { it.isNotBlank() }?.let(::shq) ?: "\"\$(command -v hc || echo \"\$HOME/.local/bin/hc\")\""
     private val core get() = backend == Backend.CORE
@@ -498,12 +506,16 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
     /** A file on the computer, up to [maxBytes]; "~/" paths are taken from the home folder. */
     suspend fun fetchFile(path: String, maxBytes: Long = 50L * 1024 * 1024): ByteArray {
         val p = if (path.startsWith("~/")) "\"\$HOME\"/" + shq(path.removePrefix("~/")) else shq(path)
-        val size = ssh.exec("stat -L -c %s -- $p").let { r ->
+        // The type too (1.3.0, from a code review): /dev/zero, /dev/urandom or a pipe has size 0 and
+        // would be read forever, so only a regular file is fetched, and never more than [maxBytes].
+        val (kind, size) = ssh.exec("stat -L -c '%F|%s' -- $p").let { r ->
             if (r.exit != 0) throw HerdrError("That file isn't there (${path.substringAfterLast('/')}).", r.exit)
-            r.out.trim().toLongOrNull() ?: 0L
+            val f = r.out.trim().split('|')
+            f.getOrNull(0).orEmpty() to (f.getOrNull(1)?.toLongOrNull() ?: 0L)
         }
+        if (!kind.startsWith("regular")) throw HerdrError("That isn't a regular file (${kind.ifBlank { "unknown type" }}), so it isn't fetched.", 0)
         if (size > maxBytes) throw HerdrError("That file is ${size / (1024 * 1024)} MB, over the ${maxBytes / (1024 * 1024)} MB limit.", 0)
-        val (exit, bytes) = ssh.execBytes("cat -- $p")
+        val (exit, bytes) = ssh.execBytes("head -c ${maxBytes} -- $p", maxBytes = (maxBytes + 1).coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
         if (exit != 0) throw HerdrError("That file couldn't be read.", exit)
         return bytes
     }
@@ -1439,7 +1451,7 @@ fun corePanes(json: String): List<Pane> {
  * both there (`hc server status` would start a core, so it isn't used).
  */
 suspend fun detectBackend(ssh: HerdrSsh, herdrPath: String): Detected {
-    val h = herdrPath.trim().ifBlank { "herdr" }
+    val h = programPath(herdrPath.trim().ifBlank { "herdr" })
     val script = """
 h=${'$'}(command -v $h 2>/dev/null || command -v herdr 2>/dev/null || { [ -x "${'$'}HOME/.local/bin/herdr" ] && echo "${'$'}HOME/.local/bin/herdr"; })
 c=${'$'}(command -v hc 2>/dev/null || { [ -x "${'$'}HOME/.local/bin/hc" ] && echo "${'$'}HOME/.local/bin/hc"; })

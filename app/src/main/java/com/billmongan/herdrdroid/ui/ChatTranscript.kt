@@ -83,6 +83,9 @@ import com.billmongan.herdrdroid.transcript.ImageItem
 import com.billmongan.herdrdroid.transcript.Item
 import com.billmongan.herdrdroid.transcript.NoteItem
 import com.billmongan.herdrdroid.transcript.OneRow
+import com.billmongan.herdrdroid.transcript.QState
+import com.billmongan.herdrdroid.transcript.QuestionItem
+import com.billmongan.herdrdroid.transcript.QuestionLog
 import com.billmongan.herdrdroid.transcript.Row as ChatRow
 import com.billmongan.herdrdroid.transcript.TextItem
 import com.billmongan.herdrdroid.transcript.ThinkItem
@@ -366,6 +369,41 @@ private fun ItemView(item: Item, rows: List<ChatRow>, size: Float, family: FontF
         )
         is ToolItem -> ToolView(item, size, live = false)
         is ImageItem -> AttachmentView(item)
+        is QuestionItem -> QuestionView(item, size)
+    }
+}
+
+/**
+ * A question the agent asked, kept in the chat as plain text (1.3.0): who asked and how it ended,
+ * the question (each step of a multi-question dialog in turn), the options offered and the answer.
+ * Not a card: the orange card is only for answering a question that is open now.
+ */
+@Composable
+fun QuestionView(q: QuestionItem, size: Float) {
+    SelectionContainer {
+        Column(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(QuestionLog.label(q), color = Palette.Muted, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
+            q.parts.forEach { p ->
+                p.title?.takeIf { q.parts.size >= 2 }?.let { Text(it, color = Palette.Muted, fontSize = (size * 0.95f).sp, fontWeight = FontWeight.SemiBold) }
+                if (p.question.isNotBlank()) Text(p.question, color = Palette.Ink, fontSize = (size * 1.08f).sp, fontWeight = FontWeight.SemiBold,
+                    lineHeight = (size * 1.08f * 1.4f).sp)
+                p.details.forEach { Text(it, color = Palette.Ink, fontSize = (size * 1.0f).sp, lineHeight = (size * 1.4f).sp) }
+                p.command?.let { Text(it, color = Palette.Ink, fontFamily = Fonts.Mono, fontSize = (size * 0.92f).sp) }
+                if (p.options.isNotEmpty()) Column(Modifier.padding(start = 8.dp)) {
+                    p.options.forEach { o ->
+                        val picked = p.answer != null && o == p.answer
+                        Text("- $o" + if (picked) "   (your answer)" else "", color = if (picked) Palette.Blue else Palette.Muted,
+                            fontSize = (size * 0.98f).sp, fontWeight = if (picked) FontWeight.SemiBold else FontWeight.Normal)
+                    }
+                }
+                p.answer?.takeIf { it !in p.options }?.let {
+                    Text("Your answer: $it", color = Palette.Blue, fontSize = (size * 1.0f).sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+            q.action?.let { Text("Then: $it", color = Palette.Blue, fontSize = (size * 0.98f).sp) }
+            q.recorded?.let { Text("Recorded answer: $it", color = Palette.Muted, fontSize = (size * 0.95f).sp) }
+            if (q.state == QState.ELSEWHERE && q.parts.none { it.answer != null }) Text("Answered outside the app; the answer wasn't seen here.", color = Palette.Muted, fontSize = 12.5.sp)
+        }
     }
 }
 

@@ -185,6 +185,17 @@ object Transcript {
                 continue
             }
             val item = toItem(j) ?: continue
+            // One card per tool call (1.3.0, from a code review): Copilot logs a call both in its
+            // message's toolRequests and again at tool.execution_start, under different keys. The
+            // second fills in the first, so the result lands on the card that is shown.
+            if (item is ToolItem && item.id != null && index[item.key] == null) {
+                val same = list.indexOfLast { it is ToolItem && it.id == item.id }
+                if (same >= 0) {
+                    val t = list[same] as ToolItem
+                    list[same] = t.copy(input = t.input ?: item.input, name = t.name.ifBlank { item.name }, title = t.title.ifBlank { item.title })
+                    continue
+                }
+            }
             val at = index[item.key]
             if (at != null) {
                 val old = list[at]
@@ -208,6 +219,7 @@ object Transcript {
         is TextItem -> item.text
         is ThinkItem -> item.text
         is NoteItem -> item.text
+        is QuestionItem -> QuestionLog.plain(item)
         is ImageItem -> item.path ?: "[image]"
         is ToolItem -> buildString {
             append(item.title)

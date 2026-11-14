@@ -28,6 +28,7 @@ import urllib.parse
 
 HOME = os.path.expanduser("~")
 TAIL_BYTES = 1_500_000       # how much of a long log the first read shows
+DELTA_BYTES = 2 * TAIL_BYTES  # the most one read takes after its cursor; the next read goes on from there (1.3.0)
 FIRST_ROWS = 400             # the same for the SQLite logs
 OUT_CHARS = 6000             # a tool's output is cut here
 IN_CHARS = 4000              # and its input here
@@ -262,7 +263,12 @@ def read_jsonl(path, cur):
         off = max(0, size - TAIL_BYTES)
     with open(path, "rb") as f:
         f.seek(off)
-        data = f.read()
+        # At most DELTA_BYTES (1.3.0, from a code review: a cursor far behind a big log read the whole
+        # gap into memory and into the phone). The cursor stops at the last whole line read.
+        data = f.read(DELTA_BYTES)
+    if not reset and len(data) == DELTA_BYTES and data.rfind(b"\n") < 0:
+        # One line longer than a whole read (a huge tool output): step past it rather than stall on it.
+        return [], {"file": path, "off": off + len(data)}, False, False
     more = False
     if reset and off > 0:
         more = True
@@ -1269,9 +1275,12 @@ def protected_pids(procs, agent):
     if not agent:
         return roots
     a = agent.lower()
+    # The agent's name as a whole word (1.3.0, from a code review: as a substring, "pi" matched pip
+    # and pigz); "kiro-cli" and "vibe-rs" still match.
+    word = re.compile(r"(?<![a-z0-9])" + re.escape(a) + r"(?![a-z0-9])")
     ok = [p for p in procs if not HELPER_RE.search(p["cmd"])]
-    cand = [p for p in ok if a in p["name"].lower()] or \
-        [p for p in ok if a in p["cmd"].lower() and "agent-startup" not in p["cmd"]]
+    cand = [p for p in ok if word.search(p["name"].lower())] or \
+        [p for p in ok if word.search(p["cmd"].lower()) and "agent-startup" not in p["cmd"]]
     if not cand:
         return roots
     cur = min(cand, key=lambda p: p["depth"])
