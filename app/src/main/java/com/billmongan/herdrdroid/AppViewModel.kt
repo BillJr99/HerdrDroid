@@ -1,5 +1,7 @@
 package com.billmongan.herdrdroid
 
+import com.billmongan.herdrdroid.transcript.CachedChat
+import com.billmongan.herdrdroid.transcript.withRead
 import android.app.Application
 import android.net.Uri
 import android.provider.OpenableColumns
@@ -249,6 +251,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun deleteServer(server: Server) {
+        // Its kept chats go with it, from memory and from the phone (1.2.9).
+        transcriptCache.keys.filter { it.startsWith("${server.id}|") }.forEach { transcriptCache.remove(it) }
+        viewModelScope.launch(Dispatchers.IO) { chatStore?.removeServer(server.id) }
         store.delete(server.id)
         SshKeyVault.delete(server.keystoreAlias)
         prefs.forgetQuotas(server.id)
@@ -803,6 +808,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun closeSession() {
+        // The open chat is kept before the connection goes, so a reconnect shows it at once (1.2.9).
+        stashOpenChat()
         hermesPoll?.cancel()
         hermesState = null
         closeJob?.cancel()
@@ -864,6 +871,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun onBackground() {
         foreground = false
         backgroundAt = System.currentTimeMillis()
+        // The open chat is written to the phone, so reopening the app shows it at once (1.2.9).
+        val open = transcriptPane
+        val sid = current?.id
+        if (open != null && sid != null && transcriptState == TranscriptMode.ON && transcriptCursor.isNotEmpty()) persistChat(sid, open, openChatNow(open))
         // Other servers reached over a WebSocket are let go too (watchable() now leaves them out).
         fleet?.watch(watchable())
         // Close a WebSocket connection right away: holding it open would keep that server awake.
@@ -1032,6 +1043,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 } else p
             }
             current?.id?.let { trackDone(it, fresh) }
+            maintainChats(before, fresh)
             panes = withBusy(fresh, busyCounts)
             current?.let { s -> noticeChanges(s.id, s.label, fresh) { herdr } }
             // Footers (each agent's model) every 30 seconds wherever you are in the app; before
@@ -1148,11 +1160,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun resetTranscript(paneId: String) {
         if (transcriptPane == paneId) return
         // Keep the chat being left, so going back to it is instant.
-        transcriptPane?.let { old ->
-            if (transcriptState == TranscriptMode.ON) transcriptCache[ck(old)] = CachedChat(transcriptItems, transcriptCursor, transcriptMore, transcriptTitle, transcriptStart, transcriptFile)
-        }
+        stashOpenChat()
         transcriptPane = paneId
-        val c = transcriptCache[ck(paneId)]
+        val c = cachedChat(paneId)
         if (c != null) {
             // Read ahead on connect (or kept from before): shown at once, then caught up from its cursor.
             transcriptCursor = c.cursor
@@ -1173,12 +1183,100 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         transcriptState = if (hasTranscriptReader(paneId)) TranscriptMode.UNKNOWN else TranscriptMode.OFF
     }
 
-    /** One agent's chat kept in memory: what it showed and where its log was read up to. */
-    private data class CachedChat(val items: List<Item>, val cursor: String, val more: Boolean, val title: String?, val start: Long = -1L, val file: String? = null)
-
-    /** Every chat read so far, per server and pane; kept until the app exits. */
+    /** Every chat read so far, per server and pane; kept until the app exits, and on the phone (1.2.9). */
     private val transcriptCache = java.util.concurrent.ConcurrentHashMap<String, CachedChat>()
     private fun ck(paneId: String) = "${current?.id}|$paneId"
+
+    /** The chats kept in the app's private storage, sealed with a Keystore key; null if that can't be set up. */
+    private val chatStore: com.billmongan.herdrdroid.transcript.ChatStore? by lazy {
+        runCatching {
+            com.billmongan.herdrdroid.transcript.ChatStore(java.io.File(getApplication<Application>().noBackupFilesDir, "chats"),
+                com.billmongan.herdrdroid.store.ChatVault::seal, com.billmongan.herdrdroid.store.ChatVault::open)
+        }.getOrNull()
+    }
+    private val persistedAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    /** The panes each server had at the last clean-up of its kept chats. */
+    private val keptIds = java.util.concurrent.ConcurrentHashMap<String, Set<String>>()
+
+    /** Writes a chat to the phone's storage, off the main thread. */
+    private fun persistChat(serverId: String, paneId: String, chat: CachedChat) {
+        persistedAt["$serverId|$paneId"] = System.currentTimeMillis()
+        viewModelScope.launch(Dispatchers.IO) { chatStore?.save(serverId, paneId, chat) }
+    }
+
+    /**
+     * The chat kept for [paneId] on the open server: in memory, or else from the phone's storage.
+     * A copy made for another agent than the one now in the pane is dropped.
+     */
+    private fun cachedChat(paneId: String): CachedChat? {
+        val sid = current?.id ?: return null
+        val agent = pane(paneId)?.agent?.lowercase()
+        val c = transcriptCache[ck(paneId)] ?: chatStore?.load(sid, paneId)?.also { transcriptCache[ck(paneId)] = it }
+        if (c != null && c.agent != null && agent != null && c.agent != agent) {
+            forgetChat(sid, paneId)
+            return null
+        }
+        return c
+    }
+
+    private fun forgetChat(serverId: String, paneId: String) {
+        transcriptCache.remove("$serverId|$paneId")
+        viewModelScope.launch(Dispatchers.IO) { chatStore?.remove(serverId, paneId) }
+    }
+
+    /** The open chat as it is now. */
+    private fun openChatNow(paneId: String) = CachedChat(transcriptItems, transcriptCursor, transcriptMore, transcriptTitle,
+        transcriptStart, transcriptFile, pane(paneId)?.agent?.lowercase())
+
+    /** Keeps the open chat, in memory and on the phone, before it is left (another agent, a reconnect, a server switch). */
+    private fun stashOpenChat() {
+        val old = transcriptPane ?: return
+        val sid = current?.id ?: return
+        if (transcriptState != TranscriptMode.ON || transcriptCursor.isEmpty()) return
+        val c = openChatNow(old)
+        transcriptCache[ck(old)] = c
+        persistChat(sid, old, c)
+    }
+
+    /**
+     * Drops the chats of panes that closed, or whose agent changed, after a pane list read; and
+     * catches up, in the background, the kept chat of an agent whose status just changed, so it is
+     * current when you go back to it.
+     */
+    private fun maintainChats(before: Map<String, Pane>, fresh: List<Pane>) {
+        val sid = current?.id ?: return
+        val ids = fresh.map { it.id }.toSet()
+        for (k in transcriptCache.keys.filter { it.startsWith("$sid|") }) {
+            val pid = k.removePrefix("$sid|")
+            val p = fresh.firstOrNull { it.id == pid }
+            val c = transcriptCache[k] ?: continue
+            if (p == null || (p.agent != null && c.agent != null && p.agent.lowercase() != c.agent)) {
+                com.billmongan.herdrdroid.diag.DiagLog.log("chat", "$pid: ${if (p == null) "pane closed" else "agent changed"}; its kept chat is dropped")
+                forgetChat(sid, pid)
+            }
+        }
+        if (keptIds[sid] != ids) {
+            keptIds[sid] = ids
+            viewModelScope.launch(Dispatchers.IO) { chatStore?.keepOnly(sid, ids) }
+        }
+        for (p in fresh) {
+            val was = before[p.id] ?: continue
+            if (was.status == p.status || p.id == transcriptPane || !hasTranscriptReader(p.id)) continue
+            val c = transcriptCache[ck(p.id)] ?: continue
+            viewModelScope.launch { catchUp(sid, p, c) }
+        }
+    }
+
+    /** Reads what was added to a kept chat's log since its cursor and folds it in. */
+    private suspend fun catchUp(sid: String, p: Pane, c: CachedChat) {
+        val r = quietly { it.transcript(p, c.cursor, transcriptScript) } ?: return
+        if (!r.ok || current?.id != sid || transcriptPane == p.id) return
+        val next = mergeRead(c, r)
+        transcriptCache["$sid|${p.id}"] = next
+        persistChat(sid, p.id, next)
+    }
+
+    private fun mergeRead(c: CachedChat, r: com.billmongan.herdrdroid.transcript.TranscriptRead) = c.withRead(r)
     /** Each server's last previews and models, so its cards show at once when it's opened again. */
     private val previewCache = java.util.concurrent.ConcurrentHashMap<String, Map<String, String>>()
     private val modelCache = java.util.concurrent.ConcurrentHashMap<String, Map<String, String>>()
@@ -1195,13 +1293,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val sid = current?.id
             val order = listOf(Status.NEEDS_YOU, Status.WORKING, Status.DONE, Status.IDLE, Status.UNKNOWN)
             for (p in panes.filter { hasTranscriptReader(it.id) }.sortedBy { order.indexOf(it.status) }) {
-                if (transcriptCache.containsKey(ck(p.id)) || transcriptPane == p.id) continue
-                val r = quietly { it.transcript(p, "", transcriptScript) } ?: continue
-                if (!r.ok || transcriptPane == p.id) continue
+                if (transcriptPane == p.id) continue
+                // A chat kept from before (this run, or on the phone) is only caught up from its cursor.
+                val kept = transcriptCache[ck(p.id)] ?: withContext(Dispatchers.IO) { chatStore?.load(sid ?: return@withContext null, p.id) }
+                    ?.takeIf { it.agent == null || p.agent == null || it.agent == p.agent.lowercase() }
                 if (current?.id != sid) return@launch
-                val cj = runCatching { org.json.JSONObject(r.cursor) }.getOrNull()
-                transcriptCache[ck(p.id)] = CachedChat(Transcript.merge(emptyList(), r.items, true), r.cursor, r.more, r.title,
-                    cj?.optLong("start", -1L) ?: -1L, cj?.optString("file")?.ifBlank { null })
+                if (kept != null && transcriptCache[ck(p.id)] == null) transcriptCache[ck(p.id)] = kept
+                val r = quietly { it.transcript(p, kept?.cursor ?: "", transcriptScript) } ?: continue
+                if (current?.id != sid) return@launch
+                if (!r.ok || transcriptPane == p.id) continue
+                val base = kept ?: CachedChat(emptyList(), "", false, null, -1L, null, p.agent?.lowercase())
+                val next = mergeRead(if (kept == null) base else kept, if (kept == null) r.copy(reset = true) else r)
+                transcriptCache[ck(p.id)] = next
+                if (sid != null && (kept == null || r.reset || r.items.isNotEmpty())) persistChat(sid, p.id, next)
             }
         }
     }
@@ -1246,6 +1350,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (transcriptPane != paneId) return
         if (!r.ok) {
             if (transcriptItems.isEmpty()) transcriptState = TranscriptMode.OFF
+            // A kept cursor the reader can't use any more: read the whole log next time, keeping
+            // what is shown until it arrives (1.2.9).
+            else if (transcriptCursor.isNotEmpty()) {
+                com.billmongan.herdrdroid.diag.DiagLog.log("chat", "$paneId: the reader couldn't continue from the kept cursor (${r.why}); reading the log again")
+                transcriptCursor = ""
+            }
             return
         }
         transcriptCursor = r.cursor
@@ -1259,6 +1369,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         r.title?.let { transcriptTitle = it }
         transcriptState = TranscriptMode.ON
+        // Keep the open chat current in memory, and on the phone every few seconds while it changes.
+        if (r.reset || r.items.isNotEmpty()) current?.id?.let { sid ->
+            val c = openChatNow(paneId)
+            transcriptCache[ck(paneId)] = c
+            if (System.currentTimeMillis() - (persistedAt["$sid|$paneId"] ?: 0L) > 4_000L) persistChat(sid, paneId, c)
+        }
         lastSent?.let { (pid, text) ->
             val want = text.filterNot { it.isWhitespace() }.take(60)
             if (pid == paneId && transcriptItems.takeLast(16).any { it is UserItem && it.text.filterNot { c -> c.isWhitespace() }.take(60) == want }) {

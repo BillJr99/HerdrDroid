@@ -96,12 +96,33 @@ class ComposeUiTest {
                 PromptCard(p, agent = "Claude", onChoice = { picked += it.keys }, onKey = {}, onTypeAnswer = {})
             }
         }
-        // The question appears once, as the agent's message, and the card says only "Your answer".
-        rule.onAllNodesWithText(long.trim()).assertCountEquals(1)
+        // The question appears once, as the agent's message (1.2.9: heading, then the explanation),
+        // and the card says only "Your answer".
+        rule.onAllNodesWithText("Which of these should the deploy use?").assertCountEquals(1)
+        rule.onAllNodesWithText(long.substringAfter("? ").trim()).assertCountEquals(1)
         rule.onNodeWithText("Claude asks").assertExists()
         rule.onNodeWithText("Your answer").assertExists()
         rule.onNodeWithText("Production").performScrollTo().performClick()
         assertEquals(listOf("2"), picked)
+    }
+
+    /** 1.2.9: Claude's tab bar becomes "Question 1 of 4" and chips; a command gets its own block. */
+    @Test fun multiQuestionStepsAndCommandBlock() {
+        val p = Prompt("Close residue 537? Both were repaired.", listOf(Choice("Close it", "1", false), Choice("Keep it", "2", false)), selected = "1",
+            parts = com.billmongan.herdrdroid.herdr.questionParts(listOf(
+                com.billmongan.herdrdroid.herdr.QLine("←  ☒ Close 537  ☐ Stop hook  ☐ Revise 329  ☐ Markup line  ✔ Submit  →"),
+                com.billmongan.herdrdroid.herdr.QLine("Close residue 537? Both were repaired.", gapBefore = true),
+                com.billmongan.herdrdroid.herdr.QLine("$ git status", gapBefore = true))))
+        rule.setContent { PromptQuestion(p, agent = "Claude") }
+        rule.onNodeWithText("Question 2 of 4").assertExists()
+        rule.onNodeWithText("✓ Close 537").assertExists()
+        rule.onNodeWithText("Stop hook").assertExists()
+        rule.onNodeWithText("Submit").assertExists()
+        rule.onNodeWithText("Close residue 537?").assertExists()
+        rule.onNodeWithText("Both were repaired.").assertExists()
+        rule.onNodeWithText("git status").assertExists()
+        rule.onNodeWithText("←", substring = true).assertDoesNotExist()
+        rule.onNodeWithText("☐", substring = true).assertDoesNotExist()
     }
 
     @Test fun cardAloneHasNoQuestionBody() {

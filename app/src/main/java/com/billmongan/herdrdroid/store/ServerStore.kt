@@ -276,6 +276,36 @@ object PasswordVault {
     }
 }
 
+/** Seals the chats kept on the phone with an AES key that never leaves the Android Keystore (1.2.9). */
+object ChatVault {
+    private const val ALIAS = "herdrdroid_chats"
+
+    private fun key(): SecretKey {
+        val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        (ks.getKey(ALIAS, null) as? SecretKey)?.let { return it }
+        val gen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
+        gen.init(
+            KeyGenParameterSpec.Builder(ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .build()
+        )
+        return gen.generateKey()
+    }
+
+    fun seal(plain: ByteArray): ByteArray {
+        val c = Cipher.getInstance("AES/GCM/NoPadding")
+        c.init(Cipher.ENCRYPT_MODE, key())
+        return c.iv + c.doFinal(plain)
+    }
+
+    fun open(sealed: ByteArray): ByteArray {
+        val c = Cipher.getInstance("AES/GCM/NoPadding")
+        c.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, sealed, 0, 12))
+        return c.doFinal(sealed, 12, sealed.size - 12)
+    }
+}
+
 /**
  * SSH keys made on this phone. Each is an ECDSA P-256 key pair inside the Android Keystore, so the
  * private key can sign but can never be read or copied out. (The Keystore has no Ed25519 before

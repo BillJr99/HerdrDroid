@@ -856,7 +856,152 @@ data class Choice(val label: String, val keys: String, val pressEnter: Boolean)
  * when there is one: answers then move the highlight with the arrow keys and press Enter instead
  * of typing a digit, which could land in an option's own text box.
  */
-data class Prompt(val question: String, val choices: List<Choice>, val selected: String? = null, val escRejects: Boolean = false)
+data class Prompt(
+    val question: String,
+    val choices: List<Choice>,
+    val selected: String? = null,
+    val escRejects: Boolean = false,
+    /** The question laid out for the app: progress steps, heading, command and context (1.2.9). */
+    val parts: QuestionParts? = null,
+) {
+    /** [parts], or the same layout read from the question's text. */
+    fun shownParts(): QuestionParts = parts ?: questionParts(listOf(QLine(question)))
+}
+
+/** One step of Claude's multi-question dialog ("☐ Close 537", "☒ Stop hook", "✔ Submit"). */
+data class QTab(val title: String, val done: Boolean, val current: Boolean, val submit: Boolean = false)
+enum class QKind { HEADING, TEXT, COMMAND }
+data class QBlock(val kind: QKind, val text: String)
+/** A question as the app shows it: [tabs] for Claude's multi-question dialog, then [blocks] in screen order. */
+data class QuestionParts(val tabs: List<QTab>, val blocks: List<QBlock>) {
+    val heading: String? get() = blocks.firstOrNull { it.kind == QKind.HEADING }?.text
+    val command: String? get() = blocks.firstOrNull { it.kind == QKind.COMMAND }?.text
+    val details: List<String> get() = blocks.filter { it.kind == QKind.TEXT }.map { it.text }
+    /** "Question 2 of 4", or null when there is one question. */
+    val step: String? get() {
+        val qs = tabs.filter { !it.submit }
+        if (qs.size < 2) return null
+        val at = tabs.indexOfFirst { it.current }
+        return if (at in qs.indices) "Question ${at + 1} of ${qs.size}" else "Review and submit (${qs.size} questions)"
+    }
+}
+
+/** A line of a question as read off the screen: [cmd] when it sat in a box of its own (Grok, Copilot). */
+data class QLine(val text: String, val cmd: Boolean = false, val gapBefore: Boolean = false)
+
+private val TAB_ITEM = Regex("""([☐☒✔✓☑])\s*([^☐☒✔✓☑←→]+)""")
+/** "Reason: …", "Environment: local", "Read: /path": a labelled line of context, never the heading. */
+private val LABEL_LINE = Regex("""^[A-Z][A-Za-z ]{0,24}:\s""")
+/** A line that only introduces the command under it. */
+private val COMMAND_INTRO = Regex("""^(Requesting permission for:?|Bash command|Command|Run command|Shell command)$""", RegexOption.IGNORE_CASE)
+/** Vibe's "Permission for the file_system.bash tool (…)": the command is the next line. */
+private val TOOL_PERMISSION = Regex("""^Permission for the \S+ tool(\s*\(.*\))?$""")
+private const val MARKS = "›❯◆◈●○•▸➤▶↓→│┃╭╰╮╯─ "
+
+/**
+ * Claude's multi-question tab bar, "←  ☐ Close 537  ☒ Stop hook  ✔ Submit  →", as steps; the
+ * current one is the first unanswered question (Submit once all are answered). The second value is
+ * any question text that followed the bar on the same line.
+ */
+fun parseTabBar(line: String): Pair<List<QTab>, String>? {
+    val t = line.trim()
+    val items = TAB_ITEM.findAll(t).toList()
+    if (items.size < 2) return null
+    val titles = items.map { it.groupValues[2].trim() }
+    if (!t.startsWith("←") && titles.none { it.equals("Submit", true) }) return null
+    val rest = if (t.contains("→")) t.substringAfterLast("→").trim() else ""
+    var tabs = items.mapIndexed { i, m ->
+        val sub = titles[i].equals("Submit", true)
+        QTab(titles[i], done = !sub && m.groupValues[1] != "☐", current = false, submit = sub)
+    }.filter { it.title.isNotEmpty() }
+    val cur = tabs.indexOfFirst { !it.done && !it.submit }.takeIf { it >= 0 } ?: tabs.indexOfFirst { it.submit }
+    if (cur >= 0) tabs = tabs.mapIndexed { i, q -> if (i == cur) q.copy(current = true) else q }
+    return tabs to rest
+}
+
+/** The index just past the question's first "?" outside parentheses, or -1. */
+private fun firstQuestionEnd(s: String): Int {
+    var depth = 0
+    s.forEachIndexed { i, c ->
+        when (c) {
+            '(' -> depth++
+            ')' -> depth = maxOf(0, depth - 1)
+            '?' -> if (depth == 0 && (i == s.lastIndex || s[i + 1] == ' ')) return i + 1
+        }
+    }
+    return -1
+}
+
+/**
+ * Lays a question out for the app (1.2.9, Bill: "improve the formatting ... Format questions from
+ * other agents nicely too"): Claude's tab bar becomes steps; the question is the heading; a command
+ * (Codex's "$ …", Grok's and Copilot's boxed line, the line under Antigravity's "Requesting
+ * permission for:" or Vibe's "Permission for the … tool") is its own block; the rest is context.
+ * Terminal-wrapped lines join into one paragraph; a blank line, a "Label: " line or a line ending
+ * in "?" starts a new one. No marker or box characters are kept.
+ */
+fun questionParts(lines: List<QLine>): QuestionParts {
+    var tabs = emptyList<QTab>()
+    val body = mutableListOf<QLine>()
+    for (l in lines) {
+        val bar = if (tabs.isEmpty()) parseTabBar(l.text) else null
+        if (bar != null) {
+            tabs = bar.first
+            if (bar.second.isNotEmpty()) body += QLine(bar.second, gapBefore = true)
+        } else body += l
+    }
+    class Para(var text: String, val cmd: Boolean)
+    val paras = mutableListOf<Para>()
+    var cmdNext = false
+    for (l in body) {
+        val answerRow = l.text.trim().startsWith("→")
+        var t = l.text.trim().trimStart { it in MARKS }.trimEnd { it in "│┃╮╯─ " }.trim()
+        if (t.isEmpty() || !t.any(Char::isLetterOrDigit)) continue
+        // Claude's review step: "● Close 537" over "→ Close it" reads "Close 537: Close it".
+        if (answerRow && paras.lastOrNull()?.cmd == false) { paras.last().text += ": " + t; continue }
+        if (COMMAND_INTRO.matches(t)) { cmdNext = true; continue }
+        val dollar = Regex("""^\$\s+(.+)$""").find(t)
+        val isCmd = l.cmd || dollar != null || cmdNext
+        cmdNext = false
+        if (dollar != null) t = dollar.groupValues[1].trim()
+        val last = paras.lastOrNull()
+        if (isCmd) {
+            if (last != null && last.cmd && !l.gapBefore && dollar == null) last.text += " " + t else paras += Para(t, true)
+            continue
+        }
+        // Grok's title ("Check SSH to demo-box: grok usage ...") came joined to its command before.
+        // A capitalised line after a "Label: …" line is a new sentence ("Reason: outside workspace"
+        // over "Allow access to this file?"); a wrapped label line goes on in lower case.
+        val afterLabel = last != null && LABEL_LINE.containsMatchIn(last.text) && t.first().isUpperCase()
+        val bullet = l.text.trim().first() in "●•◆"
+        if (last == null || last.cmd || l.gapBefore || afterLabel || bullet || LABEL_LINE.containsMatchIn(t) || last.text.endsWith("?") || last.text.endsWith(":"))
+            paras += Para(t, false)
+        else last.text += " " + t
+        if (TOOL_PERMISSION.matches(paras.last().text)) cmdNext = true
+    }
+    val texts = paras.withIndex().filter { !it.value.cmd }
+    val pick = texts.firstOrNull { !LABEL_LINE.containsMatchIn(it.value.text) && firstQuestionEnd(it.value.text) > 0 }
+        ?: texts.firstOrNull { !LABEL_LINE.containsMatchIn(it.value.text) } ?: texts.firstOrNull()
+    // The heading first (with the explanation that followed it on the same paragraph), then the
+    // command, then the rest of the context in screen order.
+    val head = mutableListOf<QBlock>()
+    val cmds = mutableListOf<QBlock>()
+    val rest = mutableListOf<QBlock>()
+    paras.forEachIndexed { i, p ->
+        when {
+            p.cmd -> cmds += QBlock(QKind.COMMAND, p.text)
+            i == pick?.index -> {
+                val end = firstQuestionEnd(p.text)
+                if (end in 1 until p.text.length) {
+                    head += QBlock(QKind.HEADING, p.text.substring(0, end).trim())
+                    head += QBlock(QKind.TEXT, p.text.substring(end).trim())
+                } else head += QBlock(QKind.HEADING, p.text.trimEnd(':'))
+            }
+            else -> rest += QBlock(QKind.TEXT, p.text)
+        }
+    }
+    return QuestionParts(tabs, (head + cmds + rest).filter { it.text.isNotBlank() })
+}
 
 /** An option whose own label says Esc answers it: "No, and tell Codex what to do differently (esc)". */
 private val ESC_LABEL = Regex("""\((?:esc)\b[^)]*\)""", RegexOption.IGNORE_CASE)
@@ -995,13 +1140,18 @@ fun detectUnnumberedMenu(text: String): Prompt? {
         ?.substringBefore("  ")?.trimEnd(':')?.ifBlank { null } ?: "Choose"
     // Kiro: "shell requires approval" under a rule, with the tool and command just above the rule
     // ("↓ Shell mkdir -p sub && date > sub/now.txt"). The question carries the command too.
+    var kiroCmd: String? = null
     if (question.endsWith("requires approval")) {
         (top - 1 downTo maxOf(0, top - 8)).map { raw[it].trim() }
             .firstNotNullOfOrNull { Regex("""^[↓•●▸]?\s*(Shell|Write|Edit|Read|Fetch|Web\w*|\w+Tool)\s+(.+)$""").find(it) }
-            ?.let { m -> question = "$question: ${m.groupValues[2].trim()}" }
+            ?.let { m -> kiroCmd = m.groupValues[2].trim(); question = "$question: $kiroCmd" }
     }
     val selected = rows.indexOfFirst { it.first == at } + 1
-    return Prompt(question, labels.mapIndexed { i, l -> Choice(l, (i + 1).toString(), false) }, selected.toString())
+    val parts = kiroCmd?.let { cmd ->
+        val head = question.substringBefore(": ").replaceFirstChar { it.uppercase() }
+        QuestionParts(emptyList(), listOf(QBlock(QKind.HEADING, head), QBlock(QKind.COMMAND, cmd)))
+    }
+    return Prompt(question, labels.mapIndexed { i, l -> Choice(l, (i + 1).toString(), false) }, selected.toString(), parts = parts)
 }
 
 fun detectPrompt(text: String, blocked: Boolean): Prompt? {
@@ -1040,7 +1190,19 @@ fun detectPrompt(text: String, blocked: Boolean): Prompt? {
         if (at <= 0) null else {
             // Each line, and whether it is a Grok command line ("┃  │ grok usage ..."), which follows
             // its title after ": " ("Print plan usage with no session id: grok usage ...").
-            val got = mutableListOf<Pair<String, Boolean>>()
+            val got = mutableListOf<QLine>()
+            // Claude's multi-question dialog: everything from its tab bar down to the options is the
+            // question, including the review step's "● Close 537" / "→ Close it" rows (1.2.9).
+            val barAt = (at - 1 downTo maxOf(0, at - 30)).firstOrNull { parseTabBar(clean(raw[it])) != null }
+            if (barAt != null) {
+                var gapNext = false
+                for (k in barAt until at) {
+                    val c = clean(raw[k])
+                    if (raw[k].isBlank() || c.isEmpty()) { gapNext = true; continue }
+                    got += QLine(c, gapBefore = gapNext); gapNext = false
+                }
+                return@let got.takeIf { it.isNotEmpty() }
+            }
             var i = at - 1
             // Blank lines inside a card are crossed (Antigravity puts one between "Requesting
             // permission for:", the command, and "Run this command?"), up to two of them; a rule, the
@@ -1055,7 +1217,7 @@ fun detectPrompt(text: String, blocked: Boolean): Prompt? {
                 // A rule on its own line ("──────") ends the question; clean() would empty it.
                 if (got.isNotEmpty() && l.trim().matches(Regex("""^[─━═]{3,}$"""))) break
                 if (l.isBlank() || c.isEmpty()) {
-                    if (got.isNotEmpty() && !gap) { gap = true; gaps++; if (gaps > 2) break }
+                    if (got.isNotEmpty() && !gap) { gap = true; gaps++; if (gaps > 2) break; got[0] = got[0].copy(gapBefore = true) }
                     i--; continue
                 }
                 if (l.trimStart().startsWith("╭") || l.trimStart().startsWith("┌") || c.matches(Regex("""^[─━═\-_\s]+$"""))) break
@@ -1066,20 +1228,36 @@ fun detectPrompt(text: String, blocked: Boolean): Prompt? {
                 if (got.isNotEmpty() && (ACTIVITY.containsMatchIn(c) || STATUS_LINE.containsMatchIn(c) ||
                         (gap && PROMPT_ECHO.containsMatchIn(c)))) break
                 gap = false
-                val isCmd = l.trimStart().startsWith("┃") && l.trimStart().trimStart('┃', ' ').startsWith("│")
+                // A box inside the card's frame holds the command: Grok's "┃  │ grok usage", Copilot's
+                // "│ │ mkdir -p sub" (1.2.9: Copilot's too, so it shows as a command).
+                val tl = l.trimStart()
+                val isCmd = (tl.startsWith("┃") || tl.startsWith("│")) && tl.drop(1).trimStart().startsWith("│")
                 // Grok's "← → narrow scope" hint sits between the command and its options.
-                if (c.any(Char::isLetterOrDigit) && !c.contains("narrow scope")) got.add(0, c.trimStart('›', '❯', ' ') to isCmd)
+                if (c.any(Char::isLetterOrDigit) && !c.contains("narrow scope")) got.add(0, QLine(c.trimStart('›', '❯', ' '), isCmd))
                 i--
             }
-            buildString {
-                got.forEachIndexed { k, (t, cmd) ->
-                    if (k > 0) append(if (cmd && !got[k - 1].second) ": " else " ")
-                    append(t)
-                }
-            }.replace(Regex("\\s+"), " ").trim().takeIf { it.isNotEmpty() }
+            got.takeIf { it.isNotEmpty() }
         }
     }
-    val question = above ?: lines.lastOrNull { clean(it).endsWith("?") }?.let(clean)
+    // The question's text (notifications, matching) leaves out Claude's tab bar; the app shows it as steps.
+    val aboveText = above?.let { got ->
+        val body = got.mapNotNull { l ->
+            val bar = parseTabBar(l.text)
+            when {
+                bar == null -> l
+                bar.second.isEmpty() -> null
+                else -> QLine(bar.second)
+            }
+        }
+        buildString {
+            body.forEachIndexed { k, l ->
+                if (k > 0) append(if (l.cmd && !body[k - 1].cmd) ": " else " ")
+                append(l.text)
+            }
+        }.replace(Regex("\\s+"), " ").trim().takeIf { it.isNotEmpty() }
+    }
+    val question = aboveText ?: lines.lastOrNull { clean(it).endsWith("?") }?.let(clean)
+    val parts = above?.let(::questionParts)
 
     // A numbered list is a menu only when the screen shows a real one: a highlight on one of its
     // rows (❯ › > ▶, or a filled radio), a question dialog's footer, or Vibe's card footer. A reply
@@ -1090,7 +1268,7 @@ fun detectPrompt(text: String, blocked: Boolean): Prompt? {
     if (numbered.size in 2..9 && realMenu) {
         // Vibe draws no marker on the highlighted row; a fresh card highlights the first one.
         val selected = run.firstOrNull { it.first in marked }?.second ?: if (vibeCard) "1" else null
-        return Prompt(question ?: "Choose an option", numbered, selected, escRejects = vibeCard)
+        return Prompt(question ?: "Choose an option", numbered, selected, escRejects = vibeCard, parts = parts.takeIf { aboveText != null })
     }
 
     val yn = Regex("""[(\[]\s*[yY](?:es)?\s*/\s*[nN]o?\s*[)\]]""")

@@ -531,14 +531,14 @@ fun EditServerScreen(vm: AppViewModel, existing: Server?, prefillHost: String? =
             }
         }
         if (existing?.passwordCipher != null) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { forgetPassword = !forgetPassword }) {
                 Checkbox(checked = forgetPassword, onCheckedChange = { forgetPassword = it })
                 Text("Forget the saved password", color = Palette.Ink)
             }
         }
         if (existing?.fingerprint != null && !viaWs) {
             Column {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { forgetFingerprint = !forgetFingerprint }) {
                     Checkbox(checked = forgetFingerprint, onCheckedChange = { forgetFingerprint = it })
                     Text("Forget the saved host fingerprint", color = Palette.Ink)
                 }

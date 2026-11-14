@@ -922,8 +922,49 @@ internal fun PromptQuestion(
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("$agent asks", color = Palette.OrangeInk, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
         preview?.invoke()
+        val parts = p.shownParts()
+        if (parts.tabs.isNotEmpty()) QuestionSteps(parts)
+        // The question as a heading, a command in a block of its own, the rest as plain text, in the
+        // order the agent drew them (1.2.9).
         SelectionContainer {
-            Text(p.question, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, lineHeight = 24.sp, color = Palette.Ink)
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                parts.blocks.forEach { b ->
+                    when (b.kind) {
+                        com.billmongan.herdrdroid.herdr.QKind.HEADING -> Text(b.text, fontSize = 17.sp,
+                            fontWeight = FontWeight.SemiBold, lineHeight = 24.sp, color = Palette.Ink)
+                        com.billmongan.herdrdroid.herdr.QKind.TEXT -> Text(b.text, fontSize = 15.sp,
+                            lineHeight = 21.sp, color = Palette.Ink)
+                        com.billmongan.herdrdroid.herdr.QKind.COMMAND -> Surface(shape = RoundedCornerShape(10.dp),
+                            color = Palette.Code, border = BorderStroke(1.dp, Palette.Line), modifier = Modifier.fillMaxWidth()) {
+                            Text(b.text, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, fontSize = 13.5.sp,
+                                lineHeight = 19.sp, color = Palette.Ink, modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Claude's multi-question dialog as steps: "Question 1 of 4", then a chip for each question and Submit. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun QuestionSteps(parts: com.billmongan.herdrdroid.herdr.QuestionParts) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        parts.step?.let { Text(it, color = Palette.Muted, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold) }
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            parts.tabs.forEach { t ->
+                val (bg, edge, ink) = when {
+                    t.current -> Triple(Palette.OrangeSoft, Palette.Orange, Palette.OrangeInk)
+                    t.done -> Triple(Palette.GreenSoft, Palette.GreenSoft, Palette.Ink)
+                    else -> Triple(Palette.Card, Palette.Line, Palette.Muted)
+                }
+                Surface(shape = RoundedCornerShape(50), color = bg, border = BorderStroke(1.dp, edge)) {
+                    Text((if (t.done) "✓ " else "") + t.title, color = ink, fontSize = 12.5.sp,
+                        fontWeight = if (t.current) FontWeight.Bold else FontWeight.Medium, maxLines = 1,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp))
+                }
+            }
         }
     }
 }
