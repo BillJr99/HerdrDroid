@@ -213,6 +213,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var ssh: HerdrSsh? = null
     private var herdr: Herdr? = null
     private var foreground = true
+    /** The app is in front (the screens' own loops read nothing while it isn't, 1.4.0). */
+    val inFront: Boolean get() = foreground
+
+    /** The phone's screen is on; the background loops slow down while it is off (1.4.0). */
+    fun screenOn(): Boolean = runCatching {
+        (getApplication<Application>().getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager).isInteractive
+    }.getOrDefault(true)
     private var backgroundAt = 0L
     private var downSince = 0L
     private var reconnectJob: Job? = null
@@ -458,6 +465,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 quotas = prefs.quotas(saved.id).let { q -> q + serverQuotas[saved.id].orEmpty().filter { (k, r) -> (q[k]?.at ?: 0L) < r.at } }
                 lastQuotaTry.clear()
                 unlockedThisSession += saved.id
+                // Each agent's version on this computer, once per connection (1.4.0), for the parsers.
+                agentVersions = emptyMap()
+                viewModelScope.launch { quietly { it.agentVersions() }?.let { v -> if (current?.id == saved.id) agentVersions = v } }
                 lastStatus.clear()
                 // From the drawer or at startup the agent opens directly, with no stop on the tab list.
                 if (!openAgent) screen = Screen.Tabs
@@ -934,9 +944,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             var wait = 1_000L
             while (isActive) {
                 val h = herdr ?: return@launch
+                // Behind, only while Watching (1.4.0, from a code review: alerts for the open server
+                // stopped until the app was opened again), and never for a WebSocket server, which
+                // isn't held open in the background; then no faster than every 15 s (60 s, screen off).
                 if (!foreground) {
-                    delay(1_000)
-                    continue
+                    if (!watching || current?.overWebSocket == true) { delay(1_000); continue }
+                    wait = maxOf(wait, if (screenOn()) 15_000L else 60_000L)
                 }
                 try {
                     ssh?.reset()
@@ -1155,11 +1168,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         quietly { it.read(paneId) }?.let { text ->
             // Switched to another agent while this read was on its way: it isn't that agent's screen.
             if ((screen as? Screen.Agent)?.paneId != paneId) return
+            noteInputLine(paneId, text)
             paneText = text
             paneTextPane = paneId
             // What the question card sees, logged when it changes (sizes only, no question text).
             val status = panes.firstOrNull { it.id == paneId }?.status
-            val p = com.billmongan.herdrdroid.herdr.detectPrompt(text, status == Status.NEEDS_YOU)
+            val p = com.billmongan.herdrdroid.herdr.detectPrompt(text, status == Status.NEEDS_YOU, pane(paneId)?.agent, versionOf(paneId))
             current?.id?.let { sid -> observeQuestion(sid, paneId, p, status, pane(paneId)?.agentName) }
             val dialog = com.billmongan.herdrdroid.herdr.showsQuestionDialog(text)
             val sig = if (p == null && !dialog) "none" else
@@ -1562,16 +1576,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** A message sent from this phone that the agent's log doesn't show yet (queued, or steering). */
-    data class PendingSend(val id: Long, val paneId: String, val text: String, val at: Long, val seenBefore: Int, val undelivered: Boolean = false)
+    data class PendingSend(val id: Long, val paneId: String, val text: String, val at: Long, val seenBefore: Int, val undelivered: Boolean = false,
+                           /** Why it was held instead of sent (1.4.0: someone is typing in that pane); Resend sends it anyway. */
+                           val held: String? = null)
 
     /** Messages the agent never showed in its log (see [applyTranscript]), for Resend and Dismiss. */
     fun undeliveredFor(paneId: String): List<Pair<Long, String>> =
-        pendingSends.filter { it.paneId == paneId && it.undelivered }.map { it.id to it.text }
+        pendingSends.filter { it.paneId == paneId && it.undelivered }
+            .map { it.id to (it.held?.let { why -> "${it.text}\n(held: $why)" } ?: it.text) }
 
     fun resendPending(id: Long) {
         val p = pendingSends.firstOrNull { it.id == id } ?: return
         pendingSends = pendingSends - p
-        pane(p.paneId)?.let { sendMessage(it, p.text) }
+        // Resend is a deliberate "send it anyway", so a send held for typing isn't held again.
+        pane(p.paneId)?.let { sendMessage(it, p.text, force = true) }
     }
 
     fun dismissPending(id: Long) { pendingSends = pendingSends.filterNot { it.id == id } }
@@ -1713,16 +1731,101 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         quietGate.sent("${current?.id}|$paneId", System.currentTimeMillis())
     }
 
-    fun sendMessage(pane: Pane, text: String, delivered: () -> Unit = {}) {
+    /** The open computer's agent versions (1.4.0): agent kind to version. */
+    var agentVersions by mutableStateOf<Map<String, String>>(emptyMap())
+        private set
+
+    /** The version of the agent in [paneId], when known. */
+    fun versionOf(paneId: String): String? = pane(paneId)?.agent?.lowercase()?.let { agentVersions[it] }
+
+    /** A short message the screens show once (1.4.0: the debug bundle was copied). */
+    var notice by mutableStateOf<String?>(null)
+
+    /**
+     * One pane's state as text for a bug report (1.4.0): the app version, the agent, its status and
+     * scroll offset, the parser's decision on the last screen (question, choices, highlight, and
+     * the fallback card), the chat's cursor and mode, the question records, the last lines of the
+     * diagnostic log about this pane, and the last screen. Secrets are taken out by [Redact]. It
+     * goes only to this phone's clipboard or share sheet; nothing is written on the computer.
+     */
+    fun debugBundle(paneId: String): String {
+        val p = pane(paneId)
+        val screenText = if (paneTextPane == paneId) paneText else ""
+        val prompt = com.billmongan.herdrdroid.herdr.detectPrompt(screenText, p?.status == Status.NEEDS_YOU, p?.agent, versionOf(paneId))
+        val diag = com.billmongan.herdrdroid.diag.DiagLog.text().lines().filter { it.contains(paneId) }.takeLast(40)
+        val raw = buildString {
+            appendLine("HerdrDroid ${com.billmongan.herdrdroid.BuildConfig.VERSION_NAME} debug bundle, pane $paneId")
+            appendLine("agent: ${p?.agent ?: "none"} (${p?.agentName ?: "?"}) version ${versionOf(paneId) ?: "unknown"}, status ${p?.status}, focused ${p?.focused}, scroll offset ${p?.scrollOffset}")
+            appendLine("backend: ${herdr?.backend}, link: $link")
+            appendLine()
+            appendLine("## Parser decision on the last screen")
+            if (prompt == null) appendLine("no question card")
+            else {
+                appendLine("question: ${prompt.question}")
+                appendLine("choices: " + prompt.choices.joinToString(" | ") { "${it.keys}=${it.label}" })
+                appendLine("highlighted: ${prompt.selected}, multi-select: ${prompt.multi}, esc rejects: ${prompt.escRejects}, fallback card: ${prompt.region != null}")
+                prompt.parts?.let { appendLine("layout: steps ${it.tabs.map { t -> t.title }}, heading ${it.heading}, command ${it.command}") }
+            }
+            appendLine("last prompt signature: ${lastPromptSig[paneId]}")
+            appendLine()
+            appendLine("## Chat")
+            appendLine("mode ${transcriptState}, open pane ${transcriptPane}, items ${if (transcriptPane == paneId) transcriptItems.size else transcriptCache[ck(paneId)]?.items?.size}")
+            appendLine("cursor: ${if (transcriptPane == paneId) transcriptCursor else transcriptCache[ck(paneId)]?.cursor}")
+            appendLine("questions: " + questionsFor(paneId).joinToString("; ") { com.billmongan.herdrdroid.transcript.QuestionLog.label(it) })
+            appendLine()
+            appendLine("## Diagnostic log (this pane)")
+            diag.forEach { appendLine(it) }
+            appendLine()
+            appendLine("## Last screen")
+            appendLine(screenText.lines().takeLast(60).joinToString("\n"))
+        }
+        return com.billmongan.herdrdroid.diag.Redact.text(raw)
+    }
+
+    /** When each open pane's input line last held typing (1.4.0, the send guard). */
+    private val typedAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /** Notes the input line of a pane's screen as just read: any typing in it is remembered for 4 s. */
+    private fun noteInputLine(paneId: String, screen: String) {
+        val now = com.billmongan.herdrdroid.herdr.inputLineOf(screen) ?: return
+        // Kept apart from the line's text (from a review: an empty read cleared the 4-second guard at once).
+        if (now.isNotEmpty()) typedAt[paneId] = System.currentTimeMillis()
+    }
+
+    /**
+     * Why a message must not be typed into [paneId] now (1.4.0, "never type into a busy pane"): text
+     * already in its input line at the computer, or someone typing there in the last 4 seconds.
+     * Null to send. A pane waiting on a question is answered, not typed into, so it is never held.
+     */
+    private fun holdReason(paneId: String, screen: String): String? {
+        val now = com.billmongan.herdrdroid.herdr.inputLineOf(screen) ?: return null
+        if (now.isNotEmpty()) return "something is already typed in its input line at the computer (\"${now.take(40)}\")"
+        val at = typedAt[paneId]
+        if (at != null && System.currentTimeMillis() - at < 4_000) return "someone was typing in it a moment ago"
+        return null
+    }
+
+    fun sendMessage(pane: Pane, text: String, force: Boolean = false, delivered: () -> Unit = {}) {
         noteSent(pane.id)
         lastSent = pane.id to text
         lastSentAt = System.currentTimeMillis()
+        val pendingId = System.nanoTime()
         pendingSends = pendingSends + PendingSend(
-            System.nanoTime(), pane.id, text, lastSentAt,
+            pendingId, pane.id, text, lastSentAt,
             if (transcriptPane == pane.id) sameTextCount(text) else 0,
         )
         com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${pane.id} (${pane.agent ?: "shell"}, ${pane.status}): ${text.length} chars; link ${link}, ${if (herdr == null) "no client" else "client ready"}")
         act(pane.id, "Couldn't send") { h ->
+            if (!force && pane.status != Status.NEEDS_YOU) {
+                val screenNow = runCatching { h.read(pane.id, 40) }.getOrNull()
+                val why = screenNow?.let { holdReason(pane.id, it) }
+                if (why != null) {
+                    com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${pane.id}: held, $why")
+                    pendingSends = pendingSends.map { if (it.id == pendingId) it.copy(undelivered = true, held = why) else it }
+                    error = "Not sent to ${pane.agentName}: $why. Tap Resend to send it anyway."
+                    return@act
+                }
+            }
             try {
                 h.sendMessage(pane, text)
                 com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${pane.id}: delivered to herdr (${h.lastSendRoute})")
@@ -1803,6 +1906,28 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val keys = com.billmongan.herdrdroid.herdr.menuKeys(dialog, target) ?: return "Grok's privacy settings have no highlighted choice."
         h.sendKeys(paneId, *keys.toTypedArray())
         return null
+    }
+
+    /**
+     * A typed answer to a "Type something." / "Other" option (1.4.0): move the highlight to that
+     * option, type the text there and press Enter. Without a known highlight, it is sent as a
+     * message, as "Type a different answer" does.
+     */
+    fun answerTyped(pane: Pane, prompt: com.billmongan.herdrdroid.herdr.Prompt, choice: com.billmongan.herdrdroid.herdr.Choice, text: String) {
+        noteSent(pane.id)
+        val move = com.billmongan.herdrdroid.herdr.moveKeys(prompt, choice)
+        // Recorded only once it was sent (1.3.2).
+        if (move == null) { sendMessage(pane, text) { noteAnswer(pane.id, prompt, text) }; return }
+        act(pane.id, "Couldn't answer") { h ->
+            if (move.isNotEmpty()) h.sendKeys(pane.id, *move.toTypedArray())
+            delay(300)
+            h.sendText(pane.id, text)
+            delay(200)
+            h.sendKeys(pane.id, "enter")
+            noteAnswer(pane.id, prompt, text)
+            readPane(pane.id)
+            refreshPanes()
+        }
     }
 
     fun answer(paneId: String, keys: String, pressEnter: Boolean, sent: () -> Unit = {}) {
@@ -2193,6 +2318,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             busyOf = { h -> h.workCounts(h.panes0Cache, transcriptScript).second },
         ).also { fleet = it }
         f.everyMs = if (watching) 5_000L else 10_000L
+        f.screenOn = ::screenOn
         f.watch(watchable())
     }
 
@@ -2205,7 +2331,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (watchJob?.isActive == true) return
         watchJob = viewModelScope.launch {
             while (isActive) {
-                delay(3_000)
+                // Every 3 s, or every 12 s with the screen off (1.4.0: fewer polls when nobody looks).
+                delay(if (screenOn()) 3_000 else 12_000)
                 // In front, the screens refresh panes themselves; behind, this keeps alerts coming.
                 if (!foreground && herdr != null && current?.overWebSocket != true) runCatching { refreshPanes() }
             }

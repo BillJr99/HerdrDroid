@@ -560,14 +560,17 @@ def grok(cwd, cur):
 
 
 def copilot(cwd, cur):
+    # Newest first, stopping at the first session for this folder (1.4.0, from a code review: every
+    # read, follow ticks included, opened the first line of every events.jsonl there was).
     best = None
-    for f in glob.glob(os.path.join(HOME, ".copilot", "session-state", "*", "events.jsonl")):
+    files = glob.glob(os.path.join(HOME, ".copilot", "session-state", "*", "events.jsonl"))
+    for f in sorted(files, key=lambda x: os.path.getmtime(x) if os.path.exists(x) else 0, reverse=True):
         try:
             with open(f, "rb") as fh:
                 head = json.loads(fh.readline() or b"{}")
             if ((head.get("data") or {}).get("context") or {}).get("cwd") == cwd:
-                if best is None or os.path.getmtime(f) > os.path.getmtime(best):
-                    best = f
+                best = f
+                break
         except Exception:
             continue
     best = pinned(best)
@@ -596,8 +599,8 @@ def copilot(cwd, cur):
         elif t == "tool.execution_complete":
             res = d.get("result")
             items.append(result_item(k, d.get("toolCallId"), text_of(res), d.get("success") is False))
-    if not items and reset:
-        return None
+    # No messages in the window read (1.4.0, from a code review): still return the cursor, so the
+    # next read goes on from here instead of reading the same tail again.
     return {"cur": ncur, "reset": reset, "more": more, "items": items, "title": None}
 
 

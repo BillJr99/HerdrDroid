@@ -248,6 +248,8 @@ fun ServerBanners(vm: AppViewModel) {
         ) { vm.retryNow() }
     }
     vm.error?.let { ErrorBanner(it) { vm.error = null } }
+    // A one-time note (1.4.0: "Debug bundle copied").
+    vm.notice?.let { ErrorBanner(it) { vm.notice = null } }
 }
 
 /**

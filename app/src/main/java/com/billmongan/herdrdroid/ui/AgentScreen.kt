@@ -130,6 +130,8 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     var typingAnswer by remember { mutableStateOf(false) }
     // The question a typed answer is for (the card is hidden while you type it), so the history records it there.
     var answering by remember { mutableStateOf<Prompt?>(null) }
+    // The "Type something." / "Other" option the typed answer goes to (1.4.0), when one was tapped.
+    var answerVia by remember { mutableStateOf<com.billmongan.herdrdroid.herdr.Choice?>(null) }
     var ctrl by remember { mutableStateOf(Hold.OFF) }
     var alt by remember { mutableStateOf(Hold.OFF) }
     /** The slash command whose screen is showing, until you go back to the chat. */
@@ -170,7 +172,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
         var tick = 0
         var streamFailures = 0
         while (true) {
-            if (!liveNow && vm.hasTranscriptReader(paneId)) {
+            if (!liveNow && vm.inFront && vm.hasTranscriptReader(paneId)) {
                 // Once the log is found, stream it (replies show within about a third of a
                 // second); if streaming doesn't work here, poll every 1.5 seconds instead.
                 if (vm.transcriptState == TranscriptMode.ON && streamFailures < 3) {
@@ -183,22 +185,24 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
         }
     }
     // The screen itself: the terminal view, the fallback chat view, and questions the agent asks.
+    // These loops read only while the app is in front (1.4.0): behind it, the watcher does the
+    // pane checks, and the screen reads and work sweeps would only spend the battery.
     LaunchedEffect(paneId, structured) {
         while (true) {
-            vm.readPane(paneId)
-            kotlinx.coroutines.delay(if (structured) 2_500 else 1_500)
+            if (vm.inFront) vm.readPane(paneId)
+            kotlinx.coroutines.delay(if (!vm.inFront) 1_000 else if (structured) 2_500 else 1_500)
         }
     }
     LaunchedEffect(paneId) {
         while (true) {
             kotlinx.coroutines.delay(4_000)
-            vm.refreshPanes()
+            if (vm.inFront) vm.refreshPanes()
         }
     }
     // What runs under this agent (subagents, background tasks, processes), every 5 seconds.
     LaunchedEffect(paneId) {
         while (true) {
-            vm.refreshWork(paneId)
+            if (vm.inFront) vm.refreshWork(paneId)
             kotlinx.coroutines.delay(5_000)
         }
     }
@@ -213,9 +217,13 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     fun send() {
         if (message.isNotBlank() && pane != null) {
             val text = message.trim()
-            // The typed answer goes into the question's history once it was delivered (1.3.2).
+            val via = answerVia
             val q = answering
-            if (typingAnswer) vm.sendMessage(pane, text) { vm.noteAnswer(paneId, q, text) } else vm.sendMessage(pane, text); message = ""; typingAnswer = false; answering = null
+            // A typed answer goes into the question's history once it was delivered (1.3.2).
+            if (typingAnswer && via != null && q != null) vm.answerTyped(pane, q, via, text)
+            else if (typingAnswer) vm.sendMessage(pane, text) { vm.noteAnswer(paneId, q, text) }
+            else vm.sendMessage(pane, text)
+            message = ""; typingAnswer = false; answering = null; answerVia = null
             // A slash command answers on the screen (a menu, a sign-in code), not in the agent's log,
             // so show the screen and the keys to move through it.
             if (text.startsWith("/") && !live) { fullTerminal = true; commandScreen = text.substringBefore(' ') }
@@ -227,7 +235,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     val status = pane?.let { vm.shownStatus(it) } ?: Status.UNKNOWN
     // Only this agent's screen: never one read from the agent you just left.
     val screenText = if (vm.paneTextPane == paneId) vm.paneText else ""
-    val prompt: Prompt? = if (typingAnswer) null else detectPrompt(screenText, status == Status.NEEDS_YOU)
+    val prompt: Prompt? = if (typingAnswer) null else detectPrompt(screenText, status == Status.NEEDS_YOU, pane?.agent, vm.versionOf(paneId))
     // The terminal (and screen) view follows new output only while you are at the bottom; once you
     // scroll up it stays where you put it, through updates and view switches (1.2.7; before, every
     // update jumped to the bottom). "Latest" below brings it back.
@@ -321,7 +329,8 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                     val label = "Pressed " + when (k) { "esc" -> "Esc"; "tab" -> "Tab"; "shift+tab" -> "Shift+Tab"; "ctrl+c" -> "Ctrl+C"; else -> k }
                     vm.sendKeysThen(paneId, listOf(k)) { vm.noteAnswer(paneId, p, label) }
                 },
-                onTypeAnswer = { answering = p; typingAnswer = true },
+                onTypeAnswer = { answering = p; answerVia = null; typingAnswer = true },
+                onTypedChoice = { c -> answering = p; answerVia = c; typingAnswer = true },
             )
         }
     }
@@ -431,6 +440,23 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                     if (structured && vm.transcriptItems.isNotEmpty()) DropdownMenuItem(text = { Text("Find in chat") }, onClick = { menu = false; finding = true })
                     if (!live) DropdownMenuItem(text = { Text(if (reading) "Leave reading mode" else "Reading mode") }, onClick = { menu = false; reading = !reading })
                     DropdownMenuItem(text = { Text("Running underneath") }, onClick = { menu = false; vm.screen = Screen.Work(paneId) })
+                    // 1.4.0: one pane's last screens, the parser's decision and the chat cursor, with
+                    // secrets taken out, for a bug report. Only to this phone's clipboard or share sheet.
+                    DropdownMenuItem(text = { Text("Copy debug bundle") }, onClick = {
+                        menu = false
+                        val text = vm.debugBundle(paneId)
+                        runCatching {
+                            val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                            cm.setPrimaryClip(android.content.ClipData.newPlainText("HerdrDroid debug bundle", text))
+                        }
+                        vm.notice = "Debug bundle copied (${text.length} characters, secrets redacted)"
+                    })
+                    DropdownMenuItem(text = { Text("Share debug bundle") }, onClick = {
+                        menu = false
+                        val send = android.content.Intent(android.content.Intent.ACTION_SEND).setType("text/plain")
+                            .putExtra(android.content.Intent.EXTRA_TEXT, vm.debugBundle(paneId))
+                        runCatching { context.startActivity(android.content.Intent.createChooser(send, "Share debug bundle")) }
+                    })
                     // The agent's own key for moving a running command to the background (Ctrl+B),
                     // offered only for agents where that is what the key does.
                     if (com.billmongan.herdrdroid.herdr.Backgrounding.supported(pane?.agent)) DropdownMenuItem(
@@ -996,6 +1022,8 @@ internal fun PromptCard(
     onChoice: (Choice) -> Unit,
     onKey: (String) -> Unit,
     onTypeAnswer: () -> Unit,
+    /** A choice that means "I'll type it" ("Type something.", "Other"): move there, then type (1.4.0). */
+    onTypedChoice: (Choice) -> Unit = { onTypeAnswer() },
 ) {
     Surface(
         shape = RoundedCornerShape(18.dp),
@@ -1011,10 +1039,32 @@ internal fun PromptCard(
             }
             // Each choice grows to fit its whole label; the page scrolls, the card has no scroll of its own.
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                // The fallback card (1.4.0): the screen looked like a question no parser understood, so
+                // the card shows that part of the screen and generic keys instead of choices.
+                p.region?.takeIf { p.choices.isEmpty() }?.let { region ->
+                    Text("The app couldn't read this question's options, so here is the screen and the keys to answer it:",
+                        color = Palette.Muted, fontSize = 12.5.sp)
+                    androidx.compose.foundation.text.selection.SelectionContainer {
+                        Text(region.joinToString("\n"), color = Palette.TerminalInk, fontFamily = Fonts.Mono, fontSize = 12.sp,
+                            modifier = Modifier.fillMaxWidth().background(Palette.Terminal, RoundedCornerShape(10.dp)).padding(10.dp))
+                    }
+                    val numbers = region.mapNotNull { Regex("""^[❯›>▶➤\s]*(\d{1,2})[.)]\s""").find(it)?.groupValues?.get(1) }.distinct().take(9)
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        numbers.forEach { n -> KeyButton(n) { onKey(n) } }
+                        KeyButton("↑") { onKey("up") }
+                        KeyButton("↓") { onKey("down") }
+                        KeyButton("Space") { onKey("space") }
+                        KeyButton("Enter") { onKey("enter") }
+                    }
+                }
+                if (p.multi) Text("Several can be picked: each option below turns its box on or off; Enter (or the agent's Submit option) sends them.",
+                    color = Palette.Muted, fontSize = 12.5.sp)
                 p.choices.forEachIndexed { i, c ->
                     // Say what tapping really sends: arrows and Enter for a menu with a highlighted row,
                     // Esc for a "(esc)" option, otherwise the key itself (1.2.7; it always said "sends N").
-                    val what = keysLabel(com.billmongan.herdrdroid.herdr.menuKeys(p, c), c)
+                    val typed = com.billmongan.herdrdroid.herdr.isTypedAnswerChoice(c.label)
+                    val what = if (typed) "moves there, then you type your answer" else keysLabel(com.billmongan.herdrdroid.herdr.menuKeys(p, c), c)
+                    val caution = com.billmongan.herdrdroid.herdr.grantsStandingPermission(c.label)
                     // The highlighted row (the one Enter picks) is the blue one, not always the first.
                     val first = c.keys == (p.selected ?: p.choices.firstOrNull()?.keys)
                     val body: @Composable () -> Unit = {
@@ -1022,12 +1072,15 @@ internal fun PromptCard(
                             Text(c.label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, lineHeight = 20.sp,
                                 color = if (first) Palette.OnBlue else Palette.Ink)
                             Text(what, fontSize = 12.sp, color = if (first) Palette.OnBlue.copy(alpha = 0.8f) else Palette.Muted)
+                            // Standing permission (1.4.0): say so before it is tapped.
+                            if (caution) Text("Caution: this lets the agent do it again without asking you.", fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold, color = if (first) Palette.OnBlue else Palette.OrangeInk)
                         }
                     }
                     val pad = PaddingValues(horizontal = 16.dp, vertical = 10.dp)
                     if (first) {
                         Button(
-                            onClick = { onChoice(c) },
+                            onClick = { if (typed) onTypedChoice(c) else onChoice(c) },
                             shape = RoundedCornerShape(14.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = Palette.Blue, contentColor = Palette.OnBlue),
                             contentPadding = pad,
@@ -1035,7 +1088,7 @@ internal fun PromptCard(
                         ) { body() }
                     } else {
                         OutlinedButton(
-                            onClick = { onChoice(c) },
+                            onClick = { if (typed) onTypedChoice(c) else onChoice(c) },
                             shape = RoundedCornerShape(14.dp),
                             contentPadding = pad,
                             modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),

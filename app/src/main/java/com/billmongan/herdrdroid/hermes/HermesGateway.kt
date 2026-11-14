@@ -61,17 +61,14 @@ class HermesGateway(private val ssh: HerdrSsh) {
             throw HermesError("Hermes's gateway isn't ready: " + (attach.optString("detail").ifBlank { attach.optString("state") }))
         }
         val url = attach.getString("url")
-        val m = Regex("""ws://([^:/]+):(\d+)(/.*)""").matchEntire(url) ?: throw HermesError("Unexpected gateway address.")
-        val host = m.groupValues[1]
-        val port = m.groupValues[2].toInt()
-        val path = m.groupValues[3]
+        val (host, port, path) = parseGatewayUrl(url)
         val protos: JSONArray = attach.getJSONArray("protocols")
         val f = ssh.forward(host, port)
         fwd = f
         val ready = CompletableDeferred<Unit>()
         val req = Request.Builder()
             .url("ws://127.0.0.1:${f.localPort}$path")
-            .header("Host", "$host:$port")
+            .header("Host", (if (host.contains(':')) "[$host]" else host) + ":$port")
             .header("Sec-WebSocket-Protocol", (0 until protos.length()).joinToString(", ") { protos.getString(it) })
             .build()
         ws = http.newWebSocket(req, object : WebSocketListener() {
@@ -158,4 +155,27 @@ class HermesGateway(private val ssh: HerdrSsh) {
         fwd?.close()
         fwd = null
     }
+}
+
+/**
+ * The host, port and path (with any query) of the address `hermes gateway attach` gives (1.4.0,
+ * from a code review: only exactly ws://host:port/path was accepted). An IPv6 host may be in
+ * brackets; with no path, "/" is used. A wss:// gateway is refused with a clear message: the app
+ * reaches the gateway through its SSH tunnel at 127.0.0.1, where the gateway's TLS certificate
+ * wouldn't match.
+ */
+fun parseGatewayUrl(url: String): Triple<String, Int, String> {
+    val u = url.trim()
+    if (u.startsWith("wss://", ignoreCase = true)) throw HermesError("Hermes's gateway uses wss://, which the app can't reach through its SSH tunnel.")
+    val m = Regex("""^ws://(\[[0-9A-Fa-f:.]+]|[^:/?#\[\]]+)(?::(\d+))?([/?#].*)?$""", RegexOption.IGNORE_CASE).matchEntire(u)
+        ?: throw HermesError("Unexpected gateway address.")
+    val host = m.groupValues[1].removePrefix("[").removeSuffix("]")
+    val port = m.groupValues[2].toIntOrNull() ?: 80
+    val rest = m.groupValues[3]
+    val path = when {
+        rest.isEmpty() -> "/"
+        rest.startsWith("/") -> rest
+        else -> "/$rest"
+    }
+    return Triple(host, port, path)
 }

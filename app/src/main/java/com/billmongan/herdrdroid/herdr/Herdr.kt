@@ -231,6 +231,9 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
         if (core) forPhone(run(hcCmd("read", paneId, "--lines", lines.toString())))
         else forPhone(run(cmd("pane", "read", paneId, "--source", "recent", "--lines", lines.toString())))
 
+    /** Each agent's program version here (1.4.0): agent kind to version, for the parsers and the debug bundle. */
+    suspend fun agentVersions(): Map<String, String> = runCatching { AgentVersions.parse(ssh.exec(AgentVersions.script(), timeoutSeconds = 60).out) }.getOrDefault(emptyMap())
+
     /** The last few lines of every pane, fetched in one round trip. */
     suspend fun previews(ids: List<String>): Map<String, Peek> {
         if (ids.isEmpty()) return emptyMap()
@@ -892,6 +895,13 @@ data class Prompt(
     val escRejects: Boolean = false,
     /** The question laid out for the app: progress steps, heading, command and context (1.2.9). */
     val parts: QuestionParts? = null,
+    /**
+     * When the screen looks like a question but no parser understood it (1.4.0): the bottom of the
+     * screen as it shows, for the fallback card, which offers generic keys instead of choices.
+     */
+    val region: List<String>? = null,
+    /** A list of checkboxes (several can be picked): a choice toggles its row, Enter submits (1.4.0). */
+    val multi: Boolean = false,
 ) {
     /** [parts], or the same layout read from the question's text. */
     fun shownParts(): QuestionParts = parts ?: questionParts(listOf(QLine(question)))
@@ -1032,6 +1042,31 @@ fun questionParts(lines: List<QLine>): QuestionParts {
     return QuestionParts(tabs, (head + cmds + rest).filter { it.text.isNotBlank() })
 }
 
+/**
+ * What is typed in the agent's input line now, read off its screen (1.4.0): the lowest line that
+ * starts with a prompt glyph (❯ › > »), without the glyph and box edges; "" when it is empty; null
+ * when no input line shows (a question card or a full-screen view), so nothing can be judged.
+ */
+fun inputLineOf(screen: String): String? {
+    val lead = Regex("""^[\s\u00A0│┃|]*[>❯›»][\s\u00A0]*""")
+    // Not an input line (from a review): a menu row ("❯ 1. Yes"), a ">>" or ">>>" prompt or nested quote.
+    val notInput = Regex("""^[\s\u00A0│┃|]*(?:[>❯›»]\s*\d{1,2}[.)]\s|>>)""")
+    val line = screen.lines().takeLast(14).lastOrNull { lead.containsMatchIn(it) && !notInput.containsMatchIn(it) } ?: return null
+    return line.replace(lead, "").trimEnd(' ', '\u00A0', '│', '┃', '|').trim()
+}
+
+/** A choice that grants standing permission ("always allow", "don't ask again"); the card adds a caution (1.4.0). */
+private val ALWAYS_LABEL = Regex("""\balways\b|don'?t ask again|\btrust\b|remainder of this session|always-approve|for this (session|conversation)""", RegexOption.IGNORE_CASE)
+fun grantsStandingPermission(label: String): Boolean = ALWAYS_LABEL.containsMatchIn(label)
+
+/** A choice that means "I'll type my own answer" ("Type something.", "Other", "Something else"), 1.4.0. */
+private val OTHER_LABEL = Regex("""^(type something\.?|other\b.*|something else.*|chat about this|type your own.*|enter (a |your )?custom.*)$""", RegexOption.IGNORE_CASE)
+fun isTypedAnswerChoice(label: String): Boolean = OTHER_LABEL.matches(label.trim())
+
+/** A checkbox row ("[ ] Tests", "[x] Docs", "☐ Lint", "◼ Build"), 1.4.0. */
+private val CHECKBOX = Regex("""^(\[[ xX✓✔]\]|[☐☑☒◻◼□■])\s+""")
+fun isCheckbox(label: String): Boolean = CHECKBOX.containsMatchIn(label.trim())
+
 /** An option whose own label says Esc answers it: "No, and tell Codex what to do differently (esc)". */
 private val ESC_LABEL = Regex("""\((?:esc)\b[^)]*\)""", RegexOption.IGNORE_CASE)
 private val REJECT_LABEL = Regex("""^(deny|reject|no)\b""", RegexOption.IGNORE_CASE)
@@ -1046,8 +1081,13 @@ fun menuKeys(prompt: Prompt, choice: Choice): List<String>? {
     val to = choice.keys.toIntOrNull() ?: return null
     if (prompt.choices.none { it.keys == choice.keys }) return null
     val step = if (to > from) "down" else "up"
-    return List(kotlin.math.abs(to - from)) { step } + "enter"
+    // A checkbox row is toggled with Space, not picked with Enter (1.4.0); "Submit" is Enter.
+    val last = if (prompt.multi && isCheckbox(choice.label)) "space" else "enter"
+    return List(kotlin.math.abs(to - from)) { step } + last
 }
+
+/** The arrows that move the highlight to [choice], without the Enter (a typed answer goes there next), 1.4.0. */
+fun moveKeys(prompt: Prompt, choice: Choice): List<String>? = menuKeys(prompt, choice)?.dropLast(1)
 
 /**
  * Looks at the bottom of a pane for a question the agent is waiting on:
@@ -1183,9 +1223,15 @@ fun detectUnnumberedMenu(text: String): Prompt? {
     return Prompt(question, labels.mapIndexed { i, l -> Choice(l, (i + 1).toString(), false) }, selected.toString(), parts = parts)
 }
 
-fun detectPrompt(text: String, blocked: Boolean): Prompt? {
+/**
+ * [agent] and [version] (1.4.0) let a version-specific rule from [ParserRules] apply; with neither,
+ * the defaults are used, as before.
+ */
+fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version: String? = null): Prompt? {
+    val rules = ParserRules.forAgent(agent, version)
     // A question dialog on screen means the agent waits, whatever herdr reported.
-    @Suppress("NAME_SHADOWING") val blocked = blocked || showsQuestionDialog(text)
+    @Suppress("NAME_SHADOWING") val blocked = blocked || showsQuestionDialog(text) ||
+        (rules.extraFooter?.let { f -> text.lines().takeLast(6).any { f.containsMatchIn(it) } } == true)
     val raw = text.lines().map { it.trimEnd() }.takeLast(80)
     val lines = raw.filter { it.isNotBlank() }.takeLast(40)
     if (lines.isEmpty()) return if (blocked) Prompt("This agent is waiting for you.", emptyList()) else null
@@ -1194,7 +1240,8 @@ fun detectPrompt(text: String, blocked: Boolean): Prompt? {
     // "❯ 1. Yes", "  2. Yes, and don't ask again for …" (labels can be long; up to 200 characters).
     // Grok draws radio buttons instead: "1 (○) Yes, and don't ask again", "2 (●) Yes, proceed", with
     // (●) on the highlighted option, which ↑/↓ move and Enter picks (checked in Grok 4.7, 2026-11-13).
-    val option = Regex("""^[\s│┃|]*([❯›>▶➤]\s*)?(\d)(?:[.)]|\s+(\([○●◯◉]\)))\s+(.{1,200}?)[\s│┃|]*$""")
+    // One or two digits (1.4.0, from a code review: option 10 and longer menus never became a card).
+    val option = Regex("""^[\s│┃|]*([❯›>▶➤]\s*)?(\d{1,2})(?:[.)]|\s+(\([○●◯◉]\)))\s+(.{1,200}?)[\s│┃|]*$""")
     val marked = mutableSetOf<Int>()
     val optionRows = lines.withIndex().mapNotNull { (i, l) ->
         option.find(l)?.let { m ->
@@ -1294,10 +1341,11 @@ fun detectPrompt(text: String, blocked: Boolean): Prompt? {
     // first, second, then, but they weren't mutually exclusive options").
     val vibeCard = lines.takeLast(6).any { VIBE_CARD_FOOTER.containsMatchIn(it) }
     val realMenu = run.any { it.first in marked } || showsQuestionDialog(text) || vibeCard
-    if (numbered.size in 2..9 && realMenu) {
+    if (numbered.size in 2..20 && realMenu) {
         // Vibe draws no marker on the highlighted row; a fresh card highlights the first one.
         val selected = run.firstOrNull { it.first in marked }?.second ?: if (vibeCard) "1" else null
-        return Prompt(question ?: "Choose an option", numbered, selected, escRejects = vibeCard, parts = parts.takeIf { aboveText != null })
+        val multi = numbered.count { isCheckbox(it.label) } >= 2
+        return Prompt(question ?: "Choose an option", numbered, selected, escRejects = vibeCard, parts = parts.takeIf { aboveText != null }, multi = multi)
     }
 
     val yn = Regex("""[(\[]\s*[yY](?:es)?\s*/\s*[nN]o?\s*[)\]]""")
@@ -1317,7 +1365,14 @@ fun detectPrompt(text: String, blocked: Boolean): Prompt? {
     // Grok's data-sharing banner, when nothing else is being asked: answered through /privacy.
     if (showsGrokBanner(text)) return GROK_PRIVACY_PROMPT
 
-    return if (blocked) Prompt(question ?: "This agent is waiting for you.", emptyList()) else null
+    // Looks like a question (herdr says it waits, or a question footer shows) but nothing above
+    // understood it (1.4.0): the fallback card shows the bottom of the screen and generic keys.
+    val footer = lines.takeLast(6).any { QUESTION_FOOTER.containsMatchIn(it) }
+    if (blocked || footer) {
+        val region = raw.dropLastWhile { it.isBlank() }.takeLast(16).map { clean(it) }.dropWhile { it.isEmpty() }
+        return Prompt(question ?: "This agent is waiting for you.", emptyList(), region = region.takeIf { r -> r.any { it.isNotBlank() } })
+    }
+    return null
 }
 
 /** The choice keys of Grok's data-sharing question; [AppViewModel] answers them through /privacy. */

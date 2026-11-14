@@ -46,6 +46,10 @@ class Fleet(
     private var job: Job? = null
     private var watched = mapOf<String, Server>()
     var everyMs = 15_000L
+    /** True while the phone's screen is on (1.4.0): with it off, the loop slows to 3 x [everyMs]. */
+    var screenOn: () -> Boolean = { true }
+    /** When each server's work sweep last ran: it runs at most every 30 s (90 s, screen off), not on every tick (1.4.0). */
+    private val sweptAt = mutableMapOf<String, Long>()
     private val detected = mutableSetOf<String>()
     private val retryAt = mutableMapOf<String, Long>()
     private val retryStep = mutableMapOf<String, Long>()
@@ -85,7 +89,10 @@ class Fleet(
                         }
                         val st = try {
                             val raw = pair.second.panes()
-                            val busy = busyOf?.let { f ->
+                            val gap = if (screenOn()) 30_000L else 90_000L
+                            val sweepDue = System.currentTimeMillis() - (sweptAt[id] ?: 0L) >= gap
+                            val busy = if (!sweepDue) Result.success(states[id]?.busy ?: emptyMap()) else busyOf?.let { f ->
+                                sweptAt[id] = System.currentTimeMillis()
                                 try { Result.success(f(pair.second)) } catch (c: CancellationException) { throw c } catch (e: Exception) { Result.failure(e) }
                             } ?: Result.success(emptyMap())
                             FleetState(server, sweptPanes(raw, busy), null, System.currentTimeMillis(), busy.getOrDefault(emptyMap()))
@@ -102,7 +109,7 @@ class Fleet(
                         states = states + (id to st)
                         if (st.error == null) onSeen(st)
                     }
-                    delay(everyMs)
+                    delay(if (screenOn()) everyMs else everyMs * 3)
                 }
             }
         }
