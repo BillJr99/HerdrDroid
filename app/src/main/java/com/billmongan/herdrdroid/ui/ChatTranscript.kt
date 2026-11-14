@@ -120,6 +120,16 @@ class ChatActions(
  * expandable activity row between replies. New items fade in; the view follows the bottom while
  * you are there and offers a "↓" button when you have scrolled up.
  */
+/**
+ * Whether the chat follows the bottom, kept with the pane rather than inside the chat view, so that
+ * switching to the terminal view and back, or leaving the app and returning, leaves the chat where
+ * you put it (Bill, 2026-11-13: "don't always auto scroll [to] the bottom ... leave it where I put it").
+ */
+class ChatFollow {
+    val stick = androidx.compose.runtime.mutableStateOf(true)
+    val first = androidx.compose.runtime.mutableStateOf(true)
+}
+
 @Composable
 fun TranscriptChat(
     rows: List<ChatRow>,
@@ -136,6 +146,7 @@ fun TranscriptChat(
     footer: (@Composable () -> Unit)? = null,
     state: LazyListState,
     modifier: Modifier = Modifier,
+    follow: ChatFollow = remember(state) { ChatFollow() },
 ) {
     val scope = rememberCoroutineScope()
     val total = rows.size + 3
@@ -156,13 +167,13 @@ fun TranscriptChat(
     }
     var unseen by remember { mutableStateOf(0) }
     var lastCount by remember { mutableStateOf(rows.size) }
-    var first by remember(state) { mutableStateOf(true) }
+    var first by follow.first
     val lastKey = rows.lastOrNull()?.key
     val lastSig = rows.lastOrNull()?.let { r -> if (r is ActivityRow) r.items.size.toString() + r.running else (r as OneRow).item.hashCode().toString() }
     // The chat sticks to the bottom: on opening, on coming back to the app, and while anything
     // below grows (the fresh read after the cached chat, images, a long reply), until the user drags
     // it up. Dragging back down to the bottom sticks it again. The app's own jumps never count.
-    var stick by remember(state) { mutableStateOf(true) }
+    var stick by follow.stick
     LaunchedEffect(state) {
         state.interactionSource.interactions.collect {
             when (it) {
@@ -184,12 +195,12 @@ fun TranscriptChat(
                 }
             }
     }
-    // Back in front (from another app, or the screen turned on): to the bottom again.
+    // Back in front (from another app, or the screen turned on): to the bottom only if it was
+    // following the bottom; a chat you had scrolled up stays where you left it (1.2.7).
     val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
     androidx.compose.runtime.DisposableEffect(lifecycle, state) {
         val obs = androidx.lifecycle.LifecycleEventObserver { _, e ->
-            if (e == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
-                stick = true
+            if (e == androidx.lifecycle.Lifecycle.Event.ON_RESUME && stick) {
                 scope.launch { val n = state.layoutInfo.totalItemsCount; if (n > 0) state.scrollToItem(n - 1) }
             }
         }

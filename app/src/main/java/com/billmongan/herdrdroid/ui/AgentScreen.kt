@@ -46,6 +46,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -71,6 +72,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -128,7 +130,6 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     var typingAnswer by remember { mutableStateOf(false) }
     var ctrl by remember { mutableStateOf(Hold.OFF) }
     var alt by remember { mutableStateOf(Hold.OFF) }
-    var showUsage by rememberSaveable { mutableStateOf(false) }
     /** The slash command whose screen is showing, until you go back to the chat. */
     var commandScreen by rememberSaveable(paneId) { mutableStateOf<String?>(null) }
     LaunchedEffect(fullTerminal) { if (!fullTerminal) commandScreen = null }
@@ -223,9 +224,19 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     // Only this agent's screen: never one read from the agent you just left.
     val screenText = if (vm.paneTextPane == paneId) vm.paneText else ""
     val prompt: Prompt? = if (typingAnswer) null else detectPrompt(screenText, status == Status.NEEDS_YOU)
-    val scroll = rememberScrollState()
-    LaunchedEffect(screenText, structured) { if (!structured) scroll.animateScrollTo(scroll.maxValue) }
-    val quota = vm.quotaFor(pane)
+    // The terminal (and screen) view follows new output only while you are at the bottom; once you
+    // scroll up it stays where you put it, through updates and view switches (1.2.7; before, every
+    // update jumped to the bottom). "Latest" below brings it back.
+    val scroll = androidx.compose.runtime.key(paneId) { rememberScrollState() }
+    val termScope = androidx.compose.runtime.rememberCoroutineScope()
+    var termFollow by androidx.compose.runtime.key(paneId) { remember { mutableStateOf(true) } }
+    val chatFollow = androidx.compose.runtime.key(paneId) { remember { ChatFollow() } }
+    LaunchedEffect(scroll) {
+        androidx.compose.runtime.snapshotFlow { scroll.isScrollInProgress }.collect { moving ->
+            if (!moving) termFollow = scroll.value >= scroll.maxValue - 24
+        }
+    }
+    LaunchedEffect(screenText, structured, termFollow) { if (!structured && termFollow) scroll.scrollTo(scroll.maxValue) }
     val onZoom by rememberUpdatedState<(Float) -> Unit> { z -> pinch = (pinch * z) }
     val onZoomEnd by rememberUpdatedState<() -> Unit> {
         if (pinch != 1f) {
@@ -382,7 +393,9 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
             Box {
                 IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More", tint = Palette.Ink) }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                    if (quota != null) DropdownMenuItem(text = { Text(if (showUsage) "Hide usage" else "Usage") }, onClick = { menu = false; showUsage = !showUsage })
+                    // 1.2.7: the per-agent "Usage / Hide usage" toggle is gone. It drew its panel at the top
+                    // of the chat, out of sight when the chat sits at the bottom, so it seemed to do nothing
+                    // (Bill, 2026-11-13). Every agent's usage is on the screen below.
                     DropdownMenuItem(text = { Text("Usage history, all agents") }, onClick = { menu = false; vm.screen = Screen.Usage })
                     if (pane != null) DropdownMenuItem(text = { Text("Files") }, onClick = { menu = false; vm.openFiles(pane.cwd.ifBlank { "~" }) })
                     if (pane?.agent != null && vm.hasTranscriptReader(paneId)) {
@@ -487,22 +500,21 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                     onOpen = { t -> opened = t },
                     focusKey = matches.getOrNull(findAt)?.second,
                 ),
-                header = { if (showUsage && quota != null) QuotaDetails(quota, vm.quotaHistoryFor(pane)) { showUsage = false } },
+                header = {},
                 footer = promptCard,
                 state = listState,
                 modifier = Modifier.fillMaxSize().then(pinchToZoom),
+                follow = chatFollow,
             ) } } }
-        } else {
+        } else Box(Modifier.weight(1f).fillMaxWidth()) {
             Column(
                 Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
+                    .fillMaxSize()
                     .then(pinchToZoom)
                     .verticalScroll(scroll)
                     .padding(horizontal = 16.dp, vertical = 14.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                if (showUsage && quota != null) QuotaDetails(quota, vm.quotaHistoryFor(pane)) { showUsage = false }
                 val text = screenText
                 if (text.isBlank()) {
                     Text("Loading…", color = Palette.Muted, fontSize = 15.sp)
@@ -527,6 +539,18 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                     ChatView(text, pending, liveSize, vm.readingFont)
                 }
                 promptCard()
+            }
+            if (!termFollow && screenText.isNotBlank()) {
+                Surface(
+                    shape = RoundedCornerShape(20.dp), color = Palette.Card, border = BorderStroke(1.dp, Palette.Line), shadowElevation = 4.dp,
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp)
+                        .clickable { termFollow = true; termScope.launch { scroll.animateScrollTo(scroll.maxValue) } },
+                ) {
+                    Row(Modifier.padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Jump to the latest", tint = Palette.Blue, modifier = Modifier.size(18.dp))
+                        Text("Latest", color = Palette.Blue, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
             }
         }
 
@@ -895,8 +919,11 @@ internal fun PromptCard(
                 preview?.invoke()
                 Text(p.question, fontSize = 19.sp, fontWeight = FontWeight.SemiBold, lineHeight = 25.sp, color = Palette.Ink)
                 p.choices.forEachIndexed { i, c ->
-                    val what = if (c.pressEnter) "sends ${c.keys} + Enter" else "sends ${c.keys}"
-                    val first = i == 0
+                    // Say what tapping really sends: arrows and Enter for a menu with a highlighted row,
+                    // Esc for a "(esc)" option, otherwise the key itself (1.2.7; it always said "sends N").
+                    val what = keysLabel(com.billmongan.herdrdroid.herdr.menuKeys(p, c), c)
+                    // The highlighted row (the one Enter picks) is the blue one, not always the first.
+                    val first = c.keys == (p.selected ?: p.choices.firstOrNull()?.keys)
                     val body: @Composable () -> Unit = {
                         Column(Modifier.fillMaxWidth()) {
                             Text(c.label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, lineHeight = 20.sp,
@@ -1113,4 +1140,12 @@ private fun sourceName(source: String): String? = when (source.lowercase()) {
     "tui", "local" -> "Hermes app"
     "api_server" -> "API"
     else -> source.replaceFirstChar { it.uppercase() }
+}
+
+/** The keys a question-box choice sends, as its button says them: "sends ↓ ↓ Enter", "sends Esc". */
+internal fun keysLabel(nav: List<String>?, c: com.billmongan.herdrdroid.herdr.Choice): String {
+    if (c.keys.startsWith("grok-privacy:")) return "types /privacy in Grok and picks it there"
+    if (nav == null) return if (c.pressEnter) "sends ${c.keys} + Enter" else "sends ${c.keys}"
+    val names = nav.map { when (it) { "up" -> "↑"; "down" -> "↓"; "enter" -> "Enter"; "esc" -> "Esc"; else -> it } }
+    return "sends " + names.joinToString(" ")
 }

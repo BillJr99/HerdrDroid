@@ -48,8 +48,8 @@ class GrokQuestionTest {
         assertEquals(listOf("1", "2", "3"), p.choices.map { it.keys })
         assertEquals("Yes, proceed", p.choices[1].label)
         assertEquals("No, reject (type to add feedback)", p.choices[2].label)
-        assertTrue(p.question, p.question.startsWith("Check SSH to demo-box in batch mode"))
-        assertTrue(p.question, p.question.contains("ssh -o BatchMode=yes"))
+        // 1.2.7: exactly the title, then the command; never the "◆ … [stop]" status line above.
+        assertEquals("Check SSH to demo-box in batch mode: ssh -o BatchMode=yes -o ConnectTimeout=5 bill@192.0.2.26 true; echo \"EXIT:\$?\"", p.question)
         assertEquals("2", p.selected)
     }
 
@@ -64,7 +64,7 @@ class GrokQuestionTest {
         val p = detectPrompt(scopedCard, blocked = true)!!
         assertEquals(4, p.choices.size)
         assertEquals("3", p.selected)
-        assertTrue(p.question, !p.question.contains("narrow scope"))
+        assertEquals("Make a folder and write the date: mkdir -p sub && date > sub/now.txt", p.question)
         assertEquals("Never allow: mkdir -p", p.choices[3].label)
     }
 

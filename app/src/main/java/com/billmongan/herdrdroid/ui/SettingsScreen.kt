@@ -296,30 +296,6 @@ fun QuotaBar(item: QuotaItem) {
     )
 }
 
-/** Every limit for one agent, for the agent screen. */
-@Composable
-fun QuotaDetails(r: QuotaReading, history: List<com.billmongan.herdrdroid.AppViewModel.QuotaPoint> = emptyList(), onClose: () -> Unit) {
-    Surface(shape = RoundedCornerShape(14.dp), color = Palette.Card, border = BorderStroke(1.dp, Palette.Line)) {
-        Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Usage limits · ${ago(r.at)}", fontWeight = FontWeight.SemiBold, color = Palette.Ink, modifier = Modifier.weight(1f))
-                TextButton(onClick = onClose) { Text("Hide") }
-            }
-            r.items.forEach { i ->
-                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Row {
-                        Text(i.label, color = Palette.Ink, fontSize = 14.sp, modifier = Modifier.weight(1f))
-                        Text("${i.usedPercent.fmt()}% used", color = Palette.Muted, fontSize = 13.sp)
-                    }
-                    QuotaBar(i)
-                    i.resets?.let { Text("Resets ${com.billmongan.herdrdroid.herdr.shortReset(it)}", color = Palette.Muted, fontSize = 12.sp) }
-                    val points = history.mapNotNull { pt -> pt.used[i.label]?.let { pt.at to it } }
-                    if (points.size >= 2) UsageChart(points)
-                }
-            }
-        }
-    }
-}
 
 private fun Double.fmt(): String = if (this % 1.0 == 0.0) toInt().toString() else "%.1f".format(this)
 

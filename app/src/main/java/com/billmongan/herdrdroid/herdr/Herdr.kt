@@ -883,8 +883,17 @@ fun menuKeys(prompt: Prompt, choice: Choice): List<String>? {
 /** The footer of Claude's question dialog ("Enter to select · ↑/↓ to navigate · Esc to cancel"). */
 private val QUESTION_FOOTER = Regex("""Enter to select.*(navigate|Esc to cancel)|Tab/Arrow keys to navigate|↑/↓ to navigate|\b\d+/\d+:select\b|↑/?↓(?:/jk)?\s+(?:to\s+)?navigate|press enter to confirm or esc""", RegexOption.IGNORE_CASE)
 
-/** A line of the agent's own activity log, above a card: "● Ran …", "• Running …", "◆ …", "> prompt". */
-private val ACTIVITY = Regex("""^([●○•◆◈⏵✓✗└▸⠀-⣿]|> |❯ )""")
+/** A line of the agent's own activity log above a card: "● Ran …", "• Running …", "◆ …", spinners. */
+private val ACTIVITY = Regex("""^[●○•◆◈⏵✓✗└▸☐☒⠀-⣿]""")  // ☐ ☒: Claude's question-dialog header chips
+/** A running status line: Grok's "… 7.5s 26s ⇣87.0k [↓][stop]", or "esc to interrupt". */
+private val STATUS_LINE = Regex("""\[stop]|⇣\s*[\d.]+k?|\besc to interrupt\b""", RegexOption.IGNORE_CASE)
+
+/** Grok's data-sharing banner ("Help improve Grok ... [Opt out] [Opt in]"): never part of a card's question. */
+private val GROK_BANNER = Regex("""Help improve Grok|\[Opt out]\s*\[Opt in]|Opt-in to allow SpaceXAI|Read Terms and Privacy Policy|Change anytime via settings""")
+
+/** An echoed prompt above a card ("› card", "> run it", "❯ go"); only after a blank line, since
+ *  Grok's card title itself starts with "›" right above its command. */
+private val PROMPT_ECHO = Regex("""^[›>❯]\s""")
 
 /** Vibe's approval card: numbered rows, the highlight shown only by colour, "Esc reject" in its footer. */
 private val VIBE_CARD_FOOTER = Regex("""↑↓/jk navigate.*Esc reject""", RegexOption.IGNORE_CASE)
@@ -1029,7 +1038,9 @@ fun detectPrompt(text: String, blocked: Boolean): Prompt? {
     val above = run.firstOrNull()?.let { (_, firstKey, firstLabel) ->
         val at = raw.indexOfLast { option.find(it)?.let { m -> m.groupValues[2] == firstKey && m.groupValues[4].trim() == firstLabel } == true }
         if (at <= 0) null else {
-            val got = mutableListOf<String>()
+            // Each line, and whether it is a Grok command line ("┃  │ grok usage ..."), which follows
+            // its title after ": " ("Print plan usage with no session id: grok usage ...").
+            val got = mutableListOf<Pair<String, Boolean>>()
             var i = at - 1
             // Blank lines inside a card are crossed (Antigravity puts one between "Requesting
             // permission for:", the command, and "Run this command?"), up to two of them; a rule, the
@@ -1039,6 +1050,8 @@ fun detectPrompt(text: String, blocked: Boolean): Prompt? {
             while (i >= 0 && got.size < 20) {
                 val l = raw[i]
                 val c = clean(l)
+                // Grok's data-sharing banner can sit right above a card; it is its own question.
+                if (got.isNotEmpty() && GROK_BANNER.containsMatchIn(c)) break
                 // A rule on its own line ("──────") ends the question; clean() would empty it.
                 if (got.isNotEmpty() && l.trim().matches(Regex("""^[─━═]{3,}$"""))) break
                 if (l.isBlank() || c.isEmpty()) {
@@ -1046,19 +1059,35 @@ fun detectPrompt(text: String, blocked: Boolean): Prompt? {
                     i--; continue
                 }
                 if (l.trimStart().startsWith("╭") || l.trimStart().startsWith("┌") || c.matches(Regex("""^[─━═\-_\s]+$"""))) break
-                if (gap && got.isNotEmpty() && ACTIVITY.containsMatchIn(c)) break
+                // The agent's activity always ends the question; an echoed prompt does after a blank
+                // line (1.2.7: before, Codex's card took in the conversation above it).
+                // A status line (Grok's "… 7.5s 26s ⇣87.0k [↓][stop]", "esc to interrupt") ends it too,
+                // wherever its marker is (1.2.7, Bill: "make sure you parse it correctly").
+                if (got.isNotEmpty() && (ACTIVITY.containsMatchIn(c) || STATUS_LINE.containsMatchIn(c) ||
+                        (gap && PROMPT_ECHO.containsMatchIn(c)))) break
                 gap = false
+                val isCmd = l.trimStart().startsWith("┃") && l.trimStart().trimStart('┃', ' ').startsWith("│")
                 // Grok's "← → narrow scope" hint sits between the command and its options.
-                if (c.any(Char::isLetterOrDigit) && !c.contains("narrow scope")) got.add(0, c.trimStart('›', '❯', ' '))
+                if (c.any(Char::isLetterOrDigit) && !c.contains("narrow scope")) got.add(0, c.trimStart('›', '❯', ' ') to isCmd)
                 i--
             }
-            got.joinToString(" ").replace(Regex("\\s+"), " ").trim().takeIf { it.isNotEmpty() }
+            buildString {
+                got.forEachIndexed { k, (t, cmd) ->
+                    if (k > 0) append(if (cmd && !got[k - 1].second) ": " else " ")
+                    append(t)
+                }
+            }.replace(Regex("\\s+"), " ").trim().takeIf { it.isNotEmpty() }
         }
     }
     val question = above ?: lines.lastOrNull { clean(it).endsWith("?") }?.let(clean)
 
-    if (numbered.size in 2..9 && (blocked || question?.endsWith("?") == true)) {
-        val vibeCard = lines.takeLast(6).any { VIBE_CARD_FOOTER.containsMatchIn(it) }
+    // A numbered list is a menu only when the screen shows a real one: a highlight on one of its
+    // rows (❯ › > ▶, or a filled radio), a question dialog's footer, or Vibe's card footer. A reply
+    // that lists steps and ends with "?" is prose, not a question card (1.2.7, Bill: "choices like
+    // first, second, then, but they weren't mutually exclusive options").
+    val vibeCard = lines.takeLast(6).any { VIBE_CARD_FOOTER.containsMatchIn(it) }
+    val realMenu = run.any { it.first in marked } || showsQuestionDialog(text) || vibeCard
+    if (numbered.size in 2..9 && realMenu) {
         // Vibe draws no marker on the highlighted row; a fresh card highlights the first one.
         val selected = run.firstOrNull { it.first in marked }?.second ?: if (vibeCard) "1" else null
         return Prompt(question ?: "Choose an option", numbered, selected, escRejects = vibeCard)
@@ -1070,11 +1099,59 @@ fun detectPrompt(text: String, blocked: Boolean): Prompt? {
         return Prompt(clean(lines[ynIndex]), listOf(Choice("Yes", "y", true), Choice("No", "n", true)))
     }
 
+    // Grok's privacy dialog (from /privacy): "○  Opt in" / "●  Opt out", the filled circle is the
+    // current choice and the cursor; ↑/↓ and Enter answer it.
+    detectGrokPrivacyDialog(text)?.let { return it }
+
     // A menu without numbers, as Kiro draws its approval card ("❯ Yes, single permission" over
     // "  Trust, always allow in this session" and "  No (Tab to edit)"); arrows and Enter answer it.
     if (blocked) detectUnnumberedMenu(text)?.let { return it }
 
+    // Grok's data-sharing banner, when nothing else is being asked: answered through /privacy.
+    if (showsGrokBanner(text)) return GROK_PRIVACY_PROMPT
+
     return if (blocked) Prompt(question ?: "This agent is waiting for you.", emptyList()) else null
+}
+
+/** The choice keys of Grok's data-sharing question; [AppViewModel] answers them through /privacy. */
+const val GROK_PRIVACY_OUT = "grok-privacy:out"
+const val GROK_PRIVACY_IN = "grok-privacy:in"
+val GROK_PRIVACY_PROMPT = Prompt(
+    "Help improve Grok: share coding data with SpaceXAI?",
+    listOf(Choice("Opt out (keep it off)", GROK_PRIVACY_OUT, false), Choice("Opt in", GROK_PRIVACY_IN, false)),
+)
+
+/** Grok's "Help improve Grok ... [Opt out] [Opt in]" banner is on screen (2026-11-13, Grok 4.7). */
+fun showsGrokBanner(text: String): Boolean {
+    val tail = text.lines().takeLast(40).joinToString("\n")
+    return tail.contains("Help improve Grok") && Regex("""\[Opt out]\s*\[Opt in]""").containsMatchIn(tail)
+}
+
+/**
+ * Grok's /privacy dialog: a box headed "Settings › Coding data, retention, and training" with rows
+ * "○  Opt in" and "●  Opt out" (the filled circle is the current choice and the cursor) and the
+ * footer "↑/↓ nav | Enter select | ... | Esc cancel".
+ */
+fun detectGrokPrivacyDialog(text: String): Prompt? {
+    val lines = text.lines().takeLast(40)
+    if (lines.none { it.contains("Coding data, retention, and training") }) return null
+    val row = Regex("""^[\s│┃|]*([○●◯◉])\s+(Opt in|Opt out)\b""")
+    val rows = lines.mapNotNull { row.find(it) }
+    if (rows.size != 2) return null
+    val choices = rows.mapIndexed { i, m -> Choice(m.groupValues[2], (i + 1).toString(), false) }
+    val selected = rows.indexOfFirst { it.groupValues[1] in setOf("●", "◉") }.takeIf { it >= 0 }?.let { (it + 1).toString() }
+    return Prompt("Grok: share coding data with SpaceXAI (Coding data, retention, and training)?", choices, selected)
+}
+
+/**
+ * What Grok's input box holds, from its bottom box ("│ ❯ text │"); null when no input line is
+ * found (a dialog is open, say). Used to make sure it is empty before typing /privacy: on
+ * 2026-11-13 the app's own usage check had left "/usage" there and "/privacy" went to the model
+ * as "/usage/privacy".
+ */
+fun grokInputText(text: String): String? {
+    val m = text.lines().takeLast(12).asReversed().firstNotNullOfOrNull { Regex("""^\s*[│┃|]\s*❯ ?(.*?)\s*[│┃|]?\s*$""").find(it) }
+    return m?.groupValues?.get(1)?.trim()
 }
 
 /** Links and sign-in codes on an agent's screen, for one-tap Open and Copy (a /login flow, say). */

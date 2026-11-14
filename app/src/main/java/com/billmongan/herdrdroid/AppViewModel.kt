@@ -1500,6 +1500,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * highlighted option is known, so a digit is never typed into an option's text box.
      */
     fun answerChoice(paneId: String, prompt: com.billmongan.herdrdroid.herdr.Prompt, choice: com.billmongan.herdrdroid.herdr.Choice) {
+        if (choice.keys.startsWith("grok-privacy:")) {
+            act(paneId, "Couldn't answer") { h ->
+                answerGrokPrivacy(h, paneId, optIn = choice.keys == com.billmongan.herdrdroid.herdr.GROK_PRIVACY_IN)?.let { throw IllegalStateException(it) }
+                readPane(paneId)
+                refreshPanes()
+            }
+            return
+        }
         val keys = com.billmongan.herdrdroid.herdr.menuKeys(prompt, choice)
         if (keys == null) { answer(paneId, choice.keys, choice.pressEnter); return }
         act(paneId, "Couldn't answer") { h ->
@@ -1507,6 +1515,38 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             readPane(paneId)
             refreshPanes()
         }
+    }
+
+    /**
+     * Answers Grok's data-sharing banner the way that works (checked on demo-box2's Grok 4.7,
+     * 2026-11-13): with the input box empty, type /privacy and Enter, which opens "Settings ›
+     * Coding data, retention, and training"; then move to Opt in or Opt out with the arrows and
+     * press Enter. Returns a problem to show, or null.
+     */
+    private suspend fun answerGrokPrivacy(h: Herdr, paneId: String, optIn: Boolean): String? {
+        var screen = h.read(paneId, 60)
+        if (com.billmongan.herdrdroid.herdr.detectGrokPrivacyDialog(screen) == null) {
+            val left = com.billmongan.herdrdroid.herdr.grokInputText(screen)
+                ?: return "Grok's input box isn't showing, so /privacy wasn't typed. Close what is open in Grok and try again."
+            if (left.isNotEmpty()) {
+                // Backspaces clear it in any terminal program; then check that it is empty.
+                h.sendKeys(paneId, *Array(left.length + 2) { "backspace" })
+                delay(500)
+                if (!com.billmongan.herdrdroid.herdr.grokInputText(h.read(paneId, 60)).isNullOrEmpty())
+                    return "Grok's input box still has text in it, so /privacy wasn't typed."
+            }
+            h.sendText(paneId, "/privacy")
+            delay(700)
+            h.sendKeys(paneId, "enter")
+            delay(1500)
+            screen = h.read(paneId, 60)
+        }
+        val dialog = com.billmongan.herdrdroid.herdr.detectGrokPrivacyDialog(screen)
+            ?: return "Grok's privacy settings didn't open."
+        val target = dialog.choices.firstOrNull { it.label == if (optIn) "Opt in" else "Opt out" } ?: return "Grok's privacy settings changed shape."
+        val keys = com.billmongan.herdrdroid.herdr.menuKeys(dialog, target) ?: return "Grok's privacy settings have no highlighted choice."
+        h.sendKeys(paneId, *keys.toTypedArray())
+        return null
     }
 
     fun answer(paneId: String, keys: String, pressEnter: Boolean) {
@@ -1774,20 +1814,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** The open server's readings for this pane's agent, oldest first. */
-    fun quotaHistoryFor(pane: Pane?): List<QuotaPoint> {
-        val key = QuotaProfiles.key(pane?.agent) ?: return emptyList()
-        val sid = current?.id ?: return emptyList()
-        return runCatching {
-            val arr = org.json.JSONObject(prefs.quotaHistory).optJSONArray("$sid|$key") ?: return emptyList()
-            (0 until arr.length()).map { i ->
-                val o = arr.getJSONObject(i)
-                val u = o.getJSONObject("used")
-                QuotaPoint(o.optLong("at"), u.keys().asSequence().associateWith { u.optDouble(it) })
-            }
-        }.getOrDefault(emptyList())
-    }
-
     // -- Shared from other apps ----------------------------------------------------------------------
 
     /** Something shared into HerdrDroid, waiting for an agent to be picked. */
@@ -1970,6 +1996,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         runCatching {
+            if (a.keys.startsWith("grok-privacy:")) {
+                answerGrokPrivacy(h, a.paneId, optIn = a.keys == com.billmongan.herdrdroid.herdr.GROK_PRIVACY_IN)
+                return@runCatching
+            }
             val nav = if (!a.isKey) now?.let { p -> p.choices.firstOrNull { it.keys == a.keys }?.let { c -> com.billmongan.herdrdroid.herdr.menuKeys(p, c) } } else null
             if (nav != null) h.sendKeys(a.paneId, *nav.toTypedArray())
             else if (a.isKey) h.sendKeys(a.paneId, a.keys)

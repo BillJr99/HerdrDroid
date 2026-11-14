@@ -148,9 +148,12 @@ fun TabsScreen(vm: AppViewModel) {
                         DropdownMenuItem(text = { Text("Files") }, onClick = { menu = false; vm.openFiles("~") })
                         DropdownMenuItem(text = { Text("Search conversations") }, onClick = { menu = false; vm.screen = Screen.Search })
                         DropdownMenuItem(text = { Text("Usage") }, onClick = { menu = false; vm.screen = Screen.Usage })
+                        // Greyed and saying why when nothing is working (1.2.7: it stayed orange while
+                        // disabled, so it looked like a button that did nothing).
+                        val anyWorking = panes.any { it.status == Status.WORKING && it.agent != null }
                         DropdownMenuItem(
-                            text = { Text("Stop everything…", color = Palette.OrangeInk) },
-                            enabled = panes.any { it.status == Status.WORKING && it.agent != null },
+                            text = { Text(if (anyWorking) "Stop everything…" else "Stop everything (nothing is working)", color = if (anyWorking) Palette.OrangeInk else Palette.Muted) },
+                            enabled = anyWorking,
                             onClick = { menu = false; confirmStopAll = true },
                         )
                         DropdownMenuItem(text = { Text("Settings") }, onClick = { menu = false; vm.screen = Screen.Settings(Screen.Tabs) })

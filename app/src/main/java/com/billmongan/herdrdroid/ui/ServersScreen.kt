@@ -1,5 +1,7 @@
 package com.billmongan.herdrdroid.ui
 
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.layout.size
@@ -229,7 +231,9 @@ fun ServersScreen(vm: AppViewModel) {
             text = { Text("Add server") },
             containerColor = Palette.Blue,
             contentColor = Palette.OnBlue,
-            modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp),
+            // Named for screen readers and UI automation, which did not see its text.
+            modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp)
+                .semantics { contentDescription = "Add server" },
         )
     }
 
@@ -363,9 +367,11 @@ fun EditServerScreen(vm: AppViewModel, existing: Server?, prefillHost: String? =
     var wsUrl by remember { mutableStateOf(existing?.wsUrl ?: "wss://") }
     var pinned by remember { mutableStateOf(existing?.fingerprint ?: "") }
     var backend by remember { mutableStateOf(existing?.backend) }
-    var port by remember { mutableStateOf(existing?.port?.toString() ?: "") }
+    // 1.2.7: a new server starts with port 22 and the command "herdr" (both required; before, they
+    // started empty and Save stayed grey with nothing saying why).
+    var port by remember { mutableStateOf(existing?.port?.toString() ?: "22") }
     var user by remember { mutableStateOf(existing?.user ?: "") }
-    var herdrPath by remember { mutableStateOf(existing?.herdrPath ?: "") }
+    var herdrPath by remember { mutableStateOf(existing?.herdrPath ?: "herdr") }
     var biometric by remember { mutableStateOf(existing?.biometric ?: false) }
     var useKey by remember { mutableStateOf(existing?.useKey ?: false) }
     var keyKind by remember { mutableStateOf(existing?.keyKind) }
