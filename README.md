@@ -212,9 +212,9 @@ The build needs JDK 17, the Android SDK (platform 34, build-tools 34.0.0) and Gr
 bash build-in-docker.sh /path/to/work-folder
 ```
 
-The build runs the parser tests first, then writes the signed APK to `<work-folder>/out/`. The app is signed with the sideload key in `keystore/`, so a newer build installs over an older one. Keep that file with the source: a build signed with a different key will not install over this one without uninstalling first.
+The build runs the parser tests first, then writes the signed APK to `<work-folder>/out/`. The app is signed with the sideload key, so a newer build installs over an older one. A build signed with a different key will not install over this one without uninstalling first, so the key must never change.
 
-The key's passwords are read from `keystore/signing.properties` (`storePassword`, `keyAlias`, `keyPassword`), which git ignores, so neither the build file nor the build script holds them.
+The key lives outside the source, in its own folder: `~/Documents/herdrdroid-signing/` (mode 700, files 600), or the folder named by `HD_SIGNING_DIR`. It holds `herdrdroid-sideload.jks` and `signing.properties` (`storePassword`, `keyAlias`, `keyPassword`). `build-in-docker.sh` mounts that folder read-only into the build container and points Gradle at it with `HD_KEYSTORE_DIR`, so no sync or clean of the source folder can reach the key (since 1.4.0, after a source sync deleted the copy kept in `keystore/`). The script stops when the key is missing; it never makes a new one. CI writes the key into `keystore/` from the repository's secrets (`keystore/push-signing-secrets.sh`, which also reads `HD_SIGNING_DIR`). The original is kept off the build machine as well.
 
 ## Layout
 

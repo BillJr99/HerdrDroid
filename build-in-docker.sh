@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
 # Builds the signed HerdrDroid APK in a throwaway container.
 # Usage: bash build-in-docker.sh <work-folder>
-#   <work-folder>/src   the source (this folder's contents), including keystore/signing.properties
-#                       with storePassword, keyAlias and keyPassword (git ignores that file)
+#   <work-folder>/src   the source (this folder's contents); no signing files in it
+#   HD_SIGNING_DIR      the folder with herdrdroid-sideload.jks and signing.properties (storePassword,
+#                       keyAlias, keyPassword), default ~/Documents/herdrdroid-signing (mode 700, files
+#                       600). Kept outside the source so no source sync can reach it; mounted read-only.
 #   <work-folder>/.cache   SDK and Gradle caches (reused between builds; delete to clean)
 #   <work-folder>/out   the APK
 #   HD_DOCKER_ARGS     optional extra docker run options (see the end of this file)
 set -euo pipefail
 W="$(cd "$1" && pwd)"
+S="${HD_SIGNING_DIR:-$HOME/Documents/herdrdroid-signing}"
+[ -f "$S/signing.properties" ] && [ -f "$S/herdrdroid-sideload.jks" ] || {
+  echo "no signing key in $S (herdrdroid-sideload.jks, signing.properties): the build stops rather than sign with a different key" >&2; exit 1; }
 mkdir -p "$W/out" "$W/.cache"
 cat > "$W/.cache/inner.sh" <<'INNER'
 set -euo pipefail
@@ -28,16 +33,9 @@ if [ ! -x "$G" ]; then
   unzip -q /tmp/g.zip -d /w/.cache
 fi
 cd /w/src
-mkdir -p keystore
-P=keystore/signing.properties
-[ -f "$P" ] || { echo "missing $P (storePassword, keyAlias, keyPassword)" >&2; exit 1; }
-prop() { sed -n "s/^$1=//p" "$P" | head -1; }
-# Make the key only when there is none, so every build signs with the same one and installs over the last.
-if [ ! -f keystore/herdrdroid-sideload.jks ]; then
-  SP="$(prop storePassword)" KP="$(prop keyPassword)" keytool -genkeypair -keystore keystore/herdrdroid-sideload.jks \
-    -alias "$(prop keyAlias)" -keyalg RSA -keysize 3072 -validity 10000 \
-    -storepass:env SP -keypass:env KP -dname "CN=HerdrDroid sideload" >/dev/null 2>&1
-fi
+# The signing key is never made here: a new key would make APKs that can't install over the last one.
+export HD_KEYSTORE_DIR=/signing
+[ -f /signing/signing.properties ] && [ -f /signing/herdrdroid-sideload.jks ] || { echo "no signing key mounted at /signing" >&2; exit 1; }
 [ -f gradlew ] || "$G" wrapper --gradle-version 8.9 -q
 echo "sdk.dir=$ANDROID_HOME" > local.properties
 "$G" --no-daemon --console=plain -q testDebugUnitTest assembleRelease
@@ -50,4 +48,4 @@ INNER
 # shellcheck disable=SC2086
 sudo -n docker run --rm --name herdrdroid-build ${HD_DOCKER_ARGS:-} \
   -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
-  -v "$W":/w eclipse-temurin:17-jdk bash /w/.cache/inner.sh
+  -v "$W":/w -v "$S":/signing:ro eclipse-temurin:17-jdk bash /w/.cache/inner.sh

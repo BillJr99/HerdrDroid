@@ -32,17 +32,19 @@ android {
         }
     }
 
-    // A sideload signing key kept with the source, so later builds install over this one.
-    // Its passwords live in keystore/signing.properties, which git ignores.
+    // The sideload signing key, so every build installs over the last. Its folder is HD_KEYSTORE_DIR
+    // when set (build-in-docker.sh mounts a folder kept outside the source there), else keystore/
+    // (CI writes it there from the repository's secrets); git ignores both files.
+    val keyDir = System.getenv("HD_KEYSTORE_DIR")?.takeIf { it.isNotBlank() }?.let { file(it) } ?: rootProject.file("keystore")
     val signing = Properties().apply {
-        val f = rootProject.file("keystore/signing.properties")
+        val f = File(keyDir, "signing.properties")
         if (f.exists()) f.inputStream().use { load(it) }
     }
     // Without the key (a CI run with no signing secrets), the release APK is built unsigned.
-    val hasKey = rootProject.file("keystore/herdrdroid-sideload.jks").exists() && signing.getProperty("storePassword") != null
+    val hasKey = File(keyDir, "herdrdroid-sideload.jks").exists() && signing.getProperty("storePassword") != null
     signingConfigs {
         create("sideload") {
-            storeFile = rootProject.file("keystore/herdrdroid-sideload.jks")
+            storeFile = File(keyDir, "herdrdroid-sideload.jks")
             storePassword = signing.getProperty("storePassword")
             keyAlias = signing.getProperty("keyAlias")
             keyPassword = signing.getProperty("keyPassword")
