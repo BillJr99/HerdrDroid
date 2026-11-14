@@ -1454,7 +1454,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if ((screen as? Screen.Agent)?.paneId != paneId) return
         val p = pane(paneId) ?: return
         resetTranscript(paneId)
-        val r = quietly { it.transcript(p, transcriptCursor, transcriptScript) } ?: return
+        val r = quietly { it.transcript(p, transcriptCursor, transcriptScript) }
+            ?: return com.billmongan.herdrdroid.diag.DiagLog.log("chat", "$paneId: the log reader didn't run (${p.agent}, link $link)")
         applyTranscript(paneId, r)
     }
 
@@ -1486,6 +1487,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun applyTranscript(paneId: String, r: com.billmongan.herdrdroid.transcript.TranscriptRead) {
         if (transcriptPane != paneId) return
         if (!r.ok) {
+            // Why the chat view stays off is worth a line in the diagnostics (1.4.1).
+            if (transcriptItems.isEmpty()) com.billmongan.herdrdroid.diag.DiagLog.log("chat", "$paneId: no chat view (${pane(paneId)?.agent}): ${r.why}")
             if (transcriptItems.isEmpty()) transcriptState = TranscriptMode.OFF
             // A kept cursor the reader can't use any more: read the whole log next time, keeping
             // what is shown until it arrives (1.2.9).
