@@ -154,11 +154,38 @@ class ChatStoreBindingTest {
         ChatStore(tmp.root, seal, { b, ad -> if (ad != null) throw com.billmongan.herdrdroid.store.VaultLocked(Exception("window")) else open(b, ad) })
             .save("s1", "w1:p1", newer)
         assertTrue(old.isFile)
-        // It reads back: now the old one goes.
+        // It reads back, but the old file holds something else the app never loaded: it stays
+        // (1.4.1, third review). The next load finds it older than the new file and removes it.
         val store = ChatStore(tmp.root, seal, open)
         store.save("s1", "w1:p1", newer)
-        assertFalse(old.exists())
+        assertTrue(old.isFile)
+        old.setLastModified(System.currentTimeMillis() - 60_000)
         assertEquals(newer.items, store.load("s1", "w1:p1")!!.items)
+        assertFalse(old.exists())
+    }
+
+    @Test fun aSaveAfterLoadingTheOldFileReplacesIt() {
+        val old = legacy()
+        // The move can't happen yet (sealing fails), so the load returns the old file's chat.
+        var sealing = false
+        val store = ChatStore(tmp.root, { b, ad -> if (!sealing) throw com.billmongan.herdrdroid.store.VaultLocked(Exception("window")) else seal(b, ad) }, open)
+        assertEquals(chat.items, store.load("s1", "w1:p1")!!.items)
+        sealing = true
+        // That chat, carried on, is saved: it was built from the old file, so the old file goes.
+        store.save("s1", "w1:p1", chat.copy(items = chat.items + TextItem("t7", "more")))
+        assertFalse(old.exists())
+    }
+
+    @Test fun aReadBackThatFailsLeavesTheKeptFileAsItWas() {
+        val store = ChatStore(tmp.root, seal, open)
+        store.save("s1", "w1:p1", chat)
+        val f = File(tmp.root, newName("s1", "w1:p1", ".chat"))
+        val before = f.readBytes()
+        val flaky = ChatStore(tmp.root, seal, { b, ad -> if (b.contentEquals(before)) open(b, ad) else "{}".toByteArray() })
+        flaky.load("s1", "w1:p1")
+        flaky.save("s1", "w1:p1", chat.copy(items = listOf(TextItem("t8", "won't read back"))))
+        assertTrue(before.contentEquals(f.readBytes()))
+        assertFalse(tmp.root.listFiles()!!.any { it.name.endsWith(".tmp") })
     }
 
     @Test fun anOldCopyThatDiffersAndIsNewerStays() {
@@ -193,6 +220,8 @@ class ChatStoreBindingTest {
         val old = legacy()
         val store = ChatStore(tmp.root, seal, open)
         val newer = chat.copy(items = listOf(TextItem("t9", "newer")))
+        // Loaded first, as the app does: the chat saved is built on the old file's, which then goes.
+        store.load("s1", "w1:p1")
         store.save("s1", "w1:p1", newer)
         assertFalse(old.exists())
         assertEquals(newer.items, store.load("s1", "w1:p1")!!.items)

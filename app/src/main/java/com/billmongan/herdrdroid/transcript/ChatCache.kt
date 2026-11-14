@@ -161,39 +161,49 @@ class ChatStore(
         java.nio.file.Files.move(tmp.toPath(), f.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
     }
 
-    /** The kept files this process has opened or written (1.4.1): only those may be written over. */
+    /**
+     * The kept files whose contents this process loaded (returned to the app) or wrote and read back
+     * (1.4.1). A save only writes over, or removes, a file in this set: anything else may hold a
+     * newer chat the app never saw, so it is kept.
+     */
     private val trusted = HashSet<String>()
 
     /**
-     * Saves [plain] as [f] (1.4.1, from a second code review), never over a copy that can't be read:
-     *  - an existing [f] this process hasn't opened is opened first, and when it can't be (locked, a
-     *    read error) nothing is written, so a newer file is never replaced by an older chat;
-     *  - the write is read back; a copy that doesn't open to [plain] is set aside, and the old one kept;
-     *  - [old] (the 1.4.0 name) is removed only when it opens and holds the same, or something older
-     *    than the file this save replaced, or when there was no new file (it was the source).
+     * Saves [plain] as [f] (1.4.1, from three rounds of code review), never over a copy the app hasn't
+     * read:
+     *  - an existing [f] whose contents this process never loaded or wrote is left alone (nothing is
+     *    written; the in-memory chat stays and is saved once the file has been loaded);
+     *  - the new seal is written beside [f] and read back there, and only a copy that opens to [plain]
+     *    is moved onto [f] in one atomic step; otherwise the temporary file goes and [f] is untouched;
+     *  - [old] (the 1.4.0 name) is removed only when it opens and holds the same text, or when its
+     *    contents were what the app loaded, or when it is older than the [f] this save replaced.
      */
     private fun writeKept(f: File, old: File, plain: ByteArray, ad: ByteArray) {
         val existed = f.isFile
         if (existed && f.name !in trusted) {
-            if (runCatching { open(f.readBytes(), ad) }.isFailure) {
-                DiagLog.log("chat", "a kept file that can't be opened now wasn't written over; it is tried again at the next save")
-                return
-            }
-            trusted += f.name
+            DiagLog.log("chat", "a kept file the app hasn't read yet wasn't written over; it is saved once that file has been loaded")
+            return
         }
         val before = if (existed) f.lastModified() else 0L
         dir.mkdirs()
-        replace(f, seal(plain, ad))
-        val back = runCatching { open(f.readBytes(), ad) }.getOrNull()
-        if (back == null || !back.contentEquals(plain)) {
-            trusted -= f.name
-            if (back != null) setAside(f)
-            return
+        val tmp = File(dir, f.name + ".tmp")
+        try {
+            tmp.writeBytes(seal(plain, ad))
+            val back = runCatching { open(tmp.readBytes(), ad) }.getOrNull()
+            if (back == null || !back.contentEquals(plain)) {
+                DiagLog.log("chat", "a save didn't read back the same; the kept file stays as it was")
+                return
+            }
+            java.nio.file.Files.move(tmp.toPath(), f.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+        } finally {
+            if (tmp.exists()) tmp.delete()   // the app's own unused temporary copy
         }
         trusted += f.name
         if (old.isFile) {
             val o = openPlain(old, null)
-            if (o != null && (o.contentEquals(plain) || !existed || old.lastModified() <= before)) old.delete()
+            if (o != null && (o.contentEquals(plain) || old.name in trusted || (existed && old.lastModified() <= before))) {
+                old.delete(); trusted -= old.name
+            }
         }
         trim()
     }
@@ -239,19 +249,20 @@ class ChatStore(
             if (f.isFile) {
                 if (!legacy.isFile) return null
                 val o = openPlain(legacy, null) ?: return null
-                return runCatching { decode(String(o, Charsets.UTF_8)) }.getOrNull()
+                return runCatching { decode(String(o, Charsets.UTF_8)) }.getOrNull()?.also { trusted += legacy.name }
             }
         }
         if (!legacy.isFile) return null
         val plain = openPlain(legacy, null) ?: return null
         val v = runCatching { decode(String(plain, Charsets.UTF_8)) }.getOrNull()
         if (v == null) { setAside(legacy); return null }
+        trusted += legacy.name
         runCatching {
             dir.mkdirs()
             replace(f, seal(plain, ad))
             // Read back: only a copy that opens to the same text replaces the old one; one that
             // doesn't is set aside, so the next load reads the old file again.
-            if (open(f.readBytes(), ad).contentEquals(plain)) { trusted += f.name; legacy.delete() } else setAside(f)
+            if (open(f.readBytes(), ad).contentEquals(plain)) { trusted += f.name; legacy.delete(); trusted -= legacy.name } else setAside(f)
         }.onFailure { DiagLog.log("chat", "a kept chat wasn't moved to its new name yet (${it.javaClass.simpleName}); the old copy stays") }
         return v
     }

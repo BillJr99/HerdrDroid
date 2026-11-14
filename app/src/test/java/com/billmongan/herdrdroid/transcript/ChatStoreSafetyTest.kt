@@ -51,8 +51,9 @@ class ChatStoreSafetyTest {
     }
 
     @Test fun aFileThatOpensButDoesntDecodeIsSetAside() {
+        // Written properly, then opened by a store whose files open to something that isn't a chat.
+        ChatStore(tmp.root, seal, open).save("s", "p", chat)
         val s = ChatStore(tmp.root, seal, { _: ByteArray -> "not json".toByteArray() })
-        s.save("s", "p", chat)
         assertNull(s.load("s", "p"))
         assertEquals(0, tmp.root.listFiles()!!.count { it.name.endsWith(".chat") })
         assertEquals(1, java.io.File(tmp.root, "unreadable").listFiles()!!.count { it.name.endsWith(".chat") })
