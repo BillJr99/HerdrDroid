@@ -210,4 +210,31 @@ class ChatStoreBindingTest {
         assertTrue(f.readBytes()[0].toInt() != 0)
         assertEquals(chat.items, store.load("s1", "w1:p1")!!.items)
     }
+    @Test fun aSaveNeverWritesOverANewFileItCantOpen() {
+        // A newer chat under the new name that can't be opened now, and an older one under the old name.
+        val old = legacy()
+        val f = File(tmp.root, newName("s1", "w1:p1", ".chat"))
+        val newest = chat.copy(items = listOf(TextItem("t5", "the newest chat")))
+        f.writeBytes(seal(ChatCodec.encode(newest).toByteArray(Charsets.UTF_8), "herdrdroid|chat|s1|w1:p1".toByteArray()))
+        val newBytes = f.readBytes()
+        var busy = true
+        val store = ChatStore(tmp.root, seal, { b, ad -> if (busy && ad != null) throw java.security.ProviderException("keystore busy") else open(b, ad) })
+        // The load falls back to the old chat; the save that follows must not replace the newer file.
+        assertEquals(chat.items, store.load("s1", "w1:p1")!!.items)
+        store.save("s1", "w1:p1", chat)
+        assertTrue(newBytes.contentEquals(f.readBytes()))
+        assertTrue(old.isFile)
+        // Once it opens, the newer chat is what loads.
+        busy = false
+        assertEquals(newest.items, store.load("s1", "w1:p1")!!.items)
+    }
+
+    @Test fun aSaveKeepsANewerDifferentOldCopy() {
+        val store = ChatStore(tmp.root, seal, open)
+        store.save("s1", "w1:p1", chat.copy(items = listOf(TextItem("t2", "older, under the new name"))))
+        File(tmp.root, newName("s1", "w1:p1", ".chat")).setLastModified(System.currentTimeMillis() - 60_000)
+        val old = legacy()   // newer, and different
+        store.save("s1", "w1:p1", chat.copy(items = listOf(TextItem("t3", "saved again"))))
+        assertTrue(old.isFile)
+    }
 }

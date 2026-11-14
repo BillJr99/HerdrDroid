@@ -235,7 +235,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
      * Waits until any agent pane in [panes] changes state, or [timeoutMs] passes (1.4.1, "fewer
      * polls"): one command that runs `herdr agent wait <pane> --until <each other state>` for every
      * agent pane at once, prints the first that changed and stops the rest. It runs on the send
-     * lane, so it never holds up reads or answers. Returns the pane that changed, "" on a timeout,
+     * lane, so it never holds up reads or answers. Returns the pane that changed, or null on a timeout,
      * or null when it can't wait here (herdr-core, no agent panes, or an error), so the caller polls.
      */
     suspend fun waitForChange(panes: List<Pane>, timeoutMs: Long): String? {
@@ -247,15 +247,14 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
             val until = names.filterKeys { it != p.status }.values.joinToString(" ") { "--until $it" }
             "( $herdr agent wait ${shq(p.id)} $until --timeout $timeoutMs >/dev/null 2>&1 && echo ${shq("@@chg " + p.id)} ) & pids=\"\$pids \$!\"; "
         }
-        val script = "pids=; ${body}wait -n 2>/dev/null; kill \$pids 2>/dev/null; true"
-        val started = System.currentTimeMillis()
+        // The first wait's own status is the script's (1.4.1, from a second review: a trailing
+        // "true" made a failed wait look like a timeout).
+        val script = "pids=; ${body}wait -n 2>/dev/null; rc=\$?; kill \$pids 2>/dev/null; exit \$rc"
         val r = runCatching { ssh.execNow("bash -c " + shq(script), timeoutSeconds = timeoutMs / 1000 + 20) }.getOrNull() ?: return null
-        if (r.exit != 0) return null
-        r.out.lines().firstOrNull { it.startsWith("@@chg ") }?.let { return it.removePrefix("@@chg ").trim() }
-        // No change reported: a real timeout took about [timeoutMs]; back much sooner means the
-        // waits failed (herdr without agent wait, say), and the caller polls instead of looping
-        // straight into another wait (1.4.1, from a code review).
-        return if (System.currentTimeMillis() - started >= timeoutMs * 3 / 4) "" else null
+        // A change is the pane that changed. Anything else (a timeout, a wait that failed, herdr
+        // without agent wait) is null, and the caller polls with its usual gap instead of starting
+        // another wait straight away (1.4.1, from two code reviews).
+        return r.out.lines().firstOrNull { it.startsWith("@@chg ") }?.removePrefix("@@chg ")?.trim()
     }
 
     /** Each agent's program version here (1.4.0): agent kind to version, for the parsers and the debug bundle. */
