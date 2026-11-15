@@ -85,7 +85,10 @@ Allow access to this file?
         // Repeated text after the last snapshot's block is new and kept.
         val prev = listOf("● Ran ls: 12 files.", "> ls")
         val now = listOf("old line", "● Ran ls: 12 files.", "> ls", "● Ran ls: 12 files.", "> ls", "done")
-        assertEquals(5, QuestionLog.afterBlock(now, prev))
+        // After the first copy: the second "Ran ls" is new output and stays.
+        assertEquals(3, QuestionLog.afterBlock(now, prev))
+        // One common line is not a match.
+        assertEquals(0, QuestionLog.afterBlock(listOf("x", "> ls", "y"), listOf("a", "> ls")))
         assertEquals(0, QuestionLog.afterBlock(listOf("all new"), prev))
         // A wrapped question that matches no single line: the card is cut from its first option,
         // with the question's own lines above it.
@@ -100,5 +103,13 @@ Allow access to this file?
         log = answered(log, 2_000)
         val live = "> list the files\n● I'll run ls.\nRequesting permission for:\n   ls -la\n● Ran ls: 12 files.\n> "
         assertEquals("● Ran ls: 12 files.\n> ", QuestionLog.liveTail(live, log))
+    }
+    @Test fun cuttingTheCardWithoutAMatchingQuestionLine() {
+        // The question isn't on any one line and no blank line separates it: only its own lines go.
+        val p = Prompt("Allow this?", listOf(Choice("Yes", "1", false), Choice("No", "2", false)))
+        assertEquals("● step one\n● step two", QuestionLog.snapshot("● step one\n● step two\nAllow\nthis?\n> 1. Yes\n  2. No", p, emptyList()))
+        // Neither the question nor its first option on screen as such: the trailing option lines go.
+        val q = Prompt("Something else entirely", listOf(Choice("Option A", "1", false), Choice("Option B", "2", false)))
+        assertEquals("● output", QuestionLog.snapshot("● output\n  2. Option B", q, emptyList()))
     }
 }

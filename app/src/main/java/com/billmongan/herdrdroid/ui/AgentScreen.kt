@@ -641,7 +641,9 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                     }
                     val pending = vm.lastSent?.takeIf { it.first == paneId }?.second
                     // Under a saved history, only the part of the screen not already shown above (1.4.3, from review).
-                    ChatView(com.billmongan.herdrdroid.transcript.QuestionLog.liveTail(text, vm.questionsFor(paneId)), pending, liveSize, vm.readingFont)
+                    // The same questions the history shows (from review): an open one's screen stays live.
+                    ChatView(com.billmongan.herdrdroid.transcript.QuestionLog.liveTail(text,
+                        vm.questionsFor(paneId).filter { prompt == null || it.state != com.billmongan.herdrdroid.transcript.QState.OPEN }), pending, liveSize, vm.readingFont)
                 }
                 promptCard()
             }

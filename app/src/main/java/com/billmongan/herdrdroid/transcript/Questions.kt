@@ -108,13 +108,19 @@ object QuestionLog {
         if (q != null) return lines.take(q)
         val opt = p.choices.firstOrNull()?.label?.trim()?.take(30).orEmpty()
         val o = if (opt.length >= 2) (lines.size - 1 downTo from).firstOrNull { lines[it].contains(opt) } else null
+        val qn = p.question.filterNot(Char::isWhitespace)
         if (o != null) {
-            // The question's own lines sit just above its options: up to the blank line before them.
+            // The question's own lines sit just above its options: only lines that are part of its
+            // text are cut with it (from review: walking to a blank line could empty the snapshot).
             var k = o
-            while (k > 0 && lines[k - 1].isNotBlank()) k--
+            while (k > 0 && lines[k - 1].isNotBlank() && lines[k - 1].filterNot(Char::isWhitespace).let { it.length >= 3 && qn.contains(it) }) k--
             return lines.take(k)
         }
-        return lines
+        // Neither found: drop the trailing lines that are the card's options.
+        val labels = p.choices.map { it.label.trim().take(30) }.filter { it.length >= 2 }
+        var end = lines.size
+        while (end > 0 && (lines[end - 1].isBlank() || labels.any { lines[end - 1].contains(it) })) end--
+        return lines.take(end)
     }
 
     /**
@@ -123,10 +129,12 @@ object QuestionLog {
      */
     fun afterBlock(lines: List<String>, prev: List<String>): Int {
         if (prev.isEmpty() || lines.isEmpty()) return 0
-        for (n in minOf(5, prev.size) downTo 1) {
+        // The first place the block appears (a prompt printed again later is new output), and at
+        // least two lines, unless the snapshot had only one (from review).
+        val body = lines.withIndex().filter { it.value.isNotBlank() }
+        for (n in minOf(5, prev.size) downTo minOf(2, prev.size)) {
             val tail = prev.takeLast(n)
-            val body = lines.withIndex().filter { it.value.isNotBlank() }
-            for (s in body.size - n downTo 0) {
+            for (s in 0..body.size - n) {
                 if ((0 until n).all { body[s + it].value == tail[it] }) return body[s + n - 1].index + 1
             }
         }

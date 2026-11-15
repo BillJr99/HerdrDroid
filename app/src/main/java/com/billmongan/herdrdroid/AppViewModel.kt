@@ -1989,10 +1989,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             // letting me click your button"): a highlight that moved since, or a card that changed,
             // would otherwise send the wrong keys or keys nothing answers.
             val now = runCatching { h.read(paneId, 80) }.getOrNull()
-            val fresh = now?.let { com.billmongan.herdrdroid.herdr.detectPrompt(it, true, pane(paneId)?.agent, versionOf(paneId)) }
+            if (now.isNullOrBlank()) {
+                // Nothing is sent blind (from review): the screen couldn't be read at the tap.
+                com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: the screen couldn't be read at the tap; nothing sent")
+                withContext(Dispatchers.Main) { flash("Not sent: $agentName's screen couldn't be read just now. Try again.") }
+                return@act
+            }
+            // Parsed the way the card was: with the pane's own status (from review).
+            val fresh = com.billmongan.herdrdroid.herdr.detectPrompt(now, pane(paneId)?.status == Status.NEEDS_YOU, pane(paneId)?.agent, versionOf(paneId))
             val same = fresh?.choices?.firstOrNull { it.label.filterNot(Char::isWhitespace) == choice.label.filterNot(Char::isWhitespace) }
             val use = if (fresh != null && same != null) fresh to same else prompt to choice
-            if (now != null && same == null) {
+            if (same == null) {
                 com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: \"${choice.label.take(40)}\" is no longer on the screen; nothing sent")
                 withContext(Dispatchers.Main) { flash("Not sent: \"${choice.label.take(40)}\" is no longer on $agentName's screen.") }
                 readPane(paneId)
