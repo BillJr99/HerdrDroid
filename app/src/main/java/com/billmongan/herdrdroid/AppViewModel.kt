@@ -1219,13 +1219,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             paneReadProblem = why
         }
         quietly { h ->
-            try { h.read(paneId) } catch (e: Exception) {
+            // When the read of recent output fails or comes back empty, the visible screen is read
+            // instead (1.4.8, Bill: Muse's question card said the pane couldn't be read): a waiting
+            // agent's card is at the bottom of its screen, so that is enough to answer it.
+            suspend fun fallback(why: String): String? {
+                val v = try { h.readVisible(paneId) } catch (e: Exception) {
+                    if (e is CancellationException || e is LinkDown || e is AuthRejected || e is HostKeyChanged) throw e
+                    null
+                }
+                return if (v.isNullOrBlank()) { problem(why); null } else {
+                    com.billmongan.herdrdroid.diag.DiagLog.log("read", "$paneId: $why; read the visible screen instead")
+                    v
+                }
+            }
+            val got = try { h.read(paneId) } catch (e: Exception) {
                 if (e is CancellationException || e is LinkDown || e is AuthRejected || e is HostKeyChanged) throw e
                 // A failed read was silent before (1.4.2: Bill's Codex card showed nothing, and the
                 // terminal view said "Loading…"): say why, in the diagnostics and the terminal view.
-                problem(e.message?.take(120) ?: e.javaClass.simpleName)
-                null
+                return@quietly fallback(e.message?.take(120) ?: e.javaClass.simpleName)
             }
+            if (got.isBlank()) fallback("the screen came back empty") else got
         }?.let { text ->
             // An empty screen is not a good read (1.4.2, from review: the blank screen Bill hit was one).
             if (text.isBlank()) { problem("the screen came back empty"); return }
@@ -2136,6 +2149,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * Answers a menu question: moves the highlight with the arrow keys and presses Enter when the
      * highlighted option is known, so a digit is never typed into an option's text box.
      */
+    /** When each card (pane and question signature) was last answered from here (1.4.8). */
+    private val answeredCards = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    /** A card answered this recently is not answered again: the agent may not have redrawn yet (1.4.8). */
+    private val ANSWER_HOLD_MS = 8_000L
+
     fun answerChoice(paneId: String, prompt: com.billmongan.herdrdroid.herdr.Prompt, choice: com.billmongan.herdrdroid.herdr.Choice) {
         noteSent(paneId)
         // The answer goes into the history only once it was sent (1.3.2, from a code review).
@@ -2154,7 +2172,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             // The keys come from the screen as it is now, not as it was drawn (1.4.3, Bill: "isn't
             // letting me click your button"): a highlight that moved since, or a card that changed,
             // would otherwise send the wrong keys or keys nothing answers.
-            val now = runCatching { h.read(paneId, 80) }.getOrNull()
+            // As deep as the card's own read (1.4.8), so a tall card is told by the same signature.
+            val now = runCatching { h.read(paneId) }.getOrNull()
             if (now.isNullOrBlank()) {
                 // Nothing is sent blind (from review): the screen couldn't be read at the tap.
                 com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: the screen couldn't be read at the tap; nothing sent")
@@ -2165,6 +2184,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val fresh = com.billmongan.herdrdroid.herdr.detectPrompt(now, pane(paneId)?.status == Status.NEEDS_YOU, pane(paneId)?.agent, versionOf(paneId))
             val same = fresh?.choices?.firstOrNull { it.label.filterNot(Char::isWhitespace) == choice.label.filterNot(Char::isWhitespace) }
             val use = if (fresh != null && same != null) fresh to same else prompt to choice
+            // Only the card that was tapped is answered (1.4.8, Bill: "Maybe it is passing the same
+            // approval to two inputs?"): Muse's next stage asks with the same options, so a second tap,
+            // or a tap that lands after the screen moved on, would answer a question nobody has seen.
+            val tappedSig = com.billmongan.herdrdroid.transcript.QuestionLog.signature(prompt)
+            val freshSig = fresh?.let { com.billmongan.herdrdroid.transcript.QuestionLog.signature(it) }
+            if (same != null && freshSig != tappedSig) {
+                com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: the question on screen is not the one tapped; nothing sent")
+                withContext(Dispatchers.Main) { flash("Not sent: $agentName is asking something new. Check the card and answer again.") }
+                readPane(paneId)
+                return@act
+            }
+            val key = "$paneId|$tappedSig"
+            val before = answeredCards[key]
+            if (before != null && System.currentTimeMillis() - before < ANSWER_HOLD_MS) {
+                com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: this card was answered ${(System.currentTimeMillis() - before) / 1000} s ago; not sent twice")
+                withContext(Dispatchers.Main) { flash("Already answered. Waiting for $agentName.") }
+                readPane(paneId)
+                return@act
+            }
             if (same == null) {
                 com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: \"${choice.label.take(40)}\" is no longer on the screen; nothing sent")
                 withContext(Dispatchers.Main) { flash("Not sent: \"${choice.label.take(40)}\" is no longer on $agentName's screen.") }
@@ -2175,6 +2213,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             if (keys == null) {
                 if (use.second.pressEnter) h.typeAndEnter(paneId, use.second.keys) else h.sendText(paneId, use.second.keys)
             } else h.sendKeys(paneId, *keys.toTypedArray())
+            answeredCards[key] = System.currentTimeMillis()
             val sent = keys?.joinToString(" ") { keyName(it) } ?: use.second.keys
             com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: sent $sent")
             noteAnswer(paneId, prompt, choice.label)
@@ -2773,6 +2812,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 else "The question changed before your answer arrived, so nothing was sent.")
             return
         }
+        // The same card already answered from the app or another alert a moment ago (1.4.8): not twice.
+        val cardKey = now?.let { "${a.paneId}|" + com.billmongan.herdrdroid.transcript.QuestionLog.signature(it) }
+        val before = cardKey?.let { answeredCards[it] }
+        if (before != null && System.currentTimeMillis() - before < ANSWER_HOLD_MS) {
+            com.billmongan.herdrdroid.diag.DiagLog.log("answer", "${a.paneId}: alert tap on a card answered ${(System.currentTimeMillis() - before) / 1000} s ago; not sent twice")
+            Notify.sending(app, a.serverId, a.paneId, "Already answered", "")
+            return
+        }
         var sent = false
         try {
             val label = now?.choices?.firstOrNull { it.keys == a.keys }?.label ?: if (a.isKey) "Pressed ${a.keys}" else a.keys
@@ -2789,6 +2836,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             else if (a.pressEnter) h.typeAndEnter(a.paneId, a.keys)
             else h.sendText(a.paneId, a.keys)
             sent = true
+            cardKey?.let { answeredCards[it] = System.currentTimeMillis() }
             answered()
             Notify.sending(app, a.serverId, a.paneId, "Answered", label)
             // Recorded once it was sent (1.3.2); a failure here is not a failed answer.

@@ -243,6 +243,13 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
         else runCatching { runNow(cmd("pane", "read", paneId, "--source", "recent", "--lines", lines.toString(), "--format", "ansi")) }
             .getOrElse { if (it is kotlinx.coroutines.CancellationException) throw it; read(paneId, lines) }
 
+    /**
+     * Only what the pane shows now (`--source visible`), plain (1.4.8): the fallback when the usual
+     * read of its recent output fails or comes back empty, so a waiting agent's card can still be read.
+     */
+    suspend fun readVisible(paneId: String): String =
+        if (core) read(paneId, 60) else forPhone(runNow(cmd("pane", "read", paneId, "--source", "visible")))
+
     suspend fun read(paneId: String, lines: Int = 200): String =
         if (core) forPhone(runNow(hcCmd("read", paneId, "--lines", lines.toString())))
         else forPhone(runNow(cmd("pane", "read", paneId, "--source", "recent", "--lines", lines.toString())))
@@ -1593,7 +1600,9 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
             // top of a box, or the agent's own activity lines above the card end the question.
             var gaps = 0
             var gap = false
-            while (i >= 0 && got.size < 20) {
+            // At most 20 lines, or 60 while none of them asks yet (1.4.8: a Muse card with a long command
+            // put its "Would you like to run the following command?" more than 20 lines up).
+            while (i >= 0 && (got.size < 20 || (got.size < 60 && got.none { it.text.trimEnd().endsWith("?") }))) {
                 val l = raw[i]
                 val c = clean(l)
                 // Grok's data-sharing banner can sit right above a card; it is its own question.

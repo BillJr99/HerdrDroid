@@ -300,6 +300,9 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     // sit in the chat or terminal as the agent's message; the orange card below holds the answers.
     val promptCard: @Composable () -> Unit = {
         prompt?.let { p ->
+          // In the terminal view the card shrinks to one line with the way back (1.4.8, Bill: "the show
+          // terminal button doesn't actually do anything"), so the terminal itself is what you see.
+          CardOrTerminalBar(showingTerminal = fullTerminal, agent = pane?.agentName ?: "The agent", onBackToQuestion = { fullTerminal = false }) {
             PromptQuestion(
                 p,
                 agent = pane?.agentName ?: "The agent",
@@ -341,8 +344,9 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 onTypeAnswer = { answering = p; answerVia = null; typingAnswer = true },
                 onTypedChoice = { c -> answering = p; answerVia = c; typingAnswer = true },
                 // The terminal is always one tap away from a card, on every agent (1.4.2).
-                onShowTerminal = { hermesLive = false; fullTerminal = true },
+                onShowTerminal = { hermesLive = false; fullTerminal = true; termFollow = true },
             )
+          }
         } ?: agentError?.let { why ->
             // An agent's error (1.4.2): a banner with the way to the terminal, never a question card.
             Surface(shape = RoundedCornerShape(14.dp), color = Palette.OrangeSoft, border = BorderStroke(1.dp, Palette.Orange)) {
@@ -603,28 +607,14 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 val text = screenText
-                if (text.isBlank()) {
+                if (fullTerminal) {
+                    // The terminal view (1.4.8: before, a pane with no good read yet showed the same note as
+                    // the card, so Show terminal looked like it did nothing).
+                    TerminalView(text, vm.paneReadProblem, liveSize)
+                } else if (text.isBlank()) {
                     // Say why the screen isn't there, rather than "Loading…" for ever (1.4.2).
                     Text(vm.paneReadProblem?.let { "The app couldn't read this pane's screen yet ($it). It keeps trying." } ?: "Loading…",
                         color = Palette.Muted, fontSize = 15.sp)
-                } else if (fullTerminal) {
-                    // The last screen that was read, saying so when the latest read failed (1.4.2, from review).
-                    vm.paneReadProblem?.let { Text("The latest read failed ($it); this is the last screen the app read.", color = Palette.OrangeInk, fontSize = 12.5.sp) }
-                    SelectionContainer {
-                        Text(
-                            text,
-                            color = Palette.TerminalInk,
-                            fontFamily = Fonts.Mono,
-                            fontSize = (liveSize * 0.88f).sp,
-                            lineHeight = (liveSize * 0.88f * 1.35f).sp,
-                            softWrap = false,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(Palette.Terminal, RoundedCornerShape(12.dp))
-                                .horizontalScroll(rememberScrollState())
-                                .padding(12.dp),
-                        )
-                    }
                 } else {
                     // Agents without a readable log (Antigravity, Kiro) keep their question history here (1.3.0).
                     // The pane's history (1.4.3, Bill): each earlier screen, then the question asked under
@@ -1054,6 +1044,53 @@ private fun QuestionSteps(parts: com.billmongan.herdrdroid.herdr.QuestionParts) 
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp))
                 }
             }
+        }
+    }
+}
+
+/**
+ * The pane's terminal (1.4.8): the last screen read, in its own font, with a note when the latest
+ * read failed; with nothing read yet, a heading that says it is the terminal view and why it is empty.
+ */
+@Composable
+internal fun TerminalView(text: String, readProblem: String?, size: Float) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Terminal", color = Palette.Muted, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
+        if (text.isBlank()) {
+            Text(readProblem?.let { "Nothing has been read from this pane yet ($it). The app keeps trying." }
+                ?: "Reading this pane's screen…", color = Palette.Muted, fontSize = 15.sp)
+            return@Column
+        }
+        // The last screen that was read, saying so when the latest read failed (1.4.2, from review).
+        readProblem?.let { Text("The latest read failed ($it); this is the last screen the app read.", color = Palette.OrangeInk, fontSize = 12.5.sp) }
+        SelectionContainer {
+            Text(
+                text,
+                color = Palette.TerminalInk,
+                fontFamily = Fonts.Mono,
+                fontSize = (size * 0.88f).sp,
+                lineHeight = (size * 0.88f * 1.35f).sp,
+                softWrap = false,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Palette.Terminal, RoundedCornerShape(12.dp))
+                    .horizontalScroll(rememberScrollState())
+                    .padding(12.dp),
+            )
+        }
+    }
+}
+
+/** The question card, or in the terminal view a one-line bar that leads back to it (1.4.8). */
+@Composable
+internal fun CardOrTerminalBar(showingTerminal: Boolean, agent: String, onBackToQuestion: () -> Unit, card: @Composable () -> Unit) {
+    if (!showingTerminal) { card(); return }
+    Surface(shape = RoundedCornerShape(14.dp), color = Palette.OrangeSoft, border = BorderStroke(1.dp, Palette.Orange)) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Filled.Warning, contentDescription = null, tint = Palette.OrangeInk, modifier = Modifier.size(18.dp))
+            Text("$agent is waiting for your answer", color = Palette.OrangeInk, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f).padding(start = 8.dp))
+            TextButton(onClick = onBackToQuestion) { Text("Back to the question") }
         }
     }
 }

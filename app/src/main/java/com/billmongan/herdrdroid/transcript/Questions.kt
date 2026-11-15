@@ -161,6 +161,9 @@ object QuestionLog {
     fun screenHistory(questions: List<QuestionItem>): List<Any> = questions.sortedBy { it.at }.flatMap { q ->
         listOfNotNull(q.screen?.let { ScreenSnapshot(q.key + ":screen", it, q.at - 1) }, q)
     }
+    /** Muse Code's "Stage 1/2" under a command it asks about stage by stage (1.4.8). */
+    private val STAGE = Regex("""\bStage\s+(\d+)\s*/\s*(\d+)\b""")
+
     /** A question seen again this soon after it was settled is the same one (the screen redrew), not a new one. */
     const val SAME_WINDOW_MS = 30_000L
 
@@ -171,7 +174,17 @@ object QuestionLog {
         val parts = p.shownParts()
         val steps = parts.tabs.filter { !it.submit }
         if (steps.size >= 2) return "steps:" + steps.joinToString("|") { norm(it.title) }
-        return "q:" + norm(parts.heading ?: p.question) + "|" + p.choices.joinToString("|") { norm(it.label) }
+        val options = p.choices.joinToString("|") { norm(it.label) }
+        // A card about a command is told by its command and its stage, not by its heading (1.4.8, Bill:
+        // Muse's card seemed to be two questions): a tall card's heading can scroll off the read
+        // window and come back, which made one card look like two; and Muse's next stage of the same
+        // command ("Stage 2/2") asks with the same heading and options, so the stage tells it apart.
+        val cmd = parts.command?.takeIf { it.isNotBlank() }
+        if (cmd != null) {
+            val stage = STAGE.find((parts.details + p.question).joinToString(" "))?.let { "${it.groupValues[1]}/${it.groupValues[2]}" }.orEmpty()
+            return "c:" + norm(cmd).take(160) + "|" + stage + "|" + options
+        }
+        return "q:" + norm(parts.heading ?: p.question) + "|" + options
     }
 
     /** The parts a prompt shows now: the current step filled in, the other steps by name only. */

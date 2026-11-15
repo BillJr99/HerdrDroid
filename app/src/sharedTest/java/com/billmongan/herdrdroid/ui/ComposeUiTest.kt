@@ -125,6 +125,49 @@ class ComposeUiTest {
         rule.onNodeWithText("☐", substring = true).assertDoesNotExist()
     }
 
+    /**
+     * 1.4.8 (Bill: "the show terminal button doesn't actually do anything", "only broken if there's a
+     * question card"): with a card open, Show terminal switches to the terminal and the card becomes a
+     * bar that leads back. Muse's card and Claude's.
+     */
+    @Test fun showTerminalWithMusesCardOpen() = showTerminal("Muse",
+        Prompt("Would you like to run the following command?", listOf(Choice("Allow this stage once (y)", "1", false), Choice("Abort the entire command (esc)", "2", false)), selected = "1"))
+
+    @Test fun showTerminalWithClaudesCardOpen() = showTerminal("Claude",
+        Prompt("Do you want to proceed?", listOf(Choice("Yes", "1", false), Choice("No, and tell Claude what to do differently (esc)", "2", false)), selected = "1"))
+
+    private fun showTerminal(agent: String, p: Prompt) {
+        val first = p.choices.first().label
+        val full = androidx.compose.runtime.mutableStateOf(false)
+        val shown = androidx.compose.runtime.mutableStateOf("")
+        rule.setContent {
+            androidx.compose.foundation.layout.Column(Modifier.fillMaxSize().verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+                if (full.value) TerminalView(shown.value, if (shown.value.isEmpty()) "timed out" else null, 12.5f)
+                CardOrTerminalBar(full.value, agent, onBackToQuestion = { full.value = false }) {
+                    PromptCard(p, agent = agent, onChoice = {}, onKey = {}, onTypeAnswer = {}, onShowTerminal = { full.value = true })
+                }
+            }
+        }
+        for (screen in listOf("demo screen line one\n⟩ 1. $first", "")) {
+            shown.value = screen
+            rule.waitForIdle()
+            rule.onNodeWithText(first).assertExists()
+            rule.onNodeWithText("Show terminal").performScrollTo().performClick()
+            rule.waitForIdle()
+            assertTrue(full.value)
+            rule.onNodeWithText("Terminal").assertExists()
+            if (screen.isEmpty()) rule.onNodeWithText("Nothing has been read from this pane yet (timed out). The app keeps trying.").assertExists()
+            else rule.onNodeWithText(screen).assertExists()
+            // The card is a one-line bar now, with the way back.
+            rule.onNodeWithText(first).assertDoesNotExist()
+            rule.onNodeWithText("$agent is waiting for your answer").assertExists()
+            rule.onNodeWithText("Back to the question").performClick()
+            rule.waitForIdle()
+            rule.onNodeWithText(first).assertExists()
+            rule.onNodeWithText("Terminal").assertDoesNotExist()
+        }
+    }
+
     @Test fun cardAloneHasNoQuestionBody() {
         val p = Prompt("Do you want to proceed with this very particular question?", listOf(Choice("Yes", "1", false), Choice("No", "2", false)), selected = "1")
         rule.setContent { PromptCard(p, agent = "Codex", onChoice = {}, onKey = {}, onTypeAnswer = {}) }

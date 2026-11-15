@@ -1,0 +1,34 @@
+◆ Ran command · List files changed in diffs · ✓ · 2m · ctrl+o
+
+  Read 6 files · ctrl+o
+
+◆ Ran 2 commands · Scan viewer for HTML injection sinks · Check worktree scope and casts · 2m · ctrl+o
+
+  Read 3 files · ctrl+o
+
+◆ Ran 4 commands · Check cast tail and session state · Print cast transcripts for privacy scan · +2 ✓ · 7m · ctrl+o
+
+◇ Calling tools (17m 14s · esc to interrupt)
+
+  ✓ R1 XSS: trace cast text to DOM, check escaping
+  ◆ R2 Privacy: scan recordings for hostnames/paths/tokens
+  ◇ R3 Robustness: missing cast, long output, reduced motion
+  ◇ R4 Scope: only viz/ plus two tutorial pages
+  ◇ R5/R6 Cosmetics: empty band + Copied label root cause
+  ◇ Reconcile findings file:line severity + RECOMMEND verdict
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Would you like to run the following command?
+
+  $ B=/home/user/work/demo-repo-terminal-mode
+  │ grep -rn "prefers-reduced-motion\|autoplay" "$B/course/viz/viewer/" || echo "no reduced-motion handling in viewer"
+  │ echo ---unit-tests.log---
+  │ cat /home/user/work/outputs/terminal-mode/unit-tests.log
+  │ echo ---browser-check.log---
+  │ cat /home/user/work/outputs/terminal-mode/browser-check.log
+
+⟩ 1. Yes, proceed (y)
+  2. No, and tell Muse Code what to do differently (esc)
+Change approval defaults in /permissions
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  muse-wonder-full-1.0 · max · ~/agents/muse · Launch overrides
