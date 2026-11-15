@@ -993,14 +993,27 @@ def muse_sessions(cwd):
 
 
 def muse_live(path):
-    """True when a running Muse holds this session: its folder's .session.lock names a live pid."""
+    """True when a running Muse holds this session (1.4.5). Muse holds a kernel flock on the session
+    folder's .session.lock while it is open; the "pid=" line in it is only a hint and can outlive
+    its process (from Grok's review). The lock is looked up in /proc/locks by device and inode, so
+    nothing here ever takes or tests the lock itself. Without /proc/locks, the pid must be alive
+    and be a Muse program."""
+    lock = os.path.join(os.path.dirname(path), ".session.lock")
     try:
-        with open(os.path.join(os.path.dirname(path), ".session.lock")) as fh:
+        st = os.stat(lock)
+    except OSError:
+        return False
+    want = "%02x:%02x:%d" % (os.major(st.st_dev), os.minor(st.st_dev), st.st_ino)
+    try:
+        with open("/proc/locks") as fh:
+            return any(len(f) > 5 and f[1] == "FLOCK" and f[5] == want for f in (l.split() for l in fh))
+    except OSError:
+        pass
+    try:
+        with open(lock) as fh:
             m = re.search(r"pid=(\d+)", fh.read(200))
-        if not m:
-            return False
-        os.kill(int(m.group(1)), 0)
-        return True
+        with open("/proc/%d/cmdline" % int(m.group(1)), "rb") as fh:
+            return b"muse" in fh.read()
     except Exception:
         return False
 

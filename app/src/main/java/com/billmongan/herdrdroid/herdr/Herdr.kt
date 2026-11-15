@@ -1651,7 +1651,15 @@ fun screenLinks(text: String): ScreenLinks {
  * (Antigravity's integration is "antigravity-cli"), and every per-agent rule in the app (footer
  * models, usage checks, commands, log readers) keys on these names.
  */
-fun canonicalAgent(name: String): String = when (val n = name.trim().lowercase()) {
+fun canonicalAgent(name: String): String {
+    val n = name.trim().lowercase()
+    // Muse Code's launcher execs "muse-bin-<version>", the program name herdr-core reports (1.4.5,
+    // from Grok's review); a path to either counts too.
+    if (Regex("""(^|/)muse(-bin-[\w.+-]+)?$""").containsMatchIn(n)) return "muse"
+    return canonicalKind(n)
+}
+
+private fun canonicalKind(n: String): String = when (n) {
     "agy", "antigravity", "antigravity-cli", "antigravity_cli", "gemini-antigravity" -> "agy"
     "claude-code", "claude_code", "claudecode" -> "claude"
     "codex-cli", "openai-codex" -> "codex"
@@ -1661,7 +1669,6 @@ fun canonicalAgent(name: String): String = when (val n = name.trim().lowercase()
     "pi-agent", "pi-coding-agent" -> "pi"
     "kiro-cli", "kiro-cli-chat" -> "kiro"
     "vibe-rs", "mistral-vibe", "vibe-acp" -> "vibe"
-    // Meta's Muse Code (1.4.5); its launcher runs "muse-bin-<version>", which matches "muse" as a word.
     "muse-code", "meta-muse", "muse-cli" -> "muse"
     else -> n
 }

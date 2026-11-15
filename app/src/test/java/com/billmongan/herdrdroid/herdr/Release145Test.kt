@@ -26,6 +26,12 @@ class Release145Test {
         val p = Pane("w2:pZ", "w2:tW", "w2", "muse", Status.IDLE, "muse", "/home/user/agents/muse")
         assertEquals("Muse", p.agentName)
         assertEquals("muse", canonicalAgent("muse-code"))
+        // The program herdr-core reports: the binary Muse's launcher execs (from Grok's review).
+        assertEquals("muse", canonicalAgent("muse-bin-1.4.20-R8619.1"))
+        assertEquals("muse", canonicalAgent("/home/user/.local/bin/muse-bin-1.4.20-R8619.1"))
+        assertEquals("muse", canonicalAgent("muse"))
+        assertEquals("museum", canonicalAgent("museum"))
+        assertEquals("kiro", canonicalAgent("kiro-cli"))
         assertTrue("muse" in HERDR_KINDS)
         assertTrue(Backgrounding.supported("muse"))
         assertTrue(com.billmongan.herdrdroid.ui.SlashCommands.forAgent("muse").map { it.name }.containsAll(listOf("/model", "/compact", "/usage")))

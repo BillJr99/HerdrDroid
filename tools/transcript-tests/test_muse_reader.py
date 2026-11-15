@@ -2,6 +2,7 @@
 way Muse Code 1.4.20 writes it: ~/.local/share/muse/session-index.db (table sessions) naming each
 session's session.jsonl, a .session.lock with the running pid. Records are synthetic, in the shape of
 a live session (field names checked 2026-11-15). Run: python3 -I tools/transcript-tests/test_muse_reader.py"""
+import fcntl
 import json
 import os
 import sqlite3
@@ -82,7 +83,13 @@ class MuseReader(unittest.TestCase):
             other = [ev(1, {"kind": "started", "prompt": "headless exec"})]
             store(home, "/w/muse", [("live", RECORDS, 1, os.getpid()), ("exec", other, 9, None)])
             t = load(home)
-            self.assertEqual(t.muse("/w/muse", {})["items"][0]["text"], "run echo hi")
+            # A pid line alone (left by a Muse that exited, its pid now reused) is not live (from Grok's review).
+            self.assertEqual(t.muse("/w/muse", {})["items"][0]["text"], "headless exec")
+            # Held the way Muse holds it: a flock on .session.lock.
+            lock = os.path.join(home, ".local", "share", "muse", "sessions", "2027", "01", "15", "live", ".session.lock")
+            with open(lock) as fh:
+                fcntl.flock(fh, fcntl.LOCK_EX)
+                self.assertEqual(t.muse("/w/muse", {})["items"][0]["text"], "run echo hi")
             # Without a live lock, the newest for the folder.
             self.assertIsNone(t.muse("/w/other", {}))
             sess = t.list_sessions("muse", "/w/muse")
