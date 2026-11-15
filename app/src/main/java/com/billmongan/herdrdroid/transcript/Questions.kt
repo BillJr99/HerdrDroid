@@ -161,6 +161,9 @@ object QuestionLog {
     fun screenHistory(questions: List<QuestionItem>): List<Any> = questions.sortedBy { it.at }.flatMap { q ->
         listOfNotNull(q.screen?.let { ScreenSnapshot(q.key + ":screen", it, q.at - 1) }, q)
     }
+    /** Where Muse's lines under a command begin, in a joined paragraph (1.4.8). */
+    private val TRAILER = Regex("""\bStage\s+\d+\s*/\s*\d+\b|\bCurrent argv:""")
+
     /** Muse Code's "Stage 1/2" under a command it asks about stage by stage (1.4.8). */
     private val STAGE = Regex("""\bStage\s+(\d+)\s*/\s*(\d+)\b""")
 
@@ -207,7 +210,10 @@ object QuestionLog {
         val cmd = parts.blocks.filter { it.kind == com.billmongan.herdrdroid.herdr.QKind.COMMAND }.joinToString(" ") { it.text }.takeIf { it.isNotBlank() }
         // The heading goes last, as a question only ("?"), so a read that missed it still matches (see [sameCard]).
         if (cmd != null) return "c:" + norm(cmd).take(4000) + tail + "|h=" + norm(parts.heading?.takeIf { it.trimEnd().endsWith("?") }.orEmpty()).take(80)
-        return "q:" + norm(parts.heading ?: p.question) + tail
+        // Muse's "Stage 1/2" and "Current argv" lines join the script's last line on a short read; they are
+        // left out, so what is signed is only the part of the command shown (from Grok's review).
+        val shown = (parts.heading ?: p.question).let { h -> TRAILER.find(h)?.let { h.substring(0, it.range.first) } ?: h }
+        return "q:" + norm(shown) + tail
     }
 
     /** The parts a prompt shows now: the current step filled in, the other steps by name only. */

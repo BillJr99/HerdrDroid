@@ -105,6 +105,14 @@ class MuseStagesTest {
         assertEquals(false, QuestionLog.sameCard(cut, next))
     }
 
+    @Test fun aShortReadOfOnlyTheLastLinesIsStillTheSameCard() {
+        // From Grok's review: a read that starts at the script's last line joins "Stage 1/1" onto it.
+        val body = (1..10).map { "x$it = $it" } + "print(label, len(rows))"
+        val full = QuestionLog.signature(prompt(script(body, "1/1")))
+        val tail = script(body, "1/1").lines().dropWhile { !it.contains("print(label") }.joinToString("\n")
+        assertTrue(QuestionLog.sameCard(full, QuestionLog.signature(prompt(tail))))
+    }
+
     @Test fun aShortReadOfAnotherScriptIsAnotherCard() {
         // From Grok's review: a short read of a different script at the same stage is not the same card.
         val body = (1..10).map { "x$it = $it" }
