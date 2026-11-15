@@ -233,6 +233,16 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
      * nothing): a read never waits behind a long command such as a big session log being read, so
      * the screen, and the question on it, show while that runs.
      */
+    /**
+     * The pane's screen with its styles kept (1.4.6), for telling an agent's dim placeholder from
+     * typed text ([isPlaceholderText]). herdr-core, or a herdr without `--format ansi`, gives the
+     * plain screen, where only the known hints count.
+     */
+    suspend fun readStyled(paneId: String, lines: Int = 40): String =
+        if (core) read(paneId, lines)
+        else runCatching { runNow(cmd("pane", "read", paneId, "--source", "recent", "--lines", lines.toString(), "--format", "ansi")) }
+            .getOrElse { if (it is kotlinx.coroutines.CancellationException) throw it; read(paneId, lines) }
+
     suspend fun read(paneId: String, lines: Int = 200): String =
         if (core) forPhone(runNow(hcCmd("read", paneId, "--lines", lines.toString())))
         else forPhone(runNow(cmd("pane", "read", paneId, "--source", "recent", "--lines", lines.toString())))
@@ -1147,17 +1157,29 @@ fun isComposerHint(agent: String?, text: String): Boolean {
  * What is typed in the agent's input line now, read off its screen (1.4.0): the lowest line that
  * starts with a prompt glyph (❯ › > »), without the glyph and box edges; "" when it is empty; null
  * when no input line shows (a question card or a full-screen view), so nothing can be judged.
- * An agent's own hint in an empty line ([isComposerHint]) reads as "" (1.4.4).
+ * An agent's own hint in an empty line reads as "": on a screen read with its styles (1.4.6), any
+ * text drawn entirely as a placeholder ([isPlaceholderText]: faint, or a grey colour); on a plain
+ * screen, the known hints ([isComposerHint], 1.4.4).
  */
 fun inputLineOf(screen: String, agent: String? = null): String? {
-    val lead = Regex("""^[\s\u00A0│┃|]*[>❯›»][\s\u00A0]*""")
+    val (raw, typed) = inputRow(screen) ?: return null
+    if (typed.isEmpty() || isComposerHint(agent, typed)) return ""
+    return if (isPlaceholderText(raw, typed, agent)) "" else typed
+}
+
+private val INPUT_LEAD = Regex("""^[\s\u00A0│┃|]*[>❯›»][\s\u00A0]*""")
+private val ANSI_SEQ = Regex("""\u001B\[[0-9;?]*[ -/]*[@-~]|\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)""")
+
+/** The composer's row as read (styles kept) and the text typed in it, or null with no input line (see [inputLineOf]). */
+private fun inputRow(screen: String): Pair<String, String>? {
+    val lead = INPUT_LEAD
     // Not an input line (from a review): a menu row ("❯ 1. Yes"), a ">>" or ">>>" prompt or nested quote.
     val notInput = Regex("""^[\s\u00A0│┃|]*(?:[>❯›»]\s*\d{1,2}[.)]\s|>>)""")
     // 1.4.1 (from a code review): colour codes taken out first, and only the composer's own row
     // counts: one between two rule lines (the box agents draw around it), else one inside a
     // "│ ... │" frame, else one with at most a three-line footer under it. A quoted or diff "> " row in the output above is not typing.
-    val ansi = Regex("""\u001B\[[0-9;?]*[ -/]*[@-~]|\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)""")
-    val rows = screen.lines().map { it.replace(ansi, "") }.takeLast(14)
+    val rawRows = screen.lines().map { it.replace("\r", "") }.takeLast(14)
+    val rows = rawRows.map { it.replace(ANSI_SEQ, "") }
     val rule = Regex("""^[\s\u00A0╭╰├└┌]*[─━═╌┄-]{4,}""")
     fun isRule(i: Int) = i in rows.indices && rule.containsMatchIn(rows[i])
     val candidates = rows.indices.filter { lead.containsMatchIn(rows[it]) && !notInput.containsMatchIn(rows[it]) }
@@ -1166,8 +1188,87 @@ fun inputLineOf(screen: String, agent: String? = null): String? {
         ?: candidates.lastOrNull { framed.matches(rows[it]) }
         ?: candidates.lastOrNull { c -> rows.drop(c + 1).count { it.isNotBlank() && !rule.containsMatchIn(it) } <= 3 }
         ?: return null
-    val typed = rows[i].replace(lead, "").trimEnd(' ', '\u00A0', '│', '┃', '|').trim()
-    return if (isComposerHint(agent, typed)) "" else typed
+    return rawRows[i] to rows[i].replace(lead, "").trimEnd(' ', '\u00A0', '│', '┃', '|').trim()
+}
+
+/** One character of a styled row and how it is drawn (1.4.6). */
+private data class Styled(val ch: Char, val faint: Boolean, val italic: Boolean, val grey: Boolean)
+
+/** A colour that reads as grey: the three channels within 28 of each other, of middle brightness. */
+private fun greyRgb(r: Int, g: Int, b: Int): Boolean =
+    maxOf(r, g, b) - minOf(r, g, b) <= 28 && (r + g + b) / 3 in 90..180
+
+/** The 256-colour palette entry [n] as grey or not (8 is bright black; 16 to 231 the colour cube; 232 to 255 the greys). */
+private fun grey256(n: Int): Boolean = when (n) {
+    8 -> true
+    in 16..231 -> { val lv = intArrayOf(0, 95, 135, 175, 215, 255); val c = n - 16; greyRgb(lv[c / 36], lv[c / 6 % 6], lv[c % 6]) }
+    in 232..255 -> (8 + 10 * (n - 232)) in 90..180
+    else -> false
+}
+
+/** The characters of a row with the SGR state each is drawn in; other escape sequences are dropped. */
+private fun styledChars(row: String): List<Styled> {
+    val out = ArrayList<Styled>(row.length)
+    var faint = false; var italic = false; var grey = false
+    var i = 0
+    while (i < row.length) {
+        val m = if (row[i] == '\u001B') ANSI_SEQ.find(row, i)?.takeIf { it.range.first == i } else null
+        if (m != null) {
+            val seq = m.value
+            if (seq.startsWith("\u001B[") && seq.endsWith("m")) {
+                val ps = seq.substring(2, seq.length - 1).split(';').map { it.toIntOrNull() ?: 0 }
+                var k = 0
+                while (k < ps.size) {
+                    when (val c = ps[k]) {
+                        0 -> { faint = false; italic = false; grey = false }
+                        2 -> faint = true
+                        22 -> faint = false
+                        3 -> italic = true
+                        23 -> italic = false
+                        39 -> grey = false
+                        in 30..37 -> grey = false
+                        90 -> grey = true
+                        in 91..97 -> grey = false
+                        38 -> {
+                            if (ps.getOrNull(k + 1) == 2 && k + 4 < ps.size) { grey = greyRgb(ps[k + 2], ps[k + 3], ps[k + 4]); k += 4 }
+                            else if (ps.getOrNull(k + 1) == 5 && k + 2 < ps.size) { grey = grey256(ps[k + 2]); k += 2 }
+                        }
+                        48 -> k += if (ps.getOrNull(k + 1) == 2) 4 else if (ps.getOrNull(k + 1) == 5) 2 else 0
+                        else -> {}
+                    }
+                    k++
+                }
+            }
+            i = m.range.last + 1
+            continue
+        }
+        out += Styled(row[i], faint, italic, grey)
+        i++
+    }
+    return out
+}
+
+/**
+ * True when [typed], the text of the composer row [raw] (as read with its styles), is drawn the
+ * way agents draw a placeholder (1.4.6, Bill: "ask codex to do anything" is "the greyed out text in
+ * the input pane that just appears for you to type over"): every visible character of it faint
+ * (Claude Code and Codex draw theirs with SGR 2) or in a grey colour (Kiro's 158,158,158), or, for
+ * Hermes, italic (its gold italic examples). Text with any character in normal type is typed,
+ * so typing followed by a dim suggestion (Claude's ghost text) still holds. A row read without
+ * styles is never a placeholder by this test.
+ */
+fun isPlaceholderText(raw: String, typed: String, agent: String?): Boolean {
+    if (!raw.contains('\u001B') || typed.isEmpty()) return false
+    val chars = styledChars(raw)
+    val plain = chars.joinToString("") { it.ch.toString() }
+    // The styled reading must give the same text as the plain one, or nothing is assumed.
+    if (plain != raw.replace(ANSI_SEQ, "")) return false
+    val leadEnd = INPUT_LEAD.find(plain)?.range?.last?.plus(1) ?: return false
+    val start = plain.indexOf(typed, leadEnd)
+    if (start < 0) return false
+    val hermes = agent?.lowercase() == "hermes"
+    val seen = chars.subList(start, start + typed.length).filter { !it.ch.isWhitespace() }
+    return seen.isNotEmpty() && seen.all { it.faint || it.grey || (hermes && it.italic) }
 }
 
 /** A choice that grants standing permission ("always allow", "don't ask again"); the card adds a caution (1.4.0). */

@@ -1919,9 +1919,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Notes the input line of a pane's screen as just read: any typing in it is remembered for 4 s. */
     private fun noteInputLine(paneId: String, screen: String) {
         val now = com.billmongan.herdrdroid.herdr.inputLineOf(screen, pane(paneId)?.agent) ?: return
+        // Typing is the line changing (1.4.6): text that stays the same from one read to the next
+        // (a placeholder the plain read can't tell from typing, such as one of Codex's rotating
+        // suggestions) is not someone typing. Text that is there is still held by [holdReason].
         // Kept apart from the line's text (from a review: an empty read cleared the 4-second guard at once).
-        if (now.isNotEmpty()) typedAt[paneId] = System.currentTimeMillis()
+        // Styled and plain reads are compared only with their own kind, since a placeholder reads as ""
+        // in one and as text in the other.
+        val before = lastInputLine.put(if (screen.contains('\u001B')) "$paneId|styled" else paneId, now)
+        if (now.isNotEmpty() && before != null && before != now) typedAt[paneId] = System.currentTimeMillis()
     }
+
+    /** Each pane's input line at the last read, to tell typing (a change) from text that stays (1.4.6). */
+    private val lastInputLine = java.util.concurrent.ConcurrentHashMap<String, String>()
 
     /**
      * Why a message must not be typed into [paneId] now (1.4.0, "never type into a busy pane"): text
@@ -1934,7 +1943,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         // The row taken for the input line is the highlighted option of a menu (Kiro's unnumbered
         // approval card, "❯ Yes, single permission"): a question, not text typed at the computer.
         // Still not typed into, but said as it is (1.4.1, from a code review).
-        if (now.isNotEmpty() && com.billmongan.herdrdroid.herdr.detectUnnumberedMenu(screen)?.choices?.any { it.label.trim() == now } == true)
+        if (now.isNotEmpty() && com.billmongan.herdrdroid.herdr.detectUnnumberedMenu(com.billmongan.herdrdroid.herdr.forPhone(screen))?.choices?.any { it.label.trim() == now } == true)
             return "a question is open in it (\"${now.take(40)}\"); answer it first"
         if (now.isNotEmpty()) return "something is already typed in its input line at the computer (\"${now.take(40)}\")"
         val at = typedAt[paneId]
@@ -1956,7 +1965,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             if (!force && pane.status != Status.NEEDS_YOU) {
                 // Behind an earlier message still waiting for this pane, so they go in the order sent (1.4.4).
                 val earlier = pendingSends.any { it.paneId == pane.id && it.waiting && it.id != pendingId }
-                val screenNow = if (earlier) null else runCatching { h.read(pane.id, 40) }.getOrNull()
+                // Read with its styles (1.4.6), so an agent's dim placeholder isn't taken for typing.
+                val screenNow = if (earlier) null else runCatching { h.readStyled(pane.id, 40) }.getOrNull()
                 // A pane that can't be read first is not typed into blind (1.4.1, from a code review).
                 val why = when {
                     earlier -> "an earlier message to it is still waiting"
@@ -2031,7 +2041,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     pn.status == Status.NEEDS_YOU -> "a question is open in it; answer it first"
                     pendingSends.any { it.paneId == p.paneId && it.waiting && it.at < p.at && it.id != p.id } -> "an earlier message to it is still waiting"
                     else -> {
-                        val screen = runCatching { h.read(p.paneId, 40) }.getOrNull()
+                        val screen = runCatching { h.readStyled(p.paneId, 40) }.getOrNull()
                             ?: return@check "its screen couldn't be read"
                         noteInputLine(p.paneId, screen)
                         // Checked again after the read, which can take a while (from Grok's review): a
@@ -2042,7 +2052,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                             after == null -> "the pane isn't listed just now"
                             p.paneId in probingPanes -> "a usage check is running in it"
                             after.status == Status.NEEDS_YOU ||
-                                com.billmongan.herdrdroid.herdr.detectPrompt(screen, false, after.agent, versionOf(p.paneId)) != null ->
+                                com.billmongan.herdrdroid.herdr.detectPrompt(com.billmongan.herdrdroid.herdr.forPhone(screen), false, after.agent, versionOf(p.paneId)) != null ->
                                 "a question is open in it; answer it first"
                             else -> holdReason(p.paneId, screen)
                         }
