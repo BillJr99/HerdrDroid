@@ -1069,7 +1069,8 @@ fun questionParts(lines: List<QLine>): QuestionParts {
             continue
         }
         // A long path wrapped onto the next line goes on in its block (1.4.2).
-        if (last != null && last.inPlace && !l.gapBefore && PATH_PIECE.matches(t) && !LABEL_LINE.containsMatchIn(t)) { last.text += t; continue }
+        if (last != null && last.inPlace && !l.gapBefore && PATH_PIECE.matches(t) && !LABEL_LINE.containsMatchIn(t) &&
+            (last.text.last() in "/-_." || t.first() in "/.~")) { last.text += t; continue }
         // Grok's title ("Check SSH to demo-box: grok usage ...") came joined to its command before.
         // A capitalised line after a "Label: …" line is a new sentence ("Reason: outside workspace"
         // over "Allow access to this file?"); a wrapped label line goes on in lower case.
@@ -1147,6 +1148,10 @@ fun isCheckbox(label: String): Boolean = CHECKBOX.containsMatchIn(label.trim())
 /** An option whose own label says Esc answers it: "No, and tell Codex what to do differently (esc)". */
 private val ESC_LABEL = Regex("""\((?:esc)\b[^)]*\)""", RegexOption.IGNORE_CASE)
 private val REJECT_LABEL = Regex("""^(deny|reject|no)\b""", RegexOption.IGNORE_CASE)
+/** A sentence that asks: starts with a word, three words or more, ends in "?", and no code signs in it (1.4.2). */
+private val ASKING_SENTENCE = Regex("""^[\p{L}"'(][^{}=;<>`]*\s\S+\s[^{}=;<>`]*\?$""")
+/** A line of code that ends in "?": a declaration keyword, or a nullable type ("name: String?"). */
+private val CODE_LINE = Regex("""^(val|var|let|const|def|fun|function|func|fn|return|import|public|private|class|type)\b|:\s*[A-Z]\w*(<[^>]*>)?\?$""")
 /** Codex's approval footer (1.4.2). */
 private val CODEX_FOOTER = Regex("""Press enter to confirm or esc to cancel""", RegexOption.IGNORE_CASE)
 /** An option's own one-letter key at the end of its label, "(y)" (1.4.2). */
@@ -1324,20 +1329,30 @@ fun detectUnnumberedMenu(text: String): Prompt? {
  * crash (a panic, a traceback, a fatal error) counts wherever it is in those lines.
  */
 fun detectAgentError(text: String): String? {
-    val rows = text.lines().map { it.trim().trim('│', '┃', '|', ' ').trim() }.filter { it.isNotBlank() }.takeLast(12)
+    val all = text.lines().filter { it.isNotBlank() }.takeLast(12)
     val found = linkedSetOf<String>()
     var carry = false
-    for (l in rows) {
+    for (raw in all) {
+        // A row inside a box (a code view, a table) is the agent's content, never its error (1.4.2, from review).
+        if (raw.trimStart().firstOrNull()?.let { it in "│┃|╭╰┌└├" } == true) { carry = false; continue }
+        val l = raw.trim().trim('│', '┃', '|', ' ').trim()
         val mine = YOUR_LINE.containsMatchIn(l)
-        val marked = !mine && (ERROR_MARK.containsMatchIn(l) || AGENT_OWN_ERROR.containsMatchIn(l))
+        val marked = !mine && (ERROR_MARK.containsMatchIn(l) || AGENT_OWN_ERROR.containsMatchIn(l) || ERROR_LEAD.containsMatchIn(l))
         if (marked || (carry && !mine)) for ((pattern, summary) in AGENT_ERRORS) if (pattern.containsMatchIn(l)) found += summary
-        if (!mine) for ((pattern, summary) in AGENT_CRASHES) if (pattern.containsMatchIn(l)) found += summary
         carry = marked
     }
-    // A crash with the shell's prompt back under it: the agent is gone.
-    if (found.any { it == "the agent crashed" } && rows.lastOrNull()?.let { SHELL_PROMPT.containsMatchIn(it) } == true) found += "the agent exited"
+    // A crash counts only when the shell's prompt is back at the bottom: the agent itself is gone
+    // (1.4.2, from review: a traceback the agent shows from your program is not its crash).
+    val rows = all.map { it.trim() }
+    if (rows.lastOrNull()?.let { SHELL_PROMPT.containsMatchIn(it) } == true &&
+        rows.dropLast(1).any { r -> !YOUR_LINE.containsMatchIn(r) && AGENT_CRASHES.any { (p, _) -> p.containsMatchIn(r) } }) {
+        found += "the agent crashed"; found += "the agent exited"
+    }
     return found.takeIf { it.isNotEmpty() }?.joinToString("; ")
 }
+
+/** A line that opens with an error itself: "Rate limit exceeded", "429 Too Many Requests", "503 Service Unavailable" (1.4.2, from review). */
+private val ERROR_LEAD = Regex("""^\W{0,3}(Rate limit (exceeded|reached)|[45]\d\d [A-Z][a-z]+( [A-Z][a-z]+)*\b|Usage limit (reached|exceeded)|Out of credits|Insufficient (credits|balance)|Connection (lost|reset|refused|closed))""")
 
 /** Your own lines: the echo of what you typed, or the input box. */
 private val YOUR_LINE = Regex("""^(>|❯|›|»)(\s|$)""")
@@ -1366,8 +1381,8 @@ private val AGENT_CRASHES = listOf(
     Regex("""thread '.{1,40}' panicked at|Traceback \(most recent call last\)|Segmentation fault|core dumped|^Killed$|FATAL ERROR:|Unhandled(Promise)?Rejection|unhandled exception|uncaught exception""", RegexOption.IGNORE_CASE) to "the agent crashed",
 )
 
-/** A shell's prompt: "tester@host:~/work$", "bill@demo-box2:~ %", or a bare "$". */
-private val SHELL_PROMPT = Regex("""^([\w.-]+@[\w.-]+(:\S*)?\s?[$#%]|[$#%])\s*$""")
+/** A shell's prompt: "tester@host:~/work$", "bill@demo-box2:~ %" (a bare "$" is too easily something else). */
+private val SHELL_PROMPT = Regex("""^[\w.-]+@[\w.-]+(:\S*)?\s?[$#%]\s*$""")
 
 fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version: String? = null): Prompt? {
     val rules = ParserRules.forAgent(agent, version)
@@ -1513,15 +1528,19 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     // Looks like a question (herdr says it waits, or a question footer shows) but nothing above
     // understood it (1.4.0): the fallback card shows the bottom of the screen and generic keys.
     val footer = lines.takeLast(6).any { QUESTION_FOOTER.containsMatchIn(it) }
+    // A line near the bottom that asks: a sentence ending in "?", not code ("val name: String?",
+    // "// why?") and not inside a box (omp's code view) (1.4.2, from review).
+    val asks = lines.takeLast(6).any { l ->
+        val t = l.trimStart()
+        t.firstOrNull()?.let { it in "│┃|╭╰" } != true && ASKING_SENTENCE.matches(clean(l)) && !CODE_LINE.containsMatchIn(clean(l))
+    }
     // An agent's error (a failed compaction, a rate limit) is not a question, whatever herdr says:
-    // no card; the pane shows it as an error banner (1.4.2). A question footer still wins.
-    if (!footer && detectAgentError(text) != null) return null
+    // no card; the pane shows it as an error banner (1.4.2). A sentence that asks still gets its card.
+    if (!asks && detectAgentError(text) != null) return null
     // herdr's "blocked" alone is not a question (1.4.2: opencode's plugin kept a pane blocked after
     // a failed compaction, even on a fresh session, and the app showed an empty card). The fallback
-    // card needs something question-like on screen too: a question footer, or a line near the bottom
-    // that asks ("…?"). Otherwise the status is stale and there is no card.
-    // A line inside a box (a code view, as omp draws one) never counts as asking (1.4.2).
-    val asks = lines.takeLast(6).any { !it.trimStart().startsWith("│") && !it.trimStart().startsWith("┃") && clean(it).endsWith("?") }
+    // card needs something question-like on screen too: a question footer, or a sentence near the
+    // bottom that asks. Otherwise the status is stale and there is no card.
     if (footer || (blocked && asks)) {
         val region = raw.dropLastWhile { it.isBlank() }.takeLast(16).map { clean(it) }.dropWhile { it.isEmpty() }
         return Prompt(question ?: "This agent is waiting for you.", emptyList(), region = region.takeIf { r -> r.any { it.isNotBlank() } } ?: listOf(UNREAD_SCREEN))

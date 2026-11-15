@@ -236,7 +236,12 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     // Only this agent's screen: never one read from the agent you just left.
     val screenText = if (vm.paneTextPane == paneId) vm.paneText else ""
     // Never an empty card (1.4.2): one with no options always shows the screen region or a note.
-    val prompt: Prompt? = if (typingAnswer) null else detectPrompt(screenText, status == Status.NEEDS_YOU, pane?.agent, vm.versionOf(paneId))?.forCard()
+    // While the latest read failed, no card is built from the last screen: its buttons would answer
+    // whatever the pane shows now (1.4.2, from review). If the agent waits, the card says the screen
+    // couldn't be read and offers the keys and Show terminal.
+    val prompt: Prompt? = if (typingAnswer) null
+        else if (vm.paneReadProblem != null) (if (status == Status.NEEDS_YOU) Prompt("This agent is waiting for you.", emptyList()).forCard() else null)
+        else detectPrompt(screenText, status == Status.NEEDS_YOU, pane?.agent, vm.versionOf(paneId))?.forCard()
     // An agent's error on screen (1.4.2): shown as a banner when there is no question.
     val agentError: String? = remember(screenText) { com.billmongan.herdrdroid.herdr.detectAgentError(screenText) }.takeIf { prompt == null }
     // The terminal (and screen) view follows new output only while you are at the bottom; once you

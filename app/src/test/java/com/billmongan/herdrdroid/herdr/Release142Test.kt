@@ -143,4 +143,22 @@ class Release142Test {
             assertEquals(screen, null, detectAgentError(screen))
         }
     }
+    @Test fun secondReviewRules() {
+        // A boxed code or table line is the agent's content, not its error.
+        assertEquals(null, detectAgentError("│ Error: 429 Too Many Requests │\n│ status 500                 │\n> next"))
+        // A line that opens with the error itself counts, with no mark.
+        assertEquals("model rate-limited", detectAgentError("output\nRate limit exceeded\n> "))
+        assertTrue(detectAgentError("429 Too Many Requests")!!.contains("model rate-limited"))
+        // A question under an error still gets its card.
+        assertNotNull(detectPrompt("✗ Compaction failed\nRetry the compaction?", blocked = true))
+        // Code that ends in "?" is not a question.
+        assertEquals(null, detectPrompt("fun f(name: String?)\nval name: String?\n// why?", blocked = true))
+        // A traceback the agent shows from your program is not its crash; with the shell back, it is.
+        val tb = "Traceback (most recent call last):\n  File \"t.py\", line 1\nZeroDivisionError: division by zero"
+        assertEquals(null, detectAgentError(tb + "\n› "))
+        assertTrue(detectAgentError(tb + "\nbill@demo-box2:~/x$")!!.contains("the agent exited"))
+        // A status word after a path is not part of it.
+        val text = "  Would you like to make the following edits?\n  Destination: /tmp/foo\n  Done.\n› 1. Yes, proceed (y)\n  2. No, and tell Codex what to do differently (esc)\n  Press enter to confirm or esc to cancel"
+        assertEquals("/tmp/foo", detectPrompt(text, blocked = true, agent = "codex")!!.shownParts().blocks.first { it.kind == QKind.COMMAND }.text)
+    }
 }

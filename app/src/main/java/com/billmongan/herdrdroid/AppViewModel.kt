@@ -1174,6 +1174,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         current?.let { previewCache[it.id] = previews; modelCache[it.id] = models }
     }
 
+    /** How many lines the alerts read, when made and when answered: the same both times (1.4.2). */
+    private val NOTIFY_READ_LINES = 80
+
     /** Why the open pane's screen couldn't be read, when the last read failed (1.4.2); null after a good read. */
     var paneReadProblem by mutableStateOf<String?>(null)
         private set
@@ -2413,8 +2416,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             if (onScreen) continue
             when {
                 p.status == Status.NEEDS_YOU -> viewModelScope.launch {
-                    val text = runCatching { client()?.read(p.id, 40) }.getOrNull().orEmpty()
-                    val prompt = detectPrompt(text, blocked = true)
+                    val text = runCatching { client()?.read(p.id, NOTIFY_READ_LINES) }.getOrNull().orEmpty()
+                    // A screen that couldn't be read: one plain notice, no question and no Reply (1.4.2, from review).
+                    if (text.isBlank()) { Notify.unread(app, serverId, serverLabel, p.id, p.agentName); return@launch }
+                    val prompt = detectPrompt(text, blocked = true, agent = p.agent)
                     // An agent's error, not a question (1.4.2): its own alert, once per change of state.
                     val error = if (prompt == null) com.billmongan.herdrdroid.herdr.detectAgentError(text) else null
                     if (error != null) { Notify.agentError(app, serverId, serverLabel, p.id, p.agentName, error); return@launch }
@@ -2422,7 +2427,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     // no alert. A screen that couldn't be read still alerts, saying so.
                     if (prompt == null && text.isNotBlank()) { com.billmongan.herdrdroid.diag.DiagLog.log("watch", "${p.id}: herdr says blocked, but nothing on screen asks; no alert"); return@launch }
                     withContext(Dispatchers.Main) { if (prompt != null && prompt.choices.isNotEmpty()) observeQuestion(serverId, p.id, prompt, p.status, p.agentName) }
-                    Notify.needsYou(app, serverId, serverLabel, p.id, p.agentName, prompt?.question ?: "Waiting for you.", prompt?.choices.orEmpty())
+                    Notify.needsYou(app, serverId, serverLabel, p.id, p.agentName, prompt?.question ?: "Waiting for you.", prompt?.choices.orEmpty(), p.agent)
                 }
                 // Only agents that need you notify (Bill, 2026-11-13); finishing doesn't.
                 before == Status.NEEDS_YOU -> {
@@ -2453,15 +2458,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer", "The app isn't connected to $serverLabel, so the answer wasn't sent.")
             return
         }
-        // One answer at a time per pane: a second tap while the first is on its way is dropped.
-        val flight = "${a.serverId}|${a.paneId}"
-        if (!notifyInFlight.add(flight)) return
-        try { answerFromNotificationNow(h, a, app, serverLabel) } finally { notifyInFlight.remove(flight) }
+        // One answer per question (1.4.2, from review): taps are handled one after another, so a second
+        // tap for a question already answered from its alert is dropped for 15 seconds, before the
+        // pane may have redrawn.
+        val key = "${a.serverId}|${a.paneId}|${a.question.filterNot { it.isWhitespace() }}"
+        val at = notifyAnswered[key]
+        if (at != null && System.currentTimeMillis() - at < 15_000) return
+        answerFromNotificationNow(h, a, app, serverLabel) { notifyAnswered[key] = System.currentTimeMillis() }
     }
 
-    private val notifyInFlight = java.util.Collections.synchronizedSet(HashSet<String>())
+    /** When each question (server, pane, question text) was last answered from its alert. */
+    private val notifyAnswered = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
-    private suspend fun answerFromNotificationNow(h: Herdr, a: NotifyAction, app: Application, serverLabel: String) {
+    private suspend fun answerFromNotificationNow(h: Herdr, a: NotifyAction, app: Application, serverLabel: String, answered: () -> Unit) {
         // A typed reply: sent as a message (as the answer when the agent is waiting on a question).
         if (a.isReply) {
             runCatching {
@@ -2475,13 +2484,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             return
         }
-        val text = runCatching { h.read(a.paneId, 40) }.getOrNull()
+        val text = runCatching { h.read(a.paneId, NOTIFY_READ_LINES) }.getOrNull()
         if (text.isNullOrBlank()) {
             // Not "the question changed": the app couldn't see (1.4.2, from review).
             Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer", "The pane's screen couldn't be read, so the answer wasn't sent.")
             return
         }
-        val now = detectPrompt(text, blocked = true)
+        // The same depth and agent the alert was made with (1.4.2, from review).
+        val now = detectPrompt(text, blocked = true, agent = a.agent)
         if (!notificationAnswerStillFits(now, a)) {
             // The question's words still on screen but not read as that card: say the app couldn't
             // tell, rather than that it changed.
@@ -2507,10 +2517,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             else if (a.pressEnter) h.typeAndEnter(a.paneId, a.keys)
             else h.sendText(a.paneId, a.keys)
             sent = true
+            answered()
             Notify.sending(app, a.serverId, a.paneId, "Answered", label)
             // Recorded once it was sent (1.3.2); a failure here is not a failed answer.
             runCatching { withContext(Dispatchers.Main) { noteAnswer(a.paneId, now, label, a.serverId) } }
         } catch (c: CancellationException) {
+            // The alert never stays on "Sending" (1.4.2, from review).
+            Notify.sending(app, a.serverId, a.paneId, if (sent) "Answered" else "Open HerdrDroid to answer", if (sent) "" else "The answer wasn't sent.")
             throw c
         } catch (e: Exception) {
             // Only a send that didn't go out is reported, so answering again can't send it twice.

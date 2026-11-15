@@ -27,6 +27,8 @@ data class NotifyAction(
     val serverId: String, val paneId: String, val keys: String, val pressEnter: Boolean, val question: String,
     /** The label of the choice the button answers (1.4.2): checked too, so a reworded question still matches its options. */
     val label: String = "",
+    /** The pane's agent, so the tap reads the screen the way the alert did (1.4.2). */
+    val agent: String? = null,
     /** True for the Esc button: [keys] is a key name sent with send-keys, not typed text. */
     val isKey: Boolean = false,
     /** True for a typed reply from the notification: [keys] is the message. */
@@ -141,7 +143,7 @@ object Notify {
     }
 
     /** An agent is waiting on a question; [choices] become up to two buttons, plus Esc to decline. */
-    fun needsYou(ctx: Context, serverId: String, serverLabel: String, paneId: String, agent: String, question: String, choices: List<Choice>) {
+    fun needsYou(ctx: Context, serverId: String, serverLabel: String, paneId: String, agent: String, question: String, choices: List<Choice>, agentKind: String? = null) {
         if (!allowed(ctx)) return
         // Past the fingerprint window (1.3.1): the alert still comes, without the question or the
         // answer buttons; opening it asks for the fingerprint first.
@@ -173,7 +175,7 @@ object Notify {
             val i = Intent(ctx, ActionReceiver::class.java)
                 .forButton(serverId, paneId, n)
                 .putExtra(EXTRA_SERVER, serverId).putExtra(EXTRA_PANE, paneId)
-                .putExtra("keys", c.keys).putExtra("enter", c.pressEnter).putExtra("question", question).putExtra("label", c.label)
+                .putExtra("keys", c.keys).putExtra("enter", c.pressEnter).putExtra("question", question).putExtra("label", c.label).putExtra("agent", agentKind)
             val pi = PendingIntent.getBroadcast(ctx, code(serverId, paneId, n), i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
             b.addAction(0, c.label.take(24), pi)
         }
@@ -181,7 +183,7 @@ object Notify {
         val esc = Intent(ctx, ActionReceiver::class.java)
             .forButton(serverId, paneId, 3)
             .putExtra(EXTRA_SERVER, serverId).putExtra(EXTRA_PANE, paneId)
-            .putExtra("keys", "esc").putExtra("isKey", true).putExtra("question", question)
+            .putExtra("keys", "esc").putExtra("isKey", true).putExtra("question", question).putExtra("agent", agentKind)
         b.addAction(0, "Esc", PendingIntent.getBroadcast(ctx, code(serverId, paneId, 3), esc, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
         if (choices.isEmpty()) b.addAction(replyAction(ctx, serverId, paneId, agent, question = question))
         runCatching { NotificationManagerCompat.from(ctx).notify(id(serverId, paneId), b.build()) }
@@ -214,6 +216,19 @@ object Notify {
             .setSmallIcon(R.drawable.ic_notify)
             .setContentTitle("$agent stopped on an error · $serverLabel")
             .setContentText(if (com.billmongan.herdrdroid.store.Vaults.locked()) LOCKED_TEXT else "$agent: $error")
+            .setContentIntent(openIntent(ctx, serverId, paneId))
+            .setAutoCancel(true)
+            .build()
+        runCatching { NotificationManagerCompat.from(ctx).notify(id(serverId, paneId), n) }
+    }
+
+    /** An agent waits, but its screen couldn't be read (1.4.2): a plain notice, no question and no buttons. */
+    fun unread(ctx: Context, serverId: String, serverLabel: String, paneId: String, agent: String) {
+        if (!allowed(ctx)) return
+        val n = NotificationCompat.Builder(ctx, ATTENTION)
+            .setSmallIcon(R.drawable.ic_notify)
+            .setContentTitle("$agent may need you · $serverLabel")
+            .setContentText("The app couldn't read its screen. Open HerdrDroid to see it.")
             .setContentIntent(openIntent(ctx, serverId, paneId))
             .setAutoCancel(true)
             .build()
@@ -295,7 +310,7 @@ class ActionReceiver : BroadcastReceiver() {
         val taken = AppBus.emit(
             NotifyAction(
                 server, pane, intent.getStringExtra("keys").orEmpty(), intent.getBooleanExtra("enter", false),
-                intent.getStringExtra("question").orEmpty(), label = label, isKey = intent.getBooleanExtra("isKey", false),
+                intent.getStringExtra("question").orEmpty(), label = label, agent = intent.getStringExtra("agent"), isKey = intent.getBooleanExtra("isKey", false),
             ),
         )
         if (taken) Notify.sending(context, server, pane, "Sending your answer", if (label.isNotEmpty()) label else "Esc")
