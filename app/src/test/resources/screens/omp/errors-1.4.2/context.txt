@@ -1,0 +1,5 @@
+  (the agent's earlier output)
+
+Error: exceeds the context window of llmproxy/flagship__free
+
+ π > ⬢ llmproxy/flagship__free > 📁 ~/agents/omp ▶─────────────────...74%╎...128K

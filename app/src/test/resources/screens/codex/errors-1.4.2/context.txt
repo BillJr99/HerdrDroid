@@ -1,0 +1,8 @@
+  (the agent's earlier output)
+
+■ Context window exceeded while compacting; removing oldest history item.
+
+› Ask Codex to do anything
+
+  GPT-6.1-Sol default · ~/agents/codex
+  ← for agents · ? for shortcuts

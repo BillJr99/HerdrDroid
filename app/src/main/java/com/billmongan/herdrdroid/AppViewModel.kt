@@ -1179,17 +1179,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
 
     suspend fun readPane(paneId: String) {
+        // Only for the pane open now (1.4.2, from review: a late answer for another pane set or
+        // cleared the open pane's problem).
+        fun isOpen() = (screen as? Screen.Agent)?.paneId == paneId
+        fun problem(why: String) {
+            if (!isOpen()) return
+            if (paneReadProblem != why) com.billmongan.herdrdroid.diag.DiagLog.log("read", "$paneId: the screen couldn't be read: $why")
+            paneReadProblem = why
+        }
         quietly { h ->
-            try { h.read(paneId).also { paneReadProblem = null } } catch (e: Exception) {
+            try { h.read(paneId) } catch (e: Exception) {
                 if (e is CancellationException || e is LinkDown || e is AuthRejected || e is HostKeyChanged) throw e
                 // A failed read was silent before (1.4.2: Bill's Codex card showed nothing, and the
                 // terminal view said "Loading…"): say why, in the diagnostics and the terminal view.
-                val why = e.message?.take(120) ?: e.javaClass.simpleName
-                if (paneReadProblem != why) com.billmongan.herdrdroid.diag.DiagLog.log("read", "$paneId: the screen couldn't be read: $why")
-                paneReadProblem = why
+                problem(e.message?.take(120) ?: e.javaClass.simpleName)
                 null
             }
         }?.let { text ->
+            // An empty screen is not a good read (1.4.2, from review: the blank screen Bill hit was one).
+            if (text.isBlank()) { problem("the screen came back empty"); return }
+            if (isOpen()) paneReadProblem = null
             // Switched to another agent while this read was on its way: it isn't that agent's screen.
             if ((screen as? Screen.Agent)?.paneId != paneId) return
             noteInputLine(paneId, text)
@@ -2436,9 +2445,23 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** A notification button: answer only if the same question is still on screen. */
     private suspend fun answerFromNotification(a: NotifyAction) {
-        val h = if (a.serverId == current?.id) herdr else fleet?.herdr(a.serverId)
-        h ?: return
         val app = getApplication<Application>()
+        val serverLabel = servers.firstOrNull { it.id == a.serverId }?.label ?: ""
+        val h = if (a.serverId == current?.id) herdr else fleet?.herdr(a.serverId)
+        if (h == null) {
+            // Not connected to that server now (1.4.2, from review: the alert stayed on "Sending").
+            Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer", "The app isn't connected to $serverLabel, so the answer wasn't sent.")
+            return
+        }
+        // One answer at a time per pane: a second tap while the first is on its way is dropped.
+        val flight = "${a.serverId}|${a.paneId}"
+        if (!notifyInFlight.add(flight)) return
+        try { answerFromNotificationNow(h, a, app, serverLabel) } finally { notifyInFlight.remove(flight) }
+    }
+
+    private val notifyInFlight = java.util.Collections.synchronizedSet(HashSet<String>())
+
+    private suspend fun answerFromNotificationNow(h: Herdr, a: NotifyAction, app: Application, serverLabel: String) {
         // A typed reply: sent as a message (as the answer when the agent is waiting on a question).
         if (a.isReply) {
             runCatching {
@@ -2453,35 +2476,46 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         val text = runCatching { h.read(a.paneId, 40) }.getOrNull()
-        if (text == null) {
-            Notify.needsYou(app, a.serverId, servers.firstOrNull { it.id == a.serverId }?.label ?: "", a.paneId, "The agent",
-                "Your answer couldn't be sent: the screen couldn't be read. Open the app to answer.", emptyList())
+        if (text.isNullOrBlank()) {
+            // Not "the question changed": the app couldn't see (1.4.2, from review).
+            Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer", "The pane's screen couldn't be read, so the answer wasn't sent.")
             return
         }
         val now = detectPrompt(text, blocked = true)
         if (!notificationAnswerStillFits(now, a)) {
-            Notify.needsYou(app, a.serverId, servers.firstOrNull { it.id == a.serverId }?.label ?: "", a.paneId, "The agent",
-                "The question changed before your answer arrived. Open the app to answer.", emptyList())
+            // The question's words still on screen but not read as that card: say the app couldn't
+            // tell, rather than that it changed.
+            val stillThere = a.question.isNotBlank() && text.filterNot { it.isWhitespace() }.contains(a.question.filterNot { it.isWhitespace() }.take(60))
+            Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
+                if (stillThere) "The app couldn't match your answer to the question on screen, so nothing was sent."
+                else "The question changed before your answer arrived, so nothing was sent.")
             return
         }
-        runCatching {
+        var sent = false
+        try {
             val label = now?.choices?.firstOrNull { it.keys == a.keys }?.label ?: if (a.isKey) "Pressed ${a.keys}" else a.keys
             if (a.keys.startsWith("grok-privacy:")) {
-                if (answerGrokPrivacy(h, a.paneId, optIn = a.keys == com.billmongan.herdrdroid.herdr.GROK_PRIVACY_IN) == null)
-                    withContext(Dispatchers.Main) { noteAnswer(a.paneId, now, label, a.serverId) }
-                return@runCatching
+                val problem = answerGrokPrivacy(h, a.paneId, optIn = a.keys == com.billmongan.herdrdroid.herdr.GROK_PRIVACY_IN)
+                sent = problem == null
+                if (sent) { Notify.sending(app, a.serverId, a.paneId, "Answered", label); withContext(Dispatchers.Main) { noteAnswer(a.paneId, now, label, a.serverId) } }
+                else Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer", problem!!)
+                return
             }
             val nav = if (!a.isKey) now?.let { p -> p.choices.firstOrNull { it.keys == a.keys }?.let { c -> com.billmongan.herdrdroid.herdr.menuKeys(p, c) } } else null
             if (nav != null) h.sendKeys(a.paneId, *nav.toTypedArray())
             else if (a.isKey) h.sendKeys(a.paneId, a.keys)
             else if (a.pressEnter) h.typeAndEnter(a.paneId, a.keys)
             else h.sendText(a.paneId, a.keys)
-            // Recorded once it was sent (1.3.2).
-            withContext(Dispatchers.Main) { noteAnswer(a.paneId, now, label, a.serverId) }
+            sent = true
             Notify.sending(app, a.serverId, a.paneId, "Answered", label)
-        }.onFailure {
-            Notify.needsYou(app, a.serverId, servers.firstOrNull { it.id == a.serverId }?.label ?: "", a.paneId, "The agent",
-                "Your answer couldn't be sent (${it.message}). Open the app to answer.", emptyList())
+            // Recorded once it was sent (1.3.2); a failure here is not a failed answer.
+            runCatching { withContext(Dispatchers.Main) { noteAnswer(a.paneId, now, label, a.serverId) } }
+        } catch (c: CancellationException) {
+            throw c
+        } catch (e: Exception) {
+            // Only a send that didn't go out is reported, so answering again can't send it twice.
+            if (!sent) Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
+                "Your answer couldn't be sent (${e.message ?: e.javaClass.simpleName}).")
         }
     }
 

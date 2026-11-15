@@ -1,0 +1,7 @@
+  (the agent's earlier output)
+
+  ✗ Error: fetch failed (ECONNRESET)
+
+  ┃  Ask anything...
+  ┃  Build  llmproxy__flagship/free
+                                                   tab agents  ctrl+p commands

@@ -1,0 +1,7 @@
+  (the agent's earlier output)
+
+Error: quota exceeded for the Antigravity plan; resets at 00:00 UTC
+
+> 
+
+  Gemini 4 Argon · medium · ~/agents/agy

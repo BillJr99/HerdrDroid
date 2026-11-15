@@ -1,0 +1,8 @@
+  (the agent's earlier output)
+
+  ⚠ Compaction failed - the summary request timed out
+
+  ╭──────────────────────────────────────────────────────────────╮
+  │ ❯                                                            │
+  ╰──────────────────────────────────────────── Grok 4.7 (high) ─╯
+  Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+.:shortcuts

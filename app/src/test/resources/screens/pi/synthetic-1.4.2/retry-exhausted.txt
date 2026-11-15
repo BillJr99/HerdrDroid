@@ -1,0 +1,14 @@
+ ╭─ tour-c20.json ─────────────────────────────────────────────────────────────╮
+ │ {                                                                           │
+ │   "title": "Lambda calculus, step by step",                                 │
+ │   "steps": [                                                                │
+ │     { "line": 1, "text": "Start from the identity function." },             │
+ │     { "line": 4, "text": "Apply it to itself: what comes back?" }           │
+ │   ]                                                                         │
+ │ }                                                                           │
+ ╰─────────────────────────────────────────────────────────────────────────────╯
+ Error: Retry budget exhausted after 10 retries: 502 All 6 'llmproxy__flagship/free' candidate(s) failed. Last upstream error:
+   Rate limit exceeded (type=upstream_error param=all_candidates_failed)
+ Error: Retry failed after 10 attempts: 502 All 6 'llmproxy__flagship/free' candidate(s) failed. Last upstream error: Rate limit
+ exceeded (type=upstream_error param=all_candidates_failed)
+ π > ⬢ llmproxy/flagship__free > 📁 ~/agents/pi ▶────...74%╎...128K

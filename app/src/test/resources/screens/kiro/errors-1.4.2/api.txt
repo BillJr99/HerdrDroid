@@ -1,0 +1,7 @@
+  (the agent's earlier output)
+
+  ⚠ Error: Service overloaded error detected (status 500)
+
+› 
+
+ Default · auto · ◔ 2%        ~/agents/kiro

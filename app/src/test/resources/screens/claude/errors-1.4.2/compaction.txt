@@ -1,0 +1,8 @@
+  (the agent's earlier output)
+
+  ⎿  Error: automatic compaction failed: the conversation is too long
+
+╭──────────────────────────────────────────────────────────────╮
+│ >                                                            │
+╰──────────────────────────────────────────────────────────────╯
+  ? for shortcuts

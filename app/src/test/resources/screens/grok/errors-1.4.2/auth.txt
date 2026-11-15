@@ -1,0 +1,8 @@
+  (the agent's earlier output)
+
+  ⚠ Error: auth provider 401: please log in again with grok login
+
+  ╭──────────────────────────────────────────────────────────────╮
+  │ ❯                                                            │
+  ╰──────────────────────────────────────────── Grok 4.7 (high) ─╯
+  Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+.:shortcuts

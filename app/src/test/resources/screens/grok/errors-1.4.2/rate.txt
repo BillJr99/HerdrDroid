@@ -1,0 +1,8 @@
+  (the agent's earlier output)
+
+  ⚠ Rate limited: too many requests. Try again in 30 seconds.
+
+  ╭──────────────────────────────────────────────────────────────╮
+  │ ❯                                                            │
+  ╰──────────────────────────────────────────── Grok 4.7 (high) ─╯
+  Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+.:shortcuts

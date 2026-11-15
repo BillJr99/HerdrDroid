@@ -1,0 +1,7 @@
+  (the agent's earlier output)
+
+  ✗ Error: AI.Error.QuotaExceeded: quota exceeded for this provider
+
+  ┃  Ask anything...
+  ┃  Build  llmproxy__flagship/free
+                                                   tab agents  ctrl+p commands

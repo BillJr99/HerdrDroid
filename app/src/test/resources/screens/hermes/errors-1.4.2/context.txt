@@ -1,0 +1,7 @@
+  (the agent's earlier output)
+
+  ✗ Error: context_length_exceeded: the prompt is too long
+
+❯ 
+
+ ☤ Hermes · claude-opus-5-5 · ~/agents/hermes

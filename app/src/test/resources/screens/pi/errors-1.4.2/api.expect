@@ -1,0 +1,4 @@
+card: none
+blocked: true
+error: retries exhausted; every model candidate failed; model rate-limited
+source: modeled on the agent's error style (no live capture or source string); omp's identical screen was captured live today

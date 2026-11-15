@@ -1,0 +1,7 @@
+  (the agent's earlier output)
+
+  ⚠ Error: You have used all your Kiro credits for this month. Quota exceeded.
+
+› 
+
+ Default · auto · ◔ 2%        ~/agents/kiro

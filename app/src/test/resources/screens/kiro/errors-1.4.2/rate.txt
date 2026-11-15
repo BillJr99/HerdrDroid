@@ -1,0 +1,7 @@
+  (the agent's earlier output)
+
+  ⚠ Error: Too Many Requests: rate limit exceeded, retrying
+
+› 
+
+ Default · auto · ◔ 2%        ~/agents/kiro

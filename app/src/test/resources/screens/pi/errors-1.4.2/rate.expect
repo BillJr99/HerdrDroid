@@ -1,0 +1,4 @@
+card: none
+blocked: true
+error: model rate-limited; provider error
+source: modeled on the agent's error style (no live capture or source string); pi's 429 was seen live today

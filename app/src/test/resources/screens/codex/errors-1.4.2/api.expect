@@ -1,0 +1,4 @@
+card: none
+blocked: true
+error: provider error; model overloaded
+source: modeled on the agent's error style (no live capture or source string)

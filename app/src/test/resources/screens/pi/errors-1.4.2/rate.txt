@@ -1,0 +1,5 @@
+  (the agent's earlier output)
+
+Error: 429 Rate limit exceeded (type=upstream_error)
+
+ π > ⬢ llmproxy/flagship__free > 📁 ~/agents/pi ▶──────────────────...12%╎...128K

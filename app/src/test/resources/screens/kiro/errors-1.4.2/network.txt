@@ -1,0 +1,7 @@
+  (the agent's earlier output)
+
+  ⚠ Error: dispatch failure: connection reset
+
+› 
+
+ Default · auto · ◔ 2%        ~/agents/kiro

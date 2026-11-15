@@ -1,0 +1,7 @@
+  (the agent's earlier output)
+
+  ✗ Error: fetch failed (ECONNREFUSED)
+
+❯ 
+
+ Interactive · Manual Approval · / commands    GPT-5.6 Terra

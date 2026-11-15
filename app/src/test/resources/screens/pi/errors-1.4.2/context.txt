@@ -1,0 +1,5 @@
+  (the agent's earlier output)
+
+Error: context window exceeded (131072 tokens)
+
+ π > ⬢ llmproxy/flagship__free > 📁 ~/agents/pi ▶──────────────────...12%╎...128K

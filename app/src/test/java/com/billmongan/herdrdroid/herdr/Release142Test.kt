@@ -85,4 +85,62 @@ class Release142Test {
         val both = "✗ Compaction failed earlier\n\n" + screen("codex/captured-2026-11-14/edit-approval.txt")
         assertEquals(3, detectPrompt(both, blocked = true, agent = "codex")!!.choices.size)
     }
+    @Test fun letterKeysOnlyForCodexMenus() {
+        // The same "(y)" label on another agent's menu (no Codex footer, not Codex) keeps arrows and Enter.
+        val other = " Go ahead?\n ❯ 1. Yes, go (y)\n   2. No, stop (n)\n Enter to select · Esc to cancel"
+        val p = detectPrompt(other, blocked = true, agent = "claude")!!
+        assertFalse(p.shortcuts)
+        assertEquals(listOf("down", "enter"), menuKeys(p, p.choices[1]))
+        // A choice not on the menu gets no letter.
+        val codex = detectPrompt(screen("codex/captured-2026-11-14/edit-approval.txt"), blocked = true)!!
+        assertTrue(codex.shortcuts)
+        assertEquals(null, menuKeys(codex, Choice("Something else (z)", "9", false)))
+    }
+
+    @Test fun aRegionOfBlankLinesStillShowsTheNote() {
+        assertEquals(listOf(UNREAD_SCREEN), Prompt("Waiting", emptyList(), region = listOf("", "  ")).forCard().region)
+    }
+
+    @Test fun aStatusWordAfterAPathIsNotPartOfIt() {
+        val text = """
+  Would you like to make the following edits?
+  Destination: /tmp/foo
+  Ready
+› 1. Yes, proceed (y)
+  2. No, and tell Codex what to do differently (esc)
+  Press enter to confirm or esc to cancel
+""".trimIndent()
+        assertEquals("/tmp/foo", detectPrompt(text, blocked = true, agent = "codex")!!.shownParts().blocks.first { it.kind == QKind.COMMAND }.text)
+    }
+    @Test fun ompsRetryErrorIsABannerAndItsCodeBoxIsNoCard() {
+        for (name in listOf("omp/captured-2026-11-14/retry-exhausted.txt", "pi/synthetic-1.4.2/retry-exhausted.txt")) {
+            val text = screen(name)
+            for (agent in listOf("omp", "pi", null)) assertEquals(name, null, detectPrompt(text, blocked = true, agent = agent))
+            val why = detectAgentError(text)!!
+            assertTrue(why, why.contains("retries exhausted") && why.contains("model rate-limited"))
+        }
+        // The boxed code alone, with herdr saying blocked and no error under it: still no card.
+        val box = screen("omp/captured-2026-11-14/retry-exhausted.txt").lines().take(9).joinToString("\n") + "\n π > ⬢ llmproxy/flagship__free > 📁 ~/agents/omp"
+        assertEquals(null, detectPrompt(box, blocked = true, agent = "omp"))
+        // Even when a line in the box ends in a question mark.
+        val asking = box.replace("what comes back?\" }", "what comes back?")
+        assertEquals(null, detectPrompt(asking, blocked = true, agent = "omp"))
+    }
+    @Test fun aConversationAboutErrorsShowsNoBanner() {
+        // Every one of these words, said in a conversation (yours or the agent's), not as an error.
+        val talk = listOf(
+            "> why did we hit a rate limit exceeded error yesterday? was it a 429?",
+            "❯ check the quota exceeded and usage limit messages, and the 402 Payment Required case",
+            "› what does 'context window exceeded' mean, and when does compaction failed show up?",
+            "The 429 responses mean the provider rate-limited us; a 503 Service Unavailable is different.",
+            "When the context window exceeds its limit, the agent compacts the conversation first.",
+            "A token expired message means you need to log in again; 401 and 403 are auth failures.",
+            "Overloaded providers return 529; a connection reset or network error is retried.",
+            "I fixed the out of credits banner and the not logged in check in the parser.",
+        )
+        for (n in talk.indices) {
+            val screen = talk.take(n + 1).joinToString("\n")
+            assertEquals(screen, null, detectAgentError(screen))
+        }
+    }
 }

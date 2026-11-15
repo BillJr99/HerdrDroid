@@ -600,6 +600,8 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                     Text(vm.paneReadProblem?.let { "The app couldn't read this pane's screen yet ($it). It keeps trying." } ?: "Loading…",
                         color = Palette.Muted, fontSize = 15.sp)
                 } else if (fullTerminal) {
+                    // The last screen that was read, saying so when the latest read failed (1.4.2, from review).
+                    vm.paneReadProblem?.let { Text("The latest read failed ($it); this is the last screen the app read.", color = Palette.OrangeInk, fontSize = 12.5.sp) }
                     SelectionContainer {
                         Text(
                             text,

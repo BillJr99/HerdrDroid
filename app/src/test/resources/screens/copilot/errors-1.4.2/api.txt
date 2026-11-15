@@ -1,0 +1,7 @@
+  (the agent's earlier output)
+
+  ✗ Error: 503 Service Unavailable
+
+❯ 
+
+ Interactive · Manual Approval · / commands    GPT-5.6 Terra

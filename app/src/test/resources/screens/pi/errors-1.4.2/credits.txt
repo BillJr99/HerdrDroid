@@ -1,0 +1,5 @@
+  (the agent's earlier output)
+
+Error: 402 Payment Required: insufficient credits on this provider
+
+ π > ⬢ llmproxy/flagship__free > 📁 ~/agents/pi ▶──────────────────...12%╎...128K

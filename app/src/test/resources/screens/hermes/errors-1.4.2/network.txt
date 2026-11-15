@@ -1,0 +1,7 @@
+  (the agent's earlier output)
+
+  ✗ Error: connection closed by the gateway
+
+❯ 
+
+ ☤ Hermes · claude-opus-5-5 · ~/agents/hermes

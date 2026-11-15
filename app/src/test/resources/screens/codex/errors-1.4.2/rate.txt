@@ -1,0 +1,8 @@
+  (the agent's earlier output)
+
+■ stream error: 429 Too Many Requests; retrying in 30s
+
+› Ask Codex to do anything
+
+  GPT-6.1-Sol default · ~/agents/codex
+  ← for agents · ? for shortcuts

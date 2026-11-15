@@ -1,0 +1,8 @@
+  (the agent's earlier output)
+
+■ stream error: 500 Internal Server Error; the server is overloaded
+
+› Ask Codex to do anything
+
+  GPT-6.1-Sol default · ~/agents/codex
+  ← for agents · ? for shortcuts

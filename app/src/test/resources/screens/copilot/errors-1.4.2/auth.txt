@@ -1,0 +1,7 @@
+  (the agent's earlier output)
+
+  ✗ Error: You are not logged in. Run /login to sign in to GitHub.
+
+❯ 
+
+ Interactive · Manual Approval · / commands    GPT-5.6 Terra

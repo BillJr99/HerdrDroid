@@ -1,0 +1,7 @@
+  (the agent's earlier output)
+
+  ✗ Error: 503 Service Unavailable from api.mistral.ai
+
+> 
+
+/home/user/agents/vibe                 usage ▏      0% · ctx ▍      11.8k/202k

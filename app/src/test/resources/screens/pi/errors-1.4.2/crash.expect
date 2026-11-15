@@ -1,0 +1,4 @@
+card: none
+blocked: true
+error: the agent crashed; the agent exited
+source: modeled on the agent's error style (no live capture or source string)

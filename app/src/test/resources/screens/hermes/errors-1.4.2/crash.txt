@@ -1,0 +1,6 @@
+  (the agent's earlier output)
+
+Traceback (most recent call last):
+  File "hermes/cli.py", line 88, in run
+RuntimeError: gateway stopped
+bill@demo-box2:~/agents/hermes$

@@ -1,0 +1,7 @@
+  (the agent's earlier output)
+
+  ✗ Error: Unauthorized: run /connect to sign in to the provider again
+
+  ┃  Ask anything...
+  ┃  Build  llmproxy__flagship/free
+                                                   tab agents  ctrl+p commands

@@ -1,0 +1,7 @@
+  (the agent's earlier output)
+
+Error: 503 Service Unavailable: the model is overloaded
+
+> 
+
+  Gemini 4 Argon · medium · ~/agents/agy

@@ -938,12 +938,14 @@ data class Prompt(
     val region: List<String>? = null,
     /** A list of checkboxes (several can be picked): a choice toggles its row, Enter submits (1.4.0). */
     val multi: Boolean = false,
+    /** Codex's menu, whose options name their own keys ("Yes, proceed (y)"): those keys answer it (1.4.2). */
+    val shortcuts: Boolean = false,
 ) {
     /**
      * Never an empty card (1.4.2): a prompt with no choices always has something to show, the
      * screen region or, when the screen couldn't be read, a note saying so, with the generic keys.
      */
-    fun forCard(): Prompt = if (choices.isNotEmpty() || !region.isNullOrEmpty()) this else copy(region = listOf(UNREAD_SCREEN))
+    fun forCard(): Prompt = if (choices.isNotEmpty() || region.orEmpty().any { it.isNotBlank() }) this else copy(region = listOf(UNREAD_SCREEN))
 
     /** [parts], or the same layout read from the question's text. */
     fun shownParts(): QuestionParts = parts ?: questionParts(listOf(QLine(question)))
@@ -976,6 +978,8 @@ data class QLine(val text: String, val cmd: Boolean = false, val gapBefore: Bool
 private val TAB_ITEM = Regex("""([☐☒✔✓☑])\s*([^☐☒✔✓☑←→]+)""")
 /** "Reason: …", "Environment: local", "Read: /path": a labelled line of context, never the heading. */
 private val LABEL_LINE = Regex("""^[A-Z][A-Za-z ]{0,24}:\s""")
+/** The rest of a wrapped path: no spaces, and path characters in it (1.4.2, from review: not a status word). */
+private val PATH_PIECE = Regex("""^[^\s]*[/._\-~][^\s]*$""")
 /** A label whose value is a path, address or tool name, shown in a monospace block (1.4.2). */
 private val PATH_LABEL = Regex("""^(Destination|Path|File|Files|Directory|Target|URL|Host|Server|Tool):\s+(\S.*)$""")
 /** A line that only introduces the command under it. */
@@ -1065,7 +1069,7 @@ fun questionParts(lines: List<QLine>): QuestionParts {
             continue
         }
         // A long path wrapped onto the next line goes on in its block (1.4.2).
-        if (last != null && last.inPlace && !l.gapBefore && !t.contains(' ') && !LABEL_LINE.containsMatchIn(t)) { last.text += t; continue }
+        if (last != null && last.inPlace && !l.gapBefore && PATH_PIECE.matches(t) && !LABEL_LINE.containsMatchIn(t)) { last.text += t; continue }
         // Grok's title ("Check SSH to demo-box: grok usage ...") came joined to its command before.
         // A capitalised line after a "Label: …" line is a new sentence ("Reason: outside workspace"
         // over "Allow access to this file?"); a wrapped label line goes on in lower case.
@@ -1143,6 +1147,8 @@ fun isCheckbox(label: String): Boolean = CHECKBOX.containsMatchIn(label.trim())
 /** An option whose own label says Esc answers it: "No, and tell Codex what to do differently (esc)". */
 private val ESC_LABEL = Regex("""\((?:esc)\b[^)]*\)""", RegexOption.IGNORE_CASE)
 private val REJECT_LABEL = Regex("""^(deny|reject|no)\b""", RegexOption.IGNORE_CASE)
+/** Codex's approval footer (1.4.2). */
+private val CODEX_FOOTER = Regex("""Press enter to confirm or esc to cancel""", RegexOption.IGNORE_CASE)
 /** An option's own one-letter key at the end of its label, "(y)" (1.4.2). */
 private val SHORTCUT_LABEL = Regex("""\(([a-z])\)\s*$""")
 
@@ -1154,7 +1160,7 @@ fun menuKeys(prompt: Prompt, choice: Choice): List<String>? {
     if (ESC_LABEL.containsMatchIn(choice.label) || (prompt.escRejects && REJECT_LABEL.containsMatchIn(choice.label))) return listOf("esc")
     // Codex names each option's own key at the end of its label: "Yes, proceed (y)", "Yes, and don't
     // ask again for these files (a)". That key answers it directly (1.4.2).
-    SHORTCUT_LABEL.find(choice.label)?.let { return listOf(it.groupValues[1]) }
+    if (prompt.shortcuts && prompt.choices.any { it.keys == choice.keys }) SHORTCUT_LABEL.find(choice.label)?.let { return listOf(it.groupValues[1]) }
     val from = prompt.selected?.toIntOrNull() ?: return null
     val to = choice.keys.toIntOrNull() ?: return null
     if (prompt.choices.none { it.keys == choice.keys }) return null
@@ -1306,28 +1312,62 @@ fun detectUnnumberedMenu(text: String): Prompt? {
  * the defaults are used, as before.
  */
 /**
- * An agent's error on screen (1.4.2, Bill's opencode pane: herdr said "blocked", the screen showed a
- * failed compaction and a rate limit, and the app showed an empty question card): a short summary
- * such as "model rate-limited; compaction failed", or null. Read from the bottom 30 lines only, and
- * only from lines that look like an error (a ✗ or ⚠ mark, "Error", "failed", a limit reached), so
- * a conversation that merely mentions rate limits is not one.
+ * An agent's error on screen (1.4.2, Bill's opencode and omp panes: herdr said "blocked", the screen
+ * showed a failed compaction or a rate limit, and the app showed an empty question card): a short
+ * summary such as "compaction failed; model rate-limited", or null.
+ *
+ * Only the bottom 12 lines count, and only a line that reads as an error: one that starts with an
+ * error mark (✗ ⚠ × ■ ⎿ !) or word (Error, Fatal, Failed), says "error:" or "(HTTP 5xx)", or opens
+ * with one of the agents' own unmistakable messages ("You are not logged in", "Your credit balance
+ * is too low"); the line after such a line counts too, for an error wrapped over two lines. Your
+ * own lines (">", "❯", "›") never count, so a conversation about rate limits shows no banner. A
+ * crash (a panic, a traceback, a fatal error) counts wherever it is in those lines.
  */
 fun detectAgentError(text: String): String? {
-    val tail = text.lines().map { it.trim().trim('│', '┃', '|', '─', ' ') }.filter { it.isNotBlank() }.takeLast(30)
+    val rows = text.lines().map { it.trim().trim('│', '┃', '|', ' ').trim() }.filter { it.isNotBlank() }.takeLast(12)
     val found = linkedSetOf<String>()
-    for (l in tail) for ((pattern, summary) in AGENT_ERRORS) if (pattern.containsMatchIn(l)) found += summary
+    var carry = false
+    for (l in rows) {
+        val mine = YOUR_LINE.containsMatchIn(l)
+        val marked = !mine && (ERROR_MARK.containsMatchIn(l) || AGENT_OWN_ERROR.containsMatchIn(l))
+        if (marked || (carry && !mine)) for ((pattern, summary) in AGENT_ERRORS) if (pattern.containsMatchIn(l)) found += summary
+        if (!mine) for ((pattern, summary) in AGENT_CRASHES) if (pattern.containsMatchIn(l)) found += summary
+        carry = marked
+    }
+    // A crash with the shell's prompt back under it: the agent is gone.
+    if (found.any { it == "the agent crashed" } && rows.lastOrNull()?.let { SHELL_PROMPT.containsMatchIn(it) } == true) found += "the agent exited"
     return found.takeIf { it.isNotEmpty() }?.joinToString("; ")
 }
 
+/** Your own lines: the echo of what you typed, or the input box. */
+private val YOUR_LINE = Regex("""^(>|❯|›|»)(\s|$)""")
+private val ERROR_MARK = Regex("""^(✗|⚠|×|✖|❌|■|⎿|‼|!)|^\W{0,3}(Error|ERROR|Fatal|FATAL|fatal|Failed|FAILED|error)\b|\b[Ee]rror:|\((HTTP|status) [45]\d\d\)|\bstatus [45]\d\d\b""")
+/** Messages the agents print on their own line (from their programs' strings, 2026-11-14). */
+private val AGENT_OWN_ERROR = Regex("""^\W{0,3}(You are not logged in|You're not logged in|Not logged in|Please (log|sign) in|Your credit balance is too low|Quota exceeded|Grok is temporarily overloaded|prompt is too long:|Context window exceeded|Compaction failed|Rate limited|Too Many Requests|Service Unavailable|Internal Server Error|Bad Gateway|Token refresh failed|Invalid .{0,40}credentials|Billing error|You've hit your usage limit|Claude usage limit reached|A network error occurred)""", RegexOption.IGNORE_CASE)
+
 private val AGENT_ERRORS = listOf(
-    Regex("""✗\s*Compaction|[Cc]ompaction failed|failed to compact""") to "compaction failed",
+    Regex("""✗\s*Compaction|[Cc]ompaction failed|failed to (start )?compact|compaction:?error|compaction_failed""") to "compaction failed",
     Regex("""\bAll \d+ .{0,80}candidate\(?s?\)? failed""") to "every model candidate failed",
-    Regex("""Rate limit exceeded|rate[- ]limited|\b429\b.{0,40}(Too Many Requests|rate)|Too Many Requests""", RegexOption.IGNORE_CASE) to "model rate-limited",
+    // omp and pi on the llmproxy stack: "Error: Retry budget exhausted after 10 retries: 502 ...".
+    Regex("""Retry budget exhausted|Retry failed after \d+ attempts""", RegexOption.IGNORE_CASE) to "retries exhausted",
+    Regex("""Rate limit(ed| exceeded| reached| error)?\b|rate[-_ ]limited|rate_limit_error|\b429\b|Too Many Requests|resource.?exhausted|MODEL_CAPACITY_(EXHAUSTED|EXCEEDED)""", RegexOption.IGNORE_CASE) to "model rate-limited",
+    Regex("""usage limit|hit your (usage )?limit|quota (exceeded|exhausted)|QuotaExceeded|limit reached.{0,40}reset|insufficient_quota|exceeded your current quota|message quota exceeded""", RegexOption.IGNORE_CASE) to "usage limit reached",
+    Regex("""credit balance is too low|out of credits|insufficient (credits?|balance|funds)|\b402\b|Payment Required|Billing error|billing_block""", RegexOption.IGNORE_CASE) to "out of credits",
     Regex("""API Error:?\s*(\d{3}|Overloaded|Request rejected|Connection)""") to "API error",
-    Regex("""\b(usage limit (reached|hit)|hit your usage limit|reached your usage limit|limit reached.{0,40}resets?|quota exceeded|insufficient_quota|exceeded your current quota)""", RegexOption.IGNORE_CASE) to "usage limit reached",
-    Regex("""\b(Provider|Upstream) error|provider returned an? error|Last upstream error""", RegexOption.IGNORE_CASE) to "provider error",
-    Regex("""\bOverloaded\b|overloaded_error""") to "model overloaded",
+    Regex("""\b(Provider|Upstream) error|upstream_error|provider returned an? error|Last upstream error|\b5\d\d\b.{0,30}(error|server|gateway|unavailable)|\b(status|HTTP) 5\d\d\b|Internal Server Error|Service Unavailable|Bad Gateway|temporarily unavailable""", RegexOption.IGNORE_CASE) to "provider error",
+    Regex("""\b[Oo]verloaded\b|overloaded_error|serverOverloaded""") to "model overloaded",
+    Regex("""network error|connection (lost|reset|refused|closed|timed out)|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|fetch failed|socket hang up|could not resolve host""", RegexOption.IGNORE_CASE) to "connection lost",
+    Regex("""not logged in|please (log|sign) ?in|/login\b|re-?authenticate|log ?in again|token (has )?expired|token_expired|invalid (api[_ ]?key|credentials)|\bunauthori[sz]ed\b|\b401\b|\b403\b|\bforbidden\b|authentication failed""", RegexOption.IGNORE_CASE) to "signed out or not allowed",
+    Regex("""context (window|length) (exceeded|exceeds|is full|limit)|exceeds the context window|prompt is too long|maximum context length|context_length_exceeded|too many tokens""", RegexOption.IGNORE_CASE) to "context window full",
 )
+
+/** A crash: these read as one on their own (a panic, a traceback, a fatal error). */
+private val AGENT_CRASHES = listOf(
+    Regex("""thread '.{1,40}' panicked at|Traceback \(most recent call last\)|Segmentation fault|core dumped|^Killed$|FATAL ERROR:|Unhandled(Promise)?Rejection|unhandled exception|uncaught exception""", RegexOption.IGNORE_CASE) to "the agent crashed",
+)
+
+/** A shell's prompt: "tester@host:~/work$", "bill@demo-box2:~ %", or a bare "$". */
+private val SHELL_PROMPT = Regex("""^([\w.-]+@[\w.-]+(:\S*)?\s?[$#%]|[$#%])\s*$""")
 
 fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version: String? = null): Prompt? {
     val rules = ParserRules.forAgent(agent, version)
@@ -1447,7 +1487,10 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
         // Vibe draws no marker on the highlighted row; a fresh card highlights the first one.
         val selected = run.firstOrNull { it.first in marked }?.second ?: if (vibeCard) "1" else null
         val multi = numbered.count { isCheckbox(it.label) } >= 2
-        return Prompt(question ?: "Choose an option", numbered, selected, escRejects = vibeCard, parts = parts.takeIf { aboveText != null }, multi = multi)
+        // Codex (by name, or by its "Press enter to confirm or esc to cancel" footer) answers an
+        // option by the key in its label; other agents keep arrows and Enter (1.4.2, from review).
+        val shortcuts = agent?.lowercase() == "codex" || lines.takeLast(4).any { CODEX_FOOTER.containsMatchIn(it) }
+        return Prompt(question ?: "Choose an option", numbered, selected, escRejects = vibeCard, parts = parts.takeIf { aboveText != null }, multi = multi, shortcuts = shortcuts)
     }
 
     val yn = Regex("""[(\[]\s*[yY](?:es)?\s*/\s*[nN]o?\s*[)\]]""")
@@ -1477,7 +1520,8 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     // a failed compaction, even on a fresh session, and the app showed an empty card). The fallback
     // card needs something question-like on screen too: a question footer, or a line near the bottom
     // that asks ("…?"). Otherwise the status is stale and there is no card.
-    val asks = lines.takeLast(6).any { clean(it).endsWith("?") }
+    // A line inside a box (a code view, as omp draws one) never counts as asking (1.4.2).
+    val asks = lines.takeLast(6).any { !it.trimStart().startsWith("│") && !it.trimStart().startsWith("┃") && clean(it).endsWith("?") }
     if (footer || (blocked && asks)) {
         val region = raw.dropLastWhile { it.isBlank() }.takeLast(16).map { clean(it) }.dropWhile { it.isEmpty() }
         return Prompt(question ?: "This agent is waiting for you.", emptyList(), region = region.takeIf { r -> r.any { it.isNotBlank() } } ?: listOf(UNREAD_SCREEN))

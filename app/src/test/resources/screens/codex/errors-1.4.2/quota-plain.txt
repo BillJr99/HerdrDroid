@@ -1,0 +1,8 @@
+  (the agent's earlier output)
+
+■ Quota exceeded. Check your plan and billing details.
+
+› Ask Codex to do anything
+
+  GPT-6.1-Sol default · ~/agents/codex
+  ← for agents · ? for shortcuts

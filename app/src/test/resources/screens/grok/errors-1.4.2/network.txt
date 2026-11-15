@@ -1,0 +1,8 @@
+  (the agent's earlier output)
+
+  ⚠ Error: connection lost while streaming the response
+
+  ╭──────────────────────────────────────────────────────────────╮
+  │ ❯                                                            │
+  ╰──────────────────────────────────────────── Grok 4.7 (high) ─╯
+  Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+.:shortcuts

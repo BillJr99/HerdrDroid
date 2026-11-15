@@ -1,0 +1,4 @@
+  (the agent's earlier output)
+
+thread 'tokio-runtime-worker' panicked at src/agent.rs:88:14:
+bill@demo-box2:~/agents/grok$

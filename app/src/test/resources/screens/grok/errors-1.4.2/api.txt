@@ -1,0 +1,8 @@
+  (the agent's earlier output)
+
+  ⚠ Grok is temporarily overloaded. Please try again in a moment. (HTTP 529)
+
+  ╭──────────────────────────────────────────────────────────────╮
+  │ ❯                                                            │
+  ╰──────────────────────────────────────────── Grok 4.7 (high) ─╯
+  Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+.:shortcuts

@@ -1,0 +1,7 @@
+  (the agent's earlier output)
+
+  ⚠ Compaction failed: the summary was empty
+
+› 
+
+ Default · auto · ◔ 2%        ~/agents/kiro

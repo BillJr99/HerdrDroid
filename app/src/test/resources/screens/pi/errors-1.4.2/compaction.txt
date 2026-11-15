@@ -1,0 +1,5 @@
+  (the agent's earlier output)
+
+Error: Anthropic compaction failed: request timed out
+
+ π > ⬢ llmproxy/flagship__free > 📁 ~/agents/pi ▶──────────────────...12%╎...128K

@@ -1,0 +1,8 @@
+  (the agent's earlier output)
+
+  ⚠ Billing error: your account has no credits left
+
+  ╭──────────────────────────────────────────────────────────────╮
+  │ ❯                                                            │
+  ╰──────────────────────────────────────────── Grok 4.7 (high) ─╯
+  Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+.:shortcuts

@@ -1,0 +1,7 @@
+  (the agent's earlier output)
+
+Error: token expired. Please log in again.
+
+> 
+
+  Gemini 4 Argon · medium · ~/agents/agy

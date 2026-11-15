@@ -1,0 +1,5 @@
+  (the agent's earlier output)
+
+Error: Invalid Google Cloud Code Assist credentials. Use /login to re-authenticate.
+
+ π > ⬢ llmproxy/flagship__free > 📁 ~/agents/omp ▶─────────────────...74%╎...128K

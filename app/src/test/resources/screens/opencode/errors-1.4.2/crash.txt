@@ -1,0 +1,4 @@
+  (the agent's earlier output)
+
+thread 'main' panicked at opencode/src/main.rs:12:5:
+bill@demo-box2:~/agents/opencode$

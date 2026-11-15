@@ -43,14 +43,20 @@ fun notificationAnswerStillFits(now: com.billmongan.herdrdroid.herdr.Prompt?, a:
     val sameQuestion = now.question.filterNot { it.isWhitespace() } == a.question.filterNot { it.isWhitespace() }
     if (!sameQuestion) return false
     if (a.isKey) return true
-    return now.choices.any { it.keys == a.keys && (a.label.isEmpty() || it.label.take(200) == a.label.take(200)) }
+    fun norm(s: String) = s.take(200).filterNot { it.isWhitespace() }
+    // An empty label is a button from an alert posted before 1.4.2: the question alone decides, as then.
+    return now.choices.any { it.keys == a.keys && (a.label.isEmpty() || norm(it.label) == norm(a.label)) }
 }
 
 /** Connects the notification buttons (a broadcast receiver) to the running app. */
 object AppBus {
     private val _actions = MutableSharedFlow<NotifyAction>(extraBufferCapacity = 16)
     val actions: SharedFlow<NotifyAction> = _actions
-    fun emit(a: NotifyAction) { _actions.tryEmit(a) }
+    /**
+     * Hands the tap to the running app. False when nothing is listening (the app isn't running):
+     * the value would be dropped, so the caller says to open the app instead (1.4.2, from review).
+     */
+    fun emit(a: NotifyAction): Boolean = _actions.subscriptionCount.value > 0 && _actions.tryEmit(a)
 }
 
 /**
@@ -75,6 +81,7 @@ object Notify {
         val input = androidx.core.app.RemoteInput.Builder(KEY_REPLY).setLabel("Reply to $agent")
             .apply { if (quick.isNotEmpty()) setChoices(quick.map { it.take(40) }.toTypedArray()) }.build()
         val i = Intent(ctx, ActionReceiver::class.java)
+            .forButton(serverId, paneId, if (choices.isEmpty() && question.isEmpty()) 5 else 4)
             .putExtra(EXTRA_SERVER, serverId).putExtra(EXTRA_PANE, paneId).putExtra("reply", true)
             .putExtra("question", question)
             .putExtra("cLabels", choices.map { it.label.take(40) }.toTypedArray())
@@ -118,6 +125,14 @@ object Notify {
      */
     private fun code(serverId: String, paneId: String, slot: Int) = id(serverId, paneId) * 8 + slot
 
+    /**
+     * A data address naming the server, pane and button (1.4.2, from review): part of the
+     * PendingIntent's identity, so two panes whose request codes happen to collide never share extras.
+     */
+    private fun Intent.forButton(serverId: String, paneId: String, slot: Int): Intent =
+        setData(android.net.Uri.Builder().scheme("herdrdroid").authority("answer")
+            .appendPath(serverId).appendPath(paneId).appendPath(slot.toString()).build())
+
     private fun openIntent(ctx: Context, serverId: String, paneId: String): PendingIntent {
         val i = Intent(ctx, MainActivity::class.java)
             .putExtra(EXTRA_SERVER, serverId).putExtra(EXTRA_PANE, paneId)
@@ -156,6 +171,7 @@ object Notify {
         // Reply box on a question with options; one without options gets Reply to type the answer.
         choices.take(2).forEachIndexed { n, c ->
             val i = Intent(ctx, ActionReceiver::class.java)
+                .forButton(serverId, paneId, n)
                 .putExtra(EXTRA_SERVER, serverId).putExtra(EXTRA_PANE, paneId)
                 .putExtra("keys", c.keys).putExtra("enter", c.pressEnter).putExtra("question", question).putExtra("label", c.label)
             val pi = PendingIntent.getBroadcast(ctx, code(serverId, paneId, n), i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
@@ -163,6 +179,7 @@ object Notify {
         }
         // Esc declines or dismisses the question, the same as the Esc key in the app.
         val esc = Intent(ctx, ActionReceiver::class.java)
+            .forButton(serverId, paneId, 3)
             .putExtra(EXTRA_SERVER, serverId).putExtra(EXTRA_PANE, paneId)
             .putExtra("keys", "esc").putExtra("isKey", true).putExtra("question", question)
         b.addAction(0, "Esc", PendingIntent.getBroadcast(ctx, code(serverId, paneId, 3), esc, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
@@ -275,13 +292,14 @@ class ActionReceiver : BroadcastReceiver() {
             return
         }
         val label = intent.getStringExtra("label").orEmpty()
-        AppBus.emit(
+        val taken = AppBus.emit(
             NotifyAction(
                 server, pane, intent.getStringExtra("keys").orEmpty(), intent.getBooleanExtra("enter", false),
                 intent.getStringExtra("question").orEmpty(), label = label, isKey = intent.getBooleanExtra("isKey", false),
             ),
         )
-        Notify.sending(context, server, pane, "Sending your answer", if (label.isNotEmpty()) label else "Esc")
+        if (taken) Notify.sending(context, server, pane, "Sending your answer", if (label.isNotEmpty()) label else "Esc")
+        else Notify.sending(context, server, pane, "Open HerdrDroid to answer", "The app wasn't running, so the answer wasn't sent. Tap to open it.")
     }
 }
 

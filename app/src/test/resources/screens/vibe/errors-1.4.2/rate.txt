@@ -1,0 +1,7 @@
+  (the agent's earlier output)
+
+  ✗ Error: Rate limited (429). Retry after 20 s.
+
+> 
+
+/home/user/agents/vibe                 usage ▏      0% · ctx ▍      11.8k/202k

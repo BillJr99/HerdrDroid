@@ -1,0 +1,7 @@
+  (the agent's earlier output)
+
+You are not logged in, please log in with kiro-cli login
+
+› 
+
+ Default · auto · ◔ 2%        ~/agents/kiro

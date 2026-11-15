@@ -1,0 +1,7 @@
+  (the agent's earlier output)
+
+  ✗ Error: 401 token_expired: please log in again
+
+❯ 
+
+ ☤ Hermes · claude-opus-5-5 · ~/agents/hermes

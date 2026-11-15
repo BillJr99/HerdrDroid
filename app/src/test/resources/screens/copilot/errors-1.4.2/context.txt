@@ -1,0 +1,7 @@
+  (the agent's earlier output)
+
+  ✗ Error: prompt token count exceeds the context window of this model
+
+❯ 
+
+ Interactive · Manual Approval · / commands    GPT-5.6 Terra

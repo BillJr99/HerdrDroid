@@ -1,0 +1,7 @@
+  (the agent's earlier output)
+
+  ✗ Error: Rate limit exceeded (429). Try again later.
+
+  ┃  Ask anything...
+  ┃  Build  llmproxy__flagship/free
+                                                   tab agents  ctrl+p commands
