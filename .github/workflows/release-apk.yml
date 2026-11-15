@@ -78,7 +78,13 @@ jobs:
               [ "$latest" = true ] || { assets=("$f"); install="built and signed locally"; }
             fi
             notes=$(printf 'HerdrDroid %s, the APK committed as `%s` (%s).\n\nsha256 `%s`\n\nExperimental software with no warranty; use it at your own risk. See the README for what changed.' "$v" "$f" "$install" "$sha")
+            # GitHub refuses the workflow token a tag on some old commits (403 "Resource not accessible by
+            # integration" on the commit that imported 0.6.0 and later APKs, 2026-11-15); fall back to
+            # this run's commit, which still carries the same committed APK.
             gh release create "v$v" "${assets[@]}" --target "$target" \
-              --title "HerdrDroid $v" --notes "$notes" --latest=$latest
+              --title "HerdrDroid $v" --notes "$notes" --latest=$latest \
+              || { [ "$target" != "$GITHUB_SHA" ] && echo "tag on $target refused; using $GITHUB_SHA" && \
+                   gh release create "v$v" "${assets[@]}" --target "$GITHUB_SHA" \
+                     --title "HerdrDroid $v" --notes "$notes" --latest=$latest; }
             echo "released v$v (latest=$latest)"
           done
