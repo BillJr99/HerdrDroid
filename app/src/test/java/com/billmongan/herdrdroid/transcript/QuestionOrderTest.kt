@@ -184,4 +184,16 @@ class QuestionOrderTest {
         val items = listOf<Item>(TextItem("live", "x"))
         assertEquals(T + 9, Transcript.stampSeen(many + ("live" to T + 9), items, T + 1_000_000)["live"])
     }
+    @Test fun thirdReviewRules() {
+        // A Grok chat: untimed history a, b, c; a question anchored on a; then d arrives live with a time.
+        val items = listOf<Item>(TextItem("a", "a"), TextItem("b", "b"), TextItem("c", "c"), TextItem("d", "d"))
+        val qa = q("qa", T + 1_000, after = "a").copy(doneAt = T + 2_000)
+        assertEquals(listOf("a", "qa", "b", "c", "d"), keys(QuestionLog.withQuestions(items, listOf(qa), mapOf("d" to T + 50_000), 0L, mapOf("d" to T + 50_000))))
+        // Without an anchor it goes after the untimed history.
+        assertEquals(listOf("a", "b", "c", "qn", "d"), keys(QuestionLog.withQuestions(items, listOf(q("qn", T + 1_000)), mapOf("d" to T + 50_000))))
+        // A rewritten log reusing a key for a different message drops that key's old time.
+        val before = listOf<Item>(TextItem("g1", "old one"), TextItem("g2", "same"))
+        val after = listOf<Item>(TextItem("g1", "a new message"), TextItem("g2", "same"))
+        assertEquals(mapOf("g2" to 5L, "gone" to 7L), Transcript.keptAcrossReset(mapOf("g1" to 3L, "g2" to 5L, "gone" to 7L), before, after))
+    }
 }

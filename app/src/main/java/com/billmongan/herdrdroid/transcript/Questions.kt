@@ -81,21 +81,68 @@ object QuestionLog {
      */
     fun snapshot(screen: String, p: Prompt, earlier: List<String>): String? {
         var lines = screen.lines().map { it.trimEnd() }
-        // Cut the card: from the question's own first line down.
-        val head = p.question.trim().take(40)
-        if (head.isNotEmpty()) {
-            val at = lines.indexOfLast { it.contains(head) }
-            if (at >= 0) lines = lines.take(at)
-        }
+        lines = cutCard(lines, p)
         lines = lines.dropWhile { it.isBlank() }.dropLastWhile { it.isBlank() }
-        // Drop what the snapshots before already show.
-        val before = earlier.joinToString("\n").lines().map { it.trimEnd() }.filter { it.isNotBlank() }
-        if (before.isNotEmpty() && lines.isNotEmpty()) {
-            val seenSet = before.takeLast(400).toHashSet()
-            val firstNew = lines.indexOfFirst { it.isNotBlank() && it !in seenSet }
-            lines = if (firstNew < 0) emptyList() else lines.drop(firstNew)
+        // Drop what the snapshot before already shows: the lines up to where its last lines appear
+        // here as one block (1.4.3, from review: matching single lines dropped new ones that repeated
+        // old text, and kept old ones the window had lost).
+        val prev = earlier.lastOrNull()?.lines()?.map { it.trimEnd() }?.filter { it.isNotBlank() }.orEmpty()
+        lines = lines.drop(afterBlock(lines, prev))
+        val kept = lines.takeLast(SNAPSHOT_LINES).joinToString("\n")
+        // Characters too, so one long line can't push older questions out of the history.
+        return (if (kept.length > SNAPSHOT_CHARS) kept.takeLast(SNAPSHOT_CHARS) else kept).ifBlank { null }
+    }
+
+    /** The most characters a screen snapshot keeps (1.4.3, from review). */
+    const val SNAPSHOT_CHARS = 4_000
+
+    /**
+     * The screen without the question's card (1.4.3, from review): from the question's first line, or
+     * failing that from the first option, down. A wrapped question is found by its first words;
+     * a match is looked for only near the bottom, where the card is.
+     */
+    private fun cutCard(lines: List<String>, p: Prompt): List<String> {
+        val from = maxOf(0, lines.size - 40)
+        val head = p.question.trim().lineSequence().firstOrNull()?.trim()?.take(30).orEmpty()
+        val q = if (head.length >= 4) (lines.size - 1 downTo from).firstOrNull { lines[it].contains(head) } else null
+        if (q != null) return lines.take(q)
+        val opt = p.choices.firstOrNull()?.label?.trim()?.take(30).orEmpty()
+        val o = if (opt.length >= 2) (lines.size - 1 downTo from).firstOrNull { lines[it].contains(opt) } else null
+        if (o != null) {
+            // The question's own lines sit just above its options: up to the blank line before them.
+            var k = o
+            while (k > 0 && lines[k - 1].isNotBlank()) k--
+            return lines.take(k)
         }
-        return lines.takeLast(SNAPSHOT_LINES).joinToString("\n").ifBlank { null }
+        return lines
+    }
+
+    /**
+     * Where the new part of [lines] starts: just after the last place the final lines of [prev]
+     * (up to five, as one block) appear; 0 when they don't appear, so nothing is dropped.
+     */
+    fun afterBlock(lines: List<String>, prev: List<String>): Int {
+        if (prev.isEmpty() || lines.isEmpty()) return 0
+        for (n in minOf(5, prev.size) downTo 1) {
+            val tail = prev.takeLast(n)
+            val body = lines.withIndex().filter { it.value.isNotBlank() }
+            for (s in body.size - n downTo 0) {
+                if ((0 until n).all { body[s + it].value == tail[it] }) return body[s + n - 1].index + 1
+            }
+        }
+        return 0
+    }
+
+    /**
+     * The live screen under the saved history (1.4.3, from review): only what comes after the last
+     * snapshot's final lines, so lines already shown above a question are not shown again below it.
+     */
+    fun liveTail(screen: String, questions: List<QuestionItem>): String {
+        val last = questions.sortedBy { it.at }.lastOrNull { it.screen != null }?.screen ?: return screen
+        val lines = screen.lines()
+        val prev = last.lines().map { it.trimEnd() }.filter { it.isNotBlank() }
+        val cut = afterBlock(lines.map { it.trimEnd() }, prev)
+        return if (cut <= 0) screen else lines.drop(cut).joinToString("\n")
     }
 
     /**
@@ -305,7 +352,10 @@ object QuestionLog {
                     val qt = q.at - hostOffsetMs
                     var t = -1
                     for (i in eff.indices) if (eff[i] != Long.MIN_VALUE && eff[i] <= qt) t = i
-                    maxOf(t, anchor)
+                    // Inside the untimed history (no real time at or before the question), the anchor
+                    // decides when there is one; the end of that history only for a question without
+                    // one (1.4.3, from review).
+                    if (t >= 0 && eff[t] == Long.MIN_VALUE + 1 && anchor >= 0) anchor else maxOf(t, anchor)
                 }
                 anchor >= 0 -> anchor
                 else -> items.size - 1

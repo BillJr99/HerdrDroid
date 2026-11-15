@@ -183,4 +183,19 @@ class Release142Test {
         // The shell's prompt must be the screen's last line; a boxed line under it means it isn't back.
         assertEquals(null, detectAgentError("Traceback (most recent call last):\nuser@host:~$\n│ a boxed line │"))
     }
+    @Test fun grokPythonApprovalCardAnswers() {
+        // Bill (1.4.3): "Herdrdroid isn't letting me click your button" on this card.
+        val screen = screen("grok/captured-2026-11-15/python-approval.txt")
+        for (blocked in listOf(true, false)) {
+            val p = detectPrompt(screen, blocked = blocked, agent = "grok")
+            assertNotNull("blocked=$blocked", p)
+            p!!
+            assertEquals(4, p.choices.size)
+            assertEquals("2", p.selected)
+            assertFalse(p.shortcuts)
+            assertEquals(null, detectAgentError(screen))
+            // Each option's keys: arrows from the highlighted one, then Enter.
+            assertEquals(listOf(listOf("up", "enter"), listOf("enter"), listOf("down", "enter"), listOf("down", "down", "enter")), p.choices.map { menuKeys(p, it) })
+        }
+    }
 }

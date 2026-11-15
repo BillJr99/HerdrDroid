@@ -1,0 +1,20 @@
+     ◆ Running show exact diff lines with markers
+
+   ◆ Show exact diff lines with markers… 0.4s                                                                 7m11s ⇣74.5k [↓][stop]
+
+  ┃
+  ┃  ›  Show exact diff lines with markers
+  ┃  │ python3 - << 'PY'
+  ┃  │ from pathlib import Path
+  ┃  │ p = Path("/home/user/agents/grok/reviews/herdrdroid-1.4.3-fixes2.diff")
+  ┃  │ text = p.read_text()
+  ┃  ... Ctrl-F to expand
+  ┃  ← → narrow scope
+  ┃
+  ┃  1 (○) Yes, and don't ask again for anything (always-approve mode)
+  ┃  2 (●) Yes, proceed
+  ┃  3 (○) No, reject (type to add feedback)
+  ┃  4 (○) Never allow: python3 -
+  ┃
+
+  1/4:select  │  Tab:next option  │  ←/→:scope  │  Ctrl+f:expand  │  Ctrl+o:always-approve  │  Ctrl+c:cancel  │  Esc:scrollback

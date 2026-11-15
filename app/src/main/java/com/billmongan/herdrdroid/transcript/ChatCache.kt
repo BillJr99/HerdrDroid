@@ -35,8 +35,9 @@ fun CachedChat.withRead(r: TranscriptRead, seenAt: Long = System.currentTimeMill
     // Times are kept across a reset of the same session (1.4.3): an item seen before keeps the time it
     // was first seen. Another session or file starts afresh, since its keys start over (from review).
     val same = !r.reset || Transcript.sessionOf(cursor) == Transcript.sessionOf(r.cursor)
-    val oldTimes = if (same) times else emptyMap()
-    val oldSeen = if (same) seen else emptyMap()
+    val fresh = if (r.reset) Transcript.merge(emptyList(), r.items, true) else emptyList()
+    val oldTimes = if (!same) emptyMap() else if (r.reset) Transcript.keptAcrossReset(times, items, fresh) else times
+    val oldSeen = if (!same) emptyMap() else if (r.reset) Transcript.keptAcrossReset(seen, items, fresh) else seen
     val logged = oldTimes + Transcript.timesOf(r.items)
     val next = if (r.reset) CachedChat(Transcript.merge(emptyList(), r.items, true), r.cursor, r.more, r.title ?: title,
         cj?.optLong("start", -1L) ?: -1L, cj?.optString("file")?.ifBlank { null }, agent, logged)

@@ -640,7 +640,8 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                         }
                     }
                     val pending = vm.lastSent?.takeIf { it.first == paneId }?.second
-                    ChatView(text, pending, liveSize, vm.readingFont)
+                    // Under a saved history, only the part of the screen not already shown above (1.4.3, from review).
+                    ChatView(com.billmongan.herdrdroid.transcript.QuestionLog.liveTail(text, vm.questionsFor(paneId)), pending, liveSize, vm.readingFont)
                 }
                 promptCard()
             }

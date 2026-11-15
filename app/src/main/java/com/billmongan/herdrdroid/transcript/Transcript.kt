@@ -188,6 +188,17 @@ object Transcript {
         listOf("file", "sid", "db", "pin", "pin_sid").joinToString("|") { o.optString(it) }
     }.getOrDefault("")
 
+    /**
+     * [m] without the keys whose item a reset replaced with a different one (1.4.3, from review: a
+     * rewritten or shrunk log reuses keys like "g3" for new messages, which must not inherit the old
+     * ones' times). Keys the new read doesn't carry (history outside it) are kept.
+     */
+    fun keptAcrossReset(m: Map<String, Long>, before: List<Item>, after: List<Item>): Map<String, Long> {
+        val old = before.associateBy { it.key }
+        val changed = after.filter { n -> old[n.key]?.let { it != n } ?: false }.mapTo(HashSet()) { it.key }
+        return if (changed.isEmpty()) m else m.filterKeys { it !in changed }
+    }
+
     /** The keys of a read's raw items. */
     fun keysOf(raw: List<JSONObject>): Set<String> = raw.mapNotNull { it.optString("k").ifEmpty { null } }.toHashSet()
 

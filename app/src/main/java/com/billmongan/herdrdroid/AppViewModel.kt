@@ -1391,7 +1391,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (card != null) {
             questionMisses[k] = 0
             // A pane with no readable log keeps the screen just before the question (1.4.3).
-            val keepScreen = screenText?.takeIf { pane(paneId)?.agent?.lowercase() !in readers || (transcriptPane == paneId && transcriptState == TranscriptMode.OFF) }
+            val keepScreen = screenText?.takeIf { pane(paneId)?.agent?.lowercase() !in readers }
             val next = com.billmongan.herdrdroid.transcript.QuestionLog.seen(log, card, agent, questionAnchor(serverId, paneId), now, keepScreen)
             if (next != log) putQuestions(serverId, paneId, next)
             return
@@ -1579,6 +1579,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         // Another session or file starts its times afresh: its keys start over (1.4.3, from review).
         if (r.reset && Transcript.sessionOf(transcriptCursor) != Transcript.sessionOf(r.cursor)) {
             transcriptTimes = emptyMap(); transcriptSeen = emptyMap()
+        } else if (r.reset) {
+            // The same session read again: a key whose item changed (a rewritten log) loses its old times.
+            val fresh = Transcript.merge(emptyList(), r.items, true)
+            transcriptTimes = Transcript.keptAcrossReset(transcriptTimes, transcriptItems, fresh)
+            transcriptSeen = Transcript.keptAcrossReset(transcriptSeen, transcriptItems, fresh)
         }
         transcriptCursor = r.cursor
         noteHostClock(r)
@@ -1977,14 +1982,46 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             return
         }
-        val keys = com.billmongan.herdrdroid.herdr.menuKeys(prompt, choice)
-        if (keys == null) { answer(paneId, choice.keys, choice.pressEnter) { noteAnswer(paneId, prompt, choice.label) }; return }
+        val agentName = pane(paneId)?.agentName ?: "the agent"
+        com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: tapped \"${choice.label.take(60)}\" (option ${choice.keys}, highlighted ${prompt.selected})")
         act(paneId, "Couldn't answer") { h ->
-            h.sendKeys(paneId, *keys.toTypedArray())
+            // The keys come from the screen as it is now, not as it was drawn (1.4.3, Bill: "isn't
+            // letting me click your button"): a highlight that moved since, or a card that changed,
+            // would otherwise send the wrong keys or keys nothing answers.
+            val now = runCatching { h.read(paneId, 80) }.getOrNull()
+            val fresh = now?.let { com.billmongan.herdrdroid.herdr.detectPrompt(it, true, pane(paneId)?.agent, versionOf(paneId)) }
+            val same = fresh?.choices?.firstOrNull { it.label.filterNot(Char::isWhitespace) == choice.label.filterNot(Char::isWhitespace) }
+            val use = if (fresh != null && same != null) fresh to same else prompt to choice
+            if (now != null && same == null) {
+                com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: \"${choice.label.take(40)}\" is no longer on the screen; nothing sent")
+                withContext(Dispatchers.Main) { flash("Not sent: \"${choice.label.take(40)}\" is no longer on $agentName's screen.") }
+                readPane(paneId)
+                return@act
+            }
+            val keys = com.billmongan.herdrdroid.herdr.menuKeys(use.first, use.second)
+            if (keys == null) {
+                if (use.second.pressEnter) h.typeAndEnter(paneId, use.second.keys) else h.sendText(paneId, use.second.keys)
+            } else h.sendKeys(paneId, *keys.toTypedArray())
+            val sent = keys?.joinToString(" ") { keyName(it) } ?: use.second.keys
+            com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: sent $sent")
             noteAnswer(paneId, prompt, choice.label)
+            // Say what went (1.4.3): a tap that answers shows it at once.
+            withContext(Dispatchers.Main) { flash("Sent $sent to $agentName: ${choice.label.take(40)}") }
             readPane(paneId)
             refreshPanes()
         }
+    }
+
+    /** A short note on the screen that goes by itself after 5 seconds (1.4.3). */
+    private fun flash(text: String) {
+        notice = text
+        viewModelScope.launch { delay(5_000); if (notice == text) notice = null }
+    }
+
+    /** A key as the card names it: "↓", "Enter", "Esc". */
+    private fun keyName(k: String) = when (k) {
+        "up" -> "↑"; "down" -> "↓"; "left" -> "←"; "right" -> "→"; "enter" -> "Enter"; "esc" -> "Esc"; "space" -> "Space"; "tab" -> "Tab"
+        else -> k
     }
 
     /**

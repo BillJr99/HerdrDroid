@@ -1,0 +1,5 @@
+card: options
+blocked: true
+heading: Show exact diff lines with markers
+options: Yes, and don't ask again for anything (always-approve mode) | Yes, proceed | No, reject (type to add feedback) | Never allow: python3 -
+source: captured live from Grok's pane on the dev machine, 2026-11-15, the approval card a tap didn't answer (host details replaced)

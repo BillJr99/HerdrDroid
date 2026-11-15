@@ -81,4 +81,24 @@ Allow access to this file?
         assertNull(log[0].screen)
         assertEquals(listOf<Any>(log[0]), QuestionLog.screenHistory(log))
     }
+    @Test fun reviewRulesForSnapshots() {
+        // Repeated text after the last snapshot's block is new and kept.
+        val prev = listOf("● Ran ls: 12 files.", "> ls")
+        val now = listOf("old line", "● Ran ls: 12 files.", "> ls", "● Ran ls: 12 files.", "> ls", "done")
+        assertEquals(5, QuestionLog.afterBlock(now, prev))
+        assertEquals(0, QuestionLog.afterBlock(listOf("all new"), prev))
+        // A wrapped question that matches no single line: the card is cut from its first option,
+        // with the question's own lines above it.
+        val wrapped = Prompt("Do you want to allow this very long command that wraps across lines?", listOf(Choice("Yes, allow it", "1", false), Choice("No", "2", false)))
+        val shot = QuestionLog.snapshot("● Working on it.\n\nDo you want to allow this very long\ncommand that wraps across lines?\n> 1. Yes, allow it\n  2. No", wrapped, emptyList())
+        assertEquals("● Working on it.", shot)
+        // At most SNAPSHOT_CHARS characters.
+        val wide = QuestionLog.snapshot("x".repeat(10_000) + "\nRun this command?\n> 1. Yes, run command", run, emptyList())!!
+        assertEquals(QuestionLog.SNAPSHOT_CHARS, wide.length)
+        // The live screen under the history starts after the last snapshot's lines.
+        var log = QuestionLog.seen(emptyList(), run, "Antigravity", null, 1_000, screen1)
+        log = answered(log, 2_000)
+        val live = "> list the files\n● I'll run ls.\nRequesting permission for:\n   ls -la\n● Ran ls: 12 files.\n> "
+        assertEquals("● Ran ls: 12 files.\n> ", QuestionLog.liveTail(live, log))
+    }
 }
