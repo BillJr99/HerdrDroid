@@ -164,6 +164,22 @@ object QuestionLog {
     /** Muse Code's "Stage 1/2" under a command it asks about stage by stage (1.4.8). */
     private val STAGE = Regex("""\bStage\s+(\d+)\s*/\s*(\d+)\b""")
 
+    /**
+     * Whether two signatures are one card (1.4.8): the same, or one read with its command and one
+     * without it (a read too short for a tall card) at the same Muse stage with the same options.
+     */
+    fun sameCard(a: String, b: String): Boolean {
+        if (a == b) return true
+        // A command card read once with its heading and once without (the heading scrolled off).
+        if (a.startsWith("c:") && b.startsWith("c:")) {
+            val ha = a.substringAfterLast("|h=", ""); val hb = b.substringAfterLast("|h=", "")
+            if (a.substringBeforeLast("|h=") == b.substringBeforeLast("|h=") && (ha.isEmpty() || hb.isEmpty())) return true
+        }
+        val ta = a.substringAfter("|st=", "").substringBeforeLast("|h="); val tb = b.substringAfter("|st=", "").substringBeforeLast("|h=")
+        if (ta.isEmpty() || ta != tb || ta.startsWith("|")) return false
+        return a.take(2) != b.take(2)
+    }
+
     /** A question seen again this soon after it was settled is the same one (the screen redrew), not a new one. */
     const val SAME_WINDOW_MS = 30_000L
 
@@ -175,16 +191,15 @@ object QuestionLog {
         val steps = parts.tabs.filter { !it.submit }
         if (steps.size >= 2) return "steps:" + steps.joinToString("|") { norm(it.title) }
         val options = p.choices.joinToString("|") { norm(it.label) }
-        // A card about a command is told by its command and its stage, not by its heading (1.4.8, Bill:
-        // Muse's card seemed to be two questions): a tall card's heading can scroll off the read
-        // window and come back, which made one card look like two; and Muse's next stage of the same
-        // command ("Stage 2/2") asks with the same heading and options, so the stage tells it apart.
-        val cmd = parts.command?.takeIf { it.isNotBlank() }
-        if (cmd != null) {
-            val stage = STAGE.find((parts.details + p.question).joinToString(" "))?.let { "${it.groupValues[1]}/${it.groupValues[2]}" }.orEmpty()
-            return "c:" + norm(cmd).take(160) + "|" + stage + "|" + options
-        }
-        return "q:" + norm(parts.heading ?: p.question) + "|" + options
+        // Muse's "Stage 1/2": the next stage of a command asks with the same heading and options (1.4.8).
+        val stage = STAGE.find((parts.details + p.question).joinToString(" "))?.let { "${it.groupValues[1]}/${it.groupValues[2]}" }.orEmpty()
+        val tail = "|st=$stage|op=$options"
+        // A card about a command is told by its whole command (1.4.8, Bill: Muse's card seemed to be two
+        // questions): a tall card's heading can scroll off the read window and come back.
+        val cmd = parts.blocks.filter { it.kind == com.billmongan.herdrdroid.herdr.QKind.COMMAND }.joinToString(" ") { it.text }.takeIf { it.isNotBlank() }
+        // The heading goes last, as a question only ("?"), so a read that missed it still matches (see [sameCard]).
+        if (cmd != null) return "c:" + norm(cmd).take(400) + tail + "|h=" + norm(parts.heading?.takeIf { it.trimEnd().endsWith("?") }.orEmpty()).take(80)
+        return "q:" + norm(parts.heading ?: p.question) + tail
     }
 
     /** The parts a prompt shows now: the current step filled in, the other steps by name only. */
@@ -215,8 +230,8 @@ object QuestionLog {
     fun seen(log: List<QuestionItem>, p: Prompt, agent: String?, anchor: String?, now: Long, screen: String? = null): List<QuestionItem> {
         val sig = signature(p)
         val last = log.lastOrNull()
-        if (last != null && last.sig == sig && (last.state == QState.OPEN || now - last.doneAt < SAME_WINDOW_MS)) {
-            val upd = last.copy(parts = partsOf(p, last.parts), state = QState.OPEN, doneAt = 0L)
+        if (last != null && sameCard(last.sig, sig) && (last.state == QState.OPEN || now - last.doneAt < SAME_WINDOW_MS)) {
+            val upd = last.copy(parts = partsOf(p, last.parts), state = QState.OPEN, doneAt = 0L, sig = if (sig.startsWith("c:")) sig else last.sig)
             return if (upd == last) log else log.dropLast(1) + upd
         }
         // A different question while one is still open: the open one went without an answer from here.
@@ -251,7 +266,7 @@ object QuestionLog {
      * On Claude's review step the answer closes the dialog ([QuestionItem.action]).
      */
     fun answered(log: List<QuestionItem>, p: Prompt?, answer: String): List<QuestionItem> {
-        val i = log.indexOfLast { it.state == QState.OPEN && (p == null || it.sig == signature(p)) }
+        val i = log.indexOfLast { it.state == QState.OPEN && (p == null || sameCard(it.sig, signature(p))) }
         if (i < 0) return log
         val q = log[i]
         val qp = p?.shownParts()

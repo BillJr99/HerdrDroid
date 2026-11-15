@@ -4,6 +4,7 @@ import com.billmongan.herdrdroid.herdr.detectPrompt
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -36,7 +37,7 @@ class MuseStagesTest {
     @Test fun aRedrawWithoutItsHeadingIsTheSameCard() {
         val a = prompt(card("git status", "1/1"))
         val b = prompt(card("git status", "1/1", withHeading = false))
-        assertEquals(QuestionLog.signature(a), QuestionLog.signature(b))
+        assertTrue(QuestionLog.sameCard(QuestionLog.signature(a), QuestionLog.signature(b)))
         var log = QuestionLog.seen(emptyList(), a, "muse", null, 1_000)
         log = QuestionLog.seen(log, b, "muse", null, 2_000)
         assertEquals(1, log.size)
@@ -65,6 +66,43 @@ class MuseStagesTest {
         log = QuestionLog.gone(log, working = true, now = 2_000)
         log = QuestionLog.seen(log, two, "muse", null, 3_000)
         assertEquals(listOf(QState.ANSWERED, QState.OPEN), log.map { it.state })
+    }
+
+    /** A heredoc as Muse draws it: "$ python3 - <<'PY'", then the script on "│" lines. */
+    private fun script(body: List<String>, stage: String, withTop: Boolean = true) = buildString {
+        if (withTop) { appendLine(rule); appendLine("Would you like to run the following command?"); appendLine(); appendLine("  $ python3 - <<'PY'") }
+        body.forEach { appendLine("  │ $it") }
+        appendLine("  │ PY")
+        appendLine("  Stage $stage")
+        appendLine("  Current argv: [\"python3\"]")
+        appendLine()
+        appendLine("⟩ 1. Allow this stage once (y)")
+        appendLine("  2. Abort the entire command (esc)")
+        appendLine("Change approval defaults in /permissions")
+        appendLine(rule)
+    }
+
+    @Test fun twoScriptsAreTwoQuestions() {
+        // From Grok's review: the lines under "$" are part of the command, so two scripts differ.
+        val a = prompt(script(listOf("print(1)"), "1/1"))
+        val b = prompt(script(listOf("print(2)"), "1/1"))
+        assertNotEquals(QuestionLog.signature(a), QuestionLog.signature(b))
+        assertEquals(false, QuestionLog.sameCard(QuestionLog.signature(a), QuestionLog.signature(b)))
+    }
+
+    @Test fun aReadThatMissedTheCommandIsStillTheSameCard() {
+        // A read too short for a tall card has no "$" line: the same stage and options are the same card.
+        val body = (1..10).map { "x$it = $it" }
+        val full = QuestionLog.signature(prompt(script(body, "1/2")))
+        val cut = QuestionLog.signature(prompt(script(body, "1/2", withTop = false)))
+        assertTrue(QuestionLog.sameCard(full, cut))
+        var log = QuestionLog.seen(emptyList(), prompt(script(body, "1/2")), "muse", null, 1_000)
+        log = QuestionLog.seen(log, prompt(script(body, "1/2", withTop = false)), "muse", null, 2_000)
+        assertEquals(1, log.size)
+        // The next stage, read either way, is another card.
+        val next = QuestionLog.signature(prompt(script(body, "2/2", withTop = false)))
+        assertEquals(false, QuestionLog.sameCard(full, next))
+        assertEquals(false, QuestionLog.sameCard(cut, next))
     }
 
     @Test fun anotherCommandIsANewQuestion() {

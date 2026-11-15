@@ -2149,8 +2149,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * Answers a menu question: moves the highlight with the arrow keys and presses Enter when the
      * highlighted option is known, so a digit is never typed into an option's text box.
      */
-    /** When each card (pane and question signature) was last answered from here (1.4.8). */
-    private val answeredCards = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    /** The card each pane was last answered on from here, and when (1.4.8). */
+    private val answeredCards = java.util.concurrent.ConcurrentHashMap<String, Pair<String, Long>>()
+
+    /** When [sig]'s card on [paneId] was answered, if within [ANSWER_HOLD_MS]; else null. */
+    private fun answeredRecently(paneId: String, sig: String): Long? {
+        val (was, at) = answeredCards[paneId] ?: return null
+        return at.takeIf { System.currentTimeMillis() - it < ANSWER_HOLD_MS && com.billmongan.herdrdroid.transcript.QuestionLog.sameCard(was, sig) }
+    }
+
+    /** A pane's screen as its card is read (1.4.8): recent output, else the visible screen; null when neither reads. */
+    private suspend fun readForCard(h: Herdr, paneId: String, lines: Int = 200): String? {
+        val recent = try { h.read(paneId, lines) } catch (e: Exception) {
+            if (e is CancellationException || e is LinkDown || e is AuthRejected || e is HostKeyChanged) throw e
+            null
+        }
+        if (!recent.isNullOrBlank()) return recent
+        return try { h.readVisible(paneId).takeIf { it.isNotBlank() } } catch (e: Exception) {
+            if (e is CancellationException || e is LinkDown || e is AuthRejected || e is HostKeyChanged) throw e
+            null
+        }
+    }
     /** A card answered this recently is not answered again: the agent may not have redrawn yet (1.4.8). */
     private val ANSWER_HOLD_MS = 8_000L
 
@@ -2172,8 +2191,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             // The keys come from the screen as it is now, not as it was drawn (1.4.3, Bill: "isn't
             // letting me click your button"): a highlight that moved since, or a card that changed,
             // would otherwise send the wrong keys or keys nothing answers.
-            // As deep as the card's own read (1.4.8), so a tall card is told by the same signature.
-            val now = runCatching { h.read(paneId) }.getOrNull()
+            // Read the way the card was (1.4.8, from Grok's review): recent output, or the visible screen
+            // when that fails, so the tap sees the card the card was made from.
+            val now = readForCard(h, paneId)
             if (now.isNullOrBlank()) {
                 // Nothing is sent blind (from review): the screen couldn't be read at the tap.
                 com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: the screen couldn't be read at the tap; nothing sent")
@@ -2189,15 +2209,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             // or a tap that lands after the screen moved on, would answer a question nobody has seen.
             val tappedSig = com.billmongan.herdrdroid.transcript.QuestionLog.signature(prompt)
             val freshSig = fresh?.let { com.billmongan.herdrdroid.transcript.QuestionLog.signature(it) }
-            if (same != null && freshSig != tappedSig) {
+            if (same != null && (freshSig == null || !com.billmongan.herdrdroid.transcript.QuestionLog.sameCard(freshSig, tappedSig))) {
                 com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: the question on screen is not the one tapped; nothing sent")
                 withContext(Dispatchers.Main) { flash("Not sent: $agentName is asking something new. Check the card and answer again.") }
                 readPane(paneId)
                 return@act
             }
-            val key = "$paneId|$tappedSig"
-            val before = answeredCards[key]
-            if (before != null && System.currentTimeMillis() - before < ANSWER_HOLD_MS) {
+            val before = answeredRecently(paneId, tappedSig)
+            if (before != null) {
                 com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: this card was answered ${(System.currentTimeMillis() - before) / 1000} s ago; not sent twice")
                 withContext(Dispatchers.Main) { flash("Already answered. Waiting for $agentName.") }
                 readPane(paneId)
@@ -2213,7 +2232,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             if (keys == null) {
                 if (use.second.pressEnter) h.typeAndEnter(paneId, use.second.keys) else h.sendText(paneId, use.second.keys)
             } else h.sendKeys(paneId, *keys.toTypedArray())
-            answeredCards[key] = System.currentTimeMillis()
+            answeredCards[paneId] = tappedSig to System.currentTimeMillis()
             val sent = keys?.joinToString(" ") { keyName(it) } ?: use.second.keys
             com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: sent $sent")
             noteAnswer(paneId, prompt, choice.label)
@@ -2795,7 +2814,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             return
         }
-        val text = runCatching { h.read(a.paneId, NOTIFY_READ_LINES) }.getOrNull()
+        val text = runCatching { readForCard(h, a.paneId, NOTIFY_READ_LINES) }.getOrNull()
         if (text.isNullOrBlank()) {
             // Not "the question changed": the app couldn't see (1.4.2, from review).
             Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer", "The pane's screen couldn't be read, so the answer wasn't sent.")
@@ -2813,9 +2832,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         // The same card already answered from the app or another alert a moment ago (1.4.8): not twice.
-        val cardKey = now?.let { "${a.paneId}|" + com.billmongan.herdrdroid.transcript.QuestionLog.signature(it) }
-        val before = cardKey?.let { answeredCards[it] }
-        if (before != null && System.currentTimeMillis() - before < ANSWER_HOLD_MS) {
+        val cardSig = now?.let { com.billmongan.herdrdroid.transcript.QuestionLog.signature(it) }
+        val before = cardSig?.let { answeredRecently(a.paneId, it) }
+        if (before != null) {
             com.billmongan.herdrdroid.diag.DiagLog.log("answer", "${a.paneId}: alert tap on a card answered ${(System.currentTimeMillis() - before) / 1000} s ago; not sent twice")
             Notify.sending(app, a.serverId, a.paneId, "Already answered", "")
             return
@@ -2836,7 +2855,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             else if (a.pressEnter) h.typeAndEnter(a.paneId, a.keys)
             else h.sendText(a.paneId, a.keys)
             sent = true
-            cardKey?.let { answeredCards[it] = System.currentTimeMillis() }
+            cardSig?.let { answeredCards[a.paneId] = it to System.currentTimeMillis() }
             answered()
             Notify.sending(app, a.serverId, a.paneId, "Answered", label)
             // Recorded once it was sent (1.3.2); a failure here is not a failed answer.

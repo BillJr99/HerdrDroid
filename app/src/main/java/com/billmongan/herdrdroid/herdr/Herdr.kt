@@ -991,7 +991,9 @@ data class QuestionParts(val tabs: List<QTab>, val blocks: List<QBlock>) {
 }
 
 /** A line of a question as read off the screen: [cmd] when it sat in a box of its own (Grok, Copilot). */
-data class QLine(val text: String, val cmd: Boolean = false, val gapBefore: Boolean = false)
+data class QLine(val text: String, val cmd: Boolean = false, val gapBefore: Boolean = false,
+                 /** The line began with a single "│" (1.4.8): under a "$ " line, the rest of that command. */
+                 val bar: Boolean = false)
 
 private val TAB_ITEM = Regex("""([☐☒✔✓☑])\s*([^☐☒✔✓☑←→]+)""")
 /** "Reason: …", "Environment: local", "Read: /path": a labelled line of context, never the heading. */
@@ -1064,6 +1066,9 @@ fun questionParts(lines: List<QLine>): QuestionParts {
     class Para(var text: String, val cmd: Boolean, val inPlace: Boolean = false)
     val paras = mutableListOf<Para>()
     var cmdNext = false
+    // The current command block began with "$ ": its "│ ..." lines are the rest of it (1.4.8, from Grok's
+    // review: Muse draws a script's lines under "$ python3 - <<'PY'" that way).
+    var dollarBlock = false
     for (l in body) {
         val answerRow = l.text.trim().startsWith("→")
         var t = l.text.trim().trimStart { it in MARKS }.trimEnd { it in "│┃╮╯─ " }.trim()
@@ -1080,8 +1085,10 @@ fun questionParts(lines: List<QLine>): QuestionParts {
             continue
         }
         val dollar = Regex("""^\$\s+(.+)$""").find(t)
-        val isCmd = l.cmd || dollar != null || cmdNext
+        val goesOn = dollarBlock && !l.gapBefore && l.bar && paras.lastOrNull()?.cmd == true
+        val isCmd = l.cmd || dollar != null || cmdNext || goesOn
         cmdNext = false
+        dollarBlock = dollar != null || goesOn
         if (dollar != null) t = dollar.groupValues[1].trim()
         val last = paras.lastOrNull()
         if (isCmd) {
@@ -1626,7 +1633,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
                 val tl = l.trimStart()
                 val isCmd = (tl.startsWith("┃") || tl.startsWith("│")) && tl.drop(1).trimStart().startsWith("│")
                 // Grok's "← → narrow scope" hint sits between the command and its options.
-                if (c.any(Char::isLetterOrDigit) && !c.contains("narrow scope")) got.add(0, QLine(c.trimStart('›', '❯', ' '), isCmd))
+                if (c.any(Char::isLetterOrDigit) && !c.contains("narrow scope")) got.add(0, QLine(c.trimStart('›', '❯', ' '), isCmd, bar = !isCmd && tl.startsWith("│")))
                 i--
             }
             got.takeIf { it.isNotEmpty() }
