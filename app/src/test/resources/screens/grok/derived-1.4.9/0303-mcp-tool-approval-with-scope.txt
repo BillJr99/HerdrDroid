@@ -1,0 +1,12 @@
+  ┃  ›  demo-notes: search_notes
+  ┃  │ {"query":"release checklist"}
+  ┃  ← → narrow scope
+  ┃
+  ┃  1 (○) Yes, and don't ask again for anything (always-approve mode)
+  ┃  2 (●) Yes, proceed
+  ┃  3 (○) Always allow: demo-notes/search_notes
+  ┃  4 (○) No, reject (type to add feedback)
+  ┃  5 (○) Never allow: demo-notes/search_notes
+  ┃
+
+  1/5:select  │  Tab:next option  │  ←/→:scope  │  Ctrl+o:always-approve  │  Ctrl+c:cancel  │  Esc:scrollback

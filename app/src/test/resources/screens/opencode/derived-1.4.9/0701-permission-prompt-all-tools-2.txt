@@ -1,0 +1,7 @@
+┃  △ Permission required
+┃    ← Access external directory /home/user/work/shared
+┃
+┃   Patterns
+┃   - /home/user/work/shared/*
+┃
+┃   Allow once   Always allow   Reject                    ⇆ select  enter confirm

@@ -1,0 +1,4 @@
+card: options
+blocked: true
+options: Continue with Demo-Model | Turn on usage credits and continue | Upgrade to Max or Ultra | No, keep my current model
+source: derived for the 1.4.9 card audit from the agent's own program text (exact strings, layout inferred); demo content only

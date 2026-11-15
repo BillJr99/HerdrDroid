@@ -1,0 +1,4 @@
+card: options
+blocked: true
+options: [ ] pytest | [x] tox | [ ] Other (type your answer)
+source: derived for the 1.4.9 card audit from the agent's own program text (exact strings, layout inferred); demo content only

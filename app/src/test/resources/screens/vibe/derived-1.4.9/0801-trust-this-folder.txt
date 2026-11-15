@@ -1,0 +1,10 @@
+┌──────────────────────────────────────────────────────────────────────┐
+│ Trust this folder?                                                   │
+│ Malicious configs can modify AI behavior, exfiltrate data, run       │
+│ destructive commands, or silently alter your code.                   │
+│ Detected in current folder:                                          │
+│   .vibe/config.toml                                                  │
+│                                                                      │
+│   Yes   No                                                           │
+│ ←→ select  Enter confirm                                             │
+└──────────────────────────────────────────────────────────────────────┘

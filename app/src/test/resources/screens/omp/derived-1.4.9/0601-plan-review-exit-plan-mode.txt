@@ -1,0 +1,9 @@
+ Review plan: Add greeting endpoint
+ ❯ Approve and execute
+   Approve and compact context
+   Approve and keep context
+   Refine plan
+   Save plan
+
+ continue with  default · smol · slow
+ ↑↓ navigate  enter select  esc cancel

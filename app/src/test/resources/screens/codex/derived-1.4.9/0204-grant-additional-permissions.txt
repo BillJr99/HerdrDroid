@@ -1,0 +1,6 @@
+  Would you like to grant these permissions?
+  Permissions: write /home/user/work/demo/out, network
+› 1. Yes, grant these permissions for this turn (y)
+  2. Yes, grant these permissions for this session (a)
+  3. No, and tell Codex what to do differently (esc)
+  Press enter to confirm or esc to cancel

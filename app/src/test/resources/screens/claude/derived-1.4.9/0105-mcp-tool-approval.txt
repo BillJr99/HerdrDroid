@@ -1,0 +1,9 @@
+────────────────────────────────────────────────────────────────────────
+ Tool use
+
+   demo-notes - search_notes(query: "release checklist") (MCP)
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and don’t ask again for: mcp__demo-notes__search_notes
+   3. No, and tell Claude what to do differently (esc)

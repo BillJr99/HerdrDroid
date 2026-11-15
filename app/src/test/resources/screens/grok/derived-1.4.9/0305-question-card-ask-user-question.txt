@@ -1,0 +1,8 @@
+  ┃  ?  Which database should demo-box use?
+  ┃
+  ┃  1 (●) SQLite
+  ┃  2 (○) Postgres
+  ┃  3 (○) Other (type your own answer)
+  ┃
+
+  1/3:answer  │  ←/→:question  │  z:type  │  Shift+X:dismiss  │  Esc:scrollback

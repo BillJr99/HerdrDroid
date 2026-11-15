@@ -1,0 +1,12 @@
+────────────────────────────────────────────────────────────────────────
+ Bash command
+
+   cat config/demo.yaml && ls /home/user/work/demo/logs
+   Show the config and list the logs
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, allow reading from logs/ from this project
+   3. No, and tell Claude what to do differently (esc)
+
+ Esc to cancel

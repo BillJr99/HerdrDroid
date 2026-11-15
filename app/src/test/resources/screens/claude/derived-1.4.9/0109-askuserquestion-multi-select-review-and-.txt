@@ -1,0 +1,13 @@
+←  ☒ Language  ☒ Tests  ✔ Submit  →
+
+Review your answers
+
+ ● Which language for the demo?
+   → Python
+ ● Which test runners?
+   → pytest, tox
+
+Ready to submit your answers?
+
+❯ 1. Submit answers
+  2. Cancel

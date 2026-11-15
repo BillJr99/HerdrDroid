@@ -1,0 +1,4 @@
+card: options
+blocked: true
+options: Yes | Yes, and don't ask again for tool "search_notes" from "demo-notes" | Yes, and approve all tools from server demo-notes for the rest of | No, and tell Copilot what to do differently (Esc to stop)
+source: derived for the 1.4.9 card audit from the agent's own program text (exact strings, layout inferred); demo content only

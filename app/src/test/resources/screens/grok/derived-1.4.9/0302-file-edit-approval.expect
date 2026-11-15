@@ -1,0 +1,4 @@
+card: options
+blocked: true
+options: Yes, and don't ask again for anything (always-approve mode) | Yes, allow all edits during this session | Yes, proceed | No, reject (type to add feedback)
+source: derived for the 1.4.9 card audit from the agent's own program text (exact strings, layout inferred); demo content only

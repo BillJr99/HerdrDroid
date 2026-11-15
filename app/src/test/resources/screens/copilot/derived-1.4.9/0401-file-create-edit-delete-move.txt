@@ -1,0 +1,15 @@
+╭──────────────────────────────────────────────────────────────────────────╮
+│ Edit file                                                                │
+│ ──────────────────────────────────────────────────────────────────────── │
+│ src/app.py                                                               │
+│   13 -    return "hi " + name                                            │
+│   13 +    return f"Hello, {name}!"                                       │
+│                                                                          │
+│ Do you want to edit app.py?                                              │
+│                                                                          │
+│ ❯ 1. Yes                                                                 │
+│   2. Yes, and don't ask again for file operations in this repo (demo)    │
+│   3. No, and tell Copilot what to do differently (Esc to stop)           │
+│                                                                          │
+│ ↑/↓ to navigate · enter to select · esc to cancel                        │
+╰──────────────────────────────────────────────────────────────────────────╯

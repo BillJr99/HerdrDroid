@@ -1,0 +1,12 @@
+╭──────────────────────────────────────────────────────────────╮
+│ ⚠️  Dangerous Command                                         │
+│                                                              │
+│ rm -rf /home/user/work/demo/build                            │
+│                                                              │
+│ ❯ 1. Allow once                                              │
+│   2. Allow for this session                                  │
+│   3. Add to permanent allowlist                              │
+│   4. Deny                                                    │
+│                                                              │
+│ recursive delete                                             │
+╰──────────────────────────────────────────────────────────────╯

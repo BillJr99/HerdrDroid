@@ -123,6 +123,27 @@ herdr reports which agent runs in each pane. HerdrDroid supports these:
 | Hermes | yes, plus a chat screen through its gateway | yes | `/usage` | from its footer |
 | Muse Code (Meta) | yes | yes, including its command approval with each option's own key ("y", "p", Esc); a command with several stages asks once per stage | `muse usage --json` (window and weekly allowance; nothing typed into the pane) | from its footer, with its effort |
 
+### Question cards
+
+Every question and approval card the supported agents can show is in the screen library and checked on every build: its options, which keys answer each one, the caution on options that grant standing permission, and Esc for refusals. The full list, card by card, is in [docs/question-cards.md](docs/question-cards.md).
+
+| Agent | Cards checked | Captured live | From the program |
+|---|---|---|---|
+| Claude Code | 15 | 2 | 13 |
+| Codex | 10 | 2 | 8 |
+| Grok | 9 | 4 | 5 |
+| GitHub Copilot CLI | 6 | 1 | 5 |
+| Antigravity | 1 | 0 | 1 |
+| Kiro CLI | 3 | 1 | 2 |
+| Mistral Vibe | 3 | 1 | 2 |
+| pi | 2 | 0 | 2 |
+| Oh My Pi | 2 | 0 | 2 |
+| OpenCode | 5 | 0 | 5 |
+| Hermes | 3 | 0 | 3 |
+| Muse Code | 4 | 2 | 2 |
+
+"Captured live" cards were read from an agent's own pane; the others were built from the exact text in the agent's own program, with demo content, and have not yet been seen live.
+
 Every agent gets the error banner, the terminal view, the keys and the alerts. A pane running a plain shell or an agent the app doesn't know is shown as a screen, with the terminal view and the keys.
 
 ## Requirements
@@ -337,7 +358,7 @@ If you build for yourself without the project's key, use your own key (a standar
 
 ## Version history
 
-- **1.4.9.** An answered question card left in an agent's scrollback (Grok's) is no longer shown as a live question: a card must be at the bottom of the screen.
+- **1.4.9.** An answered question card left in an agent's scrollback (Grok's) is no longer shown as a live question: a card must be at the bottom of the screen, with nothing of the agent's own after it. A check of every card each agent can show: OpenCode's and Vibe's side-by-side buttons, Grok's letter-key trust and plan cards, Hermes's bracketed and checkbox rows, pi's arrow highlight, option descriptions in omp's and Kiro's menus, more standing-permission wording, and the coverage list in docs/question-cards.md.
 - **1.4.8.** Muse Code's approval cards with two options or a tall command, even with the card's heading off the screen read; when a pane's usual read fails, its visible screen is read instead; **Show terminal** on a question card always switches to the terminal, with a bar that leads back to the question.
 - **1.4.7.** Muse Code's command approval card: its options, the highlighted one, the command, and each option's own key; "Always allow in this workspace" carries the standing-permission caution.
 - **1.4.6.** Placeholders in an agent's input line are recognised by how they are drawn (faint or grey), for every agent, so Codex's rotating suggestions no longer hold a message; text that merely stays the same between reads no longer counts as someone typing.

@@ -1,0 +1,5 @@
+  # Add greeting endpoint
+  1. Add GET /hello to src/app.py
+  2. Add a test in tests/test_app.py
+
+  a:approve  │  s:request changes  │  c:comment  │  y:copy plan  │  q:quit plan  │  Tab:prompt

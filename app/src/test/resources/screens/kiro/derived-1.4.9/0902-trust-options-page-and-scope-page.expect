@@ -1,0 +1,4 @@
+card: options
+blocked: true
+options: Trust "git push origin demo-branch" | Trust "git push" | Trust entire tool (shell)
+source: derived for the 1.4.9 card audit from the agent's own program text (exact strings, layout inferred); demo content only

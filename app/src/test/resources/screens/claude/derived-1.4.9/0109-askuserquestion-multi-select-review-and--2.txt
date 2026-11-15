@@ -1,0 +1,12 @@
+←  ☐ Runners  ✔ Submit  →
+
+Which test runners should demo-box use?
+
+❯ 1. [ ] pytest
+     Fast, plugin based
+  2. [ ] tox
+     Matrix across versions
+  3. [ ] Type something.
+  4. Chat about this
+
+Enter to select · Space to toggle · Tab/Arrow keys to navigate · Esc to cancel

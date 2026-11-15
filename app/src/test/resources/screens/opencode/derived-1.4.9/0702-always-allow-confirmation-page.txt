@@ -1,0 +1,7 @@
+┃  △ Permission required
+┃    # Shell command
+┃
+┃   This will always allow the following patterns for this project.
+┃   - npm install *
+┃
+┃   Confirm   Cancel                                      ⇆ select  enter confirm

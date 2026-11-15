@@ -1,0 +1,11 @@
+────────────────────────────────────────────────────────────────────────
+ Owner's rule: rm needs your OK
+ Run this?
+
+   rm -r /home/user/work/demo/build
+
+ → Yes
+   No
+
+ ↑↓ navigate  enter select  escape/ctrl+c cancel
+────────────────────────────────────────────────────────────────────────

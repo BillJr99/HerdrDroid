@@ -1,0 +1,11 @@
+│ demo-notes: search_notes                                                 │
+│ ╭──────────────────────────────────────────────────────────────────────╮ │
+│ │ {"query": "release checklist"}                                       │ │
+│ ╰──────────────────────────────────────────────────────────────────────╯ │
+│ Do you want to run this tool?                                            │
+│ ❯ 1. Yes                                                                 │
+│   2. Yes, and don't ask again for tool "search_notes" from "demo-notes"  │
+│      in this directory (/home/user/work/demo)                            │
+│   3. Yes, and approve all tools from server demo-notes for the rest of   │
+│      the running session                                                 │
+│   4. No, and tell Copilot what to do differently (Esc to stop)           │

@@ -1,0 +1,4 @@
+card: options
+blocked: true
+options: Allow once (y) | Allow for this session (s) | Always allow this network destination (p) | Reject (esc)
+source: derived for the 1.4.9 card audit from the agent's own program text (exact strings, layout inferred); demo content only

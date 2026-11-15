@@ -46,6 +46,16 @@ class Release149Test {
         }
     }
 
+    @Test fun aShortReplyUnderAnAnsweredCardIsNotAQuestion() {
+        // From Grok's review: the footer, four reply lines and the composer are only eight lines.
+        val short = screen.trimEnd() + "\n" + (1..4).joinToString("\n") { "     ● Step $it done" } +
+            "\n   ◆ Comparing… 0.4s     15m01s ⇣84.1k [↓][stop]\n  ╭" + "─".repeat(60) + "╮\n  │ ❯" + " ".repeat(57) + "│\n  ╰" + "─".repeat(44) + " Grok 4.7 (high) ─╯\n  Shift+Tab:mode  │  Ctrl+.:shortcuts"
+        for (blocked in listOf(false, true)) {
+            val p = detectPrompt(short, blocked, "grok")
+            assertTrue("blocked=$blocked: ${p?.choices?.map { it.label }}", p == null || p.choices.isEmpty())
+        }
+    }
+
     @Test fun everyCapturedCardStillHasRoomForItsFooter() {
         // The cards in the screen library keep their options (ScreenLibraryTest checks each); this one too.
         assertEquals(4, detectPrompt(screen, false, "grok")!!.choices.size)

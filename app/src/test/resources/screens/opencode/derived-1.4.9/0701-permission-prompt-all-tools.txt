@@ -1,0 +1,8 @@
+┃
+┃  △ Permission required
+┃    # Shell command
+┃
+┃   $ npm install --prefix /home/user/work/demo
+┃
+┃   Allow once   Always allow   Reject                    ⇆ select  enter confirm
+┃

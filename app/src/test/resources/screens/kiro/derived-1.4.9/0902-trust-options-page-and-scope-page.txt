@@ -1,0 +1,11 @@
+──────────────────────────────────────────────────────────────────────────
+ shell requires approval · trust options
+ ❯ Trust "git push origin demo-branch"
+     exact match · session
+   Trust "git push"
+     subcommand · session
+   Trust entire tool (shell)
+     session
+ Scope:  session  workspace  user  (s to cycle scope)
+──────────────────────────────────────────────────────────────────────────
+ esc to go back · ↑↓ to navigate · ↵ to select

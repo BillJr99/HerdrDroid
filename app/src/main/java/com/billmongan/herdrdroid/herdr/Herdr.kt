@@ -958,6 +958,8 @@ data class Prompt(
     val multi: Boolean = false,
     /** Codex's menu, whose options name their own keys ("Yes, proceed (y)"): those keys answer it (1.4.2). */
     val shortcuts: Boolean = false,
+    /** Buttons side by side (OpenCode's and Vibe's): left and right move between them (1.4.9). */
+    val horizontal: Boolean = false,
 ) {
     /**
      * Never an empty card (1.4.2): a prompt with no choices always has something to show, the
@@ -1291,10 +1293,13 @@ fun isPlaceholderText(raw: String, typed: String, agent: String?): Boolean {
 }
 
 /** A choice that grants standing permission ("always allow", "don't ask again"); the card adds a caution (1.4.0). */
-private val ALWAYS_LABEL = Regex("""\balways\b|don'?t ask again|\btrust\b|remainder of this session|always-approve|for this (session|conversation)""", RegexOption.IGNORE_CASE)
+// 1.4.9 (the card audit): "in the future", "permanent allowlist", "allow rule ... future", "for the rest of",
+// "approve all tools", "disable the sandbox", "for this repo" grant standing permission too.
+private val ALWAYS_LABEL = Regex("""\balways\b|don'?t ask again|\btrust\b|remainder of this session|always-approve|for this (session|conversation)|don'?t ask me again|in the future|permanent|allowlist|allow rule|for the rest of|approve all|disable the sandbox|future similar|during this session|(from|for|in) this (project|repo)|auto-accept""", RegexOption.IGNORE_CASE)
 // 1.4.1 (from a code review): a refusal ("No, don't trust this", "Never allow") grants nothing.
-private val REFUSAL_LABEL = Regex("""^\W*(no|deny|reject|cancel|never|don'?t (trust|allow))\b|\b(don'?t|do not|not|never) (trust|always)\b""", RegexOption.IGNORE_CASE)
-fun grantsStandingPermission(label: String): Boolean = ALWAYS_LABEL.containsMatchIn(label) && !REFUSAL_LABEL.containsMatchIn(label)
+private val REFUSAL_LABEL = Regex("""^\W*(no|deny|reject|cancel|never|quit|don'?t (trust|allow))\b|\b(don'?t|do not|not|never) (trust|always)\b|\bdeny rule\b|\bblock\b""", RegexOption.IGNORE_CASE)
+// A curly apostrophe ("don’t ask again", Claude's MCP and skill rows) reads as a straight one (1.4.9).
+fun grantsStandingPermission(label: String): Boolean = label.replace('\u2019', '\'').let { ALWAYS_LABEL.containsMatchIn(it) && !REFUSAL_LABEL.containsMatchIn(it) }
 
 /** A choice that means "I'll type my own answer" ("Type something.", "Other", "Something else"), 1.4.0. */
 private val OTHER_LABEL = Regex("""^(type something\.?|other\b.*|something else.*|chat about this|type your own.*|enter (a |your )?custom.*)$""", RegexOption.IGNORE_CASE)
@@ -1315,6 +1320,62 @@ private val CODE_LINE = Regex("""^(val|var|let|const|def|fun|function|func|fn|re
 private val MUSE_CARD_FOOTER = Regex("""^\s*Change approval defaults in /permissions\s*$""", RegexOption.IGNORE_CASE)
 /** What Muse prints under a command it asks about: "Stage 1/2", "Current argv: [...]" (1.4.8). */
 private val CMD_TRAILER = Regex("""^(Stage\s+\d+\s*/\s*\d+|Current argv:)""")
+/** A working agent's own status line (Grok's "… 14m29s ⇣84.1k [↓][stop]"); not a card footer's "esc to interrupt" (1.4.9). */
+private val WORKING_LINE = Regex("""\[stop]|⇣\s*[\d.]+k?""")
+/** An agent's input row ("│ ❯ ", "› ", "> "), not a numbered option row (1.4.9). */
+private val INPUT_ROW_UNDER = Regex("""^[\s\u00A0│┃|]*[>❯›»](?![\s\u00A0]*\d{1,2}[.)\s])""")
+/**
+ * Buttons on one row, with a "⇆ select" or "←→ select" hint on that row or the next (1.4.9): OpenCode's
+ * permission prompt ("Allow once   Always allow   Reject") and Vibe's folder trust ("Yes   No"). The
+ * first button has the focus when the prompt opens (the focus is drawn only in colour), and left and
+ * right move it; Esc answers a refusal.
+ */
+fun detectButtonRow(text: String): Prompt? {
+    val lines = text.lines().map { it.trimEnd() }.filter { it.isNotBlank() }.takeLast(12)
+    val hint = Regex("""(⇆|←→)\s*select""")
+    val at = lines.indexOfLast { hint.containsMatchIn(it) }
+    if (at < 0 || at < lines.size - 4) return null
+    fun buttons(l: String): List<String> = l.trim().trim { it in "│┃|" }.substringBefore("⇆").substringBefore("←→")
+        .trim().split(Regex("""\s{3,}""")).map { it.trim() }.filter { it.isNotEmpty() }
+    val here = buttons(lines[at])
+    val (row, labels) = if (here.size >= 2) at to here else (at - 1) to (if (at >= 1) buttons(lines[at - 1]) else emptyList())
+    if (labels.size !in 2..5 || labels.any { it.length > 40 || !it.first().isLetter() }) return null
+    val clean = { l: String -> l.trim().trim { it in "│┃|△ " }.trim() }
+    val above = (row - 1 downTo maxOf(0, row - 10)).map { clean(lines[it]) }.filter { it.any(Char::isLetterOrDigit) }.reversed()
+    val question = above.lastOrNull { it.endsWith("?") } ?: above.firstOrNull { it.contains("required", true) || it.endsWith("?") } ?: above.firstOrNull() ?: "Choose"
+    val parts = questionParts(above.map { QLine(it) })
+    return Prompt(question, labels.mapIndexed { i, l -> Choice(l, (i + 1).toString(), false) }, "1", escRejects = true,
+        parts = parts.takeIf { above.isNotEmpty() }, horizontal = true)
+}
+
+/**
+ * Options answered by a letter (1.4.9): Grok's folder trust ("y  Yes, proceed" / "n  No, quit") and its plan
+ * review footer ("a:approve  │  s:request changes  │  c:comment  │  …  │  q:quit plan").
+ */
+fun detectLetterMenu(text: String, blocked: Boolean): Prompt? {
+    val lines = text.lines().map { it.trimEnd() }.filter { it.isNotBlank() }.takeLast(14)
+    if (lines.isEmpty()) return null
+    val foot = lines.last()
+    if (Regex("""\ba:approve\b""").containsMatchIn(foot)) {
+        val pairs = Regex("""\b([a-z]):([a-z][a-z ]*[a-z])""").findAll(foot).map { it.groupValues[1] to it.groupValues[2] }
+            .filter { (k, _) -> k in setOf("a", "s", "c", "q") }.toList()
+        if (pairs.size < 2) return null
+        val heading = lines.firstOrNull { it.trimStart().startsWith("#") }?.trim()?.trimStart('#')?.trim()
+        return Prompt(heading?.let { "Approve the plan: $it?" } ?: "Approve the plan?",
+            pairs.map { (k, l) -> Choice(l.replaceFirstChar { it.uppercase() }, k, false) })
+    }
+    val row = Regex("""^\s*([a-z])\s{2,}(\S.{0,80})$""")
+    val rows = lines.withIndex().filter { row.matches(it.value) }
+    if (rows.size !in 2..6) return null
+    // One run, near the bottom, with the letters named in the hint under it ("Enter or y to trust · n or Esc to quit").
+    if (rows.zipWithNext().any { (a, b) -> b.index != a.index + 1 } || rows.last().index < lines.size - 3) return null
+    val letters = rows.map { row.find(it.value)!!.groupValues[1] }
+    val hint = lines.drop(rows.last().index + 1).joinToString(" ")
+    if (!blocked && letters.none { Regex("""\b$it\b""").containsMatchIn(hint) }) return null
+    val question = lines.take(rows.first().index).lastOrNull { it.trim().endsWith("?") }?.trim() ?: "Choose"
+    return Prompt(question, rows.map { r -> row.find(r.value)!!.let { m -> Choice(m.groupValues[2].trim(), m.groupValues[1], false) } })
+}
+
 /** At most this many lines with text under a live card's last option (1.4.9). */
 private const val MAX_UNDER_CARD = 8
 /** Codex's approval footer (1.4.2). */
@@ -1334,7 +1395,7 @@ fun menuKeys(prompt: Prompt, choice: Choice): List<String>? {
     val from = prompt.selected?.toIntOrNull() ?: return null
     val to = choice.keys.toIntOrNull() ?: return null
     if (prompt.choices.none { it.keys == choice.keys }) return null
-    val step = if (to > from) "down" else "up"
+    val step = if (prompt.horizontal) (if (to > from) "right" else "left") else if (to > from) "down" else "up"
     // A checkbox row is toggled with Space, not picked with Enter (1.4.0); "Submit" is Enter.
     val last = if (prompt.multi && isCheckbox(choice.label)) "space" else "enter"
     return List(kotlin.math.abs(to - from)) { step } + last
@@ -1349,7 +1410,7 @@ fun moveKeys(prompt: Prompt, choice: Choice): List<String>? = menuKeys(prompt, c
  * means the agent is waiting even when no choices can be read from the screen.
  */
 /** The footer of Claude's question dialog ("Enter to select · ↑/↓ to navigate · Esc to cancel"). */
-private val QUESTION_FOOTER = Regex("""Enter to select.*(navigate|Esc to cancel)|Tab/Arrow keys to navigate|↑/↓ to navigate|\b\d+/\d+:select\b|↑/?↓(?:/jk)?\s+(?:to\s+)?navigate|press enter to confirm or esc|^\s*Change approval defaults in /permissions\s*$""", RegexOption.IGNORE_CASE)
+private val QUESTION_FOOTER = Regex("""Enter to select.*(navigate|Esc to cancel)|Tab/Arrow keys to navigate|↑/↓ to navigate|\b\d+/\d+:select\b|↑/?↓(?:/jk)?\s+(?:to\s+)?navigate|press enter to confirm or esc|^\s*Change approval defaults in /permissions\s*$|⇆ select|←→ select|↑↓ move|↑↓ navigate\s+enter select|enter to submit|enter confirm\s+esc cancel""", RegexOption.IGNORE_CASE)
 
 /** A line of the agent's own activity log above a card: "● Ran …", "• Running …", "◆ …", spinners. */
 private val ACTIVITY = Regex("""^[●○•◆◈⏵✓✗└▸☐☒⠀-⣿]""")  // ☐ ☒: Claude's question-dialog header chips
@@ -1364,7 +1425,7 @@ private val GROK_BANNER = Regex("""Help improve Grok|\[Opt out]\s*\[Opt in]|Opt-
 private val PROMPT_ECHO = Regex("""^[›>❯]\s""")
 
 /** Vibe's approval card: numbered rows, the highlight shown only by colour, "Esc reject" in its footer. */
-private val VIBE_CARD_FOOTER = Regex("""↑↓/jk navigate.*Esc reject""", RegexOption.IGNORE_CASE)
+private val VIBE_CARD_FOOTER = Regex("""↑↓/jk navigate.*(Esc reject|Enter select)""", RegexOption.IGNORE_CASE)
 
 fun showsQuestionDialog(text: String): Boolean =
     text.lines().filter { it.isNotBlank() }.takeLast(6).any { QUESTION_FOOTER.containsMatchIn(it) }
@@ -1435,7 +1496,7 @@ fun detectUnnumberedMenu(text: String): Prompt? {
     val raw = text.lines().map { it.trimEnd() }.takeLast(60)
     val border = "│┃|"
     // "⟩" marks the current row in Muse Code's lists (its /help command list, 1.4.5).
-    val marker = Regex("""^([\s$border]*)([❯›▶➤⟩])\s+(\S.*)$""")
+    val marker = Regex("""^([\s$border]*)([❯›▶➤⟩→])\s+(\S.*)$""")
     val at = raw.indexOfLast { marker.matches(it) }
     if (at < 0) return null
     val m = marker.find(raw[at])!!
@@ -1450,15 +1511,28 @@ fun detectUnnumberedMenu(text: String): Prompt? {
         if (marker.matches(l) && l != raw[at]) return null
         return l.substring(col).trimEnd { it.isWhitespace() || it in border }
     }
+    // A description under a row ("  ❯ ◉ SQLite" over "      Single file, no server"), indented past the
+    // rows' column, is part of that row, not the end of the menu (1.4.9: omp's ask dialog, Kiro's scope page).
+    fun described(l: String): Boolean = l.length > col && l.substring(0, col).all { it.isWhitespace() || it in border } &&
+        l[col].isWhitespace() && l.substring(col).trim().trim { it in border }.isNotEmpty()
     var top = at
-    while (top - 1 >= 0 && row(raw[top - 1]) != null) top--
+    while (top - 1 >= 0) {
+        var k = top - 1
+        while (k >= 0 && described(raw[k])) k--
+        if (k >= 0 && row(raw[k]) != null) top = k else break
+    }
     var bottom = at
-    while (bottom + 1 < raw.size && row(raw[bottom + 1]) != null) bottom++
-    var rows = (top..bottom).map { it to row(raw[it])!! }
+    while (bottom + 1 < raw.size) {
+        var k = bottom + 1
+        while (k < raw.size && described(raw[k])) k++
+        if (k < raw.size && row(raw[k]) != null) bottom = k else break
+    }
+    var rows = (top..bottom).filter { !described(raw[it]) || it == at }.map { it to row(raw[it])!! }
     // A table's header ("Model   Credit usage   Description") is not a choice.
     if (rows.size > 1 && rows.first().first != at && Regex("""^(Model|Name)(\s{2,}|$)""").containsMatchIn(rows.first().second)) rows = rows.drop(1)
     if (rows.size !in 2..30) return null
-    val labels = rows.map { (_, r) -> r.split(Regex("""\s{2,}""")).filter { it.isNotBlank() }.joinToString(" · ").take(90) }
+    // omp draws a radio before each label ("◉ SQLite", "○ Postgres"): the label is the words (1.4.9).
+    val labels = rows.map { (_, r) -> r.split(Regex("""\s{2,}""")).filter { it.isNotBlank() }.joinToString(" · ").take(90).replace(Regex("""^[◉○●◯]\s+"""), "") }
     var question = (top - 1 downTo maxOf(0, top - 4)).map { raw[it].trim().trim { c -> c in border || c.isWhitespace() } }
         .firstOrNull { it.any(Char::isLetter) && !it.all { c -> c in "─━═ " } }
         ?.substringBefore("  ")?.trimEnd(':')?.ifBlank { null } ?: "Choose"
@@ -1569,12 +1643,16 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     // (●) on the highlighted option, which ↑/↓ move and Enter picks (checked in Grok 4.7, 2026-11-13).
     // One or two digits (1.4.0, from a code review: option 10 and longer menus never became a card).
     // Muse Code marks the highlighted row with "⟩" (1.4.7: "⟩ 1. Allow this stage once (y)").
-    val option = Regex("""^[\s│┃|]*([❯›>▶➤⟩]\s*)?(\d{1,2})(?:[.)]|\s+(\([○●◯◉]\)))\s+(.{1,200}?)[\s│┃|]*$""")
+    // 1.4.9 (the card audit): Hermes's "❯ [ ] 1. pytest" (a checkbox before the number) and "❯ [1] Approve
+    // Once" (a number in brackets), and pi's "→" highlight.
+    val option = Regex("""^[\s│┃|]*([❯›>▶➤⟩→]\s*)?(\[[ xX✓✔]\]\s+)?(?:(\d{1,2})(?:[.)]|\s+(\([○●◯◉]\)))|\[(\d{1,2})\])\s+(.{1,200}?)[\s│┃|]*$""")
+    fun key(m: MatchResult) = m.groupValues[3].ifEmpty { m.groupValues[5] }
+    fun label(m: MatchResult) = (m.groupValues[2] + m.groupValues[6]).trim()
     val marked = mutableSetOf<Int>()
     val optionRows = lines.withIndex().mapNotNull { (i, l) ->
         option.find(l)?.let { m ->
-            if (m.groupValues[1].isNotBlank() || m.groupValues[3] in setOf("(●)", "(◉)")) marked += i
-            Triple(i, m.groupValues[2], m.groupValues[4].trim())
+            if (m.groupValues[1].isNotBlank() || m.groupValues[4] in setOf("(●)", "(◉)")) marked += i
+            Triple(i, key(m), label(m))
         }
     }
     // Keep the last run of consecutive numbers (1, 2, 3 …), so a numbered list earlier on the
@@ -1590,7 +1668,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     // The whole question: every line above the first choice up to a blank line, the top of the
     // question's box or a rule (at most 20 lines), so a long question isn't cut.
     val above = run.firstOrNull()?.let { (_, firstKey, firstLabel) ->
-        val at = raw.indexOfLast { option.find(it)?.let { m -> m.groupValues[2] == firstKey && m.groupValues[4].trim() == firstLabel } == true }
+        val at = raw.indexOfLast { option.find(it)?.let { m -> key(m) == firstKey && label(m) == firstLabel } == true }
         if (at <= 0) null else {
             // Each line, and whether it is a Grok command line ("┃  │ grok usage ..."), which follows
             // its title after ": " ("Print plan usage with no session id: grok usage ...").
@@ -1639,7 +1717,10 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
                 val tl = l.trimStart()
                 val isCmd = (tl.startsWith("┃") || tl.startsWith("│")) && tl.drop(1).trimStart().startsWith("│")
                 // Grok's "← → narrow scope" hint sits between the command and its options.
-                if (c.any(Char::isLetterOrDigit) && !c.contains("narrow scope")) got.add(0, QLine(c.trimStart('›', '❯', ' '), isCmd, bar = !isCmd && tl.startsWith("│")))
+                // A dashed line with no words (the edges of Claude's diff box) separates paragraphs (1.4.9).
+                if (!c.any(Char::isLetterOrDigit) && got.isNotEmpty()) got[0] = got[0].copy(gapBefore = true)
+                // Grok's question card starts its question with a "?" icon (1.4.9).
+                if (c.any(Char::isLetterOrDigit) && !c.contains("narrow scope")) got.add(0, QLine(c.trimStart('›', '❯', ' ').replace(Regex("""^\?\s+"""), ""), isCmd, bar = !isCmd && tl.startsWith("│")))
                 i--
             }
             got.takeIf { it.isNotEmpty() }
@@ -1675,8 +1756,15 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     // a footer, the card's frame). A card with more under it is an old one left in the scrollback
     // after it was answered (1.4.9, Bill: "Grok is stuck on another fake question box"): Grok's
     // "(●)" stays drawn there, so it looked like a live question while Grok was back at work.
-    val underCard = run.lastOrNull()?.let { (at, _, _) -> lines.drop(at + 1).count { clean(it).any(Char::isLetterOrDigit) } } ?: 0
-    if (numbered.size in 2..20 && realMenu && underCard <= MAX_UNDER_CARD) {
+    val below = run.lastOrNull()?.let { (at, _, _) -> lines.drop(at + 1) } ?: emptyList()
+    val underCard = below.count { clean(it).any(Char::isLetterOrDigit) }
+    // The agent's own activity ("● …", a spinner, a status line) or its input row under the options means
+    // the agent went on after the card, however few lines that took (from Grok's review).
+    // A box's own corner ("└────") is not activity: only a line with words counts.
+    val wentOn = below.any { l -> val c = clean(l)
+        (c.any(Char::isLetterOrDigit) && (ACTIVITY.containsMatchIn(c) || WORKING_LINE.containsMatchIn(c))) ||
+            (INPUT_ROW_UNDER.containsMatchIn(l) && !Regex("""type your|other""", RegexOption.IGNORE_CASE).containsMatchIn(c)) }
+    if (numbered.size in 2..20 && realMenu && underCard <= MAX_UNDER_CARD && !wentOn) {
         // Vibe draws no marker on the highlighted row; a fresh card highlights the first one.
         val selected = run.firstOrNull { it.first in marked }?.second ?: if (vibeCard) "1" else null
         val multi = numbered.count { isCheckbox(it.label) } >= 2
@@ -1702,6 +1790,11 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     // A menu without numbers, as Kiro draws its approval card ("❯ Yes, single permission" over
     // "  Trust, always allow in this session" and "  No (Tab to edit)"); arrows and Enter answer it.
     if (blocked) detectUnnumberedMenu(text)?.let { return it }
+
+    // Buttons side by side (OpenCode's permission prompt, Vibe's folder trust) and options answered by a
+    // letter (Grok's folder trust and plan review), 1.4.9.
+    detectButtonRow(text)?.let { return it }
+    detectLetterMenu(text, blocked)?.let { return it }
 
     // Grok's data-sharing banner, when nothing else is being asked: answered through /privacy.
     if (showsGrokBanner(text)) return GROK_PRIVACY_PROMPT

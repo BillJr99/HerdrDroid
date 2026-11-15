@@ -1,0 +1,4 @@
+card: options
+blocked: true
+options: Yes, just this once (y) | Yes, and allow this host for this conversation (a) | Yes, and allow this host in the future (p) | No, and block this host in the future (b) | No, and tell Codex what to do differently (esc)
+source: derived for the 1.4.9 card audit from the agent's own program text (exact strings, layout inferred); demo content only

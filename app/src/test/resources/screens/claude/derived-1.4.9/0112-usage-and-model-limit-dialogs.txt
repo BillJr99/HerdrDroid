@@ -1,0 +1,7 @@
+ You've reached your Fable limit
+ You've used your included Fable usage for this week. Continuing on Demo-Model runs on usage credits.
+
+ ❯ 1. Continue with Demo-Model
+   2. Turn on usage credits and continue
+   3. Upgrade to Max or Ultra
+   4. No, keep my current model

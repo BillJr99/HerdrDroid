@@ -1383,6 +1383,6 @@ private fun sourceName(source: String): String? = when (source.lowercase()) {
 internal fun keysLabel(nav: List<String>?, c: com.billmongan.herdrdroid.herdr.Choice): String {
     if (c.keys.startsWith("grok-privacy:")) return "types /privacy in Grok and picks it there"
     if (nav == null) return if (c.pressEnter) "sends ${c.keys} + Enter" else "sends ${c.keys}"
-    val names = nav.map { when (it) { "up" -> "↑"; "down" -> "↓"; "enter" -> "Enter"; "esc" -> "Esc"; else -> it } }
+    val names = nav.map { when (it) { "up" -> "↑"; "down" -> "↓"; "left" -> "←"; "right" -> "→"; "enter" -> "Enter"; "esc" -> "Esc"; else -> it } }
     return "sends " + names.joinToString(" ")
 }

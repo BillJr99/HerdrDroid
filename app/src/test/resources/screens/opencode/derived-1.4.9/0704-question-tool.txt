@@ -1,0 +1,7 @@
+┃  Which database should demo-box use?
+┃
+┃  >1. SQLite
+┃   2. Postgres
+┃   3. Type your own answer
+┃
+┃  ↑↓ select  enter confirm  esc dismiss

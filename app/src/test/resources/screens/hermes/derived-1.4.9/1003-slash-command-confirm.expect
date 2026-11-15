@@ -1,0 +1,4 @@
+card: options
+blocked: true
+options: Approve Once  -  reload now | Always Approve  -  reload now and silence this prompt | Cancel  -  leave MCP tools unchanged
+source: derived for the 1.4.9 card audit from the agent's own program text (exact strings, layout inferred); demo content only

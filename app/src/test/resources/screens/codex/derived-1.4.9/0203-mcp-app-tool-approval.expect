@@ -1,0 +1,4 @@
+card: options
+blocked: true
+options: Allow | Allow for this session | Allow and don't ask me again | Cancel
+source: derived for the 1.4.9 card audit from the agent's own program text (exact strings, layout inferred); demo content only

@@ -1,0 +1,6 @@
+┃  △ Reject permission
+┃   Tell OpenCode what to do differently
+┃
+┃   use the cached package instead
+┃
+┃   enter confirm  esc cancel

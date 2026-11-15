@@ -1,0 +1,9 @@
+╭─ Hermes needs your input ─────────────────────────────────────╮
+│ 2 questions                                                   │
+│ ✓ Which database should demo-box use?                         │
+│     SQLite                                                    │
+│ ▸ Which test runners?                                         │
+│   ❯ [ ] 1. pytest                                             │
+│     [x] 2. tox                                                │
+│     [ ] 3. Other (type your answer)                           │
+╰───────────────────────────────────────────────────────────────╯

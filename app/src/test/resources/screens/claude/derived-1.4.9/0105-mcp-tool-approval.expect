@@ -1,0 +1,4 @@
+card: options
+blocked: true
+options: Yes | Yes, and don’t ask again for: mcp__demo-notes__search_notes | No, and tell Claude what to do differently (esc)
+source: derived for the 1.4.9 card audit from the agent's own program text (exact strings, layout inferred); demo content only

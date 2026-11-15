@@ -1,0 +1,8 @@
+  Approaching rate limits
+  Switch to demo-mini for lower credit usage?
+› 1. Switch to demo-mini
+     Uses fewer credits for upcoming turns
+  2. Keep current model
+  3. Keep current model (never show again)
+     Hide future rate limit reminders about switching models
+  Press enter to confirm or esc to cancel

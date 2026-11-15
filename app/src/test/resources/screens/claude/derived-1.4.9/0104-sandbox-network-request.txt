@@ -1,0 +1,8 @@
+────────────────────────────────────────────────────────────────────────
+ Network request outside of sandbox
+ Host: registry.example.org
+
+ Do you want to allow this connection?
+ ❯ 1. Yes
+   2. Yes, and don't ask again for registry.example.org in any project (user settings)
+   3. No, and tell Claude what to do differently (esc)

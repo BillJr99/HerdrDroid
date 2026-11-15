@@ -1,0 +1,10 @@
+↓ Shell git push origin demo-branch
+
+──────────────────────────────────────────────────────────────────────────
+ shell requires approval
+ ❯ Allow once
+   Create allow rule to approve future similar actions
+   Deny once
+   Create deny rule to block future similar actions
+──────────────────────────────────────────────────────────────────────────
+ y allow once · n deny once · t create allow rule · d create deny rule

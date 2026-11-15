@@ -1,0 +1,12 @@
+╭────────────────────────────────────────────────────────────╮
+│ Confirm action                                             │
+│                                                            │
+│ Reloading MCP servers rebuilds the tool set for this       │
+│ session.                                                   │
+│                                                            │
+│ ❯ [1] Approve Once  -  reload now                            │
+│   [2] Always Approve  -  reload now and silence this prompt  │
+│   [3] Cancel  -  leave MCP tools unchanged                   │
+│                                                            │
+│ Type 1/2/3 or use ↑/↓ then Enter. ESC/Ctrl+C cancels.      │
+╰────────────────────────────────────────────────────────────╯

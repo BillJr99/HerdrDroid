@@ -1,0 +1,4 @@
+card: options
+blocked: true
+options: Allow once | Allow for this session | Add to permanent allowlist | Deny
+source: derived for the 1.4.9 card audit from the agent's own program text (exact strings, layout inferred); demo content only

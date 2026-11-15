@@ -1,0 +1,11 @@
+╭──────────────────────────────────────────────────────────────────────────╮
+│ Question                                                                 │
+│                                                                          │
+│ Which database should demo-box use?                                      │
+│                                                                          │
+│ ❯ 1. SQLite                                                              │
+│   2. Postgres                                                            │
+│   3. Other (type your answer)                                            │
+│                                                                          │
+│ ↑/↓ to select · enter to confirm · esc to cancel                         │
+╰──────────────────────────────────────────────────────────────────────────╯

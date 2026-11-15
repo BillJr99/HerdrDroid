@@ -1,0 +1,10 @@
+ Database   Runners   Review
+ Which database should demo-box use?
+
+ ❯ ◉ SQLite (Recommended)
+       Single file, no server
+   ○ Postgres
+   ○ Other (type your own)
+   ○ Chat about this
+
+ enter select · n note · ↑↓ move · tab/left/right question · esc cancel

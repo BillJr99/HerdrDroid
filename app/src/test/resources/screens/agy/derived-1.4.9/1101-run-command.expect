@@ -1,0 +1,4 @@
+card: options
+blocked: true
+options: Yes, run command | Yes, and always allow in this conversation for commands that start with 'go test' | Yes, and always allow for commands that start with 'go test' (Persist to settings.json) | No, and tell Antigravity what to do differently
+source: derived for the 1.4.9 card audit from the agent's own program text (exact strings, layout inferred); demo content only

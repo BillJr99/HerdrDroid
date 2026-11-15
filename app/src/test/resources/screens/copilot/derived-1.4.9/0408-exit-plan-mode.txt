@@ -1,0 +1,5 @@
+│ ❯ 1. Accept plan and continue in Autopilot execution mode                │
+│   2. Accept plan and continue in Interactive execution mode (Manual      │
+│      Approval for this session; future defaults unchanged)               │
+│   3. Exit to Interactive execution mode without running the plan         │
+│   4. Suggest changes                                                     │

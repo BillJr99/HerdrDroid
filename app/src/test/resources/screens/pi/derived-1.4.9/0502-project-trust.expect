@@ -1,0 +1,4 @@
+card: options
+blocked: true
+options: Trust | Trust parent folder (/home/user/work) | Trust (this session only) | Do not trust | Do not trust (this session only)
+source: derived for the 1.4.9 card audit from the agent's own program text (exact strings, layout inferred); demo content only

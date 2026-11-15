@@ -1,0 +1,9 @@
+ Enter plan mode?
+ Claude wants to enter plan mode to explore and design an implementation approach.
+   · Identify existing patterns
+   · Design an implementation strategy
+   · Present a plan for your approval
+ No code changes will be made until you approve the plan.
+
+ ❯ 1. Yes, enter plan mode
+   2. No, start implementing now

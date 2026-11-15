@@ -1,0 +1,13 @@
+─────────────────────────────────────────────────────────────────────────────────────────
+Would you like to allow this network access?
+
+  Host: registry.example.org:443
+  Reason: install demo dependencies
+
+⟩ 1. Allow once (y)
+  2. Allow for this session (s)
+  3. Always allow this network destination (p)
+  4. Reject (esc)
+Change approval defaults in /permissions
+─────────────────────────────────────────────────────────────────────────────────────────
+  demo-model · max · ~/work/demo
