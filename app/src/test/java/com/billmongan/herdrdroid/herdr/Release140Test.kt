@@ -83,9 +83,9 @@ class Release140Test {
 
     @Test fun theDebugBundleLeavesNoSecrets() {
         val raw = "key sk-abcDEF1234567890abcdef token=ghp_abcdefghijklmnopqrstuvwxyz0123 " +
-            "password: hunter2 url wss://secret.example/ssh mail bill@example.com AKIAABCDEFGHIJKLMNOP"
+            "password: hunter2 url wss://secret.example/ssh mail user@example.com AKIAABCDEFGHIJKLMNOP"
         val r = Redact.text(raw)
-        for (bad in listOf("sk-abcDEF", "ghp_abc", "hunter2", "secret.example", "bill@example.com", "AKIAABCDEFGHIJKLMNOP")) assertFalse(r, r.contains(bad))
+        for (bad in listOf("sk-abcDEF", "ghp_abc", "hunter2", "secret.example", "user@example.com", "AKIAABCDEFGHIJKLMNOP")) assertFalse(r, r.contains(bad))
         assertTrue(r.contains("wss://<address hidden>"))
         assertEquals("plain screen text stays", Redact.text("plain screen text stays"))
         // Prose with the keywords is left alone; an Authorization header loses its value (review fixes).

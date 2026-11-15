@@ -1931,7 +1931,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Answers Grok's data-sharing banner the way that works (checked on demo-box2's Grok 4.7,
+     * Answers Grok's data-sharing banner the way that works (checked on devbox2's Grok 4.7,
      * 2026-11-13): with the input box empty, type /privacy and Enter, which opens "Settings ›
      * Coding data, retention, and training"; then move to Opt in or Opt out with the arrows and
      * press Enter. Returns a problem to show, or null.

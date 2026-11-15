@@ -15,11 +15,11 @@ import java.io.File
  *   heading: ...                       the question as the card shows it (optional)
  *   options: a | b | c                 every option's label, in order (optional)
  *   error: a; b                        detectAgentError must name each of these (1.4.2, optional)
- * A screen with no .expect file (a fresh capture from bill-agent-screens.py on demo-box2 after an
+ * A screen with no .expect file (a fresh capture from bill-agent-screens.py on devbox2 after an
  * agent update) must, if it looks like a question (a question footer, or a highlighted numbered
  * row), parse as a card with at least two options rather than fall back to the generic card.
  * Every screen that fails is listed as "BROKEN <agent>/<version>/<name>.txt", which the weekly
- * check on demo-box2 reads to report which card stopped parsing.
+ * check on devbox2 reads to report which card stopped parsing.
  */
 class ScreenLibraryTest {
     private val root: File? = javaClass.classLoader?.getResource("screens")?.let { File(it.toURI()) }

@@ -3,4 +3,4 @@
 Traceback (most recent call last):
   File "vibe/cli.py", line 210, in main
 KeyboardInterrupt
-bill@demo-box2:~/agents/vibe$
+user@devbox2:~/agents/vibe$

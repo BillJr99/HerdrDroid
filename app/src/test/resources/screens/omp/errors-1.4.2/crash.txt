@@ -1,4 +1,4 @@
   (the agent's earlier output)
 
 FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory
-bill@demo-box2:~/agents/omp$
+user@devbox2:~/agents/omp$

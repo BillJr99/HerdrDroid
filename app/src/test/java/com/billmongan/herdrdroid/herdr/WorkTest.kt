@@ -5,7 +5,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class WorkTest {
-    // The shape the reader printed for demo-box2's Claude pane (pids and commands as seen there).
+    // The shape the reader printed for devbox2's Claude pane (pids and commands as seen there).
     private val json = """
 {"ok": true, "procs": [
  {"pid": 1654, "ppid": 1, "depth": 0, "cmd": "/bin/bash", "name": "bash", "age": 365840, "cpu": 0.0, "rss": 3656},

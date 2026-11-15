@@ -3,4 +3,4 @@
 FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory
  1: 0xb7c3a0 node::Abort() [claude]
 Aborted (core dumped)
-bill@demo-box2:~/agents/claude$
+user@devbox2:~/agents/claude$

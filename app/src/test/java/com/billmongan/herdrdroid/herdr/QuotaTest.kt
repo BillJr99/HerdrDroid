@@ -193,7 +193,7 @@ GEMINI 4 ARGON
         assertEquals("Usage credits", shortLabel("Usage credits"))
     }
 
-    /** Footers captured from each agent's pane on demo-box2. */
+    /** Footers captured from each agent's pane on devbox2. */
     @Test fun modelsFromFooters() {
         assertEquals("GPT-6.1-Sol · default", footerModel("codex", """
 › Ask Codex to do anything

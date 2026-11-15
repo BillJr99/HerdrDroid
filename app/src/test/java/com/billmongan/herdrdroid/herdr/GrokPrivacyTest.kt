@@ -10,7 +10,7 @@ import org.junit.Test
 /**
  * 1.2.7: Grok's "Help improve Grok" data-sharing banner is its own question, answered through
  * Grok's /privacy dialog, and never merges into an approval card's question. Screens as Grok 4.7
- * drew them on demo-box2 on 2026-11-13.
+ * drew them on devbox2 on 2026-11-13.
  */
 class GrokPrivacyTest {
     private val banner = """
@@ -67,8 +67,8 @@ class GrokPrivacyTest {
   and debugging purposes. Change anytime via settings.
   Read Terms and Privacy Policy.
   ┃
-  ┃  ›  Check SSH to demo-box in batch mode
-  ┃  │ ssh -o BatchMode=yes bill@192.0.2.26 true
+  ┃  ›  Check SSH to devbox in batch mode
+  ┃  │ ssh -o BatchMode=yes user@192.0.2.26 true
   ┃
   ┃  1 (○) Yes, and don't ask again for anything (always-approve mode)
   ┃  2 (●) Yes, proceed
@@ -79,7 +79,7 @@ class GrokPrivacyTest {
         val p = detectPrompt(card, blocked = true)!!
         assertEquals(3, p.choices.size)
         assertFalse(p.question, p.question.contains("Grok") || p.question.contains("SpaceXAI") || p.question.contains("Privacy"))
-        assertTrue(p.question, p.question.startsWith("Check SSH to demo-box"))
+        assertTrue(p.question, p.question.startsWith("Check SSH to devbox"))
     }
 
     @Test fun codexQuestionStopsAtTheConversationAboveIt() {

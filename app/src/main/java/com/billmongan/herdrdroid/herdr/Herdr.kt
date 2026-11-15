@@ -1074,8 +1074,11 @@ fun questionParts(lines: List<QLine>): QuestionParts {
         // The rest of a path wrapped at the terminal's width: a piece with a slash or a file extension,
         // not a new path of its own (starting with / or ~) after a path that already ended (1.4.2, from review).
         if (last != null && last.inPlace && !l.gapBefore && PATH_PIECE.matches(t) && !LABEL_LINE.containsMatchIn(t) &&
-            (t.contains('/') || FILE_END.containsMatchIn(t)) && (t.first() !in "/~" || last.text.endsWith("/"))) { last.text += t; continue }
-        // Grok's title ("Check SSH to demo-box: grok usage ...") came joined to its command before.
+            t.first() !in "/~" && (
+                (t.contains('/') && last.text.last() in "-_/") ||
+                (!t.contains('/') && FILE_END.containsMatchIn(t) && (last.text.last() in "-_." ||
+                    (last.text.last().isLetterOrDigit() && !last.text.substringAfterLast('/').contains('.') && (t.first().isLowerCase() || t.first().isDigit())))))) { last.text += t; continue }
+        // Grok's title ("Check SSH to devbox: grok usage ...") came joined to its command before.
         // A capitalised line after a "Label: …" line is a new sentence ("Reason: outside workspace"
         // over "Allow access to this file?"); a wrapped label line goes on in lower case.
         val afterLabel = last != null && LABEL_LINE.containsMatchIn(last.text) && t.first().isUpperCase()
@@ -1349,8 +1352,10 @@ fun detectAgentError(text: String): String? {
     }
     // A crash counts only when the shell's prompt is back at the bottom: the agent itself is gone
     // (1.4.2, from review: a traceback the agent shows from your program is not its crash).
+    // The shell is back only when the screen's own last line is its prompt (1.4.2, from review);
+    // the crash itself is looked for outside boxes.
     val rows = all.filter { r -> r.trimStart().firstOrNull()?.let { it in "│┃|╭╰┌└├" } != true }.map { it.trim() }
-    if (rows.lastOrNull()?.let { SHELL_PROMPT.containsMatchIn(it) } == true &&
+    if (all.lastOrNull()?.trim()?.let { SHELL_PROMPT.containsMatchIn(it) } == true &&
         rows.dropLast(1).any { r -> !YOUR_LINE.containsMatchIn(r) && AGENT_CRASHES.any { (p, _) -> p.containsMatchIn(r) } }) {
         found += "the agent crashed"; found += "the agent exited"
     }
@@ -1387,7 +1392,7 @@ private val AGENT_CRASHES = listOf(
     Regex("""thread '.{1,40}' panicked at|Traceback \(most recent call last\)|Segmentation fault|core dumped|^Killed$|FATAL ERROR:|Unhandled(Promise)?Rejection|unhandled exception|uncaught exception""", RegexOption.IGNORE_CASE) to "the agent crashed",
 )
 
-/** A shell's prompt: "tester@host:~/work$", "bill@demo-box2:~ %" (a bare "$" is too easily something else). */
+/** A shell's prompt: "tester@host:~/work$", "user@devbox2:~ %" (a bare "$" is too easily something else). */
 private val SHELL_PROMPT = Regex("""^[\w.-]+@[\w.-]+(:\S*)?\s?[$#%]\s*$""")
 
 fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version: String? = null): Prompt? {

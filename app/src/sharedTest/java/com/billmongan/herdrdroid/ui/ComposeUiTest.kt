@@ -322,7 +322,7 @@ class ComposeUiTest {
 
     /** Closing a working session asks twice; the folder is never mentioned as deleted. */
     @Test fun closingABusySessionAsksTwice() {
-        val server = com.billmongan.herdrdroid.store.Server(name = "demo-box2", host = "h", port = 22, user = "u", herdrPath = "herdr")
+        val server = com.billmongan.herdrdroid.store.Server(name = "devbox2", host = "h", port = 22, user = "u", herdrPath = "herdr")
         val p = Pane("w1:p2", "w1:t2", "w1", "opencode", Status.WORKING, "", "/home/user/cs357", tabLabel = "cs357-tutorial")
         var closed = false
         rule.setContent {

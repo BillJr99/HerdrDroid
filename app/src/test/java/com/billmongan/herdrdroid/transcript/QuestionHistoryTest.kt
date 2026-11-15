@@ -70,10 +70,10 @@ Enter to select · Tab/Arrow keys to navigate · Esc to cancel
 """.trimIndent()
 
     private val grok = """
-   ◆ Check SSH to demo-box in batch mode… 58s                                     2m46s ⇣61.9k [↓][stop]
+   ◆ Check SSH to devbox in batch mode… 58s                                     2m46s ⇣61.9k [↓][stop]
   ┃
-  ┃  ›  Check SSH to demo-box in batch mode
-  ┃  │ ssh -o BatchMode=yes -o ConnectTimeout=5 bill@192.0.2.26 true; echo "EXIT:${'$'}?"
+  ┃  ›  Check SSH to devbox in batch mode
+  ┃  │ ssh -o BatchMode=yes -o ConnectTimeout=5 user@192.0.2.26 true; echo "EXIT:${'$'}?"
   ┃  ← → narrow scope
   ┃
   ┃  1 (○) Yes, and don't ask again for anything (always-approve mode)
@@ -105,11 +105,11 @@ Command
 ──────────
 
 Requesting permission for:
-   ssh bill@192.0.2.26 true
+   ssh user@192.0.2.26 true
 
 Run this command?
 > 1. Yes, run command
-  2. Yes, and always allow in this conversation for commands that start with 'ssh bill@192.0.2.26 true'
+  2. Yes, and always allow in this conversation for commands that start with 'ssh user@192.0.2.26 true'
   3. No, cancel
 
   ↑/↓ Navigate · tab Amend · ctrl+g edit/expand command
@@ -158,7 +158,7 @@ esc to cancel
         val cases = listOf(
             Triple(claudeBash, "Claude", "Do you want to proceed?"),
             Triple(codex, "Codex", "Would you like to run the following command?"),
-            Triple(grok, "Grok", "Check SSH to demo-box in batch mode"),
+            Triple(grok, "Grok", "Check SSH to devbox in batch mode"),
             Triple(copilot, "Copilot", "Do you want to run this command?"),
             Triple(antigravity, "Antigravity", "Run this command?"),
             Triple(kiro, "Kiro", "Shell requires approval"),

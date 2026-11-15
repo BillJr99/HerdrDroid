@@ -13,10 +13,10 @@ import org.junit.Test
 class GrokQuestionTest {
     private val shellCard = """
      ◆ Running list panes, first two lines
-   ◆ Check SSH to demo-box in batch mode… 58s                                     2m46s ⇣61.9k [↓][stop]
+   ◆ Check SSH to devbox in batch mode… 58s                                     2m46s ⇣61.9k [↓][stop]
   ┃
-  ┃  ›  Check SSH to demo-box in batch mode
-  ┃  │ ssh -o BatchMode=yes -o ConnectTimeout=5 bill@192.0.2.26 true; echo "EXIT:${'$'}?"
+  ┃  ›  Check SSH to devbox in batch mode
+  ┃  │ ssh -o BatchMode=yes -o ConnectTimeout=5 user@192.0.2.26 true; echo "EXIT:${'$'}?"
   ┃
   ┃  1 (○) Yes, and don't ask again for anything (always-approve mode)
   ┃  2 (●) Yes, proceed
@@ -49,7 +49,7 @@ class GrokQuestionTest {
         assertEquals("Yes, proceed", p.choices[1].label)
         assertEquals("No, reject (type to add feedback)", p.choices[2].label)
         // 1.2.7: exactly the title, then the command; never the "◆ … [stop]" status line above.
-        assertEquals("Check SSH to demo-box in batch mode: ssh -o BatchMode=yes -o ConnectTimeout=5 bill@192.0.2.26 true; echo \"EXIT:\$?\"", p.question)
+        assertEquals("Check SSH to devbox in batch mode: ssh -o BatchMode=yes -o ConnectTimeout=5 user@192.0.2.26 true; echo \"EXIT:\$?\"", p.question)
         assertEquals("2", p.selected)
     }
 

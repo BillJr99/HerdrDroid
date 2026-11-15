@@ -1,4 +1,4 @@
   (the agent's earlier output)
 
 thread 'main' panicked at crates/chat-cli/src/cli/chat/mod.rs:977:22:
-bill@demo-box2:~/agents/kiro$
+user@devbox2:~/agents/kiro$

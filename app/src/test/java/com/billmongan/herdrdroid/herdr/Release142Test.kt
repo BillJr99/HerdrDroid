@@ -156,7 +156,7 @@ class Release142Test {
         // A traceback the agent shows from your program is not its crash; with the shell back, it is.
         val tb = "Traceback (most recent call last):\n  File \"t.py\", line 1\nZeroDivisionError: division by zero"
         assertEquals(null, detectAgentError(tb + "\n› "))
-        assertTrue(detectAgentError(tb + "\nbill@demo-box2:~/x$")!!.contains("the agent exited"))
+        assertTrue(detectAgentError(tb + "\nbill@devbox2:~/x$")!!.contains("the agent exited"))
         // A status word after a path is not part of it.
         val text = "  Would you like to make the following edits?\n  Destination: /tmp/foo\n  Done.\n› 1. Yes, proceed (y)\n  2. No, and tell Codex what to do differently (esc)\n  Press enter to confirm or esc to cancel"
         assertEquals("/tmp/foo", detectPrompt(text, blocked = true, agent = "codex")!!.shownParts().blocks.first { it.kind == QKind.COMMAND }.text)
@@ -172,5 +172,15 @@ class Release142Test {
         assertEquals(null, detectAgentError("404 Not Found\nlog in again later"))
         // A boxed traceback is content, even with a shell prompt under it.
         assertEquals(null, detectAgentError("│ Traceback (most recent call last): │\n│ unhandled exception │\nbill@host:~$"))
+    }
+    @Test fun fourthReviewRules() {
+        fun dest(a: String, b: String) = detectPrompt("  Would you like to make the following edits?\n  Destination: $a\n  $b\n› 1. Yes, proceed (y)\n  2. No, and tell Codex what to do differently (esc)\n  Press enter to confirm or esc to cancel",
+            blocked = true, agent = "codex")!!.shownParts().blocks.first { it.kind == QKind.COMMAND }.text
+        assertEquals("/tmp/foo", dest("/tmp/foo", "src/Main.kt"))
+        assertEquals("/tmp/foo/", dest("/tmp/foo/", "/etc/hosts"))
+        assertEquals("/home/user/agents/codex/out/file.json", dest("/home/user/agents/codex/", "out/file.json"))
+        assertEquals("/out/course-site-lambdacalculus2-8.json", dest("/out/course-site-", "lambdacalculus2-8.json"))
+        // The shell's prompt must be the screen's last line; a boxed line under it means it isn't back.
+        assertEquals(null, detectAgentError("Traceback (most recent call last):\nuser@host:~$\n│ a boxed line │"))
     }
 }

@@ -1,4 +1,4 @@
 card: options
 blocked: false
 heading: Do you want to run this command?
-source: captured on demo-box2, 2026-11-13 (the 1.2.7 to 1.2.9 question-format tests)
+source: captured on devbox2, 2026-11-13 (the 1.2.7 to 1.2.9 question-format tests) (host details replaced)

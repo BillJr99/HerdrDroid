@@ -152,10 +152,10 @@ Enter to select · Tab/Arrow keys to navigate · Esc to cancel
 
     @Test fun grokCard() {
         val grok = """
-   ◆ Check SSH to demo-box in batch mode… 58s                                     2m46s ⇣61.9k [↓][stop]
+   ◆ Check SSH to devbox in batch mode… 58s                                     2m46s ⇣61.9k [↓][stop]
   ┃
-  ┃  ›  Check SSH to demo-box in batch mode
-  ┃  │ ssh -o BatchMode=yes -o ConnectTimeout=5 bill@192.0.2.26 true; echo "EXIT:${'$'}?"
+  ┃  ›  Check SSH to devbox in batch mode
+  ┃  │ ssh -o BatchMode=yes -o ConnectTimeout=5 user@192.0.2.26 true; echo "EXIT:${'$'}?"
   ┃  ← → narrow scope
   ┃
   ┃  1 (○) Yes, and don't ask again for anything (always-approve mode)
@@ -165,8 +165,8 @@ Enter to select · Tab/Arrow keys to navigate · Esc to cancel
   1/3:select  │  Tab:next option  │  Ctrl+o:always-approve  │  Ctrl+c:cancel  │  Esc:scrollback
 """.trimIndent()
         val parts = detectPrompt(grok, blocked = true)!!.shownParts()
-        assertEquals("Check SSH to demo-box in batch mode", parts.heading)
-        assertEquals("ssh -o BatchMode=yes -o ConnectTimeout=5 bill@192.0.2.26 true; echo \"EXIT:\$?\"", parts.command)
+        assertEquals("Check SSH to devbox in batch mode", parts.heading)
+        assertEquals("ssh -o BatchMode=yes -o ConnectTimeout=5 user@192.0.2.26 true; echo \"EXIT:\$?\"", parts.command)
         assertTrue(parts.details.isEmpty())
         clean(parts)
     }
@@ -219,11 +219,11 @@ Command
 ──────────
 
 Requesting permission for:
-   ssh bill@192.0.2.26 true
+   ssh user@192.0.2.26 true
 
 Run this command?
 > 1. Yes, run command
-  2. Yes, and always allow in this conversation for commands that start with 'ssh bill@192.0.2.26 true'
+  2. Yes, and always allow in this conversation for commands that start with 'ssh user@192.0.2.26 true'
   3. No, cancel
 
   ↑/↓ Navigate · tab Amend · ctrl+g edit/expand command
@@ -231,7 +231,7 @@ esc to cancel
 """.trimIndent()
         val c = detectPrompt(cmd, blocked = false)!!.shownParts()
         assertEquals("Run this command?", c.heading)
-        assertEquals("ssh bill@192.0.2.26 true", c.command)
+        assertEquals("ssh user@192.0.2.26 true", c.command)
         assertTrue(c.details.isEmpty())
         clean(c)
     }

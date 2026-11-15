@@ -1,4 +1,4 @@
 card: none
 blocked: true
 error: retries exhausted; every model candidate failed; model rate-limited; provider error
-source: captured live from Bill's omp pane on demo-box2, 2026-11-14 (the bottom five lines exactly as relayed; the boxed JSON above them stands in for the tour draft that was on screen)
+source: captured live from the maintainer's omp pane on devbox2, 2026-11-14 (the bottom five lines exactly as reported; the boxed JSON above them stands in for the tour draft that was on screen) (host details replaced)

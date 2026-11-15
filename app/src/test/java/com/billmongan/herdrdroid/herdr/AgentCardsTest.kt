@@ -5,7 +5,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Approval cards from every agent that draws one, captured on demo-box2 on 2026-11-13 (paths
+ * Approval cards from every agent that draws one, captured on devbox2 on 2026-11-13 (paths
  * shortened). Copilot, Kiro and Vibe were run in throwaway folders and every card was rejected;
  * Codex's and Antigravity's came from the live panes. pi, Oh My Pi, vanilla OpenCode and Hermes ran
  * the same command without asking, so they draw no card. Claude's and Grok's are in GrokQuestionTest
@@ -154,12 +154,12 @@ Command
 ──────────
 
 Requesting permission for:
-   ssh bill@192.0.2.26 true
+   ssh user@192.0.2.26 true
 
 Run this command?
 > 1. Yes, run command
-  2. Yes, and always allow in this conversation for commands that start with 'ssh bill@192.0.2.26 true'
-  3. Yes, and always allow for commands that start with 'ssh bill@192.0.2.26 true' (Persist to settings.json)
+  2. Yes, and always allow in this conversation for commands that start with 'ssh user@192.0.2.26 true'
+  3. Yes, and always allow for commands that start with 'ssh user@192.0.2.26 true' (Persist to settings.json)
   4. No, cancel
 
   ↑/↓ Navigate · tab Amend · ctrl+g edit/expand command
@@ -169,7 +169,7 @@ esc to cancel
     @Test fun antigravityCommandCardShowsTheCommand() {
         val p = detectPrompt(agyCommand, blocked = false)!!
         assertEquals(4, p.choices.size)
-        assertEquals("Requesting permission for: ssh bill@192.0.2.26 true Run this command?", p.question)
+        assertEquals("Requesting permission for: ssh user@192.0.2.26 true Run this command?", p.question)
         assertEquals(listOf("down", "down", "down", "enter"), menuKeys(p, p.choices[3]))
     }
 

@@ -2,4 +2,4 @@
 
 thread 'main' panicked at codex-rs/tui/src/app.rs:412:9:
 called `Result::unwrap()` on an `Err` value
-bill@demo-box2:~/agents/codex$
+user@devbox2:~/agents/codex$

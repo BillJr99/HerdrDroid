@@ -2,4 +2,4 @@ card: options
 blocked: true
 heading: Would you like to make the following edits?
 options: Yes, proceed (y) | Yes, and don't ask again for these files (a) | No, and tell Codex what to do differently (esc)
-source: Bill's Codex pane on demo-box2, 2026-11-14 (the 1.4.1 card that showed no question or options)
+source: the maintainer's Codex pane on devbox2, 2026-11-14 (the 1.4.1 card that showed no question or options) (host details replaced)

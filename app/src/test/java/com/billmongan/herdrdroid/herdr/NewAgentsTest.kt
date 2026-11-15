@@ -30,7 +30,7 @@ class NewAgentsTest {
     @Test fun vibeIsKnownByItsTitle() {
         assertEquals("vibe", titleAgent("Vibe"))
         assertEquals("vibe", titleAgent("vibe - fixing tests"))
-        assertNull(titleAgent("bill@demo-box2: ~/agents/vibe"))
+        assertNull(titleAgent("user@devbox2: ~/agents/vibe"))
         assertNull(titleAgent("Vibes check"))
         assertNull(titleAgent(""))
     }
