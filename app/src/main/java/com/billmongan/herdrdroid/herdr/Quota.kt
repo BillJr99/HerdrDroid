@@ -104,6 +104,26 @@ fun vibeFooterUsage(screen: String): List<QuotaItem> {
 }
 
 /**
+ * `muse usage --json` (Muse Code 1.4.20, 1.4.5): `{"allowance": {"tier", "window": {"usedPercent",
+ * "resetsAtMs"}, "weekly": {...}}, "reason", "schemaVersion": 1}`. With no data yet ("reason":
+ * "server_sent_no_usage") there is no allowance, and the card shows no usage.
+ */
+fun museUsage(json: String): List<QuotaItem> {
+    val root = org.json.JSONObject(json.trim().lines().lastOrNull { it.trimStart().startsWith("{") } ?: return emptyList())
+    val a = root.optJSONObject("allowance") ?: return emptyList()
+    val out = mutableListOf<QuotaItem>()
+    for ((key, label) in listOf("window" to "Muse window", "weekly" to "Muse weekly")) {
+        val w = a.optJSONObject(key) ?: continue
+        if (!w.has("usedPercent")) continue
+        val used = w.optDouble("usedPercent")
+        if (used.isNaN()) continue
+        val resets = w.optLong("resetsAtMs", 0L).takeIf { it > 0 }?.let { java.time.Instant.ofEpochMilli(it).toString() }
+        out += QuotaItem(label, used.coerceIn(0.0, 100.0), resets)
+    }
+    return out
+}
+
+/**
  * `omp usage --json`: `{reports: [{provider, limits: [{label, window: {label, resetLabel, resetsAt},
  * amount: {usedFraction, used, limit, remainingFraction}}]}]}`. Accounts signed in to Oh My Pi
  * itself report here; providers reached through pi-openai-compat (llmproxy) do not, so with none
@@ -197,6 +217,12 @@ object QuotaProfiles {
         QuotaProfile(
             setOf("kiro"), "/usage", listOf("esc"), 3_000,
             openMarker = Regex("esc to close", RegexOption.IGNORE_CASE), everyMinutes = 30,
+        ),
+        // Muse Code (1.4.5): `muse usage --json` reports the plan's window and weekly allowance
+        // without a model turn and without touching the pane. The launcher's update check is off for it.
+        QuotaProfile(
+            setOf("muse"), "", emptyList(), 0,
+            cliCommand = "MUSE_NO_AUTO_UPDATE=1 muse usage --json", parseCli = ::museUsage, everyMinutes = 15,
         ),
         // Vibe keeps its usage gauge in the footer, so it is read off the screen, never typed for.
         QuotaProfile(setOf("vibe"), "", emptyList(), 0, screenUsage = ::vibeFooterUsage, everyMinutes = 10),
@@ -409,6 +435,9 @@ fun footerModel(agent: String?, screen: String): String? {
         // "──── Mistral Medium 3.5[high] · auto approve ─": the model and its thinking level.
         "vibe" -> lastMatch(Regex("""─\s+([^─·]+?)\s+·\s+[^─]+─\s*$"""))
             ?.replace(Regex("""\[(\w+)]$"""), " · $1")
+        // Muse Code 1.4.20: "  muse-wonder-1.0 · high · ~/agents/muse · Launch overrides" (1.4.5).
+        "muse" -> lastMatch(Regex("""^\s*(\S+\s+·\s+(?:none|minimal|low|medium|high|xhigh|max|ultra))\s+·\s+[~/]"""))
+            ?: lastMatch(Regex("""^\s*(muse-[\w.-]+)\s+·"""))
         else -> null
     }
     return found?.takeIf { it.length in 2..48 }

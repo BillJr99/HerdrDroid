@@ -44,6 +44,7 @@ data class Pane(
             "gemini" -> "Gemini"
             "kiro" -> "Kiro"
             "vibe" -> "Vibe"
+            "muse" -> "Muse"
             else -> agent.replaceFirstChar { it.uppercase() }
         }
 
@@ -679,7 +680,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
      * session sheet offers. Nothing is installed or changed.
      */
     suspend fun installedAgents(): List<String> {
-        val names = listOf("claude", "codex", "opencode", "omp", "pi", "hermes", "grok", "copilot", "agy", "gemini", "kiro", "vibe")
+        val names = listOf("claude", "codex", "opencode", "omp", "pi", "hermes", "grok", "copilot", "agy", "gemini", "kiro", "vibe", "muse")
         // A login shell finds most; the usual per-user install folders catch the rest.  The check
         // is by program name (Kiro's is kiro-cli); what comes back is the agent's name.
         val r = ssh.exec("bash -lc " + shq(names.joinToString("; ") {
@@ -1307,7 +1308,8 @@ fun footerBypass(screen: String): Boolean =
 fun detectUnnumberedMenu(text: String): Prompt? {
     val raw = text.lines().map { it.trimEnd() }.takeLast(60)
     val border = "│┃|"
-    val marker = Regex("""^([\s$border]*)([❯›▶➤])\s+(\S.*)$""")
+    // "⟩" marks the current row in Muse Code's lists (its /help command list, 1.4.5).
+    val marker = Regex("""^([\s$border]*)([❯›▶➤⟩])\s+(\S.*)$""")
     val at = raw.indexOfLast { marker.matches(it) }
     if (at < 0) return null
     val m = marker.find(raw[at])!!
@@ -1659,6 +1661,8 @@ fun canonicalAgent(name: String): String = when (val n = name.trim().lowercase()
     "pi-agent", "pi-coding-agent" -> "pi"
     "kiro-cli", "kiro-cli-chat" -> "kiro"
     "vibe-rs", "mistral-vibe", "vibe-acp" -> "vibe"
+    // Meta's Muse Code (1.4.5); its launcher runs "muse-bin-<version>", which matches "muse" as a word.
+    "muse-code", "meta-muse", "muse-cli" -> "muse"
     else -> n
 }
 
@@ -1668,10 +1672,11 @@ fun canonicalAgent(name: String): String = when (val n = name.trim().lowercase()
  * blocking session tools", Ctrl+B), Grok ("Ctrl+B sends the running foreground command to the
  * background") and Antigravity ("Press ctrl+b to send a long task to the background"). Not offered
  * elsewhere: in pi and Oh My Pi Ctrl+B moves the cursor left, in Hermes it is push-to-talk, and
- * Codex, Copilot, Kiro and Vibe have no such key.
+ * Codex, Copilot, Kiro and Vibe have no such key. Muse Code 1.4.20 has it ("ctrl + b to send to background", 1.4.5).
  */
 object Backgrounding {
-    private val agents = setOf("claude", "opencode", "grok", "agy")
+    // Muse Code 1.4.20's /help: "ctrl + b to send to background" (1.4.5).
+    private val agents = setOf("claude", "opencode", "grok", "agy", "muse")
     const val KEY = "ctrl+b"
     fun supported(agent: String?): Boolean = agent?.lowercase() in agents
 }
@@ -1683,7 +1688,7 @@ fun agentExecutable(kind: String): String = when (kind) {
 }
 
 /** The agent kinds `herdr agent start --kind` accepts among those the app can start. */
-val HERDR_KINDS = setOf("claude", "codex", "opencode", "omp", "pi", "hermes", "grok", "copilot", "agy", "gemini", "kiro")
+val HERDR_KINDS = setOf("claude", "codex", "opencode", "omp", "pi", "hermes", "grok", "copilot", "agy", "gemini", "kiro", "muse")
 
 /**
  * An agent herdr doesn't recognize, known by the title its program gives the terminal.  Mistral
@@ -1693,7 +1698,7 @@ fun titleAgent(title: String): String? =
     if (Regex("""^vibe(\b|$)""", RegexOption.IGNORE_CASE).containsMatchIn(title.trim())) "vibe" else null
 
 /** The agents the app knows by name; any other program in a herdr-core terminal is a plain shell. */
-private val KNOWN_AGENTS = setOf("claude", "codex", "pi", "omp", "grok", "agy", "copilot", "hermes", "opencode", "gemini", "cursor", "amp", "kiro", "vibe")
+private val KNOWN_AGENTS = setOf("claude", "codex", "pi", "omp", "grok", "agy", "copilot", "hermes", "opencode", "gemini", "cursor", "amp", "kiro", "vibe", "muse")
 
 /**
  * herdr-core's terminal list (`hc ls --json`) as panes. Each terminal is its own tab; there are no

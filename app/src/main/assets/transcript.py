@@ -969,8 +969,116 @@ def kiro(cwd, cur):
     return {"cur": ncur, "reset": reset, "more": more, "items": items, "title": title}
 
 
+MUSE = (".local", "share", "muse")
+
+
+def muse_sessions(cwd):
+    """Muse Code's sessions for this folder, newest first, as (log path, updated in microseconds,
+    title), from its own index (~/.local/share/muse/session-index.db, read only), 1.4.5."""
+    out = []
+    db = os.path.join(HOME, *MUSE, "session-index.db")
+    if not os.path.isfile(db):
+        return out
+    try:
+        c = ro(db)
+        for path, upd, title in c.execute(
+                "select session_log_path, updated_at_us, title from sessions where workspace_root = ? "
+                "and coalesce(msp_kind, 'root') = 'root' order by updated_at_us desc limit 100", (cwd,)):
+            if path and os.path.isfile(path):
+                out.append((path, int(upd or 0), title))
+        c.close()
+    except Exception:
+        pass
+    return out
+
+
+def muse_live(path):
+    """True when a running Muse holds this session: its folder's .session.lock names a live pid."""
+    try:
+        with open(os.path.join(os.path.dirname(path), ".session.lock")) as fh:
+            m = re.search(r"pid=(\d+)", fh.read(200))
+        if not m:
+            return False
+        os.kill(int(m.group(1)), 0)
+        return True
+    except Exception:
+        return False
+
+
+def muse(cwd, cur):
+    """Muse Code 1.4.20 (1.4.5): ~/.local/share/muse/sessions/<y>/<m>/<d>/<id>/session.jsonl, one
+    event per line: {"payload_type", "payload", "recorded_at" (microseconds), ...}. The chat is in
+    payload_type "runtime.session" with payload kind "run": event kind "started" (your prompt),
+    "assistant_message_committed" (text), "reasoning_summary_delta" (text), "assistant_tool_calls_committed"
+    (tool_calls: name, call_id, args as JSON text), "tool_result_batch_committed" (results: tool_call_id,
+    text; "tool failed: ..." for an error) and "terminal" (how the turn ended). The session open in the
+    pane is the one whose .session.lock names a live process; otherwise the newest for the folder
+    (a headless `muse exec` in the same folder makes a session too)."""
+    found = muse_sessions(cwd)
+    live = [f for f in found if muse_live(f[0])]
+    pick = (live or found or [None])[0]
+    path = pinned(pick[0] if pick else None)
+    if not path:
+        return None
+    title = next((f[2] for f in found if f[0] == path), None)
+    recs, ncur, reset, more = read_jsonl(path, cur)
+    items = []
+    think_of = {}
+    for off, r in recs:
+        if r.get("payload_type") != "runtime.session":
+            continue
+        p = r.get("payload") if isinstance(r.get("payload"), dict) else {}
+        e = p.get("event") if isinstance(p.get("event"), dict) else None
+        if p.get("kind") != "run" or not e:
+            continue
+        n = len(items)
+        k = "m%d" % off
+        ek = e.get("kind")
+        if ek == "started" and isinstance(e.get("prompt"), str):
+            user_items(k, e["prompt"], items)
+        elif ek == "assistant_message_committed" and str(e.get("text") or "").strip():
+            items.append({"k": k, "t": "text", "text": e["text"]})
+        elif ek in ("reasoning_summary_delta", "reasoning_committed") and str(e.get("text") or "").strip():
+            mid = e.get("message_id")
+            if ek == "reasoning_committed" and mid in think_of:
+                continue
+            prev = think_of.get(mid)
+            if prev is not None and items and items[-1] is prev:
+                prev["text"] += "\n" + e["text"]
+                continue
+            it = {"k": k, "t": "think", "text": e["text"]}
+            think_of[mid] = it
+            items.append(it)
+        elif ek == "assistant_tool_calls_committed":
+            for i, c in enumerate(e.get("tool_calls") or []):
+                if isinstance(c, dict):
+                    items.append(tool_item("%s.%d" % (k, i), c.get("call_id") or c.get("id"), c.get("name"), c.get("args")))
+        elif ek == "tool_result_batch_committed":
+            for i, res in enumerate(e.get("results") or []):
+                if isinstance(res, dict):
+                    txt = str(res.get("text") or "")
+                    err = txt.startswith("tool failed")
+                    # A shell result is JSON text: {"command", "exit_code", "output", ...}.
+                    if txt.startswith("{"):
+                        try:
+                            j = json.loads(txt)
+                            if isinstance(j, dict) and "output" in j:
+                                err = err or (j.get("exit_code") or 0) != 0
+                                txt = str(j.get("output") or "")
+                        except Exception:
+                            pass
+                    items.append(result_item("%s.%d" % (k, i), res.get("tool_call_id"), txt, err))
+        elif ek == "terminal" and e.get("terminal") not in (None, "completed"):
+            items.append({"k": k, "t": "note", "text": "Turn ended: %s" % first_line(str(e.get("reason") or e.get("terminal")), 160)})
+        t = r.get("recorded_at")
+        if isinstance(t, (int, float)) and t > 0:
+            for it in items[n:]:
+                it.setdefault("ts", int(t // 1000))
+    return {"cur": ncur, "reset": reset, "more": more, "items": items, "title": title}
+
+
 READERS = {"claude": claude, "codex": codex, "pi": pi, "omp": omp, "grok": grok, "copilot": copilot,
-           "opencode": opencode, "hermes": hermes, "vibe": vibe, "kiro": kiro}
+           "opencode": opencode, "hermes": hermes, "vibe": vibe, "kiro": kiro, "muse": muse}
 
 
 def fetch_image(path, off, idx):
@@ -1100,6 +1208,13 @@ def list_sessions(agent, cwd):
                     "order by coalesce(last_activity_at, started_at) desc limit 60", (cwd,)):
                 out.append({"ref": sid, "db": db, "when": int(when or 0), "title": title, "kb": 0, "messages": n})
             c.close()
+    elif agent == "muse":
+        for path, upd, title in muse_sessions(cwd)[:60]:
+            try:
+                kb = os.path.getsize(path) // 1024
+            except OSError:
+                kb = 0
+            out.append({"ref": path, "when": int(upd // 1_000_000), "kb": kb, "title": title})
     out.sort(key=lambda s: s["when"], reverse=True)
     out = out[:60]
     for s in out:

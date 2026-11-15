@@ -115,6 +115,14 @@ object SlashCommands {
             "/retry" to "Retry the last response", "/rewind" to "Rewind to an earlier message", "/context" to "Show context use",
             "/copy" to "Copy the last reply", "/mcp" to "MCP servers", "/help" to "All commands",
         )
+        // From Muse Code 1.4.20's /help, Commands tab (2026-11-15).
+        "muse" -> listOf(
+            "/model" to "Choose the model", "/effort" to "Reasoning effort", "/compact" to "Summarize the conversation to free up context",
+            "/clear" to "Clear the terminal and start a fresh session", "/new" to "Start a new session", "/resume" to "Resume a session",
+            "/status" to "Show current session status", "/usage" to "Show session usage", "/upgrade" to "Show your subscription plan",
+            "/plan" to "Plan mode", "/permissions" to "Permissions", "/rewind" to "Rewind to an earlier turn", "/fork" to "Fork this session",
+            "/goal" to "Set a goal for the session", "/tasks" to "Background tasks and terminals", "/help" to "All commands",
+        )
         else -> emptyList()
     }.map { SlashCommand(it.first, it.second) }
 }

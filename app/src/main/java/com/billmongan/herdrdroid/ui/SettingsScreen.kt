@@ -192,7 +192,7 @@ fun SettingsScreen(vm: AppViewModel, back: Screen) {
                 Text(
                     "Every card shows its agent's limits, always. The app keeps them up to date by itself (Claude every 10 " +
                         "minutes, Grok and Antigravity every 15, the rest every 30, and right away when a reading is due), " +
-                        "using the agent's own usage command (Claude Code, Codex, Copilot, Grok, Antigravity, Hermes, Oh My Pi). " +
+                        "using the agent's own usage command (Claude Code, Codex, Copilot, Grok, Antigravity, Hermes, Oh My Pi, Muse Code). " +
                         "None of these uses a model call. It only asks an agent that's idle, prefers a pane that isn't in " +
                         "front at the computer, and never presses Enter if something is already typed there.",
                     color = Palette.Muted, fontSize = 13.sp,

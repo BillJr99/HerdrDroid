@@ -1267,7 +1267,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- Structured conversations ------------------------------------------------------------
 
-    private val readers = setOf("claude", "codex", "pi", "omp", "grok", "opencode", "hermes", "copilot", "vibe", "kiro")
+    private val readers = setOf("claude", "codex", "pi", "omp", "grok", "opencode", "hermes", "copilot", "vibe", "kiro", "muse")
 
     fun hasTranscriptReader(paneId: String) = pane(paneId)?.agent?.lowercase() in readers
 

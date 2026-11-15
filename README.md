@@ -86,6 +86,7 @@ herdr reports which agent runs in each pane. HerdrDroid supports these:
 | Oh My Pi (omp) | yes | yes | no | from its footer |
 | OpenCode | yes | yes | no (none to read) | from its footer |
 | Hermes | yes, plus a chat screen through its gateway | yes | `/usage` | from its footer |
+| Muse Code (Meta) | yes | yes, by the general menu and fallback cards | `muse usage --json` (window and weekly allowance; nothing typed into the pane) | from its footer, with its effort |
 
 Every agent gets the error banner, the terminal view, the keys and the alerts. A pane running a plain shell or an agent the app doesn't know is shown as a screen, with the terminal view and the keys.
 
@@ -283,7 +284,7 @@ If you build for yourself without the project's key, use your own key (a standar
 
 - **Unit tests** (JUnit, with Robolectric for the Android parts) run in every build: the question parsers against real screens from every agent, the chat view, the usage parsers, the key migration and the kept-chat store interrupted at every step, the notification answer checks, SSH over a WebSocket against a local server, and more. `./gradlew testDebugUnitTest` runs them.
 - **The screen library.** `app/src/test/resources/screens/<agent>/<version>/` holds agents' screens: question cards, error screens and fallback cases, each with an `.expect` file that says what the parsers must make of it (a card with these options, the fallback card, no card, or an error banner naming these errors). Each fixture says where it came from: captured live, taken from the agent program's own strings, or modelled on the agent's style. A new capture with no `.expect` file must parse as a real card if it looks like a question; `ScreenLibraryTest` lists every screen that doesn't, so a card that stops parsing after an agent update shows up.
-- **Reader tests.** `tools/transcript-tests/` tests the log readers in `transcript.py` (for example Kiro's and Vibe's) on synthetic session stores: `python3 -I tools/transcript-tests/test_kiro_reader.py`.
+- **Reader tests.** `tools/transcript-tests/` tests the log readers in `transcript.py` (for example Kiro's and Vibe's) on synthetic session stores: `python3 -I tools/transcript-tests/test_kiro_reader.py`. Muse Code's is `test_muse_reader.py`.
 - **End-to-end.** `tools/ws-test-server/` is a throwaway sshd behind a WebSocket bridge for the WebSocket test, and `tools/hc-e2e/` checks the herdr-core backend.
 - **Emulator checks.** Each release is also checked by hand-scripted runs in an Android emulator against a herdr host whose panes run small stand-in agents that draw each agent's cards, errors and logs: upgrading over the previous release with saved data, answering cards and alerts, the terminal view, and the error banners.
 
@@ -301,6 +302,7 @@ If you build for yourself without the project's key, use your own key (a standar
 
 ## Version history
 
+- **1.4.5.** Muse Code (Meta): its chat from its session log, its plan allowance from `muse usage --json`, its model and effort from the footer, its commands in the picker, and Ctrl+B to send a command to the background.
 - **1.4.4.** A message held because something is typed at the computer is sent by itself once the input line is clear, and reported only if it can't go within 2 minutes; Claude Code's "Press up to edit queued messages" hint (and the other agents' empty-line hints) no longer holds a message.
 - **1.4.3.** Answered questions sit in time order in every agent's chat instead of at the bottom.
 - **1.4.2.** Codex's edit-approval card shows its question, description, file and keys; no question card is ever empty; **Show terminal** on every card; agent errors (rate limits, quotas, credits, provider and connection errors, expired sign-ins, full context, failed compaction, crashes) show as a banner for every supported agent instead of a card; herdr's stale "blocked" status makes no card; question alerts have one set of buttons that always answer or say why not; the MIT license and this README.

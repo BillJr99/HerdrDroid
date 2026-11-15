@@ -14,10 +14,12 @@ object AgentVersions {
     val programs = mapOf(
         "claude" to "claude", "codex" to "codex", "grok" to "grok", "copilot" to "copilot", "agy" to "agy",
         "kiro" to "kiro-cli", "vibe" to "vibe", "opencode" to "opencode", "pi" to "pi", "omp" to "omp", "hermes" to "hermes",
+        "muse" to "muse",
     )
 
     /** One shell script that prints "@@ver <agent> <first line of --version>" for every program found. */
-    fun script(): String = programs.entries.joinToString(" ", postfix = " wait") { (agent, prog) ->
+    // Muse's launcher checks for updates on every start unless told not to (1.4.5).
+    fun script(): String = "export MUSE_NO_AUTO_UPDATE=1; " + programs.entries.joinToString(" ", postfix = " wait") { (agent, prog) ->
         "( p=\$(command -v $prog 2>/dev/null || { [ -x \"\$HOME/.local/bin/$prog\" ] && echo \"\$HOME/.local/bin/$prog\"; }); " +
             "[ -n \"\$p\" ] && printf '@@ver $agent %s\\n' \"\$(timeout 5 \"\$p\" --version </dev/null 2>/dev/null | head -1)\" ) &"
     }
