@@ -1694,12 +1694,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun resendPending(id: Long) {
         val p = pendingSends.firstOrNull { it.id == id } ?: return
+        // A pane that isn't listed keeps the message, with its Resend (1.4.4, from Grok's review).
+        val target = pane(p.paneId) ?: run {
+            com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${p.paneId}: Resend while the pane isn't listed; kept")
+            flash("Not sent: that pane isn't open on the computer just now.")
+            return
+        }
         pendingSends = pendingSends - p
         // What the held send was to do once delivered (1.4.1, from a code review: a typed answer
         // that was held was never recorded in the question history after Resend).
         val then = heldThen.remove(id) ?: {}
         // Resend is a deliberate "send it anyway", so a send held for typing isn't held again.
-        pane(p.paneId)?.let { sendMessage(it, p.text, force = true, delivered = then) }
+        sendMessage(target, p.text, force = true, delivered = then)
     }
 
     /** For each held send, what to do once it is delivered (see [resendPending]). */
