@@ -1925,9 +1925,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         // Kept apart from the line's text (from a review: an empty read cleared the 4-second guard at once).
         // Styled and plain reads are compared only with their own kind, since a placeholder reads as ""
         // in one and as text in the other.
-        val before = lastInputLine.put(if (screen.contains('\u001B')) "$paneId|styled" else paneId, now)
-        if (now.isNotEmpty() && before != null && before != now) typedAt[paneId] = System.currentTimeMillis()
+        val styled = screen.contains('\u001B')
+        val before = lastInputLine.put(if (styled) "$paneId|styled" else paneId, now)
+        if (styled) styledAt[paneId] = System.currentTimeMillis()
+        // A plain change while the last styled read (within 2.5 minutes) found the line empty is a
+        // placeholder changing (Codex rotates its suggestions), not typing (from Grok's review).
+        val styledEmpty = !styled && lastInputLine["$paneId|styled"] == "" &&
+            System.currentTimeMillis() - (styledAt[paneId] ?: 0L) < 150_000L
+        if (now.isNotEmpty() && before != null && before != now && !styledEmpty) typedAt[paneId] = System.currentTimeMillis()
     }
+
+    /** When each pane was last read with its styles (1.4.6). */
+    private val styledAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     /** Each pane's input line at the last read, to tell typing (a change) from text that stays (1.4.6). */
     private val lastInputLine = java.util.concurrent.ConcurrentHashMap<String, String>()

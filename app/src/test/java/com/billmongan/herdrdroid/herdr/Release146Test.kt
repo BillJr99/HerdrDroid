@@ -44,6 +44,9 @@ class Release146Test {
         assertEquals("/exit", inputLineOf(boxed("$e[0m$e[38;2;90;160;255m❯ /exit$e[0m\r", "  muse-wonder-full-1.0 · high · ~/agents/muse"), "muse"))
         // Grok's typed text in its light grey (225), inside its frame.
         assertEquals("hello", inputLineOf("out\n╭$rule╮\n│ ❯ $e[38;2;225;225;225mhello$e[0m │\n╰$rule╯\n  Shift+Tab:mode", "grok"))
+        // A known hint's words in normal type on a styled read are typing (from Grok's review).
+        assertEquals("Ask Codex to do anything", inputLineOf(boxed("$e[0m$e[1m› $e[0mAsk Codex to do anything$e[0m\r"), "codex"))
+        assertEquals("Press up to edit queued messages", inputLineOf(boxed("$e[0m$e[38;2;153;153;153m❯\u00A0$e[0mPress up to edit queued messages$e[0m\r"), "claude"))
         // Italic counts as a placeholder only for Hermes.
         assertEquals("Find and fix a failing test", inputLineOf(boxed(hermesHint), "claude"))
         // Faint text that was reset to normal before the end: typed.

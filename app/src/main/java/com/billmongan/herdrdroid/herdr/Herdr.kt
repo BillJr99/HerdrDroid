@@ -1163,8 +1163,11 @@ fun isComposerHint(agent: String?, text: String): Boolean {
  */
 fun inputLineOf(screen: String, agent: String? = null): String? {
     val (raw, typed) = inputRow(screen) ?: return null
-    if (typed.isEmpty() || isComposerHint(agent, typed)) return ""
-    return if (isPlaceholderText(raw, typed, agent)) "" else typed
+    if (typed.isEmpty()) return ""
+    // A row read with its styles is judged only by how it is drawn: the same words as a known hint
+    // in normal type are typing (from Grok's review). The hint list is for plain reads.
+    if (raw.contains('\u001B')) return if (isPlaceholderText(raw, typed, agent)) "" else typed
+    return if (isComposerHint(agent, typed)) "" else typed
 }
 
 private val INPUT_LEAD = Regex("""^[\s\u00A0│┃|]*[>❯›»][\s\u00A0]*""")
