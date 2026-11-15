@@ -1,0 +1,5 @@
+card: options
+blocked: true
+heading: Would you like to run the following command?
+options: Allow this stage once (y) | Always allow in this workspace: sudo -n chmod ... (p) | Abort the entire command (esc)
+source: captured from Muse Code 1.4.20 on demo-box2, 2026-11-15, with herdr reporting "blocked" (the request's wording and home folder replaced)

@@ -1,0 +1,47 @@
+  command and nothing else: `sudo -n true`
+  If it asks for approval, just wait for the answer. Then reply in one line with what happened.
+
+◆ Ran command · Run sudo true check · ✓ · 0.1s · ctrl+o
+
+◆ sudo -n true ran with no output and exit 0, no approval shown.
+
+❯ Please run exactly this one shell
+  command and nothing else: `sudo -n chmod -R 777 /home/user/agents/muse/probe-dir`
+  (probe-dir is an empty folder made for this test.) If it asks for approval, wait for the answer. Then reply in one line with what
+  happened.
+
+◆ Ran command · Probe approval with chmod · ✓ · 0.1s · ctrl+o
+
+◆ sudo -n chmod -R 777 /home/user/agents/muse/probe-dir ran with no output and exit 0, no approval shown.
+
+❯ Please run exactly this one shell
+  command and nothing else: `sudo -n chmod -R 777 /home/user/agents/muse/probe-dir`
+  (probe-dir is an empty folder made for this test.) If it asks for approval, wait for the answer. Then reply in one line with what
+  happened.
+
+◆ Ran command · Probe approval with chmod · ✓ · 0.1s · ctrl+o
+
+◆ sudo -n chmod -R 777 /home/user/agents/muse/probe-dir ran with no output and exit 0, no approval shown.
+
+  Skills: 39 loaded · 1 warning · 1 detail hidden (ctrl+o to expand)
+
+❯ Please run exactly this one shell
+  command and nothing else: `sudo -n chmod -R 777 /home/user/agents/muse/probe-dir`
+  (probe-dir is an empty folder made for this test.) If it asks for approval, wait for the answer. Then reply in one line with what
+  happened.
+
+◇ Calling tools (21s · esc to interrupt)
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Would you like to run the following command?
+
+  $ sudo -n chmod -R 777 /home/user/agents/muse/probe-dir
+  Stage 1/1
+  Current argv: ["sudo","-n","chmod","-R","777","/home/user/agents/muse/probe-dir"]
+
+⟩ 1. Allow this stage once (y)
+  2. Always allow in this workspace: sudo -n chmod ... (p)
+  3. Abort the entire command (esc)
+Change approval defaults in /permissions
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  muse-wonder-full-1.0 · max · ~/agents/muse · Launch overrides

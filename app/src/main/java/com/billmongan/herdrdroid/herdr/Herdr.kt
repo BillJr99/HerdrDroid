@@ -1295,6 +1295,8 @@ private val REJECT_LABEL = Regex("""^(deny|reject|no)\b""", RegexOption.IGNORE_C
 private val ASKING_SENTENCE = Regex("""^[\p{L}"'(][^{}=;<>`]*\s\S+\s[^{}=;<>`]*\?$""")
 /** A line of code that ends in "?": a declaration keyword, or a nullable type ("name: String?"). */
 private val CODE_LINE = Regex("""^(val|var|let|const|def|fun|function|func|fn|return|import|public|private|class|type)\b|:\s*[A-Z]\w*(<[^>]*>)?\?$""")
+/** The line under Muse Code's approval options (1.4.7). */
+private val MUSE_CARD_FOOTER = Regex("""^\s*Change approval defaults in /permissions\s*$""", RegexOption.IGNORE_CASE)
 /** Codex's approval footer (1.4.2). */
 private val CODEX_FOOTER = Regex("""Press enter to confirm or esc to cancel""", RegexOption.IGNORE_CASE)
 /** An option's own one-letter key at the end of its label, "(y)" (1.4.2). */
@@ -1327,7 +1329,7 @@ fun moveKeys(prompt: Prompt, choice: Choice): List<String>? = menuKeys(prompt, c
  * means the agent is waiting even when no choices can be read from the screen.
  */
 /** The footer of Claude's question dialog ("Enter to select · ↑/↓ to navigate · Esc to cancel"). */
-private val QUESTION_FOOTER = Regex("""Enter to select.*(navigate|Esc to cancel)|Tab/Arrow keys to navigate|↑/↓ to navigate|\b\d+/\d+:select\b|↑/?↓(?:/jk)?\s+(?:to\s+)?navigate|press enter to confirm or esc""", RegexOption.IGNORE_CASE)
+private val QUESTION_FOOTER = Regex("""Enter to select.*(navigate|Esc to cancel)|Tab/Arrow keys to navigate|↑/↓ to navigate|\b\d+/\d+:select\b|↑/?↓(?:/jk)?\s+(?:to\s+)?navigate|press enter to confirm or esc|^\s*Change approval defaults in /permissions\s*$""", RegexOption.IGNORE_CASE)
 
 /** A line of the agent's own activity log above a card: "● Ran …", "• Running …", "◆ …", spinners. */
 private val ACTIVITY = Regex("""^[●○•◆◈⏵✓✗└▸☐☒⠀-⣿]""")  // ☐ ☒: Claude's question-dialog header chips
@@ -1396,7 +1398,7 @@ private val BYPASS_WORDS = Regex(
     RegexOption.IGNORE_CASE,
 )
 private val KEY_HINT = Regex("""\b(ctrl|shift|alt|meta|cmd)\+[\w.]+\s*:\s*[\w-]+(\s+mode)?""", RegexOption.IGNORE_CASE)
-private val CARD_ROW = Regex("""^[\s│┃|]*([❯›>▶➤]\s*)?\d(?:[.)]|\s+\([○●◯◉]\))\s""")
+private val CARD_ROW = Regex("""^[\s│┃|]*([❯›>▶➤⟩]\s*)?\d(?:[.)]|\s+\([○●◯◉]\))\s""")
 
 fun footerBypass(screen: String): Boolean =
     screen.lines().filter { it.isNotBlank() }.takeLast(3)
@@ -1546,7 +1548,8 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     // Grok draws radio buttons instead: "1 (○) Yes, and don't ask again", "2 (●) Yes, proceed", with
     // (●) on the highlighted option, which ↑/↓ move and Enter picks (checked in Grok 4.7, 2026-11-13).
     // One or two digits (1.4.0, from a code review: option 10 and longer menus never became a card).
-    val option = Regex("""^[\s│┃|]*([❯›>▶➤]\s*)?(\d{1,2})(?:[.)]|\s+(\([○●◯◉]\)))\s+(.{1,200}?)[\s│┃|]*$""")
+    // Muse Code marks the highlighted row with "⟩" (1.4.7: "⟩ 1. Allow this stage once (y)").
+    val option = Regex("""^[\s│┃|]*([❯›>▶➤⟩]\s*)?(\d{1,2})(?:[.)]|\s+(\([○●◯◉]\)))\s+(.{1,200}?)[\s│┃|]*$""")
     val marked = mutableSetOf<Int>()
     val optionRows = lines.withIndex().mapNotNull { (i, l) ->
         option.find(l)?.let { m ->
@@ -1652,7 +1655,10 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
         val multi = numbered.count { isCheckbox(it.label) } >= 2
         // Codex (by name, or by its "Press enter to confirm or esc to cancel" footer) answers an
         // option by the key in its label; other agents keep arrows and Enter (1.4.2, from review).
-        val shortcuts = agent?.lowercase() == "codex" || lines.takeLast(4).any { CODEX_FOOTER.containsMatchIn(it) }
+        // Muse Code (1.4.7) does the same ("Allow this stage once (y)", "... (p)", "Abort the entire
+        // command (esc)"), known by name or by its "Change approval defaults in /permissions" line.
+        val shortcuts = agent?.lowercase() in setOf("codex", "muse") ||
+            lines.takeLast(4).any { CODEX_FOOTER.containsMatchIn(it) || MUSE_CARD_FOOTER.containsMatchIn(it) }
         return Prompt(question ?: "Choose an option", numbered, selected, escRejects = vibeCard, parts = parts.takeIf { aboveText != null }, multi = multi, shortcuts = shortcuts)
     }
 

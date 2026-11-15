@@ -102,7 +102,7 @@ herdr reports which agent runs in each pane. HerdrDroid supports these:
 | Oh My Pi (omp) | yes | yes | no | from its footer |
 | OpenCode | yes | yes | no (none to read) | from its footer |
 | Hermes | yes, plus a chat screen through its gateway | yes | `/usage` | from its footer |
-| Muse Code (Meta) | yes | yes, by the general menu and fallback cards | `muse usage --json` (window and weekly allowance; nothing typed into the pane) | from its footer, with its effort |
+| Muse Code (Meta) | yes | yes, including its command approval with each option's own key ("y", "p", Esc); a command with several stages asks once per stage | `muse usage --json` (window and weekly allowance; nothing typed into the pane) | from its footer, with its effort |
 
 Every agent gets the error banner, the terminal view, the keys and the alerts. A pane running a plain shell or an agent the app doesn't know is shown as a screen, with the terminal view and the keys.
 
@@ -318,6 +318,7 @@ If you build for yourself without the project's key, use your own key (a standar
 
 ## Version history
 
+- **1.4.7.** Muse Code's command approval card: its options, the highlighted one, the command, and each option's own key; "Always allow in this workspace" carries the standing-permission caution.
 - **1.4.6.** Placeholders in an agent's input line are recognised by how they are drawn (faint or grey), for every agent, so Codex's rotating suggestions no longer hold a message; text that merely stays the same between reads no longer counts as someone typing.
 - **1.4.5.** Muse Code (Meta): its chat from its session log, its plan allowance from `muse usage --json`, its model and effort from the footer, its commands in the picker, and Ctrl+B to send a command to the background.
 - **1.4.4.** A message held because something is typed at the computer is sent by itself once the input line is clear, and reported only if it can't go within 2 minutes; Claude Code's "Press up to edit queued messages" hint (and the other agents' empty-line hints) no longer holds a message.
