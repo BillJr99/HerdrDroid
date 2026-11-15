@@ -106,6 +106,8 @@ class ChatActions(
     val undelivered: List<Pair<Long, String>> = emptyList(),
     val onResend: ((Long) -> Unit)? = null,
     val onDismissPending: ((Long) -> Unit)? = null,
+    /** A message held because something is typed at the computer, sent once the line is clear (1.4.4); Cancel drops it. */
+    val onCancelWaiting: (() -> Unit)? = null,
     /** Reads the part of the log before what is shown, and adds it at the top. */
     val onLoadEarlier: (() -> Unit)? = null,
     val loadingEarlier: Boolean = false,
@@ -294,6 +296,12 @@ fun TranscriptChat(
                             )
                         }
                         pending.forEach { UserBubble(it, size, sending = true, onQuote = actions.onQuote) }
+                        actions.onCancelWaiting?.let { cancel ->
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                                Text("Sends when the input line at the computer is clear", color = Palette.Muted, fontSize = 12.sp)
+                                TextButton(onClick = cancel) { Text("Cancel") }
+                            }
+                        }
                     }
                 }
                 // Sent but never seen by the agent: say so, and offer to send it again.

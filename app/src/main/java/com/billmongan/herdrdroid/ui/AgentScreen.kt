@@ -581,6 +581,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 actions = ChatActions(
                     onQuote = quote, onStop = pane?.let { p -> { vm.stopPane(p) } },
                     undelivered = vm.undeliveredFor(paneId), onResend = vm::resendPending, onDismissPending = vm::dismissPending,
+                    onCancelWaiting = if (vm.waitingFor(paneId)) ({ vm.cancelWaiting(paneId) }) else null,
                     onLoadEarlier = if (vm.canLoadEarlier) ({ vm.loadEarlier(paneId) }) else null, loadingEarlier = vm.loadingEarlier,
                     queuedNote = "Queued in ${pane?.agentName ?: "the agent"} · it reads these when its current step ends",
                     onOpen = { t -> opened = t },
