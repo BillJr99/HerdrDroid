@@ -26,14 +26,15 @@ class Release144Test {
 
     @Test fun claudesQueuedHintIsAnEmptyInputLine() {
         assertEquals("", inputLineOf(claudeQueued, "claude"))
-        assertEquals("", inputLineOf(claudeQueued)) // agent not known yet
+        // With no known agent, nothing is taken for a hint (from Grok's review).
+        assertEquals("Press up to edit queued messages", inputLineOf(claudeQueued))
         // Claude's other queued-message hints (Claude Code 2.1.325).
         for (h in listOf("Press up to edit queued messages, Enter to send them immediately",
                 "Press up to select a queued message to edit, or Enter to send them now",
                 "Press up to select a queued message, then Enter to edit it"))
             assertEquals(h, "", inputLineOf("out\n$rule\n❯ $h\n$rule\n  ? for shortcuts", "claude"))
-        // Cut short with an ellipsis on a narrow screen.
-        assertEquals("", inputLineOf("out\n$rule\n❯ Press up to edit queued…\n$rule\n  footer", "claude"))
+        // A cut hint is typing, never a guess (from Grok's review).
+        assertEquals("Press up to edit queued…", inputLineOf("out\n$rule\n❯ Press up to edit queued…\n$rule\n  footer", "claude"))
     }
 
     @Test fun realTypingIsStillTyping() {
@@ -51,9 +52,10 @@ class Release144Test {
         assertEquals("", inputLineOf("  Weekly limit: 82% left\n› Ask Codex to do anything\n  GPT-6.1-Sol default · ~/agents/codex\n  ← for agents · ? for shortcuts", "codex"))
         // Kiro: the hint is the last row, after its status lines.
         assertEquals("", inputLineOf("▸ Credits: turn 0.18 • session 0.28 | Time: 11s\n$rule\n Trust All Tools active, confirmations are off · /quit to exit\n$rule\nbill_default · auto · ◔ 2%   ~/agents/kiro\n›  ask a question or describe a task ↵", "kiro"))
-        // Hermes's example prompts (its locales/en.yaml).
-        for (h in listOf("Find and fix a failing test", "What changed in this repo recently?", "Ask anything, or type / for commands…"))
-            assertEquals(h, "", inputLineOf("  Usage: /reasoning\n$rule\n❯ $h\n$rule\n ☤ gpt-6.1-sol · 295K/500K", "hermes"))
+        // Hermes's example prompts read like real requests, so they count as typing (from Grok's review).
+        assertEquals("Find and fix a failing test", inputLineOf("  Usage: /reasoning\n$rule\n❯ Find and fix a failing test\n$rule\n ☤ gpt-6.1-sol · 295K/500K", "hermes"))
+        // Kiro's words without its "↵" are typing.
+        assertEquals("ask a question or describe a task", inputLineOf("$rule\nbill_default · auto\n›  ask a question or describe a task", "kiro"))
         assertTrue(isComposerHint("codex", "Ask Codex to do anything"))
         assertFalse(isComposerHint("codex", "Ask Codex to do anything about the tests"))
         assertFalse(isComposerHint("grok", "Ask Codex to do anything"))

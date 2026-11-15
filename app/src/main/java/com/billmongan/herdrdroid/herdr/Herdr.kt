@@ -1117,44 +1117,29 @@ fun questionParts(lines: List<QLine>): QuestionParts {
  * The hints agents draw in an empty input line (1.4.4, Bill: the warning said "press up to edit
  * queued messages"). Each is the agent's own text, confirmed from its program or a live pane:
  * Claude Code's queued-message hints (2.1.325), Codex's empty composer (0.169, and the screen
- * library), Kiro's (a live pane), and Hermes's example prompts (its locales/en.yaml "placeholder").
- * Keyed by herdr's agent name; a pane with no known agent is checked against all of them.
+ * library) and Kiro's (a live pane, with its "↵"). Keyed by herdr's agent name. Hints that read
+ * like a real request (Hermes's example prompts, "Find and fix a failing test") are left out, so
+ * the same words typed at the computer are never taken for an empty line (from Grok's review).
  */
-private val COMPOSER_HINTS: Map<String, List<String>> = mapOf(
-    "claude" to listOf(
+private val COMPOSER_HINTS: Map<String, Set<String>> = mapOf(
+    "claude" to setOf(
         "Press up to edit queued messages",
         "Press up to edit queued messages, Enter to send them immediately",
         "Press up to select a queued message to edit, or Enter to send them now",
         "Press up to select a queued message, then Enter to edit it",
     ),
-    "codex" to listOf("Ask Codex to do anything"),
-    "kiro" to listOf("ask a question or describe a task ↵", "ask a question or describe a task"),
-    "hermes" to listOf(
-        "Ask anything, or type / for commands…",
-        "Summarize what's in this folder",
-        "Draft a reply to the last email in my inbox",
-        "Plan a feature, then build it step by step",
-        "Find and fix a failing test",
-        "Research this topic and write me a brief",
-        "What changed in this repo recently?",
-        "Turn these notes into a to-do list",
-        "Explain this error and how to fix it",
-        "Set a reminder or schedule a recurring task",
-        "Type / to browse commands, or Ctrl+P for the palette",
-    ),
+    "codex" to setOf("Ask Codex to do anything"),
+    "kiro" to setOf("ask a question or describe a task ↵"),
 )
 
 /**
- * True when [text], read from [agent]'s input line, is the agent's own hint for an empty line, not
- * typing (1.4.4). The whole line must be the hint, or a narrow screen's cut of one (at least 20
- * characters, ending in "…" or "..."), so a message that merely starts like a hint still counts as typed.
+ * True when [text], read from [agent]'s input line, is exactly that agent's own hint for an empty
+ * line (1.4.4). Only the pane's known agent counts, and only the whole hint: a cut or longer line,
+ * or a pane with no known agent, is typing (from Grok's review: never type over real text).
  */
 fun isComposerHint(agent: String?, text: String): Boolean {
-    val t = text.trim().replace(Regex("""\s+"""), " ")
-    if (t.isEmpty()) return false
-    val hints = agent?.lowercase()?.let { COMPOSER_HINTS[it] } ?: if (agent == null) COMPOSER_HINTS.values.flatten() else emptyList()
-    val cut = t.removeSuffix("…").removeSuffix("...").trimEnd()
-    return hints.any { h -> t == h || (cut != t && cut.length >= 20 && cut.length < h.length && h.startsWith(cut)) }
+    val hints = agent?.lowercase()?.let { COMPOSER_HINTS[it] } ?: return false
+    return text.trim().replace(Regex("""\s+"""), " ") in hints
 }
 
 /**

@@ -1620,9 +1620,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             // A slash command is logged as a note naming it ("/model opus" shows as "model opus" or
             // "/model opus"), not as your message: a note that came in after it was sent clears it.
             val notes = transcriptItems.takeLast(30).filterIsInstance<com.billmongan.herdrdroid.transcript.NoteItem>().map { norm(it.text.removePrefix("/")) }
-            val seen = mine.filter { p ->
+            // A send still waiting (1.4.4) was never typed: a copy of it in the log is another message (from Grok's review).
+            val seen = mine.filter { p -> !p.waiting && (
                 sameTextCount(p.text) > p.seenBefore ||
-                    (p.text.startsWith("/") && notes.any { n -> n.startsWith(norm(p.text.removePrefix("/").substringBefore(' '))) })
+                    (p.text.startsWith("/") && notes.any { n -> n.startsWith(norm(p.text.removePrefix("/").substringBefore(' '))) }))
             }
             // Safety net: an agent that is idle again has taken every message queued before it went
             // idle, so anything sent more than ten seconds ago is no longer waiting.
@@ -2001,7 +2002,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val agentName = pane(p.paneId)?.agentName ?: "the agent"
         var missing = 0
         val outcome = com.billmongan.herdrdroid.herdr.HeldSendRetry().run(
-            startedAt = p.at,
+            // The 2 minutes start when it reaches the front of the pane's queue (from Grok's review).
+            startedAt = System.currentTimeMillis(),
             firstWhy = p.held ?: "held",
             cancelled = {
                 missing = if (pane(p.paneId) == null) missing + 1 else 0
@@ -2026,7 +2028,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         val screen = runCatching { h.read(p.paneId, 40) }.getOrNull()
                             ?: return@check "its screen couldn't be read"
                         noteInputLine(p.paneId, screen)
-                        holdReason(p.paneId, screen)
+                        // Checked again after the read, which can take a while (from Grok's review): a
+                        // question or a usage check that began meanwhile is never typed into. Nothing
+                        // suspends from here to the send, so neither can begin in between.
+                        val after = pane(p.paneId)
+                        when {
+                            after == null -> "the pane isn't listed just now"
+                            p.paneId in probingPanes -> "a usage check is running in it"
+                            after.status == Status.NEEDS_YOU ||
+                                com.billmongan.herdrdroid.herdr.detectPrompt(screen, false, after.agent, versionOf(p.paneId)) != null ->
+                                "a question is open in it; answer it first"
+                            else -> holdReason(p.paneId, screen)
+                        }
                     }
                 }
             },
@@ -2042,6 +2055,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         when (outcome) {
             is com.billmongan.herdrdroid.herdr.HeldOutcome.Delivered -> {
                 val t = System.currentTimeMillis()
+                // Cancel tapped while it was being typed (from Grok's review): it went, so say so.
+                if (pendingSends.none { it.id == p.id }) {
+                    log("cancel came while it was being typed: it was sent")
+                    flash("Sent to $agentName before Cancel took effect")
+                    readPane(p.paneId)
+                    return
+                }
                 pendingSends = pendingSends.map { if (it.id == p.id) it.copy(waiting = false, held = null, at = t) else it }
                 lastSent = p.paneId to p.text
                 lastSentAt = t
@@ -2057,12 +2077,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 pendingSends = pendingSends.map { if (it.id == p.id) it.copy(waiting = false, undelivered = true, held = why) else it }
                 error = "Not sent to $agentName: $why. Tap Resend to try again."
             }
-            is com.billmongan.herdrdroid.herdr.HeldOutcome.Cancelled -> {
-                // Dismissed: already gone. A closed pane or another computer: nothing left to send it to.
-                if (pendingSends.any { it.id == p.id }) {
+            is com.billmongan.herdrdroid.herdr.HeldOutcome.Cancelled -> when {
+                // Cancelled by you, or already in the agent's log: nothing to report.
+                pendingSends.none { it.id == p.id } -> {}
+                // Another computer: its pane ids may name other panes, so the row goes, with a report.
+                outcome.why == "the computer changed" -> {
                     heldThen.remove(p.id)
                     pendingSends = pendingSends.filterNot { it.id == p.id }
-                    if (outcome.why == "the computer changed") error = "Not sent to $agentName: ${outcome.why} before its input line was clear."
+                    error = "Not sent to $agentName: ${outcome.why} before its input line was clear."
+                }
+                // The pane closed: reported, and kept as not sent (from Grok's review).
+                else -> {
+                    pendingSends = pendingSends.map { if (it.id == p.id) it.copy(waiting = false, undelivered = true, held = outcome.why) else it }
+                    error = "Not sent to $agentName: ${outcome.why} before its input line was clear."
                 }
             }
         }
