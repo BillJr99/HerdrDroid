@@ -5,7 +5,8 @@
 # and a copy named HerdrDroid.apk, so
 #   https://github.com/BillJr99/HerdrDroid/releases/latest/download/HerdrDroid.apk
 # always downloads the newest one. Nothing is rebuilt and no secret is used. A version that already
-# has a release is left alone. workflow_dispatch publishes one version by hand (for example a backfill).
+# has a release is left alone. workflow_dispatch publishes one version by hand, or every missing one
+# with version=all, each tagged at the commit that added its APK.
 # A release made here with the workflow token does not start build.yml's tag job.
 name: release-apk
 
@@ -16,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to publish, e.g. 1.4.5 (release/HerdrDroid-<version>.apk must be on main)"
+        description: "Version to publish, e.g. 1.4.5, or all for every APK on main without a release"
         required: true
 
 permissions:
@@ -40,7 +41,9 @@ jobs:
           BEFORE: ${{ github.event.before }}
           INPUT_VERSION: ${{ github.event.inputs.version }}
         run: |
-          if [ -n "$INPUT_VERSION" ]; then
+          if [ "$INPUT_VERSION" = all ]; then
+            files=$(ls release/HerdrDroid-*.apk 2>/dev/null | sort -V || true)
+          elif [ -n "$INPUT_VERSION" ]; then
             files="release/HerdrDroid-$INPUT_VERSION.apk"
             [ -f "$files" ] || { echo "::error::$files is not on this commit"; exit 1; }
           elif [ -z "$BEFORE" ] || [ "$BEFORE" = 0000000000000000000000000000000000000000 ]; then
@@ -65,8 +68,17 @@ jobs:
             sha=$(sha256sum "$f" | cut -d' ' -f1)
             mkdir -p out && cp "$f" out/HerdrDroid.apk
             latest=false; [ "$v" = "$newest" ] && latest=true
-            notes=$(printf 'HerdrDroid %s, the APK committed as `%s` (built and signed locally; installs over earlier versions).\n\nsha256 `%s`\n\nExperimental software with no warranty; use it at your own risk. See the README for what changed.' "$v" "$f" "$sha")
-            gh release create "v$v" "$f" "out/HerdrDroid.apk" --target "$GITHUB_SHA" \
+            # On a push the new APK's own commit; by hand (a backfill), the commit that added this APK.
+            target="$GITHUB_SHA"
+            assets=("$f" out/HerdrDroid.apk); install="built and signed locally; installs over earlier versions"
+            if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+              added=$(git log --diff-filter=A --format=%H -1 -- "$f"); [ -n "$added" ] && target="$added"
+              # A backfilled older version: no HerdrDroid.apk copy unless it is the newest, and no install
+              # claim, since early builds may predate the current signing key.
+              [ "$latest" = true ] || { assets=("$f"); install="built and signed locally"; }
+            fi
+            notes=$(printf 'HerdrDroid %s, the APK committed as `%s` (%s).\n\nsha256 `%s`\n\nExperimental software with no warranty; use it at your own risk. See the README for what changed.' "$v" "$f" "$install" "$sha")
+            gh release create "v$v" "${assets[@]}" --target "$target" \
               --title "HerdrDroid $v" --notes "$notes" --latest=$latest
             echo "released v$v (latest=$latest)"
           done
