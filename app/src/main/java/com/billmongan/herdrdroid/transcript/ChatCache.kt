@@ -21,6 +21,8 @@ data class CachedChat(
     val agent: String? = null,
     /** Each item's time on the computer's clock, by key, where its log has one (1.4.3: questions are placed by it). */
     val times: Map<String, Long> = emptyMap(),
+    /** When the app first saw each item, on the computer's clock (1.4.3: newer messages always go below an answered question). */
+    val seen: Map<String, Long> = emptyMap(),
 )
 
 /**
@@ -28,12 +30,16 @@ data class CachedChat(
  * overlaps what is kept adds nothing twice; a reset (another session or file, or a log that shrank)
  * replaces it all.
  */
-fun CachedChat.withRead(r: TranscriptRead): CachedChat {
+fun CachedChat.withRead(r: TranscriptRead, seenAt: Long = System.currentTimeMillis()): CachedChat {
     val cj = runCatching { JSONObject(r.cursor) }.getOrNull()
-    return if (r.reset) CachedChat(Transcript.merge(emptyList(), r.items, true), r.cursor, r.more, r.title ?: title,
-        cj?.optLong("start", -1L) ?: -1L, cj?.optString("file")?.ifBlank { null }, agent, Transcript.timesOf(r.items))
+    // Times are kept across a reset too (1.4.3): an item seen before keeps the time it was first seen.
+    val logged = times + Transcript.timesOf(r.items)
+    val next = if (r.reset) CachedChat(Transcript.merge(emptyList(), r.items, true), r.cursor, r.more, r.title ?: title,
+        cj?.optLong("start", -1L) ?: -1L, cj?.optString("file")?.ifBlank { null }, agent, logged)
     else copy(items = if (r.items.isEmpty()) items else Transcript.merge(items, r.items, false), cursor = r.cursor, title = r.title ?: title,
-        times = if (r.items.isEmpty()) times else times + Transcript.timesOf(r.items))
+        times = logged)
+    return next.copy(times = Transcript.stampSeen(next.times, next.items, seenAt, Transcript.keysOf(r.items)),
+        seen = Transcript.markSeen(seen, next.items, Transcript.keysOf(r.items), Transcript.timesOf(r.items) + times, seenAt, bulk = r.reset))
 }
 
 /** Turns a [CachedChat] into the JSON kept on the phone and back. The items use the reader's own format. */
@@ -86,9 +92,11 @@ object ChatCodec {
             chars += n
         }
         keep.reverse()
-        val kept = keep.map { it.optString("k") }.toHashSet()
-        val times = JSONObject().also { t -> c.times.forEach { (k, v) -> if (k in kept) t.put(k, v) } }
-        return JSONObject().put("v", 1).put("items", JSONArray(keep)).put("cursor", c.cursor).put("times", times)
+        // Every known time is kept, not only the kept items' (1.4.3): an item trimmed here and read
+        // again later (Load earlier) keeps its first-seen time.
+        val times = JSONObject().also { t -> c.times.forEach { (k, v) -> t.put(k, v) } }
+        val seen = JSONObject().also { t -> c.seen.forEach { (k, v) -> t.put(k, v) } }
+        return JSONObject().put("v", 1).put("items", JSONArray(keep)).put("cursor", c.cursor).put("times", times).put("seen", seen)
             .put("more", c.more || dropped).putOpt("title", c.title)
             .put("start", if (dropped) -1L else c.start).putOpt("file", c.file).putOpt("agent", c.agent).toString()
     }
@@ -106,6 +114,7 @@ object ChatCodec {
             file = if (o.isNull("file")) null else o.optString("file").ifBlank { null },
             agent = if (o.isNull("agent")) null else o.optString("agent").ifBlank { null },
             times = o.optJSONObject("times")?.let { t -> t.keys().asSequence().associateWith { t.optLong(it) }.filterValues { it > 0 } }.orEmpty(),
+            seen = o.optJSONObject("seen")?.let { t -> t.keys().asSequence().associateWith { t.optLong(it) }.filterValues { it > 0 } }.orEmpty(),
         )
     }.getOrNull()
 }

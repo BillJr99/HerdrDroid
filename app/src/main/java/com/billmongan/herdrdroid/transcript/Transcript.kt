@@ -115,6 +115,62 @@ object Transcript {
         )
     }
 
+    /** How many item times a chat keeps (1.4.3); the oldest go first past it. */
+    const val MAX_TIMES = 3000
+
+    /**
+     * [times] with a time for every item that has none (1.4.3, Bill: "you do know the time ... so you
+     * can maintain that time yourself"): the app's own clock, [seenAt] (when it first saw the item, on
+     * the computer's clock), but never later than the next item that already has a time, so items
+     * that appear above known ones (Load earlier, a session read again) stay older than them. Times
+     * already known (from the log, or seen before) never change.
+     */
+    fun stampSeen(times: Map<String, Long>, items: List<Item>, seenAt: Long, readKeys: Set<String>? = null): Map<String, Long> {
+        if (items.all { times[it.key] != null || (readKeys != null && it.key !in readKeys) }) return times
+        val out = HashMap(times)
+        var next = Long.MAX_VALUE
+        for (i in items.indices.reversed()) {
+            val k = items[i].key
+            val t = out[k]
+            if (t != null) { next = minOf(next, t); continue }
+            // Only items this read brought (1.4.3): one kept from before has no time to make up.
+            if (readKeys != null && k !in readKeys) continue
+            val mine = minOf(seenAt, if (next == Long.MAX_VALUE) seenAt else next - 1)
+            out[k] = mine
+            next = mine
+        }
+        return if (out.size <= MAX_TIMES) out else out.entries.sortedByDescending { it.value }.take(MAX_TIMES).associate { it.key to it.value }
+    }
+
+    /**
+     * [seen] with the time the app first saw each item it hasn't seen before (1.4.3, Bill: "new
+     * messages should go below it even if we don't know the timestamp"), on the computer's clock. In a
+     * [bulk] read (the log read from the start, or Load earlier) an item may be history the app never
+     * showed, so it takes its log time if that is earlier; an item above ones already seen stays older
+     * than them. In a live read it takes [seenAt] itself, the moment it arrived.
+     */
+    fun markSeen(seen: Map<String, Long>, items: List<Item>, readKeys: Set<String>, logTimes: Map<String, Long>, seenAt: Long, bulk: Boolean): Map<String, Long> {
+        // Only the items this read brought: one kept from before 1.4.3 has no first-seen time and
+        // stays without one (it is not assumed new) until a read from the start brings it again.
+        if (items.none { it.key in readKeys && seen[it.key] == null }) return seen
+        val out = HashMap(seen)
+        var next = Long.MAX_VALUE
+        for (i in items.indices.reversed()) {
+            val k = items[i].key
+            val t = out[k]
+            if (t != null) { next = minOf(next, t); continue }
+            if (k !in readKeys) continue
+            var mine = if (bulk) minOf(seenAt, logTimes[k] ?: seenAt) else seenAt
+            if (bulk && next != Long.MAX_VALUE) mine = minOf(mine, next - 1)
+            out[k] = mine
+            next = minOf(next, mine)
+        }
+        return if (out.size <= MAX_TIMES) out else out.entries.sortedByDescending { it.value }.take(MAX_TIMES).associate { it.key to it.value }
+    }
+
+    /** The keys of a read's raw items. */
+    fun keysOf(raw: List<JSONObject>): Set<String> = raw.mapNotNull { it.optString("k").ifEmpty { null } }.toHashSet()
+
     /** Each raw item's time ("ts", epoch ms on the computer's clock) by key, where the log has one (1.4.3). */
     fun timesOf(raw: List<JSONObject>): Map<String, Long> =
         raw.mapNotNull { j -> j.optString("k").ifEmpty { null }?.let { k -> j.optLong("ts", 0L).takeIf { it > 0 }?.let { k to it } } }.toMap()

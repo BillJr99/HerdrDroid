@@ -24,6 +24,7 @@ import os
 import re
 import sqlite3
 import sys
+import time
 import urllib.parse
 
 HOME = os.path.expanduser("~")
@@ -1377,7 +1378,6 @@ def open_files_of(pids):
 
 
 def pane_work(pane, agent, cwd):
-    import time
     now = time.time()
     procs, pids = pane_procs(pane)
     work = {"ok": True, "procs": procs, "subagents": [], "tasks": []}
@@ -1441,7 +1441,6 @@ def active_shells(procs, agent):
 
 def work_counts(panes):
     """For the cards: running subagents per pane (cheap)."""
-    import time
     now = time.time()
     table = proc_table()
     by_pane = {}
@@ -1549,7 +1548,6 @@ def git_status(cwds):
 
 def search_sessions(query, limit=60):
     """Messages matching [query] (case-insensitive) in every agent's logs on this computer, newest first."""
-    import time
     q = query.lower()
     hits = []
 
@@ -1672,7 +1670,6 @@ def main():
     if reader is None or not cwd:
         done({"ok": False, "why": "no log reader for this agent"})
     if follow:
-        import time
         end = time.time() + min(follow, 600)
         first = True
         while time.time() < end:
@@ -1707,7 +1704,6 @@ def main():
         done({"ok": False, "why": "%s: %s" % (type(e).__name__, str(e)[:200])})
     if res is None:
         done({"ok": False, "why": "no session log found for this folder"})
-    import time
     res.update({"ok": True, "src": agent, "now": int(time.time() * 1000)})
     if PIN and isinstance(res.get("cur"), dict):
         res["cur"].update(PIN)  # later reads stay on the pinned session

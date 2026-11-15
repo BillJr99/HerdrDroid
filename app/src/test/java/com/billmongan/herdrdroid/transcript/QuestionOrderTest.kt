@@ -80,13 +80,90 @@ class QuestionOrderTest {
             JSONObject().put("k", "t1").put("t", "text").put("text", "working").put("ts", T + 10_000),
             JSONObject().put("k", "t2").put("t", "text").put("text", "no time"))
         val read = TranscriptRead(true, null, "{}", true, false, null, raw, hostNow = T + 20_000)
-        val chatNow = CachedChat(emptyList(), "", false, null).withRead(read)
-        assertEquals(mapOf("u1" to T, "t1" to T + 10_000), chatNow.times)
+        val chatNow = CachedChat(emptyList(), "", false, null).withRead(read, T + 20_000)
+        // The log's times, and the app's own for the item without one.
+        assertEquals(mapOf("u1" to T, "t1" to T + 10_000, "t2" to T + 20_000), chatNow.times)
         val back = ChatCodec.decode(ChatCodec.encode(chatNow))!!
         assertEquals(chatNow.times, back.times)
         // A later read adds its items' times to the ones kept.
         val more = TranscriptRead(true, null, "{}", false, false, null, listOf(JSONObject().put("k", "t3").put("t", "text").put("text", "x").put("ts", T + 30_000)))
         assertEquals(T + 30_000, back.withRead(more).times["t3"])
         assertEquals(T + 20_000, Transcript.parseRead("""{"ok":true,"items":[],"cur":{},"now":${T + 20_000}}""").hostNow)
+    }
+    // ---- Logs without times (Grok): the app's own clock (1.4.3, Bill) ----
+
+    private fun raw(vararg ks: String) = ks.map { JSONObject().put("k", it).put("t", "text").put("text", it) }
+    private fun read(reset: Boolean, vararg ks: String) = TranscriptRead(true, null, "{}", reset, false, null, raw(*ks))
+
+    @Test fun grokQuestionsGoByWhenTheAppSawEachMessage() {
+        val t0 = T
+        var c = CachedChat(emptyList(), "", false, null, agent = "grok").withRead(read(true, "a", "b"), t0)
+        val q = q("qg", t0 + 10_000)          // no anchor: seen by the watcher in the background
+        c = c.withRead(read(false, "c"), t0 + 20_000)
+        assertEquals(listOf("a", "b", "qg", "c"), keys(QuestionLog.withQuestions(c.items, listOf(q), c.times)))
+        // Kept and reopened, then the log read again from the start with one new message.
+        c = ChatCodec.decode(ChatCodec.encode(c))!!.withRead(read(true, "a", "b", "c", "d"), t0 + 30_000)
+        assertEquals(listOf("a", "b", "qg", "c", "d"), keys(QuestionLog.withQuestions(c.items, listOf(q), c.times)))
+        // Earlier messages loaded above them later are older than what was on screen, not newer.
+        val older = CachedChat(raw("x", "y").map { Transcript.toItem(it)!! } + c.items, "", false, null, times = c.times)
+        val stamped = older.copy(times = Transcript.stampSeen(older.times, older.items, t0 + 40_000))
+        assertEquals(listOf("x", "y", "a", "b", "qg", "c", "d"), keys(QuestionLog.withQuestions(stamped.items, listOf(q), stamped.times)))
+        // The window trimmed to its newest part: the times are still known.
+        val trimmed = c.items.drop(1)
+        assertEquals(listOf("b", "qg", "c", "d"), keys(QuestionLog.withQuestions(trimmed, listOf(q), c.times)))
+    }
+
+    @Test fun aMessageFirstSeenAfterAReloadIsNewer() {
+        // A log with times for some items and none for others: the log's times win, the rest are the app's.
+        val mixed = listOf(JSONObject().put("k", "a").put("t", "text").put("text", "a").put("ts", T)) + raw("b")
+        var c = CachedChat(emptyList(), "", false, null).withRead(TranscriptRead(true, null, "{}", true, false, null, mixed), T + 50_000)
+        assertEquals(T, c.times["a"]); assertEquals(T + 50_000, c.times["b"])
+        c = ChatCodec.decode(ChatCodec.encode(c))!!.withRead(read(false, "c"), T + 90_000)
+        assertEquals(T + 50_000, c.times["b"])   // kept across the reopen
+        assertEquals(T + 90_000, c.times["c"])
+        val shown = QuestionLog.withQuestions(c.items, listOf(q("q1", T + 60_000), q("q0", T + 1_000)), c.times)
+        assertEquals(listOf("a", "q0", "b", "q1", "c"), keys(shown))
+    }
+    // ---- Bill's rule, for every agent: a message the app first sees after a question was answered
+    // goes below it, with or without log times, across reloads and reopens (1.4.3). ----
+
+    /** Each agent's item keys, and whether its log gives times (Grok's doesn't). */
+    private val agents = listOf(
+        Triple("claude", "k%d.0", true), Triple("codex", "c%d", true), Triple("grok", "g%d", false),
+        Triple("copilot", "e%d", true), Triple("kiro", "k%d.1", true), Triple("vibe", "v%d", true),
+        Triple("pi", "p%d", true), Triple("omp", "m%d", true), Triple("opencode", "o%d", true), Triple("hermes", "h%d", true),
+    )
+
+    private fun rawFor(fmt: String, timed: Boolean, vararg pairs: Pair<Int, Long>) = pairs.map { (n, ts) ->
+        JSONObject().put("k", fmt.format(n)).put("t", "text").put("text", "m$n").apply { if (timed) put("ts", ts) } }
+
+    @Test fun aMessageSeenAfterTheAnswerGoesBelowTheQuestionForEveryAgent() {
+        for ((agent, fmt, timed) in agents) {
+            val k = { n: Int -> fmt.format(n) }
+            // The chat read from the start: two messages.
+            var c = CachedChat(emptyList(), "", false, null, agent = agent)
+                .withRead(TranscriptRead(true, null, "{}", true, false, null, rawFor(fmt, timed, 1 to T, 2 to T + 10_000)), T + 15_000)
+            // The question appears (anchored on message 2) and is answered at T + 40 s.
+            val q = q("q-$agent", T + 20_000, after = k(2)).copy(doneAt = T + 40_000)
+            // Message 3 arrives after the answer, though its log time (a skewed clock) says T + 25 s.
+            c = c.withRead(TranscriptRead(true, null, "{}", false, false, null, rawFor(fmt, timed, 3 to T + 25_000)), T + 45_000)
+            assertEquals(agent, listOf(k(1), k(2), "q-$agent", k(3)), keys(QuestionLog.withQuestions(c.items, listOf(q), c.times, 0L, c.seen)))
+            // Kept and reopened, a message first seen then also goes below it.
+            c = ChatCodec.decode(ChatCodec.encode(c))!!
+            c = c.withRead(TranscriptRead(true, null, "{}", false, false, null, rawFor(fmt, timed, 4 to T + 26_000)), T + 90_000)
+            assertEquals(agent, listOf(k(1), k(2), "q-$agent", k(3), k(4)), keys(QuestionLog.withQuestions(c.items, listOf(q), c.times, 0L, c.seen)))
+            // The log read again from the start: nothing moves.
+            c = c.withRead(TranscriptRead(true, null, "{}", true, false, null,
+                rawFor(fmt, timed, 1 to T, 2 to T + 10_000, 3 to T + 25_000, 4 to T + 26_000)), T + 120_000)
+            assertEquals(agent, listOf(k(1), k(2), "q-$agent", k(3), k(4)), keys(QuestionLog.withQuestions(c.items, listOf(q), c.times, 0L, c.seen)))
+        }
+    }
+
+    @Test fun antigravityHasNoChatSoItsQuestionsListInTimeOrder() {
+        // Antigravity keeps no log the app can read: its screen view is the current screen, redrawn on
+        // every read, with no lasting messages to place a question among, so its questions are listed
+        // in the order they were asked, above that screen.
+        val shown = QuestionLog.withQuestions(emptyList(), listOf(q("b", T + 2), q("a", T + 1), q("c", T + 3)))
+        assertEquals(listOf("a", "b", "c"), keys(shown))
     }
 }

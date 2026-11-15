@@ -229,7 +229,9 @@ object QuestionLog {
      * times (Grok's log has none), the anchor alone decides; a question with neither goes last, in
      * time order, as before.
      */
-    fun withQuestions(items: List<Item>, questions: List<QuestionItem>, times: Map<String, Long> = emptyMap(), hostOffsetMs: Long = 0L): List<Item> {
+    fun withQuestions(items: List<Item>, questions: List<QuestionItem>, times: Map<String, Long> = emptyMap(), hostOffsetMs: Long = 0L,
+                      /** When the app first saw each item (computer clock): one seen after a question was answered always goes below it. */
+                      seen: Map<String, Long> = emptyMap()): List<Item> {
         if (questions.isEmpty() && items.none { it is ToolItem && it.name == "AskUserQuestion" }) return items
         val left = questions.toMutableList()
         // Pair each AskUserQuestion in the log with its recorded question first, so a recorded one
@@ -261,7 +263,11 @@ object QuestionLog {
                 anchor >= 0 -> anchor
                 else -> items.size - 1
             }
-            at.getOrPut(pos) { mutableListOf() } += q
+            // Never below an item the app first saw after the question was settled (answered, or
+            // gone): that message is newer than the answer, whatever its log time says (1.4.3, Bill).
+            val settled = if (q.doneAt > 0) q.doneAt - hostOffsetMs else Long.MAX_VALUE
+            val firstAfter = items.indices.firstOrNull { i -> seen[items[i].key]?.let { it > settled } == true } ?: items.size
+            at.getOrPut(maxOf(anchor, minOf(pos, firstAfter - 1))) { mutableListOf() } += q
         }
         val out = ArrayList<Item>(items.size + questions.size)
         at[-1]?.let { out += it.sortedBy { q -> q.at } }

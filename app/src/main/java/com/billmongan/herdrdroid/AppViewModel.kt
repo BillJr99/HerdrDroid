@@ -191,13 +191,30 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** The open chat's item times on the computer's clock, by key (1.4.3: questions are placed by them). */
     var transcriptTimes by mutableStateOf<Map<String, Long>>(emptyMap())
         private set
-    /** Each server's phone clock minus its computer's clock, in ms, from the reader's "now" (1.4.3). */
-    private val hostOffset = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    /** When the app first saw each item of the open chat, on the computer's clock (1.4.3). */
+    var transcriptSeen by mutableStateOf<Map<String, Long>>(emptyMap())
+        private set
+    /**
+     * Each server's phone clock minus its computer's clock, in ms (1.4.3): the smallest of the last
+     * readings of (phone time a read arrived) minus (the computer's "now" in it), since the time a read
+     * takes to arrive only ever adds to that difference (from review). Compose state, so a chat drawn
+     * before the first reading is placed again once it arrives.
+     */
+    private val offsetSamples = java.util.concurrent.ConcurrentHashMap<String, ArrayDeque<Long>>()
+    var hostOffsets by mutableStateOf<Map<String, Long>>(emptyMap())
+        private set
     /** The open server's clock offset, for placing questions (phone time) among chat items (computer time). */
-    fun hostOffsetMs(): Long = current?.id?.let { hostOffset[it] } ?: 0L
+    fun hostOffsetMs(): Long = current?.id?.let { hostOffsets[it] } ?: 0L
     private fun noteHostClock(r: com.billmongan.herdrdroid.transcript.TranscriptRead) {
         val sid = current?.id ?: return
-        if (r.hostNow > 0) hostOffset[sid] = System.currentTimeMillis() - r.hostNow
+        if (r.hostNow <= 0) return
+        val q = offsetSamples.getOrPut(sid) { ArrayDeque() }
+        val best = synchronized(q) {
+            q.addLast(System.currentTimeMillis() - r.hostNow)
+            while (q.size > 10) q.removeFirst()
+            q.min()
+        }
+        if (hostOffsets[sid] != best) hostOffsets = hostOffsets + (sid to best)
     }
     private var transcriptPane: String? = null
     private var transcriptCursor = ""
@@ -1265,6 +1282,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             transcriptCursor = c.cursor
             transcriptItems = c.items
             transcriptTimes = c.times
+            // A chat kept before 1.4.3 has no item times: read it again from the start, so every item
+            // gets its log time before questions are placed among them (1.4.3, from review).
+            if (c.items.isNotEmpty() && c.times.isEmpty()) transcriptCursor = ""
+            transcriptSeen = c.seen
             transcriptMore = c.more
             transcriptTitle = c.title
             transcriptStart = c.start
@@ -1275,6 +1296,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         transcriptCursor = ""
         transcriptItems = emptyList()
         transcriptTimes = emptyMap()
+        transcriptSeen = emptyMap()
         transcriptMore = false
         transcriptTitle = null
         transcriptStart = -1L
@@ -1409,7 +1431,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The open chat as it is now. */
     private fun openChatNow(paneId: String) = CachedChat(transcriptItems, transcriptCursor, transcriptMore, transcriptTitle,
-        transcriptStart, transcriptFile, pane(paneId)?.agent?.lowercase(), transcriptTimes)
+        transcriptStart, transcriptFile, pane(paneId)?.agent?.lowercase(), transcriptTimes, transcriptSeen)
 
     /** Keeps the open chat, in memory and on the phone, before it is left (another agent, a reconnect, a server switch). */
     private fun stashOpenChat() {
@@ -1459,7 +1481,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         persistChat(sid, p.id, next)
     }
 
-    private fun mergeRead(c: CachedChat, r: com.billmongan.herdrdroid.transcript.TranscriptRead) = c.withRead(r)
+    private fun mergeRead(c: CachedChat, r: com.billmongan.herdrdroid.transcript.TranscriptRead) = c.withRead(r, seenNow())
+
+    /** Now on the open server's computer clock: the app's own time for items its log gives none (1.4.3). */
+    private fun seenNow(): Long = System.currentTimeMillis() - hostOffsetMs()
     /** Each server's last previews and models, so its cards show at once when it's opened again. */
     private val previewCache = java.util.concurrent.ConcurrentHashMap<String, Map<String, String>>()
     private val modelCache = java.util.concurrent.ConcurrentHashMap<String, Map<String, String>>()
@@ -1482,7 +1507,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     ?.takeIf { it.agent == null || p.agent == null || it.agent == p.agent.lowercase() }
                 if (current?.id != sid) return@launch
                 if (kept != null && transcriptCache[ck(p.id)] == null) transcriptCache[ck(p.id)] = kept
-                val r = quietly { it.transcript(p, kept?.cursor ?: "", transcriptScript) } ?: continue
+                // A kept chat with no item times (from before 1.4.3) is read again from the start (1.4.3).
+                val r = quietly { it.transcript(p, kept?.takeIf { k -> k.times.isNotEmpty() || k.items.isEmpty() }?.cursor ?: "", transcriptScript) } ?: continue
                 if (current?.id != sid) return@launch
                 if (!r.ok || transcriptPane == p.id) continue
                 val base = kept ?: CachedChat(emptyList(), "", false, null, -1L, null, p.agent?.lowercase())
@@ -1548,8 +1574,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         noteHostClock(r)
         if (r.reset || r.items.isNotEmpty()) {
             transcriptItems = Transcript.merge(transcriptItems, r.items, r.reset)
-            val got = Transcript.timesOf(r.items)
-            transcriptTimes = if (r.reset) got else if (got.isEmpty()) transcriptTimes else transcriptTimes + got
+            // Log times where the log has them; otherwise when the app first saw the item, kept
+            // across reloads (a reset keeps the times already known) (1.4.3).
+            transcriptTimes = Transcript.stampSeen(transcriptTimes + Transcript.timesOf(r.items), transcriptItems, seenNow(), Transcript.keysOf(r.items))
+            transcriptSeen = Transcript.markSeen(transcriptSeen, transcriptItems, Transcript.keysOf(r.items), transcriptTimes, seenNow(), bulk = r.reset)
         }
         if (r.reset) {
             transcriptMore = r.more
@@ -1624,7 +1652,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val older = Transcript.merge(emptyList(), r.items, true)
                 val have = transcriptItems.map { it.key }.toSet()
                 transcriptItems = older.filter { it.key !in have } + transcriptItems
-                transcriptTimes = Transcript.timesOf(r.items) + transcriptTimes
+                transcriptTimes = Transcript.stampSeen(Transcript.timesOf(r.items) + transcriptTimes, transcriptItems, seenNow(), Transcript.keysOf(r.items))
+                transcriptSeen = Transcript.markSeen(transcriptSeen, transcriptItems, Transcript.keysOf(r.items), transcriptTimes, seenNow(), bulk = true)
                 transcriptStart = runCatching { org.json.JSONObject(r.cursor).optLong("start", 0L) }.getOrDefault(0L)
                 transcriptMore = r.more
             } finally {

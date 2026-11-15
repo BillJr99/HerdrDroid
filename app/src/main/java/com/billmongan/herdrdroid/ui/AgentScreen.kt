@@ -492,7 +492,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                         DropdownMenuItem(text = { Text("Export as Markdown") }, onClick = {
                             menu = false
                             vm.exportMarkdown(context, vm.transcriptTitle ?: "${pane?.agentName ?: "Agent"} in ${pane?.folder ?: ""}", pane?.agentName ?: "Agent",
-                                com.billmongan.herdrdroid.transcript.QuestionLog.withQuestions(vm.transcriptItems, vm.questionsFor(paneId), vm.transcriptTimes, vm.hostOffsetMs()))
+                                com.billmongan.herdrdroid.transcript.QuestionLog.withQuestions(vm.transcriptItems, vm.questionsFor(paneId), vm.transcriptTimes, vm.hostOffsetMs(), vm.transcriptSeen))
                         })
                     }
                     // Kept out of the header so the agent's name has the room.
@@ -522,8 +522,9 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
         // while its card is showing, so it isn't on screen twice.
         val questionsNow = vm.questionsFor(paneId)
         val cardUp = prompt != null
-        val chatItems = remember(vm.transcriptItems, questionsNow, cardUp) {
-            com.billmongan.herdrdroid.transcript.QuestionLog.withQuestions(vm.transcriptItems, questionsNow, vm.transcriptTimes, vm.hostOffsetMs())
+        // Placed again when item times or the clock offset change, not only the items (1.4.3, from review).
+        val chatItems = remember(vm.transcriptItems, questionsNow, cardUp, vm.transcriptTimes, vm.transcriptSeen, vm.hostOffsets) {
+            com.billmongan.herdrdroid.transcript.QuestionLog.withQuestions(vm.transcriptItems, questionsNow, vm.transcriptTimes, vm.hostOffsetMs(), vm.transcriptSeen)
                 .filter { !cardUp || (it as? com.billmongan.herdrdroid.transcript.QuestionItem)?.state != com.billmongan.herdrdroid.transcript.QState.OPEN }
         }
         val rowsNow = remember(chatItems) { rowsOf(chatItems) }
