@@ -22,9 +22,9 @@ on:
 permissions:
   contents: write
 
-concurrency:
-  group: release-apk
-  cancel-in-progress: false
+# No concurrency group: GitHub keeps only one pending run per group and cancels the one before it,
+# which dropped a release when three were dispatched together (2026-11-15). Each run only creates
+# releases that do not exist yet, so runs side by side are safe.
 
 jobs:
   release:
