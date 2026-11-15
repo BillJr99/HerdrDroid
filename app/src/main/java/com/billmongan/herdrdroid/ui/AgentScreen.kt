@@ -626,8 +626,19 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                     }
                 } else {
                     // Agents without a readable log (Antigravity, Kiro) keep their question history here (1.3.0).
-                    vm.questionsFor(paneId).filter { prompt == null || it.state != com.billmongan.herdrdroid.transcript.QState.OPEN }
-                        .forEach { QuestionView(it, liveSize) }
+                    // The pane's history (1.4.3, Bill): each earlier screen, then the question asked under
+                    // it, oldest first, so anything newer is below a question; the live screen comes last.
+                    com.billmongan.herdrdroid.transcript.QuestionLog.screenHistory(
+                        vm.questionsFor(paneId).filter { prompt == null || it.state != com.billmongan.herdrdroid.transcript.QState.OPEN },
+                    ).forEach { entry ->
+                        when (entry) {
+                            is com.billmongan.herdrdroid.transcript.ScreenSnapshot -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text("Earlier screen", color = Palette.Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                ChatView(entry.text, null, liveSize, vm.readingFont)
+                            }
+                            is com.billmongan.herdrdroid.transcript.QuestionItem -> QuestionView(entry, liveSize)
+                        }
+                    }
                     val pending = vm.lastSent?.takeIf { it.first == paneId }?.second
                     ChatView(text, pending, liveSize, vm.readingFont)
                 }

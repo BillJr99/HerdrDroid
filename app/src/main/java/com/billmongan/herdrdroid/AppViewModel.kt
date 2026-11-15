@@ -1238,7 +1238,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             // What the question card sees, logged when it changes (sizes only, no question text).
             val status = panes.firstOrNull { it.id == paneId }?.status
             val p = com.billmongan.herdrdroid.herdr.detectPrompt(text, status == Status.NEEDS_YOU, pane(paneId)?.agent, versionOf(paneId))
-            current?.id?.let { sid -> observeQuestion(sid, paneId, p, status, pane(paneId)?.agentName) }
+            current?.id?.let { sid -> observeQuestion(sid, paneId, p, status, pane(paneId)?.agentName, text) }
             val dialog = com.billmongan.herdrdroid.herdr.showsQuestionDialog(text)
             val sig = if (p == null && !dialog) "none" else
                 "dialog ${if (dialog) "open" else "not seen"}, herdr ${status?.name?.lowercase()}, " +
@@ -1381,7 +1381,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * Records what a read of the pane's screen showed: a question card adds or updates its record;
      * no card twice in a row while one is open settles it (answered, answered elsewhere, dismissed).
      */
-    private fun observeQuestion(serverId: String, paneId: String, p: com.billmongan.herdrdroid.herdr.Prompt?, status: Status?, agent: String?) {
+    private fun observeQuestion(serverId: String, paneId: String, p: com.billmongan.herdrdroid.herdr.Prompt?, status: Status?, agent: String?, screenText: String? = null) {
         val k = "$serverId|$paneId"
         // While the history can't be read (locked, or unreadable now), questions aren't recorded (1.3.1, 1.3.2).
         val log = loadedQuestions(serverId, paneId) ?: return
@@ -1390,7 +1390,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val card = p?.takeIf { it.choices.isNotEmpty() }
         if (card != null) {
             questionMisses[k] = 0
-            val next = com.billmongan.herdrdroid.transcript.QuestionLog.seen(log, card, agent, questionAnchor(serverId, paneId), now)
+            // A pane with no readable log keeps the screen just before the question (1.4.3).
+            val keepScreen = screenText?.takeIf { pane(paneId)?.agent?.lowercase() !in readers || (transcriptPane == paneId && transcriptState == TranscriptMode.OFF) }
+            val next = com.billmongan.herdrdroid.transcript.QuestionLog.seen(log, card, agent, questionAnchor(serverId, paneId), now, keepScreen)
             if (next != log) putQuestions(serverId, paneId, next)
             return
         }
@@ -2481,7 +2483,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     // "Blocked" with nothing on screen that asks is a stale status, not a question (1.4.2):
                     // no alert. A screen that couldn't be read still alerts, saying so.
                     if (prompt == null && text.isNotBlank()) { com.billmongan.herdrdroid.diag.DiagLog.log("watch", "${p.id}: herdr says blocked, but nothing on screen asks; no alert"); return@launch }
-                    withContext(Dispatchers.Main) { if (prompt != null && prompt.choices.isNotEmpty()) observeQuestion(serverId, p.id, prompt, p.status, p.agentName) }
+                    withContext(Dispatchers.Main) { if (prompt != null && prompt.choices.isNotEmpty()) observeQuestion(serverId, p.id, prompt, p.status, p.agentName, text) }
                     Notify.needsYou(app, serverId, serverLabel, p.id, p.agentName, prompt?.question ?: "Waiting for you.", prompt?.choices.orEmpty(), p.agent)
                 }
                 // Only agents that need you notify (Bill, 2026-11-13); finishing doesn't.

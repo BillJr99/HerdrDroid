@@ -39,6 +39,9 @@ data class QPart(
     val answer: String? = null,
 )
 
+/** A saved screen in a screen-view pane's history (1.4.3). */
+data class ScreenSnapshot(val key: String, val text: String, val at: Long)
+
 data class QuestionItem(
     override val key: String,
     val parts: List<QPart>,
@@ -56,11 +59,53 @@ data class QuestionItem(
     val sig: String = "",
     /** The answer as the agent's log recorded it, when it couldn't be split into one per question. */
     val recorded: String? = null,
+    /**
+     * The screen just before the question, for panes shown as a screen (Antigravity, and any agent
+     * whose log the app can't read) (1.4.3, Bill): kept with the question, so the screen view becomes
+     * a history of snapshots with each question between them. Only the part not already in the
+     * snapshot before it, at most [SNAPSHOT_LINES] lines.
+     */
+    val screen: String? = null,
 ) : Item
 
 object QuestionLog {
     /** Questions kept per pane, newest last. */
     const val MAX_QUESTIONS = 100
+    /** The most lines a screen snapshot keeps (1.4.3). */
+    const val SNAPSHOT_LINES = 60
+
+    /**
+     * The screen above question [p] (its card cut off), less what the earlier snapshots already hold:
+     * the longest run of their last lines found at the top of this one is dropped, so scrolling output
+     * is not repeated. Null when nothing new is left. At most [SNAPSHOT_LINES] lines, the newest.
+     */
+    fun snapshot(screen: String, p: Prompt, earlier: List<String>): String? {
+        var lines = screen.lines().map { it.trimEnd() }
+        // Cut the card: from the question's own first line down.
+        val head = p.question.trim().take(40)
+        if (head.isNotEmpty()) {
+            val at = lines.indexOfLast { it.contains(head) }
+            if (at >= 0) lines = lines.take(at)
+        }
+        lines = lines.dropWhile { it.isBlank() }.dropLastWhile { it.isBlank() }
+        // Drop what the snapshots before already show.
+        val before = earlier.joinToString("\n").lines().map { it.trimEnd() }.filter { it.isNotBlank() }
+        if (before.isNotEmpty() && lines.isNotEmpty()) {
+            val seenSet = before.takeLast(400).toHashSet()
+            val firstNew = lines.indexOfFirst { it.isNotBlank() && it !in seenSet }
+            lines = if (firstNew < 0) emptyList() else lines.drop(firstNew)
+        }
+        return lines.takeLast(SNAPSHOT_LINES).joinToString("\n").ifBlank { null }
+    }
+
+    /**
+     * What the screen view shows above the live screen, oldest first (1.4.3): each question's
+     * snapshot (the screen just before it), then the question. Anything newer is below it, and the
+     * live screen comes last.
+     */
+    fun screenHistory(questions: List<QuestionItem>): List<Any> = questions.sortedBy { it.at }.flatMap { q ->
+        listOfNotNull(q.screen?.let { ScreenSnapshot(q.key + ":screen", it, q.at - 1) }, q)
+    }
     /** A question seen again this soon after it was settled is the same one (the screen redrew), not a new one. */
     const val SAME_WINDOW_MS = 30_000L
 
@@ -99,7 +144,7 @@ object QuestionLog {
     }
 
     /** The log after a question card was seen on screen. */
-    fun seen(log: List<QuestionItem>, p: Prompt, agent: String?, anchor: String?, now: Long): List<QuestionItem> {
+    fun seen(log: List<QuestionItem>, p: Prompt, agent: String?, anchor: String?, now: Long, screen: String? = null): List<QuestionItem> {
         val sig = signature(p)
         val last = log.lastOrNull()
         if (last != null && last.sig == sig && (last.state == QState.OPEN || now - last.doneAt < SAME_WINDOW_MS)) {
@@ -109,7 +154,8 @@ object QuestionLog {
         // A different question while one is still open: the open one went without an answer from here.
         val settled = if (last != null && last.state == QState.OPEN) log.dropLast(1) + settle(last, working = true, now) else log
         val item = QuestionItem(key = "q:$now:${sig.hashCode().toUInt().toString(16)}", parts = partsOf(p, emptyList()),
-            agent = agent, after = anchor, at = now, sig = sig)
+            agent = agent, after = anchor, at = now, sig = sig,
+            screen = screen?.let { snapshot(it, p, settled.mapNotNull { q -> q.screen }) })
         return (settled + item).takeLast(MAX_QUESTIONS)
     }
 
@@ -283,7 +329,7 @@ object QuestionLog {
 
     fun toJson(q: QuestionItem): JSONObject = JSONObject().put("k", q.key).put("state", q.state.name).putOpt("agent", q.agent)
         .putOpt("after", q.after).put("at", q.at).put("doneAt", q.doneAt).putOpt("action", q.action).put("sig", q.sig)
-        .putOpt("recorded", q.recorded)
+        .putOpt("recorded", q.recorded).putOpt("screen", q.screen)
         .put("parts", JSONArray(q.parts.map { p ->
             JSONObject().putOpt("title", p.title).put("q", p.question).put("details", JSONArray(p.details)).putOpt("cmd", p.command)
                 .put("options", JSONArray(p.options)).putOpt("answer", p.answer)
@@ -301,7 +347,7 @@ object QuestionLog {
         },
         state = runCatching { QState.valueOf(o.optString("state")) }.getOrDefault(QState.DISMISSED),
         agent = o.s("agent"), after = o.s("after"), at = o.optLong("at"), doneAt = o.optLong("doneAt"),
-        action = o.s("action"), sig = o.optString("sig"), recorded = o.s("recorded"),
+        action = o.s("action"), sig = o.optString("sig"), recorded = o.s("recorded"), screen = o.s("screen"),
     )
 
     /** The kept questions as JSON: the newest [MAX_QUESTIONS] within [ChatCodec.MAX_CHARS]. */
