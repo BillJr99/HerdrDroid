@@ -81,4 +81,26 @@ class CardCoverageTest {
         assertNotNull(p)
         assertTrue(p!!.choices.isEmpty() && p.region != null)
     }
+
+    // From Grok's review of the audit.
+    @Test fun buttonAndLetterCardsLeftBehindAreNotLive() {
+        val oc = screen("opencode", "0701-permission-prompt-all-tools.txt".substring(0, 4)).trimEnd() + "\n┃  ● Ran npm install\n┃  > "
+        assertTrue(detectPrompt(oc, true, "opencode")?.choices.isNullOrEmpty())
+        val trust = screen("grok", "0307").trimEnd() + "\n  ╭" + "─".repeat(40) + "╮\n  │ ❯" + " ".repeat(37) + "│"
+        assertTrue(detectPrompt(trust, true, "grok")?.choices.isNullOrEmpty())
+    }
+
+    @Test fun aWrappedOptionKeepsItsWholeLabel() {
+        val plan = card("copilot", "0408")
+        assertTrue(plan.choices[1].label, plan.choices[1].label.endsWith(")"))
+        assertTrue(grantsStandingPermission(plan.choices[1].label))
+        // A description under an option (a capitalised sentence) is not part of it.
+        assertEquals("Allow", card("codex", "0203").choices[0].label)
+    }
+
+    @Test fun typedAnswerBehindACheckboxAndNeverShowAgain() {
+        assertTrue(isTypedAnswerChoice("[ ] Type something."))
+        assertTrue(isTypedAnswerChoice("[ ] Other (type your answer)"))
+        assertTrue(grantsStandingPermission("Keep current model (never show again)"))
+    }
 }

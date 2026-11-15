@@ -30,7 +30,7 @@ For every card: the options are read in screen order; the highlighted one is the
 | Codex | request user input multi question | from the program | 3 | ↑/↓ + Enter, Enter | 0 | no |
 | Codex | request user input multi question 2 | from the program | 3 | ↑/↓ + Enter, Enter | 0 | no |
 | Codex | plan mode implement this plan | from the program | 3 | ↑/↓ + Enter, Enter | 0 | no |
-| Codex | rate limit model switch and workspace li | from the program | 3 | ↑/↓ + Enter, Enter | 0 | no |
+| Codex | rate limit model switch and workspace li | from the program | 3 | ↑/↓ + Enter, Enter | 1 | no |
 | Grok | privacy banner | captured | 2 | its letter | 0 | no |
 | Grok | ssh permission | captured | 3 | ↑/↓ + Enter, Enter | 1 | no |
 | Grok | python approval | captured | 4 | ↑/↓ + Enter, Enter | 1 | no |
@@ -45,7 +45,7 @@ For every card: the options are read in screen order; the highlighted one is the
 | GitHub Copilot CLI | shell session approval and sandbox bypas | from the program | 3 | ↑/↓ + Enter, Enter, Esc | 1 | yes |
 | GitHub Copilot CLI | mcp tool | from the program | 4 | ↑/↓ + Enter, Enter, Esc | 2 | yes |
 | GitHub Copilot CLI | question ask user | from the program | 3 | ↑/↓ + Enter, Enter | 0 | no |
-| GitHub Copilot CLI | exit plan mode | from the program | 4 | ↑/↓ + Enter, Enter | 0 | no |
+| GitHub Copilot CLI | exit plan mode | from the program | 4 | ↑/↓ + Enter, Enter | 1 | no |
 | Antigravity | run command | from the program | 4 | ↑/↓ + Enter, Enter | 2 | no |
 | Kiro CLI | shell approval | captured | 3 | ↑/↓ + Enter, Enter | 1 | no |
 | Kiro CLI | default page label set | from the program | 4 | ↑/↓ + Enter, Enter | 1 | no |

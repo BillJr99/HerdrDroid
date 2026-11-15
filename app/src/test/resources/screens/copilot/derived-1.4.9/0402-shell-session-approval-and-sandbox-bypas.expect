@@ -1,4 +1,4 @@
 card: options
 blocked: true
-options: Run this command outside of the sandbox | Run this command outside of the sandbox, and disable the sandbox | No, and tell Copilot what to do differently (Esc to stop)
+options: Run this command outside of the sandbox | Run this command outside of the sandbox, and disable the sandbox for the rest of this session | No, and tell Copilot what to do differently (Esc to stop)
 source: derived for the 1.4.9 card audit from the agent's own program text (exact strings, layout inferred); demo content only

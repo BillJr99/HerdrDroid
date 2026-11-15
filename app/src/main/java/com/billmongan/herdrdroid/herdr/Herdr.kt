@@ -1295,7 +1295,7 @@ fun isPlaceholderText(raw: String, typed: String, agent: String?): Boolean {
 /** A choice that grants standing permission ("always allow", "don't ask again"); the card adds a caution (1.4.0). */
 // 1.4.9 (the card audit): "in the future", "permanent allowlist", "allow rule ... future", "for the rest of",
 // "approve all tools", "disable the sandbox", "for this repo" grant standing permission too.
-private val ALWAYS_LABEL = Regex("""\balways\b|don'?t ask again|\btrust\b|remainder of this session|always-approve|for this (session|conversation)|don'?t ask me again|in the future|permanent|allowlist|allow rule|for the rest of|approve all|disable the sandbox|future similar|during this session|(from|for|in) this (project|repo)|auto-accept""", RegexOption.IGNORE_CASE)
+private val ALWAYS_LABEL = Regex("""\balways\b|don'?t ask again|\btrust\b|remainder of this session|always-approve|for this (session|conversation)|don'?t ask me again|(never|don'?t) show again|in the future|permanent|allowlist|allow rule|for the rest of|approve all|disable the sandbox|future similar|during this session|(from|for|in) this (project|repo)|auto-accept""", RegexOption.IGNORE_CASE)
 // 1.4.1 (from a code review): a refusal ("No, don't trust this", "Never allow") grants nothing.
 private val REFUSAL_LABEL = Regex("""^\W*(no|deny|reject|cancel|never|quit|don'?t (trust|allow))\b|\b(don'?t|do not|not|never) (trust|always)\b|\bdeny rule\b|\bblock\b""", RegexOption.IGNORE_CASE)
 // A curly apostrophe ("don’t ask again", Claude's MCP and skill rows) reads as a straight one (1.4.9).
@@ -1303,7 +1303,8 @@ fun grantsStandingPermission(label: String): Boolean = label.replace('\u2019', '
 
 /** A choice that means "I'll type my own answer" ("Type something.", "Other", "Something else"), 1.4.0. */
 private val OTHER_LABEL = Regex("""^(type something\.?|other\b.*|something else.*|chat about this|type your own.*|enter (a |your )?custom.*)$""", RegexOption.IGNORE_CASE)
-fun isTypedAnswerChoice(label: String): Boolean = OTHER_LABEL.matches(label.trim())
+// A checkbox before it ("[ ] Type something.", 1.4.9 from Grok's review) is not part of the words.
+fun isTypedAnswerChoice(label: String): Boolean = OTHER_LABEL.matches(label.trim().replace(Regex("""^(\[[ xX✓✔]\]|[☐☑☒◻◼□■])\s+"""), ""))
 
 /** A checkbox row ("[ ] Tests", "[x] Docs", "☐ Lint", "◼ Build"), 1.4.0. */
 private val CHECKBOX = Regex("""^(\[[ xX✓✔]\]|[☐☑☒◻◼□■])\s+""")
@@ -1340,6 +1341,8 @@ fun detectButtonRow(text: String): Prompt? {
     val here = buttons(lines[at])
     val (row, labels) = if (here.size >= 2) at to here else (at - 1) to (if (at >= 1) buttons(lines[at - 1]) else emptyList())
     if (labels.size !in 2..5 || labels.any { it.length > 40 || !it.first().isLetter() }) return null
+    // Not when the agent went on under it (from Grok's review): an old prompt in the scrollback.
+    if (agentWentOn(lines.drop(at + 1))) return null
     val clean = { l: String -> l.trim().trim { it in "│┃|△ " }.trim() }
     val above = (row - 1 downTo maxOf(0, row - 10)).map { clean(lines[it]) }.filter { it.any(Char::isLetterOrDigit) }.reversed()
     val question = above.lastOrNull { it.endsWith("?") } ?: above.firstOrNull { it.contains("required", true) || it.endsWith("?") } ?: above.firstOrNull() ?: "Choose"
@@ -1360,6 +1363,7 @@ fun detectLetterMenu(text: String, blocked: Boolean): Prompt? {
         val pairs = Regex("""\b([a-z]):([a-z][a-z ]*[a-z])""").findAll(foot).map { it.groupValues[1] to it.groupValues[2] }
             .filter { (k, _) -> k in setOf("a", "s", "c", "q") }.toList()
         if (pairs.size < 2) return null
+        // The plan review's key line is the last line of the screen; nothing of the agent's own comes after it.
         val heading = lines.firstOrNull { it.trimStart().startsWith("#") }?.trim()?.trimStart('#')?.trim()
         return Prompt(heading?.let { "Approve the plan: $it?" } ?: "Approve the plan?",
             pairs.map { (k, l) -> Choice(l.replaceFirstChar { it.uppercase() }, k, false) })
@@ -1370,12 +1374,25 @@ fun detectLetterMenu(text: String, blocked: Boolean): Prompt? {
     // One run, near the bottom, with the letters named in the hint under it ("Enter or y to trust · n or Esc to quit").
     if (rows.zipWithNext().any { (a, b) -> b.index != a.index + 1 } || rows.last().index < lines.size - 3) return null
     val letters = rows.map { row.find(it.value)!!.groupValues[1] }
+    if (agentWentOn(lines.drop(rows.last().index + 1))) return null
     val hint = lines.drop(rows.last().index + 1).joinToString(" ")
     if (!blocked && letters.none { Regex("""\b$it\b""").containsMatchIn(hint) }) return null
     val question = lines.take(rows.first().index).lastOrNull { it.trim().endsWith("?") }?.trim() ?: "Choose"
     return Prompt(question, rows.map { r -> row.find(r.value)!!.let { m -> Choice(m.groupValues[2].trim(), m.groupValues[1], false) } })
 }
 
+/**
+ * Whether the agent went on after a card (1.4.9): its activity line, its working line or its input row
+ * among [below], the lines under the card's options and hint.
+ */
+internal fun agentWentOn(below: List<String>): Boolean = below.any { l ->
+    val c = l.trim().trim { it in "│┃|╭╰╮╯─ " }.trim()
+    (c.any(Char::isLetterOrDigit) && (ACTIVITY.containsMatchIn(c) || WORKING_LINE.containsMatchIn(c))) ||
+        (INPUT_ROW_UNDER.containsMatchIn(l) && !Regex("""type your|other""", RegexOption.IGNORE_CASE).containsMatchIn(c))
+}
+
+/** A key hint line ("ctrl+g to edit", "esc to cancel", "enter to submit"), 1.4.9. */
+private val KEY_HINT_LINE = Regex("""^(ctrl|shift|alt|cmd|esc|enter|tab|space|↑|↓|←|→)\b|\b(to|·)\s*(cancel|select|navigate|submit|confirm|edit)\b""", RegexOption.IGNORE_CASE)
 /** At most this many lines with text under a live card's last option (1.4.9). */
 private const val MAX_UNDER_CARD = 8
 /** Codex's approval footer (1.4.2). */
@@ -1662,7 +1679,21 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
         if (run.isNotEmpty() && o.second.toInt() != run.last().second.toInt() + 1) run.clear()
         run += o
     }
-    val numbered = run.map { Choice(it.third, it.second, false) }.distinctBy { it.keys }
+    // An option's label wrapped onto the next line goes on there (1.4.9, from Grok's review: Copilot's
+    // "(Manual" over "Approval for this session; …)"): the next line, when it is not an option row, while a
+    // "(" is still open or it starts in lower case. A description under it (capitalised, its own sentence) is not.
+    val numbered = run.map { (i, k, label) ->
+        var full = label
+        var j = i + 1
+        while (j < lines.size && option.find(lines[j]) == null) {
+            val next = clean(lines[j])
+            // A key hint under the last option ("ctrl+g to edit in editor") is not part of it.
+            if (next.isEmpty() || KEY_HINT_LINE.containsMatchIn(next) ||
+                !(full.count { it == '(' } > full.count { it == ')' } || next.first().isLowerCase())) break
+            full = "$full $next"; j++
+        }
+        Choice(full, k, false)
+    }.distinctBy { it.keys }
     // The question: the text just above the first choice (up to four lines, skipping frame
     // lines), or else the last line on screen that ends with "?".
     // The whole question: every line above the first choice up to a blank line, the top of the

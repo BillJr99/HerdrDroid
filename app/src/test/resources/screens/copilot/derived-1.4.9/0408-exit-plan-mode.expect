@@ -1,4 +1,4 @@
 card: options
 blocked: true
-options: Accept plan and continue in Autopilot execution mode | Accept plan and continue in Interactive execution mode (Manual | Exit to Interactive execution mode without running the plan | Suggest changes
+options: Accept plan and continue in Autopilot execution mode | Accept plan and continue in Interactive execution mode (Manual Approval for this session; future defaults unchanged) | Exit to Interactive execution mode without running the plan | Suggest changes
 source: derived for the 1.4.9 card audit from the agent's own program text (exact strings, layout inferred); demo content only
