@@ -2406,6 +2406,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 p.status == Status.NEEDS_YOU -> viewModelScope.launch {
                     val text = runCatching { client()?.read(p.id, 40) }.getOrNull().orEmpty()
                     val prompt = detectPrompt(text, blocked = true)
+                    // An agent's error, not a question (1.4.2): its own alert, once per change of state.
+                    val error = if (prompt == null) com.billmongan.herdrdroid.herdr.detectAgentError(text) else null
+                    if (error != null) { Notify.agentError(app, serverId, serverLabel, p.id, p.agentName, error); return@launch }
+                    // "Blocked" with nothing on screen that asks is a stale status, not a question (1.4.2):
+                    // no alert. A screen that couldn't be read still alerts, saying so.
+                    if (prompt == null && text.isNotBlank()) { com.billmongan.herdrdroid.diag.DiagLog.log("watch", "${p.id}: herdr says blocked, but nothing on screen asks; no alert"); return@launch }
                     withContext(Dispatchers.Main) { if (prompt != null && prompt.choices.isNotEmpty()) observeQuestion(serverId, p.id, prompt, p.status, p.agentName) }
                     Notify.needsYou(app, serverId, serverLabel, p.id, p.agentName, prompt?.question ?: "Waiting for you.", prompt?.choices.orEmpty())
                 }

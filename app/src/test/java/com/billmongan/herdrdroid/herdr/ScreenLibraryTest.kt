@@ -14,6 +14,7 @@ import java.io.File
  *   blocked: true | false              herdr's status when it was captured
  *   heading: ...                       the question as the card shows it (optional)
  *   options: a | b | c                 every option's label, in order (optional)
+ *   error: a; b                        detectAgentError must name each of these (1.4.2, optional)
  * A screen with no .expect file (a fresh capture from bill-agent-screens.py on demo-box2 after an
  * agent update) must, if it looks like a question (a question footer, or a highlighted numbered
  * row), parse as a card with at least two options rather than fall back to the generic card.
@@ -58,7 +59,12 @@ class ScreenLibraryTest {
                 val p = detectPrompt(text, blocked = true)
                 if (p == null || p.choices.size < 2) "looks like a question but parsed as ${if (p == null) "no card" else "the fallback card"}" else null
             } else null
+            val err = e?.get("error")?.let { want ->
+                val got = detectAgentError(text).orEmpty()
+                want.split(";").map { it.trim() }.filter { it !in got }.takeIf { it.isNotEmpty() }?.let { "agent error \"$got\", missing $it" }
+            }
             if (why != null) broken += "BROKEN $rel: $why"
+            if (err != null) broken += "BROKEN $rel: $err"
         }
         assertTrue(broken.joinToString("\n"), broken.isEmpty())
     }

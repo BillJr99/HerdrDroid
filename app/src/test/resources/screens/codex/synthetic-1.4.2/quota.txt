@@ -1,0 +1,8 @@
+› continue
+
+■ You've hit your usage limit. Upgrade to Pro or try again in 2 hours 13 minutes.
+
+› Ask Codex to do anything
+
+  GPT-6.1-Sol default · ~/agents/codex
+  ← for agents · ? for shortcuts

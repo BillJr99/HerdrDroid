@@ -1,0 +1,6 @@
+  ⚠ Rate limited: you have reached your usage limit for Grok 4.7. Try again in 41 minutes.
+
+  ╭────────────────────────────────────────────────────────────────────────────╮
+  │ ❯                                                                          │
+  ╰────────────────────────────────────────────────────────── Grok 4.7 (high) ─╯
+  Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+.:shortcuts

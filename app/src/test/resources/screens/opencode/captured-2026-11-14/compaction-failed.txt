@@ -1,0 +1,10 @@
+                                                                                     ┃ Getting started              ✕
+  ✗ Compaction ─────────────────────────────────────────────────────────            ┃
+  All 6 'llmproxy__flagship/free' candidate(s) failed. Last upstream error:          ┃ Connect provider    /connect
+  Rate limit exceeded                                                                ┃
+                                                                                     ┃
+  ┃                                                                                  ┃
+  ┃  Ask anything...                                                                 ┃
+  ┃                                                                                  ┃
+  ┃  Build  llmproxy__flagship/free                                                  ┃
+                                                                    tab agents  ctrl+p commands

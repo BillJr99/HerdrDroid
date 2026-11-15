@@ -1,0 +1,4 @@
+card: none
+blocked: true
+error: compaction failed; every model candidate failed; model rate-limited
+source: Bill's opencode pane on demo-box2, 2026-11-14, as the coordinator relayed it ("roughly"; reconstructed around the quoted lines)

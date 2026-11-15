@@ -1305,6 +1305,30 @@ fun detectUnnumberedMenu(text: String): Prompt? {
  * [agent] and [version] (1.4.0) let a version-specific rule from [ParserRules] apply; with neither,
  * the defaults are used, as before.
  */
+/**
+ * An agent's error on screen (1.4.2, Bill's opencode pane: herdr said "blocked", the screen showed a
+ * failed compaction and a rate limit, and the app showed an empty question card): a short summary
+ * such as "model rate-limited; compaction failed", or null. Read from the bottom 30 lines only, and
+ * only from lines that look like an error (a ✗ or ⚠ mark, "Error", "failed", a limit reached), so
+ * a conversation that merely mentions rate limits is not one.
+ */
+fun detectAgentError(text: String): String? {
+    val tail = text.lines().map { it.trim().trim('│', '┃', '|', '─', ' ') }.filter { it.isNotBlank() }.takeLast(30)
+    val found = linkedSetOf<String>()
+    for (l in tail) for ((pattern, summary) in AGENT_ERRORS) if (pattern.containsMatchIn(l)) found += summary
+    return found.takeIf { it.isNotEmpty() }?.joinToString("; ")
+}
+
+private val AGENT_ERRORS = listOf(
+    Regex("""✗\s*Compaction|[Cc]ompaction failed|failed to compact""") to "compaction failed",
+    Regex("""\bAll \d+ .{0,80}candidate\(?s?\)? failed""") to "every model candidate failed",
+    Regex("""Rate limit exceeded|rate[- ]limited|\b429\b.{0,40}(Too Many Requests|rate)|Too Many Requests""", RegexOption.IGNORE_CASE) to "model rate-limited",
+    Regex("""API Error:?\s*(\d{3}|Overloaded|Request rejected|Connection)""") to "API error",
+    Regex("""\b(usage limit (reached|hit)|hit your usage limit|reached your usage limit|limit reached.{0,40}resets?|quota exceeded|insufficient_quota|exceeded your current quota)""", RegexOption.IGNORE_CASE) to "usage limit reached",
+    Regex("""\b(Provider|Upstream) error|provider returned an? error|Last upstream error""", RegexOption.IGNORE_CASE) to "provider error",
+    Regex("""\bOverloaded\b|overloaded_error""") to "model overloaded",
+)
+
 fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version: String? = null): Prompt? {
     val rules = ParserRules.forAgent(agent, version)
     // A question dialog on screen means the agent waits, whatever herdr reported.
@@ -1446,7 +1470,15 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     // Looks like a question (herdr says it waits, or a question footer shows) but nothing above
     // understood it (1.4.0): the fallback card shows the bottom of the screen and generic keys.
     val footer = lines.takeLast(6).any { QUESTION_FOOTER.containsMatchIn(it) }
-    if (blocked || footer) {
+    // An agent's error (a failed compaction, a rate limit) is not a question, whatever herdr says:
+    // no card; the pane shows it as an error banner (1.4.2). A question footer still wins.
+    if (!footer && detectAgentError(text) != null) return null
+    // herdr's "blocked" alone is not a question (1.4.2: opencode's plugin kept a pane blocked after
+    // a failed compaction, even on a fresh session, and the app showed an empty card). The fallback
+    // card needs something question-like on screen too: a question footer, or a line near the bottom
+    // that asks ("…?"). Otherwise the status is stale and there is no card.
+    val asks = lines.takeLast(6).any { clean(it).endsWith("?") }
+    if (footer || (blocked && asks)) {
         val region = raw.dropLastWhile { it.isBlank() }.takeLast(16).map { clean(it) }.dropWhile { it.isEmpty() }
         return Prompt(question ?: "This agent is waiting for you.", emptyList(), region = region.takeIf { r -> r.any { it.isNotBlank() } } ?: listOf(UNREAD_SCREEN))
     }

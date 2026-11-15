@@ -27,8 +27,10 @@ class Release140Test {
         assertTrue(p.region!!.any { it.contains("alpha cluster") })
         // Plain output with no footer and herdr not saying it waits: no card at all.
         assertNull(detectPrompt("just some output\nand more output", blocked = false))
-        // herdr says it waits but the screen shows nothing to read: the fallback card with the screen.
-        assertNotNull(detectPrompt("Thinking about it\nstill here", blocked = true)!!.region)
+        // herdr says it waits but nothing on screen asks: a stale status, no card (1.4.2, Bill's
+        // opencode pane). Something that asks near the bottom still gets the fallback card.
+        assertNull(detectPrompt("Thinking about it\nstill here", blocked = true))
+        assertNotNull(detectPrompt("Thinking about it\nShall I go on?", blocked = true)!!.region)
     }
 
     @Test fun menusPastNineOptions() {

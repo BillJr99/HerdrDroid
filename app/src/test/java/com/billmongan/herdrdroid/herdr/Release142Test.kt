@@ -73,4 +73,16 @@ class Release142Test {
             assertEquals(name, listOf("esc"), menuKeys(p, p.choices.last()))
         }
     }
+    @Test fun anAgentErrorIsABannerNotAQuestion() {
+        val screen = screen("opencode/captured-2026-11-14/compaction-failed.txt")
+        // herdr said blocked: still no card, and the error is named.
+        assertEquals(null, detectPrompt(screen, blocked = true, agent = "opencode"))
+        val why = detectAgentError(screen)!!
+        assertTrue(why, why.contains("compaction failed") && why.contains("model rate-limited"))
+        // A conversation that only talks about rate limits is not an error.
+        assertEquals(null, detectAgentError("> how do rate limits work?\nThey cap requests per minute.\n> ok"))
+        // A real question with an error further up still gets its card.
+        val both = "✗ Compaction failed earlier\n\n" + screen("codex/captured-2026-11-14/edit-approval.txt")
+        assertEquals(3, detectPrompt(both, blocked = true, agent = "codex")!!.choices.size)
+    }
 }

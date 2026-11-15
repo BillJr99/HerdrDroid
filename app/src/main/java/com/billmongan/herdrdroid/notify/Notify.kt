@@ -187,6 +187,22 @@ object Notify {
         runCatching { NotificationManagerCompat.from(ctx).notify(id(serverId, "__locked__"), n) }
     }
 
+    /**
+     * An agent stopped on an error (1.4.2: a failed compaction, a rate limit), not a question: no
+     * answer buttons, opening the pane shows the terminal-ready banner.
+     */
+    fun agentError(ctx: Context, serverId: String, serverLabel: String, paneId: String, agent: String, error: String) {
+        if (!allowed(ctx)) return
+        val n = NotificationCompat.Builder(ctx, ATTENTION)
+            .setSmallIcon(R.drawable.ic_notify)
+            .setContentTitle("$agent stopped on an error · $serverLabel")
+            .setContentText(if (com.billmongan.herdrdroid.store.Vaults.locked()) LOCKED_TEXT else "$agent: $error")
+            .setContentIntent(openIntent(ctx, serverId, paneId))
+            .setAutoCancel(true)
+            .build()
+        runCatching { NotificationManagerCompat.from(ctx).notify(id(serverId, paneId), n) }
+    }
+
     /** An agent finished its work. */
     fun done(ctx: Context, serverId: String, serverLabel: String, paneId: String, agent: String, preview: String) {
         if (!allowed(ctx)) return

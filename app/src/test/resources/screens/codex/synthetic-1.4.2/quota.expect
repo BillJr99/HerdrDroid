@@ -1,0 +1,4 @@
+card: none
+blocked: true
+error: usage limit reached
+source: synthetic, in the shape of Codex's usage-limit message (no live capture)

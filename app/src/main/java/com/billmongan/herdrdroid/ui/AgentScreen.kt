@@ -237,6 +237,8 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     val screenText = if (vm.paneTextPane == paneId) vm.paneText else ""
     // Never an empty card (1.4.2): one with no options always shows the screen region or a note.
     val prompt: Prompt? = if (typingAnswer) null else detectPrompt(screenText, status == Status.NEEDS_YOU, pane?.agent, vm.versionOf(paneId))?.forCard()
+    // An agent's error on screen (1.4.2): shown as a banner when there is no question.
+    val agentError: String? = remember(screenText) { com.billmongan.herdrdroid.herdr.detectAgentError(screenText) }.takeIf { prompt == null }
     // The terminal (and screen) view follows new output only while you are at the bottom; once you
     // scroll up it stays where you put it, through updates and view switches (1.2.7; before, every
     // update jumped to the bottom). "Latest" below brings it back.
@@ -335,6 +337,19 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 // The terminal is always one tap away from a card, on every agent (1.4.2).
                 onShowTerminal = { hermesLive = false; fullTerminal = true },
             )
+        } ?: agentError?.let { why ->
+            // An agent's error (1.4.2): a banner with the way to the terminal, never a question card.
+            Surface(shape = RoundedCornerShape(14.dp), color = Palette.OrangeSoft, border = BorderStroke(1.dp, Palette.Orange)) {
+                Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Icon(Icons.Filled.Warning, contentDescription = null, tint = Palette.OrangeInk, modifier = Modifier.size(18.dp))
+                        Text("${pane?.agentName ?: "The agent"}: $why", color = Palette.OrangeInk, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                    Text("This is an error on the agent's screen, not a question. The terminal shows the whole message.",
+                        color = Palette.Muted, fontSize = 12.5.sp)
+                    if (!fullTerminal) TextButton(onClick = { hermesLive = false; fullTerminal = true }) { Text("Show terminal") }
+                }
+            }
         }
     }
 
