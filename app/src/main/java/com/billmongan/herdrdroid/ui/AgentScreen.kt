@@ -235,7 +235,8 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     val status = pane?.let { vm.shownStatus(it) } ?: Status.UNKNOWN
     // Only this agent's screen: never one read from the agent you just left.
     val screenText = if (vm.paneTextPane == paneId) vm.paneText else ""
-    val prompt: Prompt? = if (typingAnswer) null else detectPrompt(screenText, status == Status.NEEDS_YOU, pane?.agent, vm.versionOf(paneId))
+    // Never an empty card (1.4.2): one with no options always shows the screen region or a note.
+    val prompt: Prompt? = if (typingAnswer) null else detectPrompt(screenText, status == Status.NEEDS_YOU, pane?.agent, vm.versionOf(paneId))?.forCard()
     // The terminal (and screen) view follows new output only while you are at the bottom; once you
     // scroll up it stays where you put it, through updates and view switches (1.2.7; before, every
     // update jumped to the bottom). "Latest" below brings it back.
@@ -331,6 +332,8 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 },
                 onTypeAnswer = { answering = p; answerVia = null; typingAnswer = true },
                 onTypedChoice = { c -> answering = p; answerVia = c; typingAnswer = true },
+                // The terminal is always one tap away from a card, on every agent (1.4.2).
+                onShowTerminal = { hermesLive = false; fullTerminal = true },
             )
         }
     }
@@ -578,7 +581,9 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
             ) {
                 val text = screenText
                 if (text.isBlank()) {
-                    Text("Loading…", color = Palette.Muted, fontSize = 15.sp)
+                    // Say why the screen isn't there, rather than "Loading…" for ever (1.4.2).
+                    Text(vm.paneReadProblem?.let { "The app couldn't read this pane's screen yet ($it). It keeps trying." } ?: "Loading…",
+                        color = Palette.Muted, fontSize = 15.sp)
                 } else if (fullTerminal) {
                     SelectionContainer {
                         Text(
@@ -1024,7 +1029,10 @@ internal fun PromptCard(
     onTypeAnswer: () -> Unit,
     /** A choice that means "I'll type it" ("Type something.", "Other"): move there, then type (1.4.0). */
     onTypedChoice: (Choice) -> Unit = { onTypeAnswer() },
+    /** Switches to the terminal view (1.4.2): always offered, so the screen itself is never out of reach. */
+    onShowTerminal: (() -> Unit)? = null,
 ) {
+    @Suppress("NAME_SHADOWING") val p = p.forCard()
     Surface(
         shape = RoundedCornerShape(18.dp),
         color = Palette.Card,
@@ -1042,7 +1050,8 @@ internal fun PromptCard(
                 // The fallback card (1.4.0): the screen looked like a question no parser understood, so
                 // the card shows that part of the screen and generic keys instead of choices.
                 p.region?.takeIf { p.choices.isEmpty() }?.let { region ->
-                    Text("The app couldn't read this question's options, so here is the screen and the keys to answer it:",
+                    Text(if (region == listOf(com.billmongan.herdrdroid.herdr.UNREAD_SCREEN)) "The app couldn't read this pane's screen yet; the keys below still go to it:"
+                        else "The app couldn't read this question's options, so here is the screen and the keys to answer it:",
                         color = Palette.Muted, fontSize = 12.5.sp)
                     androidx.compose.foundation.text.selection.SelectionContainer {
                         Text(region.joinToString("\n"), color = Palette.TerminalInk, fontFamily = Fonts.Mono, fontSize = 12.sp,
@@ -1103,6 +1112,7 @@ internal fun PromptCard(
                 KeyButton("Ctrl+C", danger = true) { onKey("ctrl+c") }
             }
             TextButton(onClick = onTypeAnswer, modifier = Modifier.fillMaxWidth()) { Text("Type a different answer") }
+            onShowTerminal?.let { show -> TextButton(onClick = show, modifier = Modifier.fillMaxWidth()) { Text("Show terminal") } }
             Text(
                 "Each button types its key into the tab, exactly as if you typed it there. For any other " +
                     "combination, turn on Ctrl or Alt below and type the letter.",

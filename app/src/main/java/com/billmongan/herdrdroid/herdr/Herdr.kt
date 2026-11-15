@@ -227,9 +227,14 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
         if (core) read(paneId, lines)
         else forPhone(run(cmd("pane", "read", paneId, "--source", "visible", "--lines", lines.toString())))
 
+    /**
+     * The bottom of a pane's screen. On its own channel (1.4.2, Bill's Codex card that showed
+     * nothing): a read never waits behind a long command such as a big session log being read, so
+     * the screen, and the question on it, show while that runs.
+     */
     suspend fun read(paneId: String, lines: Int = 200): String =
-        if (core) forPhone(run(hcCmd("read", paneId, "--lines", lines.toString())))
-        else forPhone(run(cmd("pane", "read", paneId, "--source", "recent", "--lines", lines.toString())))
+        if (core) forPhone(runNow(hcCmd("read", paneId, "--lines", lines.toString())))
+        else forPhone(runNow(cmd("pane", "read", paneId, "--source", "recent", "--lines", lines.toString())))
 
     /**
      * Waits until any agent pane in [panes] changes state, or [timeoutMs] passes (1.4.1, "fewer
@@ -934,9 +939,18 @@ data class Prompt(
     /** A list of checkboxes (several can be picked): a choice toggles its row, Enter submits (1.4.0). */
     val multi: Boolean = false,
 ) {
+    /**
+     * Never an empty card (1.4.2): a prompt with no choices always has something to show, the
+     * screen region or, when the screen couldn't be read, a note saying so, with the generic keys.
+     */
+    fun forCard(): Prompt = if (choices.isNotEmpty() || !region.isNullOrEmpty()) this else copy(region = listOf(UNREAD_SCREEN))
+
     /** [parts], or the same layout read from the question's text. */
     fun shownParts(): QuestionParts = parts ?: questionParts(listOf(QLine(question)))
 }
+
+/** What a card with no options shows when the app couldn't read the screen (1.4.2). */
+const val UNREAD_SCREEN = "(The app couldn't read this pane's screen yet. Tap Show terminal, or answer with the keys below.)"
 
 /** One step of Claude's multi-question dialog ("☐ Close 537", "☒ Stop hook", "✔ Submit"). */
 data class QTab(val title: String, val done: Boolean, val current: Boolean, val submit: Boolean = false)
@@ -962,6 +976,8 @@ data class QLine(val text: String, val cmd: Boolean = false, val gapBefore: Bool
 private val TAB_ITEM = Regex("""([☐☒✔✓☑])\s*([^☐☒✔✓☑←→]+)""")
 /** "Reason: …", "Environment: local", "Read: /path": a labelled line of context, never the heading. */
 private val LABEL_LINE = Regex("""^[A-Z][A-Za-z ]{0,24}:\s""")
+/** A label whose value is a path, address or tool name, shown in a monospace block (1.4.2). */
+private val PATH_LABEL = Regex("""^(Destination|Path|File|Files|Directory|Target|URL|Host|Server|Tool):\s+(\S.*)$""")
 /** A line that only introduces the command under it. */
 private val COMMAND_INTRO = Regex("""^(Requesting permission for:?|Bash command|Command|Run command|Shell command)$""", RegexOption.IGNORE_CASE)
 /** Vibe's "Permission for the file_system.bash tool (…)": the command is the next line. */
@@ -1020,7 +1036,8 @@ fun questionParts(lines: List<QLine>): QuestionParts {
             if (bar.second.isNotEmpty()) body += QLine(bar.second, gapBefore = true)
         } else body += l
     }
-    class Para(var text: String, val cmd: Boolean)
+    /** [inPlace]: a path or address block that stays with its label among the context (1.4.2). */
+    class Para(var text: String, val cmd: Boolean, val inPlace: Boolean = false)
     val paras = mutableListOf<Para>()
     var cmdNext = false
     for (l in body) {
@@ -1030,6 +1047,14 @@ fun questionParts(lines: List<QLine>): QuestionParts {
         // Claude's review step: "● Close 537" over "→ Close it" reads "Close 537: Close it".
         if (answerRow && paras.lastOrNull()?.cmd == false) { paras.last().text += ": " + t; continue }
         if (COMMAND_INTRO.matches(t)) { cmdNext = true; continue }
+        // "Destination: /path/to/file" (Codex's edit card), "Path:", "File:", "URL:": the label as
+        // text and the value in a monospace block of its own (1.4.2).
+        val pathLabel = PATH_LABEL.find(t)
+        if (pathLabel != null) {
+            paras += Para(pathLabel.groupValues[1] + ":", false)
+            paras += Para(pathLabel.groupValues[2].trim(), true, inPlace = true)
+            continue
+        }
         val dollar = Regex("""^\$\s+(.+)$""").find(t)
         val isCmd = l.cmd || dollar != null || cmdNext
         cmdNext = false
@@ -1039,6 +1064,8 @@ fun questionParts(lines: List<QLine>): QuestionParts {
             if (last != null && last.cmd && !l.gapBefore && dollar == null) last.text += " " + t else paras += Para(t, true)
             continue
         }
+        // A long path wrapped onto the next line goes on in its block (1.4.2).
+        if (last != null && last.inPlace && !l.gapBefore && !t.contains(' ') && !LABEL_LINE.containsMatchIn(t)) { last.text += t; continue }
         // Grok's title ("Check SSH to demo-box: grok usage ...") came joined to its command before.
         // A capitalised line after a "Label: …" line is a new sentence ("Reason: outside workspace"
         // over "Allow access to this file?"); a wrapped label line goes on in lower case.
@@ -1059,6 +1086,7 @@ fun questionParts(lines: List<QLine>): QuestionParts {
     val rest = mutableListOf<QBlock>()
     paras.forEachIndexed { i, p ->
         when {
+            p.cmd && p.inPlace -> rest += QBlock(QKind.COMMAND, p.text)
             p.cmd -> cmds += QBlock(QKind.COMMAND, p.text)
             i == pick?.index -> {
                 val end = firstQuestionEnd(p.text)
@@ -1115,6 +1143,8 @@ fun isCheckbox(label: String): Boolean = CHECKBOX.containsMatchIn(label.trim())
 /** An option whose own label says Esc answers it: "No, and tell Codex what to do differently (esc)". */
 private val ESC_LABEL = Regex("""\((?:esc)\b[^)]*\)""", RegexOption.IGNORE_CASE)
 private val REJECT_LABEL = Regex("""^(deny|reject|no)\b""", RegexOption.IGNORE_CASE)
+/** An option's own one-letter key at the end of its label, "(y)" (1.4.2). */
+private val SHORTCUT_LABEL = Regex("""\(([a-z])\)\s*$""")
 
 /** The keys that pick [choice]: arrows from the highlighted option, then Enter; null to type it. */
 fun menuKeys(prompt: Prompt, choice: Choice): List<String>? {
@@ -1122,6 +1152,9 @@ fun menuKeys(prompt: Prompt, choice: Choice): List<String>? {
     // Copilot, and in Codex and Claude it opens a feedback box; Esc answers it in all three. Vibe's
     // card says "Esc reject", and Esc rejects wherever its (invisible) highlight is.
     if (ESC_LABEL.containsMatchIn(choice.label) || (prompt.escRejects && REJECT_LABEL.containsMatchIn(choice.label))) return listOf("esc")
+    // Codex names each option's own key at the end of its label: "Yes, proceed (y)", "Yes, and don't
+    // ask again for these files (a)". That key answers it directly (1.4.2).
+    SHORTCUT_LABEL.find(choice.label)?.let { return listOf(it.groupValues[1]) }
     val from = prompt.selected?.toIntOrNull() ?: return null
     val to = choice.keys.toIntOrNull() ?: return null
     if (prompt.choices.none { it.keys == choice.keys }) return null
@@ -1279,7 +1312,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
         (rules.extraFooter?.let { f -> text.lines().takeLast(6).any { f.containsMatchIn(it) } } == true)
     val raw = text.lines().map { it.trimEnd() }.takeLast(80)
     val lines = raw.filter { it.isNotBlank() }.takeLast(40)
-    if (lines.isEmpty()) return if (blocked) Prompt("This agent is waiting for you.", emptyList()) else null
+    if (lines.isEmpty()) return if (blocked) Prompt("This agent is waiting for you.", emptyList(), region = listOf(UNREAD_SCREEN)) else null
 
     val clean = { s: String -> s.trim().trim('│', '┃', '|', '╭', '╰', '╮', '╯', '─', ' ').trim() }
     // "❯ 1. Yes", "  2. Yes, and don't ask again for …" (labels can be long; up to 200 characters).
@@ -1415,7 +1448,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     val footer = lines.takeLast(6).any { QUESTION_FOOTER.containsMatchIn(it) }
     if (blocked || footer) {
         val region = raw.dropLastWhile { it.isBlank() }.takeLast(16).map { clean(it) }.dropWhile { it.isEmpty() }
-        return Prompt(question ?: "This agent is waiting for you.", emptyList(), region = region.takeIf { r -> r.any { it.isNotBlank() } })
+        return Prompt(question ?: "This agent is waiting for you.", emptyList(), region = region.takeIf { r -> r.any { it.isNotBlank() } } ?: listOf(UNREAD_SCREEN))
     }
     return null
 }

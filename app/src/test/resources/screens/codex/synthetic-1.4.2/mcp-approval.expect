@@ -1,0 +1,5 @@
+card: options
+blocked: true
+heading: Would you like to run the following tool?
+options: Yes, proceed (y) | Yes, and don't ask again for this tool (a) | No, and tell Codex what to do differently (esc)
+source: synthetic, in the shape of the captured run-command and edit cards (no real MCP card was available to capture)

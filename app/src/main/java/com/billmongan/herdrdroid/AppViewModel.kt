@@ -17,6 +17,7 @@ import com.billmongan.herdrdroid.hermes.HermesChat
 import com.billmongan.herdrdroid.notify.AppBus
 import com.billmongan.herdrdroid.notify.Notify
 import com.billmongan.herdrdroid.notify.NotifyAction
+import com.billmongan.herdrdroid.notify.notificationAnswerStillFits
 import com.billmongan.herdrdroid.notify.WatchService
 import com.billmongan.herdrdroid.ui.DarkPalette
 import androidx.compose.runtime.mutableStateMapOf
@@ -1173,8 +1174,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         current?.let { previewCache[it.id] = previews; modelCache[it.id] = models }
     }
 
+    /** Why the open pane's screen couldn't be read, when the last read failed (1.4.2); null after a good read. */
+    var paneReadProblem by mutableStateOf<String?>(null)
+        private set
+
     suspend fun readPane(paneId: String) {
-        quietly { it.read(paneId) }?.let { text ->
+        quietly { h ->
+            try { h.read(paneId).also { paneReadProblem = null } } catch (e: Exception) {
+                if (e is CancellationException || e is LinkDown || e is AuthRejected || e is HostKeyChanged) throw e
+                // A failed read was silent before (1.4.2: Bill's Codex card showed nothing, and the
+                // terminal view said "Loading…"): say why, in the diagnostics and the terminal view.
+                val why = e.message?.take(120) ?: e.javaClass.simpleName
+                if (paneReadProblem != why) com.billmongan.herdrdroid.diag.DiagLog.log("read", "$paneId: the screen couldn't be read: $why")
+                paneReadProblem = why
+                null
+            }
+        }?.let { text ->
             // Switched to another agent while this read was on its way: it isn't that agent's screen.
             if ((screen as? Screen.Agent)?.paneId != paneId) return
             noteInputLine(paneId, text)
@@ -1204,6 +1219,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         saveSeen()
         paneText = ""
         paneTextPane = paneId
+        paneReadProblem = null
         current?.id?.let { questions(it, paneId) }
         resetTranscript(paneId)
         screen = Screen.Agent(paneId)
@@ -2430,11 +2446,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             return
         }
-        val text = runCatching { h.read(a.paneId, 40) }.getOrNull() ?: return
+        val text = runCatching { h.read(a.paneId, 40) }.getOrNull()
+        if (text == null) {
+            Notify.needsYou(app, a.serverId, servers.firstOrNull { it.id == a.serverId }?.label ?: "", a.paneId, "The agent",
+                "Your answer couldn't be sent: the screen couldn't be read. Open the app to answer.", emptyList())
+            return
+        }
         val now = detectPrompt(text, blocked = true)
-        val same = now != null && now.question.filterNot { it.isWhitespace() } == a.question.filterNot { it.isWhitespace() } &&
-            (a.isKey || now.choices.any { it.keys == a.keys })
-        if (!same) {
+        if (!notificationAnswerStillFits(now, a)) {
             Notify.needsYou(app, a.serverId, servers.firstOrNull { it.id == a.serverId }?.label ?: "", a.paneId, "The agent",
                 "The question changed before your answer arrived. Open the app to answer.", emptyList())
             return
@@ -2453,6 +2472,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             else h.sendText(a.paneId, a.keys)
             // Recorded once it was sent (1.3.2).
             withContext(Dispatchers.Main) { noteAnswer(a.paneId, now, label, a.serverId) }
+            Notify.sending(app, a.serverId, a.paneId, "Answered", label)
+        }.onFailure {
+            Notify.needsYou(app, a.serverId, servers.firstOrNull { it.id == a.serverId }?.label ?: "", a.paneId, "The agent",
+                "Your answer couldn't be sent (${it.message}). Open the app to answer.", emptyList())
         }
     }
 

@@ -1,0 +1,5 @@
+card: options
+blocked: true
+heading: Would you like to allow network access?
+options: Yes, allow this time (y) | Yes, and don't ask again for this host (a) | No, and tell Codex what to do differently (esc)
+source: synthetic, in the shape of the captured run-command and edit cards (no real network card was available to capture)

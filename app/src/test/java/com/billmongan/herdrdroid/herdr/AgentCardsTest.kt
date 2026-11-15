@@ -103,8 +103,9 @@ esc to cancel                                                       Gemini 4 Arg
         assertEquals(3, p.choices.size)
         assertEquals("1", p.selected)
         assertTrue(p.question, p.question.startsWith("Would you like to run the following command?"))
-        assertEquals(listOf("enter"), menuKeys(p, p.choices[0]))
-        assertEquals(listOf("down", "enter"), menuKeys(p, p.choices[1]))
+        // Each option's own key, named at the end of its label (1.4.2): "(y)", "(p)", "(esc)".
+        assertEquals(listOf("y"), menuKeys(p, p.choices[0]))
+        assertEquals(listOf("p"), menuKeys(p, p.choices[1]))
         assertEquals(listOf("esc"), menuKeys(p, p.choices[2]))
     }
 

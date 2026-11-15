@@ -25,11 +25,26 @@ import kotlinx.coroutines.flow.SharedFlow
 /** A tap on a notification button, handed from the receiver to the view model. */
 data class NotifyAction(
     val serverId: String, val paneId: String, val keys: String, val pressEnter: Boolean, val question: String,
+    /** The label of the choice the button answers (1.4.2): checked too, so a reworded question still matches its options. */
+    val label: String = "",
     /** True for the Esc button: [keys] is a key name sent with send-keys, not typed text. */
     val isKey: Boolean = false,
     /** True for a typed reply from the notification: [keys] is the message. */
     val isReply: Boolean = false,
 )
+
+/**
+ * Whether a notification button still answers the question on screen [now] (1.4.2): the same
+ * question (spaces aside), and for a choice, an option with the same keys and the same label. Esc
+ * needs only the same question. A typed reply is not checked here.
+ */
+fun notificationAnswerStillFits(now: com.billmongan.herdrdroid.herdr.Prompt?, a: NotifyAction): Boolean {
+    if (now == null) return false
+    val sameQuestion = now.question.filterNot { it.isWhitespace() } == a.question.filterNot { it.isWhitespace() }
+    if (!sameQuestion) return false
+    if (a.isKey) return true
+    return now.choices.any { it.keys == a.keys && (a.label.isEmpty() || it.label.take(200) == a.label.take(200)) }
+}
 
 /** Connects the notification buttons (a broadcast receiver) to the running app. */
 object AppBus {
@@ -66,7 +81,7 @@ object Notify {
             .putExtra("cKeys", choices.map { it.keys }.toTypedArray())
             .putExtra("cEnter", choices.map { it.pressEnter }.toBooleanArray())
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0)
-        val pi = PendingIntent.getBroadcast(ctx, id(serverId, paneId) * 4 + 2, i, flags)
+        val pi = PendingIntent.getBroadcast(ctx, code(serverId, paneId, if (choices.isEmpty() && question.isEmpty()) 5 else 4), i, flags)
         return NotificationCompat.Action.Builder(0, "Reply", pi).addRemoteInput(input).setAllowGeneratedReplies(false).build()
     }
 
@@ -95,6 +110,13 @@ object Notify {
             ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
 
     private fun id(serverId: String, paneId: String) = (serverId + "|" + paneId).hashCode()
+
+    /**
+     * The request code of one button of one pane's alert (1.4.2): a separate slot for each kind of
+     * button, so a "finished" alert's Reply never rewrites the extras of a question's buttons
+     * (PendingIntents with the same code share them under FLAG_UPDATE_CURRENT).
+     */
+    private fun code(serverId: String, paneId: String, slot: Int) = id(serverId, paneId) * 8 + slot
 
     private fun openIntent(ctx: Context, serverId: String, paneId: String): PendingIntent {
         val i = Intent(ctx, MainActivity::class.java)
@@ -128,20 +150,23 @@ object Notify {
             .setContentIntent(openIntent(ctx, serverId, paneId))
             .setAutoCancel(true)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+        // One set of answer buttons (1.4.2, Bill: the pill-shaped quick replies above the buttons
+        // didn't answer, and the buttons then said the question had changed): the first two choices
+        // and Esc, all through the same checked path. Android shows three buttons, so there is no
+        // Reply box on a question with options; one without options gets Reply to type the answer.
         choices.take(2).forEachIndexed { n, c ->
             val i = Intent(ctx, ActionReceiver::class.java)
                 .putExtra(EXTRA_SERVER, serverId).putExtra(EXTRA_PANE, paneId)
-                .putExtra("keys", c.keys).putExtra("enter", c.pressEnter).putExtra("question", question)
-            val pi = PendingIntent.getBroadcast(ctx, id(serverId, paneId) * 4 + n, i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                .putExtra("keys", c.keys).putExtra("enter", c.pressEnter).putExtra("question", question).putExtra("label", c.label)
+            val pi = PendingIntent.getBroadcast(ctx, code(serverId, paneId, n), i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
             b.addAction(0, c.label.take(24), pi)
         }
         // Esc declines or dismisses the question, the same as the Esc key in the app.
         val esc = Intent(ctx, ActionReceiver::class.java)
             .putExtra(EXTRA_SERVER, serverId).putExtra(EXTRA_PANE, paneId)
             .putExtra("keys", "esc").putExtra("isKey", true).putExtra("question", question)
-        b.addAction(0, "Esc", PendingIntent.getBroadcast(ctx, id(serverId, paneId) * 4 + 3, esc, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
-        // Reply offers every choice as a quick reply (Android shows the first three buttons only).
-        b.addAction(replyAction(ctx, serverId, paneId, agent, choices.map { it.label }, choices, question))
+        b.addAction(0, "Esc", PendingIntent.getBroadcast(ctx, code(serverId, paneId, 3), esc, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
+        if (choices.isEmpty()) b.addAction(replyAction(ctx, serverId, paneId, agent, question = question))
         runCatching { NotificationManagerCompat.from(ctx).notify(id(serverId, paneId), b.build()) }
     }
 
@@ -195,6 +220,24 @@ object Notify {
     fun clear(ctx: Context, serverId: String, paneId: String) {
         NotificationManagerCompat.from(ctx).cancel(id(serverId, paneId))
     }
+
+    /**
+     * The alert after a button was tapped (1.4.2): it says what is being sent, with no buttons, so a
+     * second tap can't race the first; the app replaces it with the outcome or clears it.
+     */
+    fun sending(ctx: Context, serverId: String, paneId: String, title: String, text: String) {
+        if (!allowed(ctx)) return
+        val n = NotificationCompat.Builder(ctx, ATTENTION)
+            .setSmallIcon(R.drawable.ic_notify)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setContentIntent(openIntent(ctx, serverId, paneId))
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
+            .setSilent(true)
+            .build()
+        runCatching { NotificationManagerCompat.from(ctx).notify(id(serverId, paneId), n) }
+    }
 }
 
 /** Receives a notification button and passes it to the app, which answers in the pane. */
@@ -215,13 +258,14 @@ class ActionReceiver : BroadcastReceiver() {
             Notify.clear(context, server, pane)
             return
         }
+        val label = intent.getStringExtra("label").orEmpty()
         AppBus.emit(
             NotifyAction(
                 server, pane, intent.getStringExtra("keys").orEmpty(), intent.getBooleanExtra("enter", false),
-                intent.getStringExtra("question").orEmpty(), intent.getBooleanExtra("isKey", false),
+                intent.getStringExtra("question").orEmpty(), label = label, isKey = intent.getBooleanExtra("isKey", false),
             ),
         )
-        Notify.clear(context, server, pane)
+        Notify.sending(context, server, pane, "Sending your answer", if (label.isNotEmpty()) label else "Esc")
     }
 }
 

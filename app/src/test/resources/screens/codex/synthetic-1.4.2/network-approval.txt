@@ -1,0 +1,7 @@
+  Would you like to allow network access?
+  Host: registry.npmjs.org
+  Reason: The command needs to download packages.
+› 1. Yes, allow this time (y)
+  2. Yes, and don't ask again for this host (a)
+  3. No, and tell Codex what to do differently (esc)
+  Press enter to confirm or esc to cancel
