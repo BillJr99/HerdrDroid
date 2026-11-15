@@ -113,6 +113,12 @@ class MuseStagesTest {
         assertTrue(QuestionLog.sameCard(full, QuestionLog.signature(prompt(tail))))
     }
 
+    @Test fun aStageInsideAQuestionStays() {
+        // From Grok's review: only Muse's trailing lines are cut, not a "Stage" inside a question.
+        fun q(text: String) = com.billmongan.herdrdroid.herdr.Prompt(text, listOf(com.billmongan.herdrdroid.herdr.Choice("Yes", "1", false), com.billmongan.herdrdroid.herdr.Choice("No", "2", false)), "1")
+        assertNotEquals(QuestionLog.signature(q("Deploy Stage 1/2 now?")), QuestionLog.signature(q("Deploy Stage 1/2 later?")))
+    }
+
     @Test fun aShortReadOfAnotherScriptIsAnotherCard() {
         // From Grok's review: a short read of a different script at the same stage is not the same card.
         val body = (1..10).map { "x$it = $it" }

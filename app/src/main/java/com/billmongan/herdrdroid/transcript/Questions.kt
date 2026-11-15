@@ -162,7 +162,8 @@ object QuestionLog {
         listOfNotNull(q.screen?.let { ScreenSnapshot(q.key + ":screen", it, q.at - 1) }, q)
     }
     /** Where Muse's lines under a command begin, in a joined paragraph (1.4.8). */
-    private val TRAILER = Regex("""\bStage\s+\d+\s*/\s*\d+\b|\bCurrent argv:""")
+    // Only at the end, after the script (from Grok's review): a "Stage 1/2" inside a question stays.
+    private val TRAILER = Regex("""\s*\bStage\s+\d+\s*/\s*\d+\s*(?:Current argv:.*)?$|\s*\bCurrent argv:.*$""")
 
     /** Muse Code's "Stage 1/2" under a command it asks about stage by stage (1.4.8). */
     private val STAGE = Regex("""\bStage\s+(\d+)\s*/\s*(\d+)\b""")
