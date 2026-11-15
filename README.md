@@ -6,6 +6,8 @@ The app signs in to the computer over SSH, the way you would from a laptop, and 
 
 HerdrDroid is for people who already run agents under herdr on a computer they can reach (at home, at work, or in the cloud) and want to keep those agents moving from a phone: approving a command, answering a question, or checking whether a long job finished.
 
+> **Experimental software.** HerdrDroid is experimental and provided as is, with no warranty of any kind. It can type into and approve actions in the agents on your computer, so review what you send and use it at your own risk.
+
 ## Contents
 
 - [Features](#features)
@@ -344,4 +346,4 @@ Bug reports and pull requests are welcome. For a question card or an error the a
 
 ## License
 
-HerdrDroid is released under the MIT License; see [LICENSE](LICENSE). The bundled fonts are under the SIL Open Font License; their texts are in `app/src/main/assets/licenses/`.
+HerdrDroid is experimental software, released under the MIT License with no warranty; use it at your own risk. See [LICENSE](LICENSE). The bundled fonts are under the SIL Open Font License; their texts are in `app/src/main/assets/licenses/`.
