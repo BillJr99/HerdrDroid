@@ -81,8 +81,8 @@ class QuestionOrderTest {
             JSONObject().put("k", "t2").put("t", "text").put("text", "no time"))
         val read = TranscriptRead(true, null, "{}", true, false, null, raw, hostNow = T + 20_000)
         val chatNow = CachedChat(emptyList(), "", false, null).withRead(read, T + 20_000)
-        // The log's times, and the app's own for the item without one.
-        assertEquals(mapOf("u1" to T, "t1" to T + 10_000, "t2" to T + 20_000), chatNow.times)
+        // A read from the start (history) takes only the log's times: none is made up for t2.
+        assertEquals(mapOf("u1" to T, "t1" to T + 10_000), chatNow.times)
         val back = ChatCodec.decode(ChatCodec.encode(chatNow))!!
         assertEquals(chatNow.times, back.times)
         // A later read adds its items' times to the ones kept.
@@ -104,10 +104,9 @@ class QuestionOrderTest {
         // Kept and reopened, then the log read again from the start with one new message.
         c = ChatCodec.decode(ChatCodec.encode(c))!!.withRead(read(true, "a", "b", "c", "d"), t0 + 30_000)
         assertEquals(listOf("a", "b", "qg", "c", "d"), keys(QuestionLog.withQuestions(c.items, listOf(q), c.times)))
-        // Earlier messages loaded above them later are older than what was on screen, not newer.
-        val older = CachedChat(raw("x", "y").map { Transcript.toItem(it)!! } + c.items, "", false, null, times = c.times)
-        val stamped = older.copy(times = Transcript.stampSeen(older.times, older.items, t0 + 40_000))
-        assertEquals(listOf("x", "y", "a", "b", "qg", "c", "d"), keys(QuestionLog.withQuestions(stamped.items, listOf(q), stamped.times)))
+        // Earlier messages loaded above them later (history, no times made up) are older than the question.
+        val older = raw("x", "y").map { Transcript.toItem(it)!! } + c.items
+        assertEquals(listOf("x", "y", "a", "b", "qg", "c", "d"), keys(QuestionLog.withQuestions(older, listOf(q), c.times)))
         // The window trimmed to its newest part: the times are still known.
         val trimmed = c.items.drop(1)
         assertEquals(listOf("b", "qg", "c", "d"), keys(QuestionLog.withQuestions(trimmed, listOf(q), c.times)))
@@ -115,8 +114,10 @@ class QuestionOrderTest {
 
     @Test fun aMessageFirstSeenAfterAReloadIsNewer() {
         // A log with times for some items and none for others: the log's times win, the rest are the app's.
-        val mixed = listOf(JSONObject().put("k", "a").put("t", "text").put("text", "a").put("ts", T)) + raw("b")
-        var c = CachedChat(emptyList(), "", false, null).withRead(TranscriptRead(true, null, "{}", true, false, null, mixed), T + 50_000)
+        val first = listOf(JSONObject().put("k", "a").put("t", "text").put("text", "a").put("ts", T))
+        var c = CachedChat(emptyList(), "", false, null).withRead(TranscriptRead(true, null, "{}", true, false, null, first), T + 40_000)
+        // b arrives in a live read with no log time: the app's clock.
+        c = c.withRead(read(false, "b"), T + 50_000)
         assertEquals(T, c.times["a"]); assertEquals(T + 50_000, c.times["b"])
         c = ChatCodec.decode(ChatCodec.encode(c))!!.withRead(read(false, "c"), T + 90_000)
         assertEquals(T + 50_000, c.times["b"])   // kept across the reopen
@@ -165,5 +166,22 @@ class QuestionOrderTest {
         // in the order they were asked, above that screen.
         val shown = QuestionLog.withQuestions(emptyList(), listOf(q("b", T + 2), q("a", T + 1), q("c", T + 3)))
         assertEquals(listOf("a", "b", "c"), keys(shown))
+    }
+    @Test fun secondReviewRules() {
+        // History read in bulk from a log without times makes up no times, so a question settled
+        // before stays below it, not above.
+        var c = CachedChat(emptyList(), "", false, null, agent = "grok").withRead(read(true, "a", "b"), T + 100_000)
+        assertEquals(emptyMap<String, Long>(), c.times); assertEquals(emptyMap<String, Long>(), c.seen)
+        val old = q("old", T + 1_000).copy(doneAt = T + 2_000)
+        assertEquals(listOf("a", "b", "old"), keys(QuestionLog.withQuestions(c.items, listOf(old), c.times, 0L, c.seen)))
+        // Another session (another file) starts its times afresh; its keys start over.
+        c = CachedChat(emptyList(), """{"file":"one.jsonl"}""", false, null)
+            .withRead(TranscriptRead(true, null, """{"file":"one.jsonl"}""", true, false, null, rawFor("c%d", true, 1 to T)), T + 5_000)
+        val other = c.withRead(TranscriptRead(true, null, """{"file":"two.jsonl"}""", true, false, null, rawFor("c%d", true, 1 to T + 500_000)), T + 600_000)
+        assertEquals(T + 500_000, other.times["c1"]); assertEquals(T + 500_000, other.seen["c1"])
+        // Past the cap, the loaded items keep their times.
+        val many = (1..(Transcript.MAX_TIMES + 50)).associate { "old$it" to (T + it) }
+        val items = listOf<Item>(TextItem("live", "x"))
+        assertEquals(T + 9, Transcript.stampSeen(many + ("live" to T + 9), items, T + 1_000_000)["live"])
     }
 }

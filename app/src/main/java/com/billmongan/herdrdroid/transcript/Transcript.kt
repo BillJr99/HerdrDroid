@@ -139,15 +139,26 @@ object Transcript {
             out[k] = mine
             next = mine
         }
-        return if (out.size <= MAX_TIMES) out else out.entries.sortedByDescending { it.value }.take(MAX_TIMES).associate { it.key to it.value }
+        return capped(out, items)
+    }
+
+    /**
+     * [m] within [MAX_TIMES]: every loaded item's time is kept, then the newest of the rest (1.4.3, from
+     * review: dropping by age alone lost the times of loaded items, and of ones Load earlier brings back).
+     */
+    private fun capped(m: Map<String, Long>, items: List<Item>): Map<String, Long> {
+        if (m.size <= MAX_TIMES) return m
+        val loaded = items.mapTo(HashSet()) { it.key }
+        val keep = m.filterKeys { it in loaded }
+        return keep + m.filterKeys { it !in loaded }.entries.sortedByDescending { it.value }.take(maxOf(0, MAX_TIMES - keep.size)).associate { it.key to it.value }
     }
 
     /**
      * [seen] with the time the app first saw each item it hasn't seen before (1.4.3, Bill: "new
      * messages should go below it even if we don't know the timestamp"), on the computer's clock. In a
      * [bulk] read (the log read from the start, or Load earlier) an item may be history the app never
-     * showed, so it takes its log time if that is earlier; an item above ones already seen stays older
-     * than them. In a live read it takes [seenAt] itself, the moment it arrived.
+     * showed, so it takes its log time if that is earlier, and none without one; an item above ones
+     * already seen stays older than them. In a live read it takes [seenAt] itself, the moment it arrived.
      */
     fun markSeen(seen: Map<String, Long>, items: List<Item>, readKeys: Set<String>, logTimes: Map<String, Long>, seenAt: Long, bulk: Boolean): Map<String, Long> {
         // Only the items this read brought: one kept from before 1.4.3 has no first-seen time and
@@ -160,13 +171,22 @@ object Transcript {
             val t = out[k]
             if (t != null) { next = minOf(next, t); continue }
             if (k !in readKeys) continue
-            var mine = if (bulk) minOf(seenAt, logTimes[k] ?: seenAt) else seenAt
+            // History read in bulk (from the start, or Load earlier) was not seen arriving: it takes its
+            // log time, and with none it stays without a first-seen time (1.4.3, from review: stamping it
+            // "now" put it after questions settled long before).
+            var mine = if (bulk) (logTimes[k]?.let { minOf(seenAt, it) } ?: continue) else seenAt
             if (bulk && next != Long.MAX_VALUE) mine = minOf(mine, next - 1)
             out[k] = mine
             next = minOf(next, mine)
         }
-        return if (out.size <= MAX_TIMES) out else out.entries.sortedByDescending { it.value }.take(MAX_TIMES).associate { it.key to it.value }
+        return capped(out, items)
     }
+
+    /** Which session and file a cursor reads (1.4.3): a reset to another one starts its times afresh. */
+    fun sessionOf(cursor: String): String = runCatching {
+        val o = JSONObject(cursor)
+        listOf("file", "sid", "db", "pin", "pin_sid").joinToString("|") { o.optString(it) }
+    }.getOrDefault("")
 
     /** The keys of a read's raw items. */
     fun keysOf(raw: List<JSONObject>): Set<String> = raw.mapNotNull { it.optString("k").ifEmpty { null } }.toHashSet()

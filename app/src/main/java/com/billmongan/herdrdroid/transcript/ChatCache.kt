@@ -32,14 +32,19 @@ data class CachedChat(
  */
 fun CachedChat.withRead(r: TranscriptRead, seenAt: Long = System.currentTimeMillis()): CachedChat {
     val cj = runCatching { JSONObject(r.cursor) }.getOrNull()
-    // Times are kept across a reset too (1.4.3): an item seen before keeps the time it was first seen.
-    val logged = times + Transcript.timesOf(r.items)
+    // Times are kept across a reset of the same session (1.4.3): an item seen before keeps the time it
+    // was first seen. Another session or file starts afresh, since its keys start over (from review).
+    val same = !r.reset || Transcript.sessionOf(cursor) == Transcript.sessionOf(r.cursor)
+    val oldTimes = if (same) times else emptyMap()
+    val oldSeen = if (same) seen else emptyMap()
+    val logged = oldTimes + Transcript.timesOf(r.items)
     val next = if (r.reset) CachedChat(Transcript.merge(emptyList(), r.items, true), r.cursor, r.more, r.title ?: title,
         cj?.optLong("start", -1L) ?: -1L, cj?.optString("file")?.ifBlank { null }, agent, logged)
     else copy(items = if (r.items.isEmpty()) items else Transcript.merge(items, r.items, false), cursor = r.cursor, title = r.title ?: title,
         times = logged)
-    return next.copy(times = Transcript.stampSeen(next.times, next.items, seenAt, Transcript.keysOf(r.items)),
-        seen = Transcript.markSeen(seen, next.items, Transcript.keysOf(r.items), Transcript.timesOf(r.items) + times, seenAt, bulk = r.reset))
+    // A bulk read (from the start) makes up no times: only a live read's new items take the app's clock.
+    return next.copy(times = if (r.reset) next.times else Transcript.stampSeen(next.times, next.items, seenAt, Transcript.keysOf(r.items)),
+        seen = Transcript.markSeen(oldSeen, next.items, Transcript.keysOf(r.items), logged, seenAt, bulk = r.reset))
 }
 
 /** Turns a [CachedChat] into the JSON kept on the phone and back. The items use the reader's own format. */

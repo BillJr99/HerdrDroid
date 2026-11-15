@@ -243,9 +243,10 @@ object QuestionLog {
             if (m != null) left.remove(m)
             asks[it.key] = if (m != null) merge(asked, m) else asked
         }
-        // Each item's time, carried forward over items that have none.
+        // Each item's time, carried forward over items that have none. Items before the first known
+        // time (history read in bulk from a log without times) count as older than any question.
         val eff = LongArray(items.size)
-        var last = Long.MIN_VALUE
+        var last = Long.MIN_VALUE + 1
         items.forEachIndexed { i, it -> times[it.key]?.let { t -> if (t > last) last = t }; eff[i] = last }
         val timed = items.any { times[it.key] != null }
         val index = HashMap<String, Int>(items.size * 2).also { m -> items.forEachIndexed { i, it -> m[it.key] = i } }

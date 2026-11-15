@@ -1481,7 +1481,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         persistChat(sid, p.id, next)
     }
 
-    private fun mergeRead(c: CachedChat, r: com.billmongan.herdrdroid.transcript.TranscriptRead) = c.withRead(r, seenNow())
+    /** Folds a background read in, its computer clock noted first so the app's own times use it (1.4.3, from review). */
+    private fun mergeRead(c: CachedChat, r: com.billmongan.herdrdroid.transcript.TranscriptRead): CachedChat {
+        noteHostClock(r)
+        return c.withRead(r, seenNow())
+    }
 
     /** Now on the open server's computer clock: the app's own time for items its log gives none (1.4.3). */
     private fun seenNow(): Long = System.currentTimeMillis() - hostOffsetMs()
@@ -1570,13 +1574,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             return
         }
+        // Another session or file starts its times afresh: its keys start over (1.4.3, from review).
+        if (r.reset && Transcript.sessionOf(transcriptCursor) != Transcript.sessionOf(r.cursor)) {
+            transcriptTimes = emptyMap(); transcriptSeen = emptyMap()
+        }
         transcriptCursor = r.cursor
         noteHostClock(r)
         if (r.reset || r.items.isNotEmpty()) {
             transcriptItems = Transcript.merge(transcriptItems, r.items, r.reset)
-            // Log times where the log has them; otherwise when the app first saw the item, kept
-            // across reloads (a reset keeps the times already known) (1.4.3).
-            transcriptTimes = Transcript.stampSeen(transcriptTimes + Transcript.timesOf(r.items), transcriptItems, seenNow(), Transcript.keysOf(r.items))
+            // Log times where the log has them; otherwise, for a live read's new items, when the app
+            // first saw them, kept across reloads. A bulk read makes none up (1.4.3).
+            val logged = transcriptTimes + Transcript.timesOf(r.items)
+            transcriptTimes = if (r.reset) logged else Transcript.stampSeen(logged, transcriptItems, seenNow(), Transcript.keysOf(r.items))
             transcriptSeen = Transcript.markSeen(transcriptSeen, transcriptItems, Transcript.keysOf(r.items), transcriptTimes, seenNow(), bulk = r.reset)
         }
         if (r.reset) {
@@ -1652,7 +1661,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val older = Transcript.merge(emptyList(), r.items, true)
                 val have = transcriptItems.map { it.key }.toSet()
                 transcriptItems = older.filter { it.key !in have } + transcriptItems
-                transcriptTimes = Transcript.stampSeen(Transcript.timesOf(r.items) + transcriptTimes, transcriptItems, seenNow(), Transcript.keysOf(r.items))
+                transcriptTimes = Transcript.timesOf(r.items) + transcriptTimes
                 transcriptSeen = Transcript.markSeen(transcriptSeen, transcriptItems, Transcript.keysOf(r.items), transcriptTimes, seenNow(), bulk = true)
                 transcriptStart = runCatching { org.json.JSONObject(r.cursor).optLong("start", 0L) }.getOrDefault(0L)
                 transcriptMore = r.more
