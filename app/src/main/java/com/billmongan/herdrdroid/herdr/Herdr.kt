@@ -1315,6 +1315,8 @@ private val CODE_LINE = Regex("""^(val|var|let|const|def|fun|function|func|fn|re
 private val MUSE_CARD_FOOTER = Regex("""^\s*Change approval defaults in /permissions\s*$""", RegexOption.IGNORE_CASE)
 /** What Muse prints under a command it asks about: "Stage 1/2", "Current argv: [...]" (1.4.8). */
 private val CMD_TRAILER = Regex("""^(Stage\s+\d+\s*/\s*\d+|Current argv:)""")
+/** At most this many lines with text under a live card's last option (1.4.9). */
+private const val MAX_UNDER_CARD = 8
 /** Codex's approval footer (1.4.2). */
 private val CODEX_FOOTER = Regex("""Press enter to confirm or esc to cancel""", RegexOption.IGNORE_CASE)
 /** An option's own one-letter key at the end of its label, "(y)" (1.4.2). */
@@ -1669,7 +1671,12 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     // first, second, then, but they weren't mutually exclusive options").
     val vibeCard = lines.takeLast(6).any { VIBE_CARD_FOOTER.containsMatchIn(it) }
     val realMenu = run.any { it.first in marked } || showsQuestionDialog(text) || vibeCard
-    if (numbered.size in 2..20 && realMenu) {
+    // A card is at the bottom of the screen: under its last option only a few lines (a description,
+    // a footer, the card's frame). A card with more under it is an old one left in the scrollback
+    // after it was answered (1.4.9, Bill: "Grok is stuck on another fake question box"): Grok's
+    // "(●)" stays drawn there, so it looked like a live question while Grok was back at work.
+    val underCard = run.lastOrNull()?.let { (at, _, _) -> lines.drop(at + 1).count { clean(it).any(Char::isLetterOrDigit) } } ?: 0
+    if (numbered.size in 2..20 && realMenu && underCard <= MAX_UNDER_CARD) {
         // Vibe draws no marker on the highlighted row; a fresh card highlights the first one.
         val selected = run.firstOrNull { it.first in marked }?.second ?: if (vibeCard) "1" else null
         val multi = numbered.count { isCheckbox(it.label) } >= 2
