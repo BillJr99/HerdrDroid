@@ -105,6 +105,34 @@ class MuseStagesTest {
         assertEquals(false, QuestionLog.sameCard(cut, next))
     }
 
+    @Test fun aShortReadOfAnotherScriptIsAnotherCard() {
+        // From Grok's review: a short read of a different script at the same stage is not the same card.
+        val body = (1..10).map { "x$it = $it" }
+        val full = QuestionLog.signature(prompt(script(body, "1/1")))
+        val other = QuestionLog.signature(prompt(script((1..10).map { "y$it = ${it * 7}" }, "1/1", withTop = false)))
+        assertEquals(false, QuestionLog.sameCard(full, other))
+    }
+
+    @Test fun aWrappedLineDoesNotEndTheScript() {
+        // A long line wraps with no "│" (the path list in Bill's card); the lines after it are still the script.
+        fun card(last: String) = buildString {
+            appendLine(rule); appendLine("Would you like to run the following command?"); appendLine()
+            appendLine("  $ python3 - <<'PY'")
+            appendLine("  │ for label,p in")
+            appendLine("    [(\"a\",\"/home/user/a.cast\"),(\"b\",\"/home/user/b.cast\")]:")
+            appendLine("  │     $last")
+            appendLine("  │ PY")
+            appendLine("  Stage 1/1")
+            appendLine()
+            appendLine("⟩ 1. Allow this stage once (y)")
+            appendLine("  2. Abort the entire command (esc)")
+            appendLine("Change approval defaults in /permissions")
+        }
+        val a = QuestionLog.signature(prompt(card("print(label)")))
+        val b = QuestionLog.signature(prompt(card("print(p)")))
+        assertEquals(false, QuestionLog.sameCard(a, b))
+    }
+
     @Test fun anotherCommandIsANewQuestion() {
         val a = prompt(card("git status", null))
         val b = prompt(card("git diff --stat", null))

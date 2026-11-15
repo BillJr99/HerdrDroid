@@ -175,9 +175,17 @@ object QuestionLog {
             val ha = a.substringAfterLast("|h=", ""); val hb = b.substringAfterLast("|h=", "")
             if (a.substringBeforeLast("|h=") == b.substringBeforeLast("|h=") && (ha.isEmpty() || hb.isEmpty())) return true
         }
+        // One read with the command and one that missed its "$" line (a tall card, a short read): the
+        // same stage and options, and the short read's first line is part of that command (from Grok's review).
         val ta = a.substringAfter("|st=", "").substringBeforeLast("|h="); val tb = b.substringAfter("|st=", "").substringBeforeLast("|h=")
-        if (ta.isEmpty() || ta != tb || ta.startsWith("|")) return false
-        return a.take(2) != b.take(2)
+        if (ta.isEmpty() || ta != tb) return false
+        val (c, q) = when {
+            a.startsWith("c:") && b.startsWith("q:") -> a to b
+            a.startsWith("q:") && b.startsWith("c:") -> b to a
+            else -> return false
+        }
+        val shown = q.removePrefix("q:").substringBefore("|st=").take(30)
+        return shown.length >= 8 && c.removePrefix("c:").substringBefore("|st=").contains(shown)
     }
 
     /** A question seen again this soon after it was settled is the same one (the screen redrew), not a new one. */
@@ -198,7 +206,7 @@ object QuestionLog {
         // questions): a tall card's heading can scroll off the read window and come back.
         val cmd = parts.blocks.filter { it.kind == com.billmongan.herdrdroid.herdr.QKind.COMMAND }.joinToString(" ") { it.text }.takeIf { it.isNotBlank() }
         // The heading goes last, as a question only ("?"), so a read that missed it still matches (see [sameCard]).
-        if (cmd != null) return "c:" + norm(cmd).take(400) + tail + "|h=" + norm(parts.heading?.takeIf { it.trimEnd().endsWith("?") }.orEmpty()).take(80)
+        if (cmd != null) return "c:" + norm(cmd).take(4000) + tail + "|h=" + norm(parts.heading?.takeIf { it.trimEnd().endsWith("?") }.orEmpty()).take(80)
         return "q:" + norm(parts.heading ?: p.question) + tail
     }
 

@@ -1085,7 +1085,9 @@ fun questionParts(lines: List<QLine>): QuestionParts {
             continue
         }
         val dollar = Regex("""^\$\s+(.+)$""").find(t)
-        val goesOn = dollarBlock && !l.gapBefore && l.bar && paras.lastOrNull()?.cmd == true
+        // Every line after it up to a blank line, the "│" lines and the wrapped ones alike (from Grok's
+        // review), except Muse's own "Stage 1/2" and "Current argv: [...]" under the command.
+        val goesOn = dollarBlock && !l.gapBefore && paras.lastOrNull()?.cmd == true && !CMD_TRAILER.containsMatchIn(t)
         val isCmd = l.cmd || dollar != null || cmdNext || goesOn
         cmdNext = false
         dollarBlock = dollar != null || goesOn
@@ -1311,6 +1313,8 @@ private val ASKING_SENTENCE = Regex("""^[\p{L}"'(][^{}=;<>`]*\s\S+\s[^{}=;<>`]*\
 private val CODE_LINE = Regex("""^(val|var|let|const|def|fun|function|func|fn|return|import|public|private|class|type)\b|:\s*[A-Z]\w*(<[^>]*>)?\?$""")
 /** The line under Muse Code's approval options (1.4.7). */
 private val MUSE_CARD_FOOTER = Regex("""^\s*Change approval defaults in /permissions\s*$""", RegexOption.IGNORE_CASE)
+/** What Muse prints under a command it asks about: "Stage 1/2", "Current argv: [...]" (1.4.8). */
+private val CMD_TRAILER = Regex("""^(Stage\s+\d+\s*/\s*\d+|Current argv:)""")
 /** Codex's approval footer (1.4.2). */
 private val CODEX_FOOTER = Regex("""Press enter to confirm or esc to cancel""", RegexOption.IGNORE_CASE)
 /** An option's own one-letter key at the end of its label, "(y)" (1.4.2). */
