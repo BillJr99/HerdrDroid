@@ -978,6 +978,8 @@ data class QLine(val text: String, val cmd: Boolean = false, val gapBefore: Bool
 private val TAB_ITEM = Regex("""([☐☒✔✓☑])\s*([^☐☒✔✓☑←→]+)""")
 /** "Reason: …", "Environment: local", "Read: /path": a labelled line of context, never the heading. */
 private val LABEL_LINE = Regex("""^[A-Z][A-Za-z ]{0,24}:\s""")
+/** A piece of a path that ends in a file extension: "culus.json", "8.json". */
+private val FILE_END = Regex("""\.[A-Za-z0-9]{1,8}$""")
 /** The rest of a wrapped path: no spaces, and path characters in it (1.4.2, from review: not a status word). */
 private val PATH_PIECE = Regex("""^[^\s]*[/._\-~][^\s]*$""")
 /** A label whose value is a path, address or tool name, shown in a monospace block (1.4.2). */
@@ -1069,8 +1071,10 @@ fun questionParts(lines: List<QLine>): QuestionParts {
             continue
         }
         // A long path wrapped onto the next line goes on in its block (1.4.2).
+        // The rest of a path wrapped at the terminal's width: a piece with a slash or a file extension,
+        // not a new path of its own (starting with / or ~) after a path that already ended (1.4.2, from review).
         if (last != null && last.inPlace && !l.gapBefore && PATH_PIECE.matches(t) && !LABEL_LINE.containsMatchIn(t) &&
-            (last.text.last() in "/-_." || t.first() in "/.~")) { last.text += t; continue }
+            (t.contains('/') || FILE_END.containsMatchIn(t)) && (t.first() !in "/~" || last.text.endsWith("/"))) { last.text += t; continue }
         // Grok's title ("Check SSH to demo-box: grok usage ...") came joined to its command before.
         // A capitalised line after a "Label: …" line is a new sentence ("Reason: outside workspace"
         // over "Allow access to this file?"); a wrapped label line goes on in lower case.
@@ -1338,12 +1342,14 @@ fun detectAgentError(text: String): String? {
         val l = raw.trim().trim('│', '┃', '|', ' ').trim()
         val mine = YOUR_LINE.containsMatchIn(l)
         val marked = !mine && (ERROR_MARK.containsMatchIn(l) || AGENT_OWN_ERROR.containsMatchIn(l) || ERROR_LEAD.containsMatchIn(l))
-        if (marked || (carry && !mine)) for ((pattern, summary) in AGENT_ERRORS) if (pattern.containsMatchIn(l)) found += summary
-        carry = marked
+        var added = false
+        if (marked || (carry && !mine)) for ((pattern, summary) in AGENT_ERRORS) if (pattern.containsMatchIn(l)) { found += summary; added = true }
+        // The next line continues an error only after a line that named one (1.4.2, from review).
+        carry = marked && added
     }
     // A crash counts only when the shell's prompt is back at the bottom: the agent itself is gone
     // (1.4.2, from review: a traceback the agent shows from your program is not its crash).
-    val rows = all.map { it.trim() }
+    val rows = all.filter { r -> r.trimStart().firstOrNull()?.let { it in "│┃|╭╰┌└├" } != true }.map { it.trim() }
     if (rows.lastOrNull()?.let { SHELL_PROMPT.containsMatchIn(it) } == true &&
         rows.dropLast(1).any { r -> !YOUR_LINE.containsMatchIn(r) && AGENT_CRASHES.any { (p, _) -> p.containsMatchIn(r) } }) {
         found += "the agent crashed"; found += "the agent exited"
@@ -1352,7 +1358,7 @@ fun detectAgentError(text: String): String? {
 }
 
 /** A line that opens with an error itself: "Rate limit exceeded", "429 Too Many Requests", "503 Service Unavailable" (1.4.2, from review). */
-private val ERROR_LEAD = Regex("""^\W{0,3}(Rate limit (exceeded|reached)|[45]\d\d [A-Z][a-z]+( [A-Z][a-z]+)*\b|Usage limit (reached|exceeded)|Out of credits|Insufficient (credits|balance)|Connection (lost|reset|refused|closed))""")
+private val ERROR_LEAD = Regex("""^\W{0,3}(Rate limit (exceeded|reached)|429 Too Many Requests|Too Many Requests|5\d\d (Internal Server Error|Service Unavailable|Bad Gateway|Gateway Time-?out)|402 Payment Required|Usage limit (reached|exceeded)|Out of credits|Insufficient (credits|balance)|Connection (lost|reset|refused|closed))\b""", RegexOption.IGNORE_CASE)
 
 /** Your own lines: the echo of what you typed, or the input box. */
 private val YOUR_LINE = Regex("""^(>|❯|›|»)(\s|$)""")

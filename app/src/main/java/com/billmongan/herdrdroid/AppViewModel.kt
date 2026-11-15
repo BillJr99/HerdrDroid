@@ -2463,7 +2463,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         // pane may have redrawn.
         val key = "${a.serverId}|${a.paneId}|${a.question.filterNot { it.isWhitespace() }}"
         val at = notifyAnswered[key]
-        if (at != null && System.currentTimeMillis() - at < 15_000) return
+        if (at != null && System.currentTimeMillis() - at < 15_000) {
+            // Already answered: the alert says so rather than staying on "Sending" (1.4.2, from review).
+            Notify.sending(app, a.serverId, a.paneId, "Answered", "This question was already answered.")
+            return
+        }
         answerFromNotificationNow(h, a, app, serverLabel) { notifyAnswered[key] = System.currentTimeMillis() }
     }
 
@@ -2476,6 +2480,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             runCatching {
                 val p = h.panes().firstOrNull { it.id == a.paneId } ?: return
                 h.sendMessage(p, a.keys)
+                answered()
                 withContext(Dispatchers.Main) { noteAnswer(a.paneId, null, a.keys, a.serverId) }  // after the send
                 if (a.serverId == current?.id && transcriptPane == a.paneId) lastSent = a.paneId to a.keys
             }.onFailure {

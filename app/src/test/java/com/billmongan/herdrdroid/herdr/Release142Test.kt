@@ -161,4 +161,16 @@ class Release142Test {
         val text = "  Would you like to make the following edits?\n  Destination: /tmp/foo\n  Done.\n› 1. Yes, proceed (y)\n  2. No, and tell Codex what to do differently (esc)\n  Press enter to confirm or esc to cancel"
         assertEquals("/tmp/foo", detectPrompt(text, blocked = true, agent = "codex")!!.shownParts().blocks.first { it.kind == QKind.COMMAND }.text)
     }
+    @Test fun thirdReviewRules() {
+        fun dest(a: String, b: String) = detectPrompt("  Would you like to make the following edits?\n  Destination: $a\n  $b\n› 1. Yes, proceed (y)\n  2. No, and tell Codex what to do differently (esc)\n  Press enter to confirm or esc to cancel",
+            blocked = true, agent = "codex")!!.shownParts().blocks.first { it.kind == QKind.COMMAND }.text
+        assertEquals("/out/lambdacalculus.json", dest("/out/lambdacal", "culus.json"))
+        assertEquals("/tmp/foo", dest("/tmp/foo", "/etc/hosts"))
+        // Lower-case and capitalised lead phrases both count; a 404 doesn't carry a sign-in error over.
+        assertEquals("model rate-limited", detectAgentError("output\nrate limit exceeded"))
+        assertTrue(detectAgentError("429 TOO MANY REQUESTS")!!.contains("model rate-limited"))
+        assertEquals(null, detectAgentError("404 Not Found\nlog in again later"))
+        // A boxed traceback is content, even with a shell prompt under it.
+        assertEquals(null, detectAgentError("│ Traceback (most recent call last): │\n│ unhandled exception │\nbill@host:~$"))
+    }
 }

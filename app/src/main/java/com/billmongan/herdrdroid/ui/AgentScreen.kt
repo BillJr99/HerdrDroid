@@ -243,7 +243,8 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
         else if (vm.paneReadProblem != null) (if (status == Status.NEEDS_YOU) Prompt("This agent is waiting for you.", emptyList()).forCard() else null)
         else detectPrompt(screenText, status == Status.NEEDS_YOU, pane?.agent, vm.versionOf(paneId))?.forCard()
     // An agent's error on screen (1.4.2): shown as a banner when there is no question.
-    val agentError: String? = remember(screenText) { com.billmongan.herdrdroid.herdr.detectAgentError(screenText) }.takeIf { prompt == null }
+    // Not from the last screen while the latest read failed (1.4.2, from review).
+    val agentError: String? = remember(screenText) { com.billmongan.herdrdroid.herdr.detectAgentError(screenText) }.takeIf { prompt == null && vm.paneReadProblem == null }
     // The terminal (and screen) view follows new output only while you are at the bottom; once you
     // scroll up it stays where you put it, through updates and view switches (1.2.7; before, every
     // update jumped to the bottom). "Latest" below brings it back.
@@ -1071,7 +1072,12 @@ internal fun PromptCard(
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 // The fallback card (1.4.0): the screen looked like a question no parser understood, so
                 // the card shows that part of the screen and generic keys instead of choices.
-                p.region?.takeIf { p.choices.isEmpty() }?.let { region ->
+                // The screen couldn't be read: say so and offer the terminal, but no keys, which would go
+                // into a screen nobody has seen (1.4.2, from review).
+                val unread = p.choices.isEmpty() && p.region == listOf(com.billmongan.herdrdroid.herdr.UNREAD_SCREEN)
+                if (unread) Text("The app couldn't read this pane's screen yet. Tap Show terminal to see the last screen it read, or open it at the computer.",
+                    color = Palette.Muted, fontSize = 12.5.sp)
+                p.region?.takeIf { p.choices.isEmpty() && !unread }?.let { region ->
                     Text(if (region == listOf(com.billmongan.herdrdroid.herdr.UNREAD_SCREEN)) "The app couldn't read this pane's screen yet; the keys below still go to it:"
                         else "The app couldn't read this question's options, so here is the screen and the keys to answer it:",
                         color = Palette.Muted, fontSize = 12.5.sp)
@@ -1127,7 +1133,7 @@ internal fun PromptCard(
                     }
                 }
             }
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (!(p.choices.isEmpty() && p.region == listOf(com.billmongan.herdrdroid.herdr.UNREAD_SCREEN))) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 KeyButton("Esc") { onKey("esc") }
                 KeyButton("Tab") { onKey("tab") }
                 KeyButton("Shift+Tab") { onKey("shift+tab") }

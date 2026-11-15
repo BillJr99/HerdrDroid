@@ -1,108 +1,130 @@
 # HerdrDroid
 
-HerdrDroid is an Android app for talking to the coding agents in a [herdr](https://github.com/herdrdev/herdr) session from a phone. It signs in to the computer running herdr over SSH, with a key, a password, or both, and every tap becomes one `herdr` command on that computer. Nothing is installed on the computer and no new network port is opened, because the app uses the SSH server that is already there.
+HerdrDroid is an Android app for working with the coding agents in a [herdr](https://github.com/herdrdev/herdr) session from your phone. herdr runs several terminal agents (Claude Code, Codex, Grok, Copilot CLI and others) side by side on one computer; HerdrDroid lets you read what each one is doing, answer its questions, and send it work while you are away from that computer.
 
-## What it does
+The app signs in to the computer over SSH, the way you would from a laptop, and every tap becomes one `herdr` command there. Nothing is installed on the computer and no new network port is opened, because the app uses the SSH server that is already running. Your chats, settings and keys stay on the phone, sealed with keys in the Android Keystore.
 
-- **Servers.** You add each computer yourself: a name, its address, its SSH port, your username, and the command that runs herdr there (for example `herdr` or `~/.local/bin/herdr`). Nothing is filled in for you, so the app works with any herdr server you can reach.
-- **All tabs.** Every herdr pane is a card with its agent and working folder ("Claude · claude"), its status (Needs you, Working, Done, Idle), the model it is running, and the last line it printed. A tab that is waiting on you has an orange border and sorts to the top. The list refreshes every three seconds.
-- **Talking to an agent.** Tap a card to see the pane's recent output and send it a message. Messages to an agent go through `herdr agent prompt`, which submits text the way the agent expects. Other panes get the text and Enter.
-- **Reading the screen.** The default **Chat** view reads like a messaging app. The app joins the lines the agent wrapped at the terminal's width back into paragraphs, so they wrap again at the phone's width, with bullets and numbers hanging in their own column. Messages you sent appear as bubbles on the right. Tables, boxes and column-aligned output keep their exact layout in a monospace strip that scrolls sideways, and full-width rules become thin dividers. Scrollbars, right-hand clocks and side panels (such as OpenCode's) are left out, and the agent's own input box and status line move to a small footer. The replies use a reading font you choose in Settings: Inter (sans, the default), Source Serif, or JetBrains Mono. Pinch with two fingers to change the text size, which is remembered for each server. **Terminal** shows the exact screen, unwrapped, in JetBrains Mono.
-- **Keys.** Two rows that always fit the screen: **Ctrl**, **Alt** and the four arrows (side by side, like a keyboard's arrow cluster) on top, then Esc, Tab, Backspace, Enter and Ctrl+C (after you confirm). **Keys** in the message box hides or shows them, and the choice is remembered. **Ctrl** and **Alt** work like a phone terminal's extra keys: tap one and it applies to the next key, so Ctrl then R sends Ctrl+R (a letter typed on the keyboard counts as the next key); long-press one and it stays held until you tap it again. They combine with each other and with the other keys, for example Ctrl+Alt+↑.
-- **An agent needs you.** When herdr reports an agent as blocked, or the bottom of the screen shows a numbered menu or a `(y/n)` question, the app shows the question with one button per answer. Each button says exactly which keys it sends.
-- **Answer types (1.4.0).** A card handles every kind of answer the agents offer:
-  - a checkbox list (several options can be picked): each option toggles its box with Space, and Enter or the agent's Submit option sends them;
-  - an "Other" or "Type something." option: the app moves to it, then sends what you type there;
-  - options that grant standing permission ("always allow", "don't ask again", "trust", "for the rest of this session") carry a caution under the button.
-- **The fallback card (1.4.0).** When the screen looks like a question (herdr says the agent waits, or a question footer such as "Enter to select · Esc to cancel" shows) but none of the app's parsers can read its options, the card shows that part of the screen as it is, with generic keys: the option numbers it can see, ↑, ↓, Space, Enter, Esc, Tab and "Type a different answer".
-- **Never typing into a busy pane (1.4.0).** Before a message goes into a pane, the app reads the pane's input line. If text is already typed there at the computer, or someone typed in it in the last 4 seconds, the message is held instead of typed over it, and the app says why. Resend sends it anyway. A pane waiting on a question is answered, not typed into, so it is never held.
-- **Codex's edit card, and no empty card (1.4.2).** Codex's "Would you like to make the following edits?" card shows its question, its Description, and the file in a monospace block, and each option sends its own key ("(y)", "(a)", Esc). A card never shows empty: when the app sees a question but can't read its options, or can't read the screen at all, it shows that part of the screen (or says the screen couldn't be read) with generic keys. Every card has **Show terminal**, and the terminal view says why when a pane's screen can't be read instead of "Loading…". Screens are read on their own channel, so a long command (a big session log being read) no longer holds them up.
-- **Agent errors are a banner, not a question (1.4.2).** When an agent stops on an error (a rate limit or 429, a usage limit or quota, out of credits or 402, a provider or 5xx error, an overloaded model, a lost connection, a sign-in that expired, a full context window or a failed compaction, or a crash that left the shell's prompt back), the pane shows a banner naming it, with **Show terminal**, and the watcher sends one "stopped on an error" alert. This covers every agent the app supports (Claude, Codex, Grok, Copilot, Antigravity, Kiro, Vibe, pi, omp, opencode and Hermes). Only the bottom of the screen counts, and only a line that reads as an error (an error mark or word, or the agent's own message), so a conversation about rate limits shows nothing. A real question on screen still gets its card. herdr's "blocked" status alone, with nothing on screen that asks, gets no card and no alert.
-- **One set of buttons on a question alert (1.4.2).** A question's notification has the first two options and Esc, nothing else: the pill-shaped quick replies above them are gone (they didn't answer, and left the buttons saying the question had changed). A tapped button turns the alert into "Sending your answer", then "Answered", so a second tap can't race the first. A button answers only if the same question, with the same option, is still on screen.
-- **Kiro's chat (1.4.1).** The chat view reads Kiro CLI's session log (`~/.kiro/sessions/cli/<id>.jsonl`, the session whose `<id>.json` names the pane's folder): your prompts, Kiro's replies and thinking, and each tool call with its result. Only those record kinds are read, by their keys. Pi, omp, opencode and Hermes have had their logs read since earlier releases; Antigravity has none the app can read.
-- **What 1.4.1 tightened (from a code review of 1.4.0).** The send guard holds a message when the pane's screen can't be read first, and only the composer's own row (in its box, or just above a short footer, colour codes taken out) counts as typed text, so a quoted or diff "> " line in the output is not. When that row is a menu's highlighted option (Kiro's approval card), the app says a question is open instead. The caution under a standing permission is not shown on a refusal ("No, don't trust this"). A held typed answer is recorded in the question history once Resend delivers it. Agent versions are read all at once in under 10 seconds without holding up pane reads, and a prerelease (2.0.0-rc1) counts as older than its release. A failed check for running processes keeps the last list. Opening the app ends a long background reconnect wait at once.
-- **Each kept chat belongs to its pane (1.4.1).** A kept chat or question file's seal carries its server, pane and kind as associated data, so a file in another pane's place fails to open (and is set aside) instead of showing the wrong chat, and its name ends in a SHA-256 prefix of the ids rather than a short hash two ids could share. A file under the 1.4.0 name is opened, written under the new name and seal, read back, and only then removed; an interruption at any step keeps the old file for the next try. While the new file can't be opened (the phone locked, a read error), the old one is read instead and nothing is removed, and a save removes the old file only once the new one reads back the same.
-- **Debug bundle (1.4.0).** **Copy debug bundle** and **Share debug bundle** in an agent's menu put that pane's state on the phone's clipboard or share sheet: the app version, the agent and its version, status and scroll offset, the parser's decision on the last screen, the chat's cursor, the question records, the pane's recent diagnostic lines and its last screen. API keys, tokens, private keys, passwords, web addresses and e-mail addresses are taken out first. Nothing is written on the computer.
-- **Questions stay in the chat (1.3.0).** Every question an agent asks is kept in that agent's chat history as plain text, not a card: who asked and how it ended ("answered", "answered elsewhere", "dismissed"), the question (each step of Claude's multi-question dialog in turn, with the step names), any command it shows, the options offered, and your answer marked "(your answer)", or "Your answer: ..." for one you typed. A question answered in the terminal or another app is kept as "answered elsewhere" with no answer filled in, unless the agent's own log recorded it (Claude's AskUserQuestion), in which case the log's answer is shown and the two are one entry. A question that went away while the agent did not go back to work is "dismissed". Antigravity, whose log the app can't read (its conversations are stored in a binary format with no published layout), keeps its questions above the screen view. Kiro's chat is read from its own session log since 1.4.1. The history is kept on the phone beside the chat, sealed with the same Keystore key, and goes when the pane closes or its agent changes; nothing is written on the computer. It is in the Markdown export too.
+HerdrDroid is for people who already run agents under herdr on a computer they can reach (at home, at work, or in the cloud) and want to keep those agents moving from a phone: approving a command, answering a question, or checking whether a long job finished.
 
-The version number is shown beside the name on the server list and at the end of the status line on the tabs screen.
+## Contents
 
-## Staying connected
+- [Features](#features)
+- [Supported agents](#supported-agents)
+- [Requirements](#requirements)
+- [Installing](#installing)
+- [First setup](#first-setup)
+- [Security and privacy](#security-and-privacy)
+- [SSH over a WebSocket](#ssh-over-a-websocket)
+- [Usage limits](#usage-limits)
+- [How the app treats the panes](#how-the-app-treats-the-panes)
+- [How each action maps to herdr](#how-each-action-maps-to-herdr)
+- [Building from source](#building-from-source)
+- [Tests](#tests)
+- [Troubleshooting](#troubleshooting)
+- [Version history](#version-history)
+- [Project layout](#project-layout)
+- [Contributing](#contributing)
+- [License](#license)
 
-When the phone sleeps or the app goes to the background, Android drops the SSH socket. HerdrDroid stops polling while it is in the background, and when it comes back it opens a fresh connection before polling again. Until then the top bar says **Reconnecting…** in grey; nothing else changes on screen.
+## Features
 
-- A dropped connection never shows a banner by itself. Previews, screen reads and refreshes that fail because of it are retried quietly, with 1, 2, 4 and then 8 seconds between tries.
-- Keys, messages and answers you send while it's reconnecting wait in a queue (the top bar shows how many) and go out in order once the link is back.
-- A banner appears only for something you have to act on: still unreachable after 15 seconds (with a **Retry** button), a refused sign-in, a changed host key, or a herdr command that itself failed.
+### Servers and agents
 
-## Models
+- **Servers.** You add each computer yourself: a name, its address, its SSH port, your username, and the command that runs herdr there (for example `herdr` or `~/.local/bin/herdr`). The app works with the herdr terminal app and with herdr-core (the Herdr App); it uses whichever is running and asks once if both are.
+- **All agents at a glance.** Every herdr pane is a card with its agent and folder, its status (Needs you, Working, Done, Idle), the model it runs, its usage, and the last line it printed. A pane waiting on you has an orange border and sorts to the top. A drawer lists every agent on every saved server, grouped by status, so you can jump between them.
+- **Starting and closing sessions.** **New session** starts an agent in a folder you choose on the computer; **Close session** ends one.
 
-Terminal glyphs the app's fonts cannot draw are swapped for plain ones before anything is shown, so Claude Code's "⏵⏵ auto mode on" reads "» auto mode on" and "⏸ plan mode on" reads "‖ plan mode on" (`forPhone` in `herdr/Herdr.kt`). Without this, Android drew them from a fallback font, and they came out as a pause sign or an emoji.
+### Talking to an agent
 
-Each card shows the pane's active model, read from the footer the agent draws at the bottom of its screen. Nothing is sent to the agent for this; it comes from the same reads as the card previews.
+- **Chat view.** For agents that keep a readable session log, the app reads that log and shows the conversation as a chat: your messages, the agent's replies and thinking, and each tool call with its result, diffs and images included. Messages you send stay on screen until the agent's log shows them, with **Resend** and **Dismiss** if one never arrives. A chat can be exported as Markdown.
+- **Screen view.** For agents without a readable log, the app turns the terminal screen into a readable page: it rejoins lines the agent wrapped at the terminal's width, keeps tables and boxes in a monospace strip that scrolls sideways, and moves the agent's own input box and status line to a footer.
+- **Terminal view.** The exact screen, unwrapped, in a monospace font. It is always one tap away: from the agent's menu, and from **Show terminal** on every question card and error banner. When the app can't read a pane's screen, the terminal view says why rather than showing "Loading" for ever.
+- **Keys.** Two rows of keys that always fit the screen: Ctrl, Alt and the arrows, then Esc, Tab, Backspace, Enter and Ctrl+C (after you confirm). Ctrl and Alt work like a phone terminal's extra keys: tap one and it applies to the next key; long-press it to hold it.
+- **Never typing into a busy pane.** Before a message goes into a pane, the app reads the pane's input line. If text is already typed there at the computer, or someone typed in the last 4 seconds, or the screen can't be read, the message is held and the app says why; **Resend** sends it anyway.
+- **Reading fonts and size.** Choose Inter, Source Serif or JetBrains Mono for replies, and pinch to change the text size, which is remembered for each server.
 
-| Agent | Footer | Shown as |
-|---|---|---|
-| Codex | `GPT-6.1-Sol default · ~/agents/codex` | GPT-6.1-Sol · default |
-| Antigravity | `? for shortcuts   Gemini 4 Argon · medium` | Gemini 4 Argon · medium |
-| Grok | `╰──── Grok 4.7 (high) ─╯` | Grok 4.7 (high) |
-| Hermes | `☤ gpt-6.1-sol │ ~124K/500K │ …` | gpt-6.1-sol |
-| Copilot CLI | `… / commands · tab next tab   GPT-5.6 Terra` | GPT-5.6 Terra |
-| OpenCode | `┃  Build · Big Pickle OpenCode` | Big Pickle OpenCode |
-| pi | `0.0%/128k (auto)   (compat-llmproxy) llmproxy/flagship__free` | llmproxy/flagship__free |
+### Questions
 
-The reasoning level is shown wherever an agent makes it available without a model call. Codex, Grok and Antigravity show it in their footers. Claude Code's footer has neither model nor effort, so during its usage check the app opens `/model` ("1. Default (recommended) ✔ Fable 5.2" and "◐ Medium effort") and closes it with Esc, which changes nothing. Hermes's effort comes from `/reasoning` ("Reasoning effort: medium"), which prints inline. Copilot and OpenCode show no reasoning level anywhere, so their cards show the model only. pi's footer shows "(auto)", which isn't clearly a reasoning level, so pi shows the model only too. These appear once each agent's first check has run.
+- **Question cards.** When an agent asks something (a numbered menu, a `(y/n)` prompt, Claude's multi-question dialog, Kiro's unnumbered approval menu, Grok's privacy dialog), the app shows it as a card with one button per answer. Each button says which keys it sends: arrows and Enter for a highlighted menu, the option's own key for Codex ("(y)", "(a)"), Esc for a "(esc)" option. Checkbox lists, "Other" or "Type something" options, and menus of up to 20 options are handled. An option that grants standing permission ("don't ask again", "always allow") carries a caution.
+- **Never an empty card.** When the screen looks like a question but no parser can read its options, the card shows that part of the screen with generic keys. When the screen can't be read at all, the card says so. Every card has **Show terminal**.
+- **Errors are not questions.** When an agent stops on an error (a rate limit, a usage limit or quota, out of credits, a provider or server error, an overloaded model, a lost connection, an expired sign-in, a full context window or a failed compaction, or a crash), the pane shows a banner naming the error, with **Show terminal**, instead of a card. herdr's "blocked" status alone, with nothing on screen that asks, makes no card.
+- **Question history.** Every question an agent asks stays in that agent's chat as plain text: the question, the options, how it ended ("answered", "answered elsewhere", "dismissed"), and your answer.
 
-## Usage limits
+### Alerts and Watching
 
-The app keeps each agent's usage limits up to date by itself. Each agent's card shows its tightest limit in two short lines, such as "Week (all) [bar] 50%" and "resets Nov 12, 2:59am · 4m ago · +2 more", and **Usage** on the agent screen lists every limit with its full name. Settings has one switch to turn this off; with it off, the app never asks any agent about usage and shows nothing about it.
+- **Watching.** With **Tell me when an agent needs me** on, the app keeps watching your agents in the background (a quiet "Watching" notification shows) and alerts you when one starts waiting on a question. It can watch your other saved servers too.
+- **Answering from the alert.** A question's alert has its first two options and Esc. A tapped button turns the alert into "Sending your answer", then "Answered". A button answers only if the same question, with the same option, is still on screen; otherwise the alert says to open the app.
+- **Error alerts.** An agent that stops on an error sends one "stopped on an error" alert, with no answer buttons, once per change of state.
 
-It works by agent, not by pane. On each check, the app reads which agent herdr reports in every pane, groups the panes by agent, and asks one pane of each kind. The answer applies to every pane running that agent, so moving an agent to another pane needs no setup. Every built-in check is a command the agent's own program answers, so none of them uses a model call:
+### Usage, files and work
 
-| Agent | Command | Closed with |
-|---|---|---|
-| Claude Code | `/usage` | Esc |
-| Codex | `/status` | (prints inline) |
-| Copilot CLI | `/usage` | (prints inline) |
-| Grok | `/usage` | Esc |
-| Antigravity | `/usage` | Esc |
-| Hermes | `/usage` ("Weekly: N% remaining … resets in …", once the session has made a call) | (prints inline) |
+- **More in each agent's menu.** Switch the agent's model, search and export conversations, read a reply aloud, dictate a message, and share text or files into HerdrDroid from other apps.
 
-Grok draws its usage box over the conversation, so the parser reads each percentage only within the box column it sits in, and cuts the label and reset lines above and below it to that column. Status bars with many `│` fields (such as Hermes's footer) and approximate figures such as "~25%" are ignored.
+- **Usage limits.** Each agent's card shows its tightest usage limit and when it resets, and **Usage** lists every limit. See [Usage limits](#usage-limits) for how the app reads them without spending a model call.
+- **Files.** Browse the files in an agent's folder, open text and images, and send a file from the phone to the computer for the agent to read.
+- **What runs under an agent.** **Running underneath** lists the processes an agent started, with their output, and can stop one.
+- **Debug bundle.** **Copy debug bundle** and **Share debug bundle** put one pane's state (the app and agent versions, the parser's decision on the last screen, recent diagnostic lines) on the phone's clipboard or share sheet, with API keys, tokens, passwords, web addresses and e-mail addresses taken out.
 
-pi and OpenCode have no usage limit to read (OpenCode's `/stats` is only a token history), so panes running them, plain shells, and any agent not in the table are never sent anything.
+### Staying connected
 
-The checks are careful with the pane:
+When the phone sleeps or the app goes to the background, Android drops the SSH socket. The app opens a fresh connection when it comes back, and until then the top bar says **Reconnecting** in grey. Previews and reads that fail because of a dropped connection are retried quietly, and keys, messages and answers you send while it reconnects wait in a queue and go out in order. A banner appears only for something you have to act on: a server still unreachable after 15 seconds, a refused sign-in, a changed host key, or a herdr command that failed.
 
-- They run every 10 minutes for Claude Code, every 15 for Grok and Antigravity (whose usage screens close without a trace), and every 30 for the agents that print their usage into the conversation (Codex, Copilot, Hermes). Opening the card list runs any check that is due right away, and tapping refresh checks again (at most once every two minutes per agent). A card shows "Checking usage…" while its check runs.
-- They use only a quiet pane (1.3.1, Bill: "herdrdroid occasionally scrolls a pane which causes the actual herdr session to scroll ... Could these occur only when the pane appears to be idle"). Typing the command is the only thing the app does by itself that moves a real pane; every other read uses `herdr pane read`, which moves nothing. A pane is quiet when herdr reports it idle or done (never working, Claude Code included, and never waiting on a question), its visible screen has not changed for 45 seconds (no one typed, scrolled or printed there), the app sent it nothing for 45 seconds, it is not scrolled back (herdr's own `scroll.offset_from_bottom` in `herdr pane list` is 0; where herdr doesn't report it, the bottom of what the pane shows, `--source visible`, must be the bottom of its output), and it was not checked in the last 5 minutes. The screen is sampled on each round while a check is due, so a pane is first found quiet about a minute after it went still; a check with no quiet pane waits for the next round. A pane that is not in front in herdr's own window at the computer is preferred. After the check, the app compares the pane's visible screen with what it showed before and logs whether it is back as it was.
-- The app types the command, then reads the input line. It presses Enter only if that line holds exactly the command. If anything else was already typed there, it erases what it typed, leaves the pane as it was, and tries again in five minutes.
-- While a check runs in a pane, anything you send to that pane waits for it to finish.
-- The app keeps reading for up to six seconds until the usage screen is fully drawn (Antigravity draws its frame first and its numbers a moment later). Esc, which closes Claude's, Grok's and Antigravity's screens, goes out when the screen's own "Esc to cancel" or "Esc close" line is showing. Without that line, Esc goes only to an idle agent, where it can't interrupt anything, never to a working one.
-- A check that found no limits (for example a Hermes session that hasn't made a call yet) is tried again in five minutes.
+## Supported agents
 
-## How the app treats the panes (1.4.0)
+herdr reports which agent runs in each pane. HerdrDroid supports these:
 
-- **Reading moves nothing.** Every screen and every bit of scrollback is read with `herdr pane read` (`--source recent --lines N`, which returns scrollback too: 650 lines from a Hermes pane scrolled back 603 rows, checked with herdr 0.9.5), so no scroll or copy-mode key is ever sent just to read. The only keys the app sends by itself are the usage checks' (see Usage limits), and they wait for a quiet pane.
-- **The pane's size is never changed.** The app runs `herdr` commands over plain SSH command channels, never as a herdr client attached to the session and never with a terminal of its own (no PTY), so herdr never reflows a pane to the phone's width.
-- **Fewer polls.** While the app is behind, the agent screen's own reads stop (the watcher does the checks). With the screen off, the background refresh of the open server slows from every 3 seconds to every 12, watched servers from every 15 seconds to every 45, and the work sweep (what runs under each agent) runs at most every 30 seconds (90 with the screen off) instead of on every refresh. While Watching, a dropped connection is retried in the background too (at most every 15 seconds, 60 with the screen off), so alerts don't stop until the app is opened.
-- **Agent versions.** On connecting, the app runs each agent program's own `--version` once (5-second limit, nothing typed into any pane) and keeps the versions for the parsers and the debug bundle, so a card that changes shape in a new version can get its own rule.
+| Agent | Chat from its log | Question cards | Usage limits | Model shown |
+|---|---|---|---|---|
+| Claude Code | yes | yes, including the multi-question dialog | `/usage` | from `/model` |
+| Codex | yes | yes, with each option's own key | `/status` | from its footer |
+| Grok | yes | yes, including its privacy dialog | `/usage` | from its footer |
+| GitHub Copilot CLI | yes | yes | `/usage` | from its footer |
+| Antigravity (agy) | no (its log has no published format) | yes | `/usage` | from its footer |
+| Kiro CLI | yes | yes, including its unnumbered approval menu | no | from its footer |
+| Mistral Vibe | yes | yes | no | from its footer |
+| pi | yes | yes | no (none to read) | from its footer |
+| Oh My Pi (omp) | yes | yes | no | from its footer |
+| OpenCode | yes | yes | no (none to read) | from its footer |
+| Hermes | yes, plus a chat screen through its gateway | yes | `/usage` | from its footer |
 
-## Security
+Every agent gets the error banner, the terminal view, the keys and the alerts. A pane running a plain shell or an agent the app doesn't know is shown as a screen, with the terminal view and the keys.
 
-- **Host key pinning.** The first time you connect to a server, the app shows the server's SHA-256 host key fingerprint and asks you to confirm it. After that it refuses to connect if the fingerprint changes. To check the fingerprint on the computer itself, run `ssh-keyscan localhost | ssh-keygen -lf -`.
-- **Keys.** Turn on **Use an SSH key** for a server and either make a key on the phone or import a key file. A key made on the phone is an ECDSA P-256 key inside the Android Keystore: it can sign but can never be read or copied out (the Keystore has no Ed25519 before Android 13). The app shows its `authorized_keys` line with Copy and Share buttons. An imported key file, and its passphrase if it has one, are encrypted like a password. With the switch off, the app never offers a key to that server.
-- **Key, then password.** With a key turned on, the app offers the key first and the saved password second, so a server that turns the key down still lets you in. If there's no saved password, it asks for one.
-- **Passwords.** A saved password is encrypted with an AES key that stays in the Android Keystore. You can also ask for a fingerprint or the screen lock before the saved password or key is used. The password is sent only to the server it belongs to.
-- **Fingerprint window (1.3.1).** The Keystore keys for saved passwords, imported key files and their passphrases, and the chats and question history kept on the phone can be used only for 4 hours after you prove who you are: a strong fingerprint or face unlock, or the screen lock (Android 11 and later; before that, any fingerprint or the lock). Unlocking the app counts, and so does unlocking the phone. Within the window the app and its background alerts work as before. After it:
-  - the app asks for the fingerprint when it opens;
-  - alerts still come, but say "Unlock HerdrDroid to read" instead of the question, with no answer buttons;
-  - a watched server that needs its saved password or key to reconnect sends one "isn't being watched" notice instead of failing silently;
-  - chats and questions are not read or written until you unlock, and nothing is deleted.
-  Upgrading from 1.3.0 or earlier: the first unlock re-seals every saved secret and chat under the new keys, and the old keys are deleted only once all of it is done, so nothing is lost if it stops half way.
-  How it keeps data safe (1.3.2, after a code review of 1.3.1): nothing is saved or read while the re-seal runs; each file is replaced with one atomic rename, so a failed rename or a crash leaves the original; a server record is saved only after all its secrets were re-sealed; something even the old key can't open is set aside in an `unreadable` folder, not deleted; any other error stops the re-seal with the old keys kept, to try again at the next unlock; and the old keys are deleted only after a second pass found everything under the new ones. A kept chat or question file is never deleted because it can't be opened: one whose seal fails to authenticate, or that opens but doesn't decode, moves to the `unreadable` folder (removing the server clears it), and a locked phone, a Keystore or disk error, or an invalidated key leaves it where it is. A copy left by a 1.3.1 re-seal that stopped after removing the original becomes the file again. A password typed while the re-seal is unfinished is kept, and the next pass re-seals it. If removing the screen lock invalidates the keys, the app makes new ones for what is saved from then on, and asks for saved passwords again. A phone with no secure screen lock keeps the old keys. Keys made on the phone (ECDSA, for signing in) are not affected: they stay usable, so your servers' `authorized_keys` lines keep working.
-- **Files the app leaves on the computer (Bill's decision, 2026-11-14: kept as is).** The app writes only three things on a computer: files you send from the phone go to `~/.herdrdroid/inbox` (or the folder you pick), so the agent can read them; "Recycle" moves a file to `~/scratch/herdrdroid-recycled-<date>` instead of deleting it; and starting an agent in a new folder creates that folder. Chats, questions and settings stay on the phone.
-- **What a login can do.** A password login is a full shell for that user. The app only runs `herdr` commands, but anyone who can use your unlocked phone and this app can type into every pane. Keep the phone locked, and prefer servers on your own network or a VPN.
+## Requirements
+
+- **A phone** with Android 8.0 or later. The fingerprint window needs a secure screen lock; Android 11 or later accepts the screen lock as well as a strong fingerprint or face unlock.
+- **A computer running herdr**, reachable from the phone over SSH: on your own network, through a VPN, or through a public address. A computer that can only be reached over HTTPS can be reached with SSH over a WebSocket (see [SSH over a WebSocket](#ssh-over-a-websocket)).
+- **An account on that computer** that can run `herdr`, with a password, an SSH key, or both.
+- **python3 on the computer** for the chat view, the file browser and the process list. The app sends its small reader script over SSH each time; nothing is installed.
+
+No server-side software is needed beyond herdr, SSH and python3.
+
+## Installing
+
+HerdrDroid is installed from an APK rather than from an app store. Each release is in the `release/` folder of this repository as `HerdrDroid-<version>.apk`.
+
+1. Download the newest `release/HerdrDroid-<version>.apk` to the phone.
+2. Open it, and allow your browser or file manager to install apps when Android asks.
+3. Open HerdrDroid.
+
+To upgrade, install the newer APK over the old one; your servers, chats and settings stay. Every release is signed with the same key, which is what lets a new version install over an old one. A build signed with any other key (for example one you build yourself with a key of your own) can't install over a release; Android asks you to uninstall first, which removes the app's data.
+
+## First setup
+
+1. **Add a server.** Tap **Add server** (or **Find on this network** to look for SSH servers on your Wi-Fi) and fill in a name (optional), the address, the SSH port (22 by default), your username, and the herdr command. Leave **herdr on that computer** on **Automatic** unless you know which herdr runs there. Use the full path to herdr (for example `/home/user/.local/bin/herdr`) if it is not on the PATH of a non-interactive SSH session.
+2. **Trust the host key.** The first time you connect, the app shows the server's SHA-256 host key fingerprint and asks you to confirm it. Check it on the computer with `ssh-keyscan localhost | ssh-keygen -lf -`. After that, the app refuses to connect if the fingerprint changes.
+3. **Sign in.** Type your password and choose whether to remember it on the phone (encrypted). To sign in with a key instead, edit the server, turn on **Use an SSH key**, and either make a key on the phone or import a key file. A key made on the phone shows its `authorized_keys` line with **Copy** and **Share**; add that line to `~/.ssh/authorized_keys` for your user on the computer. With a key and a saved password, the app offers the key first and the password second.
+4. **Turn on alerts (optional).** In **Settings**, turn on **Tell me when an agent needs me** and allow notifications when Android asks.
+
+## Security and privacy
+
+- **What is kept where.** Servers, settings, saved passwords, imported keys, chats and question history are kept on the phone, in the app's private storage. Saved passwords, imported key files and their passphrases are encrypted with an AES key that never leaves the Android Keystore. Kept chats and question histories are sealed the same way, and each file is bound to its server and pane, so a file in another pane's place won't open.
+- **Keys made on the phone** are ECDSA P-256 keys inside the Android Keystore: they can sign but can never be read or copied out.
+- **The fingerprint window.** The Keystore keys for saved secrets and kept chats can be used only for 4 hours after you prove who you are (a strong fingerprint or face unlock, or the screen lock). Unlocking the app counts, and so does unlocking the phone. After the window, the app asks you to unlock when it opens, and alerts say "Unlock HerdrDroid to read" instead of the question.
+- **Host key pinning.** A server's host key is pinned the first time you connect, and a changed key stops the connection.
+- **No data is lost to a locked or damaged file.** A kept file that can't be opened now (the phone locked, a read error) is left where it is; one that is damaged for certain is moved to an `unreadable` folder, not deleted. Moving data to new keys or new file names writes the new copy, reads it back, and only then removes the old one.
+- **What the app writes on the computer.** Three things, all because you asked for them: a file you send from the phone goes to `~/.herdrdroid/inbox` (or a folder you pick), so the agent can read it; **Recycle** moves a file to `~/scratch/herdrdroid-recycled-<date>` instead of deleting it; and starting an agent in a new folder creates that folder. Nothing else is written there, and the app's reader script runs from memory.
+- **What a login can do.** A password login is a full shell for that user. The app only runs `herdr` commands and its reader, but anyone who can use your unlocked phone and this app can type into every pane. Keep the phone locked, and prefer servers on your own network or a VPN.
+- **No telemetry.** The app talks only to the servers you add.
 
 ## SSH over a WebSocket
 
@@ -194,23 +216,56 @@ Edit the server, choose **SSH over WebSocket**, and fill in the address (it star
 
 `tools/ws-test-server/` holds a throwaway sshd behind websockify that the end-to-end test uses; its Dockerfile shows a complete working setup.
 
+
+## Usage limits
+
+The app keeps each agent's usage limits up to date by itself. Each agent's card shows its tightest limit in two short lines, such as "Week (all) [bar] 50%" and "resets Nov 12, 2:59am · 4m ago · +2 more", and **Usage** on the agent screen lists every limit with its full name. Settings has one switch to turn this off; with it off, the app never asks any agent about usage and shows nothing about it.
+
+It works by agent, not by pane. On each check, the app reads which agent herdr reports in every pane, groups the panes by agent, and asks one pane of each kind. The answer applies to every pane running that agent. Every check is a command the agent's own program answers, so none of them spends a model call:
+
+| Agent | Command | Closed with |
+|---|---|---|
+| Claude Code | `/usage` | Esc |
+| Codex | `/status` | (prints inline) |
+| Copilot CLI | `/usage` | (prints inline) |
+| Grok | `/usage` | Esc |
+| Antigravity | `/usage` | Esc |
+| Hermes | `/usage` (once the session has made a call) | (prints inline) |
+
+pi and OpenCode have no usage limit to read, so panes running them, plain shells, and any agent not in the table are never sent anything.
+
+Typing a usage command is the only thing the app does by itself that moves a real pane, so the checks are careful:
+
+- They run every 10 minutes for Claude Code, every 15 for Grok and Antigravity, and every 30 for the agents that print their usage into the conversation (Codex, Copilot, Hermes). Tapping refresh checks again, at most once every two minutes per agent.
+- They use only a quiet pane: herdr reports it idle or done, its screen has not changed for 45 seconds, the app sent it nothing for 45 seconds, it is not scrolled back, and it was not checked in the last 5 minutes. A pane not in front at the computer is preferred.
+- The app types the command, then reads the input line, and presses Enter only if that line holds exactly the command. If anything else was already typed there, it erases what it typed and tries again later.
+- Esc, which closes the usage screens that need it, goes out only when the screen's own "Esc to cancel" line is showing, or to an idle agent where it can't interrupt anything.
+
+## How the app treats the panes
+
+- **Reading moves nothing.** Every screen and every bit of scrollback is read with `herdr pane read`, so no scroll or copy-mode key is ever sent just to read. Screen reads run on their own SSH channel, so a long command never holds them up.
+- **A pane's size is never changed.** The app runs `herdr` commands over plain SSH command channels, never as a client attached to the session and never with a terminal of its own, so herdr never reflows a pane to the phone's width.
+- **Fewer polls when you are not looking.** While the app is behind, the agent screen stops reading; the watcher waits on herdr for any agent to change state instead of asking every few seconds, and everything slows down further with the screen off.
+- **Agent versions.** On connecting, the app runs each agent program's own `--version` once (nothing is typed into any pane), so a question card that changes shape in a new version can get its own rule.
+
 ## How each action maps to herdr
 
 | In the app | On the computer |
 |---|---|
-| All tabs | `herdr pane list` |
-| A card's last line | `herdr pane read <pane> --source recent --lines 8` |
-| A tab's screen | `herdr pane read <pane> --source recent --lines 200` |
+| All agents | `herdr pane list` |
+| A card's last line | `herdr pane read <pane> --source recent --lines 12` |
+| An agent's screen | `herdr pane read <pane> --source recent --lines 200` |
 | Send a message to an agent | `herdr agent prompt <pane> <text>` |
 | Send a message to another pane | `herdr pane send-text <pane> <text>`, then `herdr pane send-keys <pane> enter` |
-| Quick keys | `herdr pane send-keys <pane> esc` (or `tab`, `left`, `up`, `down`, `right`, `backspace`, `enter`, `ctrl+c`) |
-| Ctrl or Alt held | `herdr pane send-keys <pane> ctrl+r` (or `alt+b`, `ctrl+alt+up`, …) |
-| A usage check | `herdr pane send-text <pane> /usage`, `herdr pane read …`, then `send-keys enter` and `esc`, or `backspace` to undo |
-| Answer buttons | `herdr pane send-text <pane> <key>`, plus `enter` for a `(y/n)` question |
+| Keys | `herdr pane send-keys <pane> esc` (or `tab`, `up`, `ctrl+c`, `ctrl+r`, `alt+b`, ...) |
+| Answer buttons | `herdr pane send-keys` with the arrows and Enter, the option's own key, or Esc |
+| Waiting for a change (Watching) | `herdr agent wait <pane> --until <state>` |
+| A usage check | `herdr pane send-text <pane> /usage`, `herdr pane read`, then `enter` and `esc`, or `backspace` to undo |
+| The chat view, files, processes | `python3` reading the agent's own logs, with the reader script sent over SSH |
 
 Every argument is single-quoted for the remote shell, so message text is passed as typed.
 
-## Building
+## Building from source
 
 The build needs JDK 17, the Android SDK (platform 34, build-tools 34.0.0) and Gradle 8.9. `build-in-docker.sh` does the whole build in a throwaway `eclipse-temurin:17-jdk` container, keeping the SDK and Gradle caches in a `.cache` folder beside the source:
 
@@ -218,25 +273,71 @@ The build needs JDK 17, the Android SDK (platform 34, build-tools 34.0.0) and Gr
 bash build-in-docker.sh /path/to/work-folder
 ```
 
-The build runs the parser tests first, then writes the signed APK to `<work-folder>/out/`. The app is signed with the sideload key, so a newer build installs over an older one. A build signed with a different key will not install over this one without uninstalling first, so the key must never change.
+`<work-folder>/src` holds this repository. The build runs the unit tests first, then writes the signed APK to `<work-folder>/out/HerdrDroid.apk`.
 
-The key lives outside the source, in its own folder: `~/Documents/herdrdroid-signing/` (mode 700, files 600), or the folder named by `HD_SIGNING_DIR`. It holds `herdrdroid-sideload.jks` and `signing.properties` (`storePassword`, `keyAlias`, `keyPassword`). `build-in-docker.sh` mounts that folder read-only into the build container and points Gradle at it with `HD_KEYSTORE_DIR`, so no sync or clean of the source folder can reach the key (since 1.4.0, after a source sync deleted the copy kept in `keystore/`). The script stops when the key is missing; it never makes a new one. CI writes the key into `keystore/` from the repository's secrets (`keystore/push-signing-secrets.sh`, which also reads `HD_SIGNING_DIR`). The original is kept off the build machine as well.
+**The signing key.** A release is signed with the project's sideload key, and every build must use that same key, or the APK won't install over an existing one. The key never lives in the source tree: `build-in-docker.sh` reads it from a separate folder (by default `~/Documents/herdrdroid-signing/`, or the folder named by `HD_SIGNING_DIR`) holding `herdrdroid-sideload.jks` and `signing.properties` (with the store password, key alias and key password). It mounts that folder read-only into the build container and points Gradle at it with `HD_KEYSTORE_DIR`. The script stops when the key is missing; it never makes a new one. CI writes the key into `keystore/` from the repository's secrets (`keystore/push-signing-secrets.sh`). Both key files are ignored by git.
 
-## Layout
+If you build for yourself without the project's key, use your own key (a standard Android keystore in the same folder layout). Your build will then install only on a phone without the released app, or after uninstalling it.
+
+## Tests
+
+- **Unit tests** (JUnit, with Robolectric for the Android parts) run in every build: the question parsers against real screens from every agent, the chat view, the usage parsers, the key migration and the kept-chat store interrupted at every step, the notification answer checks, SSH over a WebSocket against a local server, and more. `./gradlew testDebugUnitTest` runs them.
+- **The screen library.** `app/src/test/resources/screens/<agent>/<version>/` holds agents' screens: question cards, error screens and fallback cases, each with an `.expect` file that says what the parsers must make of it (a card with these options, the fallback card, no card, or an error banner naming these errors). Each fixture says where it came from: captured live, taken from the agent program's own strings, or modelled on the agent's style. A new capture with no `.expect` file must parse as a real card if it looks like a question; `ScreenLibraryTest` lists every screen that doesn't, so a card that stops parsing after an agent update shows up.
+- **Reader tests.** `tools/transcript-tests/` tests the log readers in `transcript.py` (for example Kiro's and Vibe's) on synthetic session stores: `python3 -I tools/transcript-tests/test_kiro_reader.py`.
+- **End-to-end.** `tools/ws-test-server/` is a throwaway sshd behind a WebSocket bridge for the WebSocket test, and `tools/hc-e2e/` checks the herdr-core backend.
+- **Emulator checks.** Each release is also checked by hand-scripted runs in an Android emulator against a herdr host whose panes run small stand-in agents that draw each agent's cards, errors and logs: upgrading over the previous release with saved data, answering cards and alerts, the terminal view, and the error banners.
+
+## Troubleshooting
+
+- **"The host key changed".** The server's SSH host key is no longer the one you confirmed. If you reinstalled the server or changed its keys on purpose, edit the server in the app and confirm the new fingerprint; otherwise, don't connect.
+- **herdr isn't found.** A non-interactive SSH session may not read your shell's startup files. Put the full path to herdr in the server's **herdr command** (for example `/home/user/.local/bin/herdr`).
+- **No chat view, only the screen.** The chat view needs `python3` on the computer and an agent whose log the app can read (see [Supported agents](#supported-agents)). Settings › **Diagnostics** says why a pane's chat view stays off.
+- **The screen says it couldn't be read.** The terminal view and the card say why (a dropped connection, a herdr error, an empty screen). The app keeps trying; Diagnostics has the details.
+- **A card shows the screen with generic keys.** The app saw a question but couldn't read its options. Use the keys, or **Show terminal** to see exactly what the agent shows. **Copy debug bundle** captures what the parser saw, with secrets taken out, for a bug report.
+- **An error banner won't go away.** It reflects what is on the agent's screen. Deal with the error at the agent (wait out a rate limit, sign in again, start a new session), and the banner goes when the screen changes.
+- **"Unlock HerdrDroid to read".** The 4-hour fingerprint window has passed. Open the app and unlock it.
+- **Alerts don't come.** Check that **Tell me when an agent needs me** is on, that HerdrDroid may post notifications, and that Android's battery settings let it run in the background. A server that needs a saved password the app can't use (the window has passed) sends one "isn't being watched" notice.
+- **The APK won't install over the old app.** It was signed with a different key. See [Installing](#installing).
+
+## Version history
+
+- **1.4.2.** Codex's edit-approval card shows its question, description, file and keys; no question card is ever empty; **Show terminal** on every card; agent errors (rate limits, quotas, credits, provider and connection errors, expired sign-ins, full context, failed compaction, crashes) show as a banner for every supported agent instead of a card; herdr's stale "blocked" status makes no card; question alerts have one set of buttons that always answer or say why not; the MIT license and this README.
+- **1.4.1.** Kiro's chat from its session log; each kept chat bound to its pane, with a safe move from the old file names; a stricter send guard; agent versions read in parallel; fixes from code review.
+- **1.4.0.** The fallback card, every answer type (checkboxes, "Other", standing-permission cautions, menus past nine options), never typing into a busy pane, the debug bundle, fewer polls in the background, and version-aware parsers.
+- **1.3.x.** Questions kept in the chat history (1.3.0); the 4-hour fingerprint window for saved secrets and chats, and usage checks only on quiet panes (1.3.1); a key migration and chat store that never lose data, however they are interrupted (1.3.2).
+- **1.2.x.** Grok's privacy dialog, Claude's multi-question dialog with its steps, question cards for Kiro and Vibe, the readable screen view, and the sealed chat cache kept on the phone.
+- **1.1.x.** Agents first, with a drawer across every server; the model of every agent in the drawer; finding servers on the local network; herdr-core (the Herdr App) alongside the terminal herdr, tested end to end.
+- **1.0.x.** The model menu, usage alerts and usage history, and the Hermes menu with its conversations.
+- **0.7 to 0.9.** Replying from notifications, sharing into the app, searching conversations, git status on cards, edit review, snippets, read aloud and usage charts (0.7); whole questions in the question card with the agent's latest message (0.8); usage checks that never type into the agent you are using, and busy agents shown as working (0.8 and 0.9).
+- **0.4 to 0.6.** Alerts, every server at once, files, sending work to agents, history, export and model switching (0.4); SSH over a WebSocket (0.4.2); what runs under an agent, with Stop (0.5); herdr-core support and streamed replies (0.6).
+- **0.1 to 0.3.** The first app: servers, the pane list, reading a pane, messages and keys over SSH (0.1); quiet reconnects, dark mode, SSH keys, held modifier keys and usage limits (0.2); chats from the agents' own logs, the Hermes chat, Oh My Pi, and images and files in the chat (0.3).
+
+Each release's APK is in `release/`, and the git history has the details.
+
+## Project layout
 
 | File | What it holds |
 |---|---|
-| `app/src/main/java/.../ssh/HerdrSsh.kt` | The SSH connection, host key pinning, and running one command at a time |
-| `app/src/main/java/.../ssh/WsBridge.kt` | SSH over a WebSocket: the local relay between sshj and the WebSocket |
-| `app/src/main/assets/transcript.py` | The reader sent to the computer's python3 for agent logs, history, and what runs under a pane |
-| `app/src/main/java/.../herdr/Herdr.kt` | The herdr commands, pane parsing, question detection, and the guarded usage check |
-| `app/src/main/java/.../herdr/Reflow.kt` | Turning a terminal screen into the chat view: rejoining wrapped paragraphs, tables, your messages, and the footer |
-| `app/src/main/java/.../herdr/Quota.kt` | The usage profile for each agent and the parser for their usage screens |
-| `app/src/main/java/.../store/ServerStore.kt` | Saved servers, app settings, the Keystore encryption, and keys made on the phone |
-| `app/src/main/java/.../AppViewModel.kt` | App state, the connect flow, reconnecting, the send queue, the usage checks, and recording questions and answers |
-| `app/src/main/java/.../transcript/Questions.kt` | The question history: what a question card becomes in the chat, how its answer is recorded, merging with Claude's AskUserQuestion in its log, and how it is kept on the phone |
-| `app/src/test/java/.../QuestionHistoryTest.kt` | Every agent's card recorded with its options and answer, the multi-question dialog, answered elsewhere and dismissed, no duplicates, placement in the chat, and the sealed store |
-| `app/src/main/java/.../ui/` | The screens: servers, editing a server, settings, all tabs, and one agent |
-| `app/src/test/java/.../QuotaTest.kt` | The parser run against each agent's captured usage screen |
-| `app/src/test/java/.../ReflowTest.kt` | The chat view's parser run against screens shaped like Grok, Claude Code, Codex and OpenCode |
+| `app/src/main/java/.../ssh/HerdrSsh.kt` | The SSH connection, host key pinning, and the command channels |
+| `app/src/main/java/.../ssh/WsBridge.kt` | SSH over a WebSocket: the local relay between the SSH library and the WebSocket |
+| `app/src/main/assets/transcript.py` | The reader sent to the computer's python3 for agent logs, history, files and processes |
+| `app/src/main/java/.../herdr/Herdr.kt` | The herdr commands, pane parsing, question and error detection, and the guarded usage check |
+| `app/src/main/java/.../herdr/Reflow.kt` | Turning a terminal screen into the readable screen view |
+| `app/src/main/java/.../herdr/Quota.kt` | Each agent's usage command and the parser for its usage screen |
+| `app/src/main/java/.../store/ServerStore.kt` | Saved servers, settings, the Keystore encryption, the key migration, and keys made on the phone |
+| `app/src/main/java/.../transcript/` | The chat model, the kept-chat store, and the question history |
+| `app/src/main/java/.../notify/Notify.kt` | Alerts, their answer buttons, and the background Watching service |
+| `app/src/main/java/.../AppViewModel.kt` | App state, connecting and reconnecting, the send queue, usage checks, and answers |
+| `app/src/main/java/.../ui/` | The screens: servers, settings, all agents, one agent, files, and the Hermes chat |
+| `app/src/test/` | Unit tests and the screen library |
 | `app/src/main/res/font/`, `app/src/main/assets/licenses/` | The bundled fonts (Inter, Source Serif 4, JetBrains Mono) and their SIL Open Font License texts |
+| `build-in-docker.sh` | The containerised build |
+| `tools/` | Reader tests, the WebSocket test server, and the herdr-core check |
+
+## Contributing
+
+Bug reports and pull requests are welcome. For a question card or an error the app reads wrongly, the most useful report has the agent, its version, and the debug bundle (**Copy debug bundle** in the agent's menu), which takes out keys, tokens, passwords, web addresses and e-mail addresses but may still contain your file names and conversation, so read it before you share it. A new agent screen is best added to the screen library with an `.expect` file, so the parsers keep reading it after the next change. Please run the unit tests (`./gradlew testDebugUnitTest`, or `build-in-docker.sh`) before sending a change.
+
+## License
+
+HerdrDroid is released under the MIT License; see [LICENSE](LICENSE). The bundled fonts are under the SIL Open Font License; their texts are in `app/src/main/assets/licenses/`.
