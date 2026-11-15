@@ -10,6 +10,7 @@ HerdrDroid is for people who already run agents under herdr on a computer they c
 
 ## Contents
 
+- [Screenshots](#screenshots)
 - [Features](#features)
 - [Supported agents](#supported-agents)
 - [Requirements](#requirements)
@@ -27,6 +28,19 @@ HerdrDroid is for people who already run agents under herdr on a computer they c
 - [Project layout](#project-layout)
 - [Contributing](#contributing)
 - [License](#license)
+
+## Screenshots
+
+Taken on an Android emulator against a demo computer ("demo-box") running herdr with stand-in agents; every name, path, chat and usage figure in them is made up.
+
+| | | |
+|---|---|---|
+| <img src="docs/screenshots/01-servers.png" width="240" alt="The server list with one demo server"> | <img src="docs/screenshots/02-fleet.png" width="240" alt="The agent tabs on a computer, each with its status, model and usage"> | <img src="docs/screenshots/04-drawer.png" width="240" alt="The navigation drawer listing each agent session"> |
+| Servers | Agents on one computer, with each one's model and usage limits | The session drawer |
+| <img src="docs/screenshots/03-chat-claude.png" width="240" alt="A Claude Code chat read from its session log"> | <img src="docs/screenshots/06-card.png" width="240" alt="A question card for a Claude Code approval, with one button per answer"> | <img src="docs/screenshots/07-chat-muse.png" width="240" alt="A Muse Code chat"> |
+| A chat, read from the agent's own log | A question card: each button says which keys it sends | Muse Code's chat |
+| <img src="docs/screenshots/05-usage.png" width="240" alt="Usage limits for each agent on the computer"> | <img src="docs/screenshots/08-settings.png" width="240" alt="Settings: appearance, app lock and palettes"> | |
+| Usage limits for every agent | Settings | |
 
 ## Features
 
