@@ -46,7 +46,9 @@ jobs:
           elif [ -n "$INPUT_VERSION" ]; then
             files="release/HerdrDroid-$INPUT_VERSION.apk"
             [ -f "$files" ] || { echo "::error::$files is not on this commit"; exit 1; }
-          elif [ -z "$BEFORE" ] || [ "$BEFORE" = 0000000000000000000000000000000000000000 ]; then
+          elif [ -z "$BEFORE" ] || [ "$BEFORE" = 0000000000000000000000000000000000000000 ] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            # A first push, or a force-push whose previous commit is gone from the new history
+            # (2026-11-15 history rewrite): only the APKs this commit adds.
             files=$(git diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD -- 'release/HerdrDroid-*.apk')
           else
             files=$(git diff --name-only --diff-filter=A "$BEFORE" HEAD -- 'release/HerdrDroid-*.apk')
