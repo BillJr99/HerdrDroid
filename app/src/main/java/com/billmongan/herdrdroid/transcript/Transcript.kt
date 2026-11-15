@@ -92,6 +92,8 @@ data class TranscriptRead(
     val more: Boolean,
     val title: String?,
     val items: List<JSONObject>,
+    /** The computer's clock when it answered, in epoch ms (1.4.3); 0 when the reader didn't say. */
+    val hostNow: Long = 0L,
 )
 
 object Transcript {
@@ -109,8 +111,13 @@ object Transcript {
             more = o.optBoolean("more"),
             title = o.optString("title").takeIf { !o.isNull("title") && it.isNotBlank() },
             items = (0 until arr.length()).mapNotNull { arr.optJSONObject(it) },
+            hostNow = o.optLong("now", 0L),
         )
     }
+
+    /** Each raw item's time ("ts", epoch ms on the computer's clock) by key, where the log has one (1.4.3). */
+    fun timesOf(raw: List<JSONObject>): Map<String, Long> =
+        raw.mapNotNull { j -> j.optString("k").ifEmpty { null }?.let { k -> j.optLong("ts", 0L).takeIf { it > 0 }?.let { k to it } } }.toMap()
 
     private fun JSONObject.str(k: String): String? = if (isNull(k)) null else optString(k).ifEmpty { null }
 

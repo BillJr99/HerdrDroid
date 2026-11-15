@@ -19,6 +19,8 @@ data class CachedChat(
     val start: Long = -1L,
     val file: String? = null,
     val agent: String? = null,
+    /** Each item's time on the computer's clock, by key, where its log has one (1.4.3: questions are placed by it). */
+    val times: Map<String, Long> = emptyMap(),
 )
 
 /**
@@ -29,8 +31,9 @@ data class CachedChat(
 fun CachedChat.withRead(r: TranscriptRead): CachedChat {
     val cj = runCatching { JSONObject(r.cursor) }.getOrNull()
     return if (r.reset) CachedChat(Transcript.merge(emptyList(), r.items, true), r.cursor, r.more, r.title ?: title,
-        cj?.optLong("start", -1L) ?: -1L, cj?.optString("file")?.ifBlank { null }, agent)
-    else copy(items = if (r.items.isEmpty()) items else Transcript.merge(items, r.items, false), cursor = r.cursor, title = r.title ?: title)
+        cj?.optLong("start", -1L) ?: -1L, cj?.optString("file")?.ifBlank { null }, agent, Transcript.timesOf(r.items))
+    else copy(items = if (r.items.isEmpty()) items else Transcript.merge(items, r.items, false), cursor = r.cursor, title = r.title ?: title,
+        times = if (r.items.isEmpty()) times else times + Transcript.timesOf(r.items))
 }
 
 /** Turns a [CachedChat] into the JSON kept on the phone and back. The items use the reader's own format. */
@@ -83,7 +86,9 @@ object ChatCodec {
             chars += n
         }
         keep.reverse()
-        return JSONObject().put("v", 1).put("items", JSONArray(keep)).put("cursor", c.cursor)
+        val kept = keep.map { it.optString("k") }.toHashSet()
+        val times = JSONObject().also { t -> c.times.forEach { (k, v) -> if (k in kept) t.put(k, v) } }
+        return JSONObject().put("v", 1).put("items", JSONArray(keep)).put("cursor", c.cursor).put("times", times)
             .put("more", c.more || dropped).putOpt("title", c.title)
             .put("start", if (dropped) -1L else c.start).putOpt("file", c.file).putOpt("agent", c.agent).toString()
     }
@@ -100,6 +105,7 @@ object ChatCodec {
             start = o.optLong("start", -1L),
             file = if (o.isNull("file")) null else o.optString("file").ifBlank { null },
             agent = if (o.isNull("agent")) null else o.optString("agent").ifBlank { null },
+            times = o.optJSONObject("times")?.let { t -> t.keys().asSequence().associateWith { t.optLong(it) }.filterValues { it > 0 } }.orEmpty(),
         )
     }.getOrNull()
 }

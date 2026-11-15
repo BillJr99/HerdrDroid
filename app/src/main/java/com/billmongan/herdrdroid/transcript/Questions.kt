@@ -218,10 +218,20 @@ object QuestionLog {
      * item it was asked after. One whose item isn't in the chat (fallen out of the window, or a pane
      * with no log) goes at the end, oldest first.
      */
-    fun withQuestions(items: List<Item>, questions: List<QuestionItem>): List<Item> {
+    /**
+     * The chat with each recorded question placed where it happened (1.4.3, Bill: answered questions
+     * sat at the bottom, under newer messages). Claude's AskUserQuestion is merged into its tool call.
+     * Every other question goes after the last item whose time ([times], the computer's clock) is at
+     * or before the question's ([QuestionItem.at] on the phone's clock, less [hostOffsetMs], the phone
+     * clock minus the computer's), and never before its anchor ([QuestionItem.after], the newest item
+     * when it appeared). Items without a time take the time of the item before them. A question
+     * older than every loaded item (the chat shows only its newest part) goes to the top. Without any
+     * times (Grok's log has none), the anchor alone decides; a question with neither goes last, in
+     * time order, as before.
+     */
+    fun withQuestions(items: List<Item>, questions: List<QuestionItem>, times: Map<String, Long> = emptyMap(), hostOffsetMs: Long = 0L): List<Item> {
         if (questions.isEmpty() && items.none { it is ToolItem && it.name == "AskUserQuestion" }) return items
         val left = questions.toMutableList()
-        val keys = items.map { it.key }.toHashSet()
         // Pair each AskUserQuestion in the log with its recorded question first, so a recorded one
         // is never also placed after its anchor (which comes before the tool call in the chat).
         val asks = HashMap<String, QuestionItem>()
@@ -231,14 +241,34 @@ object QuestionLog {
             if (m != null) left.remove(m)
             asks[it.key] = if (m != null) merge(asked, m) else asked
         }
-        val out = ArrayList<Item>(items.size + questions.size)
-        for (it in items) {
-            val asked = asks[it.key]
-            out += asked ?: it
-            val here = left.filter { q -> q.after == it.key }
-            if (here.isNotEmpty()) { out += here.sortedBy { q -> q.at }; left.removeAll(here) }
+        // Each item's time, carried forward over items that have none.
+        val eff = LongArray(items.size)
+        var last = Long.MIN_VALUE
+        items.forEachIndexed { i, it -> times[it.key]?.let { t -> if (t > last) last = t }; eff[i] = last }
+        val timed = items.any { times[it.key] != null }
+        val index = HashMap<String, Int>(items.size * 2).also { m -> items.forEachIndexed { i, it -> m[it.key] = i } }
+        // Where each question goes: after item [pos], -1 for before every item.
+        val at = HashMap<Int, MutableList<QuestionItem>>()
+        for (q in left) {
+            val anchor = q.after?.let { index[it] } ?: -1
+            val pos = when {
+                timed -> {
+                    val qt = q.at - hostOffsetMs
+                    var t = -1
+                    for (i in eff.indices) if (eff[i] != Long.MIN_VALUE && eff[i] <= qt) t = i
+                    maxOf(t, anchor)
+                }
+                anchor >= 0 -> anchor
+                else -> items.size - 1
+            }
+            at.getOrPut(pos) { mutableListOf() } += q
         }
-        out += left.filter { it.after == null || it.after !in keys }.sortedBy { it.at }
+        val out = ArrayList<Item>(items.size + questions.size)
+        at[-1]?.let { out += it.sortedBy { q -> q.at } }
+        items.forEachIndexed { i, it ->
+            out += asks[it.key] ?: it
+            at[i]?.let { out += it.sortedBy { q -> q.at } }
+        }
         return out
     }
 

@@ -322,6 +322,62 @@ SKIP_USER = ("<system-reminder>", "<environment_context>", "<user_instructions>"
 PASTED_TAG = re.compile(r"</?pasted_content\b[^>]*>")
 
 
+def ts_of(r):
+    """A record's time in epoch milliseconds (1.4.3: questions are placed in the chat by time), or None.
+    Looks where the agents keep it: "timestamp" (Claude, Codex, Copilot, pi, omp, Grok's updates),
+    "createdAt" (Vibe), "message.timestamp", "payload.timestamp", "data.meta.timestamp" (Kiro),
+    "time.created" (OpenCode). ISO-8601 text or a number of seconds or milliseconds."""
+    if not isinstance(r, dict):
+        return None
+    cands = [r.get("timestamp"), r.get("ts"), r.get("createdAt"), r.get("created_at"), r.get("time")]
+    for sub in ("message", "payload", "data"):
+        d = r.get(sub)
+        if isinstance(d, dict):
+            cands += [d.get("timestamp"), (d.get("meta") or {}).get("timestamp") if isinstance(d.get("meta"), dict) else None]
+    for v in cands:
+        if isinstance(v, dict):
+            v = v.get("created")
+        t = to_ms(v)
+        if t:
+            return t
+    return None
+
+
+def to_ms(v):
+    """Epoch milliseconds from ISO-8601 text or a number (seconds or milliseconds); None otherwise."""
+    if isinstance(v, bool) or v is None:
+        return None
+    if isinstance(v, (int, float)):
+        if v <= 0:
+            return None
+        return int(v * 1000) if v < 1e11 else int(v)
+    if isinstance(v, str) and v[:4].isdigit():
+        try:
+            import datetime
+            t = v.strip().replace("Z", "+00:00")
+            d = datetime.datetime.fromisoformat(t)
+            if d.tzinfo is None:
+                d = d.replace(tzinfo=datetime.timezone.utc)
+            return int(d.timestamp() * 1000)
+        except Exception:
+            try:
+                return to_ms(float(v))
+            except Exception:
+                return None
+    return None
+
+
+def stamped(recs, items, key=None):
+    """Yields each record; once its body has run, the items it added carry its time as "ts" (1.4.3)."""
+    for rec in recs:
+        n = len(items)
+        yield rec
+        t = ts_of(key(rec) if key else rec[1])
+        if t:
+            for it in items[n:]:
+                it.setdefault("ts", t)
+
+
 def user_items(key, text, out, via=None):
     # A pasted block arrives wrapped in <pasted_content id="..."> tags; show only what was pasted.
     text = PASTED_TAG.sub("", text or "").strip()
@@ -371,7 +427,7 @@ def claude(cwd, cur):
         return None
     recs, ncur, reset, more = read_jsonl(path, cur)
     items, title = [], None
-    for off, r in recs:
+    for off, r in stamped(recs, items):
         if r.get("type") == "custom-title":
             title = r.get("customTitle") or title
             continue
@@ -445,7 +501,7 @@ def codex(cwd, cur):
         return None
     recs, ncur, reset, more = read_jsonl(path, cur)
     items = []
-    for off, r in recs:
+    for off, r in stamped(recs, items):
         if r.get("type") != "response_item":
             continue
         p = r.get("payload") or {}
@@ -502,7 +558,7 @@ def pi(cwd, cur, root=(".pi", "agent")):
         return None
     recs, ncur, reset, more = read_jsonl(path, cur)
     items = []
-    for off, r in recs:
+    for off, r in stamped(recs, items):
         if r.get("type") != "message":
             continue
         m = r.get("message") or {}
@@ -542,7 +598,7 @@ def grok(cwd, cur):
         return None
     recs, ncur, reset, more = read_jsonl(path, cur)
     items = []
-    for off, r in recs:
+    for off, r in stamped(recs, items):
         t = r.get("type")
         k = "g%d" % off
         if t == "user" and not r.get("synthetic_reason"):
@@ -586,7 +642,7 @@ def copilot(cwd, cur):
         return None
     recs, ncur, reset, more = read_jsonl(best, cur)
     items = []
-    for off, r in recs:
+    for off, r in stamped(recs, items):
         t = r.get("type") or ""
         d = r.get("data") or {}
         k = "o%d" % off
@@ -649,7 +705,7 @@ def opencode(cwd, cur):
         more = start > 0
     else:
         start = cur.get("seq", 0)
-    rows = c.execute("select id, type, seq, data from session_message where session_id = ? and seq >= ? order by seq",
+    rows = c.execute("select id, type, seq, data, time_created from session_message where session_id = ? and seq >= ? order by seq",
                      (sid, start)).fetchall()
     blobs = {}
     try:
@@ -662,7 +718,7 @@ def opencode(cwd, cur):
     c.close()
     items = []
     last = start
-    for mid, typ, seq, data in rows:
+    for mid, typ, seq, data, created in stamped(rows, items, key=lambda row: {"time": row[4]}):
         last = max(last, seq)
         try:
             d = json.loads(data)
@@ -730,12 +786,12 @@ def hermes(cwd, cur):
     else:
         start = cur.get("id", 0)
     rows = c.execute(
-        "select id, role, content, tool_calls, tool_call_id, reasoning, display_kind from messages "
+        "select id, role, content, tool_calls, tool_call_id, reasoning, display_kind, timestamp from messages "
         "where session_id = ? and id >= ? and coalesce(active, 1) = 1 order by id", (sid, start)).fetchall()
     c.close()
     items = []
     last = start
-    for mid, role, content, tool_calls, tool_call_id, reasoning, display_kind in rows:
+    for mid, role, content, tool_calls, tool_call_id, reasoning, display_kind, when in stamped(rows, items, key=lambda row: {"timestamp": row[7]}):
         last = max(last, mid)
         if display_kind == "hidden":
             continue
@@ -794,7 +850,7 @@ def vibe_entries(meta):
 
 def vibe_items(entries, start):
     items = []
-    for e in entries[start:]:
+    for e in stamped(entries[start:], items, key=lambda e: e):
         k = "v" + str(e.get("id"))
         t = e.get("type")
         if t == "message" and e.get("role") == "user":
@@ -887,7 +943,7 @@ def kiro(cwd, cur):
         return None
     recs, ncur, reset, more = read_jsonl(best, cur)
     items = []
-    for off, r in recs:
+    for off, r in stamped(recs, items):
         kind = r.get("kind")
         data = r.get("data") or {}
         for i, c in enumerate(data.get("content") or []):
@@ -1630,7 +1686,8 @@ def main():
                 sys.stdout.write(json.dumps(res) + "\n")
                 sys.stdout.flush()
                 return
-            res.update({"ok": True, "src": agent})
+            # The computer's clock, so the app can place questions (phone time) among items (1.4.3).
+            res.update({"ok": True, "src": agent, "now": int(time.time() * 1000)})
             if PIN and isinstance(res.get("cur"), dict):
                 res["cur"].update(PIN)
             if first or res.get("items") or res.get("reset") or res.get("title"):
@@ -1650,7 +1707,8 @@ def main():
         done({"ok": False, "why": "%s: %s" % (type(e).__name__, str(e)[:200])})
     if res is None:
         done({"ok": False, "why": "no session log found for this folder"})
-    res.update({"ok": True, "src": agent})
+    import time
+    res.update({"ok": True, "src": agent, "now": int(time.time() * 1000)})
     if PIN and isinstance(res.get("cur"), dict):
         res["cur"].update(PIN)  # later reads stay on the pinned session
     done(res)

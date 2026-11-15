@@ -48,7 +48,7 @@ HerdrDroid is for people who already run agents under herdr on a computer they c
 - **Question cards.** When an agent asks something (a numbered menu, a `(y/n)` prompt, Claude's multi-question dialog, Kiro's unnumbered approval menu, Grok's privacy dialog), the app shows it as a card with one button per answer. Each button says which keys it sends: arrows and Enter for a highlighted menu, the option's own key for Codex ("(y)", "(a)"), Esc for a "(esc)" option. Checkbox lists, "Other" or "Type something" options, and menus of up to 20 options are handled. An option that grants standing permission ("don't ask again", "always allow") carries a caution.
 - **Never an empty card.** When the screen looks like a question but no parser can read its options, the card shows that part of the screen with generic keys. When the screen can't be read at all, the card says so. Every card has **Show terminal**.
 - **Errors are not questions.** When an agent stops on an error (a rate limit, a usage limit or quota, out of credits, a provider or server error, an overloaded model, a lost connection, an expired sign-in, a full context window or a failed compaction, or a crash), the pane shows a banner naming the error, with **Show terminal**, instead of a card. herdr's "blocked" status alone, with nothing on screen that asks, makes no card.
-- **Question history.** Every question an agent asks stays in that agent's chat as plain text: the question, the options, how it ended ("answered", "answered elsewhere", "dismissed"), and your answer.
+- **Question history.** Every question an agent asks stays in that agent's chat as plain text: the question, the options, how it ended ("answered", "answered elsewhere", "dismissed"), and your answer. Each question sits where it happened in the chat, by the times in the agent's own log (corrected for any difference between the phone's clock and the computer's), so newer messages appear below it. Grok's log has no times, so a Grok question goes after the message that was newest when it appeared.
 
 ### Alerts and Watching
 
@@ -301,6 +301,7 @@ If you build for yourself without the project's key, use your own key (a standar
 
 ## Version history
 
+- **1.4.3.** Answered questions sit in time order in every agent's chat instead of at the bottom.
 - **1.4.2.** Codex's edit-approval card shows its question, description, file and keys; no question card is ever empty; **Show terminal** on every card; agent errors (rate limits, quotas, credits, provider and connection errors, expired sign-ins, full context, failed compaction, crashes) show as a banner for every supported agent instead of a card; herdr's stale "blocked" status makes no card; question alerts have one set of buttons that always answer or say why not; the MIT license and this README.
 - **1.4.1.** Kiro's chat from its session log; each kept chat bound to its pane, with a safe move from the old file names; a stricter send guard; agent versions read in parallel; fixes from code review.
 - **1.4.0.** The fallback card, every answer type (checkboxes, "Other", standing-permission cautions, menus past nine options), never typing into a busy pane, the debug bundle, fewer polls in the background, and version-aware parsers.

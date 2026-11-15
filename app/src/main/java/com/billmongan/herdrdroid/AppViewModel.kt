@@ -188,6 +188,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var transcriptTitle by mutableStateOf<String?>(null)
         private set
+    /** The open chat's item times on the computer's clock, by key (1.4.3: questions are placed by them). */
+    var transcriptTimes by mutableStateOf<Map<String, Long>>(emptyMap())
+        private set
+    /** Each server's phone clock minus its computer's clock, in ms, from the reader's "now" (1.4.3). */
+    private val hostOffset = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    /** The open server's clock offset, for placing questions (phone time) among chat items (computer time). */
+    fun hostOffsetMs(): Long = current?.id?.let { hostOffset[it] } ?: 0L
+    private fun noteHostClock(r: com.billmongan.herdrdroid.transcript.TranscriptRead) {
+        val sid = current?.id ?: return
+        if (r.hostNow > 0) hostOffset[sid] = System.currentTimeMillis() - r.hostNow
+    }
     private var transcriptPane: String? = null
     private var transcriptCursor = ""
     private val transcriptScript: ByteArray by lazy {
@@ -1253,6 +1264,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             // Read ahead on connect (or kept from before): shown at once, then caught up from its cursor.
             transcriptCursor = c.cursor
             transcriptItems = c.items
+            transcriptTimes = c.times
             transcriptMore = c.more
             transcriptTitle = c.title
             transcriptStart = c.start
@@ -1262,6 +1274,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         transcriptCursor = ""
         transcriptItems = emptyList()
+        transcriptTimes = emptyMap()
         transcriptMore = false
         transcriptTitle = null
         transcriptStart = -1L
@@ -1396,7 +1409,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The open chat as it is now. */
     private fun openChatNow(paneId: String) = CachedChat(transcriptItems, transcriptCursor, transcriptMore, transcriptTitle,
-        transcriptStart, transcriptFile, pane(paneId)?.agent?.lowercase())
+        transcriptStart, transcriptFile, pane(paneId)?.agent?.lowercase(), transcriptTimes)
 
     /** Keeps the open chat, in memory and on the phone, before it is left (another agent, a reconnect, a server switch). */
     private fun stashOpenChat() {
@@ -1532,8 +1545,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         transcriptCursor = r.cursor
+        noteHostClock(r)
         if (r.reset || r.items.isNotEmpty()) {
             transcriptItems = Transcript.merge(transcriptItems, r.items, r.reset)
+            val got = Transcript.timesOf(r.items)
+            transcriptTimes = if (r.reset) got else if (got.isEmpty()) transcriptTimes else transcriptTimes + got
         }
         if (r.reset) {
             transcriptMore = r.more
@@ -1608,6 +1624,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val older = Transcript.merge(emptyList(), r.items, true)
                 val have = transcriptItems.map { it.key }.toSet()
                 transcriptItems = older.filter { it.key !in have } + transcriptItems
+                transcriptTimes = Transcript.timesOf(r.items) + transcriptTimes
                 transcriptStart = runCatching { org.json.JSONObject(r.cursor).optLong("start", 0L) }.getOrDefault(0L)
                 transcriptMore = r.more
             } finally {

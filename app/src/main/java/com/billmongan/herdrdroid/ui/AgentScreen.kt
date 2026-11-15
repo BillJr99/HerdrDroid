@@ -492,7 +492,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                         DropdownMenuItem(text = { Text("Export as Markdown") }, onClick = {
                             menu = false
                             vm.exportMarkdown(context, vm.transcriptTitle ?: "${pane?.agentName ?: "Agent"} in ${pane?.folder ?: ""}", pane?.agentName ?: "Agent",
-                                com.billmongan.herdrdroid.transcript.QuestionLog.withQuestions(vm.transcriptItems, vm.questionsFor(paneId)))
+                                com.billmongan.herdrdroid.transcript.QuestionLog.withQuestions(vm.transcriptItems, vm.questionsFor(paneId), vm.transcriptTimes, vm.hostOffsetMs()))
                         })
                     }
                     // Kept out of the header so the agent's name has the room.
@@ -523,7 +523,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
         val questionsNow = vm.questionsFor(paneId)
         val cardUp = prompt != null
         val chatItems = remember(vm.transcriptItems, questionsNow, cardUp) {
-            com.billmongan.herdrdroid.transcript.QuestionLog.withQuestions(vm.transcriptItems, questionsNow)
+            com.billmongan.herdrdroid.transcript.QuestionLog.withQuestions(vm.transcriptItems, questionsNow, vm.transcriptTimes, vm.hostOffsetMs())
                 .filter { !cardUp || (it as? com.billmongan.herdrdroid.transcript.QuestionItem)?.state != com.billmongan.herdrdroid.transcript.QState.OPEN }
         }
         val rowsNow = remember(chatItems) { rowsOf(chatItems) }
