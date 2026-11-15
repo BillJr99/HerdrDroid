@@ -1,0 +1,72 @@
+# Publishes each committed APK as a GitHub release (Bill, 2026-11-15: "when we push an apk can we set
+# that as a github release that downloads the apk?"). When a push to main adds
+# release/HerdrDroid-<version>.apk, this creates release v<version> on that commit with two assets:
+# the APK as committed (built and signed locally with the sideload key, so it installs over the app)
+# and a copy named HerdrDroid.apk, so
+#   https://github.com/BillJr99/HerdrDroid/releases/latest/download/HerdrDroid.apk
+# always downloads the newest one. Nothing is rebuilt and no secret is used. A version that already
+# has a release is left alone. workflow_dispatch publishes one version by hand (for example a backfill).
+# A release made here with the workflow token does not start build.yml's tag job.
+name: release-apk
+
+on:
+  push:
+    branches: [main]
+    paths: ["release/HerdrDroid-*.apk"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish, e.g. 1.4.5 (release/HerdrDroid-<version>.apk must be on main)"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-apk
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Find new APKs
+        id: find
+        env:
+          BEFORE: ${{ github.event.before }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          if [ -n "$INPUT_VERSION" ]; then
+            files="release/HerdrDroid-$INPUT_VERSION.apk"
+            [ -f "$files" ] || { echo "::error::$files is not on this commit"; exit 1; }
+          elif [ -z "$BEFORE" ] || [ "$BEFORE" = 0000000000000000000000000000000000000000 ]; then
+            files=$(git diff-tree --no-commit-id --name-only --diff-filter=A -r HEAD -- 'release/HerdrDroid-*.apk')
+          else
+            files=$(git diff --name-only --diff-filter=A "$BEFORE" HEAD -- 'release/HerdrDroid-*.apk')
+          fi
+          echo "files<<EOF" >> "$GITHUB_OUTPUT"; echo "$files" >> "$GITHUB_OUTPUT"; echo "EOF" >> "$GITHUB_OUTPUT"
+          echo "New APKs: ${files:-none}"
+
+      - name: Create releases
+        if: steps.find.outputs.files != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FILES: ${{ steps.find.outputs.files }}
+        run: |
+          newest=$(ls release/HerdrDroid-*.apk | sed -E 's#.*/HerdrDroid-(.*)\.apk#\1#' | sort -V | tail -1)
+          for f in $FILES; do
+            v=$(basename "$f" .apk); v=${v#HerdrDroid-}
+            echo "$v" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "skip $f: not a version"; continue; }
+            if gh release view "v$v" >/dev/null 2>&1; then echo "v$v already has a release"; continue; fi
+            sha=$(sha256sum "$f" | cut -d' ' -f1)
+            mkdir -p out && cp "$f" out/HerdrDroid.apk
+            latest=false; [ "$v" = "$newest" ] && latest=true
+            notes=$(printf 'HerdrDroid %s, the APK committed as `%s` (built and signed locally; installs over earlier versions).\n\nsha256 `%s`\n\nExperimental software with no warranty; use it at your own risk. See the README for what changed.' "$v" "$f" "$sha")
+            gh release create "v$v" "$f" "out/HerdrDroid.apk" --target "$GITHUB_SHA" \
+              --title "HerdrDroid $v" --notes "$notes" --latest=$latest
+            echo "released v$v (latest=$latest)"
+          done
