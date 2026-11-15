@@ -31,16 +31,35 @@ HerdrDroid is for people who already run agents under herdr on a computer they c
 
 ## Screenshots
 
-Taken on an Android emulator against a demo computer ("demo-box") running herdr with stand-in agents; every name, path, chat and usage figure in them is made up.
+Taken on an Android emulator against a demo computer ("demo-box") running herdr with stand-in agents. Every name, path, chat and usage figure in them is made up. Each screen is shown in the light and the dark theme; the app follows the phone's setting, or you can pick one in Settings.
 
-| | | |
+### Servers and agents
+
+| | Light | Dark |
 |---|---|---|
-| <img src="docs/screenshots/01-servers.png" width="240" alt="The server list with one demo server"> | <img src="docs/screenshots/02-fleet.png" width="240" alt="The agent tabs on a computer, each with its status, model and usage"> | <img src="docs/screenshots/04-drawer.png" width="240" alt="The navigation drawer listing each agent session"> |
-| Servers | Agents on one computer, with each one's model and usage limits | The session drawer |
-| <img src="docs/screenshots/03-chat-claude.png" width="240" alt="A Claude Code chat read from its session log"> | <img src="docs/screenshots/06-card.png" width="240" alt="A question card for a Claude Code approval, with one button per answer"> | <img src="docs/screenshots/07-chat-muse.png" width="240" alt="A Muse Code chat"> |
-| A chat, read from the agent's own log | A question card: each button says which keys it sends | Muse Code's chat |
-| <img src="docs/screenshots/05-usage.png" width="240" alt="Usage limits for each agent on the computer"> | <img src="docs/screenshots/08-settings.png" width="240" alt="Settings: appearance, app lock and palettes"> | |
-| Usage limits for every agent | Settings | |
+| **Servers** | <img src="docs/screenshots/light-01-servers.png" width="220" alt="The server list with one demo server, light theme"> | <img src="docs/screenshots/dark-01-servers.png" width="220" alt="The server list with one demo server, dark theme"> |
+| **Agents on one computer, with each one's model and usage limits** | <img src="docs/screenshots/light-02-fleet.png" width="220" alt="The agent tabs on a computer, each with its status, model and usage, light theme"> | <img src="docs/screenshots/dark-02-fleet.png" width="220" alt="The agent tabs on a computer, each with its status, model and usage, dark theme"> |
+| **The session drawer** | <img src="docs/screenshots/light-04-drawer.png" width="220" alt="The navigation drawer listing each agent session, light theme"> | <img src="docs/screenshots/dark-04-drawer.png" width="220" alt="The navigation drawer listing each agent session, dark theme"> |
+
+### Chats
+
+| | Light | Dark |
+|---|---|---|
+| **A Claude Code chat, read from its own log** | <img src="docs/screenshots/light-03-chat-claude.png" width="220" alt="A Claude Code chat with a tool summary and the reply, light theme"> | <img src="docs/screenshots/dark-03-chat-claude.png" width="220" alt="A Claude Code chat with a tool summary and the reply, dark theme"> |
+| **A Muse Code chat** | <img src="docs/screenshots/light-07-chat-muse.png" width="220" alt="A Muse Code chat with a command and the reply, light theme"> | <img src="docs/screenshots/dark-07-chat-muse.png" width="220" alt="A Muse Code chat with a command and the reply, dark theme"> |
+
+### Questions and approvals
+
+| | Light | Dark |
+|---|---|---|
+| **An approval card: each button says which keys it sends, and a standing permission carries a caution** | <img src="docs/screenshots/light-06-card.png" width="220" alt="A question card for a Claude Code command approval, with one button per answer, light theme"> | <img src="docs/screenshots/dark-06-card.png" width="220" alt="A question card for a Claude Code command approval, with one button per answer, dark theme"> |
+
+### Usage and settings
+
+| | Light | Dark |
+|---|---|---|
+| **Usage limits for every agent on the computer** | <img src="docs/screenshots/light-05-usage.png" width="220" alt="Usage limits for each agent, with reset times, light theme"> | <img src="docs/screenshots/dark-05-usage.png" width="220" alt="Usage limits for each agent, with reset times, dark theme"> |
+| **Settings** | <img src="docs/screenshots/light-08-settings.png" width="220" alt="Settings: appearance, app lock and palettes, light theme"> | <img src="docs/screenshots/dark-08-settings.png" width="220" alt="Settings: appearance, app lock and palettes, dark theme"> |
 
 ## Features
 
