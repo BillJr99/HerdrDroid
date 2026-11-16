@@ -145,6 +145,29 @@ Nous Rate Limits (captured just now):
         assertEquals("6d 21h", items[0].resets)
     }
 
+    /**
+     * Hermes's footer since mid-November 2026 uses " · " between its fields. Its bar is the context
+     * window (422K of 500K tokens), not a usage limit (seen as "84%" on the Hermes card, 2026-11-16).
+     */
+    @Test fun hermesDotFooterIsNotAQuota() {
+        val footer = " ☤ gpt-6.1-sol · 422K/500K · [████████░░] 84% · ◷ 7.6s · ↑ 1 t/s · 2.5d · ⏲ 8s · ✓ 10h 13m            / commands · @ files · ! shell"
+        assertTrue(parseQuota(footer).isEmpty())
+        val items = parseQuota("""
+  📈 Account limits
+  Provider: openai-codex (Prolite)
+  Weekly: 100% remaining (0% used) • resets in 6d 21h (2026-11-18 06:04 EST)
+$footer
+""")
+        assertEquals(listOf("Weekly"), items.map { it.label })
+        assertEquals(0.0, items[0].usedPercent, 0.01)
+    }
+
+    /** A gauge labelled only by tokens over a limit is a context window, whatever separates it. */
+    @Test fun tokenGaugeIsNotAQuota() {
+        assertTrue(parseQuota("gpt-6.1-sol 422K/500K [████████░░] 84%").isEmpty())
+        assertTrue(parseQuota("model ~124K/500K [██░░░░░░░░] 25%").isEmpty())
+    }
+
     /** Antigravity's real screen, including its intro lines and blank lines between limits. */
     @Test fun antigravityLive() {
         val items = parseQuota("""

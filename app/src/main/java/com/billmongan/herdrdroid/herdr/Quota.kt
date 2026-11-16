@@ -253,8 +253,15 @@ private val RESET_INLINE = Regex("""resets?:?\s+(?:in\s+)?([^)·•│┃]+)""",
 
 private fun clean(line: String) = line.trim().trim { it in BOX || it.isWhitespace() }
 
-/** True for a status bar such as Hermes's footer, which packs many fields between separators. */
-private fun isStatusBar(line: String) = line.count { it in SEP } >= 4
+/**
+ * True for a status bar such as Hermes's footer, which packs many fields between separators. Hermes
+ * has drawn them with "│" and, since mid-November 2026, with " · " ("☤ gpt-6.1-sol · 422K/500K ·
+ * [████████░░] 84% · ◷ 7.6s · ..."), so either counts.
+ */
+private fun isStatusBar(line: String) = line.count { it in SEP } >= 4 || line.split(" · ").size >= 5
+
+/** A token count over a token limit ("422K/500K", "~124K/500K"): a context-window gauge, not a usage limit. */
+private val TOKEN_GAUGE = Regex("""~?\d[\d.,]*\s*[KkMm]\s*/\s*\d[\d.,]*\s*[KkMm]\b""")
 
 /**
  * Reads usage limits out of an agent's screen. It looks for lines with a percentage and either a
@@ -328,7 +335,7 @@ fun parseQuota(text: String, bareMeansLeft: Boolean = false): List<QuotaItem> {
                 .takeIf { it.isNotBlank() && it.length <= 60 && !it.endsWith(".") }
         } ?: continue
         // Context-window gauges are not usage limits.
-        if (label.length > 60 || label.contains("context", true)) continue
+        if (label.length > 60 || label.contains("context", true) || TOKEN_GAUGE.containsMatchIn(label)) continue
 
         val pct = m.groupValues[1].toDoubleOrNull() ?: continue
         val remaining = when (word) {
