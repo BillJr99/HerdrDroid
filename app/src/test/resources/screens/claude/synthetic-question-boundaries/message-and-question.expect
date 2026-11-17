@@ -1,0 +1,5 @@
+card: options
+blocked: false
+heading: Which color should the sample use?
+options: Blue | Orange | Type something.
+source: synthetic neutral conversation and AskUserQuestion layout

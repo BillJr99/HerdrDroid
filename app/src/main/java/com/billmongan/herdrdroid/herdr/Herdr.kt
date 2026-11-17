@@ -1650,11 +1650,30 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     // A question dialog on screen means the agent waits, whatever herdr reported.
     @Suppress("NAME_SHADOWING") val blocked = blocked || showsQuestionDialog(text) ||
         (rules.extraFooter?.let { f -> text.lines().takeLast(6).any { f.containsMatchIn(it) } } == true)
-    val raw = text.lines().map { it.trimEnd() }.takeLast(80)
-    val lines = raw.filter { it.isNotBlank() }.takeLast(40)
+    var raw = text.lines().map { it.trimEnd() }.takeLast(80)
+    var lines = raw.filter { it.isNotBlank() }.takeLast(40)
     if (lines.isEmpty()) return if (blocked) Prompt("This agent is waiting for you.", emptyList(), region = listOf(UNREAD_SCREEN)) else null
 
     val clean = { s: String -> s.trim().trim('│', '┃', '|', '╭', '╰', '╮', '╯', '─', ' ').trim() }
+    // Claude's question tabs delimit the dialog, not the conversation above it.
+    // A footer left in scrollback cannot validate a later conversation list.
+    val dialogAt = raw.indexOfLast { parseTabBar(clean(it)) != null }
+    if (dialogAt >= 0) {
+        raw = raw.drop(dialogAt)
+        val footerAt = raw.indexOfFirst { QUESTION_FOOTER.containsMatchIn(it) }
+        if (footerAt >= 0 && raw.drop(footerAt + 1).any { l ->
+                INPUT_ROW_UNDER.containsMatchIn(l) ||
+                    (clean(l).any(Char::isLetterOrDigit) && !isChrome(l)) }) return null
+        lines = raw.filter { it.isNotBlank() }.takeLast(40)
+    }
+    val claudeFooter = lines.takeLast(6).any {
+        QUESTION_FOOTER.containsMatchIn(it) ||
+            Regex("""\bEsc to (cancel|reject)\b""", RegexOption.IGNORE_CASE).containsMatchIn(it)
+    }
+    // A user's echoed numbered message has the same marker as a selected option.
+    val claudeApproval = raw.any { clean(it).startsWith("Do you want to ") || COMMAND_INTRO.matches(clean(it)) }
+    if (agent?.lowercase() == "claude" && dialogAt < 0 && !claudeFooter && !claudeApproval &&
+        raw.any { PROMPT_ECHO.containsMatchIn(it.trimStart()) }) return null
     // "❯ 1. Yes", "  2. Yes, and don't ask again for …" (labels can be long; up to 200 characters).
     // Grok draws radio buttons instead: "1 (○) Yes, and don't ask again", "2 (●) Yes, proceed", with
     // (●) on the highlighted option, which ↑/↓ move and Enter picks (checked in Grok 4.7, 2026-11-13).
@@ -1774,6 +1793,8 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
             }
         }.replace(Regex("\\s+"), " ").trim().takeIf { it.isNotEmpty() }
     }
+    if (dialogAt < 0 && !claudeFooter && aboveText == null &&
+        raw.firstOrNull { it.isNotBlank() }?.let { PROMPT_ECHO.containsMatchIn(it.trimStart()) } == true) return null
     val question = aboveText ?: lines.lastOrNull { clean(it).endsWith("?") }?.let(clean)
     val parts = above?.let(::questionParts)
 
@@ -1781,8 +1802,12 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     // rows (❯ › > ▶, or a filled radio), a question dialog's footer, or Vibe's card footer. A reply
     // that lists steps and ends with "?" is prose, not a question card (1.2.7, Bill: "choices like
     // first, second, then, but they weren't mutually exclusive options").
+    if (dialogAt >= 0 && run.none { it.first in marked }) {
+        return Prompt(question ?: "This agent is waiting for you.", emptyList(), region = raw.takeLast(16))
+    }
     val vibeCard = lines.takeLast(6).any { VIBE_CARD_FOOTER.containsMatchIn(it) }
-    val realMenu = run.any { it.first in marked } || showsQuestionDialog(text) || vibeCard
+    val realMenu = (run.any { it.first in marked } || showsQuestionDialog(text) || vibeCard) &&
+        (dialogAt < 0 || run.any { it.first in marked })
     // A card is at the bottom of the screen: under its last option only a few lines (a description,
     // a footer, the card's frame). A card with more under it is an old one left in the scrollback
     // after it was answered (1.4.9, Bill: "Grok is stuck on another fake question box"): Grok's
@@ -1795,6 +1820,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     val wentOn = below.any { l -> val c = clean(l)
         (c.any(Char::isLetterOrDigit) && (ACTIVITY.containsMatchIn(c) || WORKING_LINE.containsMatchIn(c))) ||
             (INPUT_ROW_UNDER.containsMatchIn(l) && !Regex("""type your|other""", RegexOption.IGNORE_CASE).containsMatchIn(c)) }
+    if (wentOn && (dialogAt >= 0 || agent?.lowercase() == "claude")) return null
     if (numbered.size in 2..20 && realMenu && underCard <= MAX_UNDER_CARD && !wentOn) {
         // Vibe draws no marker on the highlighted row; a fresh card highlights the first one.
         val selected = run.firstOrNull { it.first in marked }?.second ?: if (vibeCard) "1" else null

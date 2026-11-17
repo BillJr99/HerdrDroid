@@ -1,0 +1,17 @@
+❯ 1. Review the draft first.
+  2. Keep the sample text.
+  3. Compare the alternatives.
+  4. Save the summary.
+
+────────────────────────────────────────────────────────────
+←  ☐ Color  ✔ Submit  →
+
+Which color should the sample use?
+
+❯ 1. Blue
+     Use a cool color.
+  2. Orange
+     Use a warm color.
+  3. Type something.
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel

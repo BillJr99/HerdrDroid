@@ -4,6 +4,8 @@ Every question or approval prompt the supported agents can show, as HerdrDroid r
 
 For every card: the options are read in screen order; the highlighted one is the one Enter picks; an option that grants standing permission carries a caution; a refusal ("No", "Deny", "Reject", "Never allow", a deny or block rule) never does; an option marked "(esc)", or a refusal where Esc rejects, sends Esc. A card counts only at the bottom of the screen with nothing of the agent's own after it, so an answered card left in the scrollback is not shown again (1.4.9), and a card answered from the phone is not answered twice (1.4.8).
 
+Claude's question tabs bound the AskUserQuestion card: options are read only below that bar, and conversation after its footer makes it an old card. An echoed numbered message alone supplies no choices. If the dialog is visible but its selected option cannot be read, the app shows the screen fallback instead of borrowing a list from the conversation. The session-log reader takes options from each tool call's JSON and matches results by call id; user-message text is not parsed as options.
+
 | Agent | Card | Source | Options | Answered by | Standing permission | Esc |
 |---|---|---|---|---|---|---|
 | Claude Code | bash permission | captured | 3 | ↑/↓ + Enter, Enter, Esc | 1 | yes |
