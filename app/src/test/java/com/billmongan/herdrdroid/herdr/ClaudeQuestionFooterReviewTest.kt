@@ -55,4 +55,21 @@ class ClaudeQuestionFooterReviewTest {
             assertTrue(prompt.choices.isEmpty())
         }
     }
+
+    @Test fun proseEndsTheEchoBeforeALaterIndentedQuestion() {
+        for (prose in listOf("The sample is ready.", "  The sample is ready.")) {
+            val question = "Which sample should be used?"
+            val prompt = detectPrompt(echo + "\n" + prose + "\n     " + question, true, "claude")!!
+            assertEquals(question, prompt.question)
+            assertTrue(prompt.choices.isEmpty())
+        }
+    }
+
+    @Test fun aBlankLineEndsTheEchoBeforeALaterNumberedQuestion() {
+        val question = "1. Which sample should be used?"
+        val prompt = detectPrompt(echo + "\n\n" + question, true, "claude")!!
+        assertEquals(question, prompt.question)
+        assertTrue(prompt.choices.isEmpty())
+    }
+
 }

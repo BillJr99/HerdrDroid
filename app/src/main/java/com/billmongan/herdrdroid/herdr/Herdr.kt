@@ -1832,9 +1832,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     // The agent's own activity ("● …", a spinner, a status line) or its input row under the options means
     // the agent went on after the card, however few lines that took (from Grok's review).
     // A box's own corner ("└────") is not activity: only a line with words counts.
-    val wentOn = below.any { l -> val c = clean(l)
-        (c.any(Char::isLetterOrDigit) && (ACTIVITY.containsMatchIn(c) || WORKING_LINE.containsMatchIn(c))) ||
-            (INPUT_ROW_UNDER.containsMatchIn(l) && !TYPED_ANSWER_HINT.containsMatchIn(c)) }
+    val wentOn = agentWentOn(below)
     if (numbered.size in 2..20 && realMenu && underCard <= MAX_UNDER_CARD && !wentOn && !rejectEcho) {
         // Vibe draws no marker on the highlighted row; a fresh card highlights the first one.
         val selected = run.firstOrNull { it.first in marked }?.second ?: if (vibeCard) "1" else null
@@ -1880,10 +1878,19 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     val askingLine = raw.withIndex().filter { it.value.isNotBlank() }.takeLast(6).lastOrNull { (i, l) ->
         val t = l.trimStart()
         val echoAt = (i downTo 0).firstOrNull { PROMPT_ECHO.containsMatchIn(raw[it].trimStart()) }
-        val echoLine = rejectEcho && echoAt != null && (i == echoAt || option.matches(l) ||
-            (l.firstOrNull()?.isWhitespace() == true && raw.subList(echoAt + 1, i).none { it.isBlank() }))
+        var continuationColumn = Int.MAX_VALUE
+        val echoLine = rejectEcho && echoAt != null && (echoAt..i).all { at ->
+            val row = raw[at]
+            val match = option.matchEntire(row)
+            when {
+                row.isBlank() -> false
+                match != null -> { continuationColumn = match.groups[6]!!.range.first; true }
+                else -> row.takeWhile { it.isWhitespace() }.length >= continuationColumn
+            }
+        }
+        val askingText = if (rejectEcho && !echoLine) option.matchEntire(l)?.let { label(it) } ?: clean(l) else clean(l)
         !echoLine && t.firstOrNull()?.let { it in "│┃|╭╰" } != true &&
-            ASKING_SENTENCE.matches(clean(l)) && !CODE_LINE.containsMatchIn(clean(l))
+            ASKING_SENTENCE.matches(askingText) && !CODE_LINE.containsMatchIn(askingText)
     }
     val asks = askingLine != null
     // An agent's error (a failed compaction, a rate limit) is not a question, whatever herdr says:
