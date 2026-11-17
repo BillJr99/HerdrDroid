@@ -1655,25 +1655,22 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     if (lines.isEmpty()) return if (blocked) Prompt("This agent is waiting for you.", emptyList(), region = listOf(UNREAD_SCREEN)) else null
 
     val clean = { s: String -> s.trim().trim('│', '┃', '|', '╭', '╰', '╮', '╯', '─', ' ').trim() }
-    // Claude's question tabs delimit the dialog, not the conversation above it.
-    // A footer left in scrollback cannot validate a later conversation list.
+    // End each old dialog at its footer, then inspect any newer UI below it.
+    val claudeFooterPattern = Regex(QUESTION_FOOTER.pattern + "|\\bEsc to (cancel|reject)\\b", RegexOption.IGNORE_CASE)
+    while (raw.isNotEmpty()) {
+        val tab = raw.indexOfLast { parseTabBar(clean(it)) != null }
+        if (tab >= 0) raw = raw.drop(tab)
+        if (tab < 0 && agent?.lowercase() != "claude") break
+        val footer = raw.indexOfFirst { claudeFooterPattern.containsMatchIn(it) }
+        if (footer < 0) break
+        val tail = raw.drop(footer + 1)
+        val newer = tail.any { l -> INPUT_ROW_UNDER.containsMatchIn(l) ||
+            (clean(l).any(Char::isLetterOrDigit) && !isChrome(l) && !KEY_HINT_LINE.containsMatchIn(clean(l))) }
+        if (!newer) { raw = raw.take(footer + 1); break }
+        raw = tail
+    }
+    lines = raw.filter { it.isNotBlank() }.takeLast(40)
     val dialogAt = raw.indexOfLast { parseTabBar(clean(it)) != null }
-    if (dialogAt >= 0) {
-        raw = raw.drop(dialogAt)
-        val footerAt = raw.indexOfFirst { QUESTION_FOOTER.containsMatchIn(it) }
-        if (footerAt >= 0 && raw.drop(footerAt + 1).any { l ->
-                INPUT_ROW_UNDER.containsMatchIn(l) ||
-                    (clean(l).any(Char::isLetterOrDigit) && !isChrome(l)) }) return null
-        lines = raw.filter { it.isNotBlank() }.takeLast(40)
-    }
-    val claudeFooter = lines.takeLast(6).any {
-        QUESTION_FOOTER.containsMatchIn(it) ||
-            Regex("""\bEsc to (cancel|reject)\b""", RegexOption.IGNORE_CASE).containsMatchIn(it)
-    }
-    // A user's echoed numbered message has the same marker as a selected option.
-    val claudeApproval = raw.any { clean(it).startsWith("Do you want to ") || COMMAND_INTRO.matches(clean(it)) }
-    if (agent?.lowercase() == "claude" && dialogAt < 0 && !claudeFooter && !claudeApproval &&
-        raw.any { PROMPT_ECHO.containsMatchIn(it.trimStart()) }) return null
     // "❯ 1. Yes", "  2. Yes, and don't ask again for …" (labels can be long; up to 200 characters).
     // Grok draws radio buttons instead: "1 (○) Yes, and don't ask again", "2 (●) Yes, proceed", with
     // (●) on the highlighted option, which ↑/↓ move and Enter picks (checked in Grok 4.7, 2026-11-13).
@@ -1793,10 +1790,18 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
             }
         }.replace(Regex("\\s+"), " ").trim().takeIf { it.isNotEmpty() }
     }
-    if (dialogAt < 0 && !claudeFooter && aboveText == null &&
-        raw.firstOrNull { it.isNotBlank() }?.let { PROMPT_ECHO.containsMatchIn(it.trimStart()) } == true) return null
     val question = aboveText ?: lines.lastOrNull { clean(it).endsWith("?") }?.let(clean)
     val parts = above?.let(::questionParts)
+    val beforeOptions = lines.take(run.firstOrNull()?.first ?: lines.size)
+    val approvalHeader = beforeOptions.any { clean(it).startsWith("Do you want to ") || COMMAND_INTRO.matches(clean(it)) }
+    val questionHeader = beforeOptions.any {
+        !PROMPT_ECHO.containsMatchIn(it.trimStart()) && clean(it).endsWith("?") && !CODE_LINE.containsMatchIn(clean(it))
+    }
+    val plainEcho = raw.firstOrNull { it.isNotBlank() }?.trimStart()?.startsWith("❯ ") == true
+    val rejectEcho = dialogAt < 0 && !approvalHeader && !questionHeader &&
+        (agent?.lowercase() == "claude" || (agent == null && plainEcho)) &&
+        raw.any { PROMPT_ECHO.containsMatchIn(it.trimStart()) }
+
 
     // A numbered list is a menu only when the screen shows a real one: a highlight on one of its
     // rows (❯ › > ▶, or a filled radio), a question dialog's footer, or Vibe's card footer. A reply
@@ -1806,8 +1811,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
         return Prompt(question ?: "This agent is waiting for you.", emptyList(), region = raw.takeLast(16))
     }
     val vibeCard = lines.takeLast(6).any { VIBE_CARD_FOOTER.containsMatchIn(it) }
-    val realMenu = (run.any { it.first in marked } || showsQuestionDialog(text) || vibeCard) &&
-        (dialogAt < 0 || run.any { it.first in marked })
+    val realMenu = run.any { it.first in marked } || showsQuestionDialog(raw.joinToString("\n")) || vibeCard
     // A card is at the bottom of the screen: under its last option only a few lines (a description,
     // a footer, the card's frame). A card with more under it is an old one left in the scrollback
     // after it was answered (1.4.9, Bill: "Grok is stuck on another fake question box"): Grok's
@@ -1820,8 +1824,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     val wentOn = below.any { l -> val c = clean(l)
         (c.any(Char::isLetterOrDigit) && (ACTIVITY.containsMatchIn(c) || WORKING_LINE.containsMatchIn(c))) ||
             (INPUT_ROW_UNDER.containsMatchIn(l) && !Regex("""type your|other""", RegexOption.IGNORE_CASE).containsMatchIn(c)) }
-    if (wentOn && (dialogAt >= 0 || agent?.lowercase() == "claude")) return null
-    if (numbered.size in 2..20 && realMenu && underCard <= MAX_UNDER_CARD && !wentOn) {
+    if (numbered.size in 2..20 && realMenu && underCard <= MAX_UNDER_CARD && !wentOn && !rejectEcho) {
         // Vibe draws no marker on the highlighted row; a fresh card highlights the first one.
         val selected = run.firstOrNull { it.first in marked }?.second ?: if (vibeCard) "1" else null
         val multi = numbered.count { isCheckbox(it.label) } >= 2
@@ -1846,19 +1849,21 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
 
     // A menu without numbers, as Kiro draws its approval card ("❯ Yes, single permission" over
     // "  Trust, always allow in this session" and "  No (Tab to edit)"); arrows and Enter answer it.
-    if (blocked) detectUnnumberedMenu(text)?.let { return it }
+    if (blocked) detectUnnumberedMenu(raw.joinToString("\n"))?.takeUnless { p ->
+        rejectEcho && p.choices.any { Regex("""^\d{1,2}[.)]\s""").containsMatchIn(it.label) }
+    }?.let { return it }
 
     // Buttons side by side (OpenCode's permission prompt, Vibe's folder trust) and options answered by a
     // letter (Grok's folder trust and plan review), 1.4.9.
-    detectButtonRow(text)?.let { return it }
-    detectLetterMenu(text, blocked)?.let { return it }
+    detectButtonRow(raw.joinToString("\n"))?.let { return it }
+    detectLetterMenu(raw.joinToString("\n"), blocked)?.let { return it }
 
     // Grok's data-sharing banner, when nothing else is being asked: answered through /privacy.
     if (showsGrokBanner(text)) return GROK_PRIVACY_PROMPT
 
     // Looks like a question (herdr says it waits, or a question footer shows) but nothing above
     // understood it (1.4.0): the fallback card shows the bottom of the screen and generic keys.
-    val footer = lines.takeLast(6).any { QUESTION_FOOTER.containsMatchIn(it) }
+    val footer = lines.takeLast(6).any { claudeFooterPattern.containsMatchIn(it) }
     // A line near the bottom that asks: a sentence ending in "?", not code ("val name: String?",
     // "// why?") and not inside a box (omp's code view) (1.4.2, from review).
     val asks = lines.takeLast(6).any { l ->
@@ -1872,7 +1877,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     // a failed compaction, even on a fresh session, and the app showed an empty card). The fallback
     // card needs something question-like on screen too: a question footer, or a sentence near the
     // bottom that asks. Otherwise the status is stale and there is no card.
-    if (footer || (blocked && asks)) {
+    if ((footer && !rejectEcho) || (blocked && asks)) {
         val region = raw.dropLastWhile { it.isBlank() }.takeLast(16).map { clean(it) }.dropWhile { it.isEmpty() }
         return Prompt(question ?: "This agent is waiting for you.", emptyList(), region = region.takeIf { r -> r.any { it.isNotBlank() } } ?: listOf(UNREAD_SCREEN))
     }
