@@ -1388,11 +1388,17 @@ fun detectLetterMenu(text: String, blocked: Boolean): Prompt? {
 internal fun agentWentOn(below: List<String>): Boolean = below.any { l ->
     val c = l.trim().trim { it in "│┃|╭╰╮╯─ " }.trim()
     (c.any(Char::isLetterOrDigit) && (ACTIVITY.containsMatchIn(c) || WORKING_LINE.containsMatchIn(c))) ||
-        (INPUT_ROW_UNDER.containsMatchIn(l) && !Regex("""type your|other""", RegexOption.IGNORE_CASE).containsMatchIn(c))
+        (INPUT_ROW_UNDER.containsMatchIn(l) && !TYPED_ANSWER_HINT.containsMatchIn(c))
 }
 
 /** A key hint line ("ctrl+g to edit", "esc to cancel", "enter to submit"), 1.4.9. */
 private val KEY_HINT_LINE = Regex("""^(ctrl|shift|alt|cmd|esc|enter|tab|space|↑|↓|←|→)\b|\b(to|·)\s*(cancel|select|navigate|submit|confirm|edit)\b""", RegexOption.IGNORE_CASE)
+/** A whole keyboard hint, not a sentence that happens to mention an action. */
+private val STANDALONE_CARD_HINT = Regex(
+    """^(?:(?:ctrl|shift|alt|cmd)[+-][a-z0-9]+|esc|enter|tab(?:/arrow keys)?|space|arrow keys|[↑↓←→/]+)\s+(?:to\s+)?(?:cancel|reject|select|navigate|submit|confirm|toggle|edit(?: in editor)?)(?:\s*[·|]\s*(?:(?:ctrl|shift|alt|cmd)[+-][a-z0-9]+|esc|enter|tab(?:/arrow keys)?|space|arrow keys|[↑↓←→/]+)\s+(?:to\s+)?(?:cancel|reject|select|navigate|submit|confirm|toggle|edit(?: in editor)?))*$""",
+    RegexOption.IGNORE_CASE,
+)
+private val TYPED_ANSWER_HINT = Regex("""type your|other""", RegexOption.IGNORE_CASE)
 /** At most this many lines with text under a live card's last option (1.4.9). */
 private const val MAX_UNDER_CARD = 8
 /** Codex's approval footer (1.4.2). */
@@ -1427,7 +1433,7 @@ fun moveKeys(prompt: Prompt, choice: Choice): List<String>? = menuKeys(prompt, c
  * means the agent is waiting even when no choices can be read from the screen.
  */
 /** The footer of Claude's question dialog ("Enter to select · ↑/↓ to navigate · Esc to cancel"). */
-private val QUESTION_FOOTER = Regex("""Enter to select.*(navigate|Esc to cancel)|Tab/Arrow keys to navigate|↑/↓ to navigate|\b\d+/\d+:select\b|↑/?↓(?:/jk)?\s+(?:to\s+)?navigate|press enter to confirm or esc|^\s*Change approval defaults in /permissions\s*$|⇆ select|←→ select|↑↓ move|↑↓ navigate\s+enter select|enter to submit|enter confirm\s+esc cancel""", RegexOption.IGNORE_CASE)
+private val QUESTION_FOOTER = Regex("""Enter to select.*(navigate|Esc to cancel)|Tab/Arrow keys to navigate|↑/↓ to navigate|\b\d+/\d+:select\b|↑/?↓(?:/jk)?\s+(?:to\s+)?navigate|press enter to confirm or esc|^\s*Change approval defaults in /permissions\s*$|⇆ select|←→ select|↑↓ move|↑↓ navigate\s+enter select|^\s*enter to submit\s*$|enter confirm\s+esc cancel""", RegexOption.IGNORE_CASE)
 
 /** A line of the agent's own activity log above a card: "● Ran …", "• Running …", "◆ …", spinners. */
 private val ACTIVITY = Regex("""^[●○•◆◈⏵✓✗└▸☐☒⠀-⣿]""")  // ☐ ☒: Claude's question-dialog header chips
@@ -1656,7 +1662,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
 
     val clean = { s: String -> s.trim().trim('│', '┃', '|', '╭', '╰', '╮', '╯', '─', ' ').trim() }
     // End each old dialog at its footer, then inspect any newer UI below it.
-    val claudeFooterPattern = Regex(QUESTION_FOOTER.pattern + "|\\bEsc to (cancel|reject)\\b", RegexOption.IGNORE_CASE)
+    val claudeFooterPattern = Regex(QUESTION_FOOTER.pattern + "|\\bEsc to (cancel|reject)\\s*[│┃|]*\\s*$", RegexOption.IGNORE_CASE)
     while (raw.isNotEmpty()) {
         val tab = raw.indexOfLast { parseTabBar(clean(it)) != null }
         if (tab >= 0) raw = raw.drop(tab)
@@ -1664,12 +1670,17 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
         val footer = raw.indexOfFirst { claudeFooterPattern.containsMatchIn(it) }
         if (footer < 0) break
         val tail = raw.drop(footer + 1)
-        val newer = tail.any { l -> INPUT_ROW_UNDER.containsMatchIn(l) ||
-            (clean(l).any(Char::isLetterOrDigit) && !isChrome(l) && !KEY_HINT_LINE.containsMatchIn(clean(l))) }
+        val newer = tail.any { l ->
+            val input = INPUT_ROW_UNDER.containsMatchIn(l)
+            val typedAnswer = input && TYPED_ANSWER_HINT.containsMatchIn(clean(l))
+            !typedAnswer && (input || (clean(l).any(Char::isLetterOrDigit) &&
+                !isChrome(l) && !STANDALONE_CARD_HINT.matches(clean(l))))
+        }
         if (!newer) { raw = raw.take(footer + 1); break }
         raw = tail
     }
     lines = raw.filter { it.isNotBlank() }.takeLast(40)
+    val activeText = raw.joinToString("\n")
     val dialogAt = raw.indexOfLast { parseTabBar(clean(it)) != null }
     // "❯ 1. Yes", "  2. Yes, and don't ask again for …" (labels can be long; up to 200 characters).
     // Grok draws radio buttons instead: "1 (○) Yes, and don't ask again", "2 (●) Yes, proceed", with
@@ -1811,7 +1822,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
         return Prompt(question ?: "This agent is waiting for you.", emptyList(), region = raw.takeLast(16))
     }
     val vibeCard = lines.takeLast(6).any { VIBE_CARD_FOOTER.containsMatchIn(it) }
-    val realMenu = run.any { it.first in marked } || showsQuestionDialog(raw.joinToString("\n")) || vibeCard
+    val realMenu = run.any { it.first in marked } || showsQuestionDialog(activeText) || vibeCard
     // A card is at the bottom of the screen: under its last option only a few lines (a description,
     // a footer, the card's frame). A card with more under it is an old one left in the scrollback
     // after it was answered (1.4.9, Bill: "Grok is stuck on another fake question box"): Grok's
@@ -1823,7 +1834,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     // A box's own corner ("└────") is not activity: only a line with words counts.
     val wentOn = below.any { l -> val c = clean(l)
         (c.any(Char::isLetterOrDigit) && (ACTIVITY.containsMatchIn(c) || WORKING_LINE.containsMatchIn(c))) ||
-            (INPUT_ROW_UNDER.containsMatchIn(l) && !Regex("""type your|other""", RegexOption.IGNORE_CASE).containsMatchIn(c)) }
+            (INPUT_ROW_UNDER.containsMatchIn(l) && !TYPED_ANSWER_HINT.containsMatchIn(c)) }
     if (numbered.size in 2..20 && realMenu && underCard <= MAX_UNDER_CARD && !wentOn && !rejectEcho) {
         // Vibe draws no marker on the highlighted row; a fresh card highlights the first one.
         val selected = run.firstOrNull { it.first in marked }?.second ?: if (vibeCard) "1" else null
@@ -1849,14 +1860,14 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
 
     // A menu without numbers, as Kiro draws its approval card ("❯ Yes, single permission" over
     // "  Trust, always allow in this session" and "  No (Tab to edit)"); arrows and Enter answer it.
-    if (blocked) detectUnnumberedMenu(raw.joinToString("\n"))?.takeUnless { p ->
+    if (blocked) detectUnnumberedMenu(activeText)?.takeUnless { p ->
         rejectEcho && p.choices.any { Regex("""^\d{1,2}[.)]\s""").containsMatchIn(it.label) }
     }?.let { return it }
 
     // Buttons side by side (OpenCode's permission prompt, Vibe's folder trust) and options answered by a
     // letter (Grok's folder trust and plan review), 1.4.9.
-    detectButtonRow(raw.joinToString("\n"))?.let { return it }
-    detectLetterMenu(raw.joinToString("\n"), blocked)?.let { return it }
+    detectButtonRow(activeText)?.let { return it }
+    detectLetterMenu(activeText, blocked)?.let { return it }
 
     // Grok's data-sharing banner, when nothing else is being asked: answered through /privacy.
     if (showsGrokBanner(text)) return GROK_PRIVACY_PROMPT
@@ -1866,10 +1877,15 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     val footer = lines.takeLast(6).any { claudeFooterPattern.containsMatchIn(it) }
     // A line near the bottom that asks: a sentence ending in "?", not code ("val name: String?",
     // "// why?") and not inside a box (omp's code view) (1.4.2, from review).
-    val asks = lines.takeLast(6).any { l ->
+    val askingLine = raw.withIndex().filter { it.value.isNotBlank() }.takeLast(6).lastOrNull { (i, l) ->
         val t = l.trimStart()
-        t.firstOrNull()?.let { it in "│┃|╭╰" } != true && ASKING_SENTENCE.matches(clean(l)) && !CODE_LINE.containsMatchIn(clean(l))
+        val echoAt = (i downTo 0).firstOrNull { PROMPT_ECHO.containsMatchIn(raw[it].trimStart()) }
+        val echoLine = rejectEcho && echoAt != null && (i == echoAt || option.matches(l) ||
+            (l.firstOrNull()?.isWhitespace() == true && raw.subList(echoAt + 1, i).none { it.isBlank() }))
+        !echoLine && t.firstOrNull()?.let { it in "│┃|╭╰" } != true &&
+            ASKING_SENTENCE.matches(clean(l)) && !CODE_LINE.containsMatchIn(clean(l))
     }
+    val asks = askingLine != null
     // An agent's error (a failed compaction, a rate limit) is not a question, whatever herdr says:
     // no card; the pane shows it as an error banner (1.4.2). A sentence that asks still gets its card.
     if (!asks && detectAgentError(text) != null) return null
@@ -1879,7 +1895,8 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     // bottom that asks. Otherwise the status is stale and there is no card.
     if ((footer && !rejectEcho) || (blocked && asks)) {
         val region = raw.dropLastWhile { it.isBlank() }.takeLast(16).map { clean(it) }.dropWhile { it.isEmpty() }
-        return Prompt(question ?: "This agent is waiting for you.", emptyList(), region = region.takeIf { r -> r.any { it.isNotBlank() } } ?: listOf(UNREAD_SCREEN))
+        val fallbackQuestion = if (rejectEcho) askingLine?.value?.let(clean) else question
+        return Prompt(fallbackQuestion ?: "This agent is waiting for you.", emptyList(), region = region.takeIf { r -> r.any { it.isNotBlank() } } ?: listOf(UNREAD_SCREEN))
     }
     return null
 }
