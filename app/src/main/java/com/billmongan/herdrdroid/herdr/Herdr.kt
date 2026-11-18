@@ -240,9 +240,14 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
      * typed text ([isPlaceholderText]). herdr-core, or a herdr without `--format ansi`, gives the
      * plain screen, where only the known hints count.
      */
+    // Herdr can scroll idle full-screen agents on a plain-text recent read. The ANSI snapshot
+    // preserves terminal scrollback without sending mouse events into the live application.
+    private fun recentSnapshot(paneId: String, lines: Int) =
+        cmd("pane", "read", paneId, "--source", "recent", "--lines", lines.toString(), "--format", "ansi")
+
     suspend fun readStyled(paneId: String, lines: Int = 40): String =
         if (core) read(paneId, lines)
-        else runCatching { runNow(cmd("pane", "read", paneId, "--source", "recent", "--lines", lines.toString(), "--format", "ansi"), timeoutSeconds = 5) }
+        else runCatching { runNow(recentSnapshot(paneId, lines), timeoutSeconds = 5) }
             .getOrElse { if (it is kotlinx.coroutines.CancellationException) throw it; read(paneId, lines) }
 
     /**
@@ -254,7 +259,12 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
 
     suspend fun read(paneId: String, lines: Int = 200): String =
         if (core) forPhone(runNow(hcCmd("read", paneId, "--lines", lines.toString()), timeoutSeconds = 5))
-        else forPhone(runNow(cmd("pane", "read", paneId, "--source", "recent", "--lines", lines.toString()), timeoutSeconds = 5))
+        else try {
+            forPhone(runNow(recentSnapshot(paneId, lines), timeoutSeconds = 5))
+        } catch (e: HerdrError) {
+            if (e.exit == -2) throw e
+            forPhone(runNow(cmd("pane", "read", paneId, "--source", "visible", "--lines", lines.toString()), timeoutSeconds = 5))
+        }
 
     /**
      * Waits until any agent pane in [panes] changes state, or [timeoutMs] passes (1.4.1, "fewer
@@ -294,7 +304,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
     suspend fun previews(ids: List<String>): Map<String, Peek> {
         if (ids.isEmpty()) return emptyMap()
         val script = ids.joinToString("; ") { id ->
-            "echo ${shq("@@herdrdroid@@$id")}; ${if (core) hcCmd("read", id, "--lines", "12") else cmd("pane", "read", id, "--source", "recent", "--lines", "12")} 2>/dev/null"
+            "echo ${shq("@@herdrdroid@@$id")}; ${if (core) hcCmd("read", id, "--lines", "12") else recentSnapshot(id, 12)} 2>/dev/null"
         }
         val out = forPhone(ssh.exec(script).out)
         val result = mutableMapOf<String, Peek>()

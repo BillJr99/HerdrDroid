@@ -384,6 +384,7 @@ If you build for yourself without the project's key, use your own key (a standar
 
 ## Version history
 
+- **2.0.0-rc.7.** Phone polling reads passive snapshots and leaves desktop pane scroll positions alone. Usage checks that open panels skip the focused desktop pane.
 - **2.0.0-rc.6.** Claude usage panels stay out of question cards. HerdrDroid checks that a usage panel is still open before closing it.
 - **2.0.0-rc.5.** OpenCode web-search permission prompts show their choices in a question card. HerdrDroid retries failed question-screen reads automatically. A message held for the input line shows Force send immediately beside Remove.
 - **2.0.0-rc.4.** Tap Remove next to an individual message waiting for idle, a connection or a clear input line. Long-press an unsent message to force send it or remove it. While a question card is open, a chat message waits until the agent is ready. Choose the typed answer option on the card to reply to the question.
