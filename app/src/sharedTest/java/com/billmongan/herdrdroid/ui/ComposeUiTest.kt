@@ -11,6 +11,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotFocused
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.hasScrollToIndexAction
+import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -79,6 +82,27 @@ class ComposeUiTest {
         rule.onNodeWithText("Steer").performClick()
         composer.assertIsFocused()
         rule.runOnIdle { assertEquals(2, sent) }
+    }
+
+    @Test fun sessionDrawerReturnsToTopWhenReopened() {
+        val open = androidx.compose.runtime.mutableStateOf(true)
+        val app = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.app.Application>()
+        val vm = com.billmongan.herdrdroid.AppViewModel(app)
+        rule.setContent {
+            Box(Modifier.height(240.dp)) { SessionDrawer(vm, opening = open.value) }
+        }
+        val list = rule.onNode(hasScrollToIndexAction())
+        fun position(): Float {
+            val range = list.fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange]
+            return rule.runOnIdle { range.value() }
+        }
+
+        list.performScrollToIndex(2)
+        assertTrue(position() > 0f)
+        rule.runOnIdle { open.value = false }
+        assertTrue(position() > 0f)
+        rule.runOnIdle { open.value = true }
+        assertEquals(0f, position(), 0f)
     }
 
     @Test fun questionChoiceShowsSendingAndDisablesChoices() {

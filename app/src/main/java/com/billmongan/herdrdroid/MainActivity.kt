@@ -208,7 +208,14 @@ class MainActivity : FragmentActivity() {
                         BackHandler { vm.drawerOpen = !vm.drawerOpen }
                         androidx.compose.material3.ModalNavigationDrawer(
                             drawerState = drawer,
-                            drawerContent = { androidx.compose.material3.ModalDrawerSheet(drawerContainerColor = Palette.Ground) { com.billmongan.herdrdroid.ui.SessionDrawer(vm) } },
+                            drawerContent = {
+                                androidx.compose.material3.ModalDrawerSheet(drawerContainerColor = Palette.Ground) {
+                                    com.billmongan.herdrdroid.ui.SessionDrawer(
+                                        vm,
+                                        opening = drawer.targetValue == androidx.compose.material3.DrawerValue.Open,
+                                    )
+                                }
+                            },
                         ) {
                             AgentScreen(vm, s.paneId)
                         }
