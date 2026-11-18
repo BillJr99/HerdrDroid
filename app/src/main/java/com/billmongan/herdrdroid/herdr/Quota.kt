@@ -52,8 +52,7 @@ data class QuotaProfile(
      */
     val whileWorking: Boolean = false,
     /**
-     * Text the agent's usage screen shows while it is open. The close keys are sent only when it
-     * is on screen, so an Esc can never reach the agent itself and interrupt it.
+     * A hint shown by a modal usage screen. This is not sufficient to authorize any key.
      */
     val openMarker: Regex? = null,
     /**
@@ -61,11 +60,6 @@ data class QuotaProfile(
      * /reasoning (effort). [parseInfo] reads its screen.
      */
     val infoCommand: String? = null,
-    /**
-     * Keys that scroll the usage screen when it shows a ↓ marker (more limits below, as on a narrow
-     * pane); the screen is read again after them, before it is closed.
-     */
-    val scrollKeys: List<String> = emptyList(),
     val parseInfo: ((String) -> PaneInfo)? = null,
     /**
      * How often to check. Agents whose usage screen closes without a trace are checked more often;
@@ -90,7 +84,11 @@ data class QuotaProfile(
      * pane's screen is only read, nothing is typed, and the agent's status doesn't matter.
      */
     val screenUsage: ((String) -> List<QuotaItem>)? = null,
-)
+) {
+    // The Herdr CLI does not offer an atomic "close this overlay if it is still on screen".
+    // A terminal probe that opens a modal cannot promise to safely restore the pane.
+    val canProbeWithoutOverlay: Boolean get() = closeKeys.isEmpty() && openMarker == null
+}
 
 /**
  * Mistral Vibe's footer: "~/agents/vibe      usage ▏      0% · ctx ▎   9.81k/202k". The gauge is
@@ -161,30 +159,53 @@ fun ompUsage(json: String): List<QuotaItem> {
 }
 
 /** Recognize the live Claude usage panel without treating a shared Esc hint as proof. */
-internal fun claudeUsageOpen(screen: String): Boolean {
-    val lines = forPhone(screen).lineSequence().toList().takeLast(45)
-        .map { it.trim().trim('│', '┃', '|').trim() }.filter { it.isNotEmpty() }
+internal fun claudeUsageOpen(screen: String): Boolean = claudeUsageFrame(screen) != null
+
+private fun overlayLines(screen: String) = forPhone(screen).lines().takeLast(60)
+    .map { it.trim().trim('│', '┃', '|').trim() }.filter { it.isNotEmpty() }
+
+private fun claudeUsageFrame(screen: String): List<String>? {
+    val lines = overlayLines(screen)
     val footer = lines.indexOfLast { CLAUDE_USAGE_CLOSE.containsMatchIn(it) }
-    if (footer < 0 || lines.drop(footer + 1).any { it.any(Char::isLetterOrDigit) || CLAUDE_INPUT.containsMatchIn(it) }) return false
+    if (footer < 0 || lines.drop(footer + 1).any { it.any(Char::isLetterOrDigit) || CLAUDE_INPUT.containsMatchIn(it) }) return null
     val top = lines.take(footer).indexOfLast { CLAUDE_USAGE_SECTION.matches(it) }
-    if (top < 0) return false
+    if (top < 0) return null
     val body = lines.subList(top + 1, footer)
-    return body.none { CLAUDE_INPUT.containsMatchIn(it) || CLAUDE_OPTION.containsMatchIn(it) || it.endsWith("?") } &&
-        (body.any { CLAUDE_USAGE_DETAIL.containsMatchIn(it) } || lines.take(top).any { it.contains("Status") && it.contains("Usage") })
+    val header = lines.take(top).indexOfLast { CLAUDE_USAGE_HEADER.matches(it) }
+    val frame = lines.subList(if (header >= 0) header else top, footer + 1)
+    if (body.any { !CLAUDE_USAGE_ROW.matches(it) } || frame.dropLast(1).any { CLAUDE_USAGE_CLOSE.matches(it) || CLAUDE_INPUT.containsMatchIn(it) || CLAUDE_OPTION.containsMatchIn(it) || it.endsWith("?") }) return null
+    if (header < 0 && body.none { CLAUDE_USAGE_DETAIL.containsMatchIn(it) }) return null
+    return frame
 }
 
 private val CLAUDE_USAGE_CLOSE = Regex("""^(?:press )?esc(?: to (?:cancel|close|exit|dismiss|go back))?(?:\s*(?:[·•]|$).*)?$""", RegexOption.IGNORE_CASE)
-private val CLAUDE_USAGE_SECTION = Regex("""^(?:Current session|Current week(?:\s+\([^)]*\))?|Usage credits|Extra usage|Usage limits)$""", RegexOption.IGNORE_CASE)
+private val CLAUDE_USAGE_HEADER = Regex("""(?:Settings\s+)?Status\s+Config\s+Usage(?:\s+Stats)?""", RegexOption.IGNORE_CASE)
+private val CLAUDE_USAGE_SECTION = Regex("""(?:Current session|Current week(?:\s+\([^)]*\))?|Usage credits|Extra usage|Usage limits)(?:\s+·\s+Resets .+)?""", RegexOption.IGNORE_CASE)
+private val CLAUDE_USAGE_ROW = Regex("""(?:[\p{So}\p{Pd}▀-▟↓↑─━\s]*\d+(?:\.\d+)?%\s+(?:used|left)|Resets\s+[^?]+|Loading(?:\.{3}|…)?|\([^()]+\)|[▀-▟↓↑─━\s]+)""", RegexOption.IGNORE_CASE)
 private val CLAUDE_USAGE_DETAIL = Regex("""\d+(?:\.\d+)?%\s+(?:used|left)|\bresets\b|\bloading\b""", RegexOption.IGNORE_CASE)
 private val CLAUDE_INPUT = Regex("""^[❯›>]""")
 private val CLAUDE_OPTION = Regex("""^\d+[.)]\s""")
 
-/**
- * True when [screen] shows this agent's usage (or model) screen open: its close hint is visible
- * AND the screen has usage numbers, or the model/effort the info command shows. The close hint
- * alone is not enough, because a permission prompt can carry the same "Esc to cancel", and an
- * Esc there would answer it.
- */
+/** Only known live layouts may authorize an explicit Escape. */
+internal fun dismissibleUsageFrame(agent: String?, visible: String): List<String>? = when (agent) {
+    "claude" -> claudeUsageFrame(visible)?.takeIf { frame ->
+        CLAUDE_USAGE_HEADER.matches(frame.first()) && frame.drop(1).dropLast(1).all {
+            CLAUDE_USAGE_SECTION.matches(it) || CLAUDE_USAGE_ROW.matches(it) ||
+                it == "Session" || CLAUDE_USAGE_COST.matches(it)
+        }
+    }
+    "kiro" -> {
+        val lines = overlayLines(visible)
+        val top = lines.indexOfLast { it == "/usage" }
+        lines.drop(top.coerceAtLeast(0)).takeIf { top >= 0 && KIRO_USAGE.matches(it.joinToString("\n")) }
+    }
+    else -> null
+}
+
+private val CLAUDE_USAGE_COST = Regex("""Total cost:\s+\$[\d,.]+""")
+private val KIRO_USAGE = Regex("""/usage\n─+\nThis session: [\d.]+ credits\nEstimated Usage \| resets on \d{4}-\d{2}-\d{2} \| [\w ]+\nCredits \([\d.]+ of [\d.]+ covered in plan\)\n[▀-▟ \t]+[\d.]+%\nTo manage your plan navigate to app\.kiro\.dev/account/usage\n─+\nesc to close[ \t]+Tab to switch to /context""", RegexOption.IGNORE_CASE)
+
+/** A coarse read-only parser for usage or model screens. Not a predicate for sending keys. */
 fun QuotaProfile.screenOpen(screen: String): Boolean {
     val marker = openMarker ?: return false
     val tail = screen.lines().takeLast(40).joinToString("\n")
@@ -212,9 +233,7 @@ object QuotaProfiles {
             setOf("claude"), "/usage", listOf("esc"), 3_000,
             // Newer Claude Code versions word the close hint differently.
             openMarker = Regex("""esc to (cancel|close|exit|dismiss|go back)|press esc|esc ·""", RegexOption.IGNORE_CASE),
-            // Arrows, because herdr accepts no Page Down; sent only while the usage screen is open.
-            scrollKeys = List(12) { "down" },
-            // Kept only to recognize a model picker left open (and close it); never typed.
+            // Kept to recognize a model picker; never typed or closed by a usage check.
             parseInfo = ::claudeModelScreen,
             everyMinutes = 10,
         ),

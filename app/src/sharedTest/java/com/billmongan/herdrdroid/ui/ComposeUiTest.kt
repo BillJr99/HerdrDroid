@@ -57,6 +57,17 @@ class ComposeUiTest {
     private fun pane(status: Status, agent: String = "claude") =
         Pane("w1:p1", "w1:t1", "w1", agent, status, "", "/home/user/agents/claude")
 
+    @Test fun usageDismissButtonDispatchesOnlyAnExplicitTapAndDisablesWhilePending() {
+        val pending = androidx.compose.runtime.mutableStateOf(false)
+        var clicks = 0
+        rule.setContent { UsageOverlayBanner(pending.value) { clicks++; pending.value = true } }
+        rule.onNodeWithText("Usage panel is open").assertIsDisplayed()
+        rule.runOnIdle { assertEquals(0, clicks) }
+        rule.onNodeWithText("Dismiss usage").performClick()
+        rule.onNodeWithText("Dismissing…").assertIsNotEnabled()
+        rule.runOnIdle { assertEquals(1, clicks) }
+    }
+
     @Test fun steerSendsAndOnlyArrowOpensQueueMenuWithoutTakingComposerFocus() {
         var sent = 0
         var queued = 0

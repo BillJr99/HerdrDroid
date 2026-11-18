@@ -6,9 +6,7 @@ import com.billmongan.herdrdroid.transcript.TranscriptRead
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 enum class Status { NEEDS_YOU, WORKING, DONE, IDLE, UNKNOWN }
@@ -379,156 +377,61 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
     suspend fun sendKeys(paneId: String, vararg keys: String) =
         if (core) runNow(hcCmd("keys", paneId, *keys)) else runNow(cmd("pane", "send-keys", paneId, *keys))
 
-    /**
-     * Types a command the agent's own program answers (no model call) and returns the screen it
-     * shows. Enter is pressed only if the input line then holds exactly that command, so a
-     * half-typed message is never sent; otherwise the typed characters are erased and this returns
-     * null. Close keys go out only while [openMarker] is on screen, so an Esc can never reach an
-     * agent that is working.
-     */
+    private fun usageSnapshotCommand(paneId: String, agent: String) =
+        "$PY -c ${shq(USAGE_OVERLAY_SNAPSHOT)} $herdr ${shq(paneId)} ${shq(agent)}"
+
+    internal suspend fun readUsageOverlay(paneId: String, agent: String): UsageOverlay? {
+        if (core) return null
+        val json = runNow(usageSnapshotCommand(paneId, agent), timeoutSeconds = 5).trim()
+        if (json.isEmpty()) return null
+        val objectJson = JSONObject(json)
+        val visible = objectJson.getString("visible")
+        if (visible.length > 20_000 || dismissibleUsageFrame(agent, visible) == null) return null
+        return UsageOverlay(objectJson.getString("occupant"), visible)
+    }
+
+    internal suspend fun closeUsageOverlay(paneId: String, agent: String, overlay: UsageOverlay): Boolean {
+        if (core || dismissibleUsageFrame(agent, overlay.visible) == null) return false
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(overlay.visible.toByteArray()).joinToString("") { "%02x".format(it) }
+        val expected = "${shq(overlay.occupant)} ${shq(digest)}"
+        // Repeat the exact compare on the server, rather than sending an unguarded Escape over SSH.
+        // Herdr does not expose an atomic compare-and-send; the final local CLI call is still separate.
+        return runNow("${usageSnapshotCommand(paneId, agent)} $expected", timeoutSeconds = 5).trim() == "sent"
+    }
+
+    /** Types a non-modal reporting command, submitting only after seeing its echo. */
     private suspend fun guardedCommand(
-        paneId: String, command: String, waitMillis: Long, closeKeys: List<String>, openMarker: Regex?,
-        working: Boolean, scrollKeys: List<String> = emptyList(), claudeUsage: Boolean = false, ready: (String) -> Boolean,
+        paneId: String, agent: String?, command: String, waitMillis: Long, ready: (String) -> Boolean,
     ): String? {
-        // \u00A0 is listed because some prompts put a no-break space after the ❯ glyph. A hint the
-        // agent draws after the command ("/usage   Show usage") still counts.
-        val prompt = """^[\s\u00A0│┃|>❯›»$]*"""
-        val echo = Regex(prompt + Regex.escape(command) + """(\s.*)?$""")
-        // The input line, where it can be told apart: the lowest line that starts with a prompt
-        // glyph. Only it counts as the echo, so a menu of commands drawn under it ("/reasoning  Set
-        // reasoning effort", Hermes) or an old line above it can't pass for what was typed.
-        val promptLead = Regex("""^[\s\u00A0│┃|]*[>❯›»$][\s\u00A0]*""")
-        fun inputText(line: String) = line.replace(promptLead, "").trimEnd(' ', '\u00A0', '│', '┃', '|')
-        fun echoed(lines: List<String>): Boolean {
-            val input = lines.lastOrNull { promptLead.containsMatchIn(it) && it.contains(command) }
-            return if (input != null) echo.matches(input) else lines.any { echo.matches(it) }
-        }
-        // Leftovers from an earlier try ("❯ /usage/usage", "❯ /usage/reasoning"): clear them
-        // before typing again. Only the app's own check commands are cleared, never other text.
-        val ours = QuotaProfiles.builtIn.flatMap { listOf(it.command, it.infoCommand) }.filterNotNull().filter { it.isNotEmpty() }
-        val oursOnly = Regex("^(?:" + ours.joinToString("|") { Regex.escape(it) } + ")+$")
-        val before = read(paneId, 45)
-        suspend fun closeClaudeUsage() {
-            repeat(4) {
-                val live = try { read(paneId, 45) } catch (_: HerdrError) {
-                    delay(500)
-                    return@repeat
-                }
-                if (!claudeUsageOpen(live)) return
-                sendKeys(paneId, "esc")
-                delay(500)
-            }
-        }
-        if (claudeUsage && claudeUsageOpen(before)) {
-            closeClaudeUsage()
-            return before
-        }
-        if (claudeUsage && detectPrompt(before, false, "claude") != null) return null
-        val beforeLines = before.lines()
-        val leftover = Regex(prompt + "((?:" + Regex.escape(command) + ")+)[\\s\u00A0│┃|]*$")
-        val inputBefore = beforeLines.takeLast(12).lastOrNull { promptLead.containsMatchIn(it) }?.let(::inputText)
-        val junkBefore = inputBefore?.takeIf { oursOnly.matches(it) }
-            ?: beforeLines.asReversed().firstNotNullOfOrNull { leftover.find(it)?.groupValues?.get(1) }
-        junkBefore?.let { junk ->
-            com.billmongan.herdrdroid.diag.DiagLog.log("usage", "clearing a leftover \"$junk\" in $paneId first")
-            sendKeys(paneId, *Array(junk.length) { "backspace" })
-            delay(300)
-        }
-        val markerBefore = openMarker?.containsMatchIn(beforeLines.takeLast(40).joinToString("\n")) == true
+        // Never erase a draft or guess from scrollback. A missing/ambiguous composer is not idle input.
+        val before = readVisible(paneId)
+        if (detectPrompt(before, false, agent) != null || inputLineOf(before, agent) != "") return null
         sendText(paneId, command)
-        // A slow host (a WebSocket server far away) can take seconds to draw what was typed: look
-        // for it for up to 5 seconds before deciding it isn't there.
-        var typed = emptyList<String>()
-        val t0 = System.currentTimeMillis()
-        val echoBy = System.currentTimeMillis() + 5_000
-        var openedAtOnce = false
-        while (true) {
+        val startedEcho = System.nanoTime()
+        do {
             delay(400)
-            typed = read(paneId, 40).lines()
-            if (echoed(typed)) break
-            // Some agents (Grok) open the screen as soon as the command is typed, without Enter.
-            if (!markerBefore && (if (claudeUsage) claudeUsageOpen(typed.joinToString("\n"))
-                else openMarker?.containsMatchIn(typed.joinToString("\n")) == true)
-            ) { openedAtOnce = true; break }
-            if (System.currentTimeMillis() > echoBy) break
+            val visible = readVisible(paneId)
+            if (detectPrompt(visible, false, agent) != null) return null
+            if (inputLineOf(visible, agent) == command) break
+            if (System.nanoTime() - startedEcho >= 5_000_000_000L) return null
+        } while (true)
+        sendKeys(paneId, "enter")
+        delay(waitMillis)
+        val started = System.nanoTime()
+        var shown = read(paneId, 120)
+        while (!ready(shown) && System.nanoTime() - started < 12_000_000_000L) {
+            delay(700)
+            shown = read(paneId, 120)
         }
-        if (openedAtOnce) {
-            com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$command in $paneId opened its screen without Enter")
-        } else if (!echoed(typed)) {
-            // Which line was the input line, so the log shows why (cut short; nothing else kept).
-            val inputLine = typed.lastOrNull { it.contains(command) || it.trimStart().startsWith("❯") || it.trimStart().startsWith(">") }?.trim()?.take(80)
-            com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$command in $paneId wasn't echoed on its own; input line: \"${inputLine ?: "not found"}\"; erased it")
-            // Glued to another check command ("/usage/reasoning"): erase all of it. Glued to
-            // anything else (someone's half-typed message): erase only what was typed here.
-            val glued = typed.lastOrNull { promptLead.containsMatchIn(it) && it.contains(command) }?.let(::inputText)?.takeIf { oursOnly.matches(it) }
-            sendKeys(paneId, *Array(glued?.length ?: command.length) { "backspace" })
-            return null
-        }
-        val echoMs = System.currentTimeMillis() - t0
-        try {
-            if (!openedAtOnce) sendKeys(paneId, "enter")
-            val t1 = System.currentTimeMillis()
-            delay(waitMillis)
-            // Some screens draw their frame first and their numbers a moment later (Antigravity, or any
-            // agent on a slow host), so keep reading for up to 12 more seconds until the screen is open
-            // and has what we need.
-            var shown = read(paneId, 120)
-            val deadline = System.currentTimeMillis() + 12_000
-            fun done(s: String) = ready(s) && (if (claudeUsage) claudeUsageOpen(s) else openMarker == null || openMarker.containsMatchIn(s))
-            while (!done(shown) && System.currentTimeMillis() < deadline) {
-                delay(700)
-                shown = read(paneId, 120)
-            }
-            val readyMs = System.currentTimeMillis() - t1
-            val wasReady = done(shown)
-            val markerSeen = openMarker?.containsMatchIn(shown)
-            var scrolled = false
-            // More limits below the fold (a ↓ marker on a narrow pane): scroll and read again first.
-            // Only while the usage screen itself is on screen (its close hint shows): the same arrow
-            // keys in the agent's input box would step through your earlier prompts instead. herdr has
-            // no Page Down key, so the arrows are the only way to scroll that screen.
-            val screenOpen = if (claudeUsage) claudeUsageOpen(shown) else openMarker == null || openMarker.containsMatchIn(shown.lines().takeLast(40).joinToString("\n"))
-            if (scrollKeys.isNotEmpty() && screenOpen && shown.lines().takeLast(30).any { it.trim().endsWith("↓") || it.trim() == "↓" }) {
-                sendKeys(paneId, *scrollKeys.toTypedArray())
-                delay(900)
-                shown = shown + "\n" + read(paneId, 120)
-                scrolled = true
-            }
-            com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$command in $paneId: echoed in ${echoMs / 100 / 10.0}s, " +
-                (if (wasReady) "screen ready in ${readyMs / 100 / 10.0}s" else "not ready after ${readyMs / 100 / 10.0}s (close hint ${when (markerSeen) { true -> "seen"; false -> "not seen"; null -> "not needed" }}, wanted numbers ${if (ready(shown)) "found" else "not found"})") +
-                (if (scrolled) ", scrolled for more" else "") + (if (working) ", agent working" else ""))
-            if (claudeUsage) return shown
-            // Close keys go out when the screen shows it is open. Without that sign, only an idle agent
-            // gets them: there an Esc can't interrupt anything, while a working agent could be stopped.
-            val open = openMarker?.containsMatchIn(shown) ?: true
-            if (closeKeys.isNotEmpty() && (open || !working)) {
-                sendKeys(paneId, *closeKeys.toTypedArray())
-                delay(400)
-            }
-            // A screen that finished drawing after the close keys went out (Antigravity, when slow) is
-            // still open. Check a few more times and close it, but only while its own marker shows, so
-            // these extra keys can never reach the agent itself.
-            if (closeKeys.isNotEmpty() && openMarker != null) {
-                repeat(4) {
-                    delay(700)
-                    if (!openMarker.containsMatchIn(read(paneId, 40))) return shown
-                    sendKeys(paneId, *closeKeys.toTypedArray())
-                }
-            }
-            return shown
-        } finally {
-            if (claudeUsage) withContext(NonCancellable) {
-                try { closeClaudeUsage() } catch (e: Exception) {
-                    com.billmongan.herdrdroid.diag.DiagLog.log("usage", "could not close Claude usage panel: ${e.javaClass.simpleName}")
-                }
-            }
-        }
+        return shown
     }
 
     /** One usage check: the limits, and where the agent needs it, the model and effort. Null when skipped. */
     suspend fun probeQuota(paneId: String, profile: QuotaProfile, working: Boolean): ProbeResult? {
-        if (core) return null
-        val shown = guardedCommand(paneId, profile.command, profile.waitMillis, profile.closeKeys, profile.openMarker, working, profile.scrollKeys, claudeUsage = "claude" in profile.agents) {
+        if (core || working || !profile.canProbeWithoutOverlay) return null
+        val agent = profile.agents.firstOrNull()
+        val shown = guardedCommand(paneId, agent, profile.command, profile.waitMillis) {
             parseQuota(it, profile.bareMeansLeft).isNotEmpty()
         } ?: return null
         var items = parseQuota(shown, profile.bareMeansLeft)
@@ -552,7 +455,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
                     else if ((sawWork || System.currentTimeMillis() - began > 20_000) && (st == Status.IDLE || st == Status.DONE)) break
                 }
                 delay(1_000)
-                val again = guardedCommand(paneId, profile.command, profile.waitMillis, profile.closeKeys, profile.openMarker, false, profile.scrollKeys) {
+                val again = guardedCommand(paneId, agent, profile.command, profile.waitMillis) {
                     parseQuota(it, profile.bareMeansLeft).isNotEmpty()
                 }
                 if (again != null) items = parseQuota(again, profile.bareMeansLeft)
@@ -562,21 +465,11 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
         com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$paneId read " +
             (if (items.isEmpty()) "no limits" else items.joinToString(prefix = "${items.size} limit(s): ") { "${it.label} ${it.usedPercent.toInt()}%${if (it.resets != null) " resets ${it.resets}" else ""}" }) +
             "; screen: " + screenShape(shown))
-        // Still showing usage numbers at the bottom of an idle agent's screen? Then the screen is
-        // open with a close hint the app didn't recognise: one more press of the close keys.
-        if (!working && profile.closeKeys.isNotEmpty()) {
-            delay(500)
-            val after = read(paneId, 30).lines().takeLast(25).joinToString("\n")
-            if (parseQuota(after, profile.bareMeansLeft).isNotEmpty()) {
-                com.billmongan.herdrdroid.diag.DiagLog.log("usage", "usage screen still open in $paneId after closing; pressing ${profile.closeKeys.joinToString("+")} again")
-                sendKeys(paneId, *profile.closeKeys.toTypedArray())
-            }
-        }
         var info: PaneInfo? = null
         val cmd = profile.infoCommand
         val parse = profile.parseInfo
         if (cmd != null && parse != null) {
-            val screen = guardedCommand(paneId, cmd, 1_200, profile.closeKeys, profile.openMarker, working) {
+            val screen = guardedCommand(paneId, agent, cmd, 1_200) {
                 parse(it).let { i -> i.model != null || i.effort != null }
             }
             info = screen?.let(parse)

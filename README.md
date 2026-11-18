@@ -304,27 +304,9 @@ Edit the server, choose **SSH over WebSocket**, and fill in the address (it star
 
 ## Usage limits
 
-The app keeps each agent's usage limits up to date by itself. Each agent's card shows its tightest limit in two short lines, such as "Week (all) [bar] 50%" and "resets Nov 12, 2:59am · 4m ago · +2 more", and **Usage** on the agent screen lists every limit with its full name. Settings has one switch to turn this off; with it off, the app never asks any agent about usage and shows nothing about it.
+**Usage** lists limits the app can read without opening a modal panel. Readings are shared across panes of the same agent on a server. The app uses CLI reports (Oh My Pi and Muse), a visible footer (Mistral Vibe), or an inline command (Codex, Copilot CLI and Hermes). Inline checks use a quiet pane and require a blank input line before typing, then the exact command before pressing Enter. The usage setting turns off automatic checks and hides usage readings.
 
-It works by agent, not by pane. On each check, the app reads which agent herdr reports in every pane, groups the panes by agent, and asks one pane of each kind. The answer applies to every pane running that agent. Every check is a command the agent's own program answers, so none of them spends a model call:
-
-| Agent | Command | Closed with |
-|---|---|---|
-| Claude Code | `/usage` | Esc |
-| Codex | `/status` | (prints inline) |
-| Copilot CLI | `/usage` | (prints inline) |
-| Grok | `/usage` | Esc |
-| Antigravity | `/usage` | Esc |
-| Hermes | `/usage` (once the session has made a call) | (prints inline) |
-
-pi and OpenCode have no usage limit to read, so panes running them, plain shells, and any agent not in the table are never sent anything.
-
-Typing a usage command is the only thing the app does by itself that moves a real pane, so the checks are careful:
-
-- They run every 10 minutes for Claude Code, every 15 for Grok and Antigravity, and every 30 for the agents that print their usage into the conversation (Codex, Copilot, Hermes). Tapping refresh checks again, at most once every two minutes per agent.
-- They use only a quiet pane: herdr reports it idle or done, its screen has not changed for 45 seconds, the app sent it nothing for 45 seconds, it is not scrolled back, and it was not checked in the last 5 minutes. A pane not in front at the computer is preferred.
-- The app types the command, then reads the input line, and presses Enter only if that line holds exactly the command. If anything else was already typed there, it erases what it typed and tries again later.
-- Esc, which closes the usage screens that need it, goes out only when the screen's own "Esc to cancel" line is showing, or to an idle agent where it can't interrupt anything.
+Claude Code, Grok, Antigravity and Kiro open modal usage panels. The app skips automatic checks for these profiles because Herdr cannot atomically verify and close a panel. It never sends Escape in the background to recover one. In the agent view, **Dismiss usage** appears for recognized Claude Code and Kiro panels when the live pane and its occupant can be verified. The button checks the screen again and sends one Escape, without retrying or queuing the key. If the panel is unfamiliar, the pane is scrolled back, or the server cannot verify the pane, use **Show terminal** to inspect the screen and use the terminal keys deliberately.
 
 ## How the app treats the panes
 
