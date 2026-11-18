@@ -9,6 +9,9 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Text
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.ui.test.assertIsNotFocused
+import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -50,20 +53,32 @@ class ComposeUiTest {
     private fun pane(status: Status, agent: String = "claude") =
         Pane("w1:p1", "w1:t1", "w1", agent, status, "", "/home/user/agents/claude")
 
-    @Test fun steerOpensOptionsBeforeSending() {
+    @Test fun steerSendsAndOnlyArrowOpensQueueMenuWithoutTakingComposerFocus() {
         var sent = 0
         var queued = 0
         rule.setContent {
             ChatComposer(value = "sample", onValueChange = {}, placeholder = "Message", canSend = true,
                 onSend = { sent++ }, working = true, steerLabel = "Steer", onQueueWhenIdle = { queued++ })
         }
+        val composer = rule.onNode(hasSetTextAction())
+        composer.assertIsNotFocused()
         rule.onNodeWithText("Steer").performClick()
-        rule.runOnIdle { assertEquals(0, sent) }
-        rule.onNodeWithText("Send when idle").performClick()
-        rule.runOnIdle { assertEquals(1, queued) }
-        rule.onNodeWithText("Steer").performClick()
-        rule.onNodeWithText("Send immediately").performClick()
+        composer.assertIsNotFocused()
+        rule.onNodeWithText("Send when idle").assertDoesNotExist()
         rule.runOnIdle { assertEquals(1, sent) }
+
+        composer.performClick().assertIsFocused()
+        rule.onNodeWithContentDescription("Send options").performClick()
+        composer.assertIsFocused()
+        rule.onNodeWithText("Send when idle").performClick()
+        composer.assertIsFocused()
+        rule.runOnIdle {
+            assertEquals(1, queued)
+            assertEquals(1, sent)
+        }
+        rule.onNodeWithText("Steer").performClick()
+        composer.assertIsFocused()
+        rule.runOnIdle { assertEquals(2, sent) }
     }
 
     @Test fun questionChoiceShowsSendingAndDisablesChoices() {
