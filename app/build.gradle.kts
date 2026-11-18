@@ -14,8 +14,8 @@ android {
         applicationId = "com.billmongan.herdrdroid"
         minSdk = 26
         targetSdk = 34
-        versionCode = 99
-        versionName = "2.0.0-rc.3"
+        versionCode = 100
+        versionName = "2.0.0-rc.4"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

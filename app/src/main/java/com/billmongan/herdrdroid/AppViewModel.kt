@@ -98,7 +98,12 @@ enum class Link { CONNECTED, RECONNECTING, OFFLINE }
 data class PendingHostKey(val server: Server, val password: String?, val remember: Boolean, val fingerprint: String)
 
 /** A tap the user made while the link was down, sent in order once it is back. */
-private class Queued(val paneId: String?, val label: String, val run: suspend (Herdr) -> Unit)
+private class Queued(
+    val paneId: String?,
+    val label: String,
+    val pendingId: Long?,
+    val run: suspend (Herdr) -> Unit,
+)
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val store = ServerStore(app)
@@ -889,6 +894,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         reconnectJob?.cancel()
         quotaJob?.cancel()
         queue.clear()
+        pendingSends = pendingSends.filterNot { it.awaitingLink }
         queuedCount = 0
         ssh?.close()
         ssh = null
@@ -1053,13 +1059,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * Runs something the user tapped. While the link is down it waits in a queue and goes out once
      * the link is back; only a real refusal from herdr is shown.
      */
-    private fun act(paneId: String?, label: String, run: suspend (Herdr) -> Unit) {
+    private fun act(paneId: String?, label: String, pendingId: Long? = null, run: suspend (Herdr) -> Unit) {
         viewModelScope.launch {
             if (link != Link.CONNECTED || herdr == null) {
-                enqueue(Queued(paneId, label, run))
+                enqueue(Queued(paneId, label, pendingId, run))
                 return@launch
             }
-            perform(Queued(paneId, label, run))
+            perform(Queued(paneId, label, pendingId, run))
         }
     }
 
@@ -1092,6 +1098,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun enqueue(q: Queued) {
+        q.pendingId?.let { id ->
+            if (pendingSends.none { it.id == id }) return
+            pendingSends = pendingSends.map { if (it.id == id) it.copy(awaitingLink = true) else it }
+        }
         com.billmongan.herdrdroid.diag.DiagLog.log("send", "queued until the link is back: ${q.label}")
         queue.addLast(q)
         queuedCount = queue.size
@@ -1663,7 +1673,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             // "/model opus"), not as your message: a note that came in after it was sent clears it.
             val notes = transcriptItems.takeLast(30).filterIsInstance<com.billmongan.herdrdroid.transcript.NoteItem>().map { norm(it.text.removePrefix("/")) }
             // A send still waiting (1.4.4) was never typed: a copy of it in the log is another message (from Grok's review).
-            val seen = mine.filter { p -> !p.waiting && (
+            val seen = mine.filter { p -> !p.waiting && !p.awaitingLink && (
                 sameTextCount(p.text) > p.seenBefore ||
                     (p.text.startsWith("/") && notes.any { n -> n.startsWith(norm(p.text.removePrefix("/").substringBefore(' '))) }))
             }
@@ -1675,7 +1685,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             // doesn't show more than ten seconds after it was sent was not delivered. It stays,
             // marked, with Resend and Dismiss, instead of disappearing.
             // A send still waiting for the input line to clear (1.4.4) was never typed, so it can't be stale.
-            val stale = if (idle) mine.filter { it !in seen && !it.undelivered && !it.waiting && now - it.at > 10_000 } else emptyList()
+            val stale = if (idle) mine.filter { it !in seen && !it.removable && now - it.at > 10_000 } else emptyList()
             if (stale.isNotEmpty()) com.billmongan.herdrdroid.diag.DiagLog.log("pending", "${stale.size} sent message(s) not in the agent's log after it went idle: marked as not seen")
             if (seen.isNotEmpty() || stale.isNotEmpty()) {
                 pendingSends = pendingSends.filter { it !in seen }.map { if (it in stale) it.copy(undelivered = true) else it }
@@ -1727,44 +1737,44 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                            /** Why it was held instead of sent (1.4.0: someone is typing in that pane); Resend sends it anyway. */
                            val held: String? = null,
                            /** Held, and being retried quietly until the input line is clear (1.4.4). */
-                           val waiting: Boolean = false)
+                           val waiting: Boolean = false,
+                           val awaitingLink: Boolean = false) {
+        val removable: Boolean get() = waiting || awaitingLink || undelivered
+    }
 
-    /** Messages the agent never showed in its log (see [applyTranscript]), for Resend and Dismiss. */
-    fun undeliveredFor(paneId: String): List<Pair<Long, String>> =
-        pendingSends.filter { it.paneId == paneId && it.undelivered }
-            .map { it.id to (it.held?.let { why -> "${it.text}\n(held: $why)" } ?: it.text) }
+    fun removableSendsFor(paneId: String): List<PendingSend> =
+        pendingSends.filter { it.paneId == paneId && it.removable }
 
-    fun resendPending(id: Long) {
-        val p = pendingSends.firstOrNull { it.id == id } ?: return
+    val canForceSendPending: Boolean get() = link == Link.CONNECTED && herdr != null
+
+    fun forceSendPending(id: Long) {
+        val p = pendingSends.firstOrNull { it.id == id && it.removable } ?: return
+        if (!canForceSendPending) return
         // A pane that isn't listed keeps the message, with its Resend (1.4.4, from Grok's review).
         val target = pane(p.paneId) ?: run {
             com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${p.paneId}: Resend while the pane isn't listed; kept")
             flash("Not sent: that pane isn't open on the computer just now.")
             return
         }
-        pendingSends = pendingSends - p
-        // What the held send was to do once delivered (1.4.1, from a code review: a typed answer
-        // that was held was never recorded in the question history after Resend).
-        val then = heldThen.remove(id) ?: {}
-        // Resend is a deliberate "send it anyway", so a send held for typing isn't held again.
+        if (hasPendingQuestion(target)) return
+        val then = heldThen[id] ?: {}
+        dismissPending(id)
+        // A deliberate force send bypasses the input-line guard.
         sendMessage(target, p.text, force = true, delivered = then)
     }
 
-    /** For each held send, what to do once it is delivered (see [resendPending]). */
+    /** For each held send, what to do once it is delivered (see [forceSendPending]). */
     private val heldThen = java.util.concurrent.ConcurrentHashMap<Long, () -> Unit>()
 
-    fun dismissPending(id: Long) { heldThen.remove(id); pendingSends = pendingSends.filterNot { it.id == id } }
-
-    /** True while a message to [paneId] waits, quietly retried, for its input line to clear (1.4.4). */
-    fun waitingFor(paneId: String): Boolean = pendingSends.any { it.paneId == paneId && it.waiting }
-
-    /** Cancel on the chat's "sends when the input line is clear" note: drops every waiting send to [paneId]. */
-    fun cancelWaiting(paneId: String) {
-        val drop = pendingSends.filter { it.paneId == paneId && it.waiting }
-        if (drop.isEmpty()) return
-        com.billmongan.herdrdroid.diag.DiagLog.log("send", "to $paneId: ${drop.size} waiting message(s) cancelled")
-        drop.forEach { heldThen.remove(it.id) }
-        pendingSends = pendingSends - drop.toSet()
+    fun dismissPending(id: Long) {
+        val pending = pendingSends.firstOrNull { it.id == id && it.removable } ?: return
+        queue.removeAll { it.pendingId == id }
+        queuedCount = queue.size
+        heldThen.remove(id)
+        pendingSends = pendingSends - pending
+        if (lastSent == (pending.paneId to pending.text) &&
+            pendingSends.none { it.paneId == pending.paneId && it.text == pending.text }
+        ) lastSent = null
     }
 
     var pendingSends by mutableStateOf<List<PendingSend>>(emptyList())
@@ -1787,7 +1797,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun pendingFor(paneId: String): List<String> {
         val now = System.currentTimeMillis()
         val hasLog = transcriptPane == paneId && transcriptState == TranscriptMode.ON
-        return pendingSends.filter { it.paneId == paneId && !it.undelivered && (it.waiting || now - it.at < (if (hasLog) 15 * 60_000L else 20_000L)) }.map { it.text }
+        return pendingSends.filter { it.paneId == paneId && !it.removable && now - it.at < (if (hasLog) 15 * 60_000L else 20_000L) }.map { it.text }
     }
 
     /** The Stop button: the key each agent's own program uses to interrupt a turn. */
@@ -2012,7 +2022,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             if (transcriptPane == pane.id) sameTextCount(text) else 0,
         )
         com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${pane.id} (${pane.agent ?: "shell"}, ${pane.status}): ${text.length} chars; link ${link}, ${if (herdr == null) "no client" else "client ready"}")
-        act(pane.id, "Couldn't send") { h ->
+        act(pane.id, "Couldn't send", pendingId) { h ->
+            if (pendingSends.none { it.id == pendingId }) return@act
             if (!force && pane.status != Status.NEEDS_YOU) {
                 // Behind an earlier message still waiting for this pane, so they go in the order sent (1.4.4).
                 val earlier = pendingSends.any { it.paneId == pane.id && it.waiting && it.id != pendingId }
@@ -2029,10 +2040,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     // report if it fails"); reported with Resend only if it still can't go in 2 minutes.
                     com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${pane.id}: held, $why; retrying every 2 s for up to 2 min")
                     if (pendingSends.none { it.id == pendingId }) return@act
-                    pendingSends = pendingSends.map { if (it.id == pendingId) it.copy(held = why, waiting = true) else it }
+                    pendingSends = pendingSends.map { if (it.id == pendingId) it.copy(held = why, waiting = true, awaitingLink = false) else it }
                     heldThen[pendingId] = delivered
                     startHeldRetry(pane.id)
                     return@act
+                }
+            }
+            // The screen read can suspend while the user removes a reconnect-queued send.
+            val pending = pendingSends.firstOrNull { it.id == pendingId } ?: return@act
+            if (pending.awaitingLink) {
+                pendingSends = pendingSends.map {
+                    if (it.id == pendingId) it.copy(awaitingLink = false, at = System.currentTimeMillis()) else it
                 }
             }
             try {
@@ -3240,6 +3258,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
     private var queueJob: Job? = null
 
+    fun hasPendingQuestion(pane: Pane): Boolean =
+        pane.status == Status.NEEDS_YOU ||
+            (paneTextPane == pane.id && paneReadProblem == null &&
+                com.billmongan.herdrdroid.herdr.detectPrompt(paneText, false, pane.agent, versionOf(pane.id)) != null)
+
     /** Holds a message until the pane's agent is ready, then sends it. */
     fun enqueue(paneId: String, text: String) {
         val serverId = current?.id ?: return
@@ -3256,7 +3279,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     if (q.serverId != current?.id) continue
                     val p = pane(q.paneId)
                     if (p == null) continue
-                    if (p.status == Status.IDLE || p.status == Status.DONE) {
+                    if ((p.status == Status.IDLE || p.status == Status.DONE) && !hasPendingQuestion(p)) {
                         queued = queued - q
                         sendMessage(p, q.text)
                     }
@@ -3269,7 +3292,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun sendQueuedImmediately(q: QueuedPrompt) {
         if (q !in queued || q.serverId != current?.id) return
         val target = pane(q.paneId) ?: return
-        if (link != Link.CONNECTED || target.status == Status.NEEDS_YOU) {
+        if (link != Link.CONNECTED || hasPendingQuestion(target)) {
             flash("Reconnect or answer the pending question before sending.")
             return
         }

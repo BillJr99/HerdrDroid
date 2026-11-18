@@ -214,21 +214,6 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
         if (alt == Hold.ONCE) alt = Hold.OFF
     }
     val modifiersOn = ctrl != Hold.OFF || alt != Hold.OFF
-    fun send() {
-        if (message.isNotBlank() && pane != null) {
-            val text = message.trim()
-            val via = answerVia
-            val q = answering
-            // A typed answer goes into the question's history once it was delivered (1.3.2).
-            if (typingAnswer && via != null && q != null) vm.answerTyped(pane, q, via, text)
-            else if (typingAnswer) vm.sendMessage(pane, text) { vm.noteAnswer(paneId, q, text) }
-            else vm.sendMessage(pane, text)
-            message = ""; typingAnswer = false; answering = null; answerVia = null
-            // A slash command answers on the screen (a menu, a sign-in code), not in the agent's log,
-            // so show the screen and the keys to move through it.
-            if (text.startsWith("/") && !live) { fullTerminal = true; commandScreen = text.substringBefore(' ') }
-        }
-    }
     val quote: (String) -> Unit = { q -> message = q.lines().joinToString("\n") { "> $it" } + "\n\n" }
 
     // As the list shows it: Done becomes Idle once you have opened it here.
@@ -242,6 +227,26 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     val prompt: Prompt? = if (typingAnswer) null
         else if (vm.paneReadProblem != null) (if (status == Status.NEEDS_YOU) Prompt("This agent is waiting for you.", emptyList()).forCard() else null)
         else detectPrompt(screenText, status == Status.NEEDS_YOU, pane?.agent, vm.versionOf(paneId))?.forCard()
+    fun send() {
+        if (message.isNotBlank() && pane != null) {
+            val text = message.trim()
+            if (!typingAnswer && (prompt != null || vm.hasPendingQuestion(pane))) {
+                vm.enqueue(paneId, text)
+                message = ""
+                return
+            }
+            val via = answerVia
+            val q = answering
+            // A typed answer goes into the question's history once it was delivered (1.3.2).
+            if (typingAnswer && via != null && q != null) vm.answerTyped(pane, q, via, text)
+            else if (typingAnswer) vm.sendMessage(pane, text) { vm.noteAnswer(paneId, q, text) }
+            else vm.sendMessage(pane, text)
+            message = ""; typingAnswer = false; answering = null; answerVia = null
+            // A slash command answers on the screen (a menu, a sign-in code), not in the agent's log,
+            // so show the screen and the keys to move through it.
+            if (text.startsWith("/") && !live) { fullTerminal = true; commandScreen = text.substringBefore(' ') }
+        }
+    }
     // An agent's error on screen (1.4.2): shown as a banner when there is no question.
     // Not from the last screen while the latest read failed (1.4.2, from review).
     val agentError: String? = remember(screenText) { com.billmongan.herdrdroid.herdr.detectAgentError(screenText) }.takeIf { prompt == null && vm.paneReadProblem == null }
@@ -585,8 +590,6 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 family = family,
                 actions = ChatActions(
                     onQuote = quote, onStop = pane?.let { p -> { vm.stopPane(p) } },
-                    undelivered = vm.undeliveredFor(paneId), onResend = vm::resendPending, onDismissPending = vm::dismissPending,
-                    onCancelWaiting = if (vm.waitingFor(paneId)) ({ vm.cancelWaiting(paneId) }) else null,
                     onLoadEarlier = if (vm.canLoadEarlier) ({ vm.loadEarlier(paneId) }) else null, loadingEarlier = vm.loadingEarlier,
                     queuedNote = "Queued in ${pane?.agentName ?: "the agent"} · it reads these when its current step ends",
                     onOpen = { t -> opened = t },
@@ -631,7 +634,9 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                             is com.billmongan.herdrdroid.transcript.QuestionItem -> QuestionView(entry, liveSize)
                         }
                     }
-                    val pending = vm.lastSent?.takeIf { it.first == paneId }?.second
+                    val pending = vm.lastSent?.takeIf { (id, text) ->
+                        id == paneId && vm.removableSendsFor(paneId).none { it.text == text }
+                    }?.second
                     // Under a saved history, only the part of the screen not already shown above (1.4.3, from review).
                     // The same questions the history shows (from review): an open one's screen stays live.
                     ChatView(com.billmongan.herdrdroid.transcript.QuestionLog.liveTail(text,
@@ -673,17 +678,41 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                     modifier = Modifier.padding(horizontal = 4.dp),
                 )
             }
-            // Messages waiting for this agent to be ready ("When idle").
-            vm.queued.filter { it.paneId == paneId && it.serverId == vm.current?.id }.forEach { q ->
-                Row(
-                    Modifier.fillMaxWidth().background(Palette.BlueSoft, RoundedCornerShape(12.dp)).padding(horizontal = 12.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+            val idleQueue = vm.queued.filter { it.paneId == paneId && it.serverId == vm.current?.id }
+            val unsent = vm.removableSendsFor(paneId)
+            if (idleQueue.isNotEmpty() || unsent.isNotEmpty()) {
+                Column(
+                    Modifier.heightIn(max = 160.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    Text("Queued until idle: " + q.text.lines().first(), color = Palette.Blue, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                    TextButton(onClick = { vm.sendQueuedImmediately(q) }, enabled = status != Status.NEEDS_YOU) {
-                        Text("Send immediately", fontSize = 12.sp)
+                    idleQueue.forEach { q ->
+                        PendingMessageRow(
+                            title = "Queued until idle",
+                            text = q.text,
+                            onRemove = { vm.cancelQueued(q) },
+                            sendLabel = "Send immediately",
+                            onSend = { vm.sendQueuedImmediately(q) },
+                            sendEnabled = vm.link == Link.CONNECTED && prompt == null && !typingAnswer && status != Status.NEEDS_YOU,
+                        )
                     }
-                    Text("Cancel", color = Palette.Blue, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.clickable { vm.cancelQueued(q) }.padding(start = 8.dp))
+                    unsent.forEach { p ->
+                        androidx.compose.runtime.key(p.id) {
+                            PendingMessageRow(
+                                title = when {
+                                    p.awaitingLink -> "Waiting to reconnect"
+                                    p.waiting -> "Waiting for the input line"
+                                    else -> "Delivery not confirmed"
+                                },
+                                text = p.text,
+                                note = p.held,
+                                onRemove = { vm.dismissPending(p.id) },
+                                sendLabel = if (p.undelivered) "Resend" else null,
+                                onSend = { vm.forceSendPending(p.id) },
+                                sendEnabled = vm.canForceSendPending && prompt == null && !typingAnswer && status != Status.NEEDS_YOU,
+                                forceSendMenu = true,
+                            )
+                        }
+                    }
                 }
             }
             if (fullTerminal) {
@@ -730,13 +759,15 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                     }
                 },
                 placeholder = if (modifiersOn) "Type a letter to send it with ${if (ctrl != Hold.OFF) "Ctrl" else "Alt"}"
+                else if (typingAnswer) "Type your answer"
+                else if (prompt != null || status == Status.NEEDS_YOU) "Message to send after the question"
                 else "Message ${pane?.agentName ?: "this tab"}",
                 canSend = message.isNotBlank() && pane != null,
                 onSend = ::send,
                 working = status == Status.WORKING,
                 onStop = pane?.let { p -> { vm.stopPane(p) } },
                 // herdr's agent prompt reaches a working agent, so a message sent now steers it.
-                steerLabel = if (pane?.agent != null && !typingAnswer) "Steer" else null,
+                steerLabel = if (pane?.agent != null && !typingAnswer && prompt == null) "Steer" else null,
                 onQueueWhenIdle = if (!typingAnswer) ({ vm.enqueue(paneId, message.trim()); message = "" }) else null,
                 onAttach = { uri -> vm.attach(uri) { path -> message = (message.trimEnd() + " " + path).trim() + " " } },
                 attachBusy = vm.uploading,
@@ -893,6 +924,53 @@ private val KEY_HEIGHT = 42.dp
  * Two rows that always fit the screen: Ctrl, Alt and the four arrows together on top, then
  * Esc, Tab, Backspace, Enter and Ctrl+C.
  */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+internal fun PendingMessageRow(
+    title: String,
+    text: String,
+    onRemove: () -> Unit,
+    sendLabel: String?,
+    onSend: (() -> Unit)?,
+    note: String? = null,
+    sendEnabled: Boolean = true,
+    forceSendMenu: Boolean = false,
+) {
+    var menu by remember { mutableStateOf(false) }
+    Row(
+        Modifier.fillMaxWidth().background(Palette.BlueSoft, RoundedCornerShape(12.dp))
+            .padding(start = 12.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        val content = if (forceSendMenu) Modifier.combinedClickable(
+            onClick = {},
+            onLongClickLabel = "Message options",
+            onLongClick = { menu = true },
+        ) else Modifier
+        Box(Modifier.weight(1f)) {
+            Column(content.fillMaxWidth().padding(vertical = 6.dp)) {
+                Text(title, color = Palette.Blue, fontSize = 12.sp)
+                Text(text, color = Palette.Ink, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                note?.let { Text(it, color = Palette.Muted, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis) }
+            }
+            if (forceSendMenu) {
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Force send immediately") },
+                        enabled = sendEnabled && onSend != null,
+                        onClick = { menu = false; onSend?.invoke() },
+                    )
+                    DropdownMenuItem(text = { Text("Remove") }, onClick = { menu = false; onRemove() })
+                }
+            }
+        }
+        if (sendLabel != null && onSend != null) {
+            TextButton(onClick = onSend, enabled = sendEnabled) { Text(sendLabel, fontSize = 12.sp) }
+        }
+        TextButton(onClick = onRemove) { Text("Remove", fontSize = 12.sp) }
+    }
+}
+
 @Composable
 private fun KeyPad(
     ctrl: Hold,

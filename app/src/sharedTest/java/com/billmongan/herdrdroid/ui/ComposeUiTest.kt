@@ -25,6 +25,7 @@ import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.text.font.FontFamily
@@ -103,6 +104,66 @@ class ComposeUiTest {
         assertTrue(position() > 0f)
         rule.runOnIdle { open.value = true }
         assertEquals(0f, position(), 0f)
+    }
+
+    @Test fun removingOneOfflineMessageDropsOnlyItsQueuedSend() {
+        val app = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.app.Application>()
+        val vm = com.billmongan.herdrdroid.AppViewModel(app)
+        val target = pane(Status.WORKING)
+        rule.setContent {
+            androidx.compose.foundation.layout.Column {
+                vm.removableSendsFor(target.id).forEach { pending ->
+                    PendingMessageRow(
+                        title = "Waiting to reconnect",
+                        text = pending.text,
+                        onRemove = { vm.dismissPending(pending.id) },
+                        sendLabel = "Resend",
+                        onSend = null,
+                    )
+                }
+            }
+        }
+        rule.runOnIdle {
+            vm.sendMessage(target, "First message")
+            vm.sendMessage(target, "Second message")
+        }
+        rule.onAllNodesWithText("Remove").assertCountEquals(2)
+        rule.onAllNodesWithText("Remove")[0].performClick()
+        rule.onNodeWithText("First message").assertDoesNotExist()
+        rule.onNodeWithText("Second message").assertIsDisplayed()
+        rule.runOnIdle {
+            assertEquals(1, vm.queuedCount)
+            assertEquals(listOf("Second message"), vm.removableSendsFor(target.id).map { it.text })
+        }
+    }
+
+    @Test fun unsentMessageLongPressOffersForceSendAndRemove() {
+        var forced = 0
+        var removed = 0
+        rule.setContent {
+            PendingMessageRow(
+                title = "Waiting for the input line",
+                text = "A pending message",
+                onRemove = { removed++ },
+                sendLabel = null,
+                onSend = { forced++ },
+                forceSendMenu = true,
+            )
+        }
+        val message = rule.onNodeWithText("A pending message")
+        message.performTouchInput { longClick() }
+        rule.onNodeWithText("Force send immediately").performClick()
+        rule.runOnIdle { assertEquals(1, forced) }
+        message.performTouchInput { longClick() }
+        rule.onAllNodesWithText("Remove").assertCountEquals(2)[1].performClick()
+        rule.runOnIdle { assertEquals(1, removed) }
+    }
+
+    @Test fun paneWaitingForAnAnswerBlocksImmediateQueueDelivery() {
+        val app = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.app.Application>()
+        val vm = com.billmongan.herdrdroid.AppViewModel(app)
+        assertTrue(vm.hasPendingQuestion(pane(Status.NEEDS_YOU)))
+        assertEquals(false, vm.hasPendingQuestion(pane(Status.IDLE)))
     }
 
     @Test fun questionChoiceShowsSendingAndDisablesChoices() {
