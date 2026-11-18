@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -205,20 +206,35 @@ fun ChatComposer(
         // While the agent works, a message steers it: the send button says so itself.
         if (label != null && onQueueWhenIdle != null) {
             Box {
-                androidx.compose.material3.Button(
-                    onClick = { sendOptions = true },
-                    enabled = canSend,
+                Surface(
                     shape = RoundedCornerShape(20.dp),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp),
-                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Palette.Blue, contentColor = Palette.OnBlue),
-                    modifier = Modifier.height(40.dp),
+                    color = if (canSend) Palette.Blue else Palette.Gray,
+                    contentColor = if (canSend) Palette.OnBlue else Palette.Muted,
                 ) {
-                    Text(label, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
-                    Icon(androidx.compose.material.icons.Icons.Filled.KeyboardArrowDown, contentDescription = "Send options", modifier = Modifier.size(18.dp))
+                    Row(Modifier.height(48.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            Modifier.fillMaxHeight().clickable(enabled = canSend, role = androidx.compose.ui.semantics.Role.Button,
+                                onClickLabel = "Send immediately", onClick = onSend).padding(horizontal = 14.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(label, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+                        }
+                        Box(Modifier.width(1.dp).height(24.dp).background(Palette.OnBlue.copy(alpha = 0.35f)))
+                        Box(
+                            Modifier.size(48.dp).clickable(enabled = canSend, role = androidx.compose.ui.semantics.Role.Button,
+                                onClick = { sendOptions = true }),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Send options", modifier = Modifier.size(20.dp))
+                        }
+                    }
                 }
-                androidx.compose.material3.DropdownMenu(expanded = sendOptions, onDismissRequest = { sendOptions = false }) {
-                    androidx.compose.material3.DropdownMenuItem(text = { Text("Send immediately") },
-                        onClick = { sendOptions = false; onSend() })
+                // Leave window focus with the composer so opening the menu does not hide the IME.
+                androidx.compose.material3.DropdownMenu(
+                    expanded = sendOptions,
+                    onDismissRequest = { sendOptions = false },
+                    properties = androidx.compose.ui.window.PopupProperties(focusable = false),
+                ) {
                     androidx.compose.material3.DropdownMenuItem(text = { Text("Send when idle") },
                         onClick = { sendOptions = false; onQueueWhenIdle() })
                 }
