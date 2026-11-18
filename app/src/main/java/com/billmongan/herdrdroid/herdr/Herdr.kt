@@ -92,9 +92,6 @@ enum class Backend { TUI, CORE }
 /** What a computer has: which herdr is installed and which one's server is running. */
 data class Detected(val tuiInstalled: Boolean, val tuiRunning: Boolean, val coreInstalled: Boolean, val coreRunning: Boolean, val hcPath: String?)
 
-/** When a usage check last started a session in each pane (Hermes), so it happens rarely. */
-private val sessionStartedAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
-
 class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend = Backend.TUI, hcPath: String? = null) {
     // The path is the user's setting; "~" stays unquoted so the remote shell expands it.
     // Left at the default, herdr is looked up the way hc is: on the PATH, else in ~/.local/bin, where
@@ -108,8 +105,6 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
     private fun cmd(vararg args: String) = herdr + " " + args.joinToString(" ") { shq(it) }
     private fun hcCmd(vararg args: String) = hc + " " + args.joinToString(" ") { shq(it) }
 
-    /** herdr-core's usage checks can't type a command without pressing Enter, so they are skipped. */
-    val canProbeScreens: Boolean get() = !core
     /** herdr-core has no way to rename a terminal, so the app hides Rename there. */
     val canRename: Boolean get() = !core
 
@@ -400,83 +395,6 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
         return runNow("${usageSnapshotCommand(paneId, agent)} $expected", timeoutSeconds = 5).trim() == "sent"
     }
 
-    /** Types a non-modal reporting command, submitting only after seeing its echo. */
-    private suspend fun guardedCommand(
-        paneId: String, agent: String?, command: String, waitMillis: Long, ready: (String) -> Boolean,
-    ): String? {
-        // Never erase a draft or guess from scrollback. A missing/ambiguous composer is not idle input.
-        val before = readVisible(paneId)
-        if (detectPrompt(before, false, agent) != null || inputLineOf(before, agent) != "") return null
-        sendText(paneId, command)
-        val startedEcho = System.nanoTime()
-        do {
-            delay(400)
-            val visible = readVisible(paneId)
-            if (detectPrompt(visible, false, agent) != null) return null
-            if (inputLineOf(visible, agent) == command) break
-            if (System.nanoTime() - startedEcho >= 5_000_000_000L) return null
-        } while (true)
-        sendKeys(paneId, "enter")
-        delay(waitMillis)
-        val started = System.nanoTime()
-        var shown = read(paneId, 120)
-        while (!ready(shown) && System.nanoTime() - started < 12_000_000_000L) {
-            delay(700)
-            shown = read(paneId, 120)
-        }
-        return shown
-    }
-
-    /** One usage check: the limits, and where the agent needs it, the model and effort. Null when skipped. */
-    suspend fun probeQuota(paneId: String, profile: QuotaProfile, working: Boolean): ProbeResult? {
-        if (core || working || !profile.canProbeWithoutOverlay) return null
-        val agent = profile.agents.firstOrNull()
-        val shown = guardedCommand(paneId, agent, profile.command, profile.waitMillis) {
-            parseQuota(it, profile.bareMeansLeft).isNotEmpty()
-        } ?: return null
-        var items = parseQuota(shown, profile.bareMeansLeft)
-        // No session yet (Hermes): start one with a short message, wait for the answer, read again.
-        // Only on an idle pane, and at most once every six hours per pane.
-        val start = profile.startSession
-        if (items.isEmpty() && !working && start != null && profile.noSession?.containsMatchIn(shown.lines().takeLast(15).joinToString("\n")) == true) {
-            val key = paneId
-            val last = sessionStartedAt[key] ?: 0L
-            if (System.currentTimeMillis() - last > 6 * 3_600_000L) {
-                sessionStartedAt[key] = System.currentTimeMillis()
-                com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$paneId has no session yet; sending one short message to start it")
-                typeAndEnter(paneId, start)
-                // Wait for the turn: working, then idle again (up to two minutes).
-                val began = System.currentTimeMillis()
-                var sawWork = false
-                while (System.currentTimeMillis() - began < 120_000) {
-                    delay(2_000)
-                    val st = runCatching { panes().firstOrNull { it.id == paneId }?.status }.getOrNull()
-                    if (st == Status.WORKING) sawWork = true
-                    else if ((sawWork || System.currentTimeMillis() - began > 20_000) && (st == Status.IDLE || st == Status.DONE)) break
-                }
-                delay(1_000)
-                val again = guardedCommand(paneId, agent, profile.command, profile.waitMillis) {
-                    parseQuota(it, profile.bareMeansLeft).isNotEmpty()
-                }
-                if (again != null) items = parseQuota(again, profile.bareMeansLeft)
-                com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$paneId after starting the session: ${items.size} limit(s)")
-            }
-        }
-        com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$paneId read " +
-            (if (items.isEmpty()) "no limits" else items.joinToString(prefix = "${items.size} limit(s): ") { "${it.label} ${it.usedPercent.toInt()}%${if (it.resets != null) " resets ${it.resets}" else ""}" }) +
-            "; screen: " + screenShape(shown))
-        var info: PaneInfo? = null
-        val cmd = profile.infoCommand
-        val parse = profile.parseInfo
-        if (cmd != null && parse != null) {
-            val screen = guardedCommand(paneId, agent, cmd, 1_200) {
-                parse(it).let { i -> i.model != null || i.effort != null }
-            }
-            info = screen?.let(parse)
-        }
-        return ProbeResult(items, info?.model, info?.effort)
-    }
-
     /**
      * Reads what the agent in [pane] has added to its own session log since [cursor], by sending
      * the transcript reader on standard input to the computer's python3. Nothing is installed or
@@ -543,19 +461,21 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
         return r.out.trim()
     }
 
-    /**
-     * A usage check that asks the agent's own command line instead of its pane (Oh My Pi's
-     * `omp usage --json`), so nothing is typed into the pane and it can run while the agent works.
-     * Null when the command isn't there or failed.
-     */
-    /** Usage read off the pane's own screen ([QuotaProfile.screenUsage]); nothing is typed. */
-    suspend fun screenQuota(paneId: String, profile: QuotaProfile): List<QuotaItem>? {
+    /** Automatic usage collection must never write to a pane. No inline-command fallback. */
+    internal suspend fun readQuota(paneIds: List<String>, profile: QuotaProfile): List<QuotaItem>? {
+        if (profile.cliCommand != null) return cliQuota(profile)
         val parse = profile.screenUsage ?: return null
         if (core) return null
-        return runCatching { parse(read(paneId, 30)) }.getOrNull()
+        return paneIds.firstNotNullOfOrNull { pane ->
+            try {
+                parse(readVisible(pane)).takeIf { it.isNotEmpty() }
+            } catch (_: HerdrError) {
+                null
+            }
+        }
     }
 
-    suspend fun cliQuota(profile: QuotaProfile): List<QuotaItem>? {
+    private suspend fun cliQuota(profile: QuotaProfile): List<QuotaItem>? {
         val cmd = profile.cliCommand ?: return null
         val parse = profile.parseCli ?: return null
         val r = ssh.exec("PATH=\"\$HOME/.local/bin:\$PATH\" $cmd", timeoutSeconds = 60)
@@ -875,8 +795,6 @@ fun parseDir(json: String): List<DirEntry> {
         DirEntry(e.getString(0), e.getBoolean(1), e.optLong(2), e.optLong(3), dir)
     }
 }
-
-data class ProbeResult(val items: List<QuotaItem>, val model: String?, val effort: String?)
 
 /** The last few lines of a pane: the one-line preview, and the raw lines the footer model comes from. */
 data class Peek(val line: String, val tail: String)

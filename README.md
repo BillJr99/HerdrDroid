@@ -304,7 +304,7 @@ Edit the server, choose **SSH over WebSocket**, and fill in the address (it star
 
 ## Usage limits
 
-**Usage** lists limits the app can read without opening a modal panel. Readings are shared across panes of the same agent on a server. The app uses CLI reports (Oh My Pi and Muse), a visible footer (Mistral Vibe), or an inline command (Codex, Copilot CLI and Hermes). Inline checks use a quiet pane and require a blank input line before typing, then the exact command before pressing Enter. The usage setting turns off automatic checks and hides usage readings.
+**Usage** lists limits the app can read without typing into a pane: CLI reports (Oh My Pi and Muse) and a visible footer (Mistral Vibe). Readings are shared across panes of the same agent on a server. Agents that require typing a command into a pane do not get new automatic readings; the app won't submit a command or start a session to check usage. The usage setting turns off automatic checks and hides usage readings.
 
 Claude Code, Grok, Antigravity and Kiro open modal usage panels. The app skips automatic checks for these profiles because Herdr cannot atomically verify and close a panel. It never sends Escape in the background to recover one. In the agent view, **Dismiss usage** appears for recognized Claude Code and Kiro panels when the live pane and its occupant can be verified. The button checks the screen again and sends one Escape, without retrying or queuing the key. If the panel is unfamiliar, the pane is scrolled back, or the server cannot verify the pane, use **Show terminal** to inspect the screen and use the terminal keys deliberately.
 
@@ -327,7 +327,7 @@ Claude Code, Grok, Antigravity and Kiro open modal usage panels. The app skips a
 | Keys | `herdr pane send-keys <pane> esc` (or `tab`, `up`, `ctrl+c`, `ctrl+r`, `alt+b`, ...) |
 | Answer buttons | `herdr pane send-keys` with the arrows and Enter, the option's own key, or Esc |
 | Waiting for a change (Watching) | `herdr agent wait <pane> --until <state>` |
-| A usage check | `herdr pane send-text <pane> /usage`, `herdr pane read`, then `enter` and `esc`, or `backspace` to undo |
+| An automatic usage check | Agent CLI report or `herdr pane read <pane> --source visible`; no pane input |
 | The chat view, files, processes | `python3` reading the agent's own logs, with the reader script sent over SSH |
 
 Every argument is single-quoted for the remote shell, so message text is passed as typed.
@@ -405,7 +405,7 @@ Each release's APK is in `release/`, and the git history has the details.
 | `app/src/main/java/.../ssh/HerdrSsh.kt` | The SSH connection, host key pinning, and the command channels |
 | `app/src/main/java/.../ssh/WsBridge.kt` | SSH over a WebSocket: the local relay between the SSH library and the WebSocket |
 | `app/src/main/assets/transcript.py` | The reader sent to the computer's python3 for agent logs, history, files and processes |
-| `app/src/main/java/.../herdr/Herdr.kt` | The herdr commands, pane parsing, question and error detection, and the guarded usage check |
+| `app/src/main/java/.../herdr/Herdr.kt` | The herdr commands, pane parsing, question and error detection, and read-only usage checks |
 | `app/src/main/java/.../herdr/Reflow.kt` | Turning a terminal screen into the readable screen view |
 | `app/src/main/java/.../herdr/Quota.kt` | Each agent's usage command and the parser for its usage screen |
 | `app/src/main/java/.../store/ServerStore.kt` | Saved servers, settings, the Keystore encryption, the key migration, and keys made on the phone |

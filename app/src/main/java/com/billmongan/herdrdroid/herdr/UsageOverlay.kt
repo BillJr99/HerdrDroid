@@ -51,7 +51,9 @@ internal val USAGE_OVERLAY_SNAPSHOT = """
             identity = hashlib.sha256(json.dumps(before, sort_keys=True).encode()).hexdigest()
             if not expected:
                 print(json.dumps({'occupant': identity, 'visible': visible}))
-            elif expected == [identity, hashlib.sha256(visible.encode()).hexdigest()] and visible == call('read', pane, '--source', 'visible'):
+            elif (expected == [identity, hashlib.sha256(visible.encode()).hexdigest()] and
+                  visible == call('read', pane, '--source', 'visible') and
+                  before == [metadata(), occupant()]):
                 call('send-keys', pane, 'esc')
                 print('sent')
     except (OSError, ValueError, KeyError, IndexError, TypeError, subprocess.SubprocessError):

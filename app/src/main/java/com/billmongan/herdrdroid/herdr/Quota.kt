@@ -71,13 +71,6 @@ data class QuotaProfile(
      * When set, [command] is not typed anywhere and [parseCli] reads the command's output.
      */
     val cliCommand: String? = null,
-    /**
-     * What the usage screen says when the agent has no session yet (Hermes: "No active agent --
-     * send a message first"). Then [startSession] is sent once, as a message, and usage is read
-     * again after the agent answers.
-     */
-    val noSession: Regex? = null,
-    val startSession: String? = null,
     val parseCli: ((String) -> List<QuotaItem>)? = null,
     /**
      * Usage the agent always shows on its own screen (Mistral Vibe's footer gauge). When set, the
@@ -85,9 +78,7 @@ data class QuotaProfile(
      */
     val screenUsage: ((String) -> List<QuotaItem>)? = null,
 ) {
-    // The Herdr CLI does not offer an atomic "close this overlay if it is still on screen".
-    // A terminal probe that opens a modal cannot promise to safely restore the pane.
-    val canProbeWithoutOverlay: Boolean get() = closeKeys.isEmpty() && openMarker == null
+    internal val hasPassiveSource: Boolean get() = (cliCommand != null && parseCli != null) || screenUsage != null
 }
 
 /**
@@ -268,8 +259,6 @@ object QuotaProfiles {
         QuotaProfile(
             setOf("hermes"), "/usage", emptyList(), 2_500,
             infoCommand = "/reasoning",
-            noSession = Regex("""No active agent""", RegexOption.IGNORE_CASE),
-            startSession = "Hi! HerdrDroid is starting this session so it can read your usage. Just reply OK.",
             everyMinutes = 30,
             parseInfo = { screen -> PaneInfo(null, Regex("""Reasoning effort:\s+(\S+)""").findAll(screen).lastOrNull()?.groupValues?.get(1)) },
         ),

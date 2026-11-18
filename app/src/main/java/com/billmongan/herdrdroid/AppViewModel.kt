@@ -264,17 +264,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val queue = ArrayDeque<Queued>()
     private val quotaLock = Mutex()
     private val lastQuotaTry = mutableMapOf<String, Long>()
-    /**
-     * Panes a usage check is typing into right now ("server/pane"), shared by the open server's
-     * round and the background server checks, so two checks never type into one pane at once
-     * (that sent "/usage/reasoning" to Hermes as one message, 2026-11-13).
-     */
-    private val typingInto = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    /** Duplicate explicit dismissals must not enqueue another key. */
+    private val dismissingUsage = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     /** When a background check last tried each agent ("server/agent"), read or not, so a screen with no limits on it isn't asked again every round. */
     private val backgroundTry = java.util.concurrent.ConcurrentHashMap<String, Long>()
-    /** The pane whose usage is being checked right now, shown on its card as "Checking usage…". */
-    var probingPanes by mutableStateOf<Set<String>>(emptySet())
-        private set
     private var textSizeJob: Job? = null
 
     // Reads go on in the background only while the user has alerts ("Watching") turned on.
@@ -718,11 +711,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
     private val startupQuotasDone = mutableSetOf<String>()
 
-    /**
-     * The usage readings that are due on another server, checked on each background round: the same
-     * checks as the open server's (idle agents only; Enter only when the input line holds exactly
-     * the command; Oh My Pi from its command line). Readings are saved for when you open it.
-     */
+    /** Collect due CLI reports and footer readings on the background server round. */
     private suspend fun startupQuotas(s: Server, h: Herdr, fresh: List<Pane>) {
         // One check at a time per server; each reading is asked for again only when it is due.
         if (!startupQuotasDone.add(s.id)) return
@@ -737,27 +726,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val profile = QuotaProfiles.forAgent(list.first().agent) ?: continue
             val every = profile.everyMinutes * 60_000L
             if (maxOf(stored[agentKey]?.at ?: 0L, backgroundTry["${s.id}/$agentKey"] ?: 0L) > now - every) continue
-            // The open server's own round handles its agents; a check from here too could type into the same pane.
+            if (!profile.hasPassiveSource) continue
+            // Let the open server collect its own footer readings.
             if (s.id == current?.id && profile.cliCommand == null) continue
             backgroundTry["${s.id}/$agentKey"] = now
-            val items = if (profile.cliCommand != null) {
-                runCatching { h.cliQuota(profile) }.getOrNull()
-            } else if (profile.screenUsage != null) {
-                // Read off the screen (Vibe's footer): nothing typed, any status will do.
-                list.firstNotNullOfOrNull { p -> runCatching { h.screenQuota(p.id, profile) }.getOrNull()?.takeIf { it.isNotEmpty() } }
-            } else {
-                if (!h.canProbeScreens || !profile.canProbeWithoutOverlay) continue
-                val target = list.firstOrNull { !it.focused && (it.scrollOffset ?: 0) == 0 &&
-                    (it.status == Status.IDLE || it.status == Status.DONE) } ?: continue
-                val typingKey = "${s.id}/${target.id}"
-                if (!typingInto.add(typingKey)) continue
-                probedAt["${s.id}|${target.id}"] = System.currentTimeMillis()
-                try { runCatching { h.probeQuota(target.id, profile, working = false) }.getOrNull()?.also { r ->
-                    r.model?.let { m -> modelCache[s.id] = modelCache[s.id].orEmpty() + (target.id to m) }
-                }?.items } finally {
-                    typingInto.remove(typingKey)
-                    probedAt["${s.id}|${target.id}"] = System.currentTimeMillis()
-                }
+            val items = try {
+                h.readQuota(list.map { it.id }, profile)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
             }
             if (!items.isNullOrEmpty()) {
                 val r = QuotaReading(System.currentTimeMillis(), items)
@@ -1074,14 +1052,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun perform(q: Queued) {
         val h = herdr ?: return
-        // Never type into a pane while the app is checking that agent's usage.
-        var waited = 0
-        // A usage check types into the pane and closes its screen with Esc: a message typed then
-        // would be lost, so it waits for the check to finish completely.
-        if (q.paneId != null && q.paneId in probingPanes) com.billmongan.herdrdroid.diag.DiagLog.log("send", "waiting for a usage check in ${q.paneId} to finish")
-        while (q.paneId != null && q.paneId in probingPanes && waited < 60_000) {
-            delay(200); waited += 200
-        }
         try {
             q.run(h)
         } catch (c: CancellationException) {
@@ -1243,8 +1213,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     internal fun dismissUsage(usage: OpenUsage) {
         if (usageOverlayFor(usage.pane) != usage || closingUsage != null) return
-        val typingKey = "${usage.server}/${usage.pane}"
-        if (!typingInto.add(typingKey)) return
+        val dismissKey = "${usage.server}/${usage.pane}"
+        if (!dismissingUsage.add(dismissKey)) return
         closingUsage = usage
         viewModelScope.launch {
             try {
@@ -1256,7 +1226,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 if (currentUsage(usage)) {
                     openUsage = null
                     if (sent) {
-                        noteSent(usage.pane)
                         delay(400) // An accepted key isn't proof of closure; wait for a redraw.
                     }
                     if (currentUsage(usage)) {
@@ -1269,7 +1238,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 }
             } finally {
                 closingUsage = null
-                typingInto.remove(typingKey)
+                dismissingUsage.remove(dismissKey)
             }
         }
     }
@@ -1952,17 +1921,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun pane(id: String): Pane? = panes.firstOrNull { it.id == id }
 
-    private val lastSentTo = java.util.concurrent.ConcurrentHashMap<String, Long>()
-
-    /** When the app may type a usage check into a pane on its own: only a quiet one (1.3.1). */
-    private val quietGate = com.billmongan.herdrdroid.herdr.QuietGate()
-
-    /** Anything the app sends a pane (a message, a key, an answer) makes it not quiet for a while. */
-    private fun noteSent(paneId: String) {
-        lastSentTo[paneId] = System.currentTimeMillis()
-        quietGate.sent("${current?.id}|$paneId", System.currentTimeMillis())
-    }
-
     /** The open computer's agent versions (1.4.0): agent kind to version. */
     var agentVersions by mutableStateOf<Map<String, String>>(emptyMap())
         private set
@@ -2062,7 +2020,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun sendMessage(pane: Pane, text: String, force: Boolean = false, typedAnswer: Boolean = false, delivered: () -> Unit = {}) {
-        noteSent(pane.id)
         lastSent = pane.id to text
         lastSentAt = System.currentTimeMillis()
         val pendingId = System.nanoTime()
@@ -2157,7 +2114,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 when {
                     link != Link.CONNECTED || h == null -> "the computer isn't connected"
                     pn == null -> "the pane isn't listed just now"
-                    p.paneId in probingPanes -> "a usage check is running in it"
                     // A question that came up since is answered first, never typed into (1.4.4).
                     pn.status == Status.NEEDS_YOU -> "a question is open in it; answer it first"
                     pendingSends.any { it.paneId == p.paneId && it.waiting && it.at < p.at && it.id != p.id } -> "an earlier message to it is still waiting"
@@ -2171,7 +2127,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         val after = pane(p.paneId)
                         when {
                             after == null -> "the pane isn't listed just now"
-                            p.paneId in probingPanes -> "a usage check is running in it"
                             blocksNormalSend(after, screen) -> "a question is open in it; answer it first"
                             else -> holdReason(p.paneId, screen)
                         }
@@ -2181,7 +2136,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             send = {
                 val h = herdr ?: throw IllegalStateException("not connected")
                 val pn = pane(p.paneId) ?: throw IllegalStateException("the pane closed")
-                noteSent(p.paneId)
                 h.sendMessage(pn, p.text)
                 log("delivered to herdr (${h.lastSendRoute})")
             },
@@ -2234,7 +2188,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Sends keys, then runs [sent] once they went out (1.3.2: a key answer is recorded only then). */
     fun sendKeysThen(paneId: String, keys: List<String>, sent: () -> Unit) {
-        noteSent(paneId)
         act(paneId, "Couldn't send the key") { h ->
             h.sendKeys(paneId, *keys.toTypedArray())
             sent()
@@ -2326,7 +2279,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch {
             try {
-                if (current?.id != server || herdr !== client || paneId in probingPanes) {
+                if (current?.id != server || herdr !== client) {
                     val message = "Not sent. Refresh the question before trying again."
                     flash(message)
                     feedback?.invoke(message)
@@ -2414,7 +2367,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 readPane(paneId)
                 return@answerOnce
             }
-            noteSent(paneId)
             // A transport error after any key is sent leaves delivery uncertain. Keep the guard
             // active until the next screen read even when the send did not return a receipt.
             sid?.let { answeredCards[it to paneId] = tappedSig to System.currentTimeMillis() }
@@ -2482,7 +2434,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * message, as "Type a different answer" does.
      */
     fun answerTyped(pane: Pane, prompt: com.billmongan.herdrdroid.herdr.Prompt, choice: com.billmongan.herdrdroid.herdr.Choice, text: String) {
-        noteSent(pane.id)
         val move = com.billmongan.herdrdroid.herdr.moveKeys(prompt, choice)
         // Recorded only once it was sent (1.3.2).
         if (move == null) { sendMessage(pane, text, typedAnswer = true) { noteAnswer(pane.id, prompt, text) }; return }
@@ -2499,7 +2450,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun answer(paneId: String, keys: String, pressEnter: Boolean, sent: () -> Unit = {}) {
-        noteSent(paneId)
         act(paneId, "Couldn't answer") { h ->
             if (pressEnter) h.typeAndEnter(paneId, keys) else h.sendText(paneId, keys)
             sent()
@@ -2527,11 +2477,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { runCatching { quotaRound(force = force) } }
     }
 
-    /**
-     * For each kind of agent that can report usage without a model call, picks one pane running it
-     * that is idle (preferring one not in front at the computer), and asks it. The reading applies to every pane
-     * running that agent. Agents with no way to report usage are never sent anything.
-     */
+    /** Refresh due usage from CLI reports and visible footers, never from typed commands. */
     private suspend fun quotaRound(force: Boolean) = quotaLock.withLock {
         val serverId = current?.id ?: return@withLock
         val fresh = quietly { it.panes() } ?: return@withLock
@@ -2551,102 +2497,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val every = (QuotaProfiles.forAgent(list.first().agent)?.everyMinutes ?: 30) * 60_000L
                 val due = if (force) now - last > 2 * 60_000 else now - last > every
                 if (!due) return@launch
-                // Commands that open a panel may only run in a quiet pane out of focus.
-                val profile0 = QuotaProfiles.forAgent(list.first().agent) ?: return@launch
-                if (profile0.screenUsage != null) {
-                    // Shown on the agent's own screen: read it, type nothing, whatever the status.
-                    if (!canPoll) return@launch
-                    val items = list.firstNotNullOfOrNull { p -> quietly { it.screenQuota(p.id, profile0) }?.takeIf { it.isNotEmpty() } }
-                    lastQuotaTry[agentKey] = now
-                    if (!items.isNullOrEmpty()) {
-                        quotas = quotas + (agentKey to QuotaReading(now, items))
-                        prefs.saveQuotas(serverId, quotas)
-                        recordQuota(serverId, agentKey, QuotaReading(now, items))
-                    }
-                    return@launch
-                }
-                if (profile0.cliCommand != null) {
-                    // Asked from the command line, not the pane: no pane to choose and nothing typed.
-                    if (!canPoll) return@launch
-                    val items = quietly { it.cliQuota(profile0) }
-                    lastQuotaTry[agentKey] = now
-                    if (!items.isNullOrEmpty()) {
-                        quotas = quotas + (agentKey to QuotaReading(now, items))
-                        prefs.saveQuotas(serverId, quotas)
-                        recordQuota(serverId, agentKey, QuotaReading(now, items))
-                    }
-                    return@launch
-                }
-                if (!profile0.canProbeWithoutOverlay) return@launch
-                // Never an agent open on screen or sent to in the last two minutes: you may be typing to it.
-                // And (1.3.1) only a quiet pane: not working, its screen unchanged and nothing sent to
-                // it for 45 s, not scrolled back, and not checked in the last 5 minutes (QuietGate).
-                val openNow = (screen as? Screen.Agent)?.paneId
-                val candidates = list.filter {
-                    !it.focused && (it.status == Status.IDLE || it.status == Status.DONE) &&
-                        it.id != openNow && (lastSentTo[it.id] ?: 0L) < now - 120_000
-                }
-                for (c in candidates) {
-                    val vis = quietly { it.readVisible(c.id, 40) } ?: continue
-                    val rec = quietly { it.read(c.id, 40) } ?: continue
-                    quietGate.observe("$serverId|${c.id}", vis, rec, System.currentTimeMillis(), c.scrollOffset)
-                }
-                val why = candidates.associate { it.id to quietGate.verdict("$serverId|${it.id}", it.status, System.currentTimeMillis()) }
-                val target = candidates.firstOrNull { why[it.id] == null }
-                if (target == null) {
-                    com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$agentKey on ${current?.label}: no quiet pane to check (" +
-                        list.joinToString { "${it.id} ${it.status}${if (it.id == openNow) " open" else ""}${if ((lastSentTo[it.id] ?: 0L) >= now - 120_000) " sent-to" else ""}${why[it.id]?.let { w -> ", $w" } ?: ""}" } + ")")
-                    // Not counted as a try: it is asked for again on the next round, once a pane is quiet.
-                    return@launch
-                }
-                quietGate.checked("$serverId|${target.id}", System.currentTimeMillis())
-                val profile = QuotaProfiles.forAgent(target.agent) ?: return@launch
-                if (!canPoll) return@launch
-                if (herdr?.canProbeScreens == false) {
-                    com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$agentKey on ${current?.label}: herdr-core, usage screens aren't checked")
-                    return@launch
-                }
-                com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$agentKey on ${current?.label}: checking ${target.id} (${target.status})")
-                val typingKey = "$serverId/${target.id}"
-                if (!typingInto.add(typingKey)) {
-                    com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$agentKey on ${current?.label}: ${target.id} is already being checked")
-                    return@launch
-                }
-                probingPanes = probingPanes + target.id
-                probedAt["$serverId|${target.id}"] = System.currentTimeMillis()
-                val before = quietly { it.readVisible(target.id, 40) }
-                val result = try {
-                    quietly { it.probeQuota(target.id, profile, working = target.status == Status.WORKING) }
-                } finally {
-                    probingPanes = probingPanes - target.id
-                    typingInto.remove(typingKey)
-                    probedAt["$serverId|${target.id}"] = System.currentTimeMillis()
-                }
-                // Back where it was (1.3.1): the pane's visible screen should match what it showed before.
-                if (before != null) {
-                    kotlinx.coroutines.delay(1_500)
-                    val after = quietly { it.readVisible(target.id, 40) }
-                    val same = after != null && com.billmongan.herdrdroid.herdr.QuietGate.norm(after) == com.billmongan.herdrdroid.herdr.QuietGate.norm(before)
-                    com.billmongan.herdrdroid.diag.DiagLog.log("usage", "${target.id} after the check: ${if (same) "back as it was" else "screen differs from before (the check's echo or a new line)"}")
-                }
-                result?.model?.let { models = models + (target.id to it); noteModels() }
-                result?.effort?.let { efforts = efforts + (target.id to it) }
-                val items = result?.items
-                com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$agentKey on ${current?.label}: ${when {
-                    result == null -> "nothing read (command not echoed, or the pane was busy)"
-                    items.isNullOrEmpty() -> "screen read, no limits found on it"
-                    else -> "${items.size} limit(s) read"
-                }}")
-                when {
-                    // Someone had text in that agent's input line, or the screen had no limits on it this
-                    // time (a Hermes session that hasn't made a call yet). Try again in 5 minutes.
-                    items.isNullOrEmpty() -> lastQuotaTry[agentKey] = now - (every - 5 * 60_000L).coerceAtLeast(0)
-                    else -> {
-                        lastQuotaTry[agentKey] = now
-                        quotas = quotas + (agentKey to QuotaReading(now, items))
-                        prefs.saveQuotas(serverId, quotas)
-                        recordQuota(serverId, agentKey, QuotaReading(now, items))
-                    }
+                val profile = QuotaProfiles.forAgent(list.first().agent) ?: return@launch
+                if (!profile.hasPassiveSource || !canPoll || current?.id != serverId) return@launch
+                val items = quietly { it.readQuota(list.map { pane -> pane.id }, profile) }
+                if (current?.id != serverId) return@launch
+                lastQuotaTry[agentKey] = now
+                if (!items.isNullOrEmpty()) {
+                    val reading = QuotaReading(now, items)
+                    quotas = quotas + (agentKey to reading)
+                    prefs.saveQuotas(serverId, quotas)
+                    recordQuota(serverId, agentKey, reading)
                 }
             }
         }
@@ -3347,19 +3207,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      */
     /**
      * Remembers, per server and pane, when it last turned done and when you last had it open, for
-     * every server (the open one and the watched ones). A new "done" begins only after real work:
-     * the app's own usage check (it types /usage into an idle agent) makes it busy for a moment,
-     * and that never counts, so an agent you already opened stays idle.
+     * every server (the open one and the watched ones).
      */
     private fun trackDone(serverId: String, list: List<Pane>) {
         val tNow = System.currentTimeMillis()
         var changed = false
         list.forEach { p ->
             val k = "$serverId|${p.id}"
-            val ownCheck = tNow - (probedAt[k] ?: 0L) < 60_000L
             when (p.status) {
                 Status.DONE -> if (!doneSince.containsKey(k)) { doneSince[k] = tNow; changed = true }
-                Status.WORKING, Status.NEEDS_YOU -> if (!ownCheck && doneSince.remove(k) != null) changed = true
+                Status.WORKING, Status.NEEDS_YOU -> if (doneSince.remove(k) != null) changed = true
                 else -> {}
             }
             // An agent open on screen when it finishes has been seen.
@@ -3368,20 +3225,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (changed) saveSeen()
     }
 
-    /** When the app last typed a usage check into each pane ("server|pane"). */
-    private val probedAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
-
     fun shownStatus(p: Pane, serverId: String? = current?.id): Status {
         val here = serverId == current?.id
         // Hermes: a conversation elsewhere (Telegram, its app) working or waiting counts here too.
         if (here && p.agent?.lowercase() == "hermes" && p.status != Status.NEEDS_YOU) hermesState?.let { return it }
         if (here && (p.status == Status.IDLE || p.status == Status.DONE || p.status == Status.UNKNOWN) && (busyCounts[p.id] ?: 0) > 0) return Status.WORKING
-        // The app's own usage check made it look busy for a moment: show what it was before.
-        val k0 = "$serverId|${p.id}"
-        // (The check only types into agents that are idle or done, so it was one or the other.)
-        if (p.status == Status.WORKING && System.currentTimeMillis() - (probedAt[k0] ?: 0L) < 60_000L) {
-            return if (doneSince.containsKey(k0)) shownStatus(p.copy(status = Status.DONE), serverId) else Status.IDLE
-        }
         // herdr's "done" is idle but not yet seen at the computer. Opening the agent here counts as
         // seeing it, and after 30 minutes it counts as idle anyway. (The app never marks it seen in
         // herdr itself: that would switch the pane in front at the computer.)

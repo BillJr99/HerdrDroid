@@ -16,13 +16,9 @@ class UsageOverlayTest {
     private val usage = "Status   Config   Usage\nCurrent session\nLoading…\nEsc to close"
     private val approval = "Approve this tool call\n❯ 1. Yes\n2. No\nEsc to cancel"
 
-    @Test fun backgroundProbesSkipEveryModalProfile() {
-        for (agent in listOf("claude", "kiro", "grok", "agy", "antigravity")) {
-            assertFalse(agent, QuotaProfiles.forAgent(agent)!!.canProbeWithoutOverlay)
-        }
-        for (agent in listOf("codex", "copilot", "hermes", "vibe", "omp", "muse")) {
-            assertTrue(agent, QuotaProfiles.forAgent(agent)!!.canProbeWithoutOverlay)
-        }
+    @Test fun automaticQuotaUsesOnlyCliAndFooterProfiles() {
+        assertEquals(setOf("vibe", "omp", "muse"), QuotaProfiles.builtIn
+            .filter { it.hasPassiveSource }.flatMap { it.agents }.toSet())
     }
 
     @Test fun usageActionRequiresKnownLayoutNotOnlyAnEscapeHintOrNumbers() {
@@ -69,8 +65,10 @@ if cmd == 'get':
         'workspace_id': 'w1', 'tab_id': 'w1:t1', 'agent_status': state['status'],
         'scroll': {'offset_from_bottom': state['scroll']}}}}))
 elif cmd == 'process-info':
-    print(json.dumps({'result': {'process_info': {'pane_id': pane, 'shell_pid': state['pid'],
-        'foreground_process_group_id': state['pid']}}}))
+    reads = root / 'reads'
+    pid = state.get('final_pid', state['pid']) if reads.exists() and int(reads.read_text()) >= 2 else state['pid']
+    print(json.dumps({'result': {'process_info': {'pane_id': pane, 'shell_pid': pid,
+        'foreground_process_group_id': pid}}}))
 elif cmd == 'read':
     assert sys.argv[3:] == [pane, '--source', 'visible']
     count_path = root / 'reads'
@@ -88,10 +86,10 @@ else:
 """)
         assertTrue(fake.setExecutable(true))
         val pid = File("/proc/self/stat").readText().substringBefore(' ').toLong()
-        fun state(visible: String = usage, agent: String = "claude", status: String = "idle", scroll: Int = 0, process: Long = pid, next: String? = null) {
+        fun state(visible: String = usage, agent: String = "claude", status: String = "idle", scroll: Int = 0, process: Long = pid, next: String? = null, finalPid: Long? = null) {
             root.resolve("reads").delete()
             root.resolve("state").writeText(JSONObject().put("visible", visible).put("agent", agent).put("status", status)
-                .put("scroll", scroll).put("pid", process).put("next", next).toString())
+                .put("scroll", scroll).put("pid", process).put("next", next).put("final_pid", finalPid).toString())
         }
         fun call(vararg args: String): String {
             val p = ProcessBuilder("/usr/bin/python3", "-c", USAGE_OVERLAY_SNAPSHOT, fake.path, "w1:p1", "claude", *args).start()
@@ -114,6 +112,8 @@ else:
         state(agent = "codex")
         assertEquals("", close())
         state(process = 1)
+        assertEquals("", close())
+        state(finalPid = 1) // Identical final frame, but a different occupant by the end of that read.
         assertEquals("", close())
         assertFalse(root.resolve("keys").exists())
         state()
