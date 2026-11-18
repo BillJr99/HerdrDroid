@@ -1651,7 +1651,39 @@ private val AGENT_CRASHES = listOf(
 /** A shell's prompt: "tester@host:~/work$", "user@devbox2:~ %" (a bare "$" is too easily something else). */
 private val SHELL_PROMPT = Regex("""^[\w.-]+@[\w.-]+(:\S*)?\s?[$#%]\s*$""")
 
+private val OPENCODE_WEB_SEARCH_FOOTER =
+    Regex("""^↑/?↓\s+select\s+enter\s+submit\s+esc\s+dismiss$""", RegexOption.IGNORE_CASE)
+private val OPENCODE_WEB_SEARCH_OPTION = Regex("""^(?:[❯›>]\s*)?([1-3])[.]\s+(.+)$""")
+
+/** OpenCode highlights this picker with color alone. Its numbered keys select and submit directly. */
+private fun detectOpenCodeWebSearch(text: String): Prompt? {
+    val lines = text.lineSequence().toList().takeLast(20).map { it.trim().trim('│', '┃', '|').trim() }
+        .filter { it.isNotBlank() }
+        .dropLastWhile { it.startsWith("~/") || it.startsWith("/") }
+    val footer = lines.lastOrNull() ?: return null
+    if (!OPENCODE_WEB_SEARCH_FOOTER.matches(footer)) return null
+
+    val header = lines.indexOfLast { it.equals("Web Search", ignoreCase = true) }
+    if (header < 0) return null
+    val body = lines.subList(header + 1, lines.lastIndex)
+    val question = body.firstOrNull() ?: return null
+    if (!question.startsWith("Allow OpenCode to search the web", ignoreCase = true) || !question.endsWith("?")) return null
+    val choices = body.drop(1).map { line ->
+        val match = OPENCODE_WEB_SEARCH_OPTION.matchEntire(line) ?: return null
+        Choice(match.groupValues[2], match.groupValues[1], pressEnter = false)
+    }
+    if (choices.map { it.keys } != listOf("1", "2", "3") ||
+        !choices[0].label.startsWith("Allow ", ignoreCase = true) ||
+        !choices[1].label.equals("Choose another provider", ignoreCase = true) ||
+        !choices[2].label.equals("Disable web search", ignoreCase = true)
+    ) return null
+    return Prompt(question, choices)
+}
+
 fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version: String? = null): Prompt? {
+    if (agent?.lowercase() in setOf("opencode", "opencode-ursinus")) {
+        detectOpenCodeWebSearch(text)?.let { return it }
+    }
     val rules = ParserRules.forAgent(agent, version)
     // A question dialog on screen means the agent waits, whatever herdr reported.
     @Suppress("NAME_SHADOWING") val blocked = blocked || showsQuestionDialog(text) ||

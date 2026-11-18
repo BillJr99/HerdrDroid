@@ -13,6 +13,29 @@ import org.junit.Test
  * dialog's layout (rule, tab bar, question, options with descriptions, footer).
  */
 class QuestionFormatTest {
+    private val webSearch = """
+        ┃  Web Search
+        ┃  Allow OpenCode to search the web for current information?
+        ┃  1. Allow search via Example
+        ┃  2. Choose another provider
+        ┃  3. Disable web search
+        ┃  ↑↓ select  enter submit  esc dismiss
+        ┃  ~/sample/project
+    """.trimIndent()
+
+    @Test fun openCodeWebSearchOffersDirectNumberKeysWithoutAHighlight() {
+        val prompt = detectPrompt(webSearch, blocked = true, agent = "opencode-ursinus")!!
+        assertEquals("Allow OpenCode to search the web for current information?", prompt.question)
+        assertEquals(listOf("Allow search via Example", "Choose another provider", "Disable web search"), prompt.choices.map { it.label })
+        assertEquals(listOf("1", "2", "3"), prompt.choices.map { it.keys })
+        assertTrue(prompt.choices.none { it.pressEnter || menuKeys(prompt, it) != null })
+    }
+
+    @Test fun oldWebSearchPromptDoesNotBecomeALiveCard() {
+        val movedOn = "$webSearch\n┃  Search complete.\n┃  ❯ "
+        assertNull(detectPrompt(movedOn, blocked = true, agent = "opencode-ursinus"))
+    }
+
     private val marks = listOf("│", "┃", "╭", "╰", "›", "❯", "◆", "(●)", "(○)", "←", "→", "☐", "☒", "✔")
 
     private fun clean(parts: QuestionParts) {
