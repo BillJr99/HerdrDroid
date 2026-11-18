@@ -23,6 +23,7 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.test.longClick
@@ -502,15 +503,57 @@ class ComposeUiTest {
             Box(Modifier.width(380.dp)) {
                 ChatComposer(
                     value = "", onValueChange = {}, placeholder = "Message Claude", canSend = false, onSend = {},
-                    compact = true, menuItems = listOf("Snippets" to { picked = "Snippets" }, "Reading mode" to { picked = "Reading" }),
+                    compact = true, menuItems = listOf("Snippets" to { picked = "Snippets" }, "Show keys" to { picked = "Keys" }),
                 )
             }
         }
         rule.onNodeWithText("Snippets").assertDoesNotExist()
         rule.onNodeWithText("🎙").assertIsDisplayed()
         rule.onNodeWithText("⋯").performClick()
-        rule.onNodeWithText("Reading mode").performClick()
-        assertEquals("Reading", picked)
+        rule.onNodeWithText("Show keys").performClick()
+        assertEquals("Keys", picked)
+    }
+
+    @Test fun voiceSettingsRequireOptInAndStartAndStopOnlyOnExplicitTap() {
+        val enabled = androidx.compose.runtime.mutableStateOf(false)
+        val active = androidx.compose.runtime.mutableStateOf(false)
+        val locked = androidx.compose.runtime.mutableStateOf(false)
+        val route = androidx.compose.runtime.mutableStateOf(com.billmongan.herdrdroid.voice.VoiceRoute.PHONE)
+        rule.setContent {
+            androidx.compose.foundation.layout.Column(Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+                VoiceSettings(com.billmongan.herdrdroid.voice.VoiceUi(enabled.value, { enabled.value = it },
+                    { active.value = true }, { active.value = false }, {}, route.value, { route.value = it }), active.value, locked.value)
+            }
+        }
+        rule.onNodeWithText("Start hands-free").assertIsNotEnabled()
+        rule.onNodeWithContentDescription("Voice Control").performClick()
+        rule.runOnIdle { assertTrue(!active.value) }
+        rule.onNodeWithText("Start hands-free").performScrollTo().performClick()
+        rule.onNodeWithText("Stop hands-free").performScrollTo().performClick()
+        rule.runOnIdle { locked.value = true }
+        rule.onNodeWithText("Start hands-free").assertIsNotEnabled()
+        if (android.os.Build.VERSION.SDK_INT >= 31) {
+            rule.onNodeWithText("Bluetooth speakers and mic").performScrollTo().performClick()
+            rule.runOnIdle { assertEquals(com.billmongan.herdrdroid.voice.VoiceRoute.BLUETOOTH, route.value) }
+        }
+        rule.onNodeWithText("Confirm message").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test fun agentMenusKeepComposerAndDraftWithoutASeparateReadingView() {
+        val app = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.app.Application>()
+        val vm = rule.runOnUiThread { com.billmongan.herdrdroid.AppViewModel(app) }
+        rule.setContent { AgentScreen(vm, "fixture:pane") }
+        rule.onNode(hasSetTextAction()).performTextInput("Synthetic draft")
+        rule.onNodeWithContentDescription("More").performClick()
+        rule.onNodeWithText("Reading mode").assertDoesNotExist()
+        rule.onNodeWithText("Leave reading mode").assertDoesNotExist()
+        rule.onNodeWithText("Running underneath").assertIsDisplayed()
+        rule.onNodeWithText("Running underneath").performClick()
+        rule.onNodeWithText("⋯").performClick()
+        rule.onNodeWithText("Reading mode").assertDoesNotExist()
+        rule.onNodeWithText("Snippets").assertIsDisplayed()
+        rule.onNodeWithText("Snippets").performClick()
+        rule.onNodeWithText("Synthetic draft").assertExists()
     }
 
     @Test fun aReplyOpensFullScreen() {

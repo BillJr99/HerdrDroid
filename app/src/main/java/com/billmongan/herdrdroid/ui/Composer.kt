@@ -185,20 +185,7 @@ fun ChatComposer(
             Unit
         }
     } else null
-    val voiceMenu = buildList {
-        if (voice != null) {
-            add((if (voice.enabled) "Turn off Voice Control" else "Enable Voice Control") to voice.toggle)
-            if (android.os.Build.VERSION.SDK_INT >= 31) {
-                for (route in com.billmongan.herdrdroid.voice.VoiceRoute.entries) {
-                    add((if (voice.route == route) "${route.label} (selected)" else route.label) to { voice.chooseRoute(route) })
-                }
-            }
-            if (voice.enabled) {
-                commandMic?.let { add("Voice command" to it) }
-                add((if (HandsFreeService.active) "Stop hands-free" else "Start hands-free") to voice.handsFree)
-            }
-        }
-    }
+    val voiceMenu = listOfNotNull(commandMic?.let { "Voice command" to it })
     var voiceMenuOpen by remember { mutableStateOf(false) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> uri?.let { onAttach?.invoke(it) } }
     val typedSlash = value.startsWith("/") && !value.contains(' ')
@@ -299,7 +286,7 @@ fun ChatComposer(
     val dictate = {
         if (handsFreeActive && voice != null) {
             dictateAfterStop = true
-            voice.handsFree()
+            voice.stopHandsFree()
         } else launchDictation()
     }
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -381,7 +368,7 @@ fun ChatComposer(
                         }
                         RoundTool("🎙", "Dictate", onLongClick = commandMic) { dictate() }
                         if (voiceMenu.isNotEmpty()) Box {
-                            RoundTool("⋯", "Voice settings") { voiceMenuOpen = true }
+                            RoundTool("⋯", "Voice commands") { voiceMenuOpen = true }
                             androidx.compose.material3.DropdownMenu(expanded = voiceMenuOpen, onDismissRequest = { voiceMenuOpen = false }) {
                                 voiceMenu.forEach { (label, action) ->
                                     androidx.compose.material3.DropdownMenuItem(text = { Text(label) }, onClick = { voiceMenuOpen = false; action() })

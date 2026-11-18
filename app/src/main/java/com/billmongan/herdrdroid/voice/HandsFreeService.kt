@@ -7,9 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.media.AudioAttributes
 import android.media.AudioFocusRequest
-import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
@@ -175,87 +173,100 @@ class HandsFreeService : Service() {
         Model(path).use { model ->
             Recognizer(model, RATE.toFloat(), """["hey herder","hey herd","[unk]"]""").use { wake ->
                 Recognizer(model, RATE.toFloat()).use { speech ->
-                    Recognizer(model, RATE.toFloat(), """["confirm answer","cancel answer","[unk]"]""").use { confirmation ->
-                        val minimum = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-                        check(minimum > 0) { "Unsupported microphone format" }
-                        val source = if (route == VoiceRoute.BLUETOOTH) MediaRecorder.AudioSource.VOICE_COMMUNICATION else MediaRecorder.AudioSource.MIC
-                        val mic = AudioRecord(source, RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(minimum, RATE))
-                        var registered = false
-                        try {
-                            synchronized(recorderLock) {
-                                if (!isCurrent(session)) return
-                                if (route == VoiceRoute.PHONE) {
-                                    val builtin = getSystemService(AudioManager::class.java).getDevices(AudioManager.GET_DEVICES_INPUTS)
-                                        .firstOrNull { route.matchesMic(it.type) }
-                                    check(builtin != null && mic.setPreferredDevice(builtin)) { "The phone microphone could not be selected" }
+                    Recognizer(model, RATE.toFloat(), ConfirmationGrammar.ANSWER.grammar).use { answer ->
+                        Recognizer(model, RATE.toFloat(), ConfirmationGrammar.MESSAGE.grammar).use { message ->
+                            val minimum = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+                            check(minimum > 0) { "Unsupported microphone format" }
+                            val source = if (route == VoiceRoute.BLUETOOTH) MediaRecorder.AudioSource.VOICE_COMMUNICATION else MediaRecorder.AudioSource.MIC
+                            val mic = AudioRecord(source, RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(minimum, RATE))
+                            var registered = false
+                            try {
+                                synchronized(recorderLock) {
+                                    if (!isCurrent(session)) return
+                                    if (route == VoiceRoute.PHONE) {
+                                        val builtin = getSystemService(AudioManager::class.java).getDevices(AudioManager.GET_DEVICES_INPUTS)
+                                            .firstOrNull { route.matchesMic(it.type) }
+                                        check(builtin != null && mic.setPreferredDevice(builtin)) { "The phone microphone could not be selected" }
+                                    }
+                                    recorder = mic
+                                    registered = true
+                                    mic.startRecording()
+                                    check(mic.recordingState == AudioRecord.RECORDSTATE_RECORDING) { "Microphone did not start" }
                                 }
-                                recorder = mic
-                                registered = true
-                                mic.startRecording()
-                                check(mic.recordingState == AudioRecord.RECORDSTATE_RECORDING) { "Microphone did not start" }
-                            }
-                            val buffer = ShortArray(1600)
-                            var deadline = 0L
-                            var ignoreUntil = 0L
-                            var wasSpeaking = false
-                            var commandRecognizer = speech
-                            val routingDeadline = android.os.SystemClock.elapsedRealtime() + 5_000L
-                            var routeVerified = false
-                            while (isCurrent(session)) {
-                                val count = mic.read(buffer, 0, buffer.size)
-                                check(count >= 0) { "Microphone disconnected" }
-                                if (count == 0 || !isCurrent(session)) continue
-                                val micType = mic.routedDevice?.type
-                                val now = android.os.SystemClock.elapsedRealtime()
-                                val selected = micType != null && route.matchesMic(micType) && audio.routed()
-                                if (!routeVerified && !selected && now < routingDeadline) continue
-                                check(selected) { "The selected voice microphone is unavailable. Check Bluetooth Phone calls or select Phone." }
-                                if (!routeVerified) {
-                                    routeVerified = true
-                                    main.post {
-                                        if (isCurrent(session)) notificationManager.notify(ID, notification("Listening for Hey Herdr"))
+                                val buffer = ShortArray(1600)
+                                var deadline = 0L
+                                var ignoreUntil = 0L
+                                var wasSpeaking = false
+                                var commandRecognizer = speech
+                                val routingDeadline = android.os.SystemClock.elapsedRealtime() + 5_000L
+                                var routeVerified = false
+                                while (isCurrent(session)) {
+                                    val count = mic.read(buffer, 0, buffer.size)
+                                    check(count >= 0) { "Microphone disconnected" }
+                                    if (count == 0 || !isCurrent(session)) continue
+                                    val micType = mic.routedDevice?.type
+                                    val now = android.os.SystemClock.elapsedRealtime()
+                                    val selected = micType != null && route.matchesMic(micType) && audio.routed()
+                                    if (!routeVerified && !selected && now < routingDeadline) continue
+                                    check(selected) { "The selected voice microphone is unavailable. Check Bluetooth Phone calls or select Phone." }
+                                    if (!routeVerified) {
+                                        routeVerified = true
+                                        main.post {
+                                            if (isCurrent(session)) notificationManager.notify(ID, notification("Listening for Hey Herdr"))
+                                        }
+                                    }
+                                    if (Speaker.speakingKey != null) {
+                                        if (!wasSpeaking) {
+                                            wake.reset()
+                                            commandRecognizer.reset()
+                                            deadline = 0
+                                            capturingCommand = false
+                                        }
+                                        wasSpeaking = true
+                                        continue
+                                    }
+                                    if (wasSpeaking) {
+                                        wasSpeaking = false
+                                        ignoreUntil = now + 800L
+                                    }
+                                    if (now < ignoreUntil) continue
+                                    if (deadline == 0L) {
+                                        if (!wake.acceptWaveForm(buffer, count)) continue
+                                        if (resultText(wake.result) in setOf("hey herder", "hey herd")) {
+                                            main.post { if (isCurrent(session)) playCue(audio) }
+                                            capturingCommand = true
+                                            deadline = now + 7_000L
+                                            ignoreUntil = now + 200L
+                                            commandRecognizer = when (confirmationGrammar?.invoke()) {
+                                                ConfirmationGrammar.ANSWER -> answer
+                                                ConfirmationGrammar.MESSAGE -> message
+                                                null -> speech
+                                            }
+                                            commandRecognizer.reset()
+                                        }
+                                    } else {
+                                        val ended = commandRecognizer.acceptWaveForm(buffer, count)
+                                        val said = if (ended) resultText(commandRecognizer.result) else if (now >= deadline) resultText(commandRecognizer.finalResult) else ""
+                                        if (said.isNotBlank() || now >= deadline) {
+                                            deadline = 0
+                                            wake.reset()
+                                            ignoreUntil = now + 600L
+                                            main.post {
+                                                if (isCurrent(session)) {
+                                                    if (said.isNotBlank()) command?.invoke(said)
+                                                    capturingCommand = false
+                                                }
+                                            }
+                                        }
                                     }
                                 }
-                                if (Speaker.speakingKey != null) {
-                                    if (!wasSpeaking) {
-                                        wake.reset()
-                                        commandRecognizer.reset()
-                                        deadline = 0
-                                    }
-                                    wasSpeaking = true
-                                    continue
+                            } finally {
+                                synchronized(recorderLock) {
+                                    if (recorder === mic) {
+                                        recorder = null
+                                        closeRecorder(mic)
+                                    } else if (!registered) mic.release()
                                 }
-                                if (wasSpeaking) {
-                                    wasSpeaking = false
-                                    ignoreUntil = now + 800L
-                                }
-                                if (now < ignoreUntil) continue
-                                if (deadline == 0L) {
-                                    if (!wake.acceptWaveForm(buffer, count)) continue
-                                    if (resultText(wake.result) in setOf("hey herder", "hey herd")) {
-                                        main.post { if (isCurrent(session)) playCue(audio) }
-                                        deadline = now + 7_000L
-                                        ignoreUntil = now + 200L
-                                        commandRecognizer = if (awaitingConfirmation?.invoke() == true) confirmation else speech
-                                        commandRecognizer.reset()
-                                    }
-                                } else {
-                                    val ended = commandRecognizer.acceptWaveForm(buffer, count)
-                                    val said = if (ended) resultText(commandRecognizer.result) else if (now >= deadline) resultText(commandRecognizer.finalResult) else ""
-                                    if (said.isNotBlank() || now >= deadline) {
-                                        deadline = 0
-                                        wake.reset()
-                                        ignoreUntil = now + 600L
-                                        if (said.isNotBlank()) main.post { if (isCurrent(session)) command?.invoke(said) }
-                                    }
-                                }
-                            }
-                        } finally {
-                            synchronized(recorderLock) {
-                                if (recorder === mic) {
-                                    recorder = null
-                                    closeRecorder(mic)
-                                } else if (!registered) mic.release()
                             }
                         }
                     }
@@ -300,6 +311,7 @@ class HandsFreeService : Service() {
         worker?.interrupt()
         main.removeCallbacksAndMessages(null)
         wakeLock?.let { if (it.isHeld) it.release() }
+        capturingCommand = false
         active = false
         sessionEnded?.invoke()
         super.onDestroy()
@@ -314,7 +326,9 @@ class HandsFreeService : Service() {
         private const val SESSION_MS = 60 * 60 * 1000L
         private const val MODEL = "vosk-model-small-en-us-0.15"
         private const val SHA256 = "30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498"
-        @Volatile internal var awaitingConfirmation: (() -> Boolean)? = null
+        @Volatile internal var confirmationGrammar: (() -> ConfirmationGrammar?)? = null
+        @Volatile internal var capturingCommand = false
+            private set
         internal var sessionEnded: (() -> Unit)? = null
         internal var command: ((String) -> Unit)? = null
         internal var active by mutableStateOf(false)

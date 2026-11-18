@@ -1588,18 +1588,23 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Reads what the pane's agent added to its session log since the last read. */
-    suspend fun readTranscript(paneId: String, allowBackground: Boolean = false) {
+    suspend fun readTranscript(paneId: String, allowBackground: Boolean = false): Boolean {
         // Only the agent on screen: a loop left over from the agent you just left must not switch
         // the chat back to it (that showed its history, and its title, on the new agent).
-        if ((screen as? Screen.Agent)?.paneId != paneId) return
-        val p = pane(paneId) ?: return
+        if ((screen as? Screen.Agent)?.paneId != paneId) return false
+        val p = pane(paneId) ?: return false
         resetTranscript(paneId)
         val visit = paneVisit
         val client = herdr
         val cursor = transcriptCursor
         val r = quietly(allowBackground) { it.transcript(p, cursor, transcriptScript) }
-            ?: return com.billmongan.herdrdroid.diag.DiagLog.log("chat", "$paneId: the log reader didn't run (${p.agent}, link $link)")
-        if (paneVisit == visit && herdr === client && transcriptCursor == cursor) applyTranscript(paneId, r)
+        if (r == null) {
+            com.billmongan.herdrdroid.diag.DiagLog.log("chat", "$paneId: the log reader didn't run (${p.agent}, link $link)")
+            return false
+        }
+        if (paneVisit != visit || herdr !== client || transcriptCursor != cursor || (screen as? Screen.Agent)?.paneId != paneId) return false
+        applyTranscript(paneId, r)
+        return r.ok
     }
 
     /**
@@ -2229,6 +2234,58 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun answerInFlight(paneId: String): Boolean = (current?.id to paneId) in answeringCards
 
+    // Includes the particular connection and visit so leaving and returning cannot re-arm a send.
+    internal data class VoiceTarget(val server: String, val client: Herdr, val visit: Long, val pane: String, val agent: String, val cwd: String)
+
+    internal fun voiceTarget(): VoiceTarget? {
+        if (locked || link != Link.CONNECTED || (!foreground && current?.overWebSocket == true)) return null
+        val pane = (screen as? Screen.Agent)?.paneId?.let(::pane) ?: return null
+        return VoiceTarget(current?.id ?: return null, herdr ?: return null, paneVisit, pane.id, pane.agent ?: return null, pane.cwd)
+    }
+
+    private val voiceComposerDrafts = mutableSetOf<Pair<String, String>>()
+
+    internal fun noteVoiceComposerDraft(server: String, pane: String, hasDraft: Boolean) {
+        if (hasDraft) voiceComposerDrafts.add(server to pane) else voiceComposerDrafts.remove(server to pane)
+    }
+
+    internal suspend fun sendVoiceMessage(target: VoiceTarget, text: String, allowed: () -> Boolean): String {
+        fun allowedHere() = allowed() && voiceTarget() == target && !answerInFlight(target.pane) &&
+            pendingSends.none { it.paneId == target.pane && it.waiting } &&
+            queued.none { it.serverId == target.server && it.paneId == target.pane } &&
+            (target.server to target.pane) !in voiceComposerDrafts && prefills[target.pane].isNullOrBlank()
+        val refuse = "Not sent. Open the agent's chat and check that it is idle with no question, draft at the computer, or queued message."
+        if (!allowedHere()) return refuse
+        val h = target.client
+        val fresh = quietly(allowBackground = true) { it.panes().singleOrNull { p -> p.id == target.pane } } ?: return refuse
+        if (!allowedHere() || fresh.agent != target.agent || fresh.cwd != target.cwd ||
+            fresh.status !in setOf(Status.IDLE, Status.DONE) || (fresh.scrollOffset ?: 0) != 0) return refuse
+        val visible = quietly(allowBackground = true) { it.readStyled(target.pane, 40) } ?: return refuse
+        if (!allowedHere() || visible.isBlank() || blocksNormalSend(fresh, visible) ||
+            com.billmongan.herdrdroid.herdr.inputLineOf(visible, fresh.agent) != "" || holdReason(fresh.id, visible) != null) return refuse
+        // No force, reconnect queue, or fallback to raw terminal input for voice.
+        return try {
+            h.sendMessage(fresh, text, allowTerminalFallback = false)
+            "Message sent."
+        } catch (c: CancellationException) {
+            throw c
+        } catch (e: Exception) {
+            if (e is LinkDown && herdr === h) linkLost(e)
+            "Could not confirm delivery. Check the chat before trying again."
+        }
+    }
+
+    internal suspend fun voiceReplySnapshot(target: VoiceTarget): com.billmongan.herdrdroid.voice.VoiceReplySnapshot? {
+        if (voiceTarget() != target || !hasTranscriptReader(target.pane)) return null
+        val status = quietly(allowBackground = true) {
+            it.panes().singleOrNull { p -> p.id == target.pane && p.agent == target.agent && p.cwd == target.cwd }?.status
+        } ?: return null
+        if (voiceTarget() != target || !readTranscript(target.pane, allowBackground = true)) return null
+        if (voiceTarget() != target || transcriptState != TranscriptMode.ON || transcriptPane != target.pane) return null
+        val session = Transcript.sessionOf(transcriptCursor).takeIf { it.isNotBlank() } ?: return null
+        return com.billmongan.herdrdroid.voice.VoiceReplySnapshot(session, status, transcriptItems)
+    }
+
     internal suspend fun refreshVoiceScreen(serverId: String, paneId: String): Boolean {
         val client = herdr ?: return false
         val visit = paneVisit
@@ -2249,7 +2306,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     internal fun voiceQuestionKey(paneId: String, prompt: com.billmongan.herdrdroid.herdr.Prompt): String? {
         if (pane(paneId)?.agent != "claude" || prompt.multi || prompt.parts?.command != null ||
-            prompt.parts?.tabs?.count { !it.submit } != 1) return null
+            prompt.parts?.tabs?.count { !it.submit } != 1 ||
+            prompt.choices.any { com.billmongan.herdrdroid.herdr.grantsStandingPermission(it.label) }) return null
         val sig = com.billmongan.herdrdroid.transcript.QuestionLog.signature(prompt)
         return questionsFor(paneId).lastOrNull {
             it.state == com.billmongan.herdrdroid.transcript.QState.OPEN &&
@@ -2301,7 +2359,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun answerChoice(paneId: String, prompt: com.billmongan.herdrdroid.herdr.Prompt, choice: com.billmongan.herdrdroid.herdr.Choice,
-        voiceQuestion: String? = null, feedback: ((String) -> Unit)? = null,
+        voiceQuestion: String? = null, voiceAllowed: () -> Boolean = { true }, feedback: ((String) -> Unit)? = null,
     ) {
         // The answer goes into the history only once it was sent (1.3.2, from a code review).
         if (choice.keys.startsWith("grok-privacy:")) {
@@ -2337,7 +2395,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             // Parsed the way the card was: with the pane's own status (from review).
             val fresh = com.billmongan.herdrdroid.herdr.detectPrompt(now, pane(paneId)?.status == Status.NEEDS_YOU, pane(paneId)?.agent, versionOf(paneId))
-            if (voiceQuestion != null && (locked || fresh == null || voiceQuestionKey(paneId, fresh) != voiceQuestion)) {
+            if (voiceQuestion != null && (locked || !voiceAllowed() || fresh == null || voiceQuestionKey(paneId, fresh) != voiceQuestion)) {
                 report("The question changed. No answer was sent.")
                 return@answerOnce
             }

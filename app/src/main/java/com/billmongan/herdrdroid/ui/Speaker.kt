@@ -21,6 +21,7 @@ object Speaker {
     private var ready = false
     private var starting = false
     private var pending: String? = null
+    private var onRead: (() -> Unit)? = null
     private val main = Handler(Looper.getMainLooper())
     private var audio: AudioManager? = null
     private var focus: AudioFocusRequest? = null
@@ -30,11 +31,12 @@ object Speaker {
     var speakingKey by androidx.compose.runtime.mutableStateOf<String?>(null)
         private set
 
-    fun speak(context: Context, key: String, text: String) {
+    fun speak(context: Context, key: String, text: String, onRead: (() -> Unit)? = null) {
         if (speakingKey == key) { stop(); return }
         val clean = speakable(text)
         appContext = context.applicationContext
         audio = appContext?.getSystemService(AudioManager::class.java)
+        this.onRead = onRead
         speakingKey = key
         val t = tts
         if (t != null && ready) { play(t, clean, key); return }
@@ -47,13 +49,14 @@ object Speaker {
                 tts?.language = Locale.getDefault()
                 tts?.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
                     override fun onStart(id: String?) {}
-                    override fun onDone(id: String?) { ended(id) }
+                    override fun onDone(id: String?) { ended(id, completed = true) }
                     @Deprecated("Deprecated in Java") override fun onError(id: String?) { ended(id) }
                     override fun onError(id: String?, errorCode: Int) { ended(id) }
                 })
                 if (ready) pending?.let { text -> speakingKey?.let { key -> tts?.let { play(it, text, key) } } }
                 else {
                     speakingKey = null
+                    this.onRead = null
                     tts?.shutdown()
                     tts = null
                 }
@@ -116,11 +119,14 @@ object Speaker {
         }, 200)
     }
 
-    private fun ended(id: String?) {
+    private fun ended(id: String?, completed: Boolean = false) {
         main.post {
-            if (speakingKey == id) {
+            if (id != null && speakingKey == id) {
+                val read = onRead
+                onRead = null
                 speakingKey = null
                 releaseFocus()
+                if (completed) read?.invoke()
             }
         }
     }
@@ -134,6 +140,7 @@ object Speaker {
 
     fun stop() {
         pending = null
+        onRead = null
         tts?.stop()
         speakingKey = null
         releaseFocus()
