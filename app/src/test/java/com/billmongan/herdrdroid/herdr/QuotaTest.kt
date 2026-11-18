@@ -253,6 +253,14 @@ GEMINI 4 ARGON
         assertEquals(null, footerModel("claude", "❯\n  ⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt"))
     }
 
+    @Test fun drawerModelsFromOpenCodeAndKiroFooters() {
+        assertEquals("llmproxy flagship free",
+            footerModel("opencode", "  ┃  Build · llmproxy flagship free (default) llmproxy (local)"))
+        assertEquals("Auto", footerModel("kiro", "bill_default · auto · ◔ 2%        ~/example"))
+        assertEquals("Claude Sonnet", footerModel("kiro-cli", "Read Only · Claude Sonnet · ◕ 52%"))
+        assertEquals(null, footerModel("opencode", "I used Build · model today"))
+    }
+
     @Test fun claudeModelPicker() {
         val screen = """
    Select model

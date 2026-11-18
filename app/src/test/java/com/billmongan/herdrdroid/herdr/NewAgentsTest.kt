@@ -121,7 +121,7 @@ Select model:   type to search
     }
 
     @Test fun footerModels() {
-        assertEquals("auto", footerModel("kiro", kiroFooter))
+        assertEquals("Auto", footerModel("kiro", kiroFooter))
         assertEquals("Mistral Medium 3.5 · high", footerModel("vibe", vibeFooter))
     }
 

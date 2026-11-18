@@ -431,14 +431,16 @@ fun footerModel(agent: String?, screen: String): String? {
         // "... / commands · tab next tab        GPT-5.6 Terra"
         "copilot" -> lines.lastOrNull { it.contains("/ commands") }
             ?.let { Regex("""\s{3,}(\S.*?)\s*$""").find(it)?.groupValues?.get(1) }
-        // "┃  Build · Big Pickle OpenCode"
-        "opencode" -> lastMatch(Regex("""┃\s+(?:Build|Plan|\w+)\s+·\s+(.+?)\s*$"""))
+        // OpenCode appends the provider and configuration after the selected model.
+        "opencode", "opencode-college" -> lastMatch(Regex("""^\s*[┃│]\s+[^·│]+?\s+·\s+([^│]+?)\s*$"""))
+            ?.substringBefore(" (default)")?.trim()?.take(48)
         // " π > ⬢ llmproxy/flagship > 📁 ~/agents/omp ▶───41%───"
         "omp" -> lastMatch(Regex("""⬢\s+(\S+)"""))
         // "0.0%/128k (auto)          (compat-llmproxy) llmproxy/flagship__free"
         "pi" -> lastMatch(Regex("""\)\s+(\S+/\S+)\s*$""")) ?: lastMatch(Regex("""%/\S+.*\s{3,}(\S+)\s*$"""))
-        // "Default · auto · ◔ 2%        ~/agents/kiro": the mode, then the model.
-        "kiro" -> lastMatch(Regex("""^\s*(?:Default|Plan|\w+)\s+·\s+(\S[^·]*?)\s+·\s+◔"""))
+        // Kiro shows the selected model (or Auto) next to the agent name and context usage.
+        "kiro", "kiro-cli" -> lastMatch(Regex("""^\s*[^·│]+?\s+·\s+(\S[^·│]*?)\s+·\s+[◔◕◑◐○●]"""))
+            ?.let { if (it.equals("auto", ignoreCase = true)) "Auto" else it }
         // "──── Mistral Medium 3.5[high] · auto approve ─": the model and its thinking level.
         "vibe" -> lastMatch(Regex("""─\s+([^─·]+?)\s+·\s+[^─]+─\s*$"""))
             ?.replace(Regex("""\[(\w+)]$"""), " · $1")

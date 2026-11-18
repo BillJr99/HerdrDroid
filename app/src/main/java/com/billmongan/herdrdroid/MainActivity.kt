@@ -5,6 +5,18 @@ import androidx.compose.runtime.getValue
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.LaunchedEffect
 import android.os.Bundle
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.mutableStateOf
+import androidx.lifecycle.lifecycleScope
+import com.billmongan.herdrdroid.voice.HandsFreeService
+import com.billmongan.herdrdroid.voice.LocalVoiceUi
+import com.billmongan.herdrdroid.voice.VoiceControls
+import com.billmongan.herdrdroid.voice.VoiceUi
+import kotlinx.coroutines.launch
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
@@ -43,8 +55,65 @@ class MainActivity : FragmentActivity() {
     private val vm: AppViewModel by viewModels()
     private var lockMessage by androidx.compose.runtime.mutableStateOf<String?>(null)
 
+    private val voicePrefs by lazy { getSharedPreferences("voice_control", MODE_PRIVATE) }
+    private var voiceEnabled by mutableStateOf(false)
+    private val voice by lazy { VoiceControls(applicationContext, vm) }
+    private val command: (String) -> Unit = { text -> if (voiceEnabled) lifecycleScope.launch { voice.handle(text) } }
+    private val voicePermission = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        if (missingVoicePermissions().isEmpty()) startHandsFree()
+        else android.widget.Toast.makeText(this, "Hands-free needs microphone access and a visible Stop notification.", android.widget.Toast.LENGTH_LONG).show()
+    }
+
+    private fun missingVoicePermissions(): Array<String> = buildList {
+        add(Manifest.permission.RECORD_AUDIO)
+        if (android.os.Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
+    }.filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }.toTypedArray()
+
+    private fun toggleVoice() {
+        voiceEnabled = !voiceEnabled
+        voicePrefs.edit().putBoolean("enabled", voiceEnabled).apply()
+        if (!voiceEnabled) stopHandsFree()
+    }
+
+    private fun stopHandsFree() {
+        voice.clear()
+        stopService(Intent(this, HandsFreeService::class.java))
+    }
+
+    private fun handsFree() {
+        when {
+            HandsFreeService.active -> stopHandsFree()
+            vm.appLock || vm.locked -> android.widget.Toast.makeText(this,
+                "Hands-free is unavailable while the HerdrDroid app lock is enabled.", android.widget.Toast.LENGTH_LONG).show()
+            missingVoicePermissions().isNotEmpty() -> voicePermission.launch(missingVoicePermissions())
+            else -> startHandsFree()
+        }
+    }
+
+    private fun startHandsFree() {
+        if (!voiceEnabled || vm.appLock || vm.locked || missingVoicePermissions().isNotEmpty()) return
+        voice.clear()
+        runCatching { ContextCompat.startForegroundService(this, Intent(this, HandsFreeService::class.java)) }
+            .onFailure { android.widget.Toast.makeText(this, "Could not start hands-free voice.", android.widget.Toast.LENGTH_LONG).show() }
+    }
+
+    override fun onDestroy() {
+        if (HandsFreeService.command === command) {
+            stopHandsFree()
+            HandsFreeService.command = null
+            HandsFreeService.sessionEnded = null
+            HandsFreeService.awaitingConfirmation = null
+        }
+        super.onDestroy()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        voiceEnabled = voicePrefs.getBoolean("enabled", false)
+        HandsFreeService.command = command
+        HandsFreeService.sessionEnded = { voice.clear() }
+        val controls = voice
+        HandsFreeService.awaitingConfirmation = controls::awaitingConfirmation
         com.billmongan.herdrdroid.notify.Notify.channels(this)
         // Only a fresh launch acts on the notification or share that started the app. A rebuilt
         // screen (theme change, rotation, back from the background or from Recents) gets that same
@@ -77,6 +146,11 @@ class MainActivity : FragmentActivity() {
                 }
                 // A tablet, an unfolded phone or a wide window shows the list and the open agent
                 // side by side; a phone shows one at a time.
+                LaunchedEffect(HandsFreeService.problem) {
+                    HandsFreeService.problem?.let { android.widget.Toast.makeText(this@MainActivity, it, android.widget.Toast.LENGTH_LONG).show() }
+                }
+                LaunchedEffect(vm.appLock, vm.locked) { if (vm.appLock || vm.locked) stopHandsFree() }
+                CompositionLocalProvider(LocalVoiceUi provides VoiceUi(voiceEnabled, ::toggleVoice, ::handsFree, command)) {
                 BoxWithConstraints(Modifier.fillMaxSize().background(Palette.Ground)) {
                 val wide = maxWidth >= 840.dp
                 val s0 = vm.screen
@@ -167,6 +241,7 @@ class MainActivity : FragmentActivity() {
                 }
             }
         }
+    }
     }
 
     override fun onNewIntent(intent: android.content.Intent) {
