@@ -746,7 +746,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 list.firstNotNullOfOrNull { p -> runCatching { h.screenQuota(p.id, profile) }.getOrNull()?.takeIf { it.isNotEmpty() } }
             } else {
                 if (!h.canProbeScreens) continue
-                val target = list.filter { it.status == Status.IDLE || it.status == Status.DONE }.sortedBy { it.focused }.firstOrNull() ?: continue
+                val target = list.firstOrNull { !it.focused && (it.scrollOffset ?: 0) == 0 &&
+                    (it.status == Status.IDLE || it.status == Status.DONE) } ?: continue
                 val typingKey = "${s.id}/${target.id}"
                 if (!typingInto.add(typingKey)) continue
                 probedAt["${s.id}|${target.id}"] = System.currentTimeMillis()
@@ -2494,9 +2495,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val every = (QuotaProfiles.forAgent(list.first().agent)?.everyMinutes ?: 30) * 60_000L
                 val due = if (force) now - last > 2 * 60_000 else now - last > every
                 if (!due) return@launch
-                // Prefer a pane that is not in front at the computer, but use that one if it is the only
-                // choice: the check presses Enter only when the input line holds exactly its command.
-                // Idle panes first; a working pane only for an agent that answers while working (Claude).
+                // Commands that open a panel may only run in a quiet pane out of focus.
                 val profile0 = QuotaProfiles.forAgent(list.first().agent) ?: return@launch
                 if (profile0.screenUsage != null) {
                     // Shown on the agent's own screen: read it, type nothing, whatever the status.
@@ -2527,7 +2526,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 // it for 45 s, not scrolled back, and not checked in the last 5 minutes (QuietGate).
                 val openNow = (screen as? Screen.Agent)?.paneId
                 val candidates = list.filter {
-                    (it.status == Status.IDLE || it.status == Status.DONE) && it.id != openNow && (lastSentTo[it.id] ?: 0L) < now - 120_000
+                    !it.focused && (it.status == Status.IDLE || it.status == Status.DONE) &&
+                        it.id != openNow && (lastSentTo[it.id] ?: 0L) < now - 120_000
                 }
                 for (c in candidates) {
                     val vis = quietly { it.readVisible(c.id, 40) } ?: continue
@@ -2535,7 +2535,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     quietGate.observe("$serverId|${c.id}", vis, rec, System.currentTimeMillis(), c.scrollOffset)
                 }
                 val why = candidates.associate { it.id to quietGate.verdict("$serverId|${it.id}", it.status, System.currentTimeMillis()) }
-                val target = candidates.filter { why[it.id] == null }.sortedWith(compareBy { it.focused }).firstOrNull()
+                val target = candidates.firstOrNull { why[it.id] == null }
                 if (target == null) {
                     com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$agentKey on ${current?.label}: no quiet pane to check (" +
                         list.joinToString { "${it.id} ${it.status}${if (it.id == openNow) " open" else ""}${if ((lastSentTo[it.id] ?: 0L) >= now - 120_000) " sent-to" else ""}${why[it.id]?.let { w -> ", $w" } ?: ""}" } + ")")
