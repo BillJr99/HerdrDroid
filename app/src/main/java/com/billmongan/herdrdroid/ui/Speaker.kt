@@ -1,7 +1,6 @@
 package com.billmongan.herdrdroid.ui
 
 import android.content.Context
-import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.Handler
@@ -10,6 +9,8 @@ import android.speech.tts.TextToSpeech
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import java.util.Locale
+import com.billmongan.herdrdroid.voice.VoiceAudio
+import com.billmongan.herdrdroid.voice.voiceRoute
 
 /**
  * Reads replies aloud with the phone's own text-to-speech. One engine for the app, started on
@@ -23,8 +24,8 @@ object Speaker {
     private val main = Handler(Looper.getMainLooper())
     private var audio: AudioManager? = null
     private var focus: AudioFocusRequest? = null
-    private val attributes = AudioAttributes.Builder()
-        .setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build()
+    private var appContext: Context? = null
+    private var route: VoiceAudio.Lease? = null
     /** The reply being read, so its button can say "Stop reading"; cleared when speech ends. */
     var speakingKey by androidx.compose.runtime.mutableStateOf<String?>(null)
         private set
@@ -32,7 +33,8 @@ object Speaker {
     fun speak(context: Context, key: String, text: String) {
         if (speakingKey == key) { stop(); return }
         val clean = speakable(text)
-        audio = context.applicationContext.getSystemService(AudioManager::class.java)
+        appContext = context.applicationContext
+        audio = appContext?.getSystemService(AudioManager::class.java)
         speakingKey = key
         val t = tts
         if (t != null && ready) { play(t, clean, key); return }
@@ -43,7 +45,6 @@ object Speaker {
                 starting = false
                 ready = status == TextToSpeech.SUCCESS
                 tts?.language = Locale.getDefault()
-                tts?.setAudioAttributes(attributes)
                 tts?.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
                     override fun onStart(id: String?) {}
                     override fun onDone(id: String?) { ended(id) }
@@ -62,7 +63,34 @@ object Speaker {
     }
 
     private fun play(engine: TextToSpeech, text: String, key: String) {
+        if (route != null) engine.stop()
         releaseFocus()
+        val context = appContext ?: return
+        val lease = try {
+            VoiceAudio.acquire(context, voiceRoute(context))
+        } catch (e: Exception) {
+            android.widget.Toast.makeText(context, e.message ?: "Voice audio is unavailable.", android.widget.Toast.LENGTH_LONG).show()
+            stop()
+            return
+        }
+        route = lease
+        val until = android.os.SystemClock.elapsedRealtime() + 5_000L
+        awaitRoute(engine, text, key, lease, until)
+    }
+
+    private fun awaitRoute(engine: TextToSpeech, text: String, key: String, lease: VoiceAudio.Lease, until: Long) {
+        if (route !== lease || speakingKey != key) return
+        if (!lease.routed()) {
+            if (android.os.SystemClock.elapsedRealtime() < until) {
+                main.postDelayed({ awaitRoute(engine, text, key, lease, until) }, 100)
+            } else {
+                appContext?.let { android.widget.Toast.makeText(it, "The selected voice audio route did not connect.", android.widget.Toast.LENGTH_LONG).show() }
+                stop()
+            }
+            return
+        }
+        val attributes = lease.attributes
+        engine.setAudioAttributes(attributes)
         val manager = audio
         val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
             .setAudioAttributes(attributes)
@@ -72,9 +100,20 @@ object Speaker {
             .build()
         if (manager != null && manager.requestAudioFocus(request) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
             focus = request
-            if (engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, key) == TextToSpeech.SUCCESS) return
+            if (engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, key) == TextToSpeech.SUCCESS) {
+                if (lease.communication) monitorRoute(lease)
+                return
+            }
         }
         stop()
+    }
+
+    private fun monitorRoute(lease: VoiceAudio.Lease) {
+        main.postDelayed({
+            if (route === lease) {
+                if (lease.routed()) monitorRoute(lease) else stop()
+            }
+        }, 200)
     }
 
     private fun ended(id: String?) {
@@ -89,6 +128,8 @@ object Speaker {
     private fun releaseFocus() {
         focus?.let { audio?.abandonAudioFocusRequest(it) }
         focus = null
+        route?.close()
+        route = null
     }
 
     fun stop() {

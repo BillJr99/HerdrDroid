@@ -107,6 +107,8 @@ When the phone sleeps or the app goes to the background, Android drops the SSH s
 
 ## Voice Control and Bluetooth
 
+On Android 12 or later, open the chat microphone menu and choose **Phone speaker and mic** or **Bluetooth speakers and mic**. For a car, enable **Phone calls** in the Android Bluetooth settings for that connection. Media audio alone cannot supply the car microphone. Select Bluetooth, then try **Read aloud** or start **hands-free** and say “Hey Herdr.” The car may display this audio as a call. HerdrDroid releases the route when speaking and listening end. If Android cannot connect the selected route, the app shows an error. Android's separate system dictation uses the system recognizer's route.
+
 Voice Control is off by default. In an agent chat, open the composer’s **⋯** menu and choose **Enable Voice Control**. Tap the mic for ordinary dictation into the composer. Hold the mic to open Android’s voice command prompt, or choose **Voice command** from the menu. Dictation keeps its existing draft and send controls.
 
 Commands include “switch to Codex on minipc2,” “switch to minipc2,” “read the latest reply,” and “read the pending question.” Use the names from your drawer. If several panes match, include the server name. Server switches use saved connections and still respect sign-in requirements.
@@ -115,7 +117,7 @@ For a supported single-question Claude dialog, say “choose option two.” Herd
 
 ### Say “Hey Herdr” with the screen locked
 
-1. While parked, pair the phone to the car as a Bluetooth media device and select Bluetooth audio. HerdrDroid stays on the phone. The phone listens and Android routes speech to the active media output.
+1. While parked, pair the phone to the car, enable Phone calls for the car in Android Bluetooth settings, and choose **Bluetooth speakers and mic** in HerdrDroid.
 2. With HerdrDroid open, choose **⋯ → Start hands-free**. Allow microphone access and notifications so the session can show its **Stop** action. The first start downloads a roughly 40 MB English recognition model from Alpha Cephei and verifies its SHA-256 before use. Download it over Wi-Fi if you prefer.
 3. Wait for **Listening for Hey Herdr** in the notification. Lock the phone and put it in your pocket. Say “Hey Herdr,” wait for the tone, then say one command. To confirm an answer, wait for the readback to finish, then say “Hey Herdr,” wait for the tone, and say “confirm answer.”
 4. Stop the session in the notification or composer menu. It also stops after an hour, when you remove the app from Recents, or when the service ends. Start it again with the app open.
@@ -384,6 +386,7 @@ If you build for yourself without the project's key, use your own key (a standar
 
 ## Version history
 
+- **2.0.0-rc.8.** Choose Phone or Bluetooth for Read aloud and hands-free from the chat mic menu.
 - **2.0.0-rc.7.** Phone polling reads passive snapshots and leaves desktop pane scroll positions alone. Usage checks that open panels skip the focused desktop pane.
 - **2.0.0-rc.6.** Claude usage panels stay out of question cards. HerdrDroid checks that a usage panel is still open before closing it.
 - **2.0.0-rc.5.** OpenCode web-search permission prompts show their choices in a question card. HerdrDroid retries failed question-screen reads automatically. A message held for the input line shows Force send immediately beside Remove.
