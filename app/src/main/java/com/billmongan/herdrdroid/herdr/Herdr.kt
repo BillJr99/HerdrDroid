@@ -6,7 +6,9 @@ import com.billmongan.herdrdroid.transcript.TranscriptRead
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 enum class Status { NEEDS_YOU, WORKING, DONE, IDLE, UNKNOWN }
@@ -376,7 +378,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
      */
     private suspend fun guardedCommand(
         paneId: String, command: String, waitMillis: Long, closeKeys: List<String>, openMarker: Regex?,
-        working: Boolean, scrollKeys: List<String> = emptyList(), ready: (String) -> Boolean,
+        working: Boolean, scrollKeys: List<String> = emptyList(), claudeUsage: Boolean = false, ready: (String) -> Boolean,
     ): String? {
         // \u00A0 is listed because some prompts put a no-break space after the ❯ glyph. A hint the
         // agent draws after the command ("/usage   Show usage") still counts.
@@ -395,7 +397,24 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
         // before typing again. Only the app's own check commands are cleared, never other text.
         val ours = QuotaProfiles.builtIn.flatMap { listOf(it.command, it.infoCommand) }.filterNotNull().filter { it.isNotEmpty() }
         val oursOnly = Regex("^(?:" + ours.joinToString("|") { Regex.escape(it) } + ")+$")
-        val beforeLines = read(paneId, 40).lines()
+        val before = read(paneId, 45)
+        suspend fun closeClaudeUsage() {
+            repeat(4) {
+                val live = try { read(paneId, 45) } catch (_: HerdrError) {
+                    delay(500)
+                    return@repeat
+                }
+                if (!claudeUsageOpen(live)) return
+                sendKeys(paneId, "esc")
+                delay(500)
+            }
+        }
+        if (claudeUsage && claudeUsageOpen(before)) {
+            closeClaudeUsage()
+            return before
+        }
+        if (claudeUsage && detectPrompt(before, false, "claude") != null) return null
+        val beforeLines = before.lines()
         val leftover = Regex(prompt + "((?:" + Regex.escape(command) + ")+)[\\s\u00A0│┃|]*$")
         val inputBefore = beforeLines.takeLast(12).lastOrNull { promptLead.containsMatchIn(it) }?.let(::inputText)
         val junkBefore = inputBefore?.takeIf { oursOnly.matches(it) }
@@ -418,7 +437,9 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
             typed = read(paneId, 40).lines()
             if (echoed(typed)) break
             // Some agents (Grok) open the screen as soon as the command is typed, without Enter.
-            if (!markerBefore && openMarker != null && openMarker.containsMatchIn(typed.joinToString("\n"))) { openedAtOnce = true; break }
+            if (!markerBefore && (if (claudeUsage) claudeUsageOpen(typed.joinToString("\n"))
+                else openMarker?.containsMatchIn(typed.joinToString("\n")) == true)
+            ) { openedAtOnce = true; break }
             if (System.currentTimeMillis() > echoBy) break
         }
         if (openedAtOnce) {
@@ -434,61 +455,70 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
             return null
         }
         val echoMs = System.currentTimeMillis() - t0
-        if (!openedAtOnce) sendKeys(paneId, "enter")
-        val t1 = System.currentTimeMillis()
-        delay(waitMillis)
-        // Some screens draw their frame first and their numbers a moment later (Antigravity, or any
-        // agent on a slow host), so keep reading for up to 12 more seconds until the screen is open
-        // and has what we need.
-        var shown = read(paneId, 120)
-        val deadline = System.currentTimeMillis() + 12_000
-        fun done(s: String) = ready(s) && (openMarker == null || openMarker.containsMatchIn(s))
-        while (!done(shown) && System.currentTimeMillis() < deadline) {
-            delay(700)
-            shown = read(paneId, 120)
-        }
-        val readyMs = System.currentTimeMillis() - t1
-        val wasReady = done(shown)
-        val markerSeen = openMarker?.containsMatchIn(shown)
-        var scrolled = false
-        // More limits below the fold (a ↓ marker on a narrow pane): scroll and read again first.
-        // Only while the usage screen itself is on screen (its close hint shows): the same arrow
-        // keys in the agent's input box would step through your earlier prompts instead. herdr has
-        // no Page Down key, so the arrows are the only way to scroll that screen.
-        val screenOpen = openMarker == null || openMarker.containsMatchIn(shown.lines().takeLast(40).joinToString("\n"))
-        if (scrollKeys.isNotEmpty() && screenOpen && shown.lines().takeLast(30).any { it.trim().endsWith("↓") || it.trim() == "↓" }) {
-            sendKeys(paneId, *scrollKeys.toTypedArray())
-            delay(900)
-            shown = shown + "\n" + read(paneId, 120)
-            scrolled = true
-        }
-        com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$command in $paneId: echoed in ${echoMs / 100 / 10.0}s, " +
-            (if (wasReady) "screen ready in ${readyMs / 100 / 10.0}s" else "not ready after ${readyMs / 100 / 10.0}s (close hint ${when (markerSeen) { true -> "seen"; false -> "not seen"; null -> "not needed" }}, wanted numbers ${if (ready(shown)) "found" else "not found"})") +
-            (if (scrolled) ", scrolled for more" else "") + (if (working) ", agent working" else ""))
-        // Close keys go out when the screen shows it is open. Without that sign, only an idle agent
-        // gets them: there an Esc can't interrupt anything, while a working agent could be stopped.
-        val open = openMarker?.containsMatchIn(shown) ?: true
-        if (closeKeys.isNotEmpty() && (open || !working)) {
-            sendKeys(paneId, *closeKeys.toTypedArray())
-            delay(400)
-        }
-        // A screen that finished drawing after the close keys went out (Antigravity, when slow) is
-        // still open. Check a few more times and close it, but only while its own marker shows, so
-        // these extra keys can never reach the agent itself.
-        if (closeKeys.isNotEmpty() && openMarker != null) {
-            repeat(4) {
+        try {
+            if (!openedAtOnce) sendKeys(paneId, "enter")
+            val t1 = System.currentTimeMillis()
+            delay(waitMillis)
+            // Some screens draw their frame first and their numbers a moment later (Antigravity, or any
+            // agent on a slow host), so keep reading for up to 12 more seconds until the screen is open
+            // and has what we need.
+            var shown = read(paneId, 120)
+            val deadline = System.currentTimeMillis() + 12_000
+            fun done(s: String) = ready(s) && (if (claudeUsage) claudeUsageOpen(s) else openMarker == null || openMarker.containsMatchIn(s))
+            while (!done(shown) && System.currentTimeMillis() < deadline) {
                 delay(700)
-                if (!openMarker.containsMatchIn(read(paneId, 40))) return shown
+                shown = read(paneId, 120)
+            }
+            val readyMs = System.currentTimeMillis() - t1
+            val wasReady = done(shown)
+            val markerSeen = openMarker?.containsMatchIn(shown)
+            var scrolled = false
+            // More limits below the fold (a ↓ marker on a narrow pane): scroll and read again first.
+            // Only while the usage screen itself is on screen (its close hint shows): the same arrow
+            // keys in the agent's input box would step through your earlier prompts instead. herdr has
+            // no Page Down key, so the arrows are the only way to scroll that screen.
+            val screenOpen = if (claudeUsage) claudeUsageOpen(shown) else openMarker == null || openMarker.containsMatchIn(shown.lines().takeLast(40).joinToString("\n"))
+            if (scrollKeys.isNotEmpty() && screenOpen && shown.lines().takeLast(30).any { it.trim().endsWith("↓") || it.trim() == "↓" }) {
+                sendKeys(paneId, *scrollKeys.toTypedArray())
+                delay(900)
+                shown = shown + "\n" + read(paneId, 120)
+                scrolled = true
+            }
+            com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$command in $paneId: echoed in ${echoMs / 100 / 10.0}s, " +
+                (if (wasReady) "screen ready in ${readyMs / 100 / 10.0}s" else "not ready after ${readyMs / 100 / 10.0}s (close hint ${when (markerSeen) { true -> "seen"; false -> "not seen"; null -> "not needed" }}, wanted numbers ${if (ready(shown)) "found" else "not found"})") +
+                (if (scrolled) ", scrolled for more" else "") + (if (working) ", agent working" else ""))
+            if (claudeUsage) return shown
+            // Close keys go out when the screen shows it is open. Without that sign, only an idle agent
+            // gets them: there an Esc can't interrupt anything, while a working agent could be stopped.
+            val open = openMarker?.containsMatchIn(shown) ?: true
+            if (closeKeys.isNotEmpty() && (open || !working)) {
                 sendKeys(paneId, *closeKeys.toTypedArray())
+                delay(400)
+            }
+            // A screen that finished drawing after the close keys went out (Antigravity, when slow) is
+            // still open. Check a few more times and close it, but only while its own marker shows, so
+            // these extra keys can never reach the agent itself.
+            if (closeKeys.isNotEmpty() && openMarker != null) {
+                repeat(4) {
+                    delay(700)
+                    if (!openMarker.containsMatchIn(read(paneId, 40))) return shown
+                    sendKeys(paneId, *closeKeys.toTypedArray())
+                }
+            }
+            return shown
+        } finally {
+            if (claudeUsage) withContext(NonCancellable) {
+                try { closeClaudeUsage() } catch (e: Exception) {
+                    com.billmongan.herdrdroid.diag.DiagLog.log("usage", "could not close Claude usage panel: ${e.javaClass.simpleName}")
+                }
             }
         }
-        return shown
     }
 
     /** One usage check: the limits, and where the agent needs it, the model and effort. Null when skipped. */
     suspend fun probeQuota(paneId: String, profile: QuotaProfile, working: Boolean): ProbeResult? {
         if (core) return null
-        val shown = guardedCommand(paneId, profile.command, profile.waitMillis, profile.closeKeys, profile.openMarker, working, profile.scrollKeys) {
+        val shown = guardedCommand(paneId, profile.command, profile.waitMillis, profile.closeKeys, profile.openMarker, working, profile.scrollKeys, claudeUsage = "claude" in profile.agents) {
             parseQuota(it, profile.bareMeansLeft).isNotEmpty()
         } ?: return null
         var items = parseQuota(shown, profile.bareMeansLeft)
@@ -1704,6 +1734,7 @@ private fun detectOpenCodeWebSearch(text: String): Prompt? {
 }
 
 fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version: String? = null): Prompt? {
+    if ((agent == null || agent.equals("claude", true)) && claudeUsageOpen(text)) return null
     if (agent?.lowercase() in setOf("opencode", "opencode-college")) {
         detectOpenCodeWebSearch(text)?.let { return it }
     }
