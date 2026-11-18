@@ -187,10 +187,10 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     // The screen itself: the terminal view, the fallback chat view, and questions the agent asks.
     // These loops read only while the app is in front (1.4.0): behind it, the watcher does the
     // pane checks, and the screen reads and work sweeps would only spend the battery.
-    LaunchedEffect(paneId, structured) {
+    LaunchedEffect(paneId, structured, pane?.status == Status.NEEDS_YOU) {
         while (true) {
             if (vm.inFront) vm.readPane(paneId)
-            kotlinx.coroutines.delay(if (!vm.inFront) 1_000 else if (structured) 2_500 else 1_500)
+            kotlinx.coroutines.delay(if (!vm.inFront) 1_000 else if (vm.pane(paneId)?.status == Status.NEEDS_YOU) 750 else if (structured) 2_000 else 1_500)
         }
     }
     LaunchedEffect(paneId) {
@@ -336,6 +336,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
             PromptCard(
                 p,
                 agent = pane?.agentName ?: "The agent",
+                sending = vm.answerInFlight(paneId),
                 onChoice = { c -> vm.answerChoice(paneId, p, c) },
                 onKey = { k ->
                     val label = "Pressed " + when (k) { "esc" -> "Esc"; "tab" -> "Tab"; "shift+tab" -> "Shift+Tab"; "ctrl+c" -> "Ctrl+C"; else -> k }
@@ -673,12 +674,15 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 )
             }
             // Messages waiting for this agent to be ready ("When idle").
-            vm.queued.filter { it.paneId == paneId }.forEach { q ->
+            vm.queued.filter { it.paneId == paneId && it.serverId == vm.current?.id }.forEach { q ->
                 Row(
                     Modifier.fillMaxWidth().background(Palette.BlueSoft, RoundedCornerShape(12.dp)).padding(horizontal = 12.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text("Queued until idle: " + q.text.lines().first(), color = Palette.Blue, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                    TextButton(onClick = { vm.sendQueuedImmediately(q) }, enabled = status != Status.NEEDS_YOU) {
+                        Text("Send immediately", fontSize = 12.sp)
+                    }
                     Text("Cancel", color = Palette.Blue, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.clickable { vm.cancelQueued(q) }.padding(start = 8.dp))
                 }
             }
@@ -732,7 +736,8 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 working = status == Status.WORKING,
                 onStop = pane?.let { p -> { vm.stopPane(p) } },
                 // herdr's agent prompt reaches a working agent, so a message sent now steers it.
-                steerLabel = if (pane?.agent != null) "Steer" else null,
+                steerLabel = if (pane?.agent != null && !typingAnswer) "Steer" else null,
+                onQueueWhenIdle = if (!typingAnswer) ({ vm.enqueue(paneId, message.trim()); message = "" }) else null,
                 onAttach = { uri -> vm.attach(uri) { path -> message = (message.trimEnd() + " " + path).trim() + " " } },
                 attachBusy = vm.uploading,
                 commands = SlashCommands.forAgent(pane?.agent),
@@ -741,7 +746,6 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 menuItems = buildList {
                     add((if (vm.showKeys) "Hide keys" else "Show keys") to { vm.setKeysShown(!vm.showKeys) })
                     add("Snippets" to { showSnippets = true })
-                    if (status == Status.WORKING && message.isNotBlank()) add("Send when idle" to { vm.enqueue(paneId, message.trim()); message = "" })
                     add("Reading mode" to { reading = true })
                 },
             )
@@ -1107,6 +1111,7 @@ internal fun PromptCard(
     onTypedChoice: (Choice) -> Unit = { onTypeAnswer() },
     /** Switches to the terminal view (1.4.2): always offered, so the screen itself is never out of reach. */
     onShowTerminal: (() -> Unit)? = null,
+    sending: Boolean = false,
 ) {
     @Suppress("NAME_SHADOWING") val p = p.forCard()
     Surface(
@@ -1118,7 +1123,7 @@ internal fun PromptCard(
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Icon(Icons.Filled.Warning, contentDescription = null, tint = Palette.OrangeInk, modifier = Modifier.size(18.dp))
                 // One line only; the question itself is just above the card, in the chat (1.2.8).
-                Text(if (p.choices.isEmpty()) "$agent is waiting for you" else "Your answer", color = Palette.OrangeInk,
+                Text(if (sending) "Sending…" else if (p.choices.isEmpty()) "$agent is waiting for you" else "Your answer", color = Palette.OrangeInk,
                     fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1)
             }
             // Each choice grows to fit its whole label; the page scrolls, the card has no scroll of its own.
@@ -1170,6 +1175,7 @@ internal fun PromptCard(
                     val pad = PaddingValues(horizontal = 16.dp, vertical = 10.dp)
                     if (first) {
                         Button(
+                            enabled = !sending,
                             onClick = { if (typed) onTypedChoice(c) else onChoice(c) },
                             shape = RoundedCornerShape(14.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = Palette.Blue, contentColor = Palette.OnBlue),
@@ -1178,6 +1184,7 @@ internal fun PromptCard(
                         ) { body() }
                     } else {
                         OutlinedButton(
+                            enabled = !sending,
                             onClick = { if (typed) onTypedChoice(c) else onChoice(c) },
                             shape = RoundedCornerShape(14.dp),
                             contentPadding = pad,
@@ -1186,13 +1193,13 @@ internal fun PromptCard(
                     }
                 }
             }
-            if (!(p.choices.isEmpty() && p.region == listOf(com.billmongan.herdrdroid.herdr.UNREAD_SCREEN))) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (!sending && !(p.choices.isEmpty() && p.region == listOf(com.billmongan.herdrdroid.herdr.UNREAD_SCREEN))) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 KeyButton("Esc") { onKey("esc") }
                 KeyButton("Tab") { onKey("tab") }
                 KeyButton("Shift+Tab") { onKey("shift+tab") }
                 KeyButton("Ctrl+C", danger = true) { onKey("ctrl+c") }
             }
-            TextButton(onClick = onTypeAnswer, modifier = Modifier.fillMaxWidth()) { Text("Type a different answer") }
+            TextButton(onClick = onTypeAnswer, enabled = !sending, modifier = Modifier.fillMaxWidth()) { Text("Type a different answer") }
             onShowTerminal?.let { show -> TextButton(onClick = show, modifier = Modifier.fillMaxWidth()) { Text("Show terminal") } }
             Text(
                 "Each button types its key into the tab, exactly as if you typed it there. For any other " +

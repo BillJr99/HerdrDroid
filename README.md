@@ -12,6 +12,7 @@ HerdrDroid is for people who already run agents under herdr on a computer they c
 
 - [Screenshots](#screenshots)
 - [Features](#features)
+- [Voice Control and Bluetooth](#voice-control-and-bluetooth)
 - [Supported agents](#supported-agents)
 - [Requirements](#requirements)
 - [Installing](#installing)
@@ -103,6 +104,31 @@ Taken on an Android emulator against a demo computer ("demo-box") running herdr 
 ### Staying connected
 
 When the phone sleeps or the app goes to the background, Android drops the SSH socket. The app opens a fresh connection when it comes back, and until then the top bar says **Reconnecting** in grey. Previews and reads that fail because of a dropped connection are retried quietly, and keys, messages and answers you send while it reconnects wait in a queue and go out in order. A banner appears only for something you have to act on: a server still unreachable after 15 seconds, a refused sign-in, a changed host key, or a herdr command that failed.
+
+## Voice Control and Bluetooth
+
+Voice Control is off by default. In an agent chat, open the composer’s **⋯** menu and choose **Enable Voice Control**. Tap the mic for ordinary dictation into the composer. Hold the mic to open Android’s voice command prompt, or choose **Voice command** from the menu. Dictation keeps its existing draft and send controls.
+
+Commands include “switch to Codex on minipc2,” “switch to minipc2,” “read the latest reply,” and “read the pending question.” Use the names from your drawer. If several panes match, include the server name. Server switches use saved connections and still respect sign-in requirements.
+
+For a supported single-question Claude dialog, say “choose option two.” HerdrDroid reads the choice back. Give a second command, “confirm answer” or “cancel answer.” HerdrDroid checks the original server, pane and question before sending. Use the phone’s question card for multi-question dialogs, typed options and permission approvals.
+
+### Say “Hey Herdr” with the screen locked
+
+1. While parked, pair the phone to the car as a Bluetooth media device and select Bluetooth audio. HerdrDroid stays on the phone. The phone listens and Android routes speech to the active media output.
+2. With HerdrDroid open, choose **⋯ → Start hands-free**. Allow microphone access and notifications so the session can show its **Stop** action. The first start downloads a roughly 40 MB English recognition model from Alpha Cephei and verifies its SHA-256 before use. Download it over Wi-Fi if you prefer.
+3. Wait for **Listening for Hey Herdr** in the notification. Lock the phone and put it in your pocket. Say “Hey Herdr,” wait for the tone, then say one command. To confirm an answer, wait for the readback to finish, then say “Hey Herdr,” wait for the tone, and say “confirm answer.”
+4. Stop the session in the notification or composer menu. It also stops after an hour, when you remove the app from Recents, or when the service ends. Start it again with the app open.
+
+Hands-free recognition runs locally with [Vosk](https://alphacephei.com/vosk/) and the Apache 2.0 [English model](https://alphacephei.com/vosk/models). Android’s short dictation and voice command prompts use the phone’s configured recognition service. Hands-free requires HerdrDroid’s optional app lock to be off. The Android screen lock can stay on. Bluetooth volume, microphone pickup and interruptions depend on your phone and car. Pause the session before switching audio devices if commands stop coming through.
+
+### Try the 2.0 test build
+
+Install the signed APK over version 1.4.11 without uninstalling it, then check that your saved servers, touch controls and typed replies still work. Test Voice Control indoors first. Switch between two panes and check that chat follows the selection. Tap one choice on a harmless question and look for **Sending…**. Check that it sends just once. Open the drawer for an OpenCode and a Kiro pane and compare the model label with each pane’s footer. Kiro shows **Auto** if that is what the CLI reports.
+
+When an agent is working, **Steer** opens a menu. Choose **Send immediately** to send now, or **Send when idle** to keep the draft in HerdrDroid’s queue. A message in that queue has its own **Send immediately** and **Cancel** actions. Sending early still checks for a question or someone typing in the pane. Once an agent has accepted a message into its own queue, it controls when to read it.
+
+For the parked Bluetooth test, hear a reply through the stereo, lock the Pixel with hands-free active, and try switching panes and reading a question. Try a harmless answer, cancel it once, then confirm a fresh one. Test **Stop** and a Bluetooth reconnect. If speech comes from the phone or the wake phrase goes unheard, note the active Bluetooth source, whether the phone was locked, and the hands-free notification state.
 
 ## Supported agents
 
@@ -358,6 +384,7 @@ If you build for yourself without the project's key, use your own key (a standar
 
 ## Version history
 
+- **2.0.0-rc.1.** Adds voice commands to the composer mic and an optional locked-screen hands-free session. Question buttons show when a choice is sending and suppress repeated taps during delivery. Pane reads ignore results from a previous visit, and OpenCode and Kiro model labels use their current footers when available. Steer opens a send-options menu, and messages queued until idle can be sent early.
 - **1.4.11.** A Claude question card shows that question's own options. A message you sent with numbered lines, echoed on Claude's screen, is no longer read as the answer buttons, and on its own it never becomes a card; a question that was answered and scrolled up is not shown as live.
 - **1.4.10.** The Hermes card no longer shows its context window as usage. Hermes now separates its footer fields with " · ", so its context gauge ("422K/500K", with a bar and a percentage) was read as a usage limit; a footer with either separator, and any gauge labelled only by tokens over a limit, is skipped.
 - **1.4.9.** An answered question card left in an agent's scrollback (Grok's) is no longer shown as a live question: a card must be at the bottom of the screen, with nothing of the agent's own after it. A check of every card each agent can show: OpenCode's and Vibe's side-by-side buttons, Grok's letter-key trust and plan cards, Hermes's bracketed and checkbox rows, pi's arrow highlight, option descriptions in omp's and Kiro's menus, more standing-permission wording, and the coverage list in docs/question-cards.md.

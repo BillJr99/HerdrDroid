@@ -9,6 +9,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Text
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -48,6 +49,38 @@ class ComposeUiTest {
 
     private fun pane(status: Status, agent: String = "claude") =
         Pane("w1:p1", "w1:t1", "w1", agent, status, "", "/home/user/agents/claude")
+
+    @Test fun steerOpensOptionsBeforeSending() {
+        var sent = 0
+        var queued = 0
+        rule.setContent {
+            ChatComposer(value = "sample", onValueChange = {}, placeholder = "Message", canSend = true,
+                onSend = { sent++ }, working = true, steerLabel = "Steer", onQueueWhenIdle = { queued++ })
+        }
+        rule.onNodeWithText("Steer").performClick()
+        rule.runOnIdle { assertEquals(0, sent) }
+        rule.onNodeWithText("Send when idle").performClick()
+        rule.runOnIdle { assertEquals(1, queued) }
+        rule.onNodeWithText("Steer").performClick()
+        rule.onNodeWithText("Send immediately").performClick()
+        rule.runOnIdle { assertEquals(1, sent) }
+    }
+
+    @Test fun questionChoiceShowsSendingAndDisablesChoices() {
+        val sending = androidx.compose.runtime.mutableStateOf(false)
+        var sent = 0
+        val question = Prompt("Which color?", listOf(Choice("Blue", "1", true), Choice("Green", "2", true)))
+        rule.setContent {
+            PromptCard(question, "Claude", onChoice = {
+                sent++
+                sending.value = true
+            }, onKey = {}, onTypeAnswer = {}, sending = sending.value)
+        }
+        rule.onNodeWithText("Blue").performClick()
+        rule.onNodeWithText("Sending…").assertIsDisplayed()
+        rule.onNodeWithText("Green").assertIsNotEnabled()
+        rule.runOnIdle { assertEquals(1, sent) }
+    }
 
     @Test fun statusPillsShowEachState() {
         rule.setContent {
