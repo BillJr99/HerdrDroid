@@ -184,6 +184,8 @@ class HerdrSsh(
     private val wsUrl: String? = null,
 ) {
     private val lock = Mutex()
+    // Keep bulk commands in order without holding the connection lock during remote I/O.
+    private val bulkLock = Mutex()
     private var client: SSHClient? = null
     private var bridge: WsBridge? = null
 
@@ -319,12 +321,14 @@ class HerdrSsh(
     }
 
     /** One command, retried once on a fresh connection only if it never reached the computer. */
-    private suspend fun runRetrying(command: String, input: ByteArray?, timeoutSeconds: Long, maxOut: Int, locked: Boolean): Triple<Int, ByteArray, ByteArray> {
+    private suspend fun runRetrying(command: String, input: ByteArray?, timeoutSeconds: Long, maxOut: Int): Triple<Int, ByteArray, ByteArray> {
         var attempt = 0
         while (true) {
+            var connection: SSHClient? = null
             try {
-                return if (locked) lock.withLock { runOn(open(), command, input, timeoutSeconds, maxOut) }
-                else runOn(lock.withLock { open() }, command, input, timeoutSeconds, maxOut)
+                val opened = lock.withLock { open() }
+                connection = opened
+                return runOn(opened, command, input, timeoutSeconds, maxOut)
             } catch (e: UnconfirmedHostKey) {
                 throw e
             } catch (e: HostKeyChanged) {
@@ -339,11 +343,22 @@ class HerdrSsh(
                 throw e
             } catch (e: AfterStart) {
                 // It reached the computer: the connection is suspect, but the command is not sent again.
-                lock.withLock { client?.runCatching { disconnect() }; client = null }
+                discard(connection)
                 throw LinkDown(e.cause ?: e)
             } catch (e: Exception) {
-                lock.withLock { client?.runCatching { disconnect() }; client = null }
+                discard(connection)
                 if (++attempt > 1) throw (e as? LinkDown ?: LinkDown(e))
+            }
+        }
+    }
+
+    /** Another channel may already have replaced a failed connection. Leave the replacement alone. */
+    private suspend fun discard(connection: SSHClient?) {
+        if (connection == null) return // open() already handled its own failure.
+        lock.withLock {
+            if (client === connection) {
+                connection.runCatching { disconnect() }
+                client = null
             }
         }
     }
@@ -357,7 +372,7 @@ class HerdrSsh(
 
     suspend fun exec(command: String, timeoutSeconds: Long = 30): ExecResult = withContext(Dispatchers.IO) {
         capped {
-            val (exit, out, err) = runRetrying(command, null, timeoutSeconds, MAX_OUT, locked = true)
+            val (exit, out, err) = bulkLock.withLock { runRetrying(command, null, timeoutSeconds, MAX_OUT) }
             ExecResult(exit, out.toString(Charsets.UTF_8), err.toString(Charsets.UTF_8))
         }
     }
@@ -368,7 +383,7 @@ class HerdrSsh(
      */
     suspend fun execNow(command: String, timeoutSeconds: Long = 30): ExecResult = withContext(Dispatchers.IO) {
         capped {
-            val (exit, out, err) = runRetrying(command, null, timeoutSeconds, MAX_OUT, locked = false)
+            val (exit, out, err) = runRetrying(command, null, timeoutSeconds, MAX_OUT)
             ExecResult(exit, out.toString(Charsets.UTF_8), err.toString(Charsets.UTF_8))
         }
     }
@@ -404,7 +419,7 @@ class HerdrSsh(
     /** Runs a command and returns its standard output as bytes (for files fetched from the computer), up to [maxBytes]. */
     suspend fun execBytes(command: String, timeoutSeconds: Long = 120, maxBytes: Int = MAX_BYTES): Pair<Int, ByteArray> = withContext(Dispatchers.IO) {
         try {
-            val (exit, out, _) = runRetrying(command, null, timeoutSeconds, maxBytes, locked = true)
+            val (exit, out, _) = bulkLock.withLock { runRetrying(command, null, timeoutSeconds, maxBytes) }
             exit to out
         } catch (e: CommandTimeout) {
             -2 to ByteArray(0)
@@ -419,7 +434,7 @@ class HerdrSsh(
      */
     suspend fun execInput(command: String, input: ByteArray, timeoutSeconds: Long = 60): ExecResult = withContext(Dispatchers.IO) {
         capped {
-            val (exit, out, err) = runRetrying(command, input, timeoutSeconds, MAX_OUT, locked = true)
+            val (exit, out, err) = bulkLock.withLock { runRetrying(command, input, timeoutSeconds, MAX_OUT) }
             ExecResult(exit, out.toString(Charsets.UTF_8), err.toString(Charsets.UTF_8))
         }
     }
