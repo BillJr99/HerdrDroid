@@ -239,7 +239,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
             val q = answering
             // A typed answer goes into the question's history once it was delivered (1.3.2).
             if (typingAnswer && via != null && q != null) vm.answerTyped(pane, q, via, text)
-            else if (typingAnswer) vm.sendMessage(pane, text) { vm.noteAnswer(paneId, q, text) }
+            else if (typingAnswer) vm.sendMessage(pane, text, typedAnswer = true) { vm.noteAnswer(paneId, q, text) }
             else vm.sendMessage(pane, text)
             message = ""; typingAnswer = false; answering = null; answerVia = null
             // A slash command answers on the screen (a menu, a sign-in code), not in the agent's log,
@@ -706,7 +706,11 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                                 text = p.text,
                                 note = p.held,
                                 onRemove = { vm.dismissPending(p.id) },
-                                sendLabel = if (p.undelivered) "Resend" else null,
+                                sendLabel = when {
+                                    p.waiting -> "Force send immediately"
+                                    p.undelivered -> "Resend"
+                                    else -> null
+                                },
                                 onSend = { vm.forceSendPending(p.id) },
                                 sendEnabled = vm.canForceSendPending && prompt == null && !typingAnswer && status != Status.NEEDS_YOU,
                                 forceSendMenu = true,
@@ -937,18 +941,17 @@ internal fun PendingMessageRow(
     forceSendMenu: Boolean = false,
 ) {
     var menu by remember { mutableStateOf(false) }
-    Row(
+    Column(
         Modifier.fillMaxWidth().background(Palette.BlueSoft, RoundedCornerShape(12.dp))
             .padding(start = 12.dp, end = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
     ) {
         val content = if (forceSendMenu) Modifier.combinedClickable(
             onClick = {},
             onLongClickLabel = "Message options",
             onLongClick = { menu = true },
         ) else Modifier
-        Box(Modifier.weight(1f)) {
-            Column(content.fillMaxWidth().padding(vertical = 6.dp)) {
+        Box(Modifier.fillMaxWidth()) {
+            Column(content.fillMaxWidth().padding(top = 6.dp)) {
                 Text(title, color = Palette.Blue, fontSize = 12.sp)
                 Text(text, color = Palette.Ink, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 note?.let { Text(it, color = Palette.Muted, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis) }
@@ -964,10 +967,14 @@ internal fun PendingMessageRow(
                 }
             }
         }
-        if (sendLabel != null && onSend != null) {
-            TextButton(onClick = onSend, enabled = sendEnabled) { Text(sendLabel, fontSize = 12.sp) }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            if (sendLabel != null && onSend != null) {
+                TextButton(onClick = onSend, enabled = sendEnabled) {
+                    Text(sendLabel, fontSize = 12.sp, softWrap = false, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            TextButton(onClick = onRemove) { Text("Remove", fontSize = 12.sp, softWrap = false, maxLines = 1) }
         }
-        TextButton(onClick = onRemove) { Text("Remove", fontSize = 12.sp) }
     }
 }
 

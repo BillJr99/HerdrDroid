@@ -37,6 +37,7 @@ import com.billmongan.herdrdroid.herdr.Backend
 import com.billmongan.herdrdroid.herdr.detectBackend
 import com.billmongan.herdrdroid.herdr.HerdrError
 import com.billmongan.herdrdroid.herdr.Pane
+import com.billmongan.herdrdroid.herdr.recoverPaneRead
 import com.billmongan.herdrdroid.herdr.QuotaProfile
 import com.billmongan.herdrdroid.herdr.QuotaProfiles
 import com.billmongan.herdrdroid.herdr.screenOpen
@@ -1221,46 +1222,37 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var paneReadProblem by mutableStateOf<String?>(null)
         private set
 
+    private var paneReadSequence = 0L
+    private var lastAppliedPaneRead = 0L
+
     suspend fun readPane(paneId: String) {
+        val attempt = ++paneReadSequence
         // Only for the pane open now (1.4.2, from review: a late answer for another pane set or
         // cleared the open pane's problem).
         val serverId = current?.id
         val client = herdr
         val visit = paneVisit
         val started = android.os.SystemClock.elapsedRealtime()
-        fun isOpen() = current?.id == serverId && herdr === client && paneVisit == visit && (screen as? Screen.Agent)?.paneId == paneId
+        fun isOpen() = attempt > lastAppliedPaneRead && current?.id == serverId && herdr === client &&
+            paneVisit == visit && (screen as? Screen.Agent)?.paneId == paneId
         fun problem(why: String) {
             if (!isOpen()) return
+            lastAppliedPaneRead = attempt
             if (paneReadProblem != why) com.billmongan.herdrdroid.diag.DiagLog.log("read", "$paneId: the screen couldn't be read: $why")
             paneReadProblem = why
         }
         quietly { h ->
-            // When the read of recent output fails or comes back empty, the visible screen is read
-            // instead (1.4.8, Bill: Muse's question card said the pane couldn't be read): a waiting
-            // agent's card is at the bottom of its screen, so that is enough to answer it.
-            suspend fun fallback(why: String): String? {
-                val v = try { h.readVisible(paneId) } catch (e: Exception) {
-                    if (e is CancellationException || e is LinkDown || e is AuthRejected || e is HostKeyChanged) throw e
-                    null
-                }
-                return if (v.isNullOrBlank()) { problem(why); null } else {
-                    com.billmongan.herdrdroid.diag.DiagLog.log("read", "$paneId: $why; read the visible screen instead")
-                    v
-                }
+            val waiting = pane(paneId)?.status == Status.NEEDS_YOU
+            try {
+                readPaneScreen(h, paneId, if (waiting || paneReadProblem != null) 80 else 200)
+            } catch (e: HerdrError) {
+                problem(e.message?.take(120) ?: "the screen could not be read")
+                null
             }
-            val got = try { h.read(paneId) } catch (e: Exception) {
-                if (e is CancellationException || e is LinkDown || e is AuthRejected || e is HostKeyChanged) throw e
-                // A failed read was silent before (1.4.2: Bill's Codex card showed nothing, and the
-                // terminal view said "Loading…"): say why, in the diagnostics and the terminal view.
-                return@quietly fallback(e.message?.take(120) ?: e.javaClass.simpleName)
-            }
-            if (got.isBlank()) fallback("the screen came back empty") else got
         }?.let { text ->
-            // An empty screen is not a good read (1.4.2, from review: the blank screen Bill hit was one).
-            if (text.isBlank()) { problem("the screen came back empty"); return }
-            if (isOpen()) paneReadProblem = null
-            // Switched to another agent while this read was on its way: it isn't that agent's screen.
             if (!isOpen()) return
+            lastAppliedPaneRead = attempt
+            paneReadProblem = null
             noteInputLine(paneId, text)
             paneText = text
             paneTextPane = paneId
@@ -2012,7 +2004,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return null
     }
 
-    fun sendMessage(pane: Pane, text: String, force: Boolean = false, delivered: () -> Unit = {}) {
+    fun sendMessage(pane: Pane, text: String, force: Boolean = false, typedAnswer: Boolean = false, delivered: () -> Unit = {}) {
         noteSent(pane.id)
         lastSent = pane.id to text
         lastSentAt = System.currentTimeMillis()
@@ -2024,15 +2016,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${pane.id} (${pane.agent ?: "shell"}, ${pane.status}): ${text.length} chars; link ${link}, ${if (herdr == null) "no client" else "client ready"}")
         act(pane.id, "Couldn't send", pendingId) { h ->
             if (pendingSends.none { it.id == pendingId }) return@act
-            if (!force && pane.status != Status.NEEDS_YOU) {
-                // Behind an earlier message still waiting for this pane, so they go in the order sent (1.4.4).
-                val earlier = pendingSends.any { it.paneId == pane.id && it.waiting && it.id != pendingId }
+            if (!typedAnswer) {
+                // Behind an earlier held message unless the user explicitly chose Force send.
+                val earlier = !force && pendingSends.any { it.paneId == pane.id && it.waiting && it.id != pendingId }
                 // Read with its styles (1.4.6), so an agent's dim placeholder isn't taken for typing.
                 val screenNow = if (earlier) null else runCatching { h.readStyled(pane.id, 40) }.getOrNull()
                 // A pane that can't be read first is not typed into blind (1.4.1, from a code review).
+                val now = pane(pane.id) ?: pane
                 val why = when {
                     earlier -> "an earlier message to it is still waiting"
-                    screenNow == null -> "its screen couldn't be read first, so the app can't tell whether someone is typing there"
+                    screenNow.isNullOrBlank() -> "its screen couldn't be read first"
+                    blocksNormalSend(now, screenNow) -> "a question is open in it; answer it first"
+                    force -> null
                     else -> holdReason(pane.id, screenNow)
                 }
                 if (why != null) {
@@ -2120,9 +2115,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         when {
                             after == null -> "the pane isn't listed just now"
                             p.paneId in probingPanes -> "a usage check is running in it"
-                            after.status == Status.NEEDS_YOU ||
-                                com.billmongan.herdrdroid.herdr.detectPrompt(com.billmongan.herdrdroid.herdr.forPhone(screen), false, after.agent, versionOf(p.paneId)) != null ->
-                                "a question is open in it; answer it first"
+                            blocksNormalSend(after, screen) -> "a question is open in it; answer it first"
                             else -> holdReason(p.paneId, screen)
                         }
                     }
@@ -2205,18 +2198,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return at.takeIf { System.currentTimeMillis() - it < ANSWER_HOLD_MS && com.billmongan.herdrdroid.transcript.QuestionLog.sameCard(was, sig) }
     }
 
-    /** A pane's screen as its card is read (1.4.8): recent output, else the visible screen; null when neither reads. */
-    private suspend fun readForCard(h: Herdr, paneId: String, lines: Int = 200): String? {
-        val recent = try { h.read(paneId, lines) } catch (e: Exception) {
-            if (e is CancellationException || e is LinkDown || e is AuthRejected || e is HostKeyChanged) throw e
-            null
-        }
-        if (!recent.isNullOrBlank()) return recent
-        return try { h.readVisible(paneId).takeIf { it.isNotBlank() } } catch (e: Exception) {
-            if (e is CancellationException || e is LinkDown || e is AuthRejected || e is HostKeyChanged) throw e
-            null
-        }
-    }
+    private suspend fun readPaneScreen(h: Herdr, paneId: String, lines: Int): String =
+        recoverPaneRead(
+            recent = { h.read(paneId, lines) },
+            visible = {
+                // A viewport scrolled back can show an old approval. Only read it at the bottom.
+                if ((pane(paneId)?.scrollOffset ?: 0) > 0) "" else h.readVisible(paneId)
+            },
+            shortRecent = { h.read(paneId, 40) },
+        )
+
+    /** Read fresh output for the card before accepting an answer. */
+    private suspend fun readForCard(h: Herdr, paneId: String, lines: Int = 80): String? =
+        try { readPaneScreen(h, paneId, lines) } catch (_: HerdrError) { null }
+
     /** A card answered this recently is not answered again: the agent may not have redrawn yet (1.4.8). */
     private val ANSWER_HOLD_MS = 8_000L
 
@@ -2228,8 +2223,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val client = herdr ?: return false
         val visit = paneVisit
         if (current?.id != serverId || link != Link.CONNECTED || (screen as? Screen.Agent)?.paneId != paneId) return false
+        val attempt = ++paneReadSequence
         val text = quietly(allowBackground = true) { readForCard(it, paneId) } ?: return false
-        if (herdr !== client || current?.id != serverId || paneVisit != visit || (screen as? Screen.Agent)?.paneId != paneId) return false
+        if (attempt <= lastAppliedPaneRead || herdr !== client || current?.id != serverId || paneVisit != visit || (screen as? Screen.Agent)?.paneId != paneId) return false
+        lastAppliedPaneRead = attempt
+        paneReadProblem = null
         paneText = text
         paneTextPane = paneId
         val pane = pane(paneId)
@@ -2429,7 +2427,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         noteSent(pane.id)
         val move = com.billmongan.herdrdroid.herdr.moveKeys(prompt, choice)
         // Recorded only once it was sent (1.3.2).
-        if (move == null) { sendMessage(pane, text) { noteAnswer(pane.id, prompt, text) }; return }
+        if (move == null) { sendMessage(pane, text, typedAnswer = true) { noteAnswer(pane.id, prompt, text) }; return }
         act(pane.id, "Couldn't answer") { h ->
             if (move.isNotEmpty()) h.sendKeys(pane.id, *move.toTypedArray())
             delay(300)
@@ -3258,10 +3256,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
     private var queueJob: Job? = null
 
-    fun hasPendingQuestion(pane: Pane): Boolean =
+    internal fun blocksNormalSend(pane: Pane, screen: String): Boolean =
         pane.status == Status.NEEDS_YOU ||
-            (paneTextPane == pane.id && paneReadProblem == null &&
-                com.billmongan.herdrdroid.herdr.detectPrompt(paneText, false, pane.agent, versionOf(pane.id)) != null)
+            (pane.agent != null && detectPrompt(forPhone(screen), false, pane.agent, versionOf(pane.id)) != null)
+
+    fun hasPendingQuestion(pane: Pane): Boolean =
+        blocksNormalSend(pane, if (paneTextPane == pane.id && paneReadProblem == null) paneText else "")
 
     /** Holds a message until the pane's agent is ready, then sends it. */
     fun enqueue(paneId: String, text: String) {
@@ -3276,7 +3276,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 refreshPanes()
                 if (link != Link.CONNECTED) continue
                 for (q in queued.toList()) {
-                    if (q.serverId != current?.id) continue
+                    if (q !in queued || q.serverId != current?.id) continue
                     val p = pane(q.paneId)
                     if (p == null) continue
                     if ((p.status == Status.IDLE || p.status == Status.DONE) && !hasPendingQuestion(p)) {

@@ -159,11 +159,37 @@ class ComposeUiTest {
         rule.runOnIdle { assertEquals(1, removed) }
     }
 
+    @Test fun heldMessageShowsForceAndRemoveOnANarrowPhone() {
+        rule.setContent {
+            Box(Modifier.width(240.dp)) {
+                PendingMessageRow(
+                    title = "Waiting for the input line",
+                    text = "A held message",
+                    onRemove = {},
+                    sendLabel = "Force send immediately",
+                    onSend = {},
+                    forceSendMenu = true,
+                )
+            }
+        }
+        rule.onNodeWithText("Force send immediately").assertIsDisplayed()
+        rule.onNodeWithText("Remove").assertIsDisplayed()
+    }
+
     @Test fun paneWaitingForAnAnswerBlocksImmediateQueueDelivery() {
         val app = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.app.Application>()
         val vm = com.billmongan.herdrdroid.AppViewModel(app)
         assertTrue(vm.hasPendingQuestion(pane(Status.NEEDS_YOU)))
         assertEquals(false, vm.hasPendingQuestion(pane(Status.IDLE)))
+        val openChoice = """
+            ┃ Web Search
+            ┃ Allow OpenCode to search the web?
+            ┃ 1. Allow search via Example
+            ┃ 2. Choose another provider
+            ┃ 3. Disable web search
+            ┃ ↑↓ select  enter submit  esc dismiss
+        """.trimIndent()
+        assertTrue(vm.blocksNormalSend(pane(Status.IDLE, "opencode"), openChoice))
     }
 
     @Test fun questionChoiceShowsSendingAndDisablesChoices() {

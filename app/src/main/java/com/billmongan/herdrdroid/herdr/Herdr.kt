@@ -135,8 +135,8 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
     }
 
     /** A command on the send lane: it doesn't wait behind reads. */
-    private suspend fun runNow(command: String): String {
-        val r = ssh.execNow(command)
+    private suspend fun runNow(command: String, timeoutSeconds: Long = 30): String {
+        val r = ssh.execNow(command, timeoutSeconds)
         if (r.exit != 0) {
             val msg = (r.err.ifBlank { r.out }).trim().lines().lastOrNull { it.isNotBlank() } ?: "exit ${r.exit}"
             throw HerdrError(msg, r.exit)
@@ -240,7 +240,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
      */
     suspend fun readStyled(paneId: String, lines: Int = 40): String =
         if (core) read(paneId, lines)
-        else runCatching { runNow(cmd("pane", "read", paneId, "--source", "recent", "--lines", lines.toString(), "--format", "ansi")) }
+        else runCatching { runNow(cmd("pane", "read", paneId, "--source", "recent", "--lines", lines.toString(), "--format", "ansi"), timeoutSeconds = 5) }
             .getOrElse { if (it is kotlinx.coroutines.CancellationException) throw it; read(paneId, lines) }
 
     /**
@@ -248,11 +248,11 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
      * read of its recent output fails or comes back empty, so a waiting agent's card can still be read.
      */
     suspend fun readVisible(paneId: String): String =
-        if (core) read(paneId, 60) else forPhone(runNow(cmd("pane", "read", paneId, "--source", "visible")))
+        if (core) read(paneId, 60) else forPhone(runNow(cmd("pane", "read", paneId, "--source", "visible"), timeoutSeconds = 5))
 
     suspend fun read(paneId: String, lines: Int = 200): String =
-        if (core) forPhone(runNow(hcCmd("read", paneId, "--lines", lines.toString())))
-        else forPhone(runNow(cmd("pane", "read", paneId, "--source", "recent", "--lines", lines.toString())))
+        if (core) forPhone(runNow(hcCmd("read", paneId, "--lines", lines.toString()), timeoutSeconds = 5))
+        else forPhone(runNow(cmd("pane", "read", paneId, "--source", "recent", "--lines", lines.toString()), timeoutSeconds = 5))
 
     /**
      * Waits until any agent pane in [panes] changes state, or [timeoutMs] passes (1.4.1, "fewer
@@ -878,6 +878,26 @@ print(json.dumps(out))
     }
 }
 
+/** Retry a screen read using a smaller recent capture after a failed visible fallback. */
+internal suspend fun recoverPaneRead(
+    recent: suspend () -> String,
+    visible: suspend () -> String,
+    shortRecent: suspend () -> String,
+    pause: suspend () -> Unit = { kotlinx.coroutines.delay(180) },
+): String {
+    var problem = HerdrError("the screen came back empty", -2)
+    for ((index, read) in listOf(recent, visible, shortRecent).withIndex()) {
+        if (index == 2) pause()
+        try {
+            val text = read()
+            if (text.isNotBlank()) return text
+        } catch (e: HerdrError) {
+            problem = e
+        }
+    }
+    throw problem
+}
+
 class HerdrError(message: String, val exit: Int) : Exception(message)
 
 /** A file or folder name typed on the phone, or null when it has a slash, is empty, or is "." or "..". */
@@ -960,6 +980,8 @@ data class Prompt(
     val shortcuts: Boolean = false,
     /** Buttons side by side (OpenCode's and Vibe's): left and right move between them (1.4.9). */
     val horizontal: Boolean = false,
+    /** OpenCode binds number keys to select and submit an option. */
+    val numberKeys: Boolean = false,
 ) {
     /**
      * Never an empty card (1.4.2): a prompt with no choices always has something to show, the
@@ -1408,6 +1430,7 @@ private val SHORTCUT_LABEL = Regex("""\(([a-z])\)\s*$""")
 
 /** The keys that pick [choice]: arrows from the highlighted option, then Enter; null to type it. */
 fun menuKeys(prompt: Prompt, choice: Choice): List<String>? {
+    if (prompt.numberKeys && choice in prompt.choices) return listOf(choice.keys)
     // "No, and tell Copilot what to do differently (Esc to stop)": Enter on that row does nothing in
     // Copilot, and in Codex and Claude it opens a feedback box; Esc answers it in all three. Vibe's
     // card says "Esc reject", and Esc rejects wherever its (invisible) highlight is.
@@ -1677,7 +1700,7 @@ private fun detectOpenCodeWebSearch(text: String): Prompt? {
         !choices[1].label.equals("Choose another provider", ignoreCase = true) ||
         !choices[2].label.equals("Disable web search", ignoreCase = true)
     ) return null
-    return Prompt(question, choices)
+    return Prompt(question, choices, numberKeys = true)
 }
 
 fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version: String? = null): Prompt? {

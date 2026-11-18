@@ -28,12 +28,39 @@ class QuestionFormatTest {
         assertEquals("Allow OpenCode to search the web for current information?", prompt.question)
         assertEquals(listOf("Allow search via Example", "Choose another provider", "Disable web search"), prompt.choices.map { it.label })
         assertEquals(listOf("1", "2", "3"), prompt.choices.map { it.keys })
-        assertTrue(prompt.choices.none { it.pressEnter || menuKeys(prompt, it) != null })
+        assertTrue(prompt.choices.none { it.pressEnter })
+        assertEquals(listOf(listOf("1"), listOf("2"), listOf("3")), prompt.choices.map { menuKeys(prompt, it) })
     }
 
     @Test fun oldWebSearchPromptDoesNotBecomeALiveCard() {
         val movedOn = "$webSearch\n┃  Search complete.\n┃  ❯ "
         assertNull(detectPrompt(movedOn, blocked = true, agent = "opencode-college"))
+    }
+
+    @Test fun failedRecentAndEmptyVisibleRecoverWithShortRead() {
+        kotlinx.coroutines.runBlocking {
+            val attempts = mutableListOf<String>()
+            val result = recoverPaneRead(
+                recent = { attempts.add("recent"); throw HerdrError("timed out", -2) },
+                visible = { attempts.add("visible"); " " },
+                shortRecent = { attempts.add("short"); webSearch },
+                pause = {},
+            )
+            assertEquals(listOf("recent", "visible", "short"), attempts)
+            assertEquals(3, detectPrompt(result, blocked = true, agent = "opencode")?.choices?.size)
+        }
+    }
+
+    @Test fun goodScreenReadSkipsFallbacks() {
+        kotlinx.coroutines.runBlocking {
+            val result = recoverPaneRead(
+                recent = { webSearch },
+                visible = { error("unexpected visible read") },
+                shortRecent = { error("unexpected retry") },
+                pause = {},
+            )
+            assertEquals(webSearch, result)
+        }
     }
 
     private val marks = listOf("│", "┃", "╭", "╰", "›", "❯", "◆", "(●)", "(○)", "←", "→", "☐", "☒", "✔")
