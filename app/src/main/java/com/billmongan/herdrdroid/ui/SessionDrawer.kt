@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
@@ -53,7 +54,11 @@ import com.billmongan.herdrdroid.store.Server
  * agent; a long press renames, pins, or closes it.
  */
 @Composable
-fun SessionDrawer(vm: AppViewModel) {
+fun SessionDrawer(vm: AppViewModel, opening: Boolean = true) {
+    val listState = rememberLazyListState()
+    LaunchedEffect(opening) {
+        if (opening) listState.scrollToItem(0)
+    }
     var filter by remember { mutableStateOf("") }
     var onlyServer by remember { mutableStateOf<String?>(null) }
     var creating by remember { mutableStateOf(false) }
@@ -83,7 +88,7 @@ fun SessionDrawer(vm: AppViewModel) {
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
         )
         vm.sessionBusy?.let { Text(it, color = Palette.Blue, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 16.dp)) }
-        LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+        LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = listState) {
             val groups = listOf(
                 "Needs you" to listOf(Status.NEEDS_YOU),
                 "Working" to listOf(Status.WORKING),
