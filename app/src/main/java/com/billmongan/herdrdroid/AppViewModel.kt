@@ -40,9 +40,10 @@ import com.billmongan.herdrdroid.herdr.Pane
 import com.billmongan.herdrdroid.herdr.recoverPaneRead
 import com.billmongan.herdrdroid.herdr.QuotaProfile
 import com.billmongan.herdrdroid.herdr.QuotaProfiles
-import com.billmongan.herdrdroid.herdr.screenOpen
-import com.billmongan.herdrdroid.herdr.claudeUsageOpen
 import com.billmongan.herdrdroid.herdr.QuotaReading
+import com.billmongan.herdrdroid.herdr.UsageOverlay
+import com.billmongan.herdrdroid.herdr.dismissUsageOverlay
+import com.billmongan.herdrdroid.herdr.dismissibleUsageFrame
 import com.billmongan.herdrdroid.herdr.footerModel
 import com.billmongan.herdrdroid.herdr.Status
 import com.billmongan.herdrdroid.ssh.AuthRejected
@@ -745,7 +746,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 // Read off the screen (Vibe's footer): nothing typed, any status will do.
                 list.firstNotNullOfOrNull { p -> runCatching { h.screenQuota(p.id, profile) }.getOrNull()?.takeIf { it.isNotEmpty() } }
             } else {
-                if (!h.canProbeScreens) continue
+                if (!h.canProbeScreens || !profile.canProbeWithoutOverlay) continue
                 val target = list.firstOrNull { !it.focused && (it.scrollOffset ?: 0) == 0 &&
                     (it.status == Status.IDLE || it.status == Status.DONE) } ?: continue
                 val typingKey = "${s.id}/${target.id}"
@@ -890,8 +891,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         stashOpenChat()
         hermesPoll?.cancel()
         hermesState = null
-        closeJob?.cancel()
-        closeWatch.clear()
+        openUsage = null
         hermes?.close()
         hermes = null
         reconnectJob?.cancel()
@@ -1227,6 +1227,53 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var paneReadSequence = 0L
     private var lastAppliedPaneRead = 0L
 
+    internal data class OpenUsage(val server: String, val pane: String, val visit: Long, val client: Herdr, val agent: String, val overlay: UsageOverlay)
+    private var openUsage by mutableStateOf<OpenUsage?>(null)
+    private var closingUsage by mutableStateOf<OpenUsage?>(null)
+
+    private fun currentUsage(usage: OpenUsage): Boolean = foreground && canPoll && !locked &&
+        current?.id == usage.server && herdr === usage.client && paneVisit == usage.visit &&
+        (screen as? Screen.Agent)?.paneId == usage.pane && pane(usage.pane)?.agent == usage.agent
+
+    internal fun usageOverlayFor(paneId: String): OpenUsage? = openUsage?.takeIf {
+        it.pane == paneId && paneReadProblem == null && currentUsage(it)
+    }
+
+    internal fun usageDismissInFlight(paneId: String): Boolean = closingUsage?.let { it.pane == paneId && currentUsage(it) } == true
+
+    internal fun dismissUsage(usage: OpenUsage) {
+        if (usageOverlayFor(usage.pane) != usage || closingUsage != null) return
+        val typingKey = "${usage.server}/${usage.pane}"
+        if (!typingInto.add(typingKey)) return
+        closingUsage = usage
+        viewModelScope.launch {
+            try {
+                val sent = quietly { h ->
+                    dismissUsageOverlay(usage.overlay, { currentUsage(usage) && usageOverlayFor(usage.pane) == usage },
+                        { h.readUsageOverlay(usage.pane, usage.agent) },
+                        { h.closeUsageOverlay(usage.pane, usage.agent, usage.overlay) })
+                } == true
+                if (currentUsage(usage)) {
+                    openUsage = null
+                    if (sent) {
+                        noteSent(usage.pane)
+                        delay(400) // An accepted key isn't proof of closure; wait for a redraw.
+                    }
+                    if (currentUsage(usage)) {
+                        readPane(usage.pane)
+                        if (currentUsage(usage) && (!sent || paneTextPane != usage.pane || paneReadProblem != null ||
+                                dismissibleUsageFrame(usage.agent, paneText) != null)) {
+                            flash("Couldn't confirm that usage closed. Check the pane before trying again.")
+                        }
+                    }
+                }
+            } finally {
+                closingUsage = null
+                typingInto.remove(typingKey)
+            }
+        }
+    }
+
     suspend fun readPane(paneId: String) {
         val attempt = ++paneReadSequence
         // Only for the pane open now (1.4.2, from review: a late answer for another pane set or
@@ -1242,6 +1289,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             lastAppliedPaneRead = attempt
             if (paneReadProblem != why) com.billmongan.herdrdroid.diag.DiagLog.log("read", "$paneId: the screen couldn't be read: $why")
             paneReadProblem = why
+            openUsage = null
         }
         quietly { h ->
             val waiting = pane(paneId)?.status == Status.NEEDS_YOU
@@ -1253,12 +1301,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
         }?.let { text ->
             if (!isOpen()) return
+            val agent = pane(paneId)?.agent
+            val liveUsage = if (client != null && serverId != null && agent != null && dismissibleUsageFrame(agent, text) != null) {
+                quietly { h -> if (h === client) h.readUsageOverlay(paneId, agent) else null }
+                    ?.let { OpenUsage(serverId, paneId, visit, client, agent, it) }
+            } else null
+            if (!isOpen()) return
             lastAppliedPaneRead = attempt
             paneReadProblem = null
+            openUsage = liveUsage
             noteInputLine(paneId, text)
             paneText = text
             paneTextPane = paneId
-            val agent = pane(paneId)?.agent
             if (agent in setOf("opencode", "opencode-ursinus", "kiro", "kiro-cli")) {
                 footerModel(agent, text)?.takeIf { models[paneId] != it }?.let {
                     models = models + (paneId to it)
@@ -1298,6 +1352,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         paneText = ""
         paneTextPane = paneId
         paneReadProblem = null
+        openUsage = null
         current?.id?.let { questions(it, paneId) }
         resetTranscript(paneId)
         screen = Screen.Agent(paneId)
@@ -2230,6 +2285,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (attempt <= lastAppliedPaneRead || herdr !== client || current?.id != serverId || paneVisit != visit || (screen as? Screen.Agent)?.paneId != paneId) return false
         lastAppliedPaneRead = attempt
         paneReadProblem = null
+        openUsage = null // This read is recent output, not an identity-bound visible snapshot.
         paneText = text
         paneTextPane = paneId
         val pane = pane(paneId)
@@ -2521,6 +2577,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     return@launch
                 }
+                if (!profile0.canProbeWithoutOverlay) return@launch
                 // Never an agent open on screen or sent to in the last two minutes: you may be typing to it.
                 // And (1.3.1) only a quiet pane: not working, its screen unchanged and nothing sent to
                 // it for 45 s, not scrolled back, and not checked in the last 5 minutes (QuietGate).
@@ -2562,7 +2619,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     quietly { it.probeQuota(target.id, profile, working = target.status == Status.WORKING) }
                 } finally {
                     probingPanes = probingPanes - target.id
-                    if (target.agent == "claude" && current?.id == serverId) watchForLeftoverScreen(target.id, profile)
                     typingInto.remove(typingKey)
                     probedAt["$serverId|${target.id}"] = System.currentTimeMillis()
                 }
@@ -2573,7 +2629,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     val same = after != null && com.billmongan.herdrdroid.herdr.QuietGate.norm(after) == com.billmongan.herdrdroid.herdr.QuietGate.norm(before)
                     com.billmongan.herdrdroid.diag.DiagLog.log("usage", "${target.id} after the check: ${if (same) "back as it was" else "screen differs from before (the check's echo or a new line)"}")
                 }
-                if (result != null) watchForLeftoverScreen(target.id, profile)
                 result?.model?.let { models = models + (target.id to it); noteModels() }
                 result?.effort?.let { efforts = efforts + (target.id to it) }
                 val items = result?.items
@@ -2596,36 +2651,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         jobs.joinAll()
-    }
-
-    private val closeWatch = mutableMapOf<String, Pair<QuotaProfile, Long>>()
-    private var closeJob: Job? = null
-
-    /**
-     * After the app opens an agent's usage or model screen, it keeps an eye on that pane for ten
-     * minutes and closes the screen if it is (still, or newly) open: an agent can draw it late,
-     * after the check finished. Only the screen the app opened is closed, recognised by its close
-     * hint together with its usage numbers or model line ([screenOpen]), so the Esc can't reach
-     * a permission prompt or a working agent.
-     */
-    private fun watchForLeftoverScreen(paneId: String, profile: QuotaProfile) {
-        if (profile.closeKeys.isEmpty() || profile.openMarker == null) return
-        closeWatch[paneId] = profile to System.currentTimeMillis() + 10 * 60_000
-        if (closeJob?.isActive == true) return
-        closeJob = viewModelScope.launch {
-            while (isActive && closeWatch.isNotEmpty()) {
-                delay(3_000)
-                val now = System.currentTimeMillis()
-                closeWatch.entries.removeAll { it.value.second < now }
-                for ((id, pair) in closeWatch.toMap()) {
-                    if (id in probingPanes) continue
-                    val screen = quietly { it.read(id, 60) } ?: continue
-                    if (if ("claude" in pair.first.agents) claudeUsageOpen(screen) else pair.first.screenOpen(screen)) {
-                        quietly { it.sendKeys(id, *pair.first.closeKeys.toTypedArray()) }
-                    }
-                }
-            }
-        }
     }
 
     fun quotaFor(pane: Pane?): QuotaReading? =
@@ -3259,7 +3284,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var queueJob: Job? = null
 
     internal fun blocksNormalSend(pane: Pane, screen: String): Boolean =
-        pane.status == Status.NEEDS_YOU ||
+        pane.status == Status.NEEDS_YOU || dismissibleUsageFrame(pane.agent, screen) != null ||
             (pane.agent != null && detectPrompt(forPhone(screen), false, pane.agent, versionOf(pane.id)) != null)
 
     fun hasPendingQuestion(pane: Pane): Boolean =

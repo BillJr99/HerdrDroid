@@ -224,10 +224,14 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     // While the latest read failed, no card is built from the last screen: its buttons would answer
     // whatever the pane shows now (1.4.2, from review). If the agent waits, the card says the screen
     // couldn't be read and offers the keys and Show terminal.
-    val prompt: Prompt? = if (typingAnswer) null
+    val usageOverlay = vm.usageOverlayFor(paneId)
+    val dismissingUsage = vm.usageDismissInFlight(paneId)
+    val usageBlocksInput = usageOverlay != null || dismissingUsage
+    val prompt: Prompt? = if (typingAnswer || usageOverlay != null) null
         else if (vm.paneReadProblem != null) (if (status == Status.NEEDS_YOU) Prompt("This agent is waiting for you.", emptyList()).forCard() else null)
         else detectPrompt(screenText, status == Status.NEEDS_YOU, pane?.agent, vm.versionOf(paneId))?.forCard()
     fun send() {
+        if (usageBlocksInput) return
         if (message.isNotBlank() && pane != null) {
             val text = message.trim()
             if (!typingAnswer && (prompt != null || vm.hasPendingQuestion(pane))) {
@@ -528,6 +532,11 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
         // still running, and its running subagents. Tap either for active and finished.
         HorizontalDivider(color = Palette.Line)
         ServerBanners(vm)
+        if (usageBlocksInput) {
+            UsageOverlayBanner(dismissingUsage) {
+                usageOverlay?.let(vm::dismissUsage)
+            }
+        }
         // The chat with its question history in place (1.3.0). A question still open is left out
         // while its card is showing, so it isn't on screen twice.
         val questionsNow = vm.questionsFor(paneId)
@@ -692,7 +701,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                             onRemove = { vm.cancelQueued(q) },
                             sendLabel = "Send immediately",
                             onSend = { vm.sendQueuedImmediately(q) },
-                            sendEnabled = vm.link == Link.CONNECTED && prompt == null && !typingAnswer && status != Status.NEEDS_YOU,
+                            sendEnabled = vm.link == Link.CONNECTED && !usageBlocksInput && prompt == null && !typingAnswer && status != Status.NEEDS_YOU,
                         )
                     }
                     unsent.forEach { p ->
@@ -712,7 +721,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                                     else -> null
                                 },
                                 onSend = { vm.forceSendPending(p.id) },
-                                sendEnabled = vm.canForceSendPending && prompt == null && !typingAnswer && status != Status.NEEDS_YOU,
+                                sendEnabled = vm.canForceSendPending && !usageBlocksInput && prompt == null && !typingAnswer && status != Status.NEEDS_YOU,
                                 forceSendMenu = true,
                             )
                         }
@@ -766,13 +775,13 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 else if (typingAnswer) "Type your answer"
                 else if (prompt != null || status == Status.NEEDS_YOU) "Message to send after the question"
                 else "Message ${pane?.agentName ?: "this tab"}",
-                canSend = message.isNotBlank() && pane != null,
+                canSend = message.isNotBlank() && pane != null && !usageBlocksInput,
                 onSend = ::send,
                 working = status == Status.WORKING,
                 onStop = pane?.let { p -> { vm.stopPane(p) } },
                 // herdr's agent prompt reaches a working agent, so a message sent now steers it.
                 steerLabel = if (pane?.agent != null && !typingAnswer && prompt == null) "Steer" else null,
-                onQueueWhenIdle = if (!typingAnswer) ({ vm.enqueue(paneId, message.trim()); message = "" }) else null,
+                onQueueWhenIdle = if (!typingAnswer && !usageBlocksInput) ({ vm.enqueue(paneId, message.trim()); message = "" }) else null,
                 onAttach = { uri -> vm.attach(uri) { path -> message = (message.trimEnd() + " " + path).trim() + " " } },
                 attachBusy = vm.uploading,
                 commands = SlashCommands.forAgent(pane?.agent),
@@ -923,6 +932,16 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
 // ---- Keys -------------------------------------------------------------------------------------
 
 private val KEY_HEIGHT = 42.dp
+
+@Composable
+internal fun UsageOverlayBanner(dismissing: Boolean, onDismiss: () -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text("Usage panel is open", Modifier.weight(1f), color = Palette.Ink)
+        TextButton(onClick = onDismiss, enabled = !dismissing) {
+            Text(if (dismissing) "Dismissing…" else "Dismiss usage")
+        }
+    }
+}
 
 /**
  * Two rows that always fit the screen: Ctrl, Alt and the four arrows together on top, then

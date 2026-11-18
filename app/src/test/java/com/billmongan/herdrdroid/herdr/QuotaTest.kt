@@ -335,6 +335,26 @@ GEMINI 4 ARGON
         assertEquals(listOf("Yes", "No"), detectPrompt(next, true, "claude")?.choices?.map { it.label })
     }
 
+    @Test fun wrappedClaudeUsageWithAKnownFooterIsRecognised() {
+        val usage = """
+            Settings  Status   Config   Usage   Stats
+            Session
+            Current week (all models) · Resets Nov 19, 7:59am
+            (UTC)
+            ████████████▋
+            24% used
+            ↓
+            Esc to close
+        """.trimIndent()
+        assertTrue(claudeUsageOpen(usage))
+        assertEquals(null, detectPrompt(usage, blocked = true, agent = "claude"))
+    }
+
+    @Test fun claudeUsageCannotBorrowTheFooterOfALaterDialog() {
+        val text = "Status   Config   Usage\nCurrent session\n30% used\nEsc to close\nApprove this tool call\nEsc to cancel"
+        assertEquals(false, claudeUsageOpen(text))
+    }
+
     @Test fun profilesWithoutAScreenNeverClose() {
         val codex = QuotaProfiles.forAgent("codex")!!
         assertEquals(false, codex.screenOpen("Esc to cancel 50% used"))
