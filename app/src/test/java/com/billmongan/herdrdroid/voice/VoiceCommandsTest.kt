@@ -20,4 +20,20 @@ class VoiceCommandsTest {
             assertNull(text, parseVoiceCommand(text))
         }
     }
+    @Test fun recognizesNamedMessageAndPreservesDictatedCaseAndPunctuation() {
+        assertEquals("Message(pane=Switch(name=codex, server=mini pc two))", parseVoiceCommand("Send a message to Codex on Mini PC Two.").toString())
+        assertEquals("Dictate(text=Check README, then stop.)", parseVoiceCommand("Dictate: Check README, then stop.").toString())
+        assertEquals("Repeat", parseVoiceCommand("Repeat that").toString())
+        assertEquals("ConfirmMessage", parseVoiceCommand("Confirm message").toString())
+        assertNull(parseVoiceCommand("Send a message to codex on"))
+    }
+    @Test fun normalizesObservedOfflineSwitchTranscriptions() {
+        val command = parseVoiceCommand("which to codex on mini pc to") as VoiceCommand.Switch
+        assertEquals("codex", command.name)
+        assertEquals("minipc2", voiceName(command.server!!))
+        val host = parseVoiceCommand("which too many pc to") as VoiceCommand.Switch
+        assertEquals("minipc2", voiceName(host.name))
+        assertNull(parseVoiceCommand("[unk] confirm message"))
+        assertNull(parseVoiceCommand("confirm"))
+    }
 }

@@ -69,7 +69,11 @@ class MainActivity : FragmentActivity() {
         selectedVoiceRoute = route
     }
     private val voice by lazy { VoiceControls(applicationContext, vm) }
-    private val command: (String) -> Unit = { text -> if (voiceEnabled) lifecycleScope.launch { voice.handle(text) } }
+    private val command: (String) -> Unit = { text ->
+        if (voiceEnabled && !vm.locked && !(HandsFreeService.active && vm.appLock)) lifecycleScope.launch {
+            if (voiceEnabled && !vm.locked && !(HandsFreeService.active && vm.appLock)) voice.handle(text)
+        }
+    }
     private val voicePermission = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         if (missingVoicePermissions().isEmpty()) startHandsFree()
         else android.widget.Toast.makeText(this, "Hands-free needs microphone access and a visible Stop notification.", android.widget.Toast.LENGTH_LONG).show()
@@ -80,8 +84,8 @@ class MainActivity : FragmentActivity() {
         if (android.os.Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
     }.filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }.toTypedArray()
 
-    private fun toggleVoice() {
-        voiceEnabled = !voiceEnabled
+    private fun changeVoiceEnabled(enabled: Boolean) {
+        voiceEnabled = enabled
         voicePrefs.edit().putBoolean("enabled", voiceEnabled).apply()
         if (!voiceEnabled) stopHandsFree()
     }
@@ -91,18 +95,14 @@ class MainActivity : FragmentActivity() {
         stopService(Intent(this, HandsFreeService::class.java))
     }
 
-    private fun handsFree() {
-        when {
-            HandsFreeService.active -> stopHandsFree()
-            vm.appLock || vm.locked -> android.widget.Toast.makeText(this,
-                "Hands-free is unavailable while the HerdrDroid app lock is enabled.", android.widget.Toast.LENGTH_LONG).show()
-            missingVoicePermissions().isNotEmpty() -> voicePermission.launch(missingVoicePermissions())
-            else -> startHandsFree()
-        }
+    private fun requestHandsFree() {
+        if (!voiceEnabled || HandsFreeService.active || vm.appLock || vm.locked) return
+        val missing = missingVoicePermissions()
+        if (missing.isNotEmpty()) voicePermission.launch(missing) else startHandsFree()
     }
 
     private fun startHandsFree() {
-        if (!voiceEnabled || vm.appLock || vm.locked || missingVoicePermissions().isNotEmpty()) return
+        if (!voiceEnabled || HandsFreeService.active || vm.appLock || vm.locked || missingVoicePermissions().isNotEmpty()) return
         voice.clear()
         runCatching { ContextCompat.startForegroundService(this, Intent(this, HandsFreeService::class.java)) }
             .onFailure { android.widget.Toast.makeText(this, "Could not start hands-free voice.", android.widget.Toast.LENGTH_LONG).show() }
@@ -113,7 +113,7 @@ class MainActivity : FragmentActivity() {
             stopHandsFree()
             HandsFreeService.command = null
             HandsFreeService.sessionEnded = null
-            HandsFreeService.awaitingConfirmation = null
+            HandsFreeService.confirmationGrammar = null
         }
         super.onDestroy()
     }
@@ -125,7 +125,7 @@ class MainActivity : FragmentActivity() {
         HandsFreeService.command = command
         HandsFreeService.sessionEnded = { voice.clear() }
         val controls = voice
-        HandsFreeService.awaitingConfirmation = controls::awaitingConfirmation
+        HandsFreeService.confirmationGrammar = controls::confirmationGrammar
         com.billmongan.herdrdroid.notify.Notify.channels(this)
         // Only a fresh launch acts on the notification or share that started the app. A rebuilt
         // screen (theme change, rotation, back from the background or from Recents) gets that same
@@ -150,6 +150,8 @@ class MainActivity : FragmentActivity() {
                         isAppearanceLightNavigationBars = !dark
                     }
                 }
+                LaunchedEffect(vm.appLock, vm.locked) { if (vm.appLock || vm.locked) stopHandsFree() }
+                LaunchedEffect(HandsFreeService.active) { if (HandsFreeService.active) voice.announceReplies() }
                 // The app lock: nothing shows and no server is contacted until it's unlocked.
                 if (vm.locked) {
                     LaunchedEffect(Unit) { unlock { ok -> if (ok) vm.unlocked() } }
@@ -161,8 +163,9 @@ class MainActivity : FragmentActivity() {
                 LaunchedEffect(HandsFreeService.problem) {
                     HandsFreeService.problem?.let { android.widget.Toast.makeText(this@MainActivity, it, android.widget.Toast.LENGTH_LONG).show() }
                 }
-                LaunchedEffect(vm.appLock, vm.locked) { if (vm.appLock || vm.locked) stopHandsFree() }
-                CompositionLocalProvider(LocalVoiceUi provides VoiceUi(voiceEnabled, ::toggleVoice, ::handsFree, command, selectedVoiceRoute, ::chooseVoiceRoute)) {
+                CompositionLocalProvider(LocalVoiceUi provides VoiceUi(
+                    voiceEnabled, ::changeVoiceEnabled, ::requestHandsFree, ::stopHandsFree, command, selectedVoiceRoute, ::chooseVoiceRoute,
+                )) {
                 BoxWithConstraints(Modifier.fillMaxSize().background(Palette.Ground)) {
                 val wide = maxWidth >= 840.dp
                 val s0 = vm.screen

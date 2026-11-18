@@ -327,7 +327,8 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
     @Volatile var lastSendRoute = ""
         private set
 
-    suspend fun sendMessage(pane: Pane, text: String) {
+    suspend fun sendMessage(pane: Pane, text: String, allowTerminalFallback: Boolean = true) {
+        require(allowTerminalFallback || (pane.agent != null && pane.status in setOf(Status.IDLE, Status.DONE)))
         lastSendRoute = when {
             core -> "hc send"
             pane.agent != null && pane.status != Status.NEEDS_YOU -> "herdr agent prompt"
@@ -343,7 +344,8 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
             try {
                 runNow(cmd("agent", "prompt", pane.id, text))
                 return
-            } catch (_: HerdrError) {
+            } catch (e: HerdrError) {
+                if (!allowTerminalFallback) throw e
                 // Fall through to typing it in, which works in any pane.
                 lastSendRoute = "agent prompt refused; typed with send-text + enter"
             }

@@ -125,6 +125,10 @@ private fun keyName(c: Char): String? = when {
 fun AgentScreen(vm: AppViewModel, paneId: String) {
     val pane = vm.pane(paneId)
     var message by rememberSaveable(paneId) { mutableStateOf(vm.takePrefill(paneId) ?: "") }
+    val draftServer = vm.current?.id
+    androidx.compose.runtime.SideEffect {
+        if (draftServer != null) vm.noteVoiceComposerDraft(draftServer, paneId, message.isNotBlank())
+    }
     var fullTerminal by rememberSaveable { mutableStateOf(false) }
     var confirmCtrlC by remember { mutableStateOf(false) }
     var typingAnswer by remember { mutableStateOf(false) }
@@ -145,8 +149,6 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     /** The agent's own model menu, read off its screen, while it is open. */
     var readingPicker by remember { mutableStateOf(false) }
     var pickerMenu by remember { mutableStateOf<Prompt?>(null) }
-    /** Reading mode: the message box and extra rows step aside; a Reply button brings them back. */
-    var reading by rememberSaveable(paneId) { mutableStateOf(false) }
     /** Find in chat: what to look for, and which match is showing. */
     var finding by rememberSaveable(paneId) { mutableStateOf(false) }
     var findText by rememberSaveable(paneId) { mutableStateOf("") }
@@ -476,7 +478,6 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                     }
                     if (pane?.agent != null) DropdownMenuItem(text = { Text("Model…") }, onClick = { menu = false; choosingModel = true })
                     if (structured && vm.transcriptItems.isNotEmpty()) DropdownMenuItem(text = { Text("Find in chat") }, onClick = { menu = false; finding = true })
-                    if (!live) DropdownMenuItem(text = { Text(if (reading) "Leave reading mode" else "Reading mode") }, onClick = { menu = false; reading = !reading })
                     DropdownMenuItem(text = { Text("Running underneath") }, onClick = { menu = false; vm.screen = Screen.Work(paneId) })
                     // 1.4.0: one pane's last screens, the parser's decision and the chat cursor, with
                     // secrets taken out, for a bug report. Only to this phone's clipboard or share sheet.
@@ -668,12 +669,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
         }
 
         // ---- Keys and the message box -------------------------------------------------------
-        if (reading && !live) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp), horizontalArrangement = Arrangement.End) {
-                Button(onClick = { reading = false }, shape = RoundedCornerShape(20.dp)) { Text("Reply") }
-            }
-        }
-        if (!live && !reading) Column(
+        if (!live) Column(
             Modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, top = if (keyboardUp) 2.dp else 6.dp, bottom = if (keyboardUp) 4.dp else 10.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
@@ -790,7 +786,6 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 menuItems = buildList {
                     add((if (vm.showKeys) "Hide keys" else "Show keys") to { vm.setKeysShown(!vm.showKeys) })
                     add("Snippets" to { showSnippets = true })
-                    add("Reading mode" to { reading = true })
                 },
             )
         }
@@ -801,7 +796,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     }
 
     opened?.let { t ->
-        FullMessage(t, liveSize, vm.readingFont.family, onQuote = { quote(t); opened = null; reading = false }, onClose = { opened = null })
+        FullMessage(t, liveSize, vm.readingFont.family, onQuote = { quote(t); opened = null }, onClose = { opened = null })
     }
 
     if (choosingModel && pane != null) {

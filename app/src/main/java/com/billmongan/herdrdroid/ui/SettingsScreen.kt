@@ -1,6 +1,11 @@
 package com.billmongan.herdrdroid.ui
 
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -48,6 +53,11 @@ import com.billmongan.herdrdroid.herdr.QuotaItem
 import com.billmongan.herdrdroid.herdr.QuotaReading
 import com.billmongan.herdrdroid.herdr.ago
 import com.billmongan.herdrdroid.herdr.shortLabel
+import com.billmongan.herdrdroid.voice.HandsFreeService
+import com.billmongan.herdrdroid.voice.LocalVoiceUi
+import com.billmongan.herdrdroid.voice.VoiceRoute
+import com.billmongan.herdrdroid.voice.VoiceUi
+import com.billmongan.herdrdroid.voice.voiceCommandHelp
 
 @Composable
 fun SettingsScreen(vm: AppViewModel, back: Screen) {
@@ -95,6 +105,7 @@ fun SettingsScreen(vm: AppViewModel, back: Screen) {
                     color = Palette.Muted, fontSize = 13.sp,
                 )
             }
+            LocalVoiceUi.current?.let { VoiceSettings(it, HandsFreeService.active, vm.appLock) }
             // Only the palettes for the look in use now (with System, whichever the phone shows).
             if (!Palette.dark) Section("Light palette") {
                 LightPalette.entries.forEach { p ->
@@ -200,6 +211,47 @@ fun SettingsScreen(vm: AppViewModel, back: Screen) {
             }
             Text("HerdrDroid ${BuildConfig.VERSION_NAME}", color = Palette.Muted, fontSize = 13.sp)
         }
+    }
+}
+
+@Composable
+internal fun VoiceSettings(voice: VoiceUi, active: Boolean, appLock: Boolean) {
+    Section("Voice") {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("Voice Control", color = Palette.Ink, fontSize = 16.sp, modifier = Modifier.weight(1f))
+            Switch(checked = voice.enabled, onCheckedChange = voice.setEnabled,
+                modifier = Modifier.semantics { contentDescription = "Voice Control" })
+        }
+        Text("Voice audio route", color = Palette.Ink, fontSize = 16.sp)
+        val routes = if (android.os.Build.VERSION.SDK_INT >= 31) VoiceRoute.entries else listOf(VoiceRoute.PHONE)
+        Column(Modifier.selectableGroup()) {
+            routes.forEach { route ->
+                Row(Modifier.fillMaxWidth().selectable(
+                    selected = route == voice.route, role = Role.RadioButton,
+                    onClick = { voice.chooseRoute(route) },
+                ).padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    RadioButton(selected = route == voice.route, onClick = null, modifier = Modifier.padding(end = 12.dp))
+                    Text(route.label, color = Palette.Ink)
+                }
+            }
+        }
+        Text("The selected route is used for hands-free and Read aloud. Bluetooth needs Android 12 or later and Phone calls enabled on the Bluetooth device.",
+            color = Palette.Muted, fontSize = 13.sp)
+        TextButton(enabled = active || (voice.enabled && !appLock), onClick = if (active) voice.stopHandsFree else voice.startHandsFree) {
+            Text(if (active) "Stop hands-free" else "Start hands-free")
+        }
+        Text(when {
+            appLock -> "Hands-free is unavailable while the HerdrDroid app lock is on."
+            active -> "Hands-free is on. You can also stop it from its notification."
+            !voice.enabled -> "Turn on Voice Control to start a hands-free session."
+            else -> "Hands-free listens only after you start it. It can continue when Android locks the screen."
+        }, color = Palette.Muted, fontSize = 13.sp)
+        Text("Voice commands", color = Palette.Ink, fontWeight = FontWeight.SemiBold)
+        Text("Hold the chat mic for a voice command, or in hands-free say “Hey Herdr,” wait for the tone, then give one command. Wake it again for each follow-up. New completed replies in the open chat are read aloud during a hands-free session.",
+            color = Palette.Muted, fontSize = 13.sp)
+        voiceCommandHelp.forEach { Text(it, color = Palette.Ink, fontSize = 14.sp) }
+        Text("Use unique pane names from the drawer. For a message, switch to the named pane first, request the message, dictate it, then confirm or cancel after the readback. For a supported question card, choose an option and confirm separately. Permission approvals and complex questions need the phone.",
+            color = Palette.Muted, fontSize = 13.sp)
     }
 }
 
