@@ -188,6 +188,11 @@ fun ChatComposer(
     val voiceMenu = buildList {
         if (voice != null) {
             add((if (voice.enabled) "Turn off Voice Control" else "Enable Voice Control") to voice.toggle)
+            if (android.os.Build.VERSION.SDK_INT >= 31) {
+                for (route in com.billmongan.herdrdroid.voice.VoiceRoute.entries) {
+                    add((if (voice.route == route) "${route.label} (selected)" else route.label) to { voice.chooseRoute(route) })
+                }
+            }
             if (voice.enabled) {
                 commandMic?.let { add("Voice command" to it) }
                 add((if (HandsFreeService.active) "Stop hands-free" else "Start hands-free") to voice.handsFree)

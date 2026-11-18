@@ -160,40 +160,62 @@ class HandsFreeService : Service() {
     private fun listen(session: Long) {
         val path = modelPath(session)
         if (!isCurrent(session)) return
+        val route = voiceRoute(this)
+        val audio = VoiceAudio.acquire(this, route)
+        try {
+            listenOnRoute(session, path, route, audio)
+        } finally {
+            audio.close()
+        }
+    }
+
+    @android.annotation.SuppressLint("MissingPermission")
+    private fun listenOnRoute(session: Long, path: String, route: VoiceRoute, audio: VoiceAudio.Lease) {
+        if (!isCurrent(session)) return
         Model(path).use { model ->
             Recognizer(model, RATE.toFloat(), """["hey herder","hey herd","[unk]"]""").use { wake ->
                 Recognizer(model, RATE.toFloat()).use { speech ->
                     Recognizer(model, RATE.toFloat(), """["confirm answer","cancel answer","[unk]"]""").use { confirmation ->
                         val minimum = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
                         check(minimum > 0) { "Unsupported microphone format" }
-                        val mic = AudioRecord(MediaRecorder.AudioSource.MIC, RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(minimum, RATE))
+                        val source = if (route == VoiceRoute.BLUETOOTH) MediaRecorder.AudioSource.VOICE_COMMUNICATION else MediaRecorder.AudioSource.MIC
+                        val mic = AudioRecord(source, RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(minimum, RATE))
                         var registered = false
                         try {
                             synchronized(recorderLock) {
                                 if (!isCurrent(session)) return
-                                val builtin = getSystemService(AudioManager::class.java).getDevices(AudioManager.GET_DEVICES_INPUTS)
-                                    .firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
-                                check(builtin != null && mic.setPreferredDevice(builtin)) { "The phone microphone could not be selected" }
+                                if (route == VoiceRoute.PHONE) {
+                                    val builtin = getSystemService(AudioManager::class.java).getDevices(AudioManager.GET_DEVICES_INPUTS)
+                                        .firstOrNull { route.matchesMic(it.type) }
+                                    check(builtin != null && mic.setPreferredDevice(builtin)) { "The phone microphone could not be selected" }
+                                }
                                 recorder = mic
                                 registered = true
                                 mic.startRecording()
                                 check(mic.recordingState == AudioRecord.RECORDSTATE_RECORDING) { "Microphone did not start" }
                             }
-                            main.post { if (isCurrent(session)) notificationManager.notify(ID, notification("Listening for Hey Herdr")) }
                             val buffer = ShortArray(1600)
                             var deadline = 0L
                             var ignoreUntil = 0L
                             var wasSpeaking = false
                             var commandRecognizer = speech
-                            val routingDeadline = android.os.SystemClock.elapsedRealtime() + 1_000L
+                            val routingDeadline = android.os.SystemClock.elapsedRealtime() + 5_000L
+                            var routeVerified = false
                             while (isCurrent(session)) {
                                 val count = mic.read(buffer, 0, buffer.size)
                                 check(count >= 0) { "Microphone disconnected" }
                                 if (count == 0 || !isCurrent(session)) continue
-                                val route = mic.routedDevice
+                                val micType = mic.routedDevice?.type
                                 val now = android.os.SystemClock.elapsedRealtime()
-                                if (route == null && now < routingDeadline) continue
-                                check(route?.type == AudioDeviceInfo.TYPE_BUILTIN_MIC) { "The phone microphone is no longer active" }
+                                val selected = micType != null && route.matchesMic(micType) && audio.routed()
+                                if (!routeVerified && !selected && now < routingDeadline) continue
+                                check(selected) { "The selected voice microphone is unavailable. Check Bluetooth Phone calls or select Phone." }
+                                if (!routeVerified) {
+                                    routeVerified = true
+                                    main.post {
+                                        if (isCurrent(session)) notificationManager.notify(ID, notification("Listening for Hey Herdr"))
+                                    }
+                                }
                                 if (Speaker.speakingKey != null) {
                                     if (!wasSpeaking) {
                                         wake.reset()
@@ -211,7 +233,7 @@ class HandsFreeService : Service() {
                                 if (deadline == 0L) {
                                     if (!wake.acceptWaveForm(buffer, count)) continue
                                     if (resultText(wake.result) in setOf("hey herder", "hey herd")) {
-                                        main.post { if (isCurrent(session)) playCue() }
+                                        main.post { if (isCurrent(session)) playCue(audio) }
                                         deadline = now + 7_000L
                                         ignoreUntil = now + 200L
                                         commandRecognizer = if (awaitingConfirmation?.invoke() == true) confirmation else speech
@@ -247,13 +269,13 @@ class HandsFreeService : Service() {
         mic.release()
     }
 
-    private fun playCue() {
+    private fun playCue(route: VoiceAudio.Lease) {
         val audio = getSystemService(AudioManager::class.java)
         val focus = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
-            .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).build())
+            .setAudioAttributes(route.attributes)
             .build()
         if (audio.requestAudioFocus(focus) != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) return
-        val tone = runCatching { android.media.ToneGenerator(AudioManager.STREAM_MUSIC, 55) }.getOrNull()
+        val tone = runCatching { android.media.ToneGenerator(if (route.communication) AudioManager.STREAM_VOICE_CALL else AudioManager.STREAM_MUSIC, 55) }.getOrNull()
         tone?.startTone(android.media.ToneGenerator.TONE_PROP_BEEP, 150)
         Handler(Looper.getMainLooper()).postDelayed({
             tone?.release()

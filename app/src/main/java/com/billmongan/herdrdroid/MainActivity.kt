@@ -16,6 +16,8 @@ import com.billmongan.herdrdroid.voice.HandsFreeService
 import com.billmongan.herdrdroid.voice.LocalVoiceUi
 import com.billmongan.herdrdroid.voice.VoiceControls
 import com.billmongan.herdrdroid.voice.VoiceUi
+import com.billmongan.herdrdroid.voice.VoiceRoute
+import com.billmongan.herdrdroid.voice.voiceRoute
 import kotlinx.coroutines.launch
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -57,6 +59,15 @@ class MainActivity : FragmentActivity() {
 
     private val voicePrefs by lazy { getSharedPreferences("voice_control", MODE_PRIVATE) }
     private var voiceEnabled by mutableStateOf(false)
+    private var selectedVoiceRoute by mutableStateOf(VoiceRoute.PHONE)
+
+    private fun chooseVoiceRoute(route: VoiceRoute) {
+        if (selectedVoiceRoute == route) return
+        stopHandsFree()
+        com.billmongan.herdrdroid.ui.Speaker.stop()
+        voicePrefs.edit().putString("audio_route", route.name).apply()
+        selectedVoiceRoute = route
+    }
     private val voice by lazy { VoiceControls(applicationContext, vm) }
     private val command: (String) -> Unit = { text -> if (voiceEnabled) lifecycleScope.launch { voice.handle(text) } }
     private val voicePermission = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
@@ -110,6 +121,7 @@ class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         voiceEnabled = voicePrefs.getBoolean("enabled", false)
+        selectedVoiceRoute = voiceRoute(this)
         HandsFreeService.command = command
         HandsFreeService.sessionEnded = { voice.clear() }
         val controls = voice
@@ -150,7 +162,7 @@ class MainActivity : FragmentActivity() {
                     HandsFreeService.problem?.let { android.widget.Toast.makeText(this@MainActivity, it, android.widget.Toast.LENGTH_LONG).show() }
                 }
                 LaunchedEffect(vm.appLock, vm.locked) { if (vm.appLock || vm.locked) stopHandsFree() }
-                CompositionLocalProvider(LocalVoiceUi provides VoiceUi(voiceEnabled, ::toggleVoice, ::handsFree, command)) {
+                CompositionLocalProvider(LocalVoiceUi provides VoiceUi(voiceEnabled, ::toggleVoice, ::handsFree, command, selectedVoiceRoute, ::chooseVoiceRoute)) {
                 BoxWithConstraints(Modifier.fillMaxSize().background(Palette.Ground)) {
                 val wide = maxWidth >= 840.dp
                 val s0 = vm.screen

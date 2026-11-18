@@ -113,5 +113,5 @@ internal class VoiceControls(private val context: Context, private val vm: AppVi
     }
 }
 
-internal data class VoiceUi(val enabled: Boolean, val toggle: () -> Unit, val handsFree: () -> Unit, val command: (String) -> Unit)
+internal data class VoiceUi(val enabled: Boolean, val toggle: () -> Unit, val handsFree: () -> Unit, val command: (String) -> Unit, val route: VoiceRoute, val chooseRoute: (VoiceRoute) -> Unit)
 internal val LocalVoiceUi = staticCompositionLocalOf<VoiceUi?> { null }
