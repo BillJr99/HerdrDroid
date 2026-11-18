@@ -319,6 +319,22 @@ GEMINI 4 ARGON
         assertEquals(false, p.whileWorking)
     }
 
+    @Test fun claudeUsageIsNotAQuestionAndAnApprovalAfterItIsNotUsage() {
+        val usage = """
+            Status   Config   Usage
+            Current session
+            50% used
+            Esc to cancel
+        """.trimIndent()
+        assertTrue(claudeUsageOpen(usage))
+        assertEquals(null, detectPrompt(usage, blocked = true, agent = "claude"))
+        assertTrue(claudeUsageOpen(usage.replace("50% used", "Loading…")))
+        assertEquals(false, claudeUsageOpen(usage + "\n❯ "))
+        val next = usage + "\nDo you want to proceed?\n❯ 1. Yes\n2. No\nEsc to cancel"
+        assertEquals(false, claudeUsageOpen(next))
+        assertEquals(listOf("Yes", "No"), detectPrompt(next, true, "claude")?.choices?.map { it.label })
+    }
+
     @Test fun profilesWithoutAScreenNeverClose() {
         val codex = QuotaProfiles.forAgent("codex")!!
         assertEquals(false, codex.screenOpen("Esc to cancel 50% used"))

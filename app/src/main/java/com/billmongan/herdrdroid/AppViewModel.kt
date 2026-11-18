@@ -41,6 +41,7 @@ import com.billmongan.herdrdroid.herdr.recoverPaneRead
 import com.billmongan.herdrdroid.herdr.QuotaProfile
 import com.billmongan.herdrdroid.herdr.QuotaProfiles
 import com.billmongan.herdrdroid.herdr.screenOpen
+import com.billmongan.herdrdroid.herdr.claudeUsageOpen
 import com.billmongan.herdrdroid.herdr.QuotaReading
 import com.billmongan.herdrdroid.herdr.footerModel
 import com.billmongan.herdrdroid.herdr.Status
@@ -2561,6 +2562,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     quietly { it.probeQuota(target.id, profile, working = target.status == Status.WORKING) }
                 } finally {
                     probingPanes = probingPanes - target.id
+                    if (target.agent == "claude" && current?.id == serverId) watchForLeftoverScreen(target.id, profile)
                     typingInto.remove(typingKey)
                     probedAt["$serverId|${target.id}"] = System.currentTimeMillis()
                 }
@@ -2618,7 +2620,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 for ((id, pair) in closeWatch.toMap()) {
                     if (id in probingPanes) continue
                     val screen = quietly { it.read(id, 60) } ?: continue
-                    if (pair.first.screenOpen(screen)) {
+                    if (if ("claude" in pair.first.agents) claudeUsageOpen(screen) else pair.first.screenOpen(screen)) {
                         quietly { it.sendKeys(id, *pair.first.closeKeys.toTypedArray()) }
                     }
                 }

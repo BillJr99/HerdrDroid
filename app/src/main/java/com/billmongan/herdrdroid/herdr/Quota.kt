@@ -160,6 +160,25 @@ fun ompUsage(json: String): List<QuotaItem> {
     return out
 }
 
+/** Recognize the live Claude usage panel without treating a shared Esc hint as proof. */
+internal fun claudeUsageOpen(screen: String): Boolean {
+    val lines = forPhone(screen).lineSequence().toList().takeLast(45)
+        .map { it.trim().trim('│', '┃', '|').trim() }.filter { it.isNotEmpty() }
+    val footer = lines.indexOfLast { CLAUDE_USAGE_CLOSE.containsMatchIn(it) }
+    if (footer < 0 || lines.drop(footer + 1).any { it.any(Char::isLetterOrDigit) || CLAUDE_INPUT.containsMatchIn(it) }) return false
+    val top = lines.take(footer).indexOfLast { CLAUDE_USAGE_SECTION.matches(it) }
+    if (top < 0) return false
+    val body = lines.subList(top + 1, footer)
+    return body.none { CLAUDE_INPUT.containsMatchIn(it) || CLAUDE_OPTION.containsMatchIn(it) || it.endsWith("?") } &&
+        (body.any { CLAUDE_USAGE_DETAIL.containsMatchIn(it) } || lines.take(top).any { it.contains("Status") && it.contains("Usage") })
+}
+
+private val CLAUDE_USAGE_CLOSE = Regex("""^(?:press )?esc(?: to (?:cancel|close|exit|dismiss|go back))?(?:\s*(?:[·•]|$).*)?$""", RegexOption.IGNORE_CASE)
+private val CLAUDE_USAGE_SECTION = Regex("""^(?:Current session|Current week(?:\s+\([^)]*\))?|Usage credits|Extra usage|Usage limits)$""", RegexOption.IGNORE_CASE)
+private val CLAUDE_USAGE_DETAIL = Regex("""\d+(?:\.\d+)?%\s+(?:used|left)|\bresets\b|\bloading\b""", RegexOption.IGNORE_CASE)
+private val CLAUDE_INPUT = Regex("""^[❯›>]""")
+private val CLAUDE_OPTION = Regex("""^\d+[.)]\s""")
+
 /**
  * True when [screen] shows this agent's usage (or model) screen open: its close hint is visible
  * AND the screen has usage numbers, or the model/effort the info command shows. The close hint
@@ -170,7 +189,8 @@ fun QuotaProfile.screenOpen(screen: String): Boolean {
     val marker = openMarker ?: return false
     val tail = screen.lines().takeLast(40).joinToString("\n")
     if (!marker.containsMatchIn(tail)) return false
-    if (parseQuota(tail, bareMeansLeft).isNotEmpty()) return true
+    if ("claude" in agents && claudeUsageOpen(tail)) return true
+    if ("claude" !in agents && parseQuota(tail, bareMeansLeft).isNotEmpty()) return true
     // The model screen counts only by its picked model (the ✔ line); "high effort" alone can
     // appear in ordinary conversation text.
     return parseInfo?.invoke(tail)?.model != null
