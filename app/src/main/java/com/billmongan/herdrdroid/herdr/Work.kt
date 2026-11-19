@@ -16,14 +16,18 @@ data class SubagentInfo(val id: String, val file: String, val title: String, val
 data class TaskInfo(val id: String, val file: String, val title: String, val updated: Long, val running: Boolean, val kb: Int)
 
 /** Everything running under one pane. */
-data class WorkInfo(val procs: List<ProcInfo>, val subagents: List<SubagentInfo>, val tasks: List<TaskInfo>) {
+data class WorkInfo(val procs: List<ProcInfo>, val subagents: List<SubagentInfo>, val tasks: List<TaskInfo>,
+    val agentOwnedOnly: Boolean = false,
+) {
     val activeSubagents get() = subagents.count { it.active }
     val runningTasks get() = tasks.count { it.running }
     /** Processes other than the pane's shell, a launcher and the agent: what the agent started. */
-    fun childProcs(agent: String?): Int = (protectedPids(this, agent)).let { keep -> procs.count { it.pid !in keep } }
+    fun childProcs(agent: String?): Int = if (agentOwnedOnly) procs.size
+        else (protectedPids(this, agent)).let { keep -> procs.count { it.pid !in keep } }
 
     /** Live agent descendants, excluding known helpers and their descendants. */
     fun activeProcs(agent: String?): List<ProcInfo> {
+        if (agentOwnedOnly) return procs
         val root = agentProcess(procs, agent)
         val parents = root?.let { mutableSetOf(it.pid) }
             ?: procs.filter { agent.isNullOrBlank() && it.depth == 0 }.mapTo(mutableSetOf()) { it.pid }
@@ -56,8 +60,9 @@ private fun JSONObject.list(k: String): List<JSONObject> = (optJSONArray(k) ?: J
 fun parseWork(json: String): WorkInfo {
     val o = JSONObject(json.trim())
     if (!o.optBoolean("ok")) throw IllegalStateException(o.optString("why").ifBlank { "That pane's work couldn't be read." })
+    val agentOwnedOnly = o.has("active_procs")
     return WorkInfo(
-        procs = o.list("procs").map {
+        procs = o.list(if (agentOwnedOnly) "active_procs" else "procs").map {
             ProcInfo(it.optInt("pid"), it.optInt("ppid"), it.optInt("depth"), it.optString("name"), it.optString("cmd"),
                 it.optLong("age"), it.optDouble("cpu"), it.optLong("rss"))
         },
@@ -67,6 +72,7 @@ fun parseWork(json: String): WorkInfo {
         tasks = o.list("tasks").map {
             TaskInfo(it.optString("id"), it.optString("file"), it.optString("title"), it.optLong("updated"), it.optBoolean("running"), it.optInt("kb"))
         },
+        agentOwnedOnly = agentOwnedOnly,
     )
 }
 
@@ -95,6 +101,7 @@ fun parseTail(json: String): TailRead {
  * A pane without an agent protects only its shell.
  */
 fun protectedPids(work: WorkInfo, agent: String?): Set<Int> {
+    if (work.agentOwnedOnly) return emptySet()
     val byPid = work.procs.associateBy { it.pid }
     // The pane's shell and any launcher (agent-startup.py) are never work.
     val roots = work.procs.filter { it.depth == 0 || it.cmd.contains("agent-startup") }.map { it.pid }.toMutableSet()

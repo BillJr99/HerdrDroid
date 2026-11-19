@@ -173,8 +173,8 @@ private fun WorkList(vm: AppViewModel, paneId: String) {
                     WorkRow(Palette.Muted, a.title, "Subagent · done · ${ago(a.updated)} · ${a.kb} KB") { vm.screen = Screen.Work(paneId, "sub", a.file, a.title) }
                 }
             }
-            // ---- Everything else in the pane (its shell, the agent, helpers it keeps) ----------
-            item {
+            // Legacy responses may still contain a separate diagnostic list.
+            if (other.isNotEmpty()) item {
                 Row(Modifier.fillMaxWidth().clickable { showOther = !showOther }.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("Other processes", color = Palette.Ink, fontWeight = FontWeight.Bold, fontSize = 15.sp)
