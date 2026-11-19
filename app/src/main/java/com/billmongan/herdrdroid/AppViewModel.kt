@@ -883,6 +883,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         stashOpenChat()
         hermesPoll?.cancel()
         hermesState = null
+        rawWorkPanes = emptyList()
+        workCounts = emptyMap()
+        busyCounts = emptyMap()
         openUsage = null
         hermes?.close()
         hermes = null
@@ -1134,9 +1137,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     p.copy(agent = was)
                 } else p
             }
-            current?.id?.let { trackDone(it, fresh) }
+            val previous = rawWorkPanes.associateBy { it.id }
+            val unchanged = fresh.filter { p -> previous[p.id]?.sameWorkIdentity(p) == true }
+                .map { it.id }.toSet()
+            busyCounts = busyCounts.filterKeys { it in unchanged }
+            workCounts = workCounts.filterKeys { it in unchanged }
+            rawWorkPanes = fresh
             maintainChats(before, fresh)
-            panes = withBusy(fresh, busyCounts)
+            applyWorkStatus()
             current?.let { s -> noticeChanges(s.id, s.label, fresh) { herdr } }
             // Footers (each agent's model) every 30 seconds wherever you are in the app; before
             // 1.1.5 only the tab list read them, which the agent-first app rarely shows.
@@ -1150,8 +1158,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 lastPreviewsAt = System.currentTimeMillis()
                 viewModelScope.launch { runCatching { refreshPreviews() } }
             }
-            updateWidget(fresh)
-            current?.let { serverPanes = serverPanes + (it.id to panes) }
         }
     }
 
@@ -1163,7 +1169,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val agents = fresh.filter { it.agent != null }
         val lines = agents.take(5).joinToString("\n") { p ->
             val mark = when (p.status) { Status.NEEDS_YOU -> "● "; Status.WORKING -> "◐ "; else -> "○ " }
-            mark + p.agentName + (if (p.folder.isNotBlank()) " · " + p.folder else "") + " · " + com.billmongan.herdrdroid.ui.look(p.status).label
+            mark + p.agentName + (if (p.folder.isNotBlank()) " · " + p.folder else "") + " · " + com.billmongan.herdrdroid.ui.look(p.status, p.backgroundBusy).label
         }
         val needs = agents.count { it.status == Status.NEEDS_YOU }
         val working = agents.count { it.status == Status.WORKING }
@@ -3345,7 +3351,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** For the cards: active subagents plus running background tasks, per pane. */
     var workCounts by mutableStateOf<Map<String, Int>>(emptyMap())
         private set
-    var busyCounts by mutableStateOf<Map<String, Int>>(emptyMap())
+    private var busyCounts by mutableStateOf<Map<String, Int>>(emptyMap())
+    private var rawWorkPanes = emptyList<Pane>()
+    private var workSweep = 0L
+
+    private fun Pane.sameWorkIdentity(other: Pane): Boolean =
+        agent == other.agent && cwd == other.cwd && sessionId == other.sessionId
+
+    private fun applyWorkStatus() {
+        panes = withBusy(rawWorkPanes, busyCounts)
+        current?.let {
+            trackDone(it.id, panes)
+            serverPanes = serverPanes + (it.id to panes)
+        }
+        updateWidget(panes)
+    }
 
     /**
      * The status a card shows: an agent herdr calls idle or done while its subagents or background
@@ -3374,8 +3394,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun shownStatus(p: Pane, serverId: String? = current?.id): Status {
         val here = serverId == current?.id
         // Hermes: a conversation elsewhere (Telegram, its app) working or waiting counts here too.
-        if (here && p.agent?.lowercase() == "hermes" && p.status != Status.NEEDS_YOU) hermesState?.let { return it }
-        if (here && (p.status == Status.IDLE || p.status == Status.DONE || p.status == Status.UNKNOWN) && (busyCounts[p.id] ?: 0) > 0) return Status.WORKING
+        if (here && p.agent?.lowercase() == "hermes" && p.status != Status.NEEDS_YOU) hermesState?.let {
+            if (it == Status.NEEDS_YOU || p.status != Status.WORKING) return it
+        }
         // herdr's "done" is idle but not yet seen at the computer. Opening the agent here counts as
         // seeing it, and after 30 minutes it counts as idle anyway. (The app never marks it seen in
         // herdr itself: that would switch the pane in front at the computer.)
@@ -3452,7 +3473,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     suspend fun refreshWorkCounts() {
-        quietly { it.workCounts(panes, transcriptScript) }?.let { (c, b) -> workCounts = c; busyCounts = b }
+        val client = herdr ?: return
+        val request = ++workSweep
+        val requested = rawWorkPanes.associateBy { it.id }
+        quietly { it.workCounts(requested.values.toList(), transcriptScript) }?.let { (counts, busy) ->
+            if (herdr !== client || request != workSweep) return
+            val unchanged = rawWorkPanes.filter { p ->
+                requested[p.id]?.sameWorkIdentity(p) == true
+            }.map { it.id }.toSet()
+            workCounts = counts.filterKeys { it in unchanged }
+            busyCounts = busy.filterKeys { it in unchanged }
+            applyWorkStatus()
+        }
     }
 
     /** One Claude subagent's log since [cursor] (its file is pinned in the cursor). */

@@ -22,17 +22,19 @@ data class WorkInfo(val procs: List<ProcInfo>, val subagents: List<SubagentInfo>
     /** Processes other than the pane's shell, a launcher and the agent: what the agent started. */
     fun childProcs(agent: String?): Int = (protectedPids(this, agent)).let { keep -> procs.count { it.pid !in keep } }
 
-    /**
-     * Processes the agent started for its work, still running: younger than the agent by more
-     * than two minutes, so helpers it started with itself (MCP servers and the like) don't count.
-     */
+    /** Live agent descendants, excluding known helpers and their descendants. */
     fun activeProcs(agent: String?): List<ProcInfo> {
-        val keep = protectedPids(this, agent)
-        val agentAge = procs.filter { it.pid in keep }.minOfOrNull { if (it.depth == 0) Long.MAX_VALUE else it.ageSec } ?: Long.MAX_VALUE
-        // Helpers started on demand (language servers, MCP servers) and their children are not work.
-        val helpers = mutableSetOf<Int>()
-        procs.forEach { if (it.pid !in keep && (it.ppid in helpers || HELPER.containsMatchIn(it.cmd))) helpers += it.pid }
-        return procs.filter { it.pid !in keep && it.pid !in helpers && (agentAge == Long.MAX_VALUE || it.ageSec < agentAge - 120) }
+        val root = agentProcess(procs, agent)
+        val parents = root?.let { mutableSetOf(it.pid) }
+            ?: procs.filter { agent.isNullOrBlank() && it.depth == 0 }.mapTo(mutableSetOf()) { it.pid }
+        return buildList {
+            for (proc in procs) {
+                if (proc.pid != root?.pid && proc.ppid in parents && !HELPER.containsMatchIn(proc.cmd)) {
+                    parents += proc.pid
+                    add(proc)
+                }
+            }
+        }
     }
 
     /** What is still active: running subagents, running background tasks, and active processes. */
@@ -96,21 +98,25 @@ fun protectedPids(work: WorkInfo, agent: String?): Set<Int> {
     val byPid = work.procs.associateBy { it.pid }
     // The pane's shell and any launcher (agent-startup.py) are never work.
     val roots = work.procs.filter { it.depth == 0 || it.cmd.contains("agent-startup") }.map { it.pid }.toMutableSet()
-    if (agent.isNullOrBlank()) return roots
-    val a = agent.lowercase()
-    // A helper the agent left running (Codex's app server, say) is never taken for the agent itself.
-    val ok = work.procs.filter { !HELPER.containsMatchIn(it.cmd) }
-    // A whole word, as in transcript.py (1.3.0): "pi" is not pip or pigz; "kiro-cli" still matches kiro.
-    val word = Regex("(?<![a-z0-9])" + Regex.escape(a) + "(?![a-z0-9])")
-    val agentProc = ok.filter { word.containsMatchIn(it.name.lowercase()) }.minByOrNull { it.depth }
-        ?: ok.filter { word.containsMatchIn(it.cmd.lowercase()) && !it.cmd.contains("agent-startup") }.minByOrNull { it.depth }
-        ?: return roots
+    val agentProc = agentProcess(work.procs, agent)
     var cur: ProcInfo? = agentProc
     while (cur != null) {
         roots += cur.pid
         cur = byPid[cur.ppid]
     }
     return roots
+}
+
+private fun agentProcess(procs: List<ProcInfo>, agent: String?): ProcInfo? {
+    if (agent.isNullOrBlank()) return null
+    val a = agent.lowercase()
+    // A helper the agent left running (Codex's app server, say) is never taken for the agent itself.
+    val ok = procs.filter { !HELPER.containsMatchIn(it.cmd) }
+    // A whole word, as in transcript.py (1.3.0): "pi" is not pip or pigz; "kiro-cli" still matches kiro.
+    val word = Regex("(?<![a-z0-9])" + Regex.escape(a) + "(?![a-z0-9])")
+    return ok.filter { word.containsMatchIn(it.name.lowercase()) }.minByOrNull { it.depth }
+        ?: ok.filter { a != "claude" && word.containsMatchIn(it.cmd.lowercase()) && !it.cmd.contains("agent-startup") }
+            .minByOrNull { it.depth }
 }
 
 fun ageText(sec: Long): String = when {

@@ -465,7 +465,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     ) {
                         Box(Modifier.size(7.dp).background(look(status).ink, CircleShape))
                         Text(
-                            "  " + look(status).label + " · " + (vm.modelLine(paneId) ?: pane?.folder ?: paneId),
+                            "  " + look(status, pane?.backgroundBusy == true).label + " · " + (vm.modelLine(paneId) ?: pane?.folder ?: paneId),
                             color = Palette.Muted, fontSize = 12.5.sp,
                             maxLines = 1, overflow = TextOverflow.Ellipsis,
                         )
