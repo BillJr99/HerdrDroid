@@ -240,7 +240,9 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     // As the list shows it: Done becomes Idle once you have opened it here.
     val status = pane?.let { vm.shownStatus(it) } ?: Status.UNKNOWN
     // Only this agent's screen: never one read from the agent you just left.
-    val screenText = if (vm.paneTextPane == paneId) vm.paneText else ""
+    val liveScreenText = if (vm.paneTextPane == paneId) vm.paneText else ""
+    val openingPreview = vm.prefetchedPaneText(paneId)
+    val screenText = openingPreview ?: liveScreenText
     val shownTarget = vm.paneTextTarget?.takeIf { vm.paneTextPane == paneId && vm.paneReadProblem == null }
     // Never an empty card (1.4.2): one with no options always shows the screen region or a note.
     // While the latest read failed, no card is built from the last screen: its buttons would answer
@@ -253,7 +255,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         else if (vm.paneReadProblem != null) (if (status == Status.NEEDS_YOU) Prompt("This agent is waiting for you.", emptyList()).forCard() else null)
         else detectPrompt(screenText, status == Status.NEEDS_YOU, pane?.agent, vm.versionOf(paneId))?.forCard()
     fun send() {
-        if (usageBlocksInput) return
+        if (usageBlocksInput || (openingPreview != null && prompt != null)) return
         val draft = answerDraft
         if (draft != null) {
             val text = draft.text.trim()
@@ -373,6 +375,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 p,
                 agent = pane?.agentName ?: "The agent",
                 sending = vm.answerInFlight(paneId),
+                readOnlyPreview = openingPreview != null,
                 onChoice = { c -> vm.answerChoice(paneId, p, c, target = shownTarget) },
                 onKey = { k ->
                     val label = "Pressed " + when (k) { "esc" -> "Esc"; "tab" -> "Tab"; "shift+tab" -> "Shift+Tab"; "ctrl+c" -> "Ctrl+C"; else -> k }
@@ -539,7 +542,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     if (!live) DropdownMenuItem(text = { Text(if (fullTerminal) "Chat view" else "Terminal view") }, onClick = { menu = false; fullTerminal = !fullTerminal })
                     // The permission mode (plan, accept edits, auto). For Claude this cycles it with
                     // Shift+Tab, the same key as at the computer.
-                    com.billmongan.herdrdroid.herdr.agentMode(pane?.agent, screenText)?.takeIf { !live }?.let { mode ->
+                    com.billmongan.herdrdroid.herdr.agentMode(pane?.agent, liveScreenText)?.takeIf { !live }?.let { mode ->
                         val cycles = pane?.agent?.lowercase() == "claude"
                         DropdownMenuItem(
                             // Shown, never set: the app has no way to turn on a bypass mode.
@@ -558,6 +561,10 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         // still running, and its running subagents. Tap either for active and finished.
         HorizontalDivider(color = Palette.Line)
         ServerBanners(vm)
+        if (openingPreview != null) {
+            Text("Checking the live pane…", color = Palette.Muted, fontSize = 12.5.sp,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+        }
         if (usageBlocksInput) {
             UsageOverlayBanner(dismissingUsage) {
                 usageOverlay?.let(vm::dismissUsage)
@@ -754,7 +761,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 }
             }
             if (fullTerminal) {
-                val found = remember(screenText) { screenLinks(screenText) }
+                val found = remember(liveScreenText) { screenLinks(liveScreenText) }
                 if (commandScreen != null || found.urls.isNotEmpty() || found.codes.isNotEmpty()) {
                     val clipboard = LocalClipboardManager.current
                     Row(
@@ -800,7 +807,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 else if (typingAnswer) if (vm.answerInFlight(paneId)) "Checking answer…" else "Type your answer"
                 else if (prompt != null || status == Status.NEEDS_YOU) "Send after answer"
                 else "Message ${pane?.agentName ?: "this tab"}",
-                canSend = message.isNotBlank() && pane != null && !usageBlocksInput && !(typingAnswer && vm.answerInFlight(paneId)),
+                canSend = message.isNotBlank() && pane != null && !usageBlocksInput &&
+                    (openingPreview == null || prompt == null) && !(typingAnswer && vm.answerInFlight(paneId)),
                 onSend = ::send,
                 working = status == Status.WORKING,
                 onStop = pane?.let { p -> { vm.stopPane(p) } },
@@ -1241,6 +1249,7 @@ internal fun PromptCard(
     /** Switches to the terminal view (1.4.2): always offered, so the screen itself is never out of reach. */
     onShowTerminal: (() -> Unit)? = null,
     sending: Boolean = false,
+    readOnlyPreview: Boolean = false,
 ) {
     @Suppress("NAME_SHADOWING") val p = p.forCard()
     Surface(
@@ -1252,8 +1261,15 @@ internal fun PromptCard(
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Icon(Icons.Filled.Warning, contentDescription = null, tint = Palette.OrangeInk, modifier = Modifier.size(18.dp))
                 // One line only; the question itself is just above the card, in the chat (1.2.8).
-                Text(if (sending) "Checking and sending…" else if (p.choices.isEmpty()) "$agent is waiting for you" else "Your answer", color = Palette.OrangeInk,
+                Text(if (readOnlyPreview) "Preview" else if (sending) "Checking and sending…"
+                    else if (p.choices.isEmpty()) "$agent is waiting for you" else "Your answer", color = Palette.OrangeInk,
                     fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+            }
+            if (readOnlyPreview) {
+                onShowTerminal?.let { show ->
+                    TextButton(onClick = show, modifier = Modifier.fillMaxWidth()) { Text("Show terminal") }
+                }
+                return@Column
             }
             // Each choice grows to fit its whole label; the page scrolls, the card has no scroll of its own.
             if (p.terminalReview) {
