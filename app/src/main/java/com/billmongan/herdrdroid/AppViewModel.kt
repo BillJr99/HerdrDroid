@@ -2130,7 +2130,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     else -> null
                 }
             },
-            check = check@{
+            check = {
                 val h = herdr
                 val pn = pane(p.paneId)
                 when {
@@ -2140,8 +2140,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     pn.status == Status.NEEDS_YOU -> "a question is open in it; answer it first"
                     pendingSends.any { it.paneId == p.paneId && it.waiting && it.at < p.at && it.id != p.id } -> "an earlier message to it is still waiting"
                     else -> {
-                        val screen = runCatching { h.readStyled(p.paneId, 40) }.getOrNull()
-                            ?: return@check "its screen couldn't be read"
+                        // Let HeldSendRetry handle read failures and propagate cancellation.
+                        val screen = h.readStyled(p.paneId, 40)
                         noteInputLine(p.paneId, screen)
                         // Checked again after the read, which can take a while (from Grok's review): a
                         // question or a usage check that began meanwhile is never typed into. Nothing
@@ -2181,6 +2181,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 readPane(p.paneId)
             }
             is com.billmongan.herdrdroid.herdr.HeldOutcome.TimedOut -> {
+                if (pendingSends.none { it.id == p.id && it.waiting }) return
                 pendingSends = pendingSends.map { if (it.id == p.id) it.copy(waiting = false, undelivered = true, held = outcome.why) else it }
                 error = "Not sent to $agentName: ${outcome.why}, for 2 minutes. Tap Resend to send it anyway."
             }
