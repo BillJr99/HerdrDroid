@@ -9,6 +9,13 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Text
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.ui.test.assertIsNotFocused
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.hasScrollToIndexAction
+import androidx.compose.ui.test.performScrollToIndex
+import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -16,8 +23,10 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.text.font.FontFamily
@@ -48,6 +57,168 @@ class ComposeUiTest {
 
     private fun pane(status: Status, agent: String = "claude") =
         Pane("w1:p1", "w1:t1", "w1", agent, status, "", "/home/user/agents/claude")
+
+    @Test fun usageDismissButtonDispatchesOnlyAnExplicitTapAndDisablesWhilePending() {
+        val pending = androidx.compose.runtime.mutableStateOf(false)
+        var clicks = 0
+        rule.setContent { UsageOverlayBanner(pending.value) { clicks++; pending.value = true } }
+        rule.onNodeWithText("Usage panel is open").assertIsDisplayed()
+        rule.runOnIdle { assertEquals(0, clicks) }
+        rule.onNodeWithText("Dismiss usage").performClick()
+        rule.onNodeWithText("Dismissing…").assertIsNotEnabled()
+        rule.runOnIdle { assertEquals(1, clicks) }
+    }
+
+    @Test fun steerSendsAndOnlyArrowOpensQueueMenuWithoutTakingComposerFocus() {
+        var sent = 0
+        var queued = 0
+        rule.setContent {
+            ChatComposer(value = "sample", onValueChange = {}, placeholder = "Message", canSend = true,
+                onSend = { sent++ }, working = true, steerLabel = "Steer", onQueueWhenIdle = { queued++ })
+        }
+        val composer = rule.onNode(hasSetTextAction())
+        composer.assertIsNotFocused()
+        rule.onNodeWithText("Steer").performClick()
+        composer.assertIsNotFocused()
+        rule.onNodeWithText("Send when idle").assertDoesNotExist()
+        rule.runOnIdle { assertEquals(1, sent) }
+
+        composer.performClick().assertIsFocused()
+        rule.onNodeWithContentDescription("Send options").performClick()
+        composer.assertIsFocused()
+        rule.onNodeWithText("Send when idle").performClick()
+        composer.assertIsFocused()
+        rule.runOnIdle {
+            assertEquals(1, queued)
+            assertEquals(1, sent)
+        }
+        rule.onNodeWithText("Steer").performClick()
+        composer.assertIsFocused()
+        rule.runOnIdle { assertEquals(2, sent) }
+    }
+
+    @Test fun sessionDrawerReturnsToTopWhenReopened() {
+        val open = androidx.compose.runtime.mutableStateOf(true)
+        val app = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.app.Application>()
+        val vm = com.billmongan.herdrdroid.AppViewModel(app)
+        rule.setContent {
+            Box(Modifier.height(240.dp)) { SessionDrawer(vm, opening = open.value) }
+        }
+        val list = rule.onNode(hasScrollToIndexAction())
+        fun position(): Float {
+            val range = list.fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange]
+            return rule.runOnIdle { range.value() }
+        }
+
+        list.performScrollToIndex(2)
+        assertTrue(position() > 0f)
+        rule.runOnIdle { open.value = false }
+        assertTrue(position() > 0f)
+        rule.runOnIdle { open.value = true }
+        assertEquals(0f, position(), 0f)
+    }
+
+    @Test fun removingOneOfflineMessageDropsOnlyItsQueuedSend() {
+        val app = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.app.Application>()
+        val vm = com.billmongan.herdrdroid.AppViewModel(app)
+        val target = pane(Status.WORKING)
+        rule.setContent {
+            androidx.compose.foundation.layout.Column {
+                vm.removableSendsFor(target.id).forEach { pending ->
+                    PendingMessageRow(
+                        title = "Waiting to reconnect",
+                        text = pending.text,
+                        onRemove = { vm.dismissPending(pending.id) },
+                        sendLabel = "Resend",
+                        onSend = null,
+                    )
+                }
+            }
+        }
+        rule.runOnIdle {
+            vm.sendMessage(target, "First message")
+            vm.sendMessage(target, "Second message")
+        }
+        rule.onAllNodesWithText("Remove").assertCountEquals(2)
+        rule.onAllNodesWithText("Remove")[0].performClick()
+        rule.onNodeWithText("First message").assertDoesNotExist()
+        rule.onNodeWithText("Second message").assertIsDisplayed()
+        rule.runOnIdle {
+            assertEquals(1, vm.queuedCount)
+            assertEquals(listOf("Second message"), vm.removableSendsFor(target.id).map { it.text })
+        }
+    }
+
+    @Test fun unsentMessageLongPressOffersForceSendAndRemove() {
+        var forced = 0
+        var removed = 0
+        rule.setContent {
+            PendingMessageRow(
+                title = "Waiting for the input line",
+                text = "A pending message",
+                onRemove = { removed++ },
+                sendLabel = null,
+                onSend = { forced++ },
+                forceSendMenu = true,
+            )
+        }
+        val message = rule.onNodeWithText("A pending message")
+        message.performTouchInput { longClick() }
+        rule.onNodeWithText("Force send immediately").performClick()
+        rule.runOnIdle { assertEquals(1, forced) }
+        message.performTouchInput { longClick() }
+        rule.onAllNodesWithText("Remove").assertCountEquals(2)[1].performClick()
+        rule.runOnIdle { assertEquals(1, removed) }
+    }
+
+    @Test fun heldMessageShowsForceAndRemoveOnANarrowPhone() {
+        rule.setContent {
+            Box(Modifier.width(240.dp)) {
+                PendingMessageRow(
+                    title = "Waiting for the input line",
+                    text = "A held message",
+                    onRemove = {},
+                    sendLabel = "Force send immediately",
+                    onSend = {},
+                    forceSendMenu = true,
+                )
+            }
+        }
+        rule.onNodeWithText("Force send immediately").assertIsDisplayed()
+        rule.onNodeWithText("Remove").assertIsDisplayed()
+    }
+
+    @Test fun paneWaitingForAnAnswerBlocksImmediateQueueDelivery() {
+        val app = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.app.Application>()
+        val vm = com.billmongan.herdrdroid.AppViewModel(app)
+        assertTrue(vm.hasPendingQuestion(pane(Status.NEEDS_YOU)))
+        assertEquals(false, vm.hasPendingQuestion(pane(Status.IDLE)))
+        val openChoice = """
+            ┃ Web Search
+            ┃ Allow OpenCode to search the web?
+            ┃ 1. Allow search via Example
+            ┃ 2. Choose another provider
+            ┃ 3. Disable web search
+            ┃ ↑↓ select  enter submit  esc dismiss
+        """.trimIndent()
+        assertTrue(vm.blocksNormalSend(pane(Status.IDLE, "opencode"), openChoice))
+    }
+
+    @Test fun questionChoiceShowsSendingAndDisablesChoices() {
+        val sending = androidx.compose.runtime.mutableStateOf(false)
+        var sent = 0
+        val question = Prompt("Which color?", listOf(Choice("Blue", "1", true), Choice("Green", "2", true)))
+        rule.setContent {
+            PromptCard(question, "Claude", onChoice = {
+                sent++
+                sending.value = true
+            }, onKey = {}, onTypeAnswer = {}, sending = sending.value)
+        }
+        rule.onNodeWithText("Blue").performClick()
+        rule.onNodeWithText("Checking and sending…").assertIsDisplayed()
+        rule.onNodeWithText("Green").assertIsNotEnabled()
+        rule.runOnIdle { assertEquals(1, sent) }
+    }
 
     @Test fun statusPillsShowEachState() {
         rule.setContent {
@@ -332,15 +503,129 @@ class ComposeUiTest {
             Box(Modifier.width(380.dp)) {
                 ChatComposer(
                     value = "", onValueChange = {}, placeholder = "Message Claude", canSend = false, onSend = {},
-                    compact = true, menuItems = listOf("Snippets" to { picked = "Snippets" }, "Reading mode" to { picked = "Reading" }),
+                    compact = true, menuItems = listOf("Snippets" to { picked = "Snippets" }, "Show keys" to { picked = "Keys" }),
                 )
             }
         }
         rule.onNodeWithText("Snippets").assertDoesNotExist()
         rule.onNodeWithText("🎙").assertIsDisplayed()
         rule.onNodeWithText("⋯").performClick()
-        rule.onNodeWithText("Reading mode").performClick()
-        assertEquals("Reading", picked)
+        rule.onNodeWithText("Show keys").performClick()
+        assertEquals("Keys", picked)
+    }
+
+    @Test fun incompleteApprovalCardOnlyOffersTheTerminal() {
+        var opened = false
+        val prompt = Prompt("Review the full command", emptyList(),
+            region = listOf("1. Allow once"), terminalReview = true)
+        rule.setContent {
+            PromptCard(prompt, "Hermes", onChoice = { error("Sent a hidden choice") },
+                onKey = { error("Synthesized a key") }, onTypeAnswer = { error("Opened a typed answer") },
+                onShowTerminal = { opened = true })
+        }
+        listOf("1", "Enter", "Esc", "Ctrl+C", "Type a different answer").forEach {
+            rule.onNodeWithText(it).assertDoesNotExist()
+        }
+        rule.onNodeWithText("Show terminal").performClick()
+        rule.runOnIdle { assertTrue(opened) }
+    }
+
+    @Test fun voiceSettingsRequireOptInAndStartAndStopOnlyOnExplicitTap() {
+        val enabled = androidx.compose.runtime.mutableStateOf(false)
+        val active = androidx.compose.runtime.mutableStateOf(false)
+        val locked = androidx.compose.runtime.mutableStateOf(false)
+        val route = androidx.compose.runtime.mutableStateOf(com.billmongan.herdrdroid.voice.VoiceRoute.PHONE)
+        rule.setContent {
+            androidx.compose.foundation.layout.Column(Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+                VoiceSettings(com.billmongan.herdrdroid.voice.VoiceUi(enabled.value, { enabled.value = it },
+                    { active.value = true }, { active.value = false }, {}, route.value, { route.value = it }), active.value, locked.value)
+            }
+        }
+        rule.onNodeWithText("Start hands-free").assertIsNotEnabled()
+        rule.onNodeWithContentDescription("Voice Control").performClick()
+        rule.runOnIdle { assertTrue(!active.value) }
+        rule.onNodeWithText("Start hands-free").performScrollTo().performClick()
+        rule.onNodeWithText("Stop hands-free").performScrollTo().performClick()
+        rule.runOnIdle { locked.value = true }
+        rule.onNodeWithText("Start hands-free").assertIsNotEnabled()
+        if (android.os.Build.VERSION.SDK_INT >= 31) {
+            rule.onNodeWithText("Bluetooth speakers and mic").performScrollTo().performClick()
+            rule.runOnIdle { assertEquals(com.billmongan.herdrdroid.voice.VoiceRoute.BLUETOOTH, route.value) }
+        }
+        rule.onNodeWithText("Confirm message").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test fun agentMenusKeepComposerAndDraftWithoutASeparateReadingView() {
+        val app = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.app.Application>()
+        val vm = rule.runOnUiThread { com.billmongan.herdrdroid.AppViewModel(app) }
+        rule.setContent { AgentScreen(vm, "fixture:pane") }
+        rule.onNode(hasSetTextAction()).performTextInput("Synthetic draft")
+        rule.onNodeWithContentDescription("More").performClick()
+        rule.onNodeWithText("Reading mode").assertDoesNotExist()
+        rule.onNodeWithText("Leave reading mode").assertDoesNotExist()
+        rule.onNodeWithText("Running underneath").assertIsDisplayed()
+        rule.onNodeWithText("Running underneath").performClick()
+        rule.onNodeWithText("⋯").performClick()
+        rule.onNodeWithText("Reading mode").assertDoesNotExist()
+        rule.onNodeWithText("Snippets").assertIsDisplayed()
+        rule.onNodeWithText("Snippets").performClick()
+        rule.onNodeWithText("Synthetic draft").assertExists()
+    }
+
+    @Test fun grokQueueDoesNotSupplyMissingQuestionOrChoices() {
+        // A blocked status by itself doesn't supply a question. Deliberately make a queued
+        // message look like a menu; the queued text is never a question source.
+        grokChatWithQueue("│ ❯ │\nShift+Tab:mode")
+        rule.onNodeWithText("Queued in Grok", substring = true).assertIsDisplayed()
+        rule.onNodeWithText("Grok asks").assertDoesNotExist()
+        rule.onNodeWithText("Your answer").assertDoesNotExist()
+        rule.onAllNodesWithText("2 (●) Second draft option", substring = true).assertCountEquals(1)
+    }
+
+    @Test fun grokQuestionAndChoicesAreTogetherBeforeTheQueue() {
+        val keys = mutableListOf<String>()
+        grokChatWithQueue("""
+            ┃  ?  Which format should the report use?
+            ┃  1 (●) Plain text
+            ┃  2 (○) Markdown
+            ┃
+            1/2:answer  │  ←/→:question  │  z:type  │  Shift+X:dismiss  │  Esc:scrollback
+        """.trimIndent()) { keys.addAll(it) }
+        val question = rule.onNodeWithText("Which format should the report use?").assertExists()
+        val choice = rule.onNodeWithText("Markdown").assertExists()
+        val queuedFirst = rule.onNodeWithText("First queued message").assertExists()
+        val queuedSecond = rule.onNodeWithText("Second draft option", substring = true).assertExists()
+        fun top(node: androidx.compose.ui.test.SemanticsNodeInteraction) = node.fetchSemanticsNode().positionInRoot.y
+        assertTrue(top(question) < top(choice))
+        assertTrue("Grok's choices should not appear under the queued messages", top(choice) < top(queuedFirst))
+        assertTrue(top(queuedFirst) < top(queuedSecond))
+        rule.onNode(hasScrollToIndexAction()).performScrollToIndex(2)
+        question.assertIsDisplayed()
+        choice.assertIsDisplayed().performClick()
+        assertEquals(listOf("down", "enter"), keys)
+    }
+
+    private fun grokChatWithQueue(screen: String, onKeys: (List<String>) -> Unit = {}) {
+        val prompt = com.billmongan.herdrdroid.herdr.detectPrompt(screen, blocked = true, agent = "grok")
+        rule.setContent {
+            Box(Modifier.width(380.dp).height(700.dp)) {
+                TranscriptChat(
+                    rows = rowsOf(listOf(UserItem("delivered", "Write a report"))),
+                    working = false, workingLabel = "", agentName = "Grok",
+                    pending = listOf("First queued message", "2 (●) Second draft option"),
+                    more = false, size = 12.5f, family = FontFamily.Default,
+                    actions = ChatActions(onQuote = {}, onStop = null, queuedNote = "Queued in Grok · not yet in the session log"),
+                    footer = {
+                        prompt?.let { p ->
+                            PromptQuestion(p, agent = "Grok")
+                            PromptCard(p, agent = "Grok", onChoice = { onKeys(requireNotNull(com.billmongan.herdrdroid.herdr.menuKeys(p, it))) },
+                                onKey = {}, onTypeAnswer = {})
+                        }
+                    },
+                    state = rememberLazyListState(), modifier = Modifier.fillMaxSize(),
+                )
+            }
+        }
     }
 
     @Test fun aReplyOpensFullScreen() {

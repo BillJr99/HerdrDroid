@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -29,6 +30,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.HorizontalDivider
@@ -38,6 +40,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import com.billmongan.herdrdroid.voice.LocalVoiceUi
+import com.billmongan.herdrdroid.voice.HandsFreeService
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -143,6 +149,7 @@ fun ChatComposer(
     working: Boolean = false,
     onStop: (() -> Unit)? = null,
     steerLabel: String? = null,
+    onQueueWhenIdle: (() -> Unit)? = null,
     onAttach: ((Uri) -> Unit)? = null,
     attachBusy: Boolean = false,
     commands: List<SlashCommand> = emptyList(),
@@ -156,12 +163,30 @@ fun ChatComposer(
 ) {
     var showCommands by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
+    var sendOptions by remember { mutableStateOf(false) }
     val speech = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
         if (r.resultCode == Activity.RESULT_OK) {
             val said = r.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()
             if (!said.isNullOrBlank()) onValueChange(if (value.isBlank()) said else value.trimEnd() + " " + said)
         }
     }
+    val voice = LocalVoiceUi.current
+    val voiceCommand = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
+        if (r.resultCode == Activity.RESULT_OK) {
+            r.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.let { voice?.command?.invoke(it) }
+        }
+    }
+    val commandMic: (() -> Unit)? = if (voice?.enabled == true && !HandsFreeService.active) {
+        {
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+                .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                .putExtra(RecognizerIntent.EXTRA_PROMPT, "Say a Herdr command")
+            runCatching { voiceCommand.launch(intent) }
+            Unit
+        }
+    } else null
+    val voiceMenu = listOfNotNull(commandMic?.let { "Voice command" to it })
+    var voiceMenuOpen by remember { mutableStateOf(false) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> uri?.let { onAttach?.invoke(it) } }
     val typedSlash = value.startsWith("/") && !value.contains(' ')
     val matches = commands.filter { typedSlash && it.name.startsWith(value, ignoreCase = true) }
@@ -171,17 +196,40 @@ fun ChatComposer(
         val label = if (working && steerLabel != null && value.isNotBlank()) steerLabel else null
         Spacer(Modifier.width(if (compact) 4.dp else 8.dp))
         // While the agent works, a message steers it: the send button says so itself.
-        if (label != null) {
-            androidx.compose.material3.Button(
-                onClick = onSend,
-                enabled = canSend,
-                shape = RoundedCornerShape(20.dp),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp),
-                colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Palette.Blue, contentColor = Palette.OnBlue),
-                modifier = Modifier.height(40.dp),
-            ) {
-                Text(label, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
-                Icon(Icons.Filled.KeyboardArrowUp, contentDescription = null, modifier = Modifier.size(18.dp))
+        if (label != null && onQueueWhenIdle != null) {
+            Box {
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = if (canSend) Palette.Blue else Palette.Gray,
+                    contentColor = if (canSend) Palette.OnBlue else Palette.Muted,
+                ) {
+                    Row(Modifier.height(48.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            Modifier.fillMaxHeight().clickable(enabled = canSend, role = androidx.compose.ui.semantics.Role.Button,
+                                onClickLabel = "Send immediately", onClick = onSend).padding(horizontal = 14.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(label, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+                        }
+                        Box(Modifier.width(1.dp).height(24.dp).background(Palette.OnBlue.copy(alpha = 0.35f)))
+                        Box(
+                            Modifier.size(48.dp).clickable(enabled = canSend, role = androidx.compose.ui.semantics.Role.Button,
+                                onClick = { sendOptions = true }),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Send options", modifier = Modifier.size(20.dp))
+                        }
+                    }
+                }
+                // Leave window focus with the composer so opening the menu does not hide the IME.
+                androidx.compose.material3.DropdownMenu(
+                    expanded = sendOptions,
+                    onDismissRequest = { sendOptions = false },
+                    properties = androidx.compose.ui.window.PopupProperties(focusable = false),
+                ) {
+                    androidx.compose.material3.DropdownMenuItem(text = { Text("Send when idle") },
+                        onClick = { sendOptions = false; onQueueWhenIdle() })
+                }
             }
         } else FilledIconButton(
             onClick = { if (stopMode) onStop?.invoke() else onSend() },
@@ -220,12 +268,26 @@ fun ChatComposer(
             modifier = m,
         )
     }
-    val dictate = {
+    val launchDictation = {
         val i = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
             .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             .putExtra(RecognizerIntent.EXTRA_PROMPT, "Say your message")
         runCatching { speech.launch(i) }
         Unit
+    }
+    var dictateAfterStop by remember { mutableStateOf(false) }
+    val handsFreeActive = HandsFreeService.active
+    androidx.compose.runtime.LaunchedEffect(handsFreeActive, dictateAfterStop) {
+        if (!handsFreeActive && dictateAfterStop) {
+            dictateAfterStop = false
+            launchDictation()
+        }
+    }
+    val dictate = {
+        if (handsFreeActive && voice != null) {
+            dictateAfterStop = true
+            voice.stopHandsFree()
+        } else launchDictation()
     }
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         AnimatedVisibility(showCommands || matches.isNotEmpty()) {
@@ -267,14 +329,14 @@ fun ChatComposer(
                         androidx.compose.material3.DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
                             if (onAttach != null) androidx.compose.material3.DropdownMenuItem(text = { Text("Attach a file") }, enabled = !attachBusy, onClick = { showMenu = false; picker.launch("*/*") })
                             if (commands.isNotEmpty()) androidx.compose.material3.DropdownMenuItem(text = { Text("Commands") }, onClick = { showMenu = false; showCommands = !showCommands })
-                            menuItems.forEach { (label, act) ->
+                            (menuItems + voiceMenu).forEach { (label, act) ->
                                 androidx.compose.material3.DropdownMenuItem(text = { Text(label) }, onClick = { showMenu = false; act() })
                             }
                         }
                     }
                     field(Modifier.weight(1f), 5)
                     // Dictation stays one tap away, in the box itself.
-                    RoundTool("🎙", "Dictate") { dictate() }
+                    RoundTool("🎙", "Dictate", onLongClick = commandMic) { dictate() }
                     sendButton()
                 }
             }
@@ -304,7 +366,15 @@ fun ChatComposer(
                         if (onAttach != null) {
                             RoundTool(if (attachBusy) "…" else "+", "Attach a file") { if (!attachBusy) picker.launch("*/*") }
                         }
-                        RoundTool("🎙", "Dictate") { dictate() }
+                        RoundTool("🎙", "Dictate", onLongClick = commandMic) { dictate() }
+                        if (voiceMenu.isNotEmpty()) Box {
+                            RoundTool("⋯", "Voice commands") { voiceMenuOpen = true }
+                            androidx.compose.material3.DropdownMenu(expanded = voiceMenuOpen, onDismissRequest = { voiceMenuOpen = false }) {
+                                voiceMenu.forEach { (label, action) ->
+                                    androidx.compose.material3.DropdownMenuItem(text = { Text(label) }, onClick = { voiceMenuOpen = false; action() })
+                                }
+                            }
+                        }
                         if (commands.isNotEmpty()) RoundTool("/", "Commands") { showCommands = !showCommands }
                     }
                     sendButton()
@@ -315,12 +385,13 @@ fun ChatComposer(
 }
 
 @Composable
-private fun RoundTool(label: String, about: String, onClick: () -> Unit) {
+@OptIn(ExperimentalFoundationApi::class)
+private fun RoundTool(label: String, about: String, onLongClick: (() -> Unit)? = null, onClick: () -> Unit) {
     Box(
         Modifier
             .size(36.dp)
             .clip(CircleShape)
-            .clickable(onClickLabel = about, onClick = onClick),
+            .combinedClickable(onClickLabel = about, onLongClickLabel = "Voice command", onLongClick = onLongClick, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Text(label, color = Palette.Muted, fontSize = if (label.length == 1) 19.sp else 16.sp, fontWeight = FontWeight.Medium)

@@ -102,7 +102,7 @@ class Release144Test {
         assertTrue(out is HeldOutcome.TimedOut)
         assertEquals(0, sent)
         assertEquals("something is already typed (\"a long note\")", (out as HeldOutcome.TimedOut).why)
-        assertEquals(60, out.checks)
+        assertEquals(59, out.checks) // No new read starts at the deadline.
     }
 
     @Test fun aFailedSendIsReportedAndACancelSendsNothing() = runBlocking {

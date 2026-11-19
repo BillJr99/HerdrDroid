@@ -28,6 +28,9 @@ data class Pane(
      * `scroll.offset_from_bottom`); 0 at the bottom, null when herdr doesn't say (1.3.1).
      */
     val scrollOffset: Int? = null,
+    val sessionId: String? = null,
+    val terminalId: String? = null,
+    val backgroundBusy: Boolean = false,
 ) {
     val agentName: String
         get() = when (agent?.lowercase()) {
@@ -92,9 +95,6 @@ enum class Backend { TUI, CORE }
 /** What a computer has: which herdr is installed and which one's server is running. */
 data class Detected(val tuiInstalled: Boolean, val tuiRunning: Boolean, val coreInstalled: Boolean, val coreRunning: Boolean, val hcPath: String?)
 
-/** When a usage check last started a session in each pane (Hermes), so it happens rarely. */
-private val sessionStartedAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
-
 class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend = Backend.TUI, hcPath: String? = null) {
     // The path is the user's setting; "~" stays unquoted so the remote shell expands it.
     // Left at the default, herdr is looked up the way hc is: on the PATH, else in ~/.local/bin, where
@@ -108,8 +108,6 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
     private fun cmd(vararg args: String) = herdr + " " + args.joinToString(" ") { shq(it) }
     private fun hcCmd(vararg args: String) = hc + " " + args.joinToString(" ") { shq(it) }
 
-    /** herdr-core's usage checks can't type a command without pressing Enter, so they are skipped. */
-    val canProbeScreens: Boolean get() = !core
     /** herdr-core has no way to rename a terminal, so the app hides Rename there. */
     val canRename: Boolean get() = !core
 
@@ -134,9 +132,11 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
         return out.toByteArray().also { zFrom = script; zTo = it }
     }
 
+    internal val connectionIdentity: Any? get() = ssh.connectionIdentity
+
     /** A command on the send lane: it doesn't wait behind reads. */
-    private suspend fun runNow(command: String): String {
-        val r = ssh.execNow(command)
+    private suspend fun runNow(command: String, timeoutSeconds: Long = 30, expectedConnection: Any? = null): String {
+        val r = ssh.execNow(command, timeoutSeconds, expectedConnection)
         if (r.exit != 0) {
             val msg = (r.err.ifBlank { r.out }).trim().lines().lastOrNull { it.isNotBlank() } ?: "exit ${r.exit}"
             throw HerdrError(msg, r.exit)
@@ -182,25 +182,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
         val arr = root.getJSONObject("result").getJSONArray("panes")
         val list = (0 until arr.length()).map { i ->
             val p = arr.getJSONObject(i)
-            Pane(
-                id = p.getString("pane_id"),
-                tabId = p.optString("tab_id"),
-                workspaceId = p.optString("workspace_id"),
-                agent = p.optString("agent").takeIf { !p.isNull("agent") && it.isNotBlank() }?.let(::canonicalAgent)
-                    ?: titleAgent(p.optString("terminal_title_stripped")),
-                status = when (p.optString("agent_status")) {
-                    "blocked" -> Status.NEEDS_YOU
-                    "working" -> Status.WORKING
-                    "done" -> Status.DONE
-                    "idle" -> Status.IDLE
-                    else -> Status.UNKNOWN
-                },
-                title = p.optString("terminal_title_stripped"),
-                cwd = p.optString("foreground_cwd", p.optString("cwd")),
-                focused = p.optBoolean("focused", false),
-                tabLabel = labels[p.optString("tab_id")].orEmpty(),
-                scrollOffset = p.optJSONObject("scroll")?.takeIf { it.has("offset_from_bottom") }?.optInt("offset_from_bottom"),
-            )
+            tuiPane(p).copy(tabLabel = labels[p.optString("tab_id")].orEmpty())
         }
         // herdr doesn't always mark a Claude question dialog (AskUserQuestion) as blocked, so the
         // bottom of each Claude pane that isn't already waiting is checked for the dialog's footer.
@@ -218,6 +200,46 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
         panes0Cache = marked
         return marked.sortedWith(compareBy({ order.indexOf(it.status) }, { it.id }))
     }
+
+    private fun tuiPane(p: JSONObject): Pane = Pane(
+                id = p.getString("pane_id"),
+                tabId = p.optString("tab_id"),
+                workspaceId = p.optString("workspace_id"),
+                agent = p.optString("agent").takeIf { !p.isNull("agent") && it.isNotBlank() }?.let(::canonicalAgent)
+                    ?: titleAgent(p.optString("terminal_title_stripped")),
+                status = when (p.optString("agent_status")) {
+                    "blocked" -> Status.NEEDS_YOU
+                    "working" -> Status.WORKING
+                    "done" -> Status.DONE
+                    "idle" -> Status.IDLE
+                    else -> Status.UNKNOWN
+                },
+                title = p.optString("terminal_title_stripped"),
+                cwd = p.optString("foreground_cwd", p.optString("cwd")),
+                sessionId = p.optJSONObject("agent_session")?.let { session ->
+                    val agent = p.optString("agent")
+                    session.optString("value").takeIf {
+                        session.optString("kind") == "id" && agent.isNotBlank() &&
+                            session.optString("agent") == agent && it.isNotBlank() && !session.isNull("value")
+                    }
+                },
+                focused = p.optBoolean("focused", false),
+                scrollOffset = p.optJSONObject("scroll")?.takeIf { it.has("offset_from_bottom") }?.optInt("offset_from_bottom"),
+                terminalId = p.opt("terminal_id")?.takeUnless { it == JSONObject.NULL }?.toString()?.takeIf { it.isNotBlank() },
+            )
+
+    /** No tab list, status enrichment, bulk lock, or reconnect during a card tap. */
+    internal suspend fun cardPane(id: String, connection: Any): Pane? {
+        if (core) return corePanes(runNow(hcCmd("ls", "--json"), 5, connection)).singleOrNull { it.id == id }
+        val p = JSONObject(runNow(cmd("pane", "get", id), 5, connection)).getJSONObject("result").getJSONObject("pane")
+        return tuiPane(p).takeIf { it.id == id && p.optJSONObject("scroll")?.opt("offset_from_bottom") == 0 }
+    }
+
+    /** Only the live viewport, with no fallback into old scrollback. */
+    internal suspend fun readCardViewport(id: String, connection: Any): String = stripAnsi(
+        if (core) runNow(hcCmd("read", id, "--lines", "80"), 5, connection)
+        else runNow(cmd("pane", "read", id, "--source", "visible"), 5, connection)
+    )
 
     /**
      * The pane's screen as it is shown at the computer (`--source visible`), which moves nothing
@@ -238,21 +260,37 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
      * typed text ([isPlaceholderText]). herdr-core, or a herdr without `--format ansi`, gives the
      * plain screen, where only the known hints count.
      */
+    // Herdr can scroll idle full-screen agents on a plain-text recent read. The ANSI snapshot
+    // preserves terminal scrollback without sending mouse events into the live application.
+    private fun recentSnapshot(paneId: String, lines: Int) =
+        cmd("pane", "read", paneId, "--source", "recent", "--lines", lines.toString(), "--format", "ansi")
+
     suspend fun readStyled(paneId: String, lines: Int = 40): String =
         if (core) read(paneId, lines)
-        else runCatching { runNow(cmd("pane", "read", paneId, "--source", "recent", "--lines", lines.toString(), "--format", "ansi")) }
+        else runCatching { runNow(recentSnapshot(paneId, lines), timeoutSeconds = 5) }
             .getOrElse { if (it is kotlinx.coroutines.CancellationException) throw it; read(paneId, lines) }
 
     /**
      * Only what the pane shows now (`--source visible`), plain (1.4.8): the fallback when the usual
      * read of its recent output fails or comes back empty, so a waiting agent's card can still be read.
      */
-    suspend fun readVisible(paneId: String): String =
-        if (core) read(paneId, 60) else forPhone(runNow(cmd("pane", "read", paneId, "--source", "visible")))
+    suspend fun readVisible(paneId: String): String = readVisible(paneId, preserveGlyphs = false)
 
-    suspend fun read(paneId: String, lines: Int = 200): String =
-        if (core) forPhone(runNow(hcCmd("read", paneId, "--lines", lines.toString())))
-        else forPhone(runNow(cmd("pane", "read", paneId, "--source", "recent", "--lines", lines.toString())))
+    internal suspend fun readVisible(paneId: String, preserveGlyphs: Boolean): String =
+        if (core) read(paneId, 60, preserveGlyphs) else screenText(
+            runNow(cmd("pane", "read", paneId, "--source", "visible"), timeoutSeconds = 5), preserveGlyphs,
+        )
+
+    private fun screenText(text: String, preserveGlyphs: Boolean) = if (preserveGlyphs) stripAnsi(text) else forPhone(text)
+
+    suspend fun read(paneId: String, lines: Int = 200, preserveGlyphs: Boolean = false): String =
+        if (core) screenText(runNow(hcCmd("read", paneId, "--lines", lines.toString()), timeoutSeconds = 5), preserveGlyphs)
+        else try {
+            screenText(runNow(recentSnapshot(paneId, lines), timeoutSeconds = 5), preserveGlyphs)
+        } catch (e: HerdrError) {
+            if (e.exit == -2) throw e
+            screenText(runNow(cmd("pane", "read", paneId, "--source", "visible", "--lines", lines.toString()), timeoutSeconds = 5), preserveGlyphs)
+        }
 
     /**
      * Waits until any agent pane in [panes] changes state, or [timeoutMs] passes (1.4.1, "fewer
@@ -292,7 +330,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
     suspend fun previews(ids: List<String>): Map<String, Peek> {
         if (ids.isEmpty()) return emptyMap()
         val script = ids.joinToString("; ") { id ->
-            "echo ${shq("@@herdrdroid@@$id")}; ${if (core) hcCmd("read", id, "--lines", "12") else cmd("pane", "read", id, "--source", "recent", "--lines", "12")} 2>/dev/null"
+            "echo ${shq("@@herdrdroid@@$id")}; ${if (core) hcCmd("read", id, "--lines", "12") else recentSnapshot(id, 12)} 2>/dev/null"
         }
         val out = forPhone(ssh.exec(script).out)
         val result = mutableMapOf<String, Peek>()
@@ -322,7 +360,8 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
     @Volatile var lastSendRoute = ""
         private set
 
-    suspend fun sendMessage(pane: Pane, text: String) {
+    suspend fun sendMessage(pane: Pane, text: String, allowTerminalFallback: Boolean = true, expectedConnection: Any? = null) {
+        require(allowTerminalFallback || (pane.agent != null && pane.status in setOf(Status.IDLE, Status.DONE)))
         lastSendRoute = when {
             core -> "hc send"
             pane.agent != null && pane.status != Status.NEEDS_YOU -> "herdr agent prompt"
@@ -331,14 +370,15 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
         if (core) {
             // hc send pastes and presses Enter; it refuses a terminal waiting on a question
             // unless forced, and a message sent then is meant as the answer.
-            if (pane.status == Status.NEEDS_YOU) runNow(hcCmd("send", "--force", pane.id, text)) else runNow(hcCmd("send", pane.id, text))
+            if (pane.status == Status.NEEDS_YOU) runNow(hcCmd("send", "--force", pane.id, text)) else runNow(hcCmd("send", pane.id, text), expectedConnection = expectedConnection)
             return
         }
         if (pane.agent != null && pane.status != Status.NEEDS_YOU) {
             try {
-                runNow(cmd("agent", "prompt", pane.id, text))
+                runNow(cmd("agent", "prompt", pane.id, text), expectedConnection = expectedConnection)
                 return
-            } catch (_: HerdrError) {
+            } catch (e: HerdrError) {
+                if (!allowTerminalFallback) throw e
                 // Fall through to typing it in, which works in any pane.
                 lastSendRoute = "agent prompt refused; typed with send-text + enter"
             }
@@ -351,197 +391,44 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
      * Types [text] without pressing Enter. herdr-core has no plain typing, so there short text
      * (a menu number, a y or n) goes as key presses.
      */
-    suspend fun sendText(paneId: String, text: String): String {
-        if (!core) return runNow(cmd("pane", "send-text", paneId, text))
+    suspend fun sendText(paneId: String, text: String, expectedConnection: Any? = null): String {
+        if (!core) return runNow(cmd("pane", "send-text", paneId, text), expectedConnection = expectedConnection)
         val keys = text.map { c -> when (c) { ' ' -> "space"; else -> c.toString() } }
-        return runNow(hcCmd("keys", paneId, *keys.toTypedArray()))
+        return runNow(hcCmd("keys", paneId, *keys.toTypedArray()), expectedConnection = expectedConnection)
     }
 
     /** Types [text] and presses Enter: one paste-and-submit on herdr-core. */
-    suspend fun typeAndEnter(paneId: String, text: String) {
-        if (core) { runNow(hcCmd("send", "--force", paneId, text)); return }
-        runNow(cmd("pane", "send-text", paneId, text))
-        runNow(cmd("pane", "send-keys", paneId, "enter"))
+    suspend fun typeAndEnter(paneId: String, text: String, expectedConnection: Any? = null) {
+        if (core) { runNow(hcCmd("send", "--force", paneId, text), expectedConnection = expectedConnection); return }
+        runNow(cmd("pane", "send-text", paneId, text), expectedConnection = expectedConnection)
+        runNow(cmd("pane", "send-keys", paneId, "enter"), expectedConnection = expectedConnection)
     }
 
-    suspend fun sendKeys(paneId: String, vararg keys: String) =
-        if (core) runNow(hcCmd("keys", paneId, *keys)) else runNow(cmd("pane", "send-keys", paneId, *keys))
+    suspend fun sendKeys(paneId: String, vararg keys: String, expectedConnection: Any? = null) =
+        if (core) runNow(hcCmd("keys", paneId, *keys), expectedConnection = expectedConnection)
+        else runNow(cmd("pane", "send-keys", paneId, *keys), expectedConnection = expectedConnection)
 
-    /**
-     * Types a command the agent's own program answers (no model call) and returns the screen it
-     * shows. Enter is pressed only if the input line then holds exactly that command, so a
-     * half-typed message is never sent; otherwise the typed characters are erased and this returns
-     * null. Close keys go out only while [openMarker] is on screen, so an Esc can never reach an
-     * agent that is working.
-     */
-    private suspend fun guardedCommand(
-        paneId: String, command: String, waitMillis: Long, closeKeys: List<String>, openMarker: Regex?,
-        working: Boolean, scrollKeys: List<String> = emptyList(), ready: (String) -> Boolean,
-    ): String? {
-        // \u00A0 is listed because some prompts put a no-break space after the ❯ glyph. A hint the
-        // agent draws after the command ("/usage   Show usage") still counts.
-        val prompt = """^[\s\u00A0│┃|>❯›»$]*"""
-        val echo = Regex(prompt + Regex.escape(command) + """(\s.*)?$""")
-        // The input line, where it can be told apart: the lowest line that starts with a prompt
-        // glyph. Only it counts as the echo, so a menu of commands drawn under it ("/reasoning  Set
-        // reasoning effort", Hermes) or an old line above it can't pass for what was typed.
-        val promptLead = Regex("""^[\s\u00A0│┃|]*[>❯›»$][\s\u00A0]*""")
-        fun inputText(line: String) = line.replace(promptLead, "").trimEnd(' ', '\u00A0', '│', '┃', '|')
-        fun echoed(lines: List<String>): Boolean {
-            val input = lines.lastOrNull { promptLead.containsMatchIn(it) && it.contains(command) }
-            return if (input != null) echo.matches(input) else lines.any { echo.matches(it) }
-        }
-        // Leftovers from an earlier try ("❯ /usage/usage", "❯ /usage/reasoning"): clear them
-        // before typing again. Only the app's own check commands are cleared, never other text.
-        val ours = QuotaProfiles.builtIn.flatMap { listOf(it.command, it.infoCommand) }.filterNotNull().filter { it.isNotEmpty() }
-        val oursOnly = Regex("^(?:" + ours.joinToString("|") { Regex.escape(it) } + ")+$")
-        val beforeLines = read(paneId, 40).lines()
-        val leftover = Regex(prompt + "((?:" + Regex.escape(command) + ")+)[\\s\u00A0│┃|]*$")
-        val inputBefore = beforeLines.takeLast(12).lastOrNull { promptLead.containsMatchIn(it) }?.let(::inputText)
-        val junkBefore = inputBefore?.takeIf { oursOnly.matches(it) }
-            ?: beforeLines.asReversed().firstNotNullOfOrNull { leftover.find(it)?.groupValues?.get(1) }
-        junkBefore?.let { junk ->
-            com.billmongan.herdrdroid.diag.DiagLog.log("usage", "clearing a leftover \"$junk\" in $paneId first")
-            sendKeys(paneId, *Array(junk.length) { "backspace" })
-            delay(300)
-        }
-        val markerBefore = openMarker?.containsMatchIn(beforeLines.takeLast(40).joinToString("\n")) == true
-        sendText(paneId, command)
-        // A slow host (a WebSocket server far away) can take seconds to draw what was typed: look
-        // for it for up to 5 seconds before deciding it isn't there.
-        var typed = emptyList<String>()
-        val t0 = System.currentTimeMillis()
-        val echoBy = System.currentTimeMillis() + 5_000
-        var openedAtOnce = false
-        while (true) {
-            delay(400)
-            typed = read(paneId, 40).lines()
-            if (echoed(typed)) break
-            // Some agents (Grok) open the screen as soon as the command is typed, without Enter.
-            if (!markerBefore && openMarker != null && openMarker.containsMatchIn(typed.joinToString("\n"))) { openedAtOnce = true; break }
-            if (System.currentTimeMillis() > echoBy) break
-        }
-        if (openedAtOnce) {
-            com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$command in $paneId opened its screen without Enter")
-        } else if (!echoed(typed)) {
-            // Which line was the input line, so the log shows why (cut short; nothing else kept).
-            val inputLine = typed.lastOrNull { it.contains(command) || it.trimStart().startsWith("❯") || it.trimStart().startsWith(">") }?.trim()?.take(80)
-            com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$command in $paneId wasn't echoed on its own; input line: \"${inputLine ?: "not found"}\"; erased it")
-            // Glued to another check command ("/usage/reasoning"): erase all of it. Glued to
-            // anything else (someone's half-typed message): erase only what was typed here.
-            val glued = typed.lastOrNull { promptLead.containsMatchIn(it) && it.contains(command) }?.let(::inputText)?.takeIf { oursOnly.matches(it) }
-            sendKeys(paneId, *Array(glued?.length ?: command.length) { "backspace" })
-            return null
-        }
-        val echoMs = System.currentTimeMillis() - t0
-        if (!openedAtOnce) sendKeys(paneId, "enter")
-        val t1 = System.currentTimeMillis()
-        delay(waitMillis)
-        // Some screens draw their frame first and their numbers a moment later (Antigravity, or any
-        // agent on a slow host), so keep reading for up to 12 more seconds until the screen is open
-        // and has what we need.
-        var shown = read(paneId, 120)
-        val deadline = System.currentTimeMillis() + 12_000
-        fun done(s: String) = ready(s) && (openMarker == null || openMarker.containsMatchIn(s))
-        while (!done(shown) && System.currentTimeMillis() < deadline) {
-            delay(700)
-            shown = read(paneId, 120)
-        }
-        val readyMs = System.currentTimeMillis() - t1
-        val wasReady = done(shown)
-        val markerSeen = openMarker?.containsMatchIn(shown)
-        var scrolled = false
-        // More limits below the fold (a ↓ marker on a narrow pane): scroll and read again first.
-        // Only while the usage screen itself is on screen (its close hint shows): the same arrow
-        // keys in the agent's input box would step through your earlier prompts instead. herdr has
-        // no Page Down key, so the arrows are the only way to scroll that screen.
-        val screenOpen = openMarker == null || openMarker.containsMatchIn(shown.lines().takeLast(40).joinToString("\n"))
-        if (scrollKeys.isNotEmpty() && screenOpen && shown.lines().takeLast(30).any { it.trim().endsWith("↓") || it.trim() == "↓" }) {
-            sendKeys(paneId, *scrollKeys.toTypedArray())
-            delay(900)
-            shown = shown + "\n" + read(paneId, 120)
-            scrolled = true
-        }
-        com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$command in $paneId: echoed in ${echoMs / 100 / 10.0}s, " +
-            (if (wasReady) "screen ready in ${readyMs / 100 / 10.0}s" else "not ready after ${readyMs / 100 / 10.0}s (close hint ${when (markerSeen) { true -> "seen"; false -> "not seen"; null -> "not needed" }}, wanted numbers ${if (ready(shown)) "found" else "not found"})") +
-            (if (scrolled) ", scrolled for more" else "") + (if (working) ", agent working" else ""))
-        // Close keys go out when the screen shows it is open. Without that sign, only an idle agent
-        // gets them: there an Esc can't interrupt anything, while a working agent could be stopped.
-        val open = openMarker?.containsMatchIn(shown) ?: true
-        if (closeKeys.isNotEmpty() && (open || !working)) {
-            sendKeys(paneId, *closeKeys.toTypedArray())
-            delay(400)
-        }
-        // A screen that finished drawing after the close keys went out (Antigravity, when slow) is
-        // still open. Check a few more times and close it, but only while its own marker shows, so
-        // these extra keys can never reach the agent itself.
-        if (closeKeys.isNotEmpty() && openMarker != null) {
-            repeat(4) {
-                delay(700)
-                if (!openMarker.containsMatchIn(read(paneId, 40))) return shown
-                sendKeys(paneId, *closeKeys.toTypedArray())
-            }
-        }
-        return shown
-    }
+    private fun usageSnapshotCommand(paneId: String, agent: String) =
+        "$PY -c ${shq(USAGE_OVERLAY_SNAPSHOT)} $herdr ${shq(paneId)} ${shq(agent)}"
 
-    /** One usage check: the limits, and where the agent needs it, the model and effort. Null when skipped. */
-    suspend fun probeQuota(paneId: String, profile: QuotaProfile, working: Boolean): ProbeResult? {
+    internal suspend fun readUsageOverlay(paneId: String, agent: String): UsageOverlay? {
         if (core) return null
-        val shown = guardedCommand(paneId, profile.command, profile.waitMillis, profile.closeKeys, profile.openMarker, working, profile.scrollKeys) {
-            parseQuota(it, profile.bareMeansLeft).isNotEmpty()
-        } ?: return null
-        var items = parseQuota(shown, profile.bareMeansLeft)
-        // No session yet (Hermes): start one with a short message, wait for the answer, read again.
-        // Only on an idle pane, and at most once every six hours per pane.
-        val start = profile.startSession
-        if (items.isEmpty() && !working && start != null && profile.noSession?.containsMatchIn(shown.lines().takeLast(15).joinToString("\n")) == true) {
-            val key = paneId
-            val last = sessionStartedAt[key] ?: 0L
-            if (System.currentTimeMillis() - last > 6 * 3_600_000L) {
-                sessionStartedAt[key] = System.currentTimeMillis()
-                com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$paneId has no session yet; sending one short message to start it")
-                typeAndEnter(paneId, start)
-                // Wait for the turn: working, then idle again (up to two minutes).
-                val began = System.currentTimeMillis()
-                var sawWork = false
-                while (System.currentTimeMillis() - began < 120_000) {
-                    delay(2_000)
-                    val st = runCatching { panes().firstOrNull { it.id == paneId }?.status }.getOrNull()
-                    if (st == Status.WORKING) sawWork = true
-                    else if ((sawWork || System.currentTimeMillis() - began > 20_000) && (st == Status.IDLE || st == Status.DONE)) break
-                }
-                delay(1_000)
-                val again = guardedCommand(paneId, profile.command, profile.waitMillis, profile.closeKeys, profile.openMarker, false, profile.scrollKeys) {
-                    parseQuota(it, profile.bareMeansLeft).isNotEmpty()
-                }
-                if (again != null) items = parseQuota(again, profile.bareMeansLeft)
-                com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$paneId after starting the session: ${items.size} limit(s)")
-            }
-        }
-        com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$paneId read " +
-            (if (items.isEmpty()) "no limits" else items.joinToString(prefix = "${items.size} limit(s): ") { "${it.label} ${it.usedPercent.toInt()}%${if (it.resets != null) " resets ${it.resets}" else ""}" }) +
-            "; screen: " + screenShape(shown))
-        // Still showing usage numbers at the bottom of an idle agent's screen? Then the screen is
-        // open with a close hint the app didn't recognise: one more press of the close keys.
-        if (!working && profile.closeKeys.isNotEmpty()) {
-            delay(500)
-            val after = read(paneId, 30).lines().takeLast(25).joinToString("\n")
-            if (parseQuota(after, profile.bareMeansLeft).isNotEmpty()) {
-                com.billmongan.herdrdroid.diag.DiagLog.log("usage", "usage screen still open in $paneId after closing; pressing ${profile.closeKeys.joinToString("+")} again")
-                sendKeys(paneId, *profile.closeKeys.toTypedArray())
-            }
-        }
-        var info: PaneInfo? = null
-        val cmd = profile.infoCommand
-        val parse = profile.parseInfo
-        if (cmd != null && parse != null) {
-            val screen = guardedCommand(paneId, cmd, 1_200, profile.closeKeys, profile.openMarker, working) {
-                parse(it).let { i -> i.model != null || i.effort != null }
-            }
-            info = screen?.let(parse)
-        }
-        return ProbeResult(items, info?.model, info?.effort)
+        val json = runNow(usageSnapshotCommand(paneId, agent), timeoutSeconds = 5).trim()
+        if (json.isEmpty()) return null
+        val objectJson = JSONObject(json)
+        val visible = objectJson.getString("visible")
+        if (visible.length > 20_000 || dismissibleUsageFrame(agent, visible) == null) return null
+        return UsageOverlay(objectJson.getString("occupant"), visible)
+    }
+
+    internal suspend fun closeUsageOverlay(paneId: String, agent: String, overlay: UsageOverlay): Boolean {
+        if (core || dismissibleUsageFrame(agent, overlay.visible) == null) return false
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(overlay.visible.toByteArray()).joinToString("") { "%02x".format(it) }
+        val expected = "${shq(overlay.occupant)} ${shq(digest)}"
+        // Repeat the exact compare on the server, rather than sending an unguarded Escape over SSH.
+        // Herdr does not expose an atomic compare-and-send; the final local CLI call is still separate.
+        return runNow("${usageSnapshotCommand(paneId, agent)} $expected", timeoutSeconds = 5).trim() == "sent"
     }
 
     /**
@@ -610,19 +497,21 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
         return r.out.trim()
     }
 
-    /**
-     * A usage check that asks the agent's own command line instead of its pane (Oh My Pi's
-     * `omp usage --json`), so nothing is typed into the pane and it can run while the agent works.
-     * Null when the command isn't there or failed.
-     */
-    /** Usage read off the pane's own screen ([QuotaProfile.screenUsage]); nothing is typed. */
-    suspend fun screenQuota(paneId: String, profile: QuotaProfile): List<QuotaItem>? {
+    /** Automatic usage collection must never write to a pane. No inline-command fallback. */
+    internal suspend fun readQuota(paneIds: List<String>, profile: QuotaProfile): List<QuotaItem>? {
+        if (profile.cliCommand != null) return cliQuota(profile)
         val parse = profile.screenUsage ?: return null
         if (core) return null
-        return runCatching { parse(read(paneId, 30)) }.getOrNull()
+        return paneIds.firstNotNullOfOrNull { pane ->
+            try {
+                parse(readVisible(pane)).takeIf { it.isNotEmpty() }
+            } catch (_: HerdrError) {
+                null
+            }
+        }
     }
 
-    suspend fun cliQuota(profile: QuotaProfile): List<QuotaItem>? {
+    private suspend fun cliQuota(profile: QuotaProfile): List<QuotaItem>? {
         val cmd = profile.cliCommand ?: return null
         val parse = profile.parseCli ?: return null
         val r = ssh.exec("PATH=\"\$HOME/.local/bin:\$PATH\" $cmd", timeoutSeconds = 60)
@@ -811,7 +700,7 @@ print(json.dumps(out))
 
     /** The processes, subagents and background tasks under [pane]. Read-only. */
     suspend fun work(pane: Pane, script: ByteArray): WorkInfo {
-        val r = ssh.execInput("$PYZ __work__ ${shq(pane.id)} ${shq(pane.agent.orEmpty())} ${shq(pane.cwd)}", z(script), timeoutSeconds = 30)
+        val r = ssh.execInput("$PYZ __work__ ${shq(pane.id)} ${shq(pane.agent.orEmpty())} ${shq(pane.cwd)} ${shq(pane.sessionId.orEmpty())}", z(script), timeoutSeconds = 30)
         if (r.out.isBlank()) throw HerdrError(r.err.trim().lines().lastOrNull { it.isNotBlank() } ?: "The work list couldn't be read.", r.exit)
         return parseWork(r.out)
     }
@@ -822,7 +711,7 @@ print(json.dumps(out))
         // Every agent: its running commands count as work too (1.2.5), not only Claude's subagents.
         val list = panes.filter { !it.agent.isNullOrBlank() }
         if (list.isEmpty()) return emptyMap<String, Int>() to emptyMap()
-        val arg = org.json.JSONArray(list.map { org.json.JSONArray(listOf(it.id, it.agent.orEmpty(), it.cwd)) }).toString()
+        val arg = org.json.JSONArray(list.map { org.json.JSONArray(listOf(it.id, it.agent.orEmpty(), it.cwd, it.sessionId.orEmpty())) }).toString()
         val r = ssh.execInput("$PYZ __workcounts__ ${shq(arg)}", z(script), timeoutSeconds = 30)
         return runCatching { parseWorkCounts(r.out) to parseBusyCounts(r.out) }.getOrDefault(emptyMap<String, Int>() to emptyMap())
     }
@@ -878,6 +767,26 @@ print(json.dumps(out))
     }
 }
 
+/** Retry a screen read using a smaller recent capture after a failed visible fallback. */
+internal suspend fun recoverPaneRead(
+    recent: suspend () -> String,
+    visible: suspend () -> String,
+    shortRecent: suspend () -> String,
+    pause: suspend () -> Unit = { kotlinx.coroutines.delay(180) },
+): String {
+    var problem = HerdrError("the screen came back empty", -2)
+    for ((index, read) in listOf(recent, visible, shortRecent).withIndex()) {
+        if (index == 2) pause()
+        try {
+            val text = read()
+            if (text.isNotBlank()) return text
+        } catch (e: HerdrError) {
+            problem = e
+        }
+    }
+    throw problem
+}
+
 class HerdrError(message: String, val exit: Int) : Exception(message)
 
 /** A file or folder name typed on the phone, or null when it has a slash, is empty, or is "." or "..". */
@@ -923,8 +832,6 @@ fun parseDir(json: String): List<DirEntry> {
     }
 }
 
-data class ProbeResult(val items: List<QuotaItem>, val model: String?, val effort: String?)
-
 /** The last few lines of a pane: the one-line preview, and the raw lines the footer model comes from. */
 data class Peek(val line: String, val tail: String)
 
@@ -960,6 +867,12 @@ data class Prompt(
     val shortcuts: Boolean = false,
     /** Buttons side by side (OpenCode's and Vibe's): left and right move between them (1.4.9). */
     val horizontal: Boolean = false,
+    /** OpenCode binds number keys to select and submit an option. */
+    val numberKeys: Boolean = false,
+    /** An incomplete approval preview is reviewable only in the terminal. */
+    val terminalReview: Boolean = false,
+    /** Exact pre-layout approval material. Never rendered or used as history text. */
+    internal val approvalIdentity: String? = null,
 ) {
     /**
      * Never an empty card (1.4.2): a prompt with no choices always has something to show, the
@@ -973,6 +886,12 @@ data class Prompt(
 
 /** What a card with no options shows when the app couldn't read the screen (1.4.2). */
 const val UNREAD_SCREEN = "(The app couldn't read this pane's screen yet. Tap Show terminal, or answer with the keys below.)"
+
+/** Dispatch identity, unlike history deduplication, must not discard punctuation or command text. */
+internal fun cardAnswerStillFits(shown: Prompt, fresh: Prompt?): Boolean =
+    !shown.terminalReview && fresh != null && !fresh.terminalReview &&
+        shown.forCard().region != listOf(UNREAD_SCREEN) &&
+        shown.copy(selected = null).forCard() == fresh.copy(selected = null).forCard()
 
 /** One step of Claude's multi-question dialog ("☐ Close 537", "☒ Stop hook", "✔ Submit"). */
 data class QTab(val title: String, val done: Boolean, val current: Boolean, val submit: Boolean = false)
@@ -1408,6 +1327,8 @@ private val SHORTCUT_LABEL = Regex("""\(([a-z])\)\s*$""")
 
 /** The keys that pick [choice]: arrows from the highlighted option, then Enter; null to type it. */
 fun menuKeys(prompt: Prompt, choice: Choice): List<String>? {
+    if (prompt.terminalReview) return null
+    if (prompt.numberKeys && choice in prompt.choices) return listOf(choice.keys)
     // "No, and tell Copilot what to do differently (Esc to stop)": Enter on that row does nothing in
     // Copilot, and in Codex and Claude it opens a feedback box; Esc answers it in all three. Vibe's
     // card says "Esc reject", and Esc rejects wherever its (invisible) highlight is.
@@ -1651,16 +1572,124 @@ private val AGENT_CRASHES = listOf(
 /** A shell's prompt: "tester@host:~/work$", "user@devbox2:~ %" (a bare "$" is too easily something else). */
 private val SHELL_PROMPT = Regex("""^[\w.-]+@[\w.-]+(:\S*)?\s?[$#%]\s*$""")
 
+private val OPENCODE_WEB_SEARCH_FOOTER =
+    Regex("""^↑/?↓\s+select\s+enter\s+submit\s+esc\s+dismiss$""", RegexOption.IGNORE_CASE)
+private val OPENCODE_WEB_SEARCH_OPTION = Regex("""^(?:[❯›>]\s*)?([1-3])[.]\s+(.+)$""")
+
+/** OpenCode highlights this picker with color alone. Its numbered keys select and submit directly. */
+private fun detectOpenCodeWebSearch(text: String): Prompt? {
+    val lines = text.lineSequence().toList().takeLast(20).map { it.trim().trim('│', '┃', '|').trim() }
+        .filter { it.isNotBlank() }
+        .dropLastWhile { it.startsWith("~/") || it.startsWith("/") }
+    val footer = lines.lastOrNull() ?: return null
+    if (!OPENCODE_WEB_SEARCH_FOOTER.matches(footer)) return null
+
+    val header = lines.indexOfLast { it.equals("Web Search", ignoreCase = true) }
+    if (header < 0) return null
+    val body = lines.subList(header + 1, lines.lastIndex)
+    val question = body.firstOrNull() ?: return null
+    if (!question.startsWith("Allow OpenCode to search the web", ignoreCase = true) || !question.endsWith("?")) return null
+    val choices = body.drop(1).map { line ->
+        val match = OPENCODE_WEB_SEARCH_OPTION.matchEntire(line) ?: return null
+        Choice(match.groupValues[2], match.groupValues[1], pressEnter = false)
+    }
+    if (choices.map { it.keys } != listOf("1", "2", "3") ||
+        !choices[0].label.startsWith("Allow ", ignoreCase = true) ||
+        !choices[1].label.equals("Choose another provider", ignoreCase = true) ||
+        !choices[2].label.equals("Disable web search", ignoreCase = true)
+    ) return null
+    return Prompt(question, choices, numberKeys = true)
+}
+
+private val HERMES_APPROVAL_FOOTER =
+    Regex("""^↑/↓ to select, Enter to confirm(?:\s*\(\d+s\))?$""", RegexOption.IGNORE_CASE)
+private val HERMES_EMPTY_INPUT = Regex("""^⚠(?:️)?\s*[❯›]$""")
+private val HERMES_HIDDEN_COMMAND = Regex("""^[.…]+\s*\(choose Show full command\)$""", RegexOption.IGNORE_CASE)
+private val HERMES_SHOW_COMMAND = Regex("""^(?:[❯›>]\s*)?5\. Show full command$""", RegexOption.IGNORE_CASE)
+private val HERMES_COMMAND_HEADING = Regex("""^(?:⚠️?\s*)?Dangerous Command$""")
+private val CODEX_COMMAND_HEADING = Regex("""^Would you like to run the following command\?$""", RegexOption.IGNORE_CASE)
+private val CODEX_OTHER_APPROVAL = Regex(
+    """^(?:Would you like to (?:make the following edits|run the following tool|allow network access|grant these permissions)|Do you want to approve network access to .+|Approve app tool call)\?$""",
+    RegexOption.IGNORE_CASE,
+)
+private val HIDDEN_CODEX_COMMAND = Regex(
+    """^(?:…|\.{3})(?:\s|$)|^(?:\[|\()?(?:\d+\s+(?:lines?|characters?)\s+(?:omitted|hidden)|command (?:truncated|hidden))\b|(?:…|\.{3})$""",
+    RegexOption.IGNORE_CASE,
+)
+
+private fun terminalCommandReview(command: String?): Prompt = Prompt(
+    question = "Review the full command",
+    choices = emptyList(),
+    parts = QuestionParts(emptyList(), listOf(QBlock(QKind.HEADING, "Review the full command")) +
+        listOfNotNull(command?.takeIf { it.isNotBlank() }?.let { QBlock(QKind.COMMAND, it) })),
+    region = listOf("Open the terminal to review the full command."),
+    terminalReview = true,
+)
+
+private fun detectHermesCommandPreview(text: String): Prompt? {
+    val lines = text.lines().takeLast(80)
+    val footer = lines.indexOfLast { HERMES_APPROVAL_FOOTER.matches(it.trim()) }
+    if (footer < 0 || lines.drop(footer + 1).filter { it.isNotBlank() }.let { tail ->
+            tail.size > 1 || tail.any { !HERMES_EMPTY_INPUT.matches(it.trim()) }
+        }) return null
+    val bottom = (footer - 1 downTo 0).firstOrNull { lines[it].isNotBlank() } ?: return null
+    if (!lines[bottom].trimStart().startsWith("╰")) return null
+    val top = (bottom - 1 downTo 0).firstOrNull { lines[it].trimStart().startsWith("╭") } ?: return null
+    val rows = lines.subList(top + 1, bottom).map { it.trim() }
+    if (rows.any { !it.startsWith("│") || !it.endsWith("│") }) return null
+    val body = rows.map { it.removePrefix("│").removeSuffix("│").trimEnd().removePrefix(" ") }
+    if (!HERMES_COMMAND_HEADING.matches(body.firstOrNull()?.trim().orEmpty())) return null
+    val hidden = body.indexOfFirst { HERMES_HIDDEN_COMMAND.matches(it.trim()) }
+    if (hidden < 1 || body.drop(hidden + 1).none { HERMES_SHOW_COMMAND.matches(it.trim()) }) return null
+    return terminalCommandReview(body.subList(1, hidden).dropWhile { it.isBlank() }.joinToString("\n"))
+}
+
 fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version: String? = null): Prompt? {
+    if ((agent == null || agent.equals("claude", true)) && claudeUsageOpen(text)) return null
+    if (agent?.lowercase() in setOf("opencode", "opencode-college")) {
+        detectOpenCodeWebSearch(text)?.let { return it }
+    }
+    if (agent.equals("hermes", true)) {
+        detectHermesCommandPreview(text)?.let { return it }
+        val rows = text.lines().takeLast(80)
+        fun body(row: String) = row.trim().trim('│').trim()
+        val hidden = rows.indexOfLast { HERMES_HIDDEN_COMMAND.matches(body(it)) }
+        if (hidden >= 0) {
+            // A clipped or stale preview must not reach the generic numbered-menu parser.
+            val footer = (hidden + 1..rows.lastIndex).firstOrNull { HERMES_APPROVAL_FOOTER.matches(rows[it].trim()) }
+                ?: return null
+            val latest = rows.drop(footer + 1).joinToString("\n")
+            if (latest.isNotBlank() && !HERMES_EMPTY_INPUT.matches(latest.trim())) {
+                return detectPrompt(latest, blocked, agent, version)
+            }
+            // If the heading or frame was clipped, the truncation marker, reveal option and
+            // live footer still identify a preview. Don't guess at the missing command text.
+            return if (rows.subList(hidden + 1, footer).any { HERMES_SHOW_COMMAND.matches(body(it)) }) {
+                terminalCommandReview(null)
+            } else null
+        }
+    }
     val rules = ParserRules.forAgent(agent, version)
     // A question dialog on screen means the agent waits, whatever herdr reported.
     @Suppress("NAME_SHADOWING") val blocked = blocked || showsQuestionDialog(text) ||
         (rules.extraFooter?.let { f -> text.lines().takeLast(6).any { f.containsMatchIn(it) } } == true)
-    var raw = text.lines().map { it.trimEnd() }.takeLast(80)
+    var raw = text.lines().takeLast(80)
+    if (agent.equals("codex", true)) {
+        val footer = raw.indexOfLast { CODEX_FOOTER.matches(it.trim()) }
+        if (footer >= 0 && raw.drop(footer + 1).any { !isChrome(it) }) {
+            raw = raw.drop(footer + 1)
+        }
+    }
     var lines = raw.filter { it.isNotBlank() }.takeLast(40)
     if (lines.isEmpty()) return if (blocked) Prompt("This agent is waiting for you.", emptyList(), region = listOf(UNREAD_SCREEN)) else null
 
     val clean = { s: String -> s.trim().trim('│', '┃', '|', '╭', '╰', '╮', '╯', '─', ' ').trim() }
+    if (agent.equals("codex", true) && CODEX_FOOTER.matches(lines.last().trim())) {
+        val heading = lines.indexOfLast { CODEX_COMMAND_HEADING.matches(clean(it)) }
+        if (heading >= 0 && lines.drop(heading + 1).none { clean(it).contains("Yes, proceed", ignoreCase = true) }) {
+            return terminalCommandReview(null)
+        }
+    }
     // End each old dialog at its footer, then inspect any newer UI below it.
     val claudeFooterPattern = Regex(QUESTION_FOOTER.pattern + "|\\bEsc to (cancel|reject)\\s*[│┃|]*\\s*$", RegexOption.IGNORE_CASE)
     while (raw.isNotEmpty()) {
@@ -1725,8 +1754,9 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     // lines), or else the last line on screen that ends with "?".
     // The whole question: every line above the first choice up to a blank line, the top of the
     // question's box or a rule (at most 20 lines), so a long question isn't cut.
-    val above = run.firstOrNull()?.let { (_, firstKey, firstLabel) ->
-        val at = raw.indexOfLast { option.find(it)?.let { m -> key(m) == firstKey && label(m) == firstLabel } == true }
+    val firstOption = run.firstOrNull()?.let { raw.lastIndexOf(lines[it.first]) } ?: -1
+    val above = run.firstOrNull()?.let {
+        val at = firstOption
         if (at <= 0) null else {
             // Each line, and whether it is a Grok command line ("┃  │ grok usage ..."), which follows
             // its title after ": " ("Print plan usage with no session id: grok usage ...").
@@ -1833,7 +1863,40 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     // the agent went on after the card, however few lines that took (from Grok's review).
     // A box's own corner ("└────") is not activity: only a line with words counts.
     val wentOn = agentWentOn(below)
+    val approvalRows = raw.take(firstOption.coerceAtLeast(0))
+    val approvalStart = approvalRows.indexOfLast { row ->
+        val body = clean(row)
+        when (agent?.lowercase()) {
+            "codex" -> CODEX_COMMAND_HEADING.matches(body) || CODEX_OTHER_APPROVAL.matches(body)
+            "hermes" -> HERMES_COMMAND_HEADING.matches(body)
+            else -> false
+        }
+    }
+    val approvalIdentity = if (approvalStart < 0) null else java.security.MessageDigest.getInstance("SHA-256")
+        .digest(approvalRows.drop(approvalStart).joinToString("\n").toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
+    if (agent.equals("codex", true) && !wentOn) {
+        val preview = parts?.command
+        val activeFooter = below.lastOrNull { !isChrome(it) }?.trim()?.let(CODEX_FOOTER::matches) == true
+        val heading = above.orEmpty().any { CODEX_COMMAND_HEADING.matches(it.text) }
+        // The layout builder drops rows with no letters or digits. Inspect the raw command
+        // region so a standalone ellipsis cannot disappear before this check.
+
+        val commandRows = raw.take(firstOption.coerceAtLeast(0)).map(clean)
+        val headingAt = commandRows.indexOfLast { CODEX_COMMAND_HEADING.matches(it) }
+        val hidden = headingAt >= 0 && commandRows.drop(headingAt + 1).any { HIDDEN_CODEX_COMMAND.containsMatchIn(it) }
+        val explicitKeys = numbered.all { SHORTCUT_LABEL.containsMatchIn(it.label) || ESC_LABEL.containsMatchIn(it.label) }
+        val approvalChoices = numbered.any { it.label.startsWith("Yes, proceed", ignoreCase = true) }
+        val otherApproval = above.orEmpty().any { CODEX_OTHER_APPROVAL.matches(it.text) }
+        if (realMenu && ((heading && (!activeFooter || numbered.size < 2 || preview.isNullOrBlank() || !explicitKeys || hidden)) ||
+                (activeFooter && approvalChoices && !otherApproval && !heading))) {
+            return if (activeFooter || blocked) terminalCommandReview(preview) else null
+        }
+    }
     if (numbered.size in 2..20 && realMenu && underCard <= MAX_UNDER_CARD && !wentOn && !rejectEcho) {
+        if (agent.equals("hermes", true) && approvalIdentity == null &&
+            numbered.any { it.label.equals("Allow once", true) } &&
+            numbered.any { it.label.equals("Deny", true) }) return terminalCommandReview(null)
         // Vibe draws no marker on the highlighted row; a fresh card highlights the first one.
         val selected = run.firstOrNull { it.first in marked }?.second ?: if (vibeCard) "1" else null
         val multi = numbered.count { isCheckbox(it.label) } >= 2
@@ -1843,7 +1906,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
         // command (esc)"), known by name or by its "Change approval defaults in /permissions" line.
         val shortcuts = agent?.lowercase() in setOf("codex", "muse") ||
             lines.takeLast(4).any { CODEX_FOOTER.containsMatchIn(it) || MUSE_CARD_FOOTER.containsMatchIn(it) }
-        return Prompt(question ?: "Choose an option", numbered, selected, escRejects = vibeCard, parts = parts.takeIf { aboveText != null }, multi = multi, shortcuts = shortcuts)
+        return Prompt(question ?: "Choose an option", numbered, selected, escRejects = vibeCard, parts = parts.takeIf { aboveText != null }, multi = multi, shortcuts = shortcuts, approvalIdentity = approvalIdentity)
     }
 
     val yn = Regex("""[(\[]\s*[yY](?:es)?\s*/\s*[nN]o?\s*[)\]]""")
@@ -2092,5 +2155,5 @@ fun parseDetect(line: String): Detected {
  * active shells running", the Claude pane on another server).
  */
 fun withBusy(list: List<Pane>, busy: Map<String, Int>): List<Pane> = list.map { p ->
-    if ((p.status == Status.IDLE || p.status == Status.DONE || p.status == Status.UNKNOWN) && (busy[p.id] ?: 0) > 0) p.copy(status = Status.WORKING) else p
+    if ((p.status == Status.IDLE || p.status == Status.DONE || p.status == Status.UNKNOWN) && (busy[p.id] ?: 0) > 0) p.copy(status = Status.WORKING, backgroundBusy = true) else p
 }

@@ -253,6 +253,14 @@ GEMINI 4 ARGON
         assertEquals(null, footerModel("claude", "❯\n  ⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt"))
     }
 
+    @Test fun drawerModelsFromOpenCodeAndKiroFooters() {
+        assertEquals("llmproxy flagship free",
+            footerModel("opencode", "  ┃  Build · llmproxy flagship free (default) llmproxy (local)"))
+        assertEquals("Auto", footerModel("kiro", "bill_default · auto · ◔ 2%        ~/example"))
+        assertEquals("Claude Sonnet", footerModel("kiro-cli", "Read Only · Claude Sonnet · ◕ 52%"))
+        assertEquals(null, footerModel("opencode", "I used Build · model today"))
+    }
+
     @Test fun claudeModelPicker() {
         val screen = """
    Select model
@@ -309,6 +317,42 @@ GEMINI 4 ARGON
         assertEquals(false, p.screenOpen(permission))
         assertEquals(false, p.screenOpen("❯ \n  ⏵⏵ auto mode on · esc to interrupt"))
         assertEquals(false, p.whileWorking)
+    }
+
+    @Test fun claudeUsageIsNotAQuestionAndAnApprovalAfterItIsNotUsage() {
+        val usage = """
+            Status   Config   Usage
+            Current session
+            50% used
+            Esc to cancel
+        """.trimIndent()
+        assertTrue(claudeUsageOpen(usage))
+        assertEquals(null, detectPrompt(usage, blocked = true, agent = "claude"))
+        assertTrue(claudeUsageOpen(usage.replace("50% used", "Loading…")))
+        assertEquals(false, claudeUsageOpen(usage + "\n❯ "))
+        val next = usage + "\nDo you want to proceed?\n❯ 1. Yes\n2. No\nEsc to cancel"
+        assertEquals(false, claudeUsageOpen(next))
+        assertEquals(listOf("Yes", "No"), detectPrompt(next, true, "claude")?.choices?.map { it.label })
+    }
+
+    @Test fun wrappedClaudeUsageWithAKnownFooterIsRecognised() {
+        val usage = """
+            Settings  Status   Config   Usage   Stats
+            Session
+            Current week (all models) · Resets Nov 19, 7:59am
+            (UTC)
+            ████████████▋
+            24% used
+            ↓
+            Esc to close
+        """.trimIndent()
+        assertTrue(claudeUsageOpen(usage))
+        assertEquals(null, detectPrompt(usage, blocked = true, agent = "claude"))
+    }
+
+    @Test fun claudeUsageCannotBorrowTheFooterOfALaterDialog() {
+        val text = "Status   Config   Usage\nCurrent session\n30% used\nEsc to close\nApprove this tool call\nEsc to cancel"
+        assertEquals(false, claudeUsageOpen(text))
     }
 
     @Test fun profilesWithoutAScreenNeverClose() {

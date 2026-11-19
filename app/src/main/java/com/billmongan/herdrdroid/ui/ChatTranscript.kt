@@ -39,6 +39,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -102,12 +103,6 @@ class ChatActions(
     val onStop: (() -> Unit)?,
     /** Sends a reply on to another agent (opens it with the reply in its message box). */
     val onForward: ((String) -> Unit)? = null,
-    /** Messages the agent never showed, with Resend and Dismiss (id to text). */
-    val undelivered: List<Pair<Long, String>> = emptyList(),
-    val onResend: ((Long) -> Unit)? = null,
-    val onDismissPending: ((Long) -> Unit)? = null,
-    /** A message held because something is typed at the computer, sent once the line is clear (1.4.4); Cancel drops it. */
-    val onCancelWaiting: (() -> Unit)? = null,
     /** Reads the part of the log before what is shown, and adds it at the top. */
     val onLoadEarlier: (() -> Unit)? = null,
     val loadingEarlier: Boolean = false,
@@ -285,37 +280,30 @@ fun TranscriptChat(
                     }
                 }
             }
-            item(key = "_pending") {
-                // Every message still on its way: queued behind the agent's turn, or steering it.
+            // Grok's live card answers the pane's current question, not anything in its queue.
+            // Keep the queue below the complete card in its own bounded, labelled section.
+            val grokQueue = agentName == "Grok"
+            val pendingMessages: @Composable () -> Unit = {
                 AnimatedVisibility(pending.isNotEmpty(), enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (pending.size > 1 || working) {
+                        if (grokQueue || pending.size > 1 || working) {
                             Text(
-                                if (working) actions.queuedNote ?: "${pending.size} waiting for ${agentName}" else "${pending.size} on the way",
+                                if (grokQueue) "Queued in Grok · not yet in the conversation"
+                                else if (working) actions.queuedNote ?: "${pending.size} waiting for ${agentName}"
+                                else "${pending.size} on the way",
                                 color = Palette.Muted, fontSize = 12.sp, textAlign = TextAlign.End, modifier = Modifier.fillMaxWidth(),
                             )
                         }
-                        pending.forEach { UserBubble(it, size, sending = true, onQuote = actions.onQuote) }
-                        actions.onCancelWaiting?.let { cancel ->
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-                                Text("Sends when the input line at the computer is clear", color = Palette.Muted, fontSize = 12.sp)
-                                TextButton(onClick = cancel) { Text("Cancel") }
-                            }
-                        }
-                    }
-                }
-                // Sent but never seen by the agent: say so, and offer to send it again.
-                if (actions.undelivered.isNotEmpty()) Column(Modifier.padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    actions.undelivered.forEach { (id, text) ->
-                        UserBubble(text, size, sending = true, onQuote = actions.onQuote)
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-                            Text("Not seen by $agentName", color = Palette.OrangeInk, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
-                            actions.onResend?.let { r -> TextButton(onClick = { r(id) }) { Text("Resend") } }
-                            actions.onDismissPending?.let { d -> TextButton(onClick = { d(id) }) { Text("Dismiss") } }
+                        Column(
+                            modifier = if (grokQueue) Modifier.heightIn(max = 96.dp).verticalScroll(rememberScrollState()) else Modifier,
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            pending.forEach { UserBubble(it, size, sending = true, onQuote = actions.onQuote) }
                         }
                     }
                 }
             }
+            if (!grokQueue) item(key = "_pending") { pendingMessages() }
             item(key = "_tail") {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     AnimatedVisibility(working, enter = fadeIn(), exit = fadeOut()) {
@@ -324,6 +312,7 @@ fun TranscriptChat(
                     footer?.invoke()
                 }
             }
+            if (grokQueue) item(key = "_pending") { pendingMessages() }
         }
         AnimatedVisibility(
             !atBottom && rows.isNotEmpty(),

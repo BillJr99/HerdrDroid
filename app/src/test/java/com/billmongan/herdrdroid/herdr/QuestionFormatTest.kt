@@ -13,6 +13,151 @@ import org.junit.Test
  * dialog's layout (rule, tab bar, question, options with descriptions, footer).
  */
 class QuestionFormatTest {
+    @Test fun approvalIdentityRetainsPunctuationOnlyCommandRows() {
+        for ((agent, screen) in listOf(
+            "codex" to """
+                Would you like to run the following command?
+                $ printf '%s' sample
+                @
+                › 1. Yes, proceed (y)
+                  2. No (esc)
+                  Press enter to confirm or esc to cancel
+            """.trimIndent(),
+            "hermes" to """
+                │ ⚠️ Dangerous Command │
+                │ printf '%s' sample │
+                │ @ │
+                │ ❯ 1. Allow once │
+                │   2. Deny │
+            """.trimIndent(),
+        )) {
+            val shown = requireNotNull(detectPrompt(screen, true, agent))
+            assertTrue(shown.choices.isNotEmpty())
+            val moved = screen.replace("❯ 1.", "  1.").replace("› 1.", "  1.")
+                .replace("2. No", "› 2. No").replace("2. Deny", "❯ 2. Deny")
+            assertTrue(cardAnswerStillFits(shown, detectPrompt(moved, true, agent)))
+            assertFalse(cardAnswerStillFits(shown, detectPrompt(screen.replace("@", "#"), true, agent)))
+        }
+    }
+
+    @Test fun cardDispatchNeedsAnExactFreshAnswerablePrompt() {
+        val screen = javaClass.getResource("/screens/codex/synthetic-2.0/truncated-command-approval.txt")!!.readText()
+        val full = screen.lineSequence().filterNot { it.contains("lines omitted") }.joinToString("\n")
+        val shown = requireNotNull(detectPrompt(full, false, "codex"))
+        assertTrue(cardAnswerStillFits(shown, shown.copy(selected = "2")))
+        assertFalse(cardAnswerStillFits(shown, detectPrompt(full.replace("printf 'preview", "printf '#preview"), false, "codex")))
+        assertFalse(cardAnswerStillFits(shown, detectPrompt(screen, false, "codex")))
+        assertFalse(cardAnswerStillFits(shown, null))
+        val fallback = Prompt("Pick?", emptyList(), region = listOf("Pick?", "first prompt"))
+        assertTrue(cardAnswerStillFits(fallback, fallback))
+        assertFalse(cardAnswerStillFits(fallback, fallback.copy(region = listOf("Pick?", "other prompt"))))
+    }
+
+    @Test fun hermesTruncatedApprovalRequiresTerminalReview() {
+        val screen = """
+            ╭───────────────────────────────────────────╮
+            │ ⚠️  Dangerous Command                     │
+            │ execute_code <<'PY'                       │
+            │ print('preview')                          │
+            │ … (choose Show full command)              │
+            │ ❯ 1. Allow once                           │
+            │   2. Allow for this session               │
+            │   3. Add to permanent allowlist           │
+            │   4. Deny                                 │
+            │   5. Show full command                    │
+            ╰───────────────────────────────────────────╯
+              ↑/↓ to select, Enter to confirm  (86224s)
+            ⚠ ❯
+        """.trimIndent()
+        val card = requireNotNull(detectPrompt(screen, blocked = true, agent = "hermes"))
+        assertEquals("Review the full command", card.question)
+        assertTrue(card.terminalReview)
+        assertTrue(card.choices.isEmpty())
+        assertEquals("execute_code <<'PY'\nprint('preview')", card.shownParts().command)
+        val oldEsc = com.billmongan.herdrdroid.notify.NotifyAction("demo", "p1", "esc", false, card.question, isKey = true)
+        assertFalse(com.billmongan.herdrdroid.notify.notificationAnswerStillFits(card, oldEsc))
+        val clipped = screen.lines().drop(2).joinToString("\n")
+        val clippedCard = requireNotNull(detectPrompt(clipped, blocked = false, agent = "hermes"))
+        assertTrue(clippedCard.terminalReview)
+        assertTrue(clippedCard.choices.isEmpty())
+        assertNull(detectPrompt(clipped + "\n❯ Next request", blocked = true, agent = "hermes"))
+        assertNull(detectPrompt(clipped.substringBefore("↑/↓"), blocked = true, agent = "hermes"))
+        assertNull(detectPrompt(screen + "\n❯ New message", blocked = true, agent = "hermes"))
+        assertFalse(detectPrompt(screen, blocked = true, agent = "codex")?.terminalReview == true)
+        assertNull(detectPrompt(screen + "\n❯ New message", blocked = false, agent = "hermes"))
+    }
+
+    @Test fun codexHiddenCommandNeverOffersShortcutOrFallbackKeys() {
+        val screen = javaClass.getResource("/screens/codex/synthetic-2.0/truncated-command-approval.txt")!!.readText()
+        val card = requireNotNull(detectPrompt(screen, blocked = false, agent = "codex"))
+        assertEquals("Review the full command", card.question)
+        assertTrue(card.terminalReview)
+        assertTrue(card.choices.isEmpty())
+        assertNull(menuKeys(card, Choice("Yes, proceed (y)", "1", false)))
+        assertNull(detectPrompt(screen + "\n› Next request", blocked = true, agent = "codex"))
+
+        val full = screen.lineSequence().filterNot { it.contains("lines omitted") }.joinToString("\n")
+        val known = requireNotNull(detectPrompt(full, blocked = false, agent = "codex"))
+        assertFalse(known.terminalReview)
+        assertTrue(requireNotNull(detectPrompt(full.lines().drop(1).joinToString("\n"), blocked = true, agent = "codex")).terminalReview)
+        assertEquals(listOf("y"), menuKeys(known, known.choices.first()))
+        assertTrue(requireNotNull(detectPrompt(full.replace(" (y)", ""), blocked = true, agent = "codex")).terminalReview)
+        for (marker in listOf("…", "...", "│  …  │")) {
+            val shortened = screen.replace("… (12 lines omitted)", marker)
+            assertTrue("Expected terminal review for $marker", detectPrompt(shortened, false, "codex")?.terminalReview == true)
+        }
+    }
+
+    private val webSearch = """
+        ┃  Web Search
+        ┃  Allow OpenCode to search the web for current information?
+        ┃  1. Allow search via Example
+        ┃  2. Choose another provider
+        ┃  3. Disable web search
+        ┃  ↑↓ select  enter submit  esc dismiss
+        ┃  ~/sample/project
+    """.trimIndent()
+
+    @Test fun openCodeWebSearchOffersDirectNumberKeysWithoutAHighlight() {
+        val prompt = detectPrompt(webSearch, blocked = true, agent = "opencode-college")!!
+        assertEquals("Allow OpenCode to search the web for current information?", prompt.question)
+        assertEquals(listOf("Allow search via Example", "Choose another provider", "Disable web search"), prompt.choices.map { it.label })
+        assertEquals(listOf("1", "2", "3"), prompt.choices.map { it.keys })
+        assertTrue(prompt.choices.none { it.pressEnter })
+        assertEquals(listOf(listOf("1"), listOf("2"), listOf("3")), prompt.choices.map { menuKeys(prompt, it) })
+    }
+
+    @Test fun oldWebSearchPromptDoesNotBecomeALiveCard() {
+        val movedOn = "$webSearch\n┃  Search complete.\n┃  ❯ "
+        assertNull(detectPrompt(movedOn, blocked = true, agent = "opencode-college"))
+    }
+
+    @Test fun failedRecentAndEmptyVisibleRecoverWithShortRead() {
+        kotlinx.coroutines.runBlocking {
+            val attempts = mutableListOf<String>()
+            val result = recoverPaneRead(
+                recent = { attempts.add("recent"); throw HerdrError("timed out", -2) },
+                visible = { attempts.add("visible"); " " },
+                shortRecent = { attempts.add("short"); webSearch },
+                pause = {},
+            )
+            assertEquals(listOf("recent", "visible", "short"), attempts)
+            assertEquals(3, detectPrompt(result, blocked = true, agent = "opencode")?.choices?.size)
+        }
+    }
+
+    @Test fun goodScreenReadSkipsFallbacks() {
+        kotlinx.coroutines.runBlocking {
+            val result = recoverPaneRead(
+                recent = { webSearch },
+                visible = { error("unexpected visible read") },
+                shortRecent = { error("unexpected retry") },
+                pause = {},
+            )
+            assertEquals(webSearch, result)
+        }
+    }
+
     private val marks = listOf("│", "┃", "╭", "╰", "›", "❯", "◆", "(●)", "(○)", "←", "→", "☐", "☒", "✔")
 
     private fun clean(parts: QuestionParts) {

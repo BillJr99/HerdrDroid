@@ -28,12 +28,6 @@ class FeaturesTest {
         assertTrue(ModelPresets.forAgent("claude").any { it.second == "/model fable" })
     }
 
-    @Test fun hermesKnowsWhenItHasNoSession() {
-        val p = QuotaProfiles.forAgent("hermes")!!
-        assertTrue(p.noSession!!.containsMatchIn("(._.) No active agent -- send a message first."))
-        assertTrue(p.startSession!!.isNotBlank())
-        assertNull(QuotaProfiles.forAgent("claude")!!.startSession)
-    }
 
     @Test fun hermesMessagesReadTheirWordsFromContentToo() {
         val f: (org.json.JSONObject) -> String = { hermesMessageText(it) }
