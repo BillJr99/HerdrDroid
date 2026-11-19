@@ -28,6 +28,7 @@ data class Pane(
      * `scroll.offset_from_bottom`); 0 at the bottom, null when herdr doesn't say (1.3.1).
      */
     val scrollOffset: Int? = null,
+    val sessionId: String? = null,
 ) {
     val agentName: String
         get() = when (agent?.lowercase()) {
@@ -129,9 +130,11 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
         return out.toByteArray().also { zFrom = script; zTo = it }
     }
 
+    internal val connectionIdentity: Any? get() = ssh.connectionIdentity
+
     /** A command on the send lane: it doesn't wait behind reads. */
-    private suspend fun runNow(command: String, timeoutSeconds: Long = 30): String {
-        val r = ssh.execNow(command, timeoutSeconds)
+    private suspend fun runNow(command: String, timeoutSeconds: Long = 30, expectedConnection: Any? = null): String {
+        val r = ssh.execNow(command, timeoutSeconds, expectedConnection)
         if (r.exit != 0) {
             val msg = (r.err.ifBlank { r.out }).trim().lines().lastOrNull { it.isNotBlank() } ?: "exit ${r.exit}"
             throw HerdrError(msg, r.exit)
@@ -192,6 +195,13 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
                 },
                 title = p.optString("terminal_title_stripped"),
                 cwd = p.optString("foreground_cwd", p.optString("cwd")),
+                sessionId = p.optJSONObject("agent_session")?.let { session ->
+                    val agent = p.optString("agent")
+                    session.optString("value").takeIf {
+                        session.optString("kind") == "id" && agent.isNotBlank() &&
+                            session.optString("agent") == agent && it.isNotBlank() && !session.isNull("value")
+                    }
+                },
                 focused = p.optBoolean("focused", false),
                 tabLabel = labels[p.optString("tab_id")].orEmpty(),
                 scrollOffset = p.optJSONObject("scroll")?.takeIf { it.has("offset_from_bottom") }?.optInt("offset_from_bottom"),
@@ -327,7 +337,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
     @Volatile var lastSendRoute = ""
         private set
 
-    suspend fun sendMessage(pane: Pane, text: String, allowTerminalFallback: Boolean = true) {
+    suspend fun sendMessage(pane: Pane, text: String, allowTerminalFallback: Boolean = true, expectedConnection: Any? = null) {
         require(allowTerminalFallback || (pane.agent != null && pane.status in setOf(Status.IDLE, Status.DONE)))
         lastSendRoute = when {
             core -> "hc send"
@@ -337,12 +347,12 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
         if (core) {
             // hc send pastes and presses Enter; it refuses a terminal waiting on a question
             // unless forced, and a message sent then is meant as the answer.
-            if (pane.status == Status.NEEDS_YOU) runNow(hcCmd("send", "--force", pane.id, text)) else runNow(hcCmd("send", pane.id, text))
+            if (pane.status == Status.NEEDS_YOU) runNow(hcCmd("send", "--force", pane.id, text)) else runNow(hcCmd("send", pane.id, text), expectedConnection = expectedConnection)
             return
         }
         if (pane.agent != null && pane.status != Status.NEEDS_YOU) {
             try {
-                runNow(cmd("agent", "prompt", pane.id, text))
+                runNow(cmd("agent", "prompt", pane.id, text), expectedConnection = expectedConnection)
                 return
             } catch (e: HerdrError) {
                 if (!allowTerminalFallback) throw e
@@ -358,21 +368,22 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
      * Types [text] without pressing Enter. herdr-core has no plain typing, so there short text
      * (a menu number, a y or n) goes as key presses.
      */
-    suspend fun sendText(paneId: String, text: String): String {
-        if (!core) return runNow(cmd("pane", "send-text", paneId, text))
+    suspend fun sendText(paneId: String, text: String, expectedConnection: Any? = null): String {
+        if (!core) return runNow(cmd("pane", "send-text", paneId, text), expectedConnection = expectedConnection)
         val keys = text.map { c -> when (c) { ' ' -> "space"; else -> c.toString() } }
-        return runNow(hcCmd("keys", paneId, *keys.toTypedArray()))
+        return runNow(hcCmd("keys", paneId, *keys.toTypedArray()), expectedConnection = expectedConnection)
     }
 
     /** Types [text] and presses Enter: one paste-and-submit on herdr-core. */
-    suspend fun typeAndEnter(paneId: String, text: String) {
-        if (core) { runNow(hcCmd("send", "--force", paneId, text)); return }
-        runNow(cmd("pane", "send-text", paneId, text))
-        runNow(cmd("pane", "send-keys", paneId, "enter"))
+    suspend fun typeAndEnter(paneId: String, text: String, expectedConnection: Any? = null) {
+        if (core) { runNow(hcCmd("send", "--force", paneId, text), expectedConnection = expectedConnection); return }
+        runNow(cmd("pane", "send-text", paneId, text), expectedConnection = expectedConnection)
+        runNow(cmd("pane", "send-keys", paneId, "enter"), expectedConnection = expectedConnection)
     }
 
-    suspend fun sendKeys(paneId: String, vararg keys: String) =
-        if (core) runNow(hcCmd("keys", paneId, *keys)) else runNow(cmd("pane", "send-keys", paneId, *keys))
+    suspend fun sendKeys(paneId: String, vararg keys: String, expectedConnection: Any? = null) =
+        if (core) runNow(hcCmd("keys", paneId, *keys), expectedConnection = expectedConnection)
+        else runNow(cmd("pane", "send-keys", paneId, *keys), expectedConnection = expectedConnection)
 
     private fun usageSnapshotCommand(paneId: String, agent: String) =
         "$PY -c ${shq(USAGE_OVERLAY_SNAPSHOT)} $herdr ${shq(paneId)} ${shq(agent)}"

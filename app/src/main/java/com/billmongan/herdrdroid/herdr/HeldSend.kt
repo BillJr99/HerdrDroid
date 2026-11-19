@@ -35,6 +35,7 @@ class HeldSendRetry(
         check: suspend () -> String?,
         send: suspend () -> Unit,
         log: (String) -> Unit = {},
+        acquire: suspend () -> (() -> Unit) = { {} },
     ): HeldOutcome {
         var why = firstWhy
         var checks = 0
@@ -44,17 +45,23 @@ class HeldSendRetry(
                 return HeldOutcome.TimedOut(why, checks)
             }
             sleep(everyMs)
-            cancelled()?.let { log("retry stopped: $it"); return HeldOutcome.Cancelled(it) }
-            val next = try {
-                check()
-            } catch (c: CancellationException) {
-                throw c
-            } catch (e: Exception) {
-                "its screen couldn't be read"
-            }
-            checks++
-            if (next == null) {
-                // The check suspended (a pane read): a dismissal in that time still stops it.
+            val release = acquire()
+            try {
+                cancelled()?.let { log("retry stopped: $it"); return HeldOutcome.Cancelled(it) }
+                val next = try {
+                    check()
+                } catch (c: CancellationException) {
+                    throw c
+                } catch (_: Exception) {
+                    "its screen couldn't be read"
+                }
+                checks++
+                if (next != null) {
+                    if (next != why) log("still held: $next")
+                    why = next
+                    continue
+                }
+                // A dismissal during the screen read still stops the send.
                 cancelled()?.let { log("retry stopped: $it"); return HeldOutcome.Cancelled(it) }
                 return try {
                     send()
@@ -67,9 +74,9 @@ class HeldSendRetry(
                     log("input line clear, but sending failed: ${e.message ?: e.javaClass.simpleName}")
                     HeldOutcome.Failed(e)
                 }
+            } finally {
+                release()
             }
-            if (next != why) log("still held: $next")
-            why = next
         }
     }
 }
