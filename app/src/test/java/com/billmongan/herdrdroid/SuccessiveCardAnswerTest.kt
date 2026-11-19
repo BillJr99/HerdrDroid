@@ -43,6 +43,24 @@ class SuccessiveCardAnswerTest {
         assertEquals(vm.notice, listOf("enter", "enter"), sent)
     }
 
+    @Test fun ordinaryOutputAfterClaudeAnswerIsNotAnotherQuestion() =
+        verifyPostAnswerOutput("claude", firstStep, "enter")
+
+    @Test fun ordinaryOutputAfterCodexApprovalIsNotAnotherQuestion() =
+        verifyPostAnswerOutput("codex", command("alpha-beta"), "y")
+
+    private fun verifyPostAnswerOutput(agent: String, card: String, key: String) = fixture(agent, card) {
+        // Recent output retains the old dialog while the agent starts printing its answer.
+        val prose = "The report now answers this heading:\nWhich format should the example use?"
+        afterSend = "$card\n\n$prose"
+        answer(shown())
+        assertEquals(listOf(key), sent)
+        assertEquals(Status.NEEDS_YOU, vm.pane("p1")?.status)
+        assertEquals(afterSend, vm.paneText)
+        assertNull("post-answer prose must not produce a card",
+            detectPrompt(vm.paneText, blocked = true, agent = agent))
+    }
+
     @Test fun punctuationOnlyChangeInApprovalIsNotAlreadyAnswered() = fixture("codex", command("alpha-beta")) {
         val first = shown()
         answer(first)
@@ -116,6 +134,7 @@ class SuccessiveCardAnswerTest {
         private val ssh = HerdrSsh(server.host, server.port, server.user, Credentials(null, null), null, { null })
         override var connection: Any? = Any()
         val sent = mutableListOf<String>()
+        var afterSend: String? = null
         var terminal = "t1"
         var recentReads = 0
 
@@ -170,6 +189,7 @@ class SuccessiveCardAnswerTest {
                 command.contains("def occupant():") && command.endsWith("'/fixture/herdr' 'p1' '$agent'") -> ok("")
                 command.contains("'pane' 'send-keys' 'p1' ") -> {
                     sent += command.substringAfter("'p1' ").replace("'", "")
+                    afterSend?.let { frame = it }
                     ok("")
                 }
                 else -> throw AssertionError("Unexpected fixture command: $command")
