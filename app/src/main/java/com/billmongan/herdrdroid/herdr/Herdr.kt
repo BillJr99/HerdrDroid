@@ -412,7 +412,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
         "$PY -c ${shq(USAGE_OVERLAY_SNAPSHOT)} $herdr ${shq(paneId)} ${shq(agent)}"
 
     internal suspend fun readUsageOverlay(paneId: String, agent: String): UsageOverlay? {
-        if (core) return null
+        if (core || (agent != "claude" && agent != "kiro")) return null
         val json = runNow(usageSnapshotCommand(paneId, agent), timeoutSeconds = 5).trim()
         if (json.isEmpty()) return null
         val objectJson = JSONObject(json)

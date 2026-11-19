@@ -81,15 +81,13 @@ internal class VoiceControls(private val context: Context, private val vm: AppVi
         }
         when (command) {
             is VoiceCommand.Switch -> {
-                val name = voiceName(command.name)
-                val explicitServer = command.server?.let(::voiceName)
-                val matchingServers = vm.servers.filter { voiceName(it.label) == (explicitServer ?: name) }
+                val matchingServers = voiceServersNamed(vm.servers, command.server ?: command.name)
                 val onServer = matchingServers.singleOrNull()
                 if (command.server == null && onServer != null) {
                     if (server?.id != onServer.id) vm.switchTo(onServer.id, null, voice = true)
                     say("Opening ${onServer.label}.")
                 } else {
-                    if (explicitServer != null && onServer == null) {
+                    if (command.server != null && onServer == null) {
                         say("I could not match that server.")
                         return
                     }
@@ -114,7 +112,7 @@ internal class VoiceControls(private val context: Context, private val vm: AppVi
             }
             is VoiceCommand.Message -> {
                 val named = command.pane.server
-                val servers = if (named == null) emptyList() else vm.servers.filter { voiceName(it.label) == voiceName(named) }
+                val servers = if (named == null) emptyList() else voiceServersNamed(vm.servers, named)
                 val matches = if (named != null && servers.size != 1) emptyList() else matchingPanes(command.pane, servers.singleOrNull()?.id)
                 val match = matches.singleOrNull()
                 val current = vm.voiceTarget()
