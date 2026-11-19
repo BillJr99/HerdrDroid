@@ -846,6 +846,8 @@ data class Prompt(
     val horizontal: Boolean = false,
     /** OpenCode binds number keys to select and submit an option. */
     val numberKeys: Boolean = false,
+    /** An incomplete approval preview is reviewable only in the terminal. */
+    val terminalReview: Boolean = false,
 ) {
     /**
      * Never an empty card (1.4.2): a prompt with no choices always has something to show, the
@@ -1294,6 +1296,7 @@ private val SHORTCUT_LABEL = Regex("""\(([a-z])\)\s*$""")
 
 /** The keys that pick [choice]: arrows from the highlighted option, then Enter; null to type it. */
 fun menuKeys(prompt: Prompt, choice: Choice): List<String>? {
+    if (prompt.terminalReview) return null
     if (prompt.numberKeys && choice in prompt.choices) return listOf(choice.keys)
     // "No, and tell Copilot what to do differently (Esc to stop)": Enter on that row does nothing in
     // Copilot, and in Codex and Claude it opens a feedback box; Esc answers it in all three. Vibe's
@@ -1567,20 +1570,86 @@ private fun detectOpenCodeWebSearch(text: String): Prompt? {
     return Prompt(question, choices, numberKeys = true)
 }
 
+private val HERMES_APPROVAL_FOOTER =
+    Regex("""^↑/↓ to select, Enter to confirm(?:\s*\(\d+s\))?$""", RegexOption.IGNORE_CASE)
+private val HERMES_EMPTY_INPUT = Regex("""^⚠(?:️)?\s*[❯›]$""")
+private val HERMES_HIDDEN_COMMAND = Regex("""^[.…]+\s*\(choose Show full command\)$""", RegexOption.IGNORE_CASE)
+private val CODEX_COMMAND_HEADING = Regex("""^Would you like to run the following command\?$""", RegexOption.IGNORE_CASE)
+private val CODEX_OTHER_APPROVAL = Regex(
+    """^(?:Would you like to (?:make the following edits|run the following tool|allow network access|grant these permissions)|Do you want to approve network access to .+|Approve app tool call)\?$""",
+    RegexOption.IGNORE_CASE,
+)
+private val HIDDEN_CODEX_COMMAND = Regex(
+    """^(?:…|\.{3})(?:\s|$)|^(?:\[|\()?(?:\d+\s+(?:lines?|characters?)\s+(?:omitted|hidden)|command (?:truncated|hidden))\b|(?:…|\.{3})$""",
+    RegexOption.IGNORE_CASE,
+)
+
+private fun terminalCommandReview(command: String?): Prompt = Prompt(
+    question = "Review the full command",
+    choices = emptyList(),
+    parts = QuestionParts(emptyList(), listOf(QBlock(QKind.HEADING, "Review the full command")) +
+        listOfNotNull(command?.takeIf { it.isNotBlank() }?.let { QBlock(QKind.COMMAND, it) })),
+    region = listOf("Open the terminal to review the full command."),
+    terminalReview = true,
+)
+
+private fun detectHermesCommandPreview(text: String): Prompt? {
+    val lines = text.lines().takeLast(80)
+    val footer = lines.indexOfLast { HERMES_APPROVAL_FOOTER.matches(it.trim()) }
+    if (footer < 0 || lines.drop(footer + 1).filter { it.isNotBlank() }.let { tail ->
+            tail.size > 1 || tail.any { !HERMES_EMPTY_INPUT.matches(it.trim()) }
+        }) return null
+    val bottom = (footer - 1 downTo 0).firstOrNull { lines[it].isNotBlank() } ?: return null
+    if (!lines[bottom].trimStart().startsWith("╰")) return null
+    val top = (bottom - 1 downTo 0).firstOrNull { lines[it].trimStart().startsWith("╭") } ?: return null
+    val rows = lines.subList(top + 1, bottom).map { it.trim() }
+    if (rows.any { !it.startsWith("│") || !it.endsWith("│") }) return null
+    val body = rows.map { it.removePrefix("│").removeSuffix("│").trimEnd().removePrefix(" ") }
+    if (!Regex("""^(?:⚠️?\s*)?Dangerous Command$""").matches(body.firstOrNull()?.trim().orEmpty())) return null
+    val hidden = body.indexOfFirst { HERMES_HIDDEN_COMMAND.matches(it.trim()) }
+    if (hidden < 1 || body.drop(hidden + 1).none { it.trim().matches(Regex("""^(?:[❯›>]\s*)?5\. Show full command$""")) }) return null
+    return terminalCommandReview(body.subList(1, hidden).dropWhile { it.isBlank() }.joinToString("\n"))
+}
+
 fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version: String? = null): Prompt? {
     if ((agent == null || agent.equals("claude", true)) && claudeUsageOpen(text)) return null
     if (agent?.lowercase() in setOf("opencode", "opencode-ursinus")) {
         detectOpenCodeWebSearch(text)?.let { return it }
+    }
+    if (agent.equals("hermes", true)) {
+        detectHermesCommandPreview(text)?.let { return it }
+        val rows = text.lines().takeLast(80)
+        val hidden = rows.indexOfLast { HERMES_HIDDEN_COMMAND.matches(it.trim().trim('│').trim()) }
+        if (hidden >= 0) {
+            // A clipped or stale preview must not reach the generic numbered-menu parser.
+            val footer = (hidden + 1..rows.lastIndex).firstOrNull { HERMES_APPROVAL_FOOTER.matches(rows[it].trim()) }
+                ?: return null
+            val latest = rows.drop(footer + 1).joinToString("\n")
+            return if (latest.isBlank() || HERMES_EMPTY_INPUT.matches(latest.trim())) null
+            else detectPrompt(latest, blocked, agent, version)
+        }
     }
     val rules = ParserRules.forAgent(agent, version)
     // A question dialog on screen means the agent waits, whatever herdr reported.
     @Suppress("NAME_SHADOWING") val blocked = blocked || showsQuestionDialog(text) ||
         (rules.extraFooter?.let { f -> text.lines().takeLast(6).any { f.containsMatchIn(it) } } == true)
     var raw = text.lines().map { it.trimEnd() }.takeLast(80)
+    if (agent.equals("codex", true)) {
+        val footer = raw.indexOfLast { CODEX_FOOTER.matches(it.trim()) }
+        if (footer >= 0 && raw.drop(footer + 1).any { !isChrome(it) }) {
+            raw = raw.drop(footer + 1)
+        }
+    }
     var lines = raw.filter { it.isNotBlank() }.takeLast(40)
     if (lines.isEmpty()) return if (blocked) Prompt("This agent is waiting for you.", emptyList(), region = listOf(UNREAD_SCREEN)) else null
 
     val clean = { s: String -> s.trim().trim('│', '┃', '|', '╭', '╰', '╮', '╯', '─', ' ').trim() }
+    if (agent.equals("codex", true) && CODEX_FOOTER.matches(lines.last().trim())) {
+        val heading = lines.indexOfLast { CODEX_COMMAND_HEADING.matches(clean(it)) }
+        if (heading >= 0 && lines.drop(heading + 1).none { clean(it).contains("Yes, proceed", ignoreCase = true) }) {
+            return terminalCommandReview(null)
+        }
+    }
     // End each old dialog at its footer, then inspect any newer UI below it.
     val claudeFooterPattern = Regex(QUESTION_FOOTER.pattern + "|\\bEsc to (cancel|reject)\\s*[│┃|]*\\s*$", RegexOption.IGNORE_CASE)
     while (raw.isNotEmpty()) {
@@ -1753,6 +1822,19 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     // the agent went on after the card, however few lines that took (from Grok's review).
     // A box's own corner ("└────") is not activity: only a line with words counts.
     val wentOn = agentWentOn(below)
+    if (agent.equals("codex", true) && !wentOn) {
+        val preview = parts?.command
+        val activeFooter = below.lastOrNull { !isChrome(it) }?.trim()?.let(CODEX_FOOTER::matches) == true
+        val heading = above.orEmpty().any { CODEX_COMMAND_HEADING.matches(it.text) }
+        val hidden = above.orEmpty().any { HIDDEN_CODEX_COMMAND.containsMatchIn(it.text) }
+        val explicitKeys = numbered.all { SHORTCUT_LABEL.containsMatchIn(it.label) || ESC_LABEL.containsMatchIn(it.label) }
+        val approvalChoices = numbered.any { it.label.startsWith("Yes, proceed", ignoreCase = true) }
+        val otherApproval = above.orEmpty().any { CODEX_OTHER_APPROVAL.matches(it.text) }
+        if (realMenu && ((heading && (!activeFooter || numbered.size < 2 || preview.isNullOrBlank() || !explicitKeys || hidden)) ||
+                (activeFooter && approvalChoices && !otherApproval && !heading))) {
+            return if (activeFooter || blocked) terminalCommandReview(preview) else null
+        }
+    }
     if (numbered.size in 2..20 && realMenu && underCard <= MAX_UNDER_CARD && !wentOn && !rejectEcho) {
         // Vibe draws no marker on the highlighted row; a fresh card highlights the first one.
         val selected = run.firstOrNull { it.first in marked }?.second ?: if (vibeCard) "1" else null

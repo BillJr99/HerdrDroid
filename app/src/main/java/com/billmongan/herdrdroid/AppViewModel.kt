@@ -2052,6 +2052,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${pane.id} (${pane.agent ?: "shell"}, ${pane.status}): ${text.length} chars; link ${link}, ${if (herdr == null) "no client" else "client ready"}")
         act(pane.id, "Couldn't send", pendingId) { h ->
             if (pendingSends.none { it.id == pendingId }) return@act
+            if (typedAnswer && pane.agent?.lowercase() in setOf("codex", "hermes")) {
+                val visible = readForCard(h, pane.id)
+                val fresh = visible?.let { detectPrompt(it, pane(pane.id)?.status == Status.NEEDS_YOU, pane.agent) }
+                if (fresh == null || fresh.terminalReview) {
+                    pendingSends = pendingSends.map { if (it.id == pendingId) it.copy(undelivered = true) else it }
+                    flash("Open the terminal to review the active question before answering.")
+                    return@act
+                }
+            }
             if (!typedAnswer) {
                 // Behind an earlier held message unless the user explicitly chose Force send.
                 val earlier = !force && pendingSends.any { it.paneId == pane.id && it.waiting && it.id != pendingId }
@@ -2396,6 +2405,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         voiceQuestion: String? = null, voiceAllowed: () -> Boolean = { true }, voiceConnection: Any? = null, feedback: ((String) -> Unit)? = null,
     ) {
         // The answer goes into the history only once it was sent (1.3.2, from a code review).
+        if (prompt.terminalReview) return
         if (choice.keys.startsWith("grok-privacy:")) {
             answerOnce(paneId) { h ->
                 answerGrokPrivacy(h, paneId, optIn = choice.keys == com.billmongan.herdrdroid.herdr.GROK_PRIVACY_IN)?.let { throw IllegalStateException(it) }
@@ -2527,6 +2537,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * message, as "Type a different answer" does.
      */
     fun answerTyped(pane: Pane, prompt: com.billmongan.herdrdroid.herdr.Prompt, choice: com.billmongan.herdrdroid.herdr.Choice, text: String) {
+        if (prompt.terminalReview) return
         val move = com.billmongan.herdrdroid.herdr.moveKeys(prompt, choice)
         // Recorded only once it was sent (1.3.2).
         if (move == null) { sendMessage(pane, text, typedAnswer = true) { noteAnswer(pane.id, prompt, text) }; return }
@@ -2863,7 +2874,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     // no alert. A screen that couldn't be read still alerts, saying so.
                     if (prompt == null && text.isNotBlank()) { com.billmongan.herdrdroid.diag.DiagLog.log("watch", "${p.id}: herdr says blocked, but nothing on screen asks; no alert"); return@launch }
                     withContext(Dispatchers.Main) { if (prompt != null && prompt.choices.isNotEmpty()) observeQuestion(serverId, p.id, prompt, p.status, p.agentName, text) }
-                    Notify.needsYou(app, serverId, serverLabel, p.id, p.agentName, prompt?.question ?: "Waiting for you.", prompt?.choices.orEmpty(), p.agent)
+                    Notify.needsYou(app, serverId, serverLabel, p.id, p.agentName, prompt?.question ?: "Waiting for you.", prompt?.choices.orEmpty(), p.agent, terminalReview = prompt?.terminalReview == true)
                 }
                 // Only agents that need you notify (Bill, 2026-11-13); finishing doesn't.
                 before == Status.NEEDS_YOU -> {
@@ -2927,6 +2938,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (a.isReply) {
             runCatching {
                 val p = h.panes().firstOrNull { it.id == a.paneId } ?: return
+                if (p.agent?.lowercase() in setOf("codex", "hermes")) {
+                    val current = readForCard(h, p.id, NOTIFY_READ_LINES)
+                        ?.let { detectPrompt(it, p.status == Status.NEEDS_YOU, p.agent) }
+                    if (current == null || current.terminalReview || current.question.filterNot(Char::isWhitespace) !=
+                        a.question.filterNot(Char::isWhitespace)) {
+                        Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer", "The active question could not be verified.")
+                        return
+                    }
+                }
                 h.sendMessage(p, a.keys)
                 answered()
                 withContext(Dispatchers.Main) { noteAnswer(a.paneId, null, a.keys, a.serverId) }  // after the send
