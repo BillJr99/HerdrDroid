@@ -5,6 +5,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class WorkTest {
+    @Test fun classifiedWorkDoesNotReinferHiddenLauncherOrRuntime() {
+        val w = parseWork("""{"ok":true,"active_procs":[{"pid":7,"ppid":5,"depth":4,"name":"sh","cmd":"sh"}],"procs":[{"pid":1,"name":"bash"}]}""")
+        assertEquals(listOf(7), w.activeProcs("opencode").map { it.pid })
+        assertEquals(1, w.childProcs("opencode"))
+    }
     // The shape the reader printed for devbox2's Claude pane (pids and commands as seen there).
     private val json = """
 {"ok": true, "procs": [

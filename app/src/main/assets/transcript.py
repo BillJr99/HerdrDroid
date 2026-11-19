@@ -1281,7 +1281,7 @@ def mask_args(args):
 
 
 def proc_table():
-    """Every process of this user: pid -> (ppid, start ticks, utime+stime ticks)."""
+    """Own processes: pid -> (ppid, start ticks, CPU ticks, session ID, controlling tty)."""
     uid = os.getuid()
     procs = {}
     for d in os.listdir("/proc"):
@@ -1295,7 +1295,7 @@ def proc_table():
             rest = st[st.rindex(")") + 2:].split()
             if rest[0] in ("Z", "X"):
                 continue
-            procs[int(d)] = (int(rest[1]), int(rest[19]), int(rest[11]) + int(rest[12]))
+            procs[int(d)] = (int(rest[1]), int(rest[19]), int(rest[11]) + int(rest[12]), int(rest[3]), int(rest[4]))
         except Exception:
             continue
     return procs
@@ -1328,12 +1328,12 @@ def pane_procs(pane, table=None, pids=None):
     with open("/proc/uptime") as f:
         up = float(f.read().split()[0])
     kids = {}
-    for pid, (ppid, _, _) in mine.items():
+    for pid, (ppid, *_) in mine.items():
         kids.setdefault(ppid if ppid in mine else 0, []).append(pid)
     out = []
 
     def walk(pid, depth):
-        ppid, start, cpu = mine[pid]
+        ppid, start, cpu, sid, tty = mine[pid]
         age = max(0.0, up - start / hz)
         try:
             with open("/proc/%d/cmdline" % pid, "rb") as f:
@@ -1346,7 +1346,7 @@ def pane_procs(pane, table=None, pids=None):
         except Exception:
             rss_kb = 0
         out.append({"pid": pid, "ppid": ppid, "depth": depth, "cmd": mask_args(args) or "?",
-                    "name": os.path.basename(args[0]) if args else "?",
+                    "name": os.path.basename(args[0]) if args else "?", "sid": sid, "tty": tty,
                     "age": int(age), "cpu": round(100.0 * (cpu / hz) / age, 1) if age > 1 else 0.0, "rss": rss_kb})
         for c in sorted(kids.get(pid, [])):
             walk(c, depth + 1)
@@ -1510,7 +1510,7 @@ def open_files_of(pids):
 def pane_work(pane, agent, cwd, session=""):
     now = time.time()
     procs, pids = pane_procs(pane)
-    work = {"ok": True, "procs": procs, "subagents": [], "tasks": []}
+    work = {"ok": True, "active_procs": active_shells(procs, agent), "subagents": [], "tasks": []}
     if agent == "claude" and cwd:
         log = claude_work_log(cwd, session, agent_pid(procs, agent))
         if log:
@@ -1537,18 +1537,33 @@ def agent_pid(procs, agent):
     word = re.compile(r"(?<![a-z0-9])" + re.escape(a) + r"(?![a-z0-9])")
     ok = [p for p in procs if not HELPER_RE.search(p["cmd"])]
     cand = [p for p in ok if word.search(p["name"].lower())]
-    if not cand and a != "claude":
-        cand = [p for p in ok if word.search(p["cmd"].lower()) and "agent-startup" not in p["cmd"]]
+    if not cand and a not in ("claude", "kiro", "opencode"):
+        cand = [p for p in ok if p["name"] in ("node", "bun", "deno", "python", "python3")
+                and word.search(p["cmd"].lower()) and "agent-startup" not in p["cmd"]]
     return min(cand, key=lambda p: p["depth"])["pid"] if cand else None
 
 
 def active_shells(procs, agent):
-    """Live agent descendants, excluding known helpers and their descendants."""
+    """Live work below a known agent, not the pane shell or resident runtime."""
     root = agent_pid(procs, agent)
-    parents = {root} if root is not None else {p["pid"] for p in procs if not agent and p["depth"] == 0}
+    if root is None:
+        return []
+    parents = {root}
+    runtime = set()
+    def detached(p, name):
+        return p["name"] == name and p.get("sid") == p["pid"] and p.get("tty") == 0
+    if agent == "opencode":
+        runtime.update(p["pid"] for p in procs if p["ppid"] == root and detached(p, "opencode"))
+    elif agent == "kiro":
+        bun = {p["pid"] for p in procs if p["ppid"] == root and p["name"] == "bun"}
+        for p in procs:
+            if p["ppid"] in bun and detached(p, "kiro-cli"):
+                runtime.update((p["ppid"], p["pid"]))
     out = []
     for p in procs:  # tree order: a parent comes before its children
-        if p["pid"] != root and p["ppid"] in parents and not HELPER_RE.search(p["cmd"]):
+        if p["pid"] in runtime and p["ppid"] in parents:
+            parents.add(p["pid"])
+        elif p["pid"] != root and p["ppid"] in parents and not HELPER_RE.search(p["cmd"]):
             parents.add(p["pid"])
             out.append(p)
     return out
@@ -1614,7 +1629,7 @@ def stop_proc(pane, pid, sig):
     if pid not in table or pane_of(pid) != pane:
         return {"ok": False, "why": "That process is no longer running in this pane."}
     kids = {}
-    for p, (pp, _, _) in table.items():
+    for p, (pp, *_) in table.items():
         kids.setdefault(pp, []).append(p)
     order = []
 
