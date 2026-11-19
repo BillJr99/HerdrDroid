@@ -13,6 +13,34 @@ import org.junit.Test
  * dialog's layout (rule, tab bar, question, options with descriptions, footer).
  */
 class QuestionFormatTest {
+    @Test fun codexMultilineCommandKeepsExactDisplayRowsAndShortcutKeys() {
+        val screen = javaClass.getResource("/screens/codex/synthetic-2.0/multiline-command-approval.txt")!!.readText()
+        val card = requireNotNull(detectPrompt(screen, false, "codex"))
+        assertFalse(card.terminalReview)
+        val command = """
+            set -e
+              label='fixture'
+              (
+                printf '%s\n' "${'$'}label"
+              )
+              printf '%s\n' 'A long quoted fixture row with spaces and punctuation: [] | !'
+              printf '%s\n' 'done'
+        """.trimIndent()
+        assertEquals(command, card.shownParts().command)
+        assertEquals(listOf("Environment: local", "Reason: May I read the synthetic sample?"), card.shownParts().details)
+        assertEquals(listOf(listOf("y"), listOf("esc")), card.choices.map { menuKeys(card, it) })
+        val changed = screen.replace("    )", "    }")
+        assertFalse(cardAnswerStillFits(card, detectPrompt(changed, false, "codex")))
+        val oldThenClipped = screen + screen.substringAfter("  $ set -e\n")
+        val rejectAndFooter = screen.substringAfter("› 1. Yes, proceed (y)\n")
+        for (partial in listOf(screen.replace("    )", "    …"), oldThenClipped, rejectAndFooter)) {
+            val review = requireNotNull(detectPrompt(partial, false, "codex"))
+            assertTrue(review.terminalReview)
+            assertTrue(review.choices.isEmpty())
+        }
+        assertNull(detectPrompt(screen + "\n› Next request", true, "codex"))
+    }
+
     @Test fun approvalIdentityRetainsPunctuationOnlyCommandRows() {
         for ((agent, screen) in listOf(
             "codex" to """

@@ -93,6 +93,18 @@ class PaneQuestionContextTest {
         rule.onNodeWithText(reply.text).assertDoesNotExist()
     }
 
+    @Test fun multilineCodexApprovalShowsTheScriptAndBothChoices() = withPane(
+        agent = "codex", frame = "codex/synthetic-2.0/multiline-command-approval.txt",
+        items = listOf(reply),
+    ) {
+        rule.onNodeWithText("\n  )\n", substring = true).performScrollTo().assertIsDisplayed()
+        rule.onNodeWithText("Would you like to run the following command?").performScrollTo().assertIsDisplayed()
+        rule.onNodeWithText("Yes, proceed (y)").performScrollTo().assertIsDisplayed()
+        rule.onNodeWithText("No, and tell Codex what to do differently (esc)").performScrollTo().assertIsDisplayed()
+        rule.onNodeWithText("Show terminal").performScrollTo().assertIsDisplayed()
+        rule.onNodeWithText("+ Show details").assertDoesNotExist()
+    }
+
     @Test fun incompleteApprovalStillOpensTerminalWithoutOfferingAnAnswer() = withPane(
         agent = "codex", frame = "codex/synthetic-2.0/truncated-command-approval.txt",
         items = listOf(reply),
