@@ -2380,17 +2380,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /**
-     * Answers a menu question: moves the highlight with the arrow keys and presses Enter when the
-     * highlighted option is known, so a digit is never typed into an option's text box.
-     */
-    /** The card each pane was last answered on from here, and when (1.4.8). */
-    private val answeredCards = java.util.concurrent.ConcurrentHashMap<Pair<String, String>, Pair<String, Long>>()
+    /** Keep dispatch identity, not the history signature (which groups different steps of a dialog). */
+    private val answeredCards = mutableMapOf<Pair<String, String>, Pair<Prompt, Long>>()
 
-    /** When [sig]'s card on [paneId] was answered, if within [ANSWER_HOLD_MS]; else null. */
-    private fun answeredRecently(paneId: String, sig: String, serverId: String? = current?.id): Long? {
-        val (was, at) = answeredCards[(serverId ?: return null) to paneId] ?: return null
-        return at.takeIf { System.currentTimeMillis() - it < ANSWER_HOLD_MS && com.billmongan.herdrdroid.transcript.QuestionLog.sameCard(was, sig) }
+    private fun rememberCardAnswer(serverId: String, paneId: String, card: Prompt) {
+        answeredCards[serverId to paneId] = card to android.os.SystemClock.elapsedRealtime()
+    }
+
+    private fun recentAnswerAge(serverId: String, paneId: String, matches: (Prompt) -> Boolean): Long? {
+        val (was, at) = answeredCards[serverId to paneId] ?: return null
+        return (android.os.SystemClock.elapsedRealtime() - at).takeIf { it < ANSWER_HOLD_MS && matches(was) }
     }
 
     private suspend fun readPaneScreen(h: Herdr, paneId: String, lines: Int): String =
@@ -2678,22 +2677,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 return@answerOnce
             }
 
-            // Only the card that was tapped is answered (1.4.8, Bill: "Maybe it is passing the same
-            // approval to two inputs?"): Muse's next stage asks with the same options, so a second tap,
-            // or a tap that lands after the screen moved on, would answer a question nobody has seen.
-            val tappedSig = com.billmongan.herdrdroid.transcript.QuestionLog.signature(prompt)
-
-            val before = answeredRecently(paneId, tappedSig)
-            if (before != null) {
-                com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: this card was answered ${(System.currentTimeMillis() - before) / 1000} s ago; not sent twice")
+            val age = recentAnswerAge(target.server, paneId) { cardAnswerStillFits(it, fresh) }
+            if (age != null) {
+                com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: this card was answered ${age / 1000} s ago; not sent twice")
                 withContext(Dispatchers.Main) { report("Already answered. Waiting for $agentName.") }
                 readPane(paneId)
                 return@answerOnce
             }
 
-            // A transport error after any key is sent leaves delivery uncertain. Keep the guard
-            // active until the next screen read even when the send did not return a receipt.
-            answeredCards[target.server to paneId] = tappedSig to System.currentTimeMillis()
+            // A transport error can leave delivery uncertain. Suppress another send to this same
+            // card even when no receipt came back; a distinct live card can still be answered.
+            rememberCardAnswer(target.server, paneId, fresh)
             val keys = com.billmongan.herdrdroid.herdr.menuKeys(fresh, choice)
             val connection = voiceConnection ?: target.connection
             if (keys == null) {
@@ -3192,7 +3186,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         // The same depth and agent the alert was made with (1.4.2, from review).
         val now = detectPrompt(text, blocked = true, agent = a.agent)
-        if (!notificationAnswerStillFits(now, a)) {
+        if (now == null || !notificationAnswerStillFits(now, a)) {
             // The question's words still on screen but not read as that card: say the app couldn't
             // tell, rather than that it changed.
             val stillThere = a.question.isNotBlank() && text.filterNot { it.isWhitespace() }.contains(a.question.filterNot { it.isWhitespace() }.take(60))
@@ -3201,18 +3195,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 else "The question changed before your answer arrived, so nothing was sent.")
             return
         }
-        // The same card already answered from the app or another alert a moment ago (1.4.8): not twice.
-        val cardSig = now?.let { com.billmongan.herdrdroid.transcript.QuestionLog.signature(it) }
-        val before = cardSig?.let { answeredRecently(a.paneId, it, a.serverId) }
-        if (before != null) {
-            com.billmongan.herdrdroid.diag.DiagLog.log("answer", "${a.paneId}: alert tap on a card answered ${(System.currentTimeMillis() - before) / 1000} s ago; not sent twice")
+        // A notification carries only question/option text, not the tab or exact command identity.
+        // If its button still fits the previous card, the alert can't prove it's for the new one.
+        val age = recentAnswerAge(a.serverId, a.paneId) { notificationAnswerStillFits(it, a) }
+        if (age != null) {
+            com.billmongan.herdrdroid.diag.DiagLog.log("answer", "${a.paneId}: alert also fits a card answered ${age / 1000} s ago; not sent twice")
             Notify.sending(app, a.serverId, a.paneId, "Already answered", "")
             return
         }
         var sent = false
-        cardSig?.let { answeredCards[a.serverId to a.paneId] = it to System.currentTimeMillis() }
+        rememberCardAnswer(a.serverId, a.paneId, now)
         try {
-            val label = now?.choices?.firstOrNull { it.keys == a.keys }?.label ?: if (a.isKey) "Pressed ${a.keys}" else a.keys
+            val label = now.choices.firstOrNull { it.keys == a.keys }?.label ?: if (a.isKey) "Pressed ${a.keys}" else a.keys
             if (a.keys.startsWith("grok-privacy:")) {
                 val problem = answerGrokPrivacy(h, a.paneId, optIn = a.keys == com.billmongan.herdrdroid.herdr.GROK_PRIVACY_IN)
                 sent = problem == null
@@ -3220,7 +3214,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 else Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer", problem!!)
                 return
             }
-            val nav = if (!a.isKey) now?.let { p -> p.choices.firstOrNull { it.keys == a.keys }?.let { c -> com.billmongan.herdrdroid.herdr.menuKeys(p, c) } } else null
+            val nav = if (!a.isKey) now.choices.firstOrNull { it.keys == a.keys }?.let { c -> com.billmongan.herdrdroid.herdr.menuKeys(now, c) } else null
             if (nav != null) h.sendKeys(a.paneId, *nav.toTypedArray())
             else if (a.isKey) h.sendKeys(a.paneId, a.keys)
             else if (a.pressEnter) h.typeAndEnter(a.paneId, a.keys)
