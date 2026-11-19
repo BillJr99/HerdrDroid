@@ -64,6 +64,7 @@ fun SessionDrawer(vm: AppViewModel, opening: Boolean = true) {
     var creating by remember { mutableStateOf(false) }
     var closing by remember { mutableStateOf<AppViewModel.Session?>(null) }
     var renaming by remember { mutableStateOf<AppViewModel.Session?>(null) }
+    var relaying by remember { mutableStateOf<AppViewModel.Session?>(null) }
     @Suppress("UNUSED_VARIABLE") val pins = vm.pinVersion
     @Suppress("UNUSED_VARIABLE") val models = vm.modelsVersion
     val all = vm.sessions()
@@ -102,6 +103,7 @@ fun SessionDrawer(vm: AppViewModel, opening: Boolean = true) {
                     SessionRow(
                         s, open = s.current && s.pane.id == openId, model = vm.modelFor(s.server.id, s.pane.id),
                         onOpen = { vm.drawerOpen = false; vm.switchTo(s.server.id, s.pane.id) },
+                        onRelay = if (!s.current) ({ relaying = s }) else null,
                         onRename = if (vm.canRename(s.server.id)) ({ renaming = s }) else null, onPin = { vm.togglePin(s.server, s.pane) }, onClose = { closing = s },
                     )
                 }
@@ -141,6 +143,30 @@ fun SessionDrawer(vm: AppViewModel, opening: Boolean = true) {
             }
         }
     }
+    relaying?.let { session ->
+        var target by remember(session.server.id, session.pane.id) { mutableStateOf<AppViewModel.RemotePromptTarget?>(null) }
+        var checking by remember(session.server.id, session.pane.id) { mutableStateOf(true) }
+        LaunchedEffect(session.server.id, session.pane.id) {
+            target = vm.bindRemotePrompt(session)
+            checking = false
+        }
+        val bound = target
+        val available = bound != null && vm.remotePromptCurrent(bound)
+        PromptRelayDialog(
+            destination = "${sessionName(session.pane)} on ${session.server.label}",
+            checking = checking, available = available,
+            onDismiss = { relaying = null },
+            onSend = { text ->
+                if (bound == null) com.billmongan.herdrdroid.herdr.RelayResult.REFUSED
+                else vm.sendRemotePrompt(bound, text) { vm.inFront }
+            },
+            onSent = {
+                relaying = null
+                android.widget.Toast.makeText(vm.getApplication(), "Message sent to ${sessionName(session.pane)} on ${session.server.label}.",
+                    android.widget.Toast.LENGTH_SHORT).show()
+            },
+        )
+    }
     if (creating) NewSessionDialog(vm) { creating = false }
     closing?.let { s -> CloseSessionDialog(s, onDismiss = { closing = null }) { closing = null; vm.closeSession(s.server.id, s.pane) } }
     renaming?.let { s -> RenameDialog(s, onDismiss = { renaming = null }) { name -> renaming = null; vm.renameSession(s.server.id, s.pane, name) } }
@@ -164,7 +190,7 @@ internal fun sessionName(p: Pane): String {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun SessionRow(s: AppViewModel.Session, open: Boolean, model: String?, onOpen: () -> Unit, onRename: (() -> Unit)?, onPin: () -> Unit, onClose: () -> Unit) {
+private fun SessionRow(s: AppViewModel.Session, open: Boolean, model: String?, onOpen: () -> Unit, onRelay: (() -> Unit)?, onRename: (() -> Unit)?, onPin: () -> Unit, onClose: () -> Unit) {
     var menu by remember { mutableStateOf(false) }
     Box {
         Row(
@@ -189,6 +215,7 @@ private fun SessionRow(s: AppViewModel.Session, open: Boolean, model: String?, o
             if (open) Text("open", color = Palette.Blue, fontWeight = FontWeight.Bold, fontSize = 12.sp)
         }
         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+            if (onRelay != null) DropdownMenuItem(text = { Text("Send prompt…") }, onClick = { menu = false; onRelay() })
             // herdr-core can't rename, so the item is only there where it works.
             if (onRename != null) DropdownMenuItem(text = { Text("Rename") }, onClick = { menu = false; onRename() })
             DropdownMenuItem(text = { Text(if (s.pinned) "Unpin" else "Pin to the top") }, onClick = { menu = false; onPin() })

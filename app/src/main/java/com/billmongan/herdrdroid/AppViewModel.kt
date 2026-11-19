@@ -2311,11 +2311,51 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (hasDraft) voiceComposerDrafts.add(server to pane) else voiceComposerDrafts.remove(server to pane)
     }
 
+    private fun promptLaneClear(serverId: String, paneId: String): Boolean =
+        (serverId to paneId) !in answeringCards &&
+            queued.none { it.serverId == serverId && it.paneId == paneId } &&
+            (serverId to paneId) !in voiceComposerDrafts &&
+            // Pending sends belong to the foreground server; pane IDs alone are not global.
+            (serverId != current?.id || (pendingSends.none { it.paneId == paneId && (it.waiting || it.awaitingLink) } &&
+                prefills[paneId].isNullOrBlank()))
+
+    private fun relayPort(serverId: String): com.billmongan.herdrdroid.herdr.PromptRelayPort? {
+        if (locked || serverId == current?.id) return null
+        val saved = servers.firstOrNull { it.id == serverId } ?: return null
+        val watched = fleetStates[serverId] ?: return null
+        if (watched.error != null || watched.server != saved || (!foreground && saved.overWebSocket)) return null
+        return fleet?.herdr(serverId)?.takeUnless { it.backend == com.billmongan.herdrdroid.herdr.Backend.CORE }
+            ?.relayPort(transcriptScript)
+    }
+
+    private val promptRelay by lazy {
+        com.billmongan.herdrdroid.herdr.PromptRelay(paneDispatch, ::relayPort) { serverId, paneId ->
+            promptLaneClear(serverId, paneId) && fleetStates[serverId]?.panes?.singleOrNull { it.id == paneId }
+                ?.let { !it.backgroundBusy && it.status in setOf(Status.IDLE, Status.DONE) } == true
+        }
+    }
+
+    internal data class RemotePromptTarget(
+        val route: com.billmongan.herdrdroid.herdr.PromptRelay.Target,
+        val origin: String?, val visit: Long, val screen: Screen,
+    )
+
+    internal suspend fun bindRemotePrompt(session: Session): RemotePromptTarget? {
+        val origin = current?.id
+        val visit = paneVisit
+        val source = screen
+        val route = promptRelay.bind(session.server.id, session.pane) ?: return null
+        return RemotePromptTarget(route, origin, visit, source).takeIf(::remotePromptCurrent)
+    }
+
+    internal fun remotePromptCurrent(target: RemotePromptTarget): Boolean =
+        target.origin == current?.id && target.visit == paneVisit && target.screen == screen && promptRelay.isCurrent(target.route)
+
+    internal suspend fun sendRemotePrompt(target: RemotePromptTarget, text: String, allowed: () -> Boolean) =
+        promptRelay.send(target.route, text) { allowed() && remotePromptCurrent(target) }
+
     internal suspend fun sendVoiceMessage(target: VoiceTarget, text: String, allowed: () -> Boolean): String {
-        fun allowedHere() = allowed() && voiceTarget() == target && !answerInFlight(target.pane) &&
-            pendingSends.none { it.paneId == target.pane && (it.waiting || it.awaitingLink) } &&
-            queued.none { it.serverId == target.server && it.paneId == target.pane } &&
-            (target.server to target.pane) !in voiceComposerDrafts && prefills[target.pane].isNullOrBlank()
+        fun allowedHere() = allowed() && voiceTarget() == target && promptLaneClear(target.server, target.pane)
         val refuse = "Not sent. Open the agent's chat and check that it is idle with no question, draft at the computer, or queued message."
         val release = paneDispatch.tryAcquire(target.server to target.pane) ?: return refuse
         val h = target.client

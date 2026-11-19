@@ -228,6 +228,24 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
                 terminalId = p.opt("terminal_id")?.takeUnless { it == JSONObject.NULL }?.toString()?.takeIf { it.isNotBlank() },
             )
 
+    internal fun relayPort(script: ByteArray): PromptRelayPort = object : PromptRelayPort {
+        override val owner get() = this@Herdr
+        override val connectionIdentity get() = this@Herdr.connectionIdentity
+        override suspend fun pane(id: String, connection: Any) = cardPane(id, connection)
+        override suspend fun viewport(id: String, connection: Any) =
+            runNow(cmd("pane", "read", id, "--source", "visible", "--format", "ansi"), 5, connection)
+        override suspend fun hasWork(pane: Pane, connection: Any): Boolean {
+            val arg = org.json.JSONArray(listOf(listOf(pane.id, pane.agent.orEmpty(), pane.cwd, pane.sessionId.orEmpty()))).toString()
+            val r = ssh.execInput("$PYZ __workcounts__ ${shq(arg)}", z(script), 8, connection)
+            if (r.exit != 0) return true
+            // Missing or malformed evidence is not an idle result.
+            val counts = JSONObject(r.out)
+            return !counts.optBoolean("ok") || counts.optJSONObject("busy")?.opt(pane.id) != 0
+        }
+        override suspend fun send(pane: Pane, text: String, connection: Any) =
+            sendMessage(pane, text, allowTerminalFallback = false, expectedConnection = connection)
+    }
+
     /** No tab list, status enrichment, bulk lock, or reconnect during a card tap. */
     internal suspend fun cardPane(id: String, connection: Any): Pane? {
         if (core) return corePanes(runNow(hcCmd("ls", "--json"), 5, connection)).singleOrNull { it.id == id }

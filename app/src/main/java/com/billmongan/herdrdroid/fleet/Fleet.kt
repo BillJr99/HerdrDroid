@@ -56,10 +56,17 @@ class Fleet(
 
     /** Starts (or retargets) watching [servers]; the rest are dropped. */
     fun watch(servers: List<Server>) {
-        watched = servers.associateBy { it.id }
-        val ids = watched.keys
-        clients.keys.filter { it !in ids }.forEach { id -> clients.remove(id)?.first?.close() }
-        states = states.filterKeys { it in ids }
+        val next = servers.associateBy { it.id }
+        val removed = watched.keys.filter { watched[it] != next[it] }.toSet()
+        watched = next
+        removed.forEach { id ->
+            clients.remove(id)?.first?.close()
+            sweptAt.remove(id)
+            detected.remove(id)
+            retryAt.remove(id)
+            retryStep.remove(id)
+        }
+        states = states.filterKeys { it in next && it !in removed }
         servers.forEach { s ->
             if (s.id !in clients && s.fingerprint != null) {
                 val ssh = HerdrSsh(s.host, s.port, s.user, credentials(s), s.fingerprint, keystoreKey, s.wsUrl?.takeIf { s.overWebSocket })
@@ -79,6 +86,7 @@ class Fleet(
                         var pair = pair0
                         if (server.backend == null && id !in detected) {
                             val d = runCatching { com.billmongan.herdrdroid.herdr.detectBackend(pair.first, server.herdrPath) }.getOrNull()
+                            if (clients[id] !== pair0 || watched[id] != server) continue
                             if (d != null) {
                                 detected += id
                                 if (d.coreRunning && !d.tuiRunning) {
@@ -101,12 +109,14 @@ class Fleet(
                         } catch (c: CancellationException) {
                             throw c
                         } catch (e: Exception) {
+                            if (clients[id] !== pair || watched[id] != server) continue
                             pair.first.reset()
                             val wait = ((retryStep[id] ?: 15_000L) * 2).coerceAtMost(10 * 60_000L)
                             retryStep[id] = wait
                             retryAt[id] = System.currentTimeMillis() + wait
                             FleetState(server, states[id]?.panes.orEmpty(), e.message ?: "unreachable", System.currentTimeMillis())
                         }
+                        if (clients[id] !== pair || watched[id] != server) continue
                         if (st.error == null) { retryAt.remove(id); retryStep.remove(id) }
                         states = states + (id to st)
                         if (st.error == null) onSeen(st)
