@@ -52,6 +52,7 @@ import com.billmongan.herdrdroid.herdr.Pane
 import com.billmongan.herdrdroid.herdr.SearchHit
 import com.billmongan.herdrdroid.herdr.Status
 import com.billmongan.herdrdroid.transcript.Item
+import com.billmongan.herdrdroid.transcript.Transcript
 import com.billmongan.herdrdroid.transcript.rowsOf
 import kotlinx.coroutines.launch
 import java.text.DateFormat
@@ -130,7 +131,14 @@ private fun HitView(vm: AppViewModel, hit: SearchHit, onBack: () -> Unit) {
     var items by remember(hit) { mutableStateOf<List<Item>?>(null) }
     var more by remember(hit) { mutableStateOf(false) }
     var problem by remember(hit) { mutableStateOf<String?>(null) }
-    LaunchedEffect(hit) { vm.readHit(hit).onSuccess { (i, m) -> items = i; more = m }.onFailure { problem = it.message } }
+    var times by remember(hit) { mutableStateOf<Map<String, Long>>(emptyMap()) }
+    LaunchedEffect(hit) {
+        vm.readHit(hit).onSuccess { r ->
+            items = Transcript.merge(emptyList(), r.items, true)
+            more = r.more
+            times = Transcript.timesOf(r.items)
+        }.onFailure { problem = it.message }
+    }
     val name = Pane("", "", "", hit.agent, Status.UNKNOWN, "", "").agentName
     Column(Modifier.fillMaxSize().background(Palette.Ground).systemBarsPadding()) {
         Row(Modifier.fillMaxWidth().padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -150,6 +158,7 @@ private fun HitView(vm: AppViewModel, hit: SearchHit, onBack: () -> Unit) {
             else -> ProvideAttachments(vm::attachmentBytes) {
                 TranscriptChat(
                     rows = remember(list) { rowsOf(list) }, working = false, workingLabel = "", agentName = name,
+                    itemTimes = times,
                     pending = emptyList(), more = more, size = vm.current?.textSize ?: 12.5f, family = vm.readingFont.family,
                     actions = ChatActions(onQuote = {}, onStop = null, onForward = null),
                     header = {}, footer = {}, state = rememberLazyListState(), modifier = Modifier.fillMaxSize(),

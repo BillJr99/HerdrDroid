@@ -199,7 +199,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var lastSent by mutableStateOf<Pair<String, String>?>(null)
         private set
-    private var lastSentAt = 0L
+    var lastSentAt by mutableStateOf(0L)
+        private set
 
     // ---- The open pane's structured conversation ----------------------------------------------
     var transcriptItems by mutableStateOf<List<Item>>(emptyList())
@@ -212,6 +213,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
     /** The open chat's item times on the computer's clock, by key (1.4.3: questions are placed by them). */
     var transcriptTimes by mutableStateOf<Map<String, Long>>(emptyMap())
+        private set
+    var transcriptLogTimes by mutableStateOf<Map<String, Long>>(emptyMap())
         private set
     /** When the app first saw each item of the open chat, on the computer's clock (1.4.3). */
     var transcriptSeen by mutableStateOf<Map<String, Long>>(emptyMap())
@@ -1386,6 +1389,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             transcriptCursor = c.cursor
             transcriptItems = c.items
             transcriptTimes = c.times
+            transcriptLogTimes = c.logTimes
             // A chat kept before 1.4.3 has no item times: read it again from the start, so every item
             // gets its log time before questions are placed among them (1.4.3, from review).
             if (c.items.isNotEmpty() && c.times.isEmpty()) transcriptCursor = ""
@@ -1400,6 +1404,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         transcriptCursor = ""
         transcriptItems = emptyList()
         transcriptTimes = emptyMap()
+        transcriptLogTimes = emptyMap()
         transcriptSeen = emptyMap()
         transcriptMore = false
         transcriptTitle = null
@@ -1537,7 +1542,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The open chat as it is now. */
     private fun openChatNow(paneId: String) = CachedChat(transcriptItems, transcriptCursor, transcriptMore, transcriptTitle,
-        transcriptStart, transcriptFile, pane(paneId)?.agent?.lowercase(), transcriptTimes, transcriptSeen)
+        transcriptStart, transcriptFile, pane(paneId)?.agent?.lowercase(), transcriptTimes, transcriptSeen, transcriptLogTimes)
 
     /** Keeps the open chat, in memory and on the phone, before it is left (another agent, a reconnect, a server switch). */
     private fun stashOpenChat() {
@@ -1692,11 +1697,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         // Another session or file starts its times afresh: its keys start over (1.4.3, from review).
         if (r.reset && Transcript.sessionOf(transcriptCursor) != Transcript.sessionOf(r.cursor)) {
             transcriptTimes = emptyMap(); transcriptSeen = emptyMap()
+            transcriptLogTimes = emptyMap()
         } else if (r.reset) {
             // The same session read again: a key whose item changed (a rewritten log) loses its old times.
             val fresh = Transcript.merge(emptyList(), r.items, true)
             transcriptTimes = Transcript.keptAcrossReset(transcriptTimes, transcriptItems, fresh)
             transcriptSeen = Transcript.keptAcrossReset(transcriptSeen, transcriptItems, fresh)
+            transcriptLogTimes = Transcript.keptAcrossReset(transcriptLogTimes, transcriptItems, fresh)
         }
         transcriptCursor = r.cursor
         noteHostClock(r)
@@ -1704,7 +1711,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             transcriptItems = Transcript.merge(transcriptItems, r.items, r.reset)
             // Log times where the log has them; otherwise, for a live read's new items, when the app
             // first saw them, kept across reloads. A bulk read makes none up (1.4.3).
-            val logged = transcriptTimes + Transcript.timesOf(r.items)
+            val recorded = Transcript.timesOf(r.items)
+            transcriptLogTimes = (transcriptLogTimes + recorded).filterKeys(Transcript.keysOfItems(transcriptItems)::contains)
+            val logged = transcriptTimes + recorded
             transcriptTimes = if (r.reset) logged else Transcript.stampSeen(logged, transcriptItems, seenNow(), Transcript.keysOf(r.items))
             transcriptSeen = Transcript.markSeen(transcriptSeen, transcriptItems, Transcript.keysOf(r.items), transcriptTimes, seenNow(), bulk = r.reset)
         }
@@ -1787,7 +1796,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val older = Transcript.merge(emptyList(), r.items, true)
                 val have = transcriptItems.map { it.key }.toSet()
                 transcriptItems = older.filter { it.key !in have } + transcriptItems
-                transcriptTimes = Transcript.timesOf(r.items) + transcriptTimes
+                val recorded = Transcript.timesOf(r.items)
+                transcriptLogTimes = (recorded + transcriptLogTimes).filterKeys(Transcript.keysOfItems(transcriptItems)::contains)
+                transcriptTimes = recorded + transcriptTimes
                 transcriptSeen = Transcript.markSeen(transcriptSeen, transcriptItems, Transcript.keysOf(r.items), transcriptTimes, seenNow(), bulk = true)
                 transcriptStart = runCatching { org.json.JSONObject(r.cursor).optLong("start", 0L) }.getOrDefault(0L)
                 transcriptMore = r.more
@@ -1859,10 +1870,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * agent that is working takes them in turn, so they stay up to 15 minutes; the screen view
      * (agents without a log) shows only the last for 20 seconds.
      */
-    fun pendingFor(paneId: String): List<String> {
+    fun pendingFor(paneId: String): List<Pair<String, Long>> {
         val now = System.currentTimeMillis()
         val hasLog = transcriptPane == paneId && transcriptState == TranscriptMode.ON
-        return pendingSends.filter { it.paneId == paneId && !it.removable && now - it.at < (if (hasLog) 15 * 60_000L else 20_000L) }.map { it.text }
+        return pendingSends.filter { it.paneId == paneId && !it.removable && now - it.at < (if (hasLog) 15 * 60_000L else 20_000L) }
+            .map { it.text to it.at }
     }
 
     /** The Stop button: the key each agent's own program uses to interrupt a turn. */
@@ -2995,7 +3007,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 h.sendMessage(p, a.keys)
                 answered()
                 withContext(Dispatchers.Main) { noteAnswer(a.paneId, null, a.keys, a.serverId) }  // after the send
-                if (a.serverId == current?.id && transcriptPane == a.paneId) lastSent = a.paneId to a.keys
+                if (a.serverId == current?.id && transcriptPane == a.paneId) {
+                    lastSentAt = System.currentTimeMillis()
+                    lastSent = a.paneId to a.keys
+                }
             }.onFailure {
                 Notify.needsYou(app, a.serverId, servers.firstOrNull { it.id == a.serverId }?.label ?: "", a.paneId, "The agent",
                     "Your reply couldn't be sent (${it.message}). Open the app to send it.", emptyList())
@@ -3470,14 +3485,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** One past session found by search, read through the pinned reader (any folder will do). */
-    suspend fun readHit(hit: com.billmongan.herdrdroid.herdr.SearchHit): Result<Pair<List<Item>, Boolean>> {
+    suspend fun readHit(hit: com.billmongan.herdrdroid.herdr.SearchHit): Result<com.billmongan.herdrdroid.transcript.TranscriptRead> {
         val h = herdr ?: return Result.failure(IllegalStateException("Not connected."))
         val pane = Pane(id = "search", tabId = "", workspaceId = "", agent = hit.agent, status = Status.UNKNOWN, title = "", cwd = "/")
         val s = PastSession(hit.ref, hit.db, hit.whenSec, hit.title, 0)
         return runCatching {
             val r = h.transcript(pane, s.pinCursor(), transcriptScript) ?: throw IllegalStateException("No reader for ${hit.agent}.")
             if (!r.ok) throw IllegalStateException(r.why ?: "That session couldn't be read.")
-            Transcript.merge(emptyList(), r.items, true) to r.more
+            r
         }
     }
 
@@ -3535,13 +3550,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** One past session's conversation, read without touching the live one. */
-    suspend fun readPastSession(paneId: String, s: PastSession): Result<Pair<List<Item>, Boolean>> {
+    suspend fun readPastSession(paneId: String, s: PastSession): Result<com.billmongan.herdrdroid.transcript.TranscriptRead> {
         val p = pane(paneId) ?: return Result.failure(IllegalStateException("That pane is gone."))
         val h = herdr ?: return Result.failure(IllegalStateException("Not connected."))
         return runCatching {
             val r = h.transcript(p, s.pinCursor(), transcriptScript) ?: throw IllegalStateException("No agent in this pane.")
             if (!r.ok) throw IllegalStateException(r.why ?: "That session couldn't be read.")
-            Transcript.merge(emptyList(), r.items, true) to r.more
+            r
         }
     }
 

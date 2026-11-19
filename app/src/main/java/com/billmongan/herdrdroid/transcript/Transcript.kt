@@ -202,6 +202,8 @@ object Transcript {
     /** The keys of a read's raw items. */
     fun keysOf(raw: List<JSONObject>): Set<String> = raw.mapNotNull { it.optString("k").ifEmpty { null } }.toHashSet()
 
+    fun keysOfItems(items: List<Item>): Set<String> = items.mapTo(HashSet()) { it.key }
+
     /** Each raw item's time ("ts", epoch ms on the computer's clock) by key, where the log has one (1.4.3). */
     fun timesOf(raw: List<JSONObject>): Map<String, Long> =
         raw.mapNotNull { j -> j.optString("k").ifEmpty { null }?.let { k -> j.optLong("ts", 0L).takeIf { it > 0 }?.let { k to it } } }.toMap()
