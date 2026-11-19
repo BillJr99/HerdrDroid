@@ -300,7 +300,7 @@ internal fun PaneCard(
                         fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = Palette.Ink, maxLines = 1, overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f),
                     )
-                    StatusPill(p.status)
+                    StatusPill(p.status, p.backgroundBusy)
                     if (onClose != null && p.status != Status.WORKING) {
                         Text("✕", color = Palette.Muted, fontSize = 15.sp, modifier = Modifier.clickable { onClose() }.padding(start = 2.dp))
                     }

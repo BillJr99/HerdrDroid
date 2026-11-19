@@ -30,6 +30,7 @@ data class Pane(
     val scrollOffset: Int? = null,
     val sessionId: String? = null,
     val terminalId: String? = null,
+    val backgroundBusy: Boolean = false,
 ) {
     val agentName: String
         get() = when (agent?.lowercase()) {
@@ -699,7 +700,7 @@ print(json.dumps(out))
 
     /** The processes, subagents and background tasks under [pane]. Read-only. */
     suspend fun work(pane: Pane, script: ByteArray): WorkInfo {
-        val r = ssh.execInput("$PYZ __work__ ${shq(pane.id)} ${shq(pane.agent.orEmpty())} ${shq(pane.cwd)}", z(script), timeoutSeconds = 30)
+        val r = ssh.execInput("$PYZ __work__ ${shq(pane.id)} ${shq(pane.agent.orEmpty())} ${shq(pane.cwd)} ${shq(pane.sessionId.orEmpty())}", z(script), timeoutSeconds = 30)
         if (r.out.isBlank()) throw HerdrError(r.err.trim().lines().lastOrNull { it.isNotBlank() } ?: "The work list couldn't be read.", r.exit)
         return parseWork(r.out)
     }
@@ -710,7 +711,7 @@ print(json.dumps(out))
         // Every agent: its running commands count as work too (1.2.5), not only Claude's subagents.
         val list = panes.filter { !it.agent.isNullOrBlank() }
         if (list.isEmpty()) return emptyMap<String, Int>() to emptyMap()
-        val arg = org.json.JSONArray(list.map { org.json.JSONArray(listOf(it.id, it.agent.orEmpty(), it.cwd)) }).toString()
+        val arg = org.json.JSONArray(list.map { org.json.JSONArray(listOf(it.id, it.agent.orEmpty(), it.cwd, it.sessionId.orEmpty())) }).toString()
         val r = ssh.execInput("$PYZ __workcounts__ ${shq(arg)}", z(script), timeoutSeconds = 30)
         return runCatching { parseWorkCounts(r.out) to parseBusyCounts(r.out) }.getOrDefault(emptyMap<String, Int>() to emptyMap())
     }
@@ -2154,5 +2155,5 @@ fun parseDetect(line: String): Detected {
  * active shells running", the Claude pane on another server).
  */
 fun withBusy(list: List<Pane>, busy: Map<String, Int>): List<Pane> = list.map { p ->
-    if ((p.status == Status.IDLE || p.status == Status.DONE || p.status == Status.UNKNOWN) && (busy[p.id] ?: 0) > 0) p.copy(status = Status.WORKING) else p
+    if ((p.status == Status.IDLE || p.status == Status.DONE || p.status == Status.UNKNOWN) && (busy[p.id] ?: 0) > 0) p.copy(status = Status.WORKING, backgroundBusy = true) else p
 }

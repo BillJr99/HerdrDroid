@@ -25,6 +25,12 @@ class FleetBusyTest {
         assertEquals(listOf(Status.WORKING, Status.DONE, Status.WORKING, Status.NEEDS_YOU), out.map { it.status })
     }
 
+    @Test fun busyBadgeAppliesOnlyToBackgroundWorkAndClearsAfterCompletion() {
+        val busy = sweptPanes(raw, Result.success(mapOf("p1" to 1, "p2" to 1, "p4" to 1)))
+        assertEquals(listOf(true, true, false, false), busy.map { it.backgroundBusy })
+        assertEquals(raw, sweptPanes(raw, Result.success(mapOf("p1" to 0))))
+    }
+
     @Test fun aFailedSweepFallsBackToHerdrsStatus() {
         val out = sweptPanes(raw, Result.failure(IllegalStateException("no /proc here")))
         assertEquals(raw, out)

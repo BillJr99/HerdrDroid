@@ -1293,6 +1293,8 @@ def proc_table():
             with open("/proc/%s/stat" % d) as f:
                 st = f.read()
             rest = st[st.rindex(")") + 2:].split()
+            if rest[0] in ("Z", "X"):
+                continue
             procs[int(d)] = (int(rest[1]), int(rest[19]), int(rest[11]) + int(rest[12]))
         except Exception:
             continue
@@ -1354,46 +1356,48 @@ def pane_procs(pane, table=None, pids=None):
     return out[:200], set(mine)
 
 
-def claude_session_dir(cwd):
-    d = os.path.join(HOME, ".claude", "projects", re.sub(r"[^A-Za-z0-9]", "-", cwd))
-    fs = glob.glob(os.path.join(d, "*.jsonl"))
-    if not fs:
-        return None, None
-    f = max(fs, key=mtime)
-    return f, os.path.splitext(f)[0]
+def claude_work_log(cwd, session, pid):
+    """Use Herdr's exact session ID or an open parent transcript of this Claude process."""
+    folder = os.path.realpath(os.path.join(HOME, ".claude", "projects", re.sub(r"[^A-Za-z0-9]", "-", cwd)))
+    if session:
+        if not re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", session):
+            return None
+        log = os.path.join(folder, session + ".jsonl")
+        return log if os.path.isfile(log) else None
+    logs = {f for f in open_files_of({pid}) if os.path.dirname(f) == folder and f.endswith(".jsonl")} if pid else set()
+    return next(iter(logs)) if len(logs) == 1 else None
 
 
-def claude_subagents(cwd, now):
-    log, sdir = claude_session_dir(cwd)
+def claude_subagents(log, now, titles=True):
+    sdir = os.path.splitext(log)[0]
     out = []
-    if not sdir:
-        return out
     fs = sorted(glob.glob(os.path.join(sdir, "subagents", "agent-*.jsonl")), key=mtime, reverse=True)[:30]
     for f in fs:
         st = os.stat(f)
         title = None
-        try:
-            with open(f, "rb") as h:
-                for n, line in enumerate(h):
-                    if n > 60:
-                        break
-                    try:
-                        r = json.loads(line)
-                    except Exception:
-                        continue
-                    m = r.get("message") if isinstance(r.get("message"), dict) else None
-                    if m and isinstance(m.get("content"), list):
-                        for b in m["content"]:
-                            if isinstance(b, dict) and b.get("type") == "tool_use" and isinstance(b.get("input"), dict) and b["input"].get("description"):
-                                title = title or b["input"]["description"]
-                    if m and m.get("role") == "user" and not r.get("isMeta"):
-                        t = (text_of(m.get("content")) or "").strip()
-                        if t and not t.startswith("<"):
-                            title = title or first_line(t, 100)
-                    if title:
-                        break
-        except Exception:
-            pass
+        if titles:
+            try:
+                with open(f, "rb") as h:
+                    for n, line in enumerate(h):
+                        if n > 60:
+                            break
+                        try:
+                            r = json.loads(line)
+                        except Exception:
+                            continue
+                        m = r.get("message") if isinstance(r.get("message"), dict) else None
+                        if m and isinstance(m.get("content"), list):
+                            for b in m["content"]:
+                                if isinstance(b, dict) and b.get("type") == "tool_use" and isinstance(b.get("input"), dict) and b["input"].get("description"):
+                                    title = title or b["input"]["description"]
+                        if m and m.get("role") == "user" and not r.get("isMeta"):
+                            t = (text_of(m.get("content")) or "").strip()
+                            if t and not t.startswith("<"):
+                                title = title or first_line(t, 100)
+                        if title:
+                            break
+            except Exception:
+                pass
         out.append({"id": os.path.basename(f)[6:-6], "file": f, "title": title or "Subagent",
                     "updated": int(st.st_mtime), "active": subagent_active(f, st, now), "kb": st.st_size // 1024})
     return out
@@ -1442,11 +1446,8 @@ def subagent_active(f, st, now):
     return (not ended) and now - st.st_mtime < 120
 
 
-def claude_tasks(cwd, now, open_files):
-    log, sdir = claude_session_dir(cwd)
-    if not log:
-        return []
-    sid = os.path.basename(sdir)
+def claude_tasks(cwd, log, open_files, titles=True):
+    sid = os.path.basename(os.path.splitext(log)[0])
     slug = re.sub(r"[^A-Za-z0-9]", "-", cwd)
     tdir = os.path.join("/tmp", "claude-%d" % os.getuid(), slug, sid, "tasks")
     fs = sorted(glob.glob(os.path.join(tdir, "*.output")), key=mtime, reverse=True)[:20]
@@ -1454,34 +1455,35 @@ def claude_tasks(cwd, now, open_files):
         return []
     # What each task is, from the session log: a background tool call and the id its result names.
     what = {}
-    try:
-        size = os.path.getsize(log)
-        with open(log, "rb") as h:
-            h.seek(max(0, size - 4_000_000))
-            uses = {}
-            for line in h:
-                if b"tool_use" not in line and b"tool_result" not in line:
-                    continue
-                try:
-                    r = json.loads(line)
-                except Exception:
-                    continue
-                m = r.get("message") if isinstance(r.get("message"), dict) else None
-                if not m or not isinstance(m.get("content"), list):
-                    continue
-                for b in m["content"]:
-                    if not isinstance(b, dict):
+    if titles:
+        try:
+            size = os.path.getsize(log)
+            with open(log, "rb") as h:
+                h.seek(max(0, size - 4_000_000))
+                uses = {}
+                for line in h:
+                    if b"tool_use" not in line and b"tool_result" not in line:
                         continue
-                    if b.get("type") == "tool_use" and isinstance(b.get("input"), dict):
-                        i = b["input"]
-                        uses[b.get("id")] = i.get("description") or first_line(str(i.get("command") or i.get("prompt") or b.get("name")), 100)
-                    elif b.get("type") == "tool_result":
-                        t = text_of(b.get("content")) or ""
-                        for tid in re.findall(r"(?:ID|id)[:\s]+([a-z0-9]{6,})", t):
-                            if b.get("tool_use_id") in uses:
-                                what[tid] = uses[b["tool_use_id"]]
-    except Exception:
-        pass
+                    try:
+                        r = json.loads(line)
+                    except Exception:
+                        continue
+                    m = r.get("message") if isinstance(r.get("message"), dict) else None
+                    if not m or not isinstance(m.get("content"), list):
+                        continue
+                    for b in m["content"]:
+                        if not isinstance(b, dict):
+                            continue
+                        if b.get("type") == "tool_use" and isinstance(b.get("input"), dict):
+                            i = b["input"]
+                            uses[b.get("id")] = i.get("description") or first_line(str(i.get("command") or i.get("prompt") or b.get("name")), 100)
+                        elif b.get("type") == "tool_result":
+                            t = text_of(b.get("content")) or ""
+                            for tid in re.findall(r"(?:ID|id)[:\s]+([a-z0-9]{6,})", t):
+                                if b.get("tool_use_id") in uses:
+                                    what[tid] = uses[b["tool_use_id"]]
+        except Exception:
+            pass
     out = []
     for f in fs:
         st = os.stat(f)
@@ -1505,13 +1507,15 @@ def open_files_of(pids):
     return out
 
 
-def pane_work(pane, agent, cwd):
+def pane_work(pane, agent, cwd, session=""):
     now = time.time()
     procs, pids = pane_procs(pane)
     work = {"ok": True, "procs": procs, "subagents": [], "tasks": []}
     if agent == "claude" and cwd:
-        work["subagents"] = claude_subagents(cwd, now)
-        work["tasks"] = claude_tasks(cwd, now, open_files_of(pids))
+        log = claude_work_log(cwd, session, agent_pid(procs, agent))
+        if log:
+            work["subagents"] = claude_subagents(log, now)
+            work["tasks"] = claude_tasks(cwd, log, open_files_of(pids))
     return work
 
 
@@ -1524,46 +1528,29 @@ HELPER_RE = re.compile(
     re.I)
 
 
-def protected_pids(procs, agent):
-    """The pane's shell, any launcher and the agent's own process: never "work". As in Work.kt.
-    A helper (an app server or daemon the agent left running, say) is never taken for the agent."""
-    by_pid = {p["pid"]: p for p in procs}
-    roots = {p["pid"] for p in procs if p["depth"] == 0 or "agent-startup" in p["cmd"]}
+def agent_pid(procs, agent):
     if not agent:
-        return roots
+        return None
     a = agent.lower()
     # The agent's name as a whole word (1.3.0, from a code review: as a substring, "pi" matched pip
     # and pigz); "kiro-cli" and "vibe-rs" still match.
     word = re.compile(r"(?<![a-z0-9])" + re.escape(a) + r"(?![a-z0-9])")
     ok = [p for p in procs if not HELPER_RE.search(p["cmd"])]
-    cand = [p for p in ok if word.search(p["name"].lower())] or \
-        [p for p in ok if word.search(p["cmd"].lower()) and "agent-startup" not in p["cmd"]]
-    if not cand:
-        return roots
-    cur = min(cand, key=lambda p: p["depth"])
-    while cur is not None:
-        roots.add(cur["pid"])
-        cur = by_pid.get(cur["ppid"])
-    return roots
+    cand = [p for p in ok if word.search(p["name"].lower())]
+    if not cand and a != "claude":
+        cand = [p for p in ok if word.search(p["cmd"].lower()) and "agent-startup" not in p["cmd"]]
+    return min(cand, key=lambda p: p["depth"])["pid"] if cand else None
 
 
 def active_shells(procs, agent):
-    """Commands the agent started that are still running: not the shell, launcher or agent, not a
-    helper (or a helper's child), and started more than two minutes after the agent, so what it
-    started with itself does not count. As WorkInfo.activeProcs in Work.kt."""
-    keep = protected_pids(procs, agent)
-    ages = [p["age"] for p in procs if p["pid"] in keep and p["depth"] > 0]
-    agent_age = min(ages) if ages else None
-    helpers, out = set(), []
+    """Live agent descendants, excluding known helpers and their descendants."""
+    root = agent_pid(procs, agent)
+    parents = {root} if root is not None else {p["pid"] for p in procs if not agent and p["depth"] == 0}
+    out = []
     for p in procs:  # tree order: a parent comes before its children
-        if p["pid"] in keep:
-            continue
-        if p["ppid"] in helpers or HELPER_RE.search(p["cmd"]):
-            helpers.add(p["pid"])
-            continue
-        if agent_age is not None and p["age"] >= agent_age - 120:
-            continue
-        out.append(p)
+        if p["pid"] != root and p["ppid"] in parents and not HELPER_RE.search(p["cmd"]):
+            parents.add(p["pid"])
+            out.append(p)
     return out
 
 
@@ -1579,23 +1566,27 @@ def work_counts(panes):
     out = {}
     busy = {}
     shells = {}
-    for pane, agent, cwd in panes:
+    for pane, agent, cwd, session in panes:
         # The card's count: subagents still running (shells are counted on the agent's own screen).
         # "busy" adds the background tasks and the commands the agent started that still run, for
         # every agent, so an agent herdr calls idle shows as working while any of them is active.
         n = 0
         tasks = 0
+        procs = []
+        pids = by_pane.get(pane, set())
         try:
-            procs, _ = pane_procs(pane, table, by_pane.get(pane, set()))
+            procs, _ = pane_procs(pane, table, pids)
             shells[pane] = len(active_shells(procs, agent))
         except Exception:
             shells[pane] = 0
         if agent == "claude" and cwd:
-            n += sum(1 for s in claude_subagents(cwd, now) if s["active"])
             try:
-                tasks = sum(1 for t in claude_tasks(cwd, now, open_files_of(by_pane.get(pane, set()))) if t.get("running"))
-            except Exception:
-                tasks = 0
+                log = claude_work_log(cwd, session, agent_pid(procs, agent))
+                if log:
+                    n = sum(1 for s in claude_subagents(log, now, titles=False) if s["active"])
+                    tasks = sum(1 for t in claude_tasks(cwd, log, open_files_of(pids), titles=False) if t["running"])
+            except OSError:
+                pass
         out[pane] = n
         busy[pane] = n + tasks + shells[pane]
     return {"ok": True, "counts": out, "busy": busy, "shells": shells}
@@ -1764,9 +1755,9 @@ def main():
         try:
             mode = sys.argv[1]
             if mode == "__work__":
-                done(pane_work(sys.argv[2], (sys.argv[3] if len(sys.argv) > 3 else "").lower(), (sys.argv[4] if len(sys.argv) > 4 else "").rstrip("/")))
+                done(pane_work(sys.argv[2], (sys.argv[3] if len(sys.argv) > 3 else "").lower(), (sys.argv[4] if len(sys.argv) > 4 else "").rstrip("/"), sys.argv[5] if len(sys.argv) > 5 else ""))
             if mode == "__workcounts__":
-                done(work_counts([(p, a.lower(), c.rstrip("/")) for p, a, c in json.loads(sys.argv[2])]))
+                done(work_counts([(p, a.lower(), c.rstrip("/"), sid) for p, a, c, sid in json.loads(sys.argv[2])]))
             if mode == "__tail__":
                 done(tail_file(sys.argv[2], int(sys.argv[3])))
             if mode == "__stop__":

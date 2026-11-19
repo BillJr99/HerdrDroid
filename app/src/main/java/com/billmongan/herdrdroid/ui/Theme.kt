@@ -251,17 +251,17 @@ fun HerdrTheme(dark: Boolean, variant: DarkPalette = DarkPalette.STANDARD, light
 
 data class StatusLook(val label: String, val ink: Color, val bg: Color, val tile: Color)
 
-fun look(status: Status) = when (status) {
+fun look(status: Status, backgroundBusy: Boolean = false) = when (status) {
     Status.NEEDS_YOU -> StatusLook("Needs you", Palette.OrangeInk, Palette.OrangeSoft, Palette.OrangeTile)
-    Status.WORKING -> StatusLook("Working", Palette.Blue, Palette.BlueSoft, Palette.BlueTile)
+    Status.WORKING -> StatusLook(if (backgroundBusy) "Busy" else "Working", Palette.Blue, Palette.BlueSoft, Palette.BlueTile)
     Status.DONE -> StatusLook("Done", Palette.Green, Palette.GreenSoft, Palette.Gray)
     Status.IDLE -> StatusLook("Idle", Palette.Muted, Palette.Gray, Palette.Gray)
     Status.UNKNOWN -> StatusLook("Shell", Palette.Muted, Palette.Gray, Palette.Gray)
 }
 
 @Composable
-fun StatusPill(status: Status) {
-    val l = look(status)
+fun StatusPill(status: Status, backgroundBusy: Boolean = false) {
+    val l = look(status, backgroundBusy)
     Text(
         l.label,
         color = l.ink,
