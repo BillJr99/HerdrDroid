@@ -2,6 +2,7 @@ package com.billmongan.herdrdroid.voice
 
 import com.billmongan.herdrdroid.herdr.Status
 import com.billmongan.herdrdroid.transcript.TextItem
+import com.billmongan.herdrdroid.transcript.ThinkItem
 import com.billmongan.herdrdroid.transcript.UserItem
 import org.junit.Assert.*
 import org.junit.Test
@@ -54,6 +55,33 @@ class VoiceSessionTest {
         assertNull(monitor.observe(snapshot.copy(session = "b")))
         monitor.clear()
         assertNull(monitor.observe(snapshot))
+    }
+
+    @Test fun initialWorkingReplyFollowedByThinkingAnnouncesUnchangedTextOnce() {
+        val monitor = NewVoiceReplies()
+        val working = VoiceReplySnapshot("a", Status.WORKING, listOf(
+            UserItem("old-q", "Old question"), TextItem("old-a", "Old answer"),
+            UserItem("q", "Check the build"), TextItem("a", "Build passed"),
+            ThinkItem("thinking", "Checking the result", null),
+        ))
+        assertNull(monitor.observe(working))
+        val done = working.copy(status = Status.DONE)
+        assertNull(monitor.observe(done))
+        assertEquals("Build passed", monitor.observe(done))
+        assertNull(monitor.observe(done))
+    }
+
+    @Test fun workingTurnWithoutReplyDoesNotUnseedPreviousAnswer() {
+        val monitor = NewVoiceReplies()
+        val working = VoiceReplySnapshot("a", Status.WORKING, listOf(
+            UserItem("old-q", "Old question"), TextItem("old-a", "Old answer"),
+            UserItem("q", "New question"), ThinkItem("thinking", "In progress", null),
+        ))
+        assertNull(monitor.observe(working))
+        // A subsequent read may be missing the new turn; the old answer was still seeded.
+        val shorter = working.copy(status = Status.DONE, items = working.items.take(2))
+        assertNull(monitor.observe(shorter))
+        assertNull(monitor.observe(shorter))
     }
 
     @Test fun everyDocumentedCommandParses() {

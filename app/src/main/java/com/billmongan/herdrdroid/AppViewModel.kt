@@ -2119,7 +2119,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         var missing = 0
         val outcome = com.billmongan.herdrdroid.herdr.HeldSendRetry().run(
             // The 2 minutes start when it reaches the front of the pane's queue (from Grok's review).
-            startedAt = System.currentTimeMillis(),
+            startedAt = com.billmongan.herdrdroid.herdr.HeldSendRetry.monotonicMillis(),
             firstWhy = p.held ?: "held",
             cancelled = {
                 missing = if (pane(p.paneId) == null) missing + 1 else 0
@@ -2362,7 +2362,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val release = paneDispatch.tryAcquire(key)
         if (release == null || !beginAnswer(key)) {
             release?.invoke()
-            feedback?.invoke("Another input is already being sent to this pane.")
+            val message = "Another input is already being sent to this pane."
+            flash(message)
+            feedback?.invoke(message)
             return
         }
         viewModelScope.launch {

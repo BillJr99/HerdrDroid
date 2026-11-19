@@ -60,7 +60,8 @@ internal class NewVoiceReplies {
             session = snapshot.session
             val lastUser = items.indexOfLast { it is UserItem }
             val inProgress = if (snapshot.status == Status.WORKING && lastUser >= 0) {
-                (items.lastOrNull() as? TextItem)?.key
+                // Thinking and tool activity can follow the in-progress assistant text.
+                items.subList(lastUser + 1, items.size).lastOrNull { it is TextItem }?.key
             } else null
             seen += items.map { it.key }.filterNot { it == inProgress }
             return null
