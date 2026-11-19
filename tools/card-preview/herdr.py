@@ -14,7 +14,7 @@ if args == ["bulk"]:
 
 source = "unexpected"
 if args[:4] == ["pane", "read", "p1", "--source"]:
-    if args[4:] == ["visible"]:
+    if args[4:] == ["visible", "--format", "ansi"]:
         source = "visible"
     elif args[4] == "recent" and args[-2:] == ["--format", "ansi"]:
         source = "recent"

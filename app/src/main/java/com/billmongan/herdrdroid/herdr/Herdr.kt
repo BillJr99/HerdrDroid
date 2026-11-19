@@ -272,7 +272,9 @@ class Herdr internal constructor(
     /** Only the live viewport, with no fallback into old scrollback. */
     internal suspend fun readCardViewport(id: String, connection: Any, timeoutSeconds: Long = 5): String = stripAnsi(
         if (core) runNow(hcCmd("read", id, "--lines", "80"), timeoutSeconds, connection)
-        else runNow(cmd("pane", "read", id, "--source", "visible"), timeoutSeconds, connection)
+        // Match the recent snapshot's serializer. Plain visible text trims row endings,
+        // which can change exact approval identity even when the pane hasn't redrawn.
+        else runNow(cmd("pane", "read", id, "--source", "visible", "--format", "ansi"), timeoutSeconds, connection)
     )
 
     /**
