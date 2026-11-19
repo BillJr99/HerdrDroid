@@ -933,15 +933,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The app is visible again. After more than a few seconds away the old socket is likely dead,
      *  so it is replaced before any poll can stall on it. */
-    fun onForeground() {
+    fun onForeground(handsFreeActive: Boolean = false) {
         foreground = true
-        // The fingerprint window passed while the app was away: ask again before showing anything.
-        if (!locked && vaultNeedsUnlock()) locked = true
+        // Only an already-running, explicitly started session can defer the app prompt.
+        // Keystore authentication and any lock already in effect are unchanged.
+        if (!handsFreeActive) refreshAppLock()
         if (watchOthers && herdr != null) fleet?.watch(watchable())
         if (herdr != null && backgroundAt > 0 && System.currentTimeMillis() - backgroundAt > 8_000) {
             ssh?.reset()
             linkLost(null)
         }
+    }
+
+    internal fun onHandsFreeEnded() {
+        if (foreground) refreshAppLock()
+    }
+
+    private fun refreshAppLock() {
+        if (!locked && vaultNeedsUnlock()) locked = true
     }
 
     fun onBackground() {

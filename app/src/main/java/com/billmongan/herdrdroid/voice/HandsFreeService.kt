@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.media.AudioFocusRequest
@@ -43,11 +44,15 @@ class HandsFreeService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == STOP || command == null) {
-            stopSelf()
+        if (intent?.action == STOP) {
+            stopListening()
             return START_NOT_STICKY
         }
         if (running) return START_NOT_STICKY
+        if (intent == null || command == null || admitStart?.invoke() != true) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
         notificationManager.createNotificationChannel(NotificationChannel(CHANNEL, "Hands-free voice", NotificationManager.IMPORTANCE_LOW))
         if (!notificationManager.areNotificationsEnabled() ||
             notificationManager.getNotificationChannel(CHANNEL)?.importance == NotificationManager.IMPORTANCE_NONE) {
@@ -68,9 +73,9 @@ class HandsFreeService : Service() {
         }
         running = true
         val session = ++generation
-        active = true
+        activeService = this
         problem = null
-        main.postDelayed({ stopSelf() }, SESSION_MS)
+        main.postDelayed({ stopListening() }, SESSION_MS)
         worker = Thread({
             try {
                 listen(session)
@@ -78,14 +83,14 @@ class HandsFreeService : Service() {
                 main.post {
                     if (isCurrent(session)) {
                         problem = "Hands-free voice stopped: ${e.message ?: "microphone unavailable"}"
-                        stopSelf()
+                        stopListening()
                     }
                 }
             } catch (e: LinkageError) {
                 main.post {
                     if (isCurrent(session)) {
                         problem = "Offline voice recognition is unavailable on this device."
-                        stopSelf()
+                        stopListening()
                     }
                 }
             }
@@ -297,11 +302,22 @@ class HandsFreeService : Service() {
     private fun resultText(json: String): String = JSONObject(json).optString("text").trim()
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        stopSelf()
+        stopListening()
         super.onTaskRemoved(rootIntent)
     }
 
+    private fun stopListening() {
+        endSession()
+        stopSelf()
+    }
+
     override fun onDestroy() {
+        endSession()
+        super.onDestroy()
+    }
+
+    private fun endSession() {
+        if (!running) return
         running = false
         generation++
         synchronized(recorderLock) {
@@ -312,12 +328,23 @@ class HandsFreeService : Service() {
         main.removeCallbacksAndMessages(null)
         wakeLock?.let { if (it.isHeld) it.release() }
         capturingCommand = false
-        active = false
-        sessionEnded?.invoke()
-        super.onDestroy()
+        if (activeService === this) {
+            activeService = null
+            sessionEnded?.invoke()
+        }
     }
 
     companion object {
+        private var activeService by mutableStateOf<HandsFreeService?>(null)
+        internal val active: Boolean get() = activeService != null
+
+        /** Revoke the session on the main thread before Android delivers onDestroy. */
+        internal fun stop(context: Context) {
+            activeService?.endSession()
+            context.stopService(Intent(context, HandsFreeService::class.java))
+        }
+
+        internal var admitStart: (() -> Boolean)? = null
         private val modelLock = Any()
         private const val CHANNEL = "hands_free_voice"
         private const val ID = 20060
@@ -331,8 +358,6 @@ class HandsFreeService : Service() {
             private set
         internal var sessionEnded: (() -> Unit)? = null
         internal var command: ((String) -> Unit)? = null
-        internal var active by mutableStateOf(false)
-            private set
         internal var problem by mutableStateOf<String?>(null)
             private set
     }

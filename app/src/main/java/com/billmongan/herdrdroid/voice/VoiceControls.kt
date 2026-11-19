@@ -69,7 +69,7 @@ internal class VoiceControls(private val context: Context, private val vm: AppVi
         }
         if (command !is VoiceCommand.Dictate && command != VoiceCommand.ConfirmMessage && command != VoiceCommand.Repeat) messages.clear()
         if (command != VoiceCommand.Repeat) confirmation = null
-        fun stillAllowed() = !vm.locked && !(HandsFreeService.active && vm.appLock) && revision == sessionRevision
+        fun stillAllowed() = !vm.locked && revision == sessionRevision
         val paneId = (vm.screen as? Screen.Agent)?.paneId
         val server = vm.current
         val pane = paneId?.let(vm::pane)
@@ -214,7 +214,7 @@ internal class VoiceControls(private val context: Context, private val vm: AppVi
         val revision = sessionRevision
         var target: AppViewModel.VoiceTarget? = null
         val replies = NewVoiceReplies()
-        fun active() = HandsFreeService.active && sessionRevision == revision && !vm.appLock && !vm.locked
+        fun active() = HandsFreeService.active && sessionRevision == revision && !vm.locked
         fun busy() = mutex.isLocked || Speaker.speakingKey != null || HandsFreeService.capturingCommand ||
             pending?.let { it.target == vm.voiceTarget() && SystemClock.elapsedRealtime() < it.expires } == true ||
             messages.isPending(vm.voiceTarget())
