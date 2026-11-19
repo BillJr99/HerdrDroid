@@ -13,6 +13,10 @@ import com.billmongan.herdrdroid.herdr.forPhone
 import com.billmongan.herdrdroid.transcript.lastReply
 import com.billmongan.herdrdroid.transcript.toMarkdown
 import com.billmongan.herdrdroid.herdr.detectPrompt
+import com.billmongan.herdrdroid.herdr.Prompt
+import com.billmongan.herdrdroid.herdr.Choice
+import com.billmongan.herdrdroid.herdr.cardAnswerStillFits
+import com.billmongan.herdrdroid.herdr.moveKeys
 import com.billmongan.herdrdroid.hermes.HermesChat
 import com.billmongan.herdrdroid.notify.AppBus
 import com.billmongan.herdrdroid.notify.Notify
@@ -2041,7 +2045,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return null
     }
 
-    fun sendMessage(pane: Pane, text: String, force: Boolean = false, typedAnswer: Boolean = false, delivered: () -> Unit = {}) {
+    fun sendMessage(pane: Pane, text: String, force: Boolean = false, delivered: () -> Unit = {}) {
         lastSent = pane.id to text
         lastSentAt = System.currentTimeMillis()
         val pendingId = System.nanoTime()
@@ -2052,16 +2056,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${pane.id} (${pane.agent ?: "shell"}, ${pane.status}): ${text.length} chars; link ${link}, ${if (herdr == null) "no client" else "client ready"}")
         act(pane.id, "Couldn't send", pendingId) { h ->
             if (pendingSends.none { it.id == pendingId }) return@act
-            if (typedAnswer && pane.agent?.lowercase() in setOf("codex", "hermes")) {
-                val visible = readForCard(h, pane.id)
-                val fresh = visible?.let { detectPrompt(it, pane(pane.id)?.status == Status.NEEDS_YOU, pane.agent) }
-                if (fresh == null || fresh.terminalReview) {
-                    pendingSends = pendingSends.map { if (it.id == pendingId) it.copy(undelivered = true) else it }
-                    flash("Open the terminal to review the active question before answering.")
-                    return@act
-                }
-            }
-            if (!typedAnswer) {
+            run {
                 // Behind an earlier held message unless the user explicitly chose Force send.
                 val earlier = !force && pendingSends.any { it.paneId == pane.id && it.waiting && it.id != pendingId }
                 // Read with its styles (1.4.6), so an agent's dim placeholder isn't taken for typing.
@@ -2217,13 +2212,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun sendKeys(paneId: String, vararg keys: String) = sendKeysThen(paneId, keys.toList()) {}
-
-    /** Sends keys, then runs [sent] once they went out (1.3.2: a key answer is recorded only then). */
-    fun sendKeysThen(paneId: String, keys: List<String>, sent: () -> Unit) {
+    /** Explicit terminal input, not an answer to a rendered card. */
+    fun sendKeys(paneId: String, vararg keys: String) {
         act(paneId, "Couldn't send the key", input = true) { h ->
-            h.sendKeys(paneId, *keys.toTypedArray())
-            sent()
+            h.sendKeys(paneId, *keys)
             readPane(paneId)
         }
     }
@@ -2359,6 +2351,55 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return true
     }
 
+    internal data class CardTarget(val client: Herdr, val connection: Any, val server: String, val visit: Long, val pane: Pane)
+
+    internal fun cardTarget(paneId: String): CardTarget? {
+        if ((screen as? Screen.Agent)?.paneId != paneId || locked || link != Link.CONNECTED) return null
+        val client = herdr ?: return null
+        return CardTarget(client, client.connectionIdentity ?: return null, current?.id ?: return null,
+            paneVisit, pane(paneId) ?: return null)
+    }
+
+    private fun Pane.sameCardOccupant(other: Pane) = id == other.id && agent == other.agent &&
+        sessionId == other.sessionId && tabId == other.tabId && workspaceId == other.workspaceId && cwd == other.cwd
+
+    private fun CardTarget.isCurrent(h: Herdr): Boolean = client === h && cardTarget(pane.id)?.let {
+        it.client === client && it.connection === connection && it.server == server && it.visit == visit &&
+            it.pane.sameCardOccupant(pane)
+    } == true
+
+    private suspend fun CardTarget.freshAnswer(h: Herdr, shown: Prompt): Prompt? {
+        if (shown.terminalReview || !isCurrent(h)) return null
+        val text = readForCard(h, pane.id)?.takeUnless { it.isBlank() } ?: return null
+        if (!isCurrent(h)) return null
+        // Confirm the occupant after the read, so pane reuse during the read cannot validate it.
+        val currentPane = h.panes().singleOrNull { it.id == pane.id } ?: return null
+        if (!isCurrent(h) || !pane.sameCardOccupant(currentPane) || (currentPane.scrollOffset ?: 0) != 0) return null
+        return detectPrompt(text, currentPane.status == Status.NEEDS_YOU, currentPane.agent, versionOf(pane.id))
+            ?.takeIf { cardAnswerStillFits(shown, it) }
+    }
+
+    internal fun answerCardKey(target: CardTarget?, prompt: Prompt, key: String, label: String) {
+        answerCardInput(target, prompt, label) { h, t, _ ->
+            h.sendKeys(t.pane.id, key, expectedConnection = t.connection)
+            true
+        }
+    }
+
+    private fun answerCardInput(target: CardTarget?, shown: Prompt, label: String,
+        send: suspend (Herdr, CardTarget, Prompt) -> Boolean,
+    ) {
+        val refused = "Not sent. Refresh the question or open the terminal to answer."
+        if (target == null || shown.terminalReview) { flash(refused); return }
+        val id = target.pane.id
+        answerOnce(id) { h ->
+            val fresh = target.freshAnswer(h, shown)
+            if (fresh == null || !send(h, target, fresh)) { flash(refused); return@answerOnce }
+            noteAnswer(id, shown, label, serverId = target.server)
+            readPane(id)
+        }
+    }
+
     private fun answerOnce(paneId: String, feedback: ((String) -> Unit)? = null, run: suspend (Herdr) -> Unit) {
         val server = current?.id ?: return
         val client = herdr
@@ -2416,46 +2457,28 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         fun report(message: String) { flash(message); feedback?.invoke(message) }
+        val target = cardTarget(paneId)
+        if (target == null) { report("Not sent. Refresh the question before trying again."); return }
         val agentName = pane(paneId)?.agentName ?: "the agent"
         com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: tapped \"${choice.label.take(60)}\" (option ${choice.keys}, highlighted ${prompt.selected})")
         answerOnce(paneId, feedback) { h ->
-            // The keys come from the screen as it is now, not as it was drawn (1.4.3, Bill: "isn't
-            // letting me click your button"): a highlight that moved since, or a card that changed,
-            // would otherwise send the wrong keys or keys nothing answers.
-            // Read the way the card was (1.4.8, from Grok's review): recent output, or the visible screen
-            // when that fails, so the tap sees the card the card was made from.
-            val sid = current?.id
-            val visit = paneVisit
-            val now = readForCard(h, paneId)
-            if (current?.id != sid || herdr !== h || paneVisit != visit || (screen as? Screen.Agent)?.paneId != paneId) {
-                report("Not sent. The pane changed.")
+            // Match the displayed card, but calculate its keys from the current highlight.
+            val fresh = target.freshAnswer(h, prompt)
+            if (fresh == null || choice !in fresh.choices) {
+                report("Not sent. Refresh the question or open the terminal to answer.")
+                readPane(paneId)
                 return@answerOnce
             }
-            if (now.isNullOrBlank()) {
-                // Nothing is sent blind (from review): the screen couldn't be read at the tap.
-                com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: the screen couldn't be read at the tap; nothing sent")
-                withContext(Dispatchers.Main) { report("Not sent: $agentName's screen couldn't be read just now. Try again.") }
-                return@answerOnce
-            }
-            // Parsed the way the card was: with the pane's own status (from review).
-            val fresh = com.billmongan.herdrdroid.herdr.detectPrompt(now, pane(paneId)?.status == Status.NEEDS_YOU, pane(paneId)?.agent, versionOf(paneId))
-            if (voiceQuestion != null && (locked || !voiceAllowed() || fresh == null || voiceQuestionKey(paneId, fresh) != voiceQuestion)) {
+            if (voiceQuestion != null && (locked || !voiceAllowed() || voiceQuestionKey(paneId, fresh) != voiceQuestion)) {
                 report("The question changed. No answer was sent.")
                 return@answerOnce
             }
-            val same = fresh?.choices?.firstOrNull { it.label.filterNot(Char::isWhitespace) == choice.label.filterNot(Char::isWhitespace) }
-            val use = if (fresh != null && same != null) fresh to same else prompt to choice
+
             // Only the card that was tapped is answered (1.4.8, Bill: "Maybe it is passing the same
             // approval to two inputs?"): Muse's next stage asks with the same options, so a second tap,
             // or a tap that lands after the screen moved on, would answer a question nobody has seen.
             val tappedSig = com.billmongan.herdrdroid.transcript.QuestionLog.signature(prompt)
-            val freshSig = fresh?.let { com.billmongan.herdrdroid.transcript.QuestionLog.signature(it) }
-            if (same != null && (freshSig == null || !com.billmongan.herdrdroid.transcript.QuestionLog.sameCard(freshSig, tappedSig))) {
-                com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: the question on screen is not the one tapped; nothing sent")
-                withContext(Dispatchers.Main) { report("Not sent: $agentName is asking something new. Check the card and answer again.") }
-                readPane(paneId)
-                return@answerOnce
-            }
+
             val before = answeredRecently(paneId, tappedSig)
             if (before != null) {
                 com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: this card was answered ${(System.currentTimeMillis() - before) / 1000} s ago; not sent twice")
@@ -2463,23 +2486,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 readPane(paneId)
                 return@answerOnce
             }
-            if (same == null) {
-                com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: \"${choice.label.take(40)}\" is no longer on the screen; nothing sent")
-                withContext(Dispatchers.Main) { report("Not sent: \"${choice.label.take(40)}\" is no longer on $agentName's screen.") }
-                readPane(paneId)
-                return@answerOnce
-            }
+
             // A transport error after any key is sent leaves delivery uncertain. Keep the guard
             // active until the next screen read even when the send did not return a receipt.
-            sid?.let { answeredCards[it to paneId] = tappedSig to System.currentTimeMillis() }
-            val keys = com.billmongan.herdrdroid.herdr.menuKeys(use.first, use.second)
+            answeredCards[target.server to paneId] = tappedSig to System.currentTimeMillis()
+            val keys = com.billmongan.herdrdroid.herdr.menuKeys(fresh, choice)
+            val connection = voiceConnection ?: target.connection
             if (keys == null) {
-                if (use.second.pressEnter) h.typeAndEnter(paneId, use.second.keys, voiceConnection)
-                else h.sendText(paneId, use.second.keys, voiceConnection)
-            } else h.sendKeys(paneId, *keys.toTypedArray(), expectedConnection = voiceConnection)
-            val sent = keys?.joinToString(" ") { keyName(it) } ?: use.second.keys
+                if (choice.pressEnter) h.typeAndEnter(paneId, choice.keys, connection)
+                else h.sendText(paneId, choice.keys, connection)
+            } else h.sendKeys(paneId, *keys.toTypedArray(), expectedConnection = connection)
+            val sent = keys?.joinToString(" ") { keyName(it) } ?: choice.keys
             com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: sent $sent")
-            noteAnswer(paneId, prompt, choice.label, serverId = sid)
+            noteAnswer(paneId, prompt, choice.label, serverId = target.server)
             // Say what went (1.4.3): a tap that answers shows it at once.
             report("Sent $sent to $agentName: ${choice.label.take(40)}")
             readPane(paneId)
@@ -2533,23 +2552,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * A typed answer to a "Type something." / "Other" option (1.4.0): move the highlight to that
-     * option, type the text there and press Enter. Without a known highlight, it is sent as a
-     * message, as "Type a different answer" does.
+     * option, verify the move, then type the text and press Enter. Without a known highlight,
+     * leave the answer to the terminal instead of guessing where to type it.
      */
-    fun answerTyped(pane: Pane, prompt: com.billmongan.herdrdroid.herdr.Prompt, choice: com.billmongan.herdrdroid.herdr.Choice, text: String) {
-        if (prompt.terminalReview) return
-        val move = com.billmongan.herdrdroid.herdr.moveKeys(prompt, choice)
-        // Recorded only once it was sent (1.3.2).
-        if (move == null) { sendMessage(pane, text, typedAnswer = true) { noteAnswer(pane.id, prompt, text) }; return }
-        act(pane.id, "Couldn't answer", input = true) { h ->
-            if (move.isNotEmpty()) h.sendKeys(pane.id, *move.toTypedArray())
-            delay(300)
-            h.sendText(pane.id, text)
-            delay(200)
-            h.sendKeys(pane.id, "enter")
-            noteAnswer(pane.id, prompt, text)
-            readPane(pane.id)
-            refreshPanes()
+    internal fun answerTyped(target: CardTarget?, prompt: Prompt, choice: Choice?, text: String) {
+        answerCardInput(target, prompt, text) { h, t, fresh ->
+            val id = t.pane.id
+            if (choice != null) {
+                if (choice !in fresh.choices) return@answerCardInput false
+                val move = moveKeys(fresh, choice) ?: return@answerCardInput false
+                if (move.isNotEmpty()) {
+                    h.sendKeys(id, *move.toTypedArray(), expectedConnection = t.connection)
+                    delay(300)
+                    val moved = t.freshAnswer(h, prompt) ?: return@answerCardInput false
+                    if (moveKeys(moved, choice)?.isEmpty() != true) return@answerCardInput false
+                }
+            }
+            h.typeAndEnter(id, text, t.connection)
+            true
         }
     }
 
