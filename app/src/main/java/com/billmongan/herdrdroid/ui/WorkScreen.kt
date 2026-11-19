@@ -293,6 +293,7 @@ private fun SubagentView(vm: AppViewModel, s: Screen.Work) {
     val pane = vm.pane(s.paneId)
     val context = LocalContext.current
     var items by remember(s.file) { mutableStateOf<List<Item>>(emptyList()) }
+    var times by remember(s.file) { mutableStateOf<Map<String, Long>>(emptyMap()) }
     var more by remember(s.file) { mutableStateOf(false) }
     var problem by remember(s.file) { mutableStateOf<String?>(null) }
     var loaded by remember(s.file) { mutableStateOf(false) }
@@ -301,7 +302,11 @@ private fun SubagentView(vm: AppViewModel, s: Screen.Work) {
         while (true) {
             vm.readSubagent(s.paneId, cursor).onSuccess { r ->
                 cursor = r.cursor
-                if (r.reset || r.items.isNotEmpty()) items = Transcript.merge(items, r.items, r.reset)
+                if (r.reset || r.items.isNotEmpty()) {
+                    items = Transcript.merge(items, r.items, r.reset)
+                    val recorded = Transcript.timesOf(r.items)
+                    times = if (r.reset) recorded else times + recorded
+                }
                 if (r.reset) more = r.more
                 problem = null
             }.onFailure { problem = it.message }
@@ -321,6 +326,7 @@ private fun SubagentView(vm: AppViewModel, s: Screen.Work) {
             else -> ProvideAttachments(vm::attachmentBytes) {
                 TranscriptChat(
                     rows = remember(items) { rowsOf(items) },
+                    itemTimes = times,
                     working = false, workingLabel = "", agentName = "Subagent", pending = emptyList(), more = more,
                     size = vm.current?.textSize ?: 12.5f, family = vm.readingFont.family,
                     actions = ChatActions(onQuote = {}, onStop = null, onForward = null),

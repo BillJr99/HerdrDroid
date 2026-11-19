@@ -619,6 +619,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 workingLabel = "",
                 agentName = pane?.agentName ?: "The agent",
                 pending = vm.pendingFor(paneId),
+                itemTimes = vm.transcriptLogTimes,
                 more = vm.transcriptMore,
                 size = liveSize,
                 family = family,
@@ -663,6 +664,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                         when (entry) {
                             is com.billmongan.herdrdroid.transcript.ScreenSnapshot -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 Text("Earlier screen", color = Palette.Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                ChatTimestamp(entry.at)
                                 ChatView(entry.text, null, liveSize, vm.readingFont)
                             }
                             is com.billmongan.herdrdroid.transcript.QuestionItem -> QuestionView(entry, liveSize)
@@ -674,7 +676,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     // Under a saved history, only the part of the screen not already shown above (1.4.3, from review).
                     // The same questions the history shows (from review): an open one's screen stays live.
                     ChatView(com.billmongan.herdrdroid.transcript.QuestionLog.liveTail(text,
-                        vm.questionsFor(paneId).filter { prompt == null || it.state != com.billmongan.herdrdroid.transcript.QState.OPEN }), pending, liveSize, vm.readingFont)
+                        vm.questionsFor(paneId).filter { prompt == null || it.state != com.billmongan.herdrdroid.transcript.QState.OPEN }), pending, liveSize, vm.readingFont,
+                        pendingAt = vm.lastSentAt)
                 }
                 promptCard()
             }
@@ -1366,7 +1369,7 @@ private fun norm(s: String) = s.filterNot { it.isWhitespace() }.take(40)
  * sideways, and the agent's own input box and status line as a quiet footer.
  */
 @Composable
-private fun ChatView(text: String, pending: String?, size: Float, font: ReadingFont) {
+private fun ChatView(text: String, pending: String?, size: Float, font: ReadingFont, pendingAt: Long? = null) {
     val segs = remember(text) { Reflow.parse(text) }
     val family: FontFamily = font.family
     val prose = if (font == ReadingFont.MONO) size else size * 1.2f
@@ -1438,7 +1441,10 @@ private fun ChatView(text: String, pending: String?, size: Float, font: ReadingF
                     }
                 }
             }
-            if (showPending) YouBubble(pending!!, prose, sending = true)
+            if (showPending) {
+                YouBubble(pending!!, prose, sending = true)
+                ChatTimestamp(pendingAt, end = true)
+            }
         }
     }
 }
