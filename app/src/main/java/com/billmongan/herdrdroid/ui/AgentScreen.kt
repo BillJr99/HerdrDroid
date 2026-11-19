@@ -776,7 +776,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 },
                 placeholder = if (modifiersOn) "Type a letter to send it with ${if (ctrl != Hold.OFF) "Ctrl" else "Alt"}"
                 else if (typingAnswer) "Type your answer"
-                else if (prompt != null || status == Status.NEEDS_YOU) "Message to send after the question"
+                else if (prompt != null || status == Status.NEEDS_YOU) "Send after answer"
                 else "Message ${pane?.agentName ?: "this tab"}",
                 canSend = message.isNotBlank() && pane != null && !usageBlocksInput,
                 onSend = ::send,
