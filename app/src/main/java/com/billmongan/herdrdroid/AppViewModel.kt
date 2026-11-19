@@ -257,7 +257,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private var ssh: HerdrSsh? = null
     private var herdr: Herdr? = null
-    private var foreground = true
+    private var foreground by mutableStateOf(true)
     /** The app is in front (the screens' own loops read nothing while it isn't, 1.4.0). */
     val inFront: Boolean get() = foreground
 

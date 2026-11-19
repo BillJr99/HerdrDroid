@@ -122,7 +122,7 @@ private fun keyName(c: Char): String? = when {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun AgentScreen(vm: AppViewModel, paneId: String) {
+internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (String) -> Unit = vm::readPane) {
     val pane = vm.pane(paneId)
     var message by rememberSaveable(paneId) { mutableStateOf(vm.takePrefill(paneId) ?: "") }
     val draftServer = vm.current?.id
@@ -186,13 +186,20 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
             kotlinx.coroutines.delay(1_500)
         }
     }
-    // The screen itself: the terminal view, the fallback chat view, and questions the agent asks.
-    // These loops read only while the app is in front (1.4.0): behind it, the watcher does the
-    // pane checks, and the screen reads and work sweeps would only spend the battery.
-    LaunchedEffect(paneId, structured, pane?.status == Status.NEEDS_YOU) {
-        while (true) {
-            if (vm.inFront) vm.readPane(paneId)
-            kotlinx.coroutines.delay(if (!vm.inFront) 1_000 else if (vm.pane(paneId)?.status == Status.NEEDS_YOU) 750 else if (structured) 2_000 else 1_500)
+    // Questions can arrive in a working pane before its status flips to Needs you. Use the same
+    // ordered screen read (and its independent SSH channel), not a second probe or the chat log.
+    fun canReadScreen() = vm.inFront && !vm.locked && vm.link == Link.CONNECTED &&
+        (vm.screen as? Screen.Agent)?.paneId == paneId
+    val screenReadable = canReadScreen()
+    LaunchedEffect(vm, paneId, structured, screenReadable, pane?.status == Status.NEEDS_YOU) {
+        while (screenReadable && canReadScreen()) {
+            readScreen(paneId)
+            kotlinx.coroutines.delay(when {
+                vm.pane(paneId)?.status == Status.NEEDS_YOU -> 750L
+                !liveNow && vm.pane(paneId)?.status == Status.WORKING && vm.paneReadProblem == null -> 500L
+                structured -> 2_000L
+                else -> 1_500L
+            })
         }
     }
     LaunchedEffect(paneId) {
