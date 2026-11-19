@@ -1,4 +1,4 @@
-card: options
+card: none
 blocked: true
-options: Yes, I trust this folder | No, exit
+note: Keep workspace trust in the terminal; do not expose generic chat answer buttons.
 source: derived for the 1.4.9 card audit from the agent's own program text (exact strings, layout inferred); demo content only
