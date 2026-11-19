@@ -39,6 +39,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -279,20 +280,30 @@ fun TranscriptChat(
                     }
                 }
             }
-            item(key = "_pending") {
-                // Every message still on its way: queued behind the agent's turn, or steering it.
+            // Grok's live card answers the pane's current question, not anything in its queue.
+            // Keep the queue below the complete card in its own bounded, labelled section.
+            val grokQueue = agentName == "Grok"
+            val pendingMessages: @Composable () -> Unit = {
                 AnimatedVisibility(pending.isNotEmpty(), enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (pending.size > 1 || working) {
+                        if (grokQueue || pending.size > 1 || working) {
                             Text(
-                                if (working) actions.queuedNote ?: "${pending.size} waiting for ${agentName}" else "${pending.size} on the way",
+                                if (grokQueue) "Queued in Grok · not yet in the conversation"
+                                else if (working) actions.queuedNote ?: "${pending.size} waiting for ${agentName}"
+                                else "${pending.size} on the way",
                                 color = Palette.Muted, fontSize = 12.sp, textAlign = TextAlign.End, modifier = Modifier.fillMaxWidth(),
                             )
                         }
-                        pending.forEach { UserBubble(it, size, sending = true, onQuote = actions.onQuote) }
+                        Column(
+                            modifier = if (grokQueue) Modifier.heightIn(max = 96.dp).verticalScroll(rememberScrollState()) else Modifier,
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            pending.forEach { UserBubble(it, size, sending = true, onQuote = actions.onQuote) }
+                        }
                     }
                 }
             }
+            if (!grokQueue) item(key = "_pending") { pendingMessages() }
             item(key = "_tail") {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     AnimatedVisibility(working, enter = fadeIn(), exit = fadeOut()) {
@@ -301,6 +312,7 @@ fun TranscriptChat(
                     footer?.invoke()
                 }
             }
+            if (grokQueue) item(key = "_pending") { pendingMessages() }
         }
         AnimatedVisibility(
             !atBottom && rows.isNotEmpty(),
