@@ -195,6 +195,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** The pane [paneText] was read from: a read still on its way when you switch agents is dropped. */
     var paneTextPane by mutableStateOf<String?>(null)
         private set
+    internal var paneTextTarget by mutableStateOf<CardTarget?>(null)
+        private set
     var lastSent by mutableStateOf<Pair<String, String>?>(null)
         private set
     private var lastSentAt = 0L
@@ -1272,6 +1274,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val client = herdr
         val visit = paneVisit
         val started = android.os.SystemClock.elapsedRealtime()
+        val cardOwner = cardTarget(paneId)
         fun isOpen() = attempt > lastAppliedPaneRead && current?.id == serverId && herdr === client &&
             paneVisit == visit && (screen as? Screen.Agent)?.paneId == paneId
         fun problem(why: String) {
@@ -1279,6 +1282,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             lastAppliedPaneRead = attempt
             if (paneReadProblem != why) com.billmongan.herdrdroid.diag.DiagLog.log("read", "$paneId: the screen couldn't be read: $why")
             paneReadProblem = why
+            paneTextTarget = null
             openUsage = null
         }
         quietly { h ->
@@ -1303,6 +1307,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             noteInputLine(paneId, text)
             paneText = text
             paneTextPane = paneId
+            paneTextTarget = cardOwner?.takeIf { it.isCurrent(it.client) }
             if (agent in setOf("opencode", "opencode-ursinus", "kiro", "kiro-cli")) {
                 footerModel(agent, text)?.takeIf { models[paneId] != it }?.let {
                     models = models + (paneId to it)
@@ -1341,6 +1346,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         saveSeen()
         paneText = ""
         paneTextPane = paneId
+        paneTextTarget = null
         paneReadProblem = null
         openUsage = null
         current?.id?.let { questions(it, paneId) }
@@ -2235,12 +2241,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun readPaneScreen(h: Herdr, paneId: String, lines: Int): String =
         recoverPaneRead(
-            recent = { h.read(paneId, lines) },
+            recent = { h.read(paneId, lines, preserveGlyphs = true) },
             visible = {
                 // A viewport scrolled back can show an old approval. Only read it at the bottom.
-                if ((pane(paneId)?.scrollOffset ?: 0) > 0) "" else h.readVisible(paneId)
+                if ((pane(paneId)?.scrollOffset ?: 0) > 0) "" else h.readVisible(paneId, preserveGlyphs = true)
             },
-            shortRecent = { h.read(paneId, 40) },
+            shortRecent = { h.read(paneId, 40, preserveGlyphs = true) },
         )
 
     /** Read fresh output for the card before accepting an answer. */
@@ -2318,6 +2324,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     internal suspend fun refreshVoiceScreen(serverId: String, paneId: String): Boolean {
         val client = herdr ?: return false
+        val cardOwner = cardTarget(paneId)
         val visit = paneVisit
         if (current?.id != serverId || link != Link.CONNECTED || (screen as? Screen.Agent)?.paneId != paneId) return false
         val attempt = ++paneReadSequence
@@ -2328,6 +2335,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         openUsage = null // This read is recent output, not an identity-bound visible snapshot.
         paneText = text
         paneTextPane = paneId
+        paneTextTarget = cardOwner?.takeIf { it.isCurrent(client) }
         val pane = pane(paneId)
         val prompt = detectPrompt(text, pane?.status == Status.NEEDS_YOU, pane?.agent, versionOf(paneId))
         observeQuestion(serverId, paneId, prompt, pane?.status, pane?.agentName, text)
@@ -2361,7 +2369,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun Pane.sameCardOccupant(other: Pane) = id == other.id && agent == other.agent &&
-        sessionId == other.sessionId && tabId == other.tabId && workspaceId == other.workspaceId && cwd == other.cwd
+        sessionId == other.sessionId && terminalId == other.terminalId && tabId == other.tabId &&
+        workspaceId == other.workspaceId && cwd == other.cwd
 
     private fun CardTarget.isCurrent(h: Herdr): Boolean = client === h && cardTarget(pane.id)?.let {
         it.client === client && it.connection === connection && it.server == server && it.visit == visit &&
@@ -2370,11 +2379,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun CardTarget.freshAnswer(h: Herdr, shown: Prompt): Prompt? {
         if (shown.terminalReview || !isCurrent(h)) return null
-        val text = readForCard(h, pane.id)?.takeUnless { it.isBlank() } ?: return null
+        val currentPane = h.cardPane(pane.id, connection) ?: return null
+        if (!isCurrent(h) || !pane.sameCardOccupant(currentPane)) return null
+        // Last remote read before input; not an atomic compare-and-send.
+        val text = h.readCardViewport(pane.id, connection).takeUnless { it.isBlank() } ?: return null
         if (!isCurrent(h)) return null
-        // Confirm the occupant after the read, so pane reuse during the read cannot validate it.
-        val currentPane = h.panes().singleOrNull { it.id == pane.id } ?: return null
-        if (!isCurrent(h) || !pane.sameCardOccupant(currentPane) || (currentPane.scrollOffset ?: 0) != 0) return null
         return detectPrompt(text, currentPane.status == Status.NEEDS_YOU, currentPane.agent, versionOf(pane.id))
             ?.takeIf { cardAnswerStillFits(shown, it) }
     }
@@ -2386,7 +2395,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun answerCardInput(target: CardTarget?, shown: Prompt, label: String,
+    private fun answerCardInput(target: CardTarget?, shown: Prompt, label: String, delivered: () -> Unit = {},
         send: suspend (Herdr, CardTarget, Prompt) -> Boolean,
     ) {
         val refused = "Not sent. Refresh the question or open the terminal to answer."
@@ -2395,6 +2404,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         answerOnce(id) { h ->
             val fresh = target.freshAnswer(h, shown)
             if (fresh == null || !send(h, target, fresh)) { flash(refused); return@answerOnce }
+            delivered()
             noteAnswer(id, shown, label, serverId = target.server)
             readPane(id)
         }
@@ -2442,29 +2452,29 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun answerChoice(paneId: String, prompt: com.billmongan.herdrdroid.herdr.Prompt, choice: com.billmongan.herdrdroid.herdr.Choice,
-        voiceQuestion: String? = null, voiceAllowed: () -> Boolean = { true }, voiceConnection: Any? = null, feedback: ((String) -> Unit)? = null,
+    internal fun answerChoice(paneId: String, prompt: Prompt, choice: Choice,
+        voiceQuestion: String? = null, voiceAllowed: () -> Boolean = { true }, voiceConnection: Any? = null,
+        target: CardTarget? = cardTarget(paneId), feedback: ((String) -> Unit)? = null,
     ) {
         // The answer goes into the history only once it was sent (1.3.2, from a code review).
         if (prompt.terminalReview) return
         if (choice.keys.startsWith("grok-privacy:")) {
-            answerOnce(paneId) { h ->
-                answerGrokPrivacy(h, paneId, optIn = choice.keys == com.billmongan.herdrdroid.herdr.GROK_PRIVACY_IN)?.let { throw IllegalStateException(it) }
-                noteAnswer(paneId, prompt, choice.label)
-                readPane(paneId)
-                refreshPanes()
+            answerCardInput(target, prompt, choice.label) { h, t, fresh ->
+                if (choice !in fresh.choices) return@answerCardInput false
+                answerGrokPrivacy(h, paneId, optIn = choice.keys == com.billmongan.herdrdroid.herdr.GROK_PRIVACY_IN,
+                    connection = t.connection)?.let { throw IllegalStateException(it) }
+                viewModelScope.launch { refreshPanes() }
+                true
             }
             return
         }
         fun report(message: String) { flash(message); feedback?.invoke(message) }
-        val target = cardTarget(paneId)
-        if (target == null) { report("Not sent. Refresh the question before trying again."); return }
         val agentName = pane(paneId)?.agentName ?: "the agent"
         com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: tapped \"${choice.label.take(60)}\" (option ${choice.keys}, highlighted ${prompt.selected})")
         answerOnce(paneId, feedback) { h ->
             // Match the displayed card, but calculate its keys from the current highlight.
-            val fresh = target.freshAnswer(h, prompt)
-            if (fresh == null || choice !in fresh.choices) {
+            val fresh = target?.freshAnswer(h, prompt)
+            if (target == null || fresh == null || choice !in fresh.choices) {
                 report("Not sent. Refresh the question or open the terminal to answer.")
                 readPane(paneId)
                 return@answerOnce
@@ -2524,21 +2534,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * Coding data, retention, and training"; then move to Opt in or Opt out with the arrows and
      * press Enter. Returns a problem to show, or null.
      */
-    private suspend fun answerGrokPrivacy(h: Herdr, paneId: String, optIn: Boolean): String? {
+    private suspend fun answerGrokPrivacy(h: Herdr, paneId: String, optIn: Boolean, connection: Any? = null): String? {
         var screen = h.read(paneId, 60)
         if (com.billmongan.herdrdroid.herdr.detectGrokPrivacyDialog(screen) == null) {
             val left = com.billmongan.herdrdroid.herdr.grokInputText(screen)
                 ?: return "Grok's input box isn't showing, so /privacy wasn't typed. Close what is open in Grok and try again."
             if (left.isNotEmpty()) {
                 // Backspaces clear it in any terminal program; then check that it is empty.
-                h.sendKeys(paneId, *Array(left.length + 2) { "backspace" })
+                h.sendKeys(paneId, *Array(left.length + 2) { "backspace" }, expectedConnection = connection)
                 delay(500)
                 if (!com.billmongan.herdrdroid.herdr.grokInputText(h.read(paneId, 60)).isNullOrEmpty())
                     return "Grok's input box still has text in it, so /privacy wasn't typed."
             }
-            h.sendText(paneId, "/privacy")
+            h.sendText(paneId, "/privacy", connection)
             delay(700)
-            h.sendKeys(paneId, "enter")
+            h.sendKeys(paneId, "enter", expectedConnection = connection)
             delay(1500)
             screen = h.read(paneId, 60)
         }
@@ -2546,7 +2556,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             ?: return "Grok's privacy settings didn't open."
         val target = dialog.choices.firstOrNull { it.label == if (optIn) "Opt in" else "Opt out" } ?: return "Grok's privacy settings changed shape."
         val keys = com.billmongan.herdrdroid.herdr.menuKeys(dialog, target) ?: return "Grok's privacy settings have no highlighted choice."
-        h.sendKeys(paneId, *keys.toTypedArray())
+        h.sendKeys(paneId, *keys.toTypedArray(), expectedConnection = connection)
         return null
     }
 
@@ -2555,8 +2565,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * option, verify the move, then type the text and press Enter. Without a known highlight,
      * leave the answer to the terminal instead of guessing where to type it.
      */
-    internal fun answerTyped(target: CardTarget?, prompt: Prompt, choice: Choice?, text: String) {
-        answerCardInput(target, prompt, text) { h, t, fresh ->
+    internal fun answerTyped(target: CardTarget?, prompt: Prompt, choice: Choice?, text: String, delivered: () -> Unit) {
+        answerCardInput(target, prompt, text, delivered) { h, t, fresh ->
             val id = t.pane.id
             if (choice != null) {
                 if (choice !in fresh.choices) return@answerCardInput false

@@ -120,23 +120,33 @@ private fun keyName(c: Char): String? = when {
     else -> null
 }
 
+private class CardAnswerDraft(
+    val target: AppViewModel.CardTarget?, val prompt: Prompt, val choice: Choice?, val text: String = "",
+) {
+    fun withText(text: String) = CardAnswerDraft(target, prompt, choice, text)
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (String) -> Unit = vm::readPane) {
     val pane = vm.pane(paneId)
-    var message by rememberSaveable(paneId) { mutableStateOf(vm.takePrefill(paneId) ?: "") }
+    var normalMessage by rememberSaveable(paneId) { mutableStateOf(vm.takePrefill(paneId) ?: "") }
     val draftServer = vm.current?.id
+    // Keep answers out of the ordinary (saveable) composer. A restored message must never
+    // silently become an unbound answer or be sent as chat after losing its target.
+    var answerDraft by remember(draftServer, paneId) { mutableStateOf<CardAnswerDraft?>(null) }
+    val typingAnswer = answerDraft != null
+    val message = answerDraft?.text ?: normalMessage
+    fun editMessage(text: String) {
+        val draft = answerDraft
+        if (draft != null) answerDraft = draft.withText(text) else normalMessage = text
+    }
     androidx.compose.runtime.SideEffect {
         if (draftServer != null) vm.noteVoiceComposerDraft(draftServer, paneId, message.isNotBlank())
     }
     var fullTerminal by rememberSaveable { mutableStateOf(false) }
     var confirmCtrlC by remember { mutableStateOf(false) }
-    var typingAnswer by remember { mutableStateOf(false) }
-    // The question a typed answer is for (the card is hidden while you type it), so the history records it there.
-    var answering by remember { mutableStateOf<Prompt?>(null) }
-    var answerTarget by remember { mutableStateOf<AppViewModel.CardTarget?>(null) }
-    // The "Type something." / "Other" option the typed answer goes to (1.4.0), when one was tapped.
-    var answerVia by remember { mutableStateOf<com.billmongan.herdrdroid.herdr.Choice?>(null) }
+
     var ctrl by remember { mutableStateOf(Hold.OFF) }
     var alt by remember { mutableStateOf(Hold.OFF) }
     /** The slash command whose screen is showing, until you go back to the chat. */
@@ -224,12 +234,13 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         if (alt == Hold.ONCE) alt = Hold.OFF
     }
     val modifiersOn = ctrl != Hold.OFF || alt != Hold.OFF
-    val quote: (String) -> Unit = { q -> message = q.lines().joinToString("\n") { "> $it" } + "\n\n" }
+    val quote: (String) -> Unit = { q -> editMessage(q.lines().joinToString("\n") { "> $it" } + "\n\n") }
 
     // As the list shows it: Done becomes Idle once you have opened it here.
     val status = pane?.let { vm.shownStatus(it) } ?: Status.UNKNOWN
     // Only this agent's screen: never one read from the agent you just left.
     val screenText = if (vm.paneTextPane == paneId) vm.paneText else ""
+    val shownTarget = vm.paneTextTarget?.takeIf { vm.paneTextPane == paneId && vm.paneReadProblem == null }
     // Never an empty card (1.4.2): one with no options always shows the screen region or a note.
     // While the latest read failed, no card is built from the last screen: its buttons would answer
     // whatever the pane shows now (1.4.2, from review). If the agent waits, the card says the screen
@@ -242,20 +253,25 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         else detectPrompt(screenText, status == Status.NEEDS_YOU, pane?.agent, vm.versionOf(paneId))?.forCard()
     fun send() {
         if (usageBlocksInput) return
-        if (message.isNotBlank() && pane != null) {
-            val text = message.trim()
-            if (!typingAnswer && (prompt != null || vm.hasPendingQuestion(pane))) {
+        val draft = answerDraft
+        if (draft != null) {
+            val text = draft.text.trim()
+            if (text.isNotEmpty() && !vm.answerInFlight(paneId)) {
+                vm.answerTyped(draft.target, draft.prompt, draft.choice, text) {
+                    if (answerDraft === draft) answerDraft = null
+                }
+            }
+            return
+        }
+        if (normalMessage.isNotBlank() && pane != null) {
+            val text = normalMessage.trim()
+            if (prompt != null || vm.hasPendingQuestion(pane)) {
                 vm.enqueue(paneId, text)
-                message = ""
+                normalMessage = ""
                 return
             }
-            val via = answerVia
-            val q = answering
-            // A typed answer goes into the question's history once it was delivered (1.3.2).
-            if (typingAnswer) {
-                if (q != null) vm.answerTyped(answerTarget, q, via, text)
-            } else vm.sendMessage(pane, text)
-            message = ""; typingAnswer = false; answering = null; answerVia = null; answerTarget = null
+            vm.sendMessage(pane, text)
+            normalMessage = ""
             // A slash command answers on the screen (a menu, a sign-in code), not in the agent's log,
             // so show the screen and the keys to move through it.
             if (text.startsWith("/") && !live) { fullTerminal = true; commandScreen = text.substringBefore(' ') }
@@ -356,13 +372,13 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 p,
                 agent = pane?.agentName ?: "The agent",
                 sending = vm.answerInFlight(paneId),
-                onChoice = { c -> vm.answerChoice(paneId, p, c) },
+                onChoice = { c -> vm.answerChoice(paneId, p, c, target = shownTarget) },
                 onKey = { k ->
                     val label = "Pressed " + when (k) { "esc" -> "Esc"; "tab" -> "Tab"; "shift+tab" -> "Shift+Tab"; "ctrl+c" -> "Ctrl+C"; else -> k }
-                    vm.answerCardKey(vm.cardTarget(paneId), p, k, label)
+                    vm.answerCardKey(shownTarget, p, k, label)
                 },
-                onTypeAnswer = { answering = p; answerTarget = vm.cardTarget(paneId); answerVia = null; typingAnswer = true },
-                onTypedChoice = { c -> answering = p; answerTarget = vm.cardTarget(paneId); answerVia = c; typingAnswer = true },
+                onTypeAnswer = { answerDraft = CardAnswerDraft(shownTarget, p, null) },
+                onTypedChoice = { c -> answerDraft = CardAnswerDraft(shownTarget, p, c) },
                 // The terminal is always one tap away from a card, on every agent (1.4.2).
                 onShowTerminal = { hermesLive = false; fullTerminal = true; termFollow = true },
             )
@@ -772,26 +788,27 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     if (modifiersOn && new.length == message.length + 1 && new.startsWith(message)) {
                         keyName(new.last())?.let { press(it) }
                     } else {
-                        message = new
+                        editMessage(new)
                     }
                 },
                 placeholder = if (modifiersOn) "Type a letter to send it with ${if (ctrl != Hold.OFF) "Ctrl" else "Alt"}"
-                else if (typingAnswer) "Type your answer"
+                else if (typingAnswer) if (vm.answerInFlight(paneId)) "Checking answer…" else "Type your answer"
                 else if (prompt != null || status == Status.NEEDS_YOU) "Send after answer"
                 else "Message ${pane?.agentName ?: "this tab"}",
-                canSend = message.isNotBlank() && pane != null && !usageBlocksInput,
+                canSend = message.isNotBlank() && pane != null && !usageBlocksInput && !(typingAnswer && vm.answerInFlight(paneId)),
                 onSend = ::send,
                 working = status == Status.WORKING,
                 onStop = pane?.let { p -> { vm.stopPane(p) } },
                 // herdr's agent prompt reaches a working agent, so a message sent now steers it.
                 steerLabel = if (pane?.agent != null && !typingAnswer && prompt == null) "Steer" else null,
-                onQueueWhenIdle = if (!typingAnswer && !usageBlocksInput) ({ vm.enqueue(paneId, message.trim()); message = "" }) else null,
-                onAttach = { uri -> vm.attach(uri) { path -> message = (message.trimEnd() + " " + path).trim() + " " } },
+                onQueueWhenIdle = if (!typingAnswer && !usageBlocksInput) ({ vm.enqueue(paneId, normalMessage.trim()); normalMessage = "" }) else null,
+                onAttach = { uri -> vm.attach(uri) { path -> editMessage((message.trimEnd() + " " + path).trim() + " ") } },
                 attachBusy = vm.uploading,
                 commands = SlashCommands.forAgent(pane?.agent),
                 // One row: Keys, Snippets and When idle live in the "⋯" menu with attach and dictate.
                 compact = true,
                 menuItems = buildList {
+                    if (typingAnswer && !vm.answerInFlight(paneId)) add("Discard answer draft" to { answerDraft = null })
                     add((if (vm.showKeys) "Hide keys" else "Show keys") to { vm.setKeysShown(!vm.showKeys) })
                     add("Snippets" to { showSnippets = true })
                 },
@@ -800,7 +817,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     }
 
     if (showSnippets) {
-        SnippetsDialog(vm, onInsert = { t -> message = if (message.isBlank()) t else message.trimEnd() + "\n" + t }, onDismiss = { showSnippets = false })
+        SnippetsDialog(vm, onInsert = { t -> editMessage(if (message.isBlank()) t else message.trimEnd() + "\n" + t) }, onDismiss = { showSnippets = false })
     }
 
     opened?.let { t ->
@@ -1230,7 +1247,7 @@ internal fun PromptCard(
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Icon(Icons.Filled.Warning, contentDescription = null, tint = Palette.OrangeInk, modifier = Modifier.size(18.dp))
                 // One line only; the question itself is just above the card, in the chat (1.2.8).
-                Text(if (sending) "Sending…" else if (p.choices.isEmpty()) "$agent is waiting for you" else "Your answer", color = Palette.OrangeInk,
+                Text(if (sending) "Checking and sending…" else if (p.choices.isEmpty()) "$agent is waiting for you" else "Your answer", color = Palette.OrangeInk,
                     fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1)
             }
             // Each choice grows to fit its whole label; the page scrolls, the card has no scroll of its own.
