@@ -146,8 +146,10 @@ class Herdr internal constructor(
     internal val connectionIdentity: Any? get() = if (commands == null) ssh.connectionIdentity else commands.connection
 
     /** A command on the send lane: it doesn't wait behind reads. */
-    private suspend fun runNow(command: String, timeoutSeconds: Long = 30, expectedConnection: Any? = null): String {
-        val r = commands?.immediate(command, timeoutSeconds, expectedConnection) ?: ssh.execNow(command, timeoutSeconds, expectedConnection)
+    private suspend fun runNow(command: String, timeoutSeconds: Long = 30, expectedConnection: Any? = null, permit: WritePermit? = null): String {
+        // The test seam claims the permit itself, so fakes see the same no-write-after-revoke rule.
+        val r = commands?.let { permit.admit(); it.immediate(command, timeoutSeconds, expectedConnection) }
+            ?: ssh.execNow(command, timeoutSeconds, expectedConnection, permit)
         if (r.exit != 0) {
             val msg = (r.err.ifBlank { r.out }).trim().lines().lastOrNull { it.isNotBlank() } ?: "exit ${r.exit}"
             throw HerdrError(msg, r.exit)
@@ -255,6 +257,9 @@ class Herdr internal constructor(
         }
         override suspend fun send(pane: Pane, text: String, connection: Any) =
             sendMessage(pane, text, allowTerminalFallback = false, expectedConnection = connection)
+        // The permit is checked by the SSH transport after it has the connection (2.0.1 finding 4).
+        override suspend fun send(pane: Pane, text: String, connection: Any, permit: WritePermit) =
+            sendPermitted(pane, text, connection, permit)
     }
 
     /** No tab list, status enrichment, bulk lock, or reconnect during a card tap. */
@@ -389,8 +394,21 @@ class Herdr internal constructor(
     @Volatile var lastSendRoute = ""
         private set
 
-    suspend fun sendMessage(pane: Pane, text: String, allowTerminalFallback: Boolean = true, expectedConnection: Any? = null) {
+    /**
+     * One agent prompt over [connection] that the transport starts only if [permit] is still open
+     * when it holds the connection: no forced answer, no typed fallback, no replay (2.0.1 finding 4).
+     */
+    internal suspend fun sendPermitted(pane: Pane, text: String, connection: Any, permit: WritePermit) =
+        sendMessage(pane, text, allowTerminalFallback = false, expectedConnection = connection, permit = permit)
+
+    suspend fun sendMessage(pane: Pane, text: String, allowTerminalFallback: Boolean = true, expectedConnection: Any? = null) =
+        sendMessage(pane, text, allowTerminalFallback, expectedConnection, permit = null)
+
+    private suspend fun sendMessage(
+        pane: Pane, text: String, allowTerminalFallback: Boolean, expectedConnection: Any?, permit: WritePermit?,
+    ) {
         require(allowTerminalFallback || (pane.agent != null && pane.status in setOf(Status.IDLE, Status.DONE)))
+        require(permit == null || (!allowTerminalFallback && expectedConnection != null))
         lastSendRoute = when {
             core -> "hc send"
             pane.agent != null && pane.status != Status.NEEDS_YOU -> "herdr agent prompt"
@@ -399,12 +417,12 @@ class Herdr internal constructor(
         if (core) {
             // hc send pastes and presses Enter; it refuses a terminal waiting on a question
             // unless forced, and a message sent then is meant as the answer.
-            if (pane.status == Status.NEEDS_YOU) runNow(hcCmd("send", "--force", pane.id, text)) else runNow(hcCmd("send", pane.id, text), expectedConnection = expectedConnection)
+            if (pane.status == Status.NEEDS_YOU) runNow(hcCmd("send", "--force", pane.id, text)) else runNow(hcCmd("send", pane.id, text), expectedConnection = expectedConnection, permit = permit)
             return
         }
         if (pane.agent != null && pane.status != Status.NEEDS_YOU) {
             try {
-                runNow(cmd("agent", "prompt", pane.id, text), expectedConnection = expectedConnection)
+                runNow(cmd("agent", "prompt", pane.id, text), expectedConnection = expectedConnection, permit = permit)
                 return
             } catch (e: HerdrError) {
                 if (!allowTerminalFallback) throw e
@@ -594,6 +612,25 @@ class Herdr internal constructor(
     }
 
     /** Closes a tab and everything in it (a helper made with [startAgent]). */
+    /**
+     * Closes [tabId] only over [connection], the one the user confirmed on: a reconnect in between
+     * refuses with ConnectionChanged rather than closing on a different link (2.0.1 finding 2).
+     */
+    internal suspend fun closeTabOn(tabId: String, connection: Any) {
+        if (core) {
+            runCatching { runNow(hcCmd("kill", tabId), expectedConnection = connection) }
+            runNow(hcCmd("rm", tabId), expectedConnection = connection)
+            return
+        }
+        runNow(cmd("tab", "close", tabId), expectedConnection = connection)
+    }
+
+    /** The live panes over [connection] only. */
+    internal suspend fun panesOn(connection: Any): List<Pane> =
+        if (core) corePanes(runNow(hcCmd("ls", "--json"), 5, connection))
+        else JSONObject(runNow(cmd("pane", "list"), 10, connection)).getJSONObject("result").getJSONArray("panes")
+            .let { a -> (0 until a.length()).map { tuiPane(a.getJSONObject(it)) } }
+
     suspend fun closeTab(tabId: String) {
         if (core) {
             runCatching { run(hcCmd("kill", tabId)) }

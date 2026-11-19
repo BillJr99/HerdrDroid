@@ -951,11 +951,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     internal fun onHandsFreeEnded() {
+        // A confirmed message still waiting for the SSH lock must not go out after hands-free ends.
+        writeGate.revokeAll()
         if (foreground) refreshAppLock()
     }
 
     private fun refreshAppLock() {
         if (!locked && vaultNeedsUnlock()) {
+            writeGate.revokeAll()
             locked = true
             clearPanePrefetch()
         }
@@ -1075,6 +1078,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val paneDispatch = com.billmongan.herdrdroid.herdr.PaneDispatch()
 
+    /** Open prompt-write permits and panes being closed (2.0.1 findings 2 and 4). */
+    private val writeGate = com.billmongan.herdrdroid.herdr.WriteGate()
+    private val localPromptSend = com.billmongan.herdrdroid.herdr.LocalPromptSend(paneDispatch, writeGate)
+    private val paneClose = com.billmongan.herdrdroid.herdr.PaneClose(paneDispatch, writeGate)
+
     /**
      * Runs something the user tapped. While the link is down it waits in a queue and goes out once
      * the link is back; only a real refusal from herdr is shown.
@@ -1096,7 +1104,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val key = q.dispatchKey
             if (key == null) q.run(h)
             else paneDispatch.run(key) {
-                if (current?.id != key.first) return@run
+                if (current?.id != key.first || writeGate.isClosing(key)) return@run
                 val connected = herdr
                 if (connected != null && link == Link.CONNECTED) q.run(connected) else enqueue(q)
             }
@@ -2414,9 +2422,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun answerInFlight(paneId: String): Boolean = (current?.id to paneId) in answeringCards
 
     // Includes the particular connection and visit so leaving and returning cannot re-arm a send.
+    // [occupant] binds a message to the same terminal and agent session, not just the pane (2.0.1 finding 1).
     internal data class VoiceTarget(
         val server: String, val client: Herdr, val connection: Any, val visit: Long,
         val pane: String, val agent: String, val cwd: String,
+        val occupant: com.billmongan.herdrdroid.herdr.Occupant,
     )
 
     internal fun voiceTarget(): VoiceTarget? {
@@ -2424,7 +2434,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val pane = (screen as? Screen.Agent)?.paneId?.let(::pane) ?: return null
         val client = herdr ?: return null
         return VoiceTarget(current?.id ?: return null, client, client.connectionIdentity ?: return null,
-            paneVisit, pane.id, pane.agent ?: return null, pane.cwd)
+            paneVisit, pane.id, pane.agent ?: return null, pane.cwd, com.billmongan.herdrdroid.herdr.Occupant.of(pane))
     }
 
     private val voiceComposerDrafts = mutableSetOf<Pair<String, String>>()
@@ -2451,7 +2461,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private val promptRelay by lazy {
-        com.billmongan.herdrdroid.herdr.PromptRelay(paneDispatch, ::relayPort) { serverId, paneId ->
+        com.billmongan.herdrdroid.herdr.PromptRelay(paneDispatch, ::relayPort, writeGate) { serverId, paneId ->
             promptLaneClear(serverId, paneId) && fleetStates[serverId]?.panes?.singleOrNull { it.id == paneId }
                 ?.let { !it.backgroundBusy && it.status in setOf(Status.IDLE, Status.DONE) } == true
         }
@@ -2479,27 +2489,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     internal suspend fun sendVoiceMessage(target: VoiceTarget, text: String, allowed: () -> Boolean): String {
         fun allowedHere() = allowed() && voiceTarget() == target && promptLaneClear(target.server, target.pane)
         val refuse = "Not sent. Open the agent's chat and check that it is idle with no question, draft at the computer, or queued message."
-        val release = paneDispatch.tryAcquire(target.server to target.pane) ?: return refuse
         val h = target.client
-        try {
-            if (!allowedHere()) return refuse
-            val fresh = quietly(allowBackground = true) { it.panes().singleOrNull { p -> p.id == target.pane } } ?: return refuse
-            if (!allowedHere() || fresh.agent != target.agent || fresh.cwd != target.cwd ||
-                fresh.status !in setOf(Status.IDLE, Status.DONE) || (fresh.scrollOffset ?: 0) != 0) return refuse
-            val visible = quietly(allowBackground = true) { it.readStyled(target.pane, 40) } ?: return refuse
-            if (!allowedHere() || visible.isBlank() || blocksNormalSend(fresh, visible) ||
-                com.billmongan.herdrdroid.herdr.inputLineOf(visible, fresh.agent) != "" || holdReason(fresh.id, visible) != null) return refuse
-            h.sendMessage(fresh, text, allowTerminalFallback = false, expectedConnection = target.connection)
-            return "Message sent."
-        } catch (c: CancellationException) {
-            throw c
-        } catch (_: com.billmongan.herdrdroid.ssh.ConnectionChanged) {
-            return "Not sent. The SSH connection changed."
-        } catch (e: Exception) {
-            if (e is LinkDown && herdr === h) linkLost(e)
-            return "Could not confirm delivery. Check the chat before trying again."
-        } finally {
-            release()
+        val port = object : com.billmongan.herdrdroid.herdr.LocalPromptSend.Port {
+            override suspend fun pane(id: String) =
+                quietly(allowBackground = true) { if (it === h) it.panes().singleOrNull { p -> p.id == id } else null }
+            override suspend fun viewport(id: String) =
+                quietly(allowBackground = true) { if (it === h) it.readStyled(id, 40) else null }
+            override fun blocked(fresh: Pane, viewport: String) = blocksNormalSend(fresh, viewport) ||
+                com.billmongan.herdrdroid.herdr.inputLineOf(viewport, fresh.agent) != "" || holdReason(fresh.id, viewport) != null
+            override suspend fun send(fresh: Pane, text: String, permit: com.billmongan.herdrdroid.herdr.WritePermit) =
+                h.sendPermitted(fresh, text, target.connection, permit)
+        }
+        val result = localPromptSend.send(target.server, target.occupant, text, ::allowedHere, port)
+        (result.failure as? LinkDown)?.let { if (herdr === h) linkLost(it) }
+        return when (result.outcome) {
+            com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.SENT -> "Message sent."
+            com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.REFUSED -> refuse
+            com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.CONNECTION_CHANGED -> "Not sent. The SSH connection changed."
+            com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.UNCERTAIN -> "Could not confirm delivery. Check the chat before trying again."
         }
     }
 
@@ -3400,11 +3407,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Closes a session's tab (ending its agent). Its folder and files are never touched. */
     fun closeSession(serverId: String, pane: Pane) {
+        // Pinned at the confirm tap: this client, its connection, and the tab's panes refuse new
+        // sends from now on (2.0.1 finding 2).
+        val h = clientFor(serverId) ?: return
+        val connection = h.connectionIdentity ?: run { error = "Couldn't close it: not connected."; return }
+        val known = if (serverId == current?.id) panes else fleetStates[serverId]?.panes.orEmpty()
+        val pending = paneClose.confirm(serverId, pane, connection, known)
         viewModelScope.launch {
-            val h = clientFor(serverId) ?: return@launch
-            runCatching { h.closeTab(pane.tabId) }
-                .onSuccess { com.billmongan.herdrdroid.diag.DiagLog.log("session", "closed \"${pane.tabLabel}\"") }
-                .onFailure { error = "Couldn't close it: ${it.message}" }
+            val port = object : com.billmongan.herdrdroid.herdr.PaneClose.Port {
+                override suspend fun panes(connection: Any) = h.panesOn(connection)
+                override suspend fun closeTab(tabId: String, connection: Any) = h.closeTabOn(tabId, connection)
+            }
+            val result = paneClose.run(pending, port)
+            when (result.outcome) {
+                com.billmongan.herdrdroid.herdr.PaneClose.Outcome.CLOSED ->
+                    com.billmongan.herdrdroid.diag.DiagLog.log("session", "closed \"${pane.tabLabel}\"")
+                com.billmongan.herdrdroid.herdr.PaneClose.Outcome.CHANGED ->
+                    error = "Not closed: the session changed or the connection was replaced. Check it and try again."
+                com.billmongan.herdrdroid.herdr.PaneClose.Outcome.FAILED ->
+                    error = "Couldn't close it: ${result.failure?.message}"
+            }
             if (serverId == current?.id) {
                 refreshPanes()
                 if ((screen as? Screen.Agent)?.paneId == pane.id) bestAgent()?.let { openPane(it, "after closing") } ?: run { screen = Screen.Tabs; drawerOpen = true }
