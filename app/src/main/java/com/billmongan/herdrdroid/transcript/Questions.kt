@@ -159,7 +159,7 @@ object QuestionLog {
      * live screen comes last.
      */
     fun screenHistory(questions: List<QuestionItem>): List<Any> = questions.sortedBy { it.at }.flatMap { q ->
-        listOfNotNull(q.screen?.let { ScreenSnapshot(q.key + ":screen", it, q.at - 1) }, q)
+        listOfNotNull(q.screen?.let { ScreenSnapshot(q.key + ":screen", it, q.at) }, q)
     }
     /** Where Muse's lines under a command begin, in a joined paragraph (1.4.8). */
     // Only at the end, after the script (from Grok's review): a "Stage 1/2" inside a question stays.

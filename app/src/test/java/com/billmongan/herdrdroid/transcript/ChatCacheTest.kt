@@ -35,6 +35,27 @@ class ChatCacheTest {
         assertEquals(chat.copy(items = back.items), back)
     }
 
+    @Test fun labelTimesSurviveCacheWithoutPromotingOrderingEstimates() {
+        val next = chat.withRead(read(chat.cursor, false,
+            """{"t":"user","k":"u1","text":"hello","ts":1700000000000}""",
+            """{"t":"text","k":"t2","text":"untimed"}"""), seenAt = 1700000010000L)
+        assertTrue(next.times.containsKey("t2"))
+        val back = ChatCodec.decode(ChatCodec.encode(next))!!
+        assertEquals(mapOf("u1" to 1700000000000L), back.logTimes)
+        assertEquals(next.items, back.items)
+        val legacy = JSONObject(ChatCodec.encode(next))
+        legacy.getJSONArray("items").getJSONObject(0).remove("ts")
+        assertTrue(ChatCodec.decode(legacy.toString())!!.logTimes.isEmpty())
+    }
+
+    @Test fun aReusedKeyDoesNotInheritTheOldSessionsLabel() {
+        val before = chat.withRead(read(chat.cursor, false,
+            """{"t":"user","k":"u1","text":"hello","ts":1700000000000}"""))
+        val reset = before.withRead(read("""{"file":"/other.jsonl"}""", true,
+            """{"t":"user","k":"u1","text":"hello"}"""))
+        assertTrue(reset.logTimes.isEmpty())
+    }
+
     @Test fun aMessageStillBeingSentIsNotKept() {
         val back = ChatCodec.decode(ChatCodec.encode(chat.copy(items = items + UserItem("p1", "queued", sending = true))))!!
         assertEquals(items, back.items)

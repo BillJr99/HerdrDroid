@@ -98,6 +98,7 @@ import com.billmongan.herdrdroid.herdr.Prompt
 import com.billmongan.herdrdroid.herdr.Reflow
 import com.billmongan.herdrdroid.herdr.Seg
 import com.billmongan.herdrdroid.herdr.Status
+import com.billmongan.herdrdroid.herdr.canonicalAgent
 import com.billmongan.herdrdroid.herdr.detectPrompt
 
 /** A modifier key: off, on for the next key only (tap), or held until tapped again (long-press). */
@@ -239,7 +240,9 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     // As the list shows it: Done becomes Idle once you have opened it here.
     val status = pane?.let { vm.shownStatus(it) } ?: Status.UNKNOWN
     // Only this agent's screen: never one read from the agent you just left.
-    val screenText = if (vm.paneTextPane == paneId) vm.paneText else ""
+    val liveScreenText = if (vm.paneTextPane == paneId) vm.paneText else ""
+    val openingPreview = vm.prefetchedPaneText(paneId)
+    val screenText = openingPreview ?: liveScreenText
     val shownTarget = vm.paneTextTarget?.takeIf { vm.paneTextPane == paneId && vm.paneReadProblem == null }
     // Never an empty card (1.4.2): one with no options always shows the screen region or a note.
     // While the latest read failed, no card is built from the last screen: its buttons would answer
@@ -252,7 +255,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         else if (vm.paneReadProblem != null) (if (status == Status.NEEDS_YOU) Prompt("This agent is waiting for you.", emptyList()).forCard() else null)
         else detectPrompt(screenText, status == Status.NEEDS_YOU, pane?.agent, vm.versionOf(paneId))?.forCard()
     fun send() {
-        if (usageBlocksInput) return
+        if (usageBlocksInput || (openingPreview != null && prompt != null)) return
         val draft = answerDraft
         if (draft != null) {
             val text = draft.text.trim()
@@ -338,40 +341,15 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
           // In the terminal view the card shrinks to one line with the way back (1.4.8, Bill: "the show
           // terminal button doesn't actually do anything"), so the terminal itself is what you see.
           CardOrTerminalBar(showingTerminal = fullTerminal, agent = pane?.agentName ?: "The agent", onBackToQuestion = { fullTerminal = false }) {
-            PromptQuestion(
-                p,
-                agent = pane?.agentName ?: "The agent",
-                // What the agent said since your last message (in full, with its images and files),
-                // and the edit waiting for approval: the last tool call in the log, still running.
-                preview = run {
-                    val items = if (structured) vm.transcriptItems else emptyList()
-                    val since = items.drop(items.indexOfLast { it is com.billmongan.herdrdroid.transcript.UserItem } + 1)
-                    val said = since.filterIsInstance<com.billmongan.herdrdroid.transcript.TextItem>().takeLast(2)
-                    val media = since.filterIsInstance<com.billmongan.herdrdroid.transcript.ImageItem>() +
-                        since.filterIsInstance<com.billmongan.herdrdroid.transcript.ToolItem>().flatMap { t ->
-                            t.attach.map { path -> com.billmongan.herdrdroid.transcript.ImageItem("att:$path", path = path, mime = com.billmongan.herdrdroid.transcript.mimeFor(path), name = path.substringAfterLast('/')) }
-                        }
-                    val edit = (items.lastOrNull { it is com.billmongan.herdrdroid.transcript.ToolItem } as? com.billmongan.herdrdroid.transcript.ToolItem)
-                        ?.takeIf { it.state == com.billmongan.herdrdroid.transcript.ToolState.RUNNING && (it.diff != null || !it.patch.isNullOrBlank()) }
-                    // A plan waiting for approval (Claude's ExitPlanMode): show the plan itself in the card.
-                    val plan = (items.lastOrNull { it is com.billmongan.herdrdroid.transcript.ToolItem && it.name == "ExitPlanMode" } as? com.billmongan.herdrdroid.transcript.ToolItem)
-                        ?.takeIf { it.state == com.billmongan.herdrdroid.transcript.ToolState.RUNNING }
-                        ?.input?.let { runCatching { org.json.JSONObject(it).optString("plan") }.getOrNull() }?.takeIf { it.isNotBlank() }
-                    if (said.isEmpty() && media.isEmpty() && edit == null && plan == null) null else ({
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            plan?.let { Text("The plan", color = Palette.Muted, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold); MarkdownText(it, liveSize, vm.readingFont.family) }
-                            if (plan == null) said.forEach { MarkdownText(it.text, liveSize, vm.readingFont.family) }
-                            media.forEach { AttachmentView(it) }
-                            edit?.let { t -> EditPreview(t, liveSize) }
-                        }
-                    })
-                },
-            )
+            // The transcript already shows prose and attachments. The parsed question has no
+            // transcript tool-call ID, so a running tool's plan or diff may belong to another turn.
+            PromptQuestion(p, agent = pane?.agentName ?: "The agent")
             Spacer(Modifier.height(10.dp))
             PromptCard(
                 p,
                 agent = pane?.agentName ?: "The agent",
                 sending = vm.answerInFlight(paneId),
+                readOnlyPreview = openingPreview != null,
                 onChoice = { c -> vm.answerChoice(paneId, p, c, target = shownTarget) },
                 onKey = { k ->
                     val label = "Pressed " + when (k) { "esc" -> "Esc"; "tab" -> "Tab"; "shift+tab" -> "Shift+Tab"; "ctrl+c" -> "Ctrl+C"; else -> k }
@@ -538,7 +516,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     if (!live) DropdownMenuItem(text = { Text(if (fullTerminal) "Chat view" else "Terminal view") }, onClick = { menu = false; fullTerminal = !fullTerminal })
                     // The permission mode (plan, accept edits, auto). For Claude this cycles it with
                     // Shift+Tab, the same key as at the computer.
-                    com.billmongan.herdrdroid.herdr.agentMode(pane?.agent, screenText)?.takeIf { !live }?.let { mode ->
+                    com.billmongan.herdrdroid.herdr.agentMode(pane?.agent, liveScreenText)?.takeIf { !live }?.let { mode ->
                         val cycles = pane?.agent?.lowercase() == "claude"
                         DropdownMenuItem(
                             // Shown, never set: the app has no way to turn on a bypass mode.
@@ -557,6 +535,10 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         // still running, and its running subagents. Tap either for active and finished.
         HorizontalDivider(color = Palette.Line)
         ServerBanners(vm)
+        if (openingPreview != null) {
+            Text("Checking the live pane…", color = Palette.Muted, fontSize = 12.5.sp,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+        }
         if (usageBlocksInput) {
             UsageOverlayBanner(dismissingUsage) {
                 usageOverlay?.let(vm::dismissUsage)
@@ -619,6 +601,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 workingLabel = "",
                 agentName = pane?.agentName ?: "The agent",
                 pending = vm.pendingFor(paneId),
+                itemTimes = vm.transcriptLogTimes,
                 more = vm.transcriptMore,
                 size = liveSize,
                 family = family,
@@ -655,6 +638,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                         color = Palette.Muted, fontSize = 15.sp)
                 } else {
                     // Agents without a readable log (Antigravity, Kiro) keep their question history here (1.3.0).
+                    val antigravity = canonicalAgent(pane?.agent.orEmpty()) == "agy"
                     // The pane's history (1.4.3, Bill): each earlier screen, then the question asked under
                     // it, oldest first, so anything newer is below a question; the live screen comes last.
                     com.billmongan.herdrdroid.transcript.QuestionLog.screenHistory(
@@ -663,7 +647,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                         when (entry) {
                             is com.billmongan.herdrdroid.transcript.ScreenSnapshot -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 Text("Earlier screen", color = Palette.Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                                ChatView(entry.text, null, liveSize, vm.readingFont)
+                                ChatTimestamp(entry.at)
+                                ChatView(entry.text, null, liveSize, vm.readingFont, antigravity = antigravity)
                             }
                             is com.billmongan.herdrdroid.transcript.QuestionItem -> QuestionView(entry, liveSize)
                         }
@@ -674,7 +659,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     // Under a saved history, only the part of the screen not already shown above (1.4.3, from review).
                     // The same questions the history shows (from review): an open one's screen stays live.
                     ChatView(com.billmongan.herdrdroid.transcript.QuestionLog.liveTail(text,
-                        vm.questionsFor(paneId).filter { prompt == null || it.state != com.billmongan.herdrdroid.transcript.QState.OPEN }), pending, liveSize, vm.readingFont)
+                        vm.questionsFor(paneId).filter { prompt == null || it.state != com.billmongan.herdrdroid.transcript.QState.OPEN }), pending, liveSize, vm.readingFont,
+                        pendingAt = vm.lastSentAt, antigravity = antigravity)
                 }
                 promptCard()
             }
@@ -749,7 +735,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 }
             }
             if (fullTerminal) {
-                val found = remember(screenText) { screenLinks(screenText) }
+                val found = remember(liveScreenText) { screenLinks(liveScreenText) }
                 if (commandScreen != null || found.urls.isNotEmpty() || found.codes.isNotEmpty()) {
                     val clipboard = LocalClipboardManager.current
                     Row(
@@ -795,7 +781,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 else if (typingAnswer) if (vm.answerInFlight(paneId)) "Checking answer…" else "Type your answer"
                 else if (prompt != null || status == Status.NEEDS_YOU) "Send after answer"
                 else "Message ${pane?.agentName ?: "this tab"}",
-                canSend = message.isNotBlank() && pane != null && !usageBlocksInput && !(typingAnswer && vm.answerInFlight(paneId)),
+                canSend = message.isNotBlank() && pane != null && !usageBlocksInput &&
+                    (openingPreview == null || prompt == null) && !(typingAnswer && vm.answerInFlight(paneId)),
                 onSend = ::send,
                 working = status == Status.WORKING,
                 onStop = pane?.let { p -> { vm.stopPane(p) } },
@@ -1120,15 +1107,10 @@ private fun ModifierKey(label: String, state: Hold, onChange: (Hold) -> Unit, mo
  * terminal. The orange [PromptCard] below it holds only the answers.
  */
 @Composable
-internal fun PromptQuestion(
-    p: Prompt,
-    agent: String,
-    /** What the agent said or wants to change, shown above the question. */
-    preview: (@Composable () -> Unit)? = null,
-) {
+internal fun PromptQuestion(p: Prompt, agent: String) {
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("$agent asks", color = Palette.OrangeInk, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
-        preview?.invoke()
+
         val parts = p.shownParts()
         if (parts.tabs.isNotEmpty()) QuestionSteps(parts)
         // The question as a heading, a command in a block of its own, the rest as plain text, in the
@@ -1236,6 +1218,7 @@ internal fun PromptCard(
     /** Switches to the terminal view (1.4.2): always offered, so the screen itself is never out of reach. */
     onShowTerminal: (() -> Unit)? = null,
     sending: Boolean = false,
+    readOnlyPreview: Boolean = false,
 ) {
     @Suppress("NAME_SHADOWING") val p = p.forCard()
     Surface(
@@ -1247,8 +1230,15 @@ internal fun PromptCard(
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Icon(Icons.Filled.Warning, contentDescription = null, tint = Palette.OrangeInk, modifier = Modifier.size(18.dp))
                 // One line only; the question itself is just above the card, in the chat (1.2.8).
-                Text(if (sending) "Checking and sending…" else if (p.choices.isEmpty()) "$agent is waiting for you" else "Your answer", color = Palette.OrangeInk,
+                Text(if (readOnlyPreview) "Preview" else if (sending) "Checking and sending…"
+                    else if (p.choices.isEmpty()) "$agent is waiting for you" else "Your answer", color = Palette.OrangeInk,
                     fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+            }
+            if (readOnlyPreview) {
+                onShowTerminal?.let { show ->
+                    TextButton(onClick = show, modifier = Modifier.fillMaxWidth()) { Text("Show terminal") }
+                }
+                return@Column
             }
             // Each choice grows to fit its whole label; the page scrolls, the card has no scroll of its own.
             if (p.terminalReview) {
@@ -1366,8 +1356,11 @@ private fun norm(s: String) = s.filterNot { it.isWhitespace() }.take(40)
  * sideways, and the agent's own input box and status line as a quiet footer.
  */
 @Composable
-private fun ChatView(text: String, pending: String?, size: Float, font: ReadingFont) {
-    val segs = remember(text) { Reflow.parse(text) }
+private fun ChatView(
+    text: String, pending: String?, size: Float, font: ReadingFont,
+    pendingAt: Long? = null, antigravity: Boolean = false,
+) {
+    val segs = remember(text, antigravity) { Reflow.parse(text, antigravity) }
     val family: FontFamily = font.family
     val prose = if (font == ReadingFont.MONO) size else size * 1.2f
     val showPending = pending != null && segs.none { it is Seg.You && norm(it.text).startsWith(norm(pending).take(20)) }
@@ -1438,7 +1431,10 @@ private fun ChatView(text: String, pending: String?, size: Float, font: ReadingF
                     }
                 }
             }
-            if (showPending) YouBubble(pending!!, prose, sending = true)
+            if (showPending) {
+                YouBubble(pending!!, prose, sending = true)
+                ChatTimestamp(pendingAt, end = true)
+            }
         }
     }
 }

@@ -41,6 +41,7 @@ import com.billmongan.herdrdroid.AppViewModel
 import com.billmongan.herdrdroid.Screen
 import com.billmongan.herdrdroid.herdr.PastSession
 import com.billmongan.herdrdroid.transcript.Item
+import com.billmongan.herdrdroid.transcript.Transcript
 import com.billmongan.herdrdroid.transcript.rowsOf
 import java.text.DateFormat
 import java.util.Date
@@ -76,8 +77,13 @@ fun HistoryScreen(vm: AppViewModel, paneId: String, session: PastSession?) {
             return@Column
         }
         var problem by remember(session) { mutableStateOf<String?>(null) }
+        var times by remember(session) { mutableStateOf<Map<String, Long>>(emptyMap()) }
         LaunchedEffect(session) {
-            vm.readPastSession(paneId, session).onSuccess { (i, m) -> items = i; more = m }.onFailure { problem = it.message }
+            vm.readPastSession(paneId, session).onSuccess { r ->
+                items = Transcript.merge(emptyList(), r.items, true)
+                more = r.more
+                times = Transcript.timesOf(r.items)
+            }.onFailure { problem = it.message }
         }
         val list = items
         when {
@@ -87,6 +93,7 @@ fun HistoryScreen(vm: AppViewModel, paneId: String, session: PastSession?) {
             else -> ProvideAttachments(vm::attachmentBytes) {
                 TranscriptChat(
                     rows = remember(list) { rowsOf(list) },
+                    itemTimes = times,
                     working = false,
                     workingLabel = "",
                     agentName = pane?.agentName ?: "The agent",

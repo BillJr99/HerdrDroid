@@ -55,6 +55,69 @@ import org.junit.runner.RunWith
 class ComposeUiTest {
     @get:Rule val rule = createComposeRule()
 
+    private fun localDateTime(at: Long): String {
+        val context = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().targetContext
+        val date = java.util.Date(at)
+        return "${android.text.format.DateFormat.getMediumDateFormat(context).format(date)} · " +
+            android.text.format.DateFormat.getTimeFormat(context).format(date)
+    }
+
+    @Test fun directPromptShowsDestinationAndPreservesDraftOnRefusal() {
+        val sends = mutableListOf<String>()
+        var sent = 0
+        rule.setContent {
+            PromptRelayDialog("Codex on Laptop", checking = false, available = true, onDismiss = {},
+                onSend = { text ->
+                    sends += text
+                    if (sends.size == 1) com.billmongan.herdrdroid.herdr.RelayResult.REFUSED
+                    else com.billmongan.herdrdroid.herdr.RelayResult.SENT
+                }, onSent = { sent++ })
+        }
+        rule.onNodeWithText("Send prompt to Codex on Laptop").assertIsDisplayed()
+        rule.onNodeWithText("Send prompt").assertIsNotEnabled()
+        rule.onNode(hasSetTextAction()).performTextInput("Check the build")
+        rule.runOnIdle { assertTrue(sends.isEmpty()) }
+        rule.onNodeWithText("Send prompt").performClick()
+        rule.onNodeWithText("Not sent.", substring = true).assertIsDisplayed()
+        rule.onNodeWithText("Check the build").assertIsDisplayed()
+        rule.onNodeWithText("Send prompt").performClick()
+        rule.runOnIdle {
+            assertEquals(listOf("Check the build", "Check the build"), sends)
+            assertEquals(1, sent)
+        }
+    }
+
+    @Test fun questionHistoryShowsTheCapturedDateAndTime() {
+        val at = 1_730_504_100_000L
+        rule.setContent {
+            QuestionView(com.billmongan.herdrdroid.transcript.QuestionItem("q", listOf(
+                com.billmongan.herdrdroid.transcript.QPart(question = "Use these settings?"),
+            ), at = at), 12.5f)
+        }
+        rule.onNodeWithText("Use these settings?", substring = true).assertIsDisplayed()
+        rule.onNodeWithText(localDateTime(at)).assertIsDisplayed()
+    }
+
+    @Test fun transcriptShowsRecordedTimesWithoutAddingOneToUntimedHistory() {
+        val at = 1_730_504_100_000L
+        val replyAt = at + 60_000L
+        val queuedAt = replyAt + 60_000L
+        val rows = rowsOf(listOf(UserItem("u", "Message"), TextItem("a", "Reply"), UserItem("old", "Untimed history")))
+        rule.setContent {
+            TranscriptChat(rows, false, "", "Claude", listOf("Pending message" to queuedAt), false,
+                12.5f, FontFamily.Default, ChatActions(onQuote = {}, onStop = null),
+                state = rememberLazyListState(), itemTimes = mapOf("u" to at, "a" to replyAt))
+        }
+        val chatList = rule.onNode(hasScrollToIndexAction())
+        chatList.performScrollToIndex(1)
+        rule.onNodeWithText(localDateTime(at)).assertIsDisplayed()
+        rule.onNodeWithText(localDateTime(replyAt)).assertIsDisplayed()
+        rule.onNodeWithText("Untimed history").assertIsDisplayed()
+        rule.onAllNodesWithText(" · ", substring = true).assertCountEquals(3)
+        chatList.performScrollToIndex(4)
+        rule.onNodeWithText(localDateTime(queuedAt)).assertIsDisplayed()
+    }
+
     private fun pane(status: Status, agent: String = "claude") =
         Pane("w1:p1", "w1:t1", "w1", agent, status, "", "/home/user/agents/claude")
 
@@ -533,21 +596,21 @@ class ComposeUiTest {
     @Test fun voiceSettingsRequireOptInAndStartAndStopOnlyOnExplicitTap() {
         val enabled = androidx.compose.runtime.mutableStateOf(false)
         val active = androidx.compose.runtime.mutableStateOf(false)
-        val locked = androidx.compose.runtime.mutableStateOf(false)
+        val appLockEnabled = true // These settings are only shown after the user unlocks.
         val route = androidx.compose.runtime.mutableStateOf(com.billmongan.herdrdroid.voice.VoiceRoute.PHONE)
         rule.setContent {
             androidx.compose.foundation.layout.Column(Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState())) {
                 VoiceSettings(com.billmongan.herdrdroid.voice.VoiceUi(enabled.value, { enabled.value = it },
-                    { active.value = true }, { active.value = false }, {}, route.value, { route.value = it }), active.value, locked.value)
+                    { active.value = true }, { active.value = false }, {}, route.value, { route.value = it }), active.value, appLockEnabled)
             }
         }
         rule.onNodeWithText("Start hands-free").assertIsNotEnabled()
         rule.onNodeWithContentDescription("Voice Control").performClick()
         rule.runOnIdle { assertTrue(!active.value) }
         rule.onNodeWithText("Start hands-free").performScrollTo().performClick()
+        rule.runOnIdle { assertTrue(active.value) }
         rule.onNodeWithText("Stop hands-free").performScrollTo().performClick()
-        rule.runOnIdle { locked.value = true }
-        rule.onNodeWithText("Start hands-free").assertIsNotEnabled()
+        rule.runOnIdle { assertTrue(!active.value) }
         if (android.os.Build.VERSION.SDK_INT >= 31) {
             rule.onNodeWithText("Bluetooth speakers and mic").performScrollTo().performClick()
             rule.runOnIdle { assertEquals(com.billmongan.herdrdroid.voice.VoiceRoute.BLUETOOTH, route.value) }
@@ -612,7 +675,7 @@ class ComposeUiTest {
                 TranscriptChat(
                     rows = rowsOf(listOf(UserItem("delivered", "Write a report"))),
                     working = false, workingLabel = "", agentName = "Grok",
-                    pending = listOf("First queued message", "2 (●) Second draft option"),
+                    pending = listOf("First queued message" to 0L, "2 (●) Second draft option" to 0L),
                     more = false, size = 12.5f, family = FontFamily.Default,
                     actions = ChatActions(onQuote = {}, onStop = null, queuedNote = "Queued in Grok · not yet in the session log"),
                     footer = {

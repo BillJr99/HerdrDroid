@@ -237,20 +237,20 @@ internal fun VoiceSettings(voice: VoiceUi, active: Boolean, appLock: Boolean) {
         }
         Text("The selected route is used for hands-free and Read aloud. Bluetooth needs Android 12 or later and Phone calls enabled on the Bluetooth device.",
             color = Palette.Muted, fontSize = 13.sp)
-        TextButton(enabled = active || (voice.enabled && !appLock), onClick = if (active) voice.stopHandsFree else voice.startHandsFree) {
+        TextButton(enabled = active || voice.enabled, onClick = if (active) voice.stopHandsFree else voice.startHandsFree) {
             Text(if (active) "Stop hands-free" else "Start hands-free")
         }
         Text(when {
-            appLock -> "Hands-free is unavailable while the HerdrDroid app lock is on."
-            active -> "Hands-free is on. You can also stop it from its notification."
+            active -> "Hands-free is on. Stop it here or from its notification to restore normal app-lock checks."
             !voice.enabled -> "Turn on Voice Control to start a hands-free session."
+            appLock -> "Unlock HerdrDroid and start hands-free yourself. App unlock prompts wait until the session ends."
             else -> "Hands-free listens only after you start it. It can continue when Android locks the screen."
         }, color = Palette.Muted, fontSize = 13.sp)
         Text("Voice commands", color = Palette.Ink, fontWeight = FontWeight.SemiBold)
         Text("Hold the chat mic for a voice command, or in hands-free say “Hey Herdr,” wait for the tone, then give one command. Wake it again for each follow-up. New completed replies in the open chat are read aloud during a hands-free session.",
             color = Palette.Muted, fontSize = 13.sp)
         voiceCommandHelp.forEach { Text(it, color = Palette.Ink, fontSize = 14.sp) }
-        Text("Use unique pane names from the drawer. For a message, switch to the named pane first, request the message, dictate it, then confirm or cancel after the readback. For a supported question card, choose an option and confirm separately. Permission approvals and complex questions need the phone.",
+        Text("Use a unique pane name from the drawer. To send directly to another server, use “Send a message to” with the pane and server names, then “Dictate” with your prompt. After the destination and message are read back, say “Confirm message” or “Cancel message.” The destination needs a live Fleet connection and an idle pane. For a supported question card, choose an option and confirm separately. Permission approvals and complex questions need the phone.",
             color = Palette.Muted, fontSize = 13.sp)
     }
 }

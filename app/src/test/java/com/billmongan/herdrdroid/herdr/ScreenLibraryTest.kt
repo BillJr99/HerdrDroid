@@ -10,7 +10,7 @@ import java.io.File
  * app/src/test/resources/screens/<agent>/<version>/<name>.txt, run through the parsers.
  *
  * A screen with a <name>.expect file is checked against it:
- *   card: options | fallback | none    what detectPrompt must return
+ *   card: options | fallback | terminal-review | none    what detectPrompt must return
  *   blocked: true | false              herdr's status when it was captured
  *   heading: ...                       the question as the card shows it (optional)
  *   options: a | b | c                 every option's label, in order (optional)
@@ -38,14 +38,17 @@ class ScreenLibraryTest {
         assertTrue("the library is empty", screens.isNotEmpty())
         val broken = mutableListOf<String>()
         for (f in screens) {
-            val rel = f.relativeTo(r).path
+            val relative = f.relativeTo(r)
+            val rel = relative.path
+            val agent = relative.parentFile.parentFile.name
             val text = f.readText()
             val e = expect(f)
             val why: String? = if (e != null) {
-                val p = detectPrompt(text, e["blocked"] == "true")
+                val p = detectPrompt(text, e["blocked"] == "true", agent)
                 when (e["card"]) {
                     "none" -> if (p != null) "expected no card, got \"${p.question}\"" else null
                     "fallback" -> if (p == null || p.choices.isNotEmpty() || p.region == null) "expected the fallback card" else null
+                    "terminal-review" -> if (p == null || !p.terminalReview || p.choices.isNotEmpty()) "expected non-actionable terminal review" else null
                     else -> when {
                         p == null || p.choices.isEmpty() -> "expected a card with options, got ${if (p == null) "none" else "no options"}"
                         e["heading"] != null && (p.parts?.heading ?: p.shownParts().heading ?: p.question) != e["heading"] ->
@@ -56,7 +59,7 @@ class ScreenLibraryTest {
                     }
                 }
             } else if (looksLikeQuestion.containsMatchIn(text)) {
-                val p = detectPrompt(text, blocked = true)
+                val p = detectPrompt(text, blocked = true, agent = agent)
                 if (p == null || p.choices.size < 2) "looks like a question but parsed as ${if (p == null) "no card" else "the fallback card"}" else null
             } else null
             val err = e?.get("error")?.let { want ->

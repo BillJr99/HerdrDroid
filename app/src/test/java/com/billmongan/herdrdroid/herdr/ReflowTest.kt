@@ -8,6 +8,35 @@ class ReflowTest {
     private fun pad(s: String, to: Int) = s + " ".repeat((to - s.length).coerceAtLeast(1))
 
     @Test
+    fun antigravityChatUsesPlainRepliesAndMutedActivityWithoutLosingContent() {
+        val screen = """
+            > Explain the notation
+
+            ○ Checking examples
+            ● The symbol ● in this sentence is intentional and the reply wraps
+              onto the next row.
+
+              • Keep real list bullets
+            ┌───┬───┐
+            │ A │ B │
+            └───┴───┘
+            ────────────────────────────────
+            >
+            ────────────────────────────────
+            Shift+Tab to change mode
+        """.trimIndent()
+        val segs = Reflow.parse(screen, antigravity = true)
+        assertEquals(Seg.You("Explain the notation"), segs.first())
+        val paras = segs.filterIsInstance<Seg.Para>()
+        assertEquals(Seg.Para(0, null, "Checking examples", detail = true), paras[0])
+        assertEquals(Seg.Para(0, null, "The symbol ● in this sentence is intentional and the reply wraps onto the next row."), paras[1])
+        assertEquals("•", paras[2].mark)
+        assertEquals(listOf("┌───┬───┐", "│ A │ B │", "└───┴───┘"), segs.filterIsInstance<Seg.Code>().single().lines)
+        assertEquals(listOf("Shift+Tab to change mode"), segs.filterIsInstance<Seg.Footer>().single().lines)
+        assertEquals(listOf("○", "●", "•"), Reflow.parse(screen).filterIsInstance<Seg.Para>().map { it.mark })
+    }
+
+    @Test
     fun grokScrollbarClockAndWrappedParagraph() {
         val w = 118
         val screen = listOf(
