@@ -5,6 +5,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import com.billmongan.herdrdroid.herdr.admit
 import net.schmizz.sshj.DefaultConfig
 import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.common.Buffer
@@ -322,16 +323,23 @@ class HerdrSsh(
     }
 
     /** One command, retried once on a fresh connection only if it never reached the computer. */
-    private suspend fun runRetrying(command: String, input: ByteArray?, timeoutSeconds: Long, maxOut: Int, expectedConnection: Any? = null): Triple<Int, ByteArray, ByteArray> {
+    private suspend fun runRetrying(
+        command: String, input: ByteArray?, timeoutSeconds: Long, maxOut: Int, expectedConnection: Any? = null,
+        permit: com.billmongan.herdrdroid.herdr.WritePermit? = null,
+    ): Triple<Int, ByteArray, ByteArray> {
         var attempt = 0
         while (true) {
             var connection: SSHClient? = null
             try {
                 val opened = lock.withLock {
-                    if (expectedConnection == null) open()
+                    val c = if (expectedConnection == null) open()
                     else requireCurrentConnection(expectedConnection, client?.takeIf {
                         it.isConnected && it.isAuthenticated && bridge?.isOpen != false
                     })
+                    // The last check before the command starts: a lock, the end of hands-free or a
+                    // confirmed close revokes the permit while this send waited (2.0.1 finding 4).
+                    permit.admit()
+                    c
                 }
                 connection = opened
                 return runOn(opened, command, input, timeoutSeconds, maxOut)
@@ -349,13 +357,16 @@ class HerdrSsh(
                 throw e
             } catch (e: ConnectionChanged) {
                 throw e
+            } catch (e: com.billmongan.herdrdroid.herdr.WriteRevoked) {
+                throw e
             } catch (e: AfterStart) {
                 // It reached the computer: the connection is suspect, but the command is not sent again.
                 discard(connection)
                 throw LinkDown(e.cause ?: e)
             } catch (e: Exception) {
                 discard(connection)
-                if (expectedConnection != null || ++attempt > 1) throw (e as? LinkDown ?: LinkDown(e))
+                // A permitted write is never replayed: the permit is claimed once.
+                if (expectedConnection != null || permit != null || ++attempt > 1) throw (e as? LinkDown ?: LinkDown(e))
             }
         }
     }
@@ -389,9 +400,16 @@ class HerdrSsh(
      * Runs a short command on its own channel without waiting for other commands: the send lane.
      * Only opening the connection takes the lock, so a message goes out while a read is running.
      */
-    suspend fun execNow(command: String, timeoutSeconds: Long = 30, expectedConnection: Any? = null): ExecResult = withContext(Dispatchers.IO) {
+    suspend fun execNow(command: String, timeoutSeconds: Long = 30, expectedConnection: Any? = null): ExecResult =
+        execNow(command, timeoutSeconds, expectedConnection, null)
+
+    /** The send lane with a write permit, claimed once the connection is held (2.0.1 finding 4). */
+    internal suspend fun execNow(
+        command: String, timeoutSeconds: Long, expectedConnection: Any?,
+        permit: com.billmongan.herdrdroid.herdr.WritePermit?,
+    ): ExecResult = withContext(Dispatchers.IO) {
         capped {
-            val (exit, out, err) = runRetrying(command, null, timeoutSeconds, MAX_OUT, expectedConnection)
+            val (exit, out, err) = runRetrying(command, null, timeoutSeconds, MAX_OUT, expectedConnection, permit)
             ExecResult(exit, out.toString(Charsets.UTF_8), err.toString(Charsets.UTF_8))
         }
     }
