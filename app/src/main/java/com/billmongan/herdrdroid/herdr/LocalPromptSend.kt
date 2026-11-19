@@ -21,14 +21,14 @@ internal class LocalPromptSend(private val dispatch: PaneDispatch, private val g
         suspend fun send(fresh: Pane, text: String, permit: WritePermit)
     }
 
-    enum class Outcome { SENT, REFUSED, CONNECTION_CHANGED, UNCERTAIN }
+    enum class Outcome { SENT, REFUSED, NO_IDENTITY, CONNECTION_CHANGED, UNCERTAIN }
 
     class Result(val outcome: Outcome, val failure: Exception? = null)
 
     suspend fun send(server: String, expected: Occupant, text: String, allowed: () -> Boolean, port: Port): Result {
         val refused = Result(Outcome.REFUSED)
         val key = server to expected.pane
-        if (!expected.stable) return refused
+        if (!expected.stable) return Result(Outcome.NO_IDENTITY)
         fun valid() = allowed() && !gate.isClosing(key)
         fun ready(p: Pane?) = p != null && Occupant.of(p) == expected &&
             p.status in setOf(Status.IDLE, Status.DONE) && (p.scrollOffset ?: 0) == 0

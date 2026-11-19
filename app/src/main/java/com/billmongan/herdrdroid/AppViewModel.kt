@@ -1103,10 +1103,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         try {
             val key = q.dispatchKey
             if (key == null) q.run(h)
-            else paneDispatch.run(key) {
-                if (current?.id != key.first || writeGate.isClosing(key)) return@run
-                val connected = herdr
-                if (connected != null && link == Link.CONNECTED) q.run(connected) else enqueue(q)
+            else {
+                val epoch = writeGate.epoch(key)
+                paneDispatch.run(key) {
+                    // A close confirmed while this tap waited for the lane drops it, even once the close is over.
+                    if (current?.id != key.first || writeGate.isClosing(key) || writeGate.epoch(key) != epoch) return@run
+                    val connected = herdr
+                    if (connected != null && link == Link.CONNECTED) q.run(connected) else enqueue(q)
+                }
             }
         } catch (c: CancellationException) {
             throw c
@@ -2288,6 +2292,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun retryHeld(p: PendingSend, server: String) {
         val log = { m: String -> com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${p.paneId}: $m") }
         val agentName = pane(p.paneId)?.agentName ?: "the agent"
+        val closeKey = server to p.paneId
+        val closeEpoch = writeGate.epoch(closeKey)
+        fun closing() = writeGate.isClosing(closeKey) || writeGate.epoch(closeKey) != closeEpoch
         var missing = 0
         val outcome = com.billmongan.herdrdroid.herdr.HeldSendRetry().run(
             // The 2 minutes start when it reaches the front of the pane's queue (from Grok's review).
@@ -2298,6 +2305,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 when {
                     pendingSends.none { it.id == p.id && it.waiting } -> "no longer waiting (cancelled, or the agent's log has it)"
                     current?.id != server -> "the computer changed"
+                    closing() -> "its tab is being closed"
                     missing >= 3 -> "the pane closed"
                     else -> null
                 }
@@ -2320,6 +2328,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         // suspends from here to the send, so neither can begin in between.
                         val after = pane(p.paneId)
                         when {
+                            // Its tab may have been closed during the read.
+                            closing() -> "its tab is being closed"
                             after == null -> "the pane isn't listed just now"
                             blocksNormalSend(after, screen) -> "a question is open in it; answer it first"
                             else -> holdReason(p.paneId, screen)
@@ -2505,6 +2515,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return when (result.outcome) {
             com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.SENT -> "Message sent."
             com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.REFUSED -> refuse
+            com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.NO_IDENTITY ->
+                "Not sent. This server doesn't report which session is in the pane, so a voice message can't be checked against the one read back."
             com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.CONNECTION_CHANGED -> "Not sent. The SSH connection changed."
             com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.UNCERTAIN -> "Could not confirm delivery. Check the chat before trying again."
         }

@@ -52,7 +52,7 @@ class LocalVoiceOccupantTest {
         val bare = pane.copy(terminalId = null, sessionId = null)
         val fake = Fake(bare)
         assertFalse(Occupant.of(bare).stable)
-        assertEquals(LocalPromptSend.Outcome.REFUSED, sender.send("local", Occupant.of(bare), "x", { true }, fake).outcome)
+        assertEquals(LocalPromptSend.Outcome.NO_IDENTITY, sender.send("local", Occupant.of(bare), "x", { true }, fake).outcome)
         assertEquals(0, fake.reads)
         assertTrue(fake.writes.isEmpty())
     }

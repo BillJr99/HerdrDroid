@@ -408,6 +408,8 @@ class HerdrSsh(
         command: String, timeoutSeconds: Long, expectedConnection: Any?,
         permit: com.billmongan.herdrdroid.herdr.WritePermit?,
     ): ExecResult = withContext(Dispatchers.IO) {
+        // Fails fast on a permit already revoked; the binding check is the claim under the lock.
+        if (permit?.revoked == true) throw com.billmongan.herdrdroid.herdr.WriteRevoked()
         capped {
             val (exit, out, err) = runRetrying(command, null, timeoutSeconds, MAX_OUT, expectedConnection, permit)
             ExecResult(exit, out.toString(Charsets.UTF_8), err.toString(Charsets.UTF_8))
