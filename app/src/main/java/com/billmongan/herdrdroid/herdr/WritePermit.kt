@@ -42,6 +42,14 @@ internal fun WritePermit?.admit() {
 internal class WriteGate {
     private val live = mutableMapOf<Pair<String, String>, MutableSet<WritePermit>>()
     private val closing = mutableMapOf<Pair<String, String>, Int>()
+    private val epochs = mutableMapOf<Pair<String, String>, Long>()
+
+    /**
+     * Changes each time a close of [key] is confirmed. Work that waited for a pane's lane compares
+     * it with the value it saw before waiting, so a close confirmed meanwhile is never followed by
+     * a write once the close is over (2.0.1 review of findings 1, 2 and 4).
+     */
+    fun epoch(key: Pair<String, String>): Long = synchronized(this) { epochs[key] ?: 0L }
 
     /** A permit for one write to [key], or null while that pane is being closed. */
     fun open(key: Pair<String, String>): WritePermit? = synchronized(this) {
@@ -61,6 +69,7 @@ internal class WriteGate {
     fun beginClose(keys: Collection<Pair<String, String>>) = synchronized(this) {
         for (key in keys) {
             closing[key] = (closing[key] ?: 0) + 1
+            epochs[key] = (epochs[key] ?: 0L) + 1
             live[key]?.forEach { it.revoke() }
         }
     }

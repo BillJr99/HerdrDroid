@@ -5,6 +5,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
 import org.junit.Assert.*
 import org.junit.Test
@@ -130,6 +131,43 @@ class RelayCloseOrderTest {
         server.panes = listOf(pane, sibling)
         val target = checkNotNull(relay.bind("remote", pane))
         assertEquals(RelayResult.SENT, relay.send(target, "ok") { true })
+    }
+
+    @Test fun `work that waited through a close sees a new epoch`() = runBlocking {
+        val key = "remote" to "pane-1"
+        val before = gate.epoch(key)
+        val pending = closer.confirm("remote", pane, server.connection, server.panes)
+        assertEquals(PaneClose.Outcome.CLOSED, closer.run(pending, server).outcome)
+        assertFalse(gate.isClosing(key))
+        assertNotEquals("a tap queued before the close is dropped after it", before, gate.epoch(key))
+    }
+
+    @Test fun `two closes of one tab with different stale views do not deadlock`() = runBlocking {
+        val early = pane.copy(id = "pane-0", terminalId = "term-0", sessionId = "session-0") // sorts first
+        server.panes = listOf(early, pane, sibling)
+        val stale = closer.confirm("remote", pane, server.connection, listOf(pane, sibling))
+        val fresh = closer.confirm("remote", pane, server.connection, listOf(early, pane, sibling))
+        // The stale close holds pane-1 and pane-2 and pauses on its pane list; the fresh close
+        // then holds pane-0 and waits for pane-1; then the stale close finds pane-0 as an extra.
+        val listing = CompletableDeferred<Unit>()
+        val proceed = CompletableDeferred<Unit>()
+        val pausing = object : PaneClose.Port by server {
+            override suspend fun panes(connection: Any): List<Pane> {
+                listing.complete(Unit); proceed.await(); return server.panes(connection)
+            }
+        }
+        val results = withTimeout(5_000) {
+            val a = async { closer.run(stale, pausing).outcome }
+            listing.await()
+            val b = async { closer.run(fresh, server).outcome }
+            yield(); yield()
+            proceed.complete(Unit)
+            listOf(a.await(), b.await())
+        }
+        assertEquals(listOf(PaneClose.Outcome.CHANGED, PaneClose.Outcome.CLOSED), results)
+        assertTrue(results.toString(), PaneClose.Outcome.CLOSED in results)
+        assertEquals(listOf("close tab-1"), server.events)
+        for (id in listOf("pane-0", "pane-1", "pane-2")) assertFalse(gate.isClosing("remote" to id))
     }
 
     @Test fun `a pane that joined the tab is held and closed too`() = runBlocking {

@@ -50,7 +50,9 @@ internal class PaneClose(private val dispatch: PaneDispatch, private val gate: W
             if (extra.isNotEmpty()) {
                 gate.beginClose(extra)
                 marked += extra
-                for (key in extra) held += dispatch.acquire(key)
+                // Not waited for: these sort outside the order already held, so waiting could
+                // deadlock against another close of the same tab. A busy one means try again.
+                for (key in extra) held += dispatch.tryAcquire(key) ?: return Result(Outcome.CHANGED)
             }
             port.closeTab(now.tabId, pending.connection)
             return Result(Outcome.CLOSED)

@@ -1,5 +1,8 @@
 package com.billmongan.herdrdroid.herdr
 
+import com.billmongan.herdrdroid.ssh.ConnectionChanged
+import com.billmongan.herdrdroid.ssh.Credentials
+import com.billmongan.herdrdroid.ssh.HerdrSsh
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
@@ -74,6 +77,20 @@ class WritePermitTransportTest {
         transport.sshLock.unlock()
         try { sending.await(); fail("expected cancellation") } catch (_: CancellationException) {}
         assertTrue(transport.writes.isEmpty())
+    }
+
+    /** The production Herdr and HerdrSsh, never connected: nothing is opened or sent. */
+    private fun inertHerdr() = Herdr(HerdrSsh("127.0.0.1", 9, "nobody", Credentials(null, null), null, { null }), "herdr")
+
+    @Test fun `the production send path carries the permit to the transport`() = runBlocking {
+        val port = inertHerdr().relayPort(ByteArray(0))
+        val revoked = WritePermit().also { it.revoke() }
+        try { port.send(pane, "deploy", Any(), revoked); fail("expected WriteRevoked") } catch (_: WriteRevoked) {}
+        // An open permit is not claimed before the transport holds the expected connection.
+        val open = WritePermit()
+        try { port.send(pane, "deploy", Any(), open); fail("expected ConnectionChanged") } catch (_: ConnectionChanged) {}
+        assertFalse(open.submitted)
+        assertFalse(open.revoked)
     }
 
     @Test fun `permit states are one-way`() {
