@@ -1,7 +1,10 @@
 package com.billmongan.herdrdroid.herdr
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** How a held send ended (1.4.4). */
 sealed class HeldOutcome {
@@ -25,9 +28,13 @@ sealed class HeldOutcome {
 class HeldSendRetry(
     private val windowMs: Long = 120_000L,
     private val everyMs: Long = 2_000L,
-    private val now: () -> Long = System::currentTimeMillis,
+    private val now: () -> Long = ::monotonicMillis,
     private val sleep: suspend (Long) -> Unit = { delay(it) },
 ) {
+    companion object {
+        internal fun monotonicMillis(): Long = System.nanoTime() / 1_000_000L
+    }
+
     suspend fun run(
         startedAt: Long,
         firstWhy: String,
@@ -39,14 +46,23 @@ class HeldSendRetry(
     ): HeldOutcome {
         var why = firstWhy
         var checks = 0
+        fun remaining() = windowMs - (now() - startedAt)
+        fun timedOut(): HeldOutcome.TimedOut {
+            log("still held after ${(now() - startedAt) / 1000} s ($checks checks): $why; reported")
+            return HeldOutcome.TimedOut(why, checks)
+        }
         while (true) {
-            if (now() - startedAt >= windowMs) {
-                log("still held after ${(now() - startedAt) / 1000} s ($checks checks): $why; reported")
-                return HeldOutcome.TimedOut(why, checks)
-            }
-            sleep(everyMs)
-            val release = acquire()
+            val beforeSleep = remaining()
+            if (beforeSleep <= 0) return timedOut()
+            sleep(minOf(everyMs, beforeSleep))
+            val lockBudget = remaining()
+            if (lockBudget <= 0) return timedOut()
+            var release: (() -> Unit)? = null
             try {
+                // Keep ownership outside the timeout scope so a timeout racing with acquisition
+                // cannot discard the unlock callback.
+                val acquired = withTimeoutOrNull(lockBudget) { release = acquire(); true }
+                if (acquired == null || remaining() <= 0) return timedOut()
                 cancelled()?.let { log("retry stopped: $it"); return HeldOutcome.Cancelled(it) }
                 val next = try {
                     check()
@@ -63,6 +79,8 @@ class HeldSendRetry(
                 }
                 // A dismissal during the screen read still stops the send.
                 cancelled()?.let { log("retry stopped: $it"); return HeldOutcome.Cancelled(it) }
+                currentCoroutineContext().ensureActive()
+                if (remaining() <= 0) return timedOut()
                 return try {
                     send()
                     HeldOutcome.Delivered(now() - startedAt, checks).also {
@@ -75,7 +93,7 @@ class HeldSendRetry(
                     HeldOutcome.Failed(e)
                 }
             } finally {
-                release()
+                release?.invoke()
             }
         }
     }
