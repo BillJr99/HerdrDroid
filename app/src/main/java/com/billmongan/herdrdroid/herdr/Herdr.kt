@@ -1703,10 +1703,12 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     @Suppress("NAME_SHADOWING") val blocked = blocked || showsQuestionDialog(text) ||
         (rules.extraFooter?.let { f -> text.lines().takeLast(6).any { f.containsMatchIn(it) } } == true)
     var raw = text.lines().takeLast(80)
+    var pastDialog = false
     if (agent.equals("codex", true)) {
         val footer = raw.indexOfLast { CODEX_FOOTER.matches(it.trim()) }
         if (footer >= 0 && raw.drop(footer + 1).any { !isChrome(it) }) {
             raw = raw.drop(footer + 1)
+            pastDialog = true
         }
     }
     var lines = raw.filter { it.isNotBlank() }.takeLast(40)
@@ -1736,6 +1738,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
         }
         if (!newer) { raw = raw.take(footer + 1); break }
         raw = tail
+        pastDialog = true
     }
     lines = raw.filter { it.isNotBlank() }.takeLast(40)
     val activeText = raw.joinToString("\n")
@@ -1991,8 +1994,10 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     // herdr's "blocked" alone is not a question (1.4.2: opencode's plugin kept a pane blocked after
     // a failed compaction, even on a fresh session, and the app showed an empty card). The fallback
     // card needs something question-like on screen too: a question footer, or a sentence near the
-    // bottom that asks. Otherwise the status is stale and there is no card.
-    if ((footer && !rejectEcho) || (blocked && asks)) {
+    // bottom that asks. After a dialog has scrolled into history, herdr can still report it as
+    // blocked; don't let that status turn subsequent prose into a new card. A current footer or
+    // other recognized prompt controls still work without waiting for the status to change.
+    if ((footer && !rejectEcho) || (blocked && asks && !pastDialog)) {
         val region = raw.dropLastWhile { it.isBlank() }.takeLast(16).map { clean(it) }.dropWhile { it.isEmpty() }
         val fallbackQuestion = if (rejectEcho) askingLine?.value?.let(clean) else question
         return Prompt(fallbackQuestion ?: "This agent is waiting for you.", emptyList(), region = region.takeIf { r -> r.any { it.isNotBlank() } } ?: listOf(UNREAD_SCREEN))
