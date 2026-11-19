@@ -1,5 +1,6 @@
 package com.billmongan.herdrdroid.voice
 
+import com.billmongan.herdrdroid.store.Server
 import java.util.Locale
 
 internal sealed interface VoiceCommand {
@@ -17,9 +18,9 @@ internal sealed interface VoiceCommand {
 }
 
 internal val voiceCommandHelp = listOf(
-    "Switch to Codex on laptop two", "Switch to laptop two", "Read the latest reply",
+    "Switch to Codex on Laptop", "Switch to Laptop", "Read the latest reply",
     "Repeat that", "Read question", "Option two", "Confirm answer", "Cancel answer",
-    "Send a message to Codex on laptop two", "Dictate check the build", "Confirm message", "Cancel message",
+    "Send a message to Codex on Laptop", "Dictate check the build", "Confirm message", "Cancel message",
 )
 
 private fun paneTarget(text: String): VoiceCommand.Switch? {
@@ -56,7 +57,7 @@ internal fun parseVoiceCommand(text: String): VoiceCommand? {
             }
             // Vosk commonly hears the initial consonants of “switch to” as “which to.”
             val target = Regex("^(?:switch to|which to) (.+)$").matchEntire(words)?.groupValues?.get(1)
-                ?: Regex("^which too (many pc (?:to|two))$").matchEntire(words)?.groupValues?.get(1)
+                ?: Regex("^which too (many pc(?: to| two)?)$").matchEntire(words)?.groupValues?.get(1)
                 ?: return null
             paneTarget(target)
         }
@@ -66,4 +67,13 @@ internal fun parseVoiceCommand(text: String): VoiceCommand? {
 internal fun voiceName(text: String): String {
     val cleaned = text.lowercase(Locale.ROOT).filter(Char::isLetterOrDigit)
     return cleaned.replace(Regex("^(?:mini|many)pc(?:two|too|to)$"), "laptop2")
+}
+
+/** The short spoken example is a fallback, not a rename of a saved server or pane. */
+internal fun voiceServersNamed(servers: List<Server>, spoken: String): List<Server> {
+    val name = voiceName(spoken)
+    val matches = servers.filter { voiceName(it.label) == name }
+    return if (matches.isEmpty() && (name == "laptop" || name == "manypc")) {
+        servers.filter { voiceName(it.label) == "laptop2" }
+    } else matches
 }

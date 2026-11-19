@@ -1,10 +1,23 @@
 package com.billmongan.herdrdroid.voice
 
+import com.billmongan.herdrdroid.store.Server
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
 class VoiceCommandsTest {
+    @Test fun settingsSayLaptopAndTheOldServerAliasStillWorks() {
+        assertEquals(listOf("Switch to Codex on Laptop", "Switch to Laptop", "Send a message to Codex on Laptop"),
+            voiceCommandHelp.filter { it.contains("laptop", ignoreCase = true) })
+        val saved = Server(id = "test", name = "laptop2", host = "laptop2", port = 22, user = "test", herdrPath = "herdr")
+        for (phrase in listOf("Switch to Laptop", "Switch to Laptop Two", "which too many pc")) {
+            val command = parseVoiceCommand(phrase) as VoiceCommand.Switch
+            assertEquals(listOf(saved), voiceServersNamed(listOf(saved), command.name))
+        }
+        val exact = saved.copy(id = "other", name = "Laptop", host = "laptop")
+        assertEquals(listOf(exact), voiceServersNamed(listOf(saved, exact), "Laptop"))
+    }
+
     @Test fun routesSpokenNamesAndNumbers() {
         assertEquals(VoiceCommand.Switch("codex", "laptop two"), parseVoiceCommand("Switch to Codex on laptop two."))
         assertEquals("laptop2", voiceName("laptop two"))

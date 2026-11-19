@@ -1271,7 +1271,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     if (currentUsage(usage)) {
                         readPane(usage.pane)
-                        if (currentUsage(usage) && (!sent || paneTextPane != usage.pane || paneReadProblem != null ||
+                        if (currentUsage(usage) && (!sent || paneTextPane != usage.pane || paneReadProblem != null || openUsage != null ||
                                 dismissibleUsageFrame(usage.agent, paneText) != null)) {
                             flash("Couldn't confirm that usage closed. Check the pane before trying again.")
                         }
@@ -1313,8 +1313,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
         }?.let { text ->
             if (!isOpen()) return
-            val agent = pane(paneId)?.agent
-            val liveUsage = if (client != null && serverId != null && agent != null && dismissibleUsageFrame(agent, text) != null) {
+            val paneNow = pane(paneId)
+            val agent = paneNow?.agent
+            // Recent output can omit the current modal even when the read succeeds. Only the
+            // guarded live viewport may offer dismissal, and this check itself never sends a key.
+            val liveUsage = if (foreground && !locked && client != null && serverId != null &&
+                agent != null && paneNow.status != Status.WORKING && (paneNow.scrollOffset ?: 0) == 0) {
                 quietly { h -> if (h === client) h.readUsageOverlay(paneId, agent) else null }
                     ?.let { OpenUsage(serverId, paneId, visit, client, agent, it) }
             } else null
