@@ -1311,7 +1311,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 problem(e.message?.take(120) ?: "the screen could not be read")
                 null
             }
-        }?.let { text ->
+        }?.let { recent ->
             if (!isOpen()) return
             val paneNow = pane(paneId)
             val agent = paneNow?.agent
@@ -1323,6 +1323,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     ?.let { OpenUsage(serverId, paneId, visit, client, agent, it) }
             } else null
             if (!isOpen()) return
+            val blocked = pane(paneId)?.status == Status.NEEDS_YOU
+            val version = versionOf(paneId)
+            val preview = detectPrompt(recent, blocked, agent, version)
+            fun canUpgrade() = foreground && isOpen() && cardOwner != null &&
+                cardOwner.client.backend == Backend.TUI && cardOwner.isCurrent(cardOwner.client) &&
+                pane(paneId)?.scrollOffset == 0
+            // A nonempty recent capture can omit part of the live dialog. Try one short,
+            // read-only viewport capture on the same connection, without waiting for another poll.
+            val liveCard = if (liveUsage == null &&
+                (preview?.terminalReview == true || (blocked && preview?.choices.isNullOrEmpty())) && canUpgrade()) {
+                val owner = checkNotNull(cardOwner)
+                quietly { h -> if (h === owner.client) h.readCardViewport(paneId, owner.connection, timeoutSeconds = 1) else null }
+                    ?.takeIf { canUpgrade() && !it.isBlank() }
+            } else null
+            if (!isOpen()) return
+            val livePrompt = liveCard?.let { detectPrompt(it, pane(paneId)?.status == Status.NEEDS_YOU, agent, version) }
+                ?.takeIf { !it.terminalReview && it.choices.isNotEmpty() }
+            val text = if (livePrompt != null) checkNotNull(liveCard) else recent
             lastAppliedPaneRead = attempt
             paneReadProblem = null
             openUsage = liveUsage
@@ -1339,7 +1357,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             // What the question card sees, logged when it changes (sizes only, no question text).
             val status = panes.firstOrNull { it.id == paneId }?.status
-            val p = com.billmongan.herdrdroid.herdr.detectPrompt(text, status == Status.NEEDS_YOU, pane(paneId)?.agent, versionOf(paneId))
+            val p = when {
+                livePrompt != null -> livePrompt
+                (status == Status.NEEDS_YOU) == blocked && pane(paneId)?.agent == agent && versionOf(paneId) == version -> preview
+                else -> detectPrompt(text, status == Status.NEEDS_YOU, pane(paneId)?.agent, versionOf(paneId))
+            }
             current?.id?.let { sid -> observeQuestion(sid, paneId, p, status, pane(paneId)?.agentName, text) }
             val dialog = com.billmongan.herdrdroid.herdr.showsQuestionDialog(text)
             val sig = if (p == null && !dialog) "none" else

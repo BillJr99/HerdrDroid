@@ -254,9 +254,9 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
     }
 
     /** Only the live viewport, with no fallback into old scrollback. */
-    internal suspend fun readCardViewport(id: String, connection: Any): String = stripAnsi(
-        if (core) runNow(hcCmd("read", id, "--lines", "80"), 5, connection)
-        else runNow(cmd("pane", "read", id, "--source", "visible"), 5, connection)
+    internal suspend fun readCardViewport(id: String, connection: Any, timeoutSeconds: Long = 5): String = stripAnsi(
+        if (core) runNow(hcCmd("read", id, "--lines", "80"), timeoutSeconds, connection)
+        else runNow(cmd("pane", "read", id, "--source", "visible"), timeoutSeconds, connection)
     )
 
     /**
