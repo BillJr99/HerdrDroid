@@ -250,7 +250,7 @@ internal fun VoiceSettings(voice: VoiceUi, active: Boolean, appLock: Boolean) {
         Text("Hold the chat mic for a voice command, or in hands-free say “Hey Herdr,” wait for the tone, then give one command. Wake it again for each follow-up. New completed replies in the open chat are read aloud during a hands-free session.",
             color = Palette.Muted, fontSize = 13.sp)
         voiceCommandHelp.forEach { Text(it, color = Palette.Ink, fontSize = 14.sp) }
-        Text("Use unique pane names from the drawer. For a message, switch to the named pane first, request the message, dictate it, then confirm or cancel after the readback. For a supported question card, choose an option and confirm separately. Permission approvals and complex questions need the phone.",
+        Text("Use a unique pane name from the drawer. To send directly to another server, use “Send a message to” with the pane and server names, then “Dictate” with your prompt. After the destination and message are read back, say “Confirm message” or “Cancel message.” The destination needs a live Fleet connection and an idle pane. For a supported question card, choose an option and confirm separately. Permission approvals and complex questions need the phone.",
             color = Palette.Muted, fontSize = 13.sp)
     }
 }

@@ -20,11 +20,19 @@ internal class VoiceControls(private val context: Context, private val vm: AppVi
     private data class Answer(val target: AppViewModel.VoiceTarget, val prompt: Prompt, val index: Int, val expires: Long, val questionKey: String)
     private var pending: Answer? = null
     private var answerReadBack: Answer? = null
-    private val messages = VoiceMessageDraft<AppViewModel.VoiceTarget>(SystemClock::elapsedRealtime)
-    private data class Confirmation(val grammar: ConfirmationGrammar, val expires: Long, val target: AppViewModel.VoiceTarget)
+    private sealed interface MessageTarget {
+        data class Local(val target: AppViewModel.VoiceTarget) : MessageTarget
+        data class Remote(val target: AppViewModel.RemotePromptTarget) : MessageTarget
+    }
+    private fun messageTargetCurrent(target: MessageTarget) = when (target) {
+        is MessageTarget.Local -> vm.voiceTarget() == target.target
+        is MessageTarget.Remote -> vm.remotePromptCurrent(target.target)
+    }
+    private val messages = VoiceMessageDraft<MessageTarget>(SystemClock::elapsedRealtime)
+    private data class Confirmation(val grammar: ConfirmationGrammar, val expires: Long, val valid: () -> Boolean)
     @Volatile private var confirmation: Confirmation? = null
     fun confirmationGrammar(): ConfirmationGrammar? = confirmation?.takeIf {
-        SystemClock.elapsedRealtime() < it.expires && vm.voiceTarget() == it.target
+        SystemClock.elapsedRealtime() < it.expires && it.valid()
     }?.grammar
     private var sessionRevision = 0L
 
@@ -118,18 +126,28 @@ internal class VoiceControls(private val context: Context, private val vm: AppVi
                 val current = vm.voiceTarget()
                 if (match == null) {
                     say(if (matches.size > 1) "More than one pane matches. Use its unique tab name and server." else "I could not match that pane.")
-                } else if (current == null || match.server.id != current.server || match.pane.id != current.pane) {
-                    say("Switch to ${match.pane.tabLabel.ifBlank { match.pane.agentName }} on ${match.server.label} first, then request the message again.")
                 } else {
-                    messages.begin(current, "${match.pane.tabLabel.ifBlank { match.pane.agentName }} on ${match.server.label}")
-                    say("Say dictate, then your message. Nothing will be sent without confirmation.")
+                    val label = "${match.pane.tabLabel.ifBlank { match.pane.agentName }} on ${match.server.label}"
+                    val target = if (match.server.id != vm.current?.id) {
+                        vm.bindRemotePrompt(match)?.let { MessageTarget.Remote(it) }
+                    } else {
+                        current?.takeIf { it.pane == match.pane.id }?.let { MessageTarget.Local(it) }
+                    }
+                    if (!stillAllowed()) return
+                    if (target == null) {
+                        if (match.server.id == vm.current?.id) say("Open $label first, then request the message again.")
+                        else say("Not sent. I could not verify $label on its Fleet connection.")
+                    } else {
+                        messages.begin(target, label)
+                        say("Say dictate, then your message to $label. Nothing will be sent without confirmation.")
+                    }
                 }
             }
             is VoiceCommand.Dictate -> {
-                val draft = messages.dictate(vm.voiceTarget(), command.text)
+                val draft = messages.dictate(messages.activeTarget(::messageTargetCurrent), command.text)
                 if (draft == null) say("Start again with send a message to, followed by the pane name.")
                 else {
-                    confirmation = Confirmation(ConfirmationGrammar.MESSAGE, draft.expires, draft.target)
+                    confirmation = Confirmation(ConfirmationGrammar.MESSAGE, draft.expires) { messageTargetCurrent(draft.target) }
                     say("Message to ${draft.label}. ${draft.text}. Say confirm message or cancel message.") {
                         if (stillAllowed()) messages.onReadBack(draft)
                     }
@@ -137,10 +155,14 @@ internal class VoiceControls(private val context: Context, private val vm: AppVi
             }
             VoiceCommand.ConfirmMessage -> {
                 if (Speaker.speakingKey != null) messages.clear()
-                val draft = messages.consume(vm.voiceTarget())
+                val draft = messages.consume(messages.activeTarget(::messageTargetCurrent))
                 if (draft == null) say("There is no message to confirm.")
                 else {
-                    val result = vm.sendVoiceMessage(draft.target, draft.text) { stillAllowed() && messages.isFresh(draft) }
+                    val allowed = { stillAllowed() && messages.isFresh(draft) }
+                    val result = when (val target = draft.target) {
+                        is MessageTarget.Local -> vm.sendVoiceMessage(target.target, draft.text, allowed)
+                        is MessageTarget.Remote -> vm.sendRemotePrompt(target.target, draft.text, allowed).feedback
+                    }
                     if (stillAllowed()) say(result)
                 }
             }
@@ -175,7 +197,7 @@ internal class VoiceControls(private val context: Context, private val vm: AppVi
                 } else {
                     val answer = Answer(target, prompt, command.index, SystemClock.elapsedRealtime() + 45_000L, questionKey)
                     pending = answer
-                    confirmation = Confirmation(ConfirmationGrammar.ANSWER, answer.expires, answer.target)
+                    confirmation = Confirmation(ConfirmationGrammar.ANSWER, answer.expires) { vm.voiceTarget() == answer.target }
                     say("Option ${command.index + 1}. ${choice.label}. Say confirm answer or cancel answer.") {
                         if (stillAllowed() && pending === answer) answerReadBack = answer
                     }
@@ -215,7 +237,7 @@ internal class VoiceControls(private val context: Context, private val vm: AppVi
         fun active() = HandsFreeService.active && sessionRevision == revision && !vm.locked
         fun busy() = mutex.isLocked || Speaker.speakingKey != null || HandsFreeService.capturingCommand ||
             pending?.let { it.target == vm.voiceTarget() && SystemClock.elapsedRealtime() < it.expires } == true ||
-            messages.isPending(vm.voiceTarget())
+            messages.activeTarget(::messageTargetCurrent) != null
         while (active()) {
             val current = vm.voiceTarget()
             if (current != target) replies.clear()

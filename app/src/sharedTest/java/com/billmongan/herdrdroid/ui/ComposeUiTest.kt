@@ -62,6 +62,31 @@ class ComposeUiTest {
             android.text.format.DateFormat.getTimeFormat(context).format(date)
     }
 
+    @Test fun directPromptShowsDestinationAndPreservesDraftOnRefusal() {
+        val sends = mutableListOf<String>()
+        var sent = 0
+        rule.setContent {
+            PromptRelayDialog("Codex on Mini PC", checking = false, available = true, onDismiss = {},
+                onSend = { text ->
+                    sends += text
+                    if (sends.size == 1) com.billmongan.herdrdroid.herdr.RelayResult.REFUSED
+                    else com.billmongan.herdrdroid.herdr.RelayResult.SENT
+                }, onSent = { sent++ })
+        }
+        rule.onNodeWithText("Send prompt to Codex on Mini PC").assertIsDisplayed()
+        rule.onNodeWithText("Send prompt").assertIsNotEnabled()
+        rule.onNode(hasSetTextAction()).performTextInput("Check the build")
+        rule.runOnIdle { assertTrue(sends.isEmpty()) }
+        rule.onNodeWithText("Send prompt").performClick()
+        rule.onNodeWithText("Not sent.", substring = true).assertIsDisplayed()
+        rule.onNodeWithText("Check the build").assertIsDisplayed()
+        rule.onNodeWithText("Send prompt").performClick()
+        rule.runOnIdle {
+            assertEquals(listOf("Check the build", "Check the build"), sends)
+            assertEquals(1, sent)
+        }
+    }
+
     @Test fun questionHistoryShowsTheCapturedDateAndTime() {
         val at = 1_730_504_100_000L
         rule.setContent {

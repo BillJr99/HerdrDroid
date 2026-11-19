@@ -24,6 +24,7 @@ internal class VoiceMessageDraft<T>(private val now: () -> Long) {
     fun clear() { draft = null; readBack = false }
     fun isFresh(draft: Draft<T>) = now() < draft.expires
     fun isPending(target: T?) = draft?.let { it.target == target && isFresh(it) } == true
+    fun activeTarget(valid: (T) -> Boolean): T? = draft?.takeIf { isFresh(it) && valid(it.target) }?.target
 
     fun dictate(target: T?, text: String): Draft<T>? {
         val selected = draft

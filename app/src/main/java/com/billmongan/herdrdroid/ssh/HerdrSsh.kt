@@ -440,9 +440,9 @@ class HerdrSsh(
      * Runs a command with [input] on its standard input: how the transcript reader script and an
      * uploaded file reach the computer without anything being installed there.
      */
-    suspend fun execInput(command: String, input: ByteArray, timeoutSeconds: Long = 60): ExecResult = withContext(Dispatchers.IO) {
+    suspend fun execInput(command: String, input: ByteArray, timeoutSeconds: Long = 60, expectedConnection: Any? = null): ExecResult = withContext(Dispatchers.IO) {
         capped {
-            val (exit, out, err) = bulkLock.withLock { runRetrying(command, input, timeoutSeconds, MAX_OUT) }
+            val (exit, out, err) = bulkLock.withLock { runRetrying(command, input, timeoutSeconds, MAX_OUT, expectedConnection) }
             ExecResult(exit, out.toString(Charsets.UTF_8), err.toString(Charsets.UTF_8))
         }
     }
