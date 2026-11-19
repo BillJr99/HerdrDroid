@@ -237,13 +237,13 @@ internal fun VoiceSettings(voice: VoiceUi, active: Boolean, appLock: Boolean) {
         }
         Text("The selected route is used for hands-free and Read aloud. Bluetooth needs Android 12 or later and Phone calls enabled on the Bluetooth device.",
             color = Palette.Muted, fontSize = 13.sp)
-        TextButton(enabled = active || (voice.enabled && !appLock), onClick = if (active) voice.stopHandsFree else voice.startHandsFree) {
+        TextButton(enabled = active || voice.enabled, onClick = if (active) voice.stopHandsFree else voice.startHandsFree) {
             Text(if (active) "Stop hands-free" else "Start hands-free")
         }
         Text(when {
-            appLock -> "Hands-free is unavailable while the HerdrDroid app lock is on."
-            active -> "Hands-free is on. You can also stop it from its notification."
+            active -> "Hands-free is on. Stop it here or from its notification to restore normal app-lock checks."
             !voice.enabled -> "Turn on Voice Control to start a hands-free session."
+            appLock -> "Unlock HerdrDroid and start hands-free yourself. App unlock prompts wait until the session ends."
             else -> "Hands-free listens only after you start it. It can continue when Android locks the screen."
         }, color = Palette.Muted, fontSize = 13.sp)
         Text("Voice commands", color = Palette.Ink, fontWeight = FontWeight.SemiBold)

@@ -11,6 +11,7 @@ import android.content.pm.PackageManager
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import com.billmongan.herdrdroid.voice.HandsFreeService
 import com.billmongan.herdrdroid.voice.LocalVoiceUi
@@ -69,11 +70,20 @@ class MainActivity : FragmentActivity() {
         selectedVoiceRoute = route
     }
     private val voice by lazy { VoiceControls(applicationContext, vm) }
-    private val command: (String) -> Unit = { text ->
-        if (voiceEnabled && !vm.locked && !(HandsFreeService.active && vm.appLock)) lifecycleScope.launch {
-            if (voiceEnabled && !vm.locked && !(HandsFreeService.active && vm.appLock)) voice.handle(text)
+    private var handsFreeStartRequested = false
+    private val command: (String) -> Unit = { dispatchVoice(it, handsFree = false) }
+    private val handsFreeCommand: (String) -> Unit = { dispatchVoice(it, handsFree = true) }
+
+    private fun dispatchVoice(text: String, handsFree: Boolean) {
+        fun allowed() = voiceEnabled && !vm.locked && (!handsFree || HandsFreeService.active)
+        if (allowed()) lifecycleScope.launch {
+            if (allowed()) voice.handle(text)
         }
     }
+
+    private fun mayStartHandsFree() = voiceEnabled && !vm.locked && !HandsFreeService.active &&
+        lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+
     private val voicePermission = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         if (missingVoicePermissions().isEmpty()) startHandsFree()
         else android.widget.Toast.makeText(this, "Hands-free needs microphone access and a visible Stop notification.", android.widget.Toast.LENGTH_LONG).show()
@@ -91,27 +101,33 @@ class MainActivity : FragmentActivity() {
     }
 
     private fun stopHandsFree() {
+        handsFreeStartRequested = false
         voice.clear()
-        stopService(Intent(this, HandsFreeService::class.java))
+        HandsFreeService.stop(this)
     }
 
     private fun requestHandsFree() {
-        if (!voiceEnabled || HandsFreeService.active || vm.appLock || vm.locked) return
+        if (!mayStartHandsFree() || handsFreeStartRequested) return
         val missing = missingVoicePermissions()
         if (missing.isNotEmpty()) voicePermission.launch(missing) else startHandsFree()
     }
 
     private fun startHandsFree() {
-        if (!voiceEnabled || HandsFreeService.active || vm.appLock || vm.locked || missingVoicePermissions().isNotEmpty()) return
+        if (!mayStartHandsFree() || handsFreeStartRequested || missingVoicePermissions().isNotEmpty()) return
         voice.clear()
+        handsFreeStartRequested = true
         runCatching { ContextCompat.startForegroundService(this, Intent(this, HandsFreeService::class.java)) }
-            .onFailure { android.widget.Toast.makeText(this, "Could not start hands-free voice.", android.widget.Toast.LENGTH_LONG).show() }
+            .onFailure {
+                handsFreeStartRequested = false
+                android.widget.Toast.makeText(this, "Could not start hands-free voice.", android.widget.Toast.LENGTH_LONG).show()
+            }
     }
 
     override fun onDestroy() {
-        if (HandsFreeService.command === command) {
+        if (HandsFreeService.command === handsFreeCommand) {
             stopHandsFree()
             HandsFreeService.command = null
+            HandsFreeService.admitStart = null
             HandsFreeService.sessionEnded = null
             HandsFreeService.confirmationGrammar = null
         }
@@ -122,8 +138,18 @@ class MainActivity : FragmentActivity() {
         super.onCreate(savedInstanceState)
         voiceEnabled = voicePrefs.getBoolean("enabled", false)
         selectedVoiceRoute = voiceRoute(this)
-        HandsFreeService.command = command
-        HandsFreeService.sessionEnded = { voice.clear() }
+        // An activity may resume its own session, but a replacement must not inherit one.
+        if (HandsFreeService.active) HandsFreeService.stop(this)
+        HandsFreeService.command = handsFreeCommand
+        HandsFreeService.admitStart = {
+            val requested = handsFreeStartRequested
+            handsFreeStartRequested = false
+            requested && mayStartHandsFree() && missingVoicePermissions().isEmpty()
+        }
+        HandsFreeService.sessionEnded = {
+            voice.clear()
+            vm.onHandsFreeEnded()
+        }
         val controls = voice
         HandsFreeService.confirmationGrammar = controls::confirmationGrammar
         com.billmongan.herdrdroid.notify.Notify.channels(this)
@@ -150,7 +176,7 @@ class MainActivity : FragmentActivity() {
                         isAppearanceLightNavigationBars = !dark
                     }
                 }
-                LaunchedEffect(vm.appLock, vm.locked) { if (vm.appLock || vm.locked) stopHandsFree() }
+                LaunchedEffect(vm.locked) { if (vm.locked) stopHandsFree() }
                 LaunchedEffect(HandsFreeService.active) { if (HandsFreeService.active) voice.announceReplies() }
                 // The app lock: nothing shows and no server is contacted until it's unlocked.
                 if (vm.locked) {
@@ -288,7 +314,7 @@ class MainActivity : FragmentActivity() {
 
     override fun onStart() {
         super.onStart()
-        vm.onForeground()
+        vm.onForeground(HandsFreeService.active && HandsFreeService.command === handsFreeCommand)
     }
 
     override fun onStop() {

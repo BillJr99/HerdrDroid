@@ -533,21 +533,21 @@ class ComposeUiTest {
     @Test fun voiceSettingsRequireOptInAndStartAndStopOnlyOnExplicitTap() {
         val enabled = androidx.compose.runtime.mutableStateOf(false)
         val active = androidx.compose.runtime.mutableStateOf(false)
-        val locked = androidx.compose.runtime.mutableStateOf(false)
+        val appLockEnabled = true // These settings are only shown after the user unlocks.
         val route = androidx.compose.runtime.mutableStateOf(com.billmongan.herdrdroid.voice.VoiceRoute.PHONE)
         rule.setContent {
             androidx.compose.foundation.layout.Column(Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState())) {
                 VoiceSettings(com.billmongan.herdrdroid.voice.VoiceUi(enabled.value, { enabled.value = it },
-                    { active.value = true }, { active.value = false }, {}, route.value, { route.value = it }), active.value, locked.value)
+                    { active.value = true }, { active.value = false }, {}, route.value, { route.value = it }), active.value, appLockEnabled)
             }
         }
         rule.onNodeWithText("Start hands-free").assertIsNotEnabled()
         rule.onNodeWithContentDescription("Voice Control").performClick()
         rule.runOnIdle { assertTrue(!active.value) }
         rule.onNodeWithText("Start hands-free").performScrollTo().performClick()
+        rule.runOnIdle { assertTrue(active.value) }
         rule.onNodeWithText("Stop hands-free").performScrollTo().performClick()
-        rule.runOnIdle { locked.value = true }
-        rule.onNodeWithText("Start hands-free").assertIsNotEnabled()
+        rule.runOnIdle { assertTrue(!active.value) }
         if (android.os.Build.VERSION.SDK_INT >= 31) {
             rule.onNodeWithText("Bluetooth speakers and mic").performScrollTo().performClick()
             rule.runOnIdle { assertEquals(com.billmongan.herdrdroid.voice.VoiceRoute.BLUETOOTH, route.value) }
