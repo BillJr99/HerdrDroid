@@ -95,7 +95,18 @@ enum class Backend { TUI, CORE }
 /** What a computer has: which herdr is installed and which one's server is running. */
 data class Detected(val tuiInstalled: Boolean, val tuiRunning: Boolean, val coreInstalled: Boolean, val coreRunning: Boolean, val hcPath: String?)
 
-class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend = Backend.TUI, hcPath: String? = null) {
+class Herdr internal constructor(
+    private val ssh: HerdrSsh, herdrPath: String, val backend: Backend, hcPath: String?,
+    private val commands: Commands?,
+) {
+    constructor(ssh: HerdrSsh, herdrPath: String, backend: Backend = Backend.TUI, hcPath: String? = null) :
+        this(ssh, herdrPath, backend, hcPath, null)
+
+    internal interface Commands {
+        val connection: Any?
+        suspend fun bulk(command: String): com.billmongan.herdrdroid.ssh.ExecResult
+        suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): com.billmongan.herdrdroid.ssh.ExecResult
+    }
     // The path is the user's setting; "~" stays unquoted so the remote shell expands it.
     // Left at the default, herdr is looked up the way hc is: on the PATH, else in ~/.local/bin, where
     // its installer puts it (a non-interactive SSH shell often lacks ~/.local/bin on the PATH).
@@ -132,11 +143,11 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
         return out.toByteArray().also { zFrom = script; zTo = it }
     }
 
-    internal val connectionIdentity: Any? get() = ssh.connectionIdentity
+    internal val connectionIdentity: Any? get() = if (commands == null) ssh.connectionIdentity else commands.connection
 
     /** A command on the send lane: it doesn't wait behind reads. */
     private suspend fun runNow(command: String, timeoutSeconds: Long = 30, expectedConnection: Any? = null): String {
-        val r = ssh.execNow(command, timeoutSeconds, expectedConnection)
+        val r = commands?.immediate(command, timeoutSeconds, expectedConnection) ?: ssh.execNow(command, timeoutSeconds, expectedConnection)
         if (r.exit != 0) {
             val msg = (r.err.ifBlank { r.out }).trim().lines().lastOrNull { it.isNotBlank() } ?: "exit ${r.exit}"
             throw HerdrError(msg, r.exit)
@@ -157,7 +168,7 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
     }
 
     private suspend fun run(command: String): String {
-        val r = ssh.exec(command)
+        val r = commands?.bulk(command) ?: ssh.exec(command)
         if (r.exit != 0) {
             val msg = (r.err.ifBlank { r.out }).trim().lines().lastOrNull { it.isNotBlank() } ?: "exit ${r.exit}"
             throw HerdrError(msg, r.exit)

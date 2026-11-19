@@ -122,6 +122,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var screen: Screen
         get() = currentScreen
         set(value) {
+            if (currentScreen != value) openingPanePreview = null
             chatVisit.navigate((currentScreen as? Screen.Agent)?.paneId, (value as? Screen.Agent)?.paneId)
             currentScreen = value
         }
@@ -882,6 +883,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun closeSession() {
+        clearPanePrefetch()
         // The open chat is kept before the connection goes, so a reconnect shows it at once (1.2.9).
         stashOpenChat()
         hermesPoll?.cancel()
@@ -953,11 +955,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun refreshAppLock() {
-        if (!locked && vaultNeedsUnlock()) locked = true
+        if (!locked && vaultNeedsUnlock()) {
+            locked = true
+            clearPanePrefetch()
+        }
     }
 
     fun onBackground() {
         foreground = false
+        clearPanePrefetch()
         backgroundAt = System.currentTimeMillis()
         // The open chat is written to the phone, so reopening the app shows it at once (1.2.9).
         val open = transcriptPane
@@ -976,6 +982,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun linkLost(e: Exception?) {
         if (herdr == null) return
         if (link == Link.CONNECTED) {
+            clearPanePrefetch()
             link = Link.RECONNECTING
             downSince = System.currentTimeMillis()
         }
@@ -1033,6 +1040,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The Retry button on the offline banner. */
     fun retryNow() {
+        clearPanePrefetch()
         reconnectJob?.cancel()
         link = Link.RECONNECTING
         downSince = System.currentTimeMillis()
@@ -1133,6 +1141,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     suspend fun refreshPanes(allowBackground: Boolean = false) {
         val client = herdr
+        val prefetchConnection = client?.connectionIdentity?.takeIf { foreground && !locked }
         quietly(allowBackground) { it.panes() }?.let { fresh0 ->
             if (herdr !== client) return
             // herdr sometimes reports a pane's agent as missing for a moment (while it redraws, or
@@ -1158,6 +1167,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             maintainChats(before, fresh)
             applyWorkStatus()
             current?.let { s -> noticeChanges(s.id, s.label, fresh) { herdr } }
+            schedulePanePrefetch(prefetchConnection)
             // Footers (each agent's model) every 30 seconds wherever you are in the app; before
             // 1.1.5 only the tab list read them, which the agent-first app rarely shows.
             // What runs under each agent (subagents, background tasks, commands it started) every
@@ -1172,6 +1182,94 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
     }
+
+    private data class PanePreview(
+        val server: String, val client: Herdr, val connection: Any, val pane: Pane,
+        val capturedAt: Long, val text: String,
+    )
+
+    private val panePreviews = LinkedHashMap<String, PanePreview>()
+    private val panePrefetchAttempts = mutableMapOf<String, Long>()
+    private var panePrefetchJob: Job? = null
+    private var panePrefetchOwner: PanePreview? = null
+    private var lastPanePrefetchAt: Long? = null
+    private var openingPanePreview by mutableStateOf<PanePreview?>(null)
+
+    private fun clearPanePrefetch() {
+        panePrefetchJob?.cancel()
+        panePrefetchOwner = null
+        panePreviews.clear()
+        panePrefetchAttempts.clear()
+        openingPanePreview = null
+    }
+
+    private fun Pane.canPrefetch(client: Herdr) = agent != null &&
+        (client.backend == Backend.CORE || scrollOffset == 0)
+
+    private fun PanePreview.matches(now: Long): Boolean = foreground && !locked && canPoll &&
+        current?.id == server && herdr === client && client.connectionIdentity === connection &&
+        now - capturedAt < PANE_PREVIEW_TTL_MS && rawWorkPanes.any {
+            it.sameCardOccupant(pane) && it.status == pane.status && it.canPrefetch(client)
+        }
+
+    /** Speculative only. Never go through the selected read, notification or input paths. */
+    private fun schedulePanePrefetch(pollConnection: Any?) {
+        val now = android.os.SystemClock.elapsedRealtime()
+        panePreviews.values.removeAll { !it.matches(now) }
+        if (openingPanePreview?.matches(now) == false) openingPanePreview = null
+        if (panePrefetchOwner?.matches(now) == false) panePrefetchJob?.cancel()
+        if (!foreground || locked || !canPoll || panePrefetchJob?.isCompleted == false) return
+        if (lastPanePrefetchAt?.let { now - it < 3_000L } == true) return
+        val h = herdr ?: return
+        val sid = current?.id ?: return
+        val connection = h.connectionIdentity ?: return
+        if (connection !== pollConnection) return
+        val selected = (screen as? Screen.Agent)?.paneId
+        val eligible = rawWorkPanes.filter { it.id != selected && it.canPrefetch(h) }
+        panePrefetchAttempts.keys.retainAll(eligible.map { it.id }.toSet())
+        // Visit least-recently tried panes first; on a tie, Needs you then Working.
+        // Preserve that rotation even on a failed/blank read so one pane can't starve the others.
+        val p = eligible.minWithOrNull(compareBy<Pane>({ panePrefetchAttempts[it.id] ?: -1L }, { it.status.ordinal })) ?: return
+        val visit = paneVisit
+        lastPanePrefetchAt = now
+        panePrefetchAttempts[p.id] = now
+        val owner = PanePreview(sid, h, connection, p, now, "")
+        panePrefetchOwner = owner
+        panePrefetchJob = viewModelScope.launch {
+            if (paneVisit != visit || !owner.matches(android.os.SystemClock.elapsedRealtime())) return@launch
+            // One short live viewport read on the existing fast channel, no reconnect or fallback.
+            val text = try {
+                h.readCardViewport(p.id, connection, timeoutSeconds = 1)
+            } catch (c: CancellationException) {
+                throw c
+            } catch (_: Exception) {
+                return@launch
+            }
+            if (text.isBlank() || text.length > 8_192 || paneVisit != visit || !owner.matches(android.os.SystemClock.elapsedRealtime())) return@launch
+            panePreviews.remove(p.id)
+            panePreviews[p.id] = owner.copy(text = text)
+            if (panePreviews.size > 8) panePreviews.remove(panePreviews.keys.first())
+        }
+    }
+
+    /** Display-only screen for the opening visit; never a source of CardTarget or question history. */
+    internal fun prefetchedPaneText(paneId: String): String? = openingPanePreview?.takeIf {
+        (screen as? Screen.Agent)?.paneId == paneId && it.pane.id == paneId && paneText.isEmpty() &&
+            paneReadProblem == null && it.matches(android.os.SystemClock.elapsedRealtime())
+    }?.text
+
+    private fun takePanePreview(paneId: String) {
+        val now = android.os.SystemClock.elapsedRealtime()
+        val preview = panePreviews.remove(paneId)?.takeIf { it.matches(now) }
+        openingPanePreview = preview
+        if (preview == null) return
+        viewModelScope.launch {
+            delay(PANE_PREVIEW_TTL_MS - (now - preview.capturedAt))
+            if (openingPanePreview === preview) openingPanePreview = null
+        }
+    }
+
+    private val PANE_PREVIEW_TTL_MS = 15_000L
 
     private var widgetSig = ""
 
@@ -1300,6 +1398,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             lastAppliedPaneRead = attempt
             if (paneReadProblem != why) com.billmongan.herdrdroid.diag.DiagLog.log("read", "$paneId: the screen couldn't be read: $why")
             paneReadProblem = why
+            openingPanePreview = null
             paneTextTarget = null
             openUsage = null
         }
@@ -1342,6 +1441,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 ?.takeIf { !it.terminalReview && it.choices.isNotEmpty() }
             val text = if (livePrompt != null) checkNotNull(liveCard) else recent
             lastAppliedPaneRead = attempt
+            openingPanePreview = null
             paneReadProblem = null
             openUsage = liveUsage
             noteInputLine(paneId, text)
@@ -1396,6 +1496,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         current?.id?.let { questions(it, paneId) }
         resetTranscript(paneId)
         screen = Screen.Agent(paneId)
+        takePanePreview(paneId)
     }
 
     // ---- Structured conversations ------------------------------------------------------------
