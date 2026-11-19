@@ -13,6 +13,33 @@ import org.junit.Test
  * dialog's layout (rule, tab bar, question, options with descriptions, footer).
  */
 class QuestionFormatTest {
+    @Test fun approvalIdentityRetainsPunctuationOnlyCommandRows() {
+        for ((agent, screen) in listOf(
+            "codex" to """
+                Would you like to run the following command?
+                $ printf '%s' sample
+                @
+                › 1. Yes, proceed (y)
+                  2. No (esc)
+                  Press enter to confirm or esc to cancel
+            """.trimIndent(),
+            "hermes" to """
+                │ ⚠️ Dangerous Command │
+                │ printf '%s' sample │
+                │ @ │
+                │ ❯ 1. Allow once │
+                │   2. Deny │
+            """.trimIndent(),
+        )) {
+            val shown = requireNotNull(detectPrompt(screen, true, agent))
+            assertTrue(shown.choices.isNotEmpty())
+            val moved = screen.replace("❯ 1.", "  1.").replace("› 1.", "  1.")
+                .replace("2. No", "› 2. No").replace("2. Deny", "❯ 2. Deny")
+            assertTrue(cardAnswerStillFits(shown, detectPrompt(moved, true, agent)))
+            assertFalse(cardAnswerStillFits(shown, detectPrompt(screen.replace("@", "#"), true, agent)))
+        }
+    }
+
     @Test fun cardDispatchNeedsAnExactFreshAnswerablePrompt() {
         val screen = javaClass.getResource("/screens/codex/synthetic-2.0/truncated-command-approval.txt")!!.readText()
         val full = screen.lineSequence().filterNot { it.contains("lines omitted") }.joinToString("\n")

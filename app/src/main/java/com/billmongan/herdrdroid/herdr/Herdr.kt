@@ -29,6 +29,7 @@ data class Pane(
      */
     val scrollOffset: Int? = null,
     val sessionId: String? = null,
+    val terminalId: String? = null,
 ) {
     val agentName: String
         get() = when (agent?.lowercase()) {
@@ -180,7 +181,26 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
         val arr = root.getJSONObject("result").getJSONArray("panes")
         val list = (0 until arr.length()).map { i ->
             val p = arr.getJSONObject(i)
-            Pane(
+            tuiPane(p).copy(tabLabel = labels[p.optString("tab_id")].orEmpty())
+        }
+        // herdr doesn't always mark a Claude question dialog (AskUserQuestion) as blocked, so the
+        // bottom of each Claude pane that isn't already waiting is checked for the dialog's footer.
+        val askable = list.filter { it.agent == "claude" && it.status != Status.NEEDS_YOU }
+        val marked = if (askable.isEmpty()) list else {
+            val tails = runCatching { previews(askable.map { it.id }) }.getOrDefault(emptyMap())
+            list.map { p ->
+                if (p in askable && tails[p.id]?.let { showsQuestionDialog(it.tail) } == true) {
+                    com.billmongan.herdrdroid.diag.DiagLog.log("prompt", "${p.id}: a question dialog is open while herdr says ${p.status.name.lowercase()}; treating it as needs you")
+                    p.copy(status = Status.NEEDS_YOU)
+                } else p
+            }
+        }
+        val order = listOf(Status.NEEDS_YOU, Status.WORKING, Status.DONE, Status.IDLE, Status.UNKNOWN)
+        panes0Cache = marked
+        return marked.sortedWith(compareBy({ order.indexOf(it.status) }, { it.id }))
+    }
+
+    private fun tuiPane(p: JSONObject): Pane = Pane(
                 id = p.getString("pane_id"),
                 tabId = p.optString("tab_id"),
                 workspaceId = p.optString("workspace_id"),
@@ -203,26 +223,22 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
                     }
                 },
                 focused = p.optBoolean("focused", false),
-                tabLabel = labels[p.optString("tab_id")].orEmpty(),
                 scrollOffset = p.optJSONObject("scroll")?.takeIf { it.has("offset_from_bottom") }?.optInt("offset_from_bottom"),
+                terminalId = p.opt("terminal_id")?.takeUnless { it == JSONObject.NULL }?.toString()?.takeIf { it.isNotBlank() },
             )
-        }
-        // herdr doesn't always mark a Claude question dialog (AskUserQuestion) as blocked, so the
-        // bottom of each Claude pane that isn't already waiting is checked for the dialog's footer.
-        val askable = list.filter { it.agent == "claude" && it.status != Status.NEEDS_YOU }
-        val marked = if (askable.isEmpty()) list else {
-            val tails = runCatching { previews(askable.map { it.id }) }.getOrDefault(emptyMap())
-            list.map { p ->
-                if (p in askable && tails[p.id]?.let { showsQuestionDialog(it.tail) } == true) {
-                    com.billmongan.herdrdroid.diag.DiagLog.log("prompt", "${p.id}: a question dialog is open while herdr says ${p.status.name.lowercase()}; treating it as needs you")
-                    p.copy(status = Status.NEEDS_YOU)
-                } else p
-            }
-        }
-        val order = listOf(Status.NEEDS_YOU, Status.WORKING, Status.DONE, Status.IDLE, Status.UNKNOWN)
-        panes0Cache = marked
-        return marked.sortedWith(compareBy({ order.indexOf(it.status) }, { it.id }))
+
+    /** No tab list, status enrichment, bulk lock, or reconnect during a card tap. */
+    internal suspend fun cardPane(id: String, connection: Any): Pane? {
+        if (core) return corePanes(runNow(hcCmd("ls", "--json"), 5, connection)).singleOrNull { it.id == id }
+        val p = JSONObject(runNow(cmd("pane", "get", id), 5, connection)).getJSONObject("result").getJSONObject("pane")
+        return tuiPane(p).takeIf { it.id == id && p.optJSONObject("scroll")?.opt("offset_from_bottom") == 0 }
     }
+
+    /** Only the live viewport, with no fallback into old scrollback. */
+    internal suspend fun readCardViewport(id: String, connection: Any): String = stripAnsi(
+        if (core) runNow(hcCmd("read", id, "--lines", "80"), 5, connection)
+        else runNow(cmd("pane", "read", id, "--source", "visible"), 5, connection)
+    )
 
     /**
      * The pane's screen as it is shown at the computer (`--source visible`), which moves nothing
@@ -257,16 +273,22 @@ class Herdr(private val ssh: HerdrSsh, herdrPath: String, val backend: Backend =
      * Only what the pane shows now (`--source visible`), plain (1.4.8): the fallback when the usual
      * read of its recent output fails or comes back empty, so a waiting agent's card can still be read.
      */
-    suspend fun readVisible(paneId: String): String =
-        if (core) read(paneId, 60) else forPhone(runNow(cmd("pane", "read", paneId, "--source", "visible"), timeoutSeconds = 5))
+    suspend fun readVisible(paneId: String): String = readVisible(paneId, preserveGlyphs = false)
 
-    suspend fun read(paneId: String, lines: Int = 200): String =
-        if (core) forPhone(runNow(hcCmd("read", paneId, "--lines", lines.toString()), timeoutSeconds = 5))
+    internal suspend fun readVisible(paneId: String, preserveGlyphs: Boolean): String =
+        if (core) read(paneId, 60, preserveGlyphs) else screenText(
+            runNow(cmd("pane", "read", paneId, "--source", "visible"), timeoutSeconds = 5), preserveGlyphs,
+        )
+
+    private fun screenText(text: String, preserveGlyphs: Boolean) = if (preserveGlyphs) stripAnsi(text) else forPhone(text)
+
+    suspend fun read(paneId: String, lines: Int = 200, preserveGlyphs: Boolean = false): String =
+        if (core) screenText(runNow(hcCmd("read", paneId, "--lines", lines.toString()), timeoutSeconds = 5), preserveGlyphs)
         else try {
-            forPhone(runNow(recentSnapshot(paneId, lines), timeoutSeconds = 5))
+            screenText(runNow(recentSnapshot(paneId, lines), timeoutSeconds = 5), preserveGlyphs)
         } catch (e: HerdrError) {
             if (e.exit == -2) throw e
-            forPhone(runNow(cmd("pane", "read", paneId, "--source", "visible", "--lines", lines.toString()), timeoutSeconds = 5))
+            screenText(runNow(cmd("pane", "read", paneId, "--source", "visible", "--lines", lines.toString()), timeoutSeconds = 5), preserveGlyphs)
         }
 
     /**
@@ -848,6 +870,8 @@ data class Prompt(
     val numberKeys: Boolean = false,
     /** An incomplete approval preview is reviewable only in the terminal. */
     val terminalReview: Boolean = false,
+    /** Exact pre-layout approval material. Never rendered or used as history text. */
+    internal val approvalIdentity: String? = null,
 ) {
     /**
      * Never an empty card (1.4.2): a prompt with no choices always has something to show, the
@@ -865,7 +889,8 @@ const val UNREAD_SCREEN = "(The app couldn't read this pane's screen yet. Tap Sh
 /** Dispatch identity, unlike history deduplication, must not discard punctuation or command text. */
 internal fun cardAnswerStillFits(shown: Prompt, fresh: Prompt?): Boolean =
     !shown.terminalReview && fresh != null && !fresh.terminalReview &&
-        shown.copy(selected = null) == fresh.copy(selected = null).forCard()
+        shown.forCard().region != listOf(UNREAD_SCREEN) &&
+        shown.copy(selected = null).forCard() == fresh.copy(selected = null).forCard()
 
 /** One step of Claude's multi-question dialog ("☐ Close 537", "☒ Stop hook", "✔ Submit"). */
 data class QTab(val title: String, val done: Boolean, val current: Boolean, val submit: Boolean = false)
@@ -1580,6 +1605,7 @@ private val HERMES_APPROVAL_FOOTER =
 private val HERMES_EMPTY_INPUT = Regex("""^⚠(?:️)?\s*[❯›]$""")
 private val HERMES_HIDDEN_COMMAND = Regex("""^[.…]+\s*\(choose Show full command\)$""", RegexOption.IGNORE_CASE)
 private val HERMES_SHOW_COMMAND = Regex("""^(?:[❯›>]\s*)?5\. Show full command$""", RegexOption.IGNORE_CASE)
+private val HERMES_COMMAND_HEADING = Regex("""^(?:⚠️?\s*)?Dangerous Command$""")
 private val CODEX_COMMAND_HEADING = Regex("""^Would you like to run the following command\?$""", RegexOption.IGNORE_CASE)
 private val CODEX_OTHER_APPROVAL = Regex(
     """^(?:Would you like to (?:make the following edits|run the following tool|allow network access|grant these permissions)|Do you want to approve network access to .+|Approve app tool call)\?$""",
@@ -1611,7 +1637,7 @@ private fun detectHermesCommandPreview(text: String): Prompt? {
     val rows = lines.subList(top + 1, bottom).map { it.trim() }
     if (rows.any { !it.startsWith("│") || !it.endsWith("│") }) return null
     val body = rows.map { it.removePrefix("│").removeSuffix("│").trimEnd().removePrefix(" ") }
-    if (!Regex("""^(?:⚠️?\s*)?Dangerous Command$""").matches(body.firstOrNull()?.trim().orEmpty())) return null
+    if (!HERMES_COMMAND_HEADING.matches(body.firstOrNull()?.trim().orEmpty())) return null
     val hidden = body.indexOfFirst { HERMES_HIDDEN_COMMAND.matches(it.trim()) }
     if (hidden < 1 || body.drop(hidden + 1).none { HERMES_SHOW_COMMAND.matches(it.trim()) }) return null
     return terminalCommandReview(body.subList(1, hidden).dropWhile { it.isBlank() }.joinToString("\n"))
@@ -1646,7 +1672,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     // A question dialog on screen means the agent waits, whatever herdr reported.
     @Suppress("NAME_SHADOWING") val blocked = blocked || showsQuestionDialog(text) ||
         (rules.extraFooter?.let { f -> text.lines().takeLast(6).any { f.containsMatchIn(it) } } == true)
-    var raw = text.lines().map { it.trimEnd() }.takeLast(80)
+    var raw = text.lines().takeLast(80)
     if (agent.equals("codex", true)) {
         val footer = raw.indexOfLast { CODEX_FOOTER.matches(it.trim()) }
         if (footer >= 0 && raw.drop(footer + 1).any { !isChrome(it) }) {
@@ -1727,8 +1753,9 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     // lines), or else the last line on screen that ends with "?".
     // The whole question: every line above the first choice up to a blank line, the top of the
     // question's box or a rule (at most 20 lines), so a long question isn't cut.
-    val above = run.firstOrNull()?.let { (_, firstKey, firstLabel) ->
-        val at = raw.indexOfLast { option.find(it)?.let { m -> key(m) == firstKey && label(m) == firstLabel } == true }
+    val firstOption = run.firstOrNull()?.let { raw.lastIndexOf(lines[it.first]) } ?: -1
+    val above = run.firstOrNull()?.let {
+        val at = firstOption
         if (at <= 0) null else {
             // Each line, and whether it is a Grok command line ("┃  │ grok usage ..."), which follows
             // its title after ": " ("Print plan usage with no session id: grok usage ...").
@@ -1835,13 +1862,25 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     // the agent went on after the card, however few lines that took (from Grok's review).
     // A box's own corner ("└────") is not activity: only a line with words counts.
     val wentOn = agentWentOn(below)
+    val approvalRows = raw.take(firstOption.coerceAtLeast(0))
+    val approvalStart = approvalRows.indexOfLast { row ->
+        val body = clean(row)
+        when (agent?.lowercase()) {
+            "codex" -> CODEX_COMMAND_HEADING.matches(body) || CODEX_OTHER_APPROVAL.matches(body)
+            "hermes" -> HERMES_COMMAND_HEADING.matches(body)
+            else -> false
+        }
+    }
+    val approvalIdentity = if (approvalStart < 0) null else java.security.MessageDigest.getInstance("SHA-256")
+        .digest(approvalRows.drop(approvalStart).joinToString("\n").toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
     if (agent.equals("codex", true) && !wentOn) {
         val preview = parts?.command
         val activeFooter = below.lastOrNull { !isChrome(it) }?.trim()?.let(CODEX_FOOTER::matches) == true
         val heading = above.orEmpty().any { CODEX_COMMAND_HEADING.matches(it.text) }
         // The layout builder drops rows with no letters or digits. Inspect the raw command
         // region so a standalone ellipsis cannot disappear before this check.
-        val firstOption = run.firstOrNull()?.let { raw.lastIndexOf(lines[it.first]) } ?: -1
+
         val commandRows = raw.take(firstOption.coerceAtLeast(0)).map(clean)
         val headingAt = commandRows.indexOfLast { CODEX_COMMAND_HEADING.matches(it) }
         val hidden = headingAt >= 0 && commandRows.drop(headingAt + 1).any { HIDDEN_CODEX_COMMAND.containsMatchIn(it) }
@@ -1854,6 +1893,9 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
         }
     }
     if (numbered.size in 2..20 && realMenu && underCard <= MAX_UNDER_CARD && !wentOn && !rejectEcho) {
+        if (agent.equals("hermes", true) && approvalIdentity == null &&
+            numbered.any { it.label.equals("Allow once", true) } &&
+            numbered.any { it.label.equals("Deny", true) }) return terminalCommandReview(null)
         // Vibe draws no marker on the highlighted row; a fresh card highlights the first one.
         val selected = run.firstOrNull { it.first in marked }?.second ?: if (vibeCard) "1" else null
         val multi = numbered.count { isCheckbox(it.label) } >= 2
@@ -1863,7 +1905,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
         // command (esc)"), known by name or by its "Change approval defaults in /permissions" line.
         val shortcuts = agent?.lowercase() in setOf("codex", "muse") ||
             lines.takeLast(4).any { CODEX_FOOTER.containsMatchIn(it) || MUSE_CARD_FOOTER.containsMatchIn(it) }
-        return Prompt(question ?: "Choose an option", numbered, selected, escRejects = vibeCard, parts = parts.takeIf { aboveText != null }, multi = multi, shortcuts = shortcuts)
+        return Prompt(question ?: "Choose an option", numbered, selected, escRejects = vibeCard, parts = parts.takeIf { aboveText != null }, multi = multi, shortcuts = shortcuts, approvalIdentity = approvalIdentity)
     }
 
     val yn = Regex("""[(\[]\s*[yY](?:es)?\s*/\s*[nN]o?\s*[)\]]""")

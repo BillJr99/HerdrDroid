@@ -215,7 +215,7 @@ class ComposeUiTest {
             }, onKey = {}, onTypeAnswer = {}, sending = sending.value)
         }
         rule.onNodeWithText("Blue").performClick()
-        rule.onNodeWithText("Sending…").assertIsDisplayed()
+        rule.onNodeWithText("Checking and sending…").assertIsDisplayed()
         rule.onNodeWithText("Green").assertIsNotEnabled()
         rule.runOnIdle { assertEquals(1, sent) }
     }
