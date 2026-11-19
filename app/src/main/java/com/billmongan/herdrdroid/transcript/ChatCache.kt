@@ -23,6 +23,8 @@ data class CachedChat(
     val times: Map<String, Long> = emptyMap(),
     /** When the app first saw each item, on the computer's clock (1.4.3: newer messages always go below an answered question). */
     val seen: Map<String, Long> = emptyMap(),
+    /** Recorded event times for labels, not the estimates used to place questions. */
+    val logTimes: Map<String, Long> = emptyMap(),
 )
 
 /**
@@ -38,14 +40,17 @@ fun CachedChat.withRead(r: TranscriptRead, seenAt: Long = System.currentTimeMill
     val fresh = if (r.reset) Transcript.merge(emptyList(), r.items, true) else emptyList()
     val oldTimes = if (!same) emptyMap() else if (r.reset) Transcript.keptAcrossReset(times, items, fresh) else times
     val oldSeen = if (!same) emptyMap() else if (r.reset) Transcript.keptAcrossReset(seen, items, fresh) else seen
-    val logged = oldTimes + Transcript.timesOf(r.items)
+    val recorded = Transcript.timesOf(r.items)
+    val logged = oldTimes + recorded
+    val oldLogTimes = if (!same) emptyMap() else if (r.reset) Transcript.keptAcrossReset(logTimes, items, fresh) else logTimes
     val next = if (r.reset) CachedChat(Transcript.merge(emptyList(), r.items, true), r.cursor, r.more, r.title ?: title,
         cj?.optLong("start", -1L) ?: -1L, cj?.optString("file")?.ifBlank { null }, agent, logged)
     else copy(items = if (r.items.isEmpty()) items else Transcript.merge(items, r.items, false), cursor = r.cursor, title = r.title ?: title,
         times = logged)
     // A bulk read (from the start) makes up no times: only a live read's new items take the app's clock.
     return next.copy(times = if (r.reset) next.times else Transcript.stampSeen(next.times, next.items, seenAt, Transcript.keysOf(r.items)),
-        seen = Transcript.markSeen(oldSeen, next.items, Transcript.keysOf(r.items), logged, seenAt, bulk = r.reset))
+        seen = Transcript.markSeen(oldSeen, next.items, Transcript.keysOf(r.items), logged, seenAt, bulk = r.reset),
+        logTimes = (oldLogTimes + recorded).filterKeys(Transcript.keysOfItems(next.items)::contains))
 }
 
 /** Turns a [CachedChat] into the JSON kept on the phone and back. The items use the reader's own format. */
@@ -92,6 +97,7 @@ object ChatCodec {
         var dropped = false
         for (it in c.items.asReversed()) {
             val j = toJson(it) ?: continue
+            c.logTimes[it.key]?.let { at -> j.put("ts", at) }
             val n = j.toString().length
             if (keep.size >= MAX_ITEMS || (chars + n > MAX_CHARS && keep.isNotEmpty())) { dropped = true; break }
             keep += j
@@ -102,6 +108,7 @@ object ChatCodec {
         // again later (Load earlier) keeps its first-seen time.
         val times = JSONObject().also { t -> c.times.forEach { (k, v) -> t.put(k, v) } }
         val seen = JSONObject().also { t -> c.seen.forEach { (k, v) -> t.put(k, v) } }
+
         return JSONObject().put("v", 1).put("items", JSONArray(keep)).put("cursor", c.cursor).put("times", times).put("seen", seen)
             .put("more", c.more || dropped).putOpt("title", c.title)
             .put("start", if (dropped) -1L else c.start).putOpt("file", c.file).putOpt("agent", c.agent).toString()
@@ -111,8 +118,9 @@ object ChatCodec {
         val o = JSONObject(s)
         if (o.optInt("v") != 1) return null
         val arr = o.getJSONArray("items")
+        val raw = (0 until arr.length()).map { arr.getJSONObject(it) }
         CachedChat(
-            items = Transcript.merge(emptyList(), (0 until arr.length()).map { arr.getJSONObject(it) }, true),
+            items = Transcript.merge(emptyList(), raw, true),
             cursor = o.getString("cursor"),
             more = o.optBoolean("more"),
             title = if (o.isNull("title")) null else o.optString("title").ifBlank { null },
@@ -121,6 +129,7 @@ object ChatCodec {
             agent = if (o.isNull("agent")) null else o.optString("agent").ifBlank { null },
             times = o.optJSONObject("times")?.let { t -> t.keys().asSequence().associateWith { t.optLong(it) }.filterValues { it > 0 } }.orEmpty(),
             seen = o.optJSONObject("seen")?.let { t -> t.keys().asSequence().associateWith { t.optLong(it) }.filterValues { it > 0 } }.orEmpty(),
+            logTimes = Transcript.timesOf(raw),
         )
     }.getOrNull()
 }

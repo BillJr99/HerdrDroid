@@ -137,7 +137,7 @@ fun TranscriptChat(
     workingLabel: String,
     agentName: String,
     /** Messages you sent that the agent's log doesn't show yet, oldest first. */
-    pending: List<String>,
+    pending: List<Pair<String, Long>>,
     more: Boolean,
     size: Float,
     family: FontFamily,
@@ -147,6 +147,7 @@ fun TranscriptChat(
     state: LazyListState,
     modifier: Modifier = Modifier,
     follow: ChatFollow = remember(state) { ChatFollow() },
+    itemTimes: Map<String, Long> = emptyMap(),
 ) {
     val scope = rememberCoroutineScope()
     val total = rows.size + 3
@@ -212,7 +213,7 @@ fun TranscriptChat(
     // A message you just sent takes the chat to the bottom once; one that stays unsent does not
     // pull it down again on every update (1.2.8).
     var lastPending by remember(state) { mutableStateOf(pending.size) }
-    LaunchedEffect(rows.size, lastKey, lastSig, pending, working) {
+    LaunchedEffect(rows.size, lastKey, lastSig, pending.map { it.first }, working) {
         if (rows.isEmpty()) return@LaunchedEffect
         val pendingGrew = pending.size > lastPending
         lastPending = pending.size
@@ -275,8 +276,12 @@ fun TranscriptChat(
                     if (focused) Modifier.border(BorderStroke(2.dp, Palette.Blue), RoundedCornerShape(12.dp)).padding(6.dp) else Modifier,
                 )) {
                     when (row) {
-                        is OneRow -> ItemView(row.item, rows, size, family, actions)
-                        is ActivityRow -> ActivityView(row, live = working && row.key == lastKey, size)
+                        is OneRow -> Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            val item = row.item
+                            ItemView(item, rows, size, family, actions, itemTimes)
+                            if (item !is QuestionItem) ChatTimestamp(itemTimes[item.key], end = item is UserItem || (item is ImageItem && item.user))
+                        }
+                        is ActivityRow -> ActivityView(row, live = working && row.key == lastKey, size, itemTimes)
                     }
                 }
             }
@@ -298,7 +303,12 @@ fun TranscriptChat(
                             modifier = if (grokQueue) Modifier.heightIn(max = 96.dp).verticalScroll(rememberScrollState()) else Modifier,
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            pending.forEach { UserBubble(it, size, sending = true, onQuote = actions.onQuote) }
+                            pending.forEach { (text, at) ->
+                                Column {
+                                    UserBubble(text, size, sending = true, onQuote = actions.onQuote)
+                                    ChatTimestamp(at, end = true)
+                                }
+                            }
                         }
                     }
                 }
@@ -339,7 +349,7 @@ fun TranscriptChat(
 }
 
 @Composable
-private fun ItemView(item: Item, rows: List<ChatRow>, size: Float, family: FontFamily, actions: ChatActions) {
+private fun ItemView(item: Item, rows: List<ChatRow>, size: Float, family: FontFamily, actions: ChatActions, itemTimes: Map<String, Long>) {
     when (item) {
         is UserItem -> UserBubble(item.text, size, sending = item.sending, onQuote = actions.onQuote)
         is TextItem -> {
@@ -366,7 +376,7 @@ private fun ItemView(item: Item, rows: List<ChatRow>, size: Float, family: FontF
         )
         is ToolItem -> ToolView(item, size, live = false)
         is ImageItem -> AttachmentView(item)
-        is QuestionItem -> QuestionView(item, size)
+        is QuestionItem -> QuestionView(item, size, item.key.takeIf { it.startsWith("ask:") }?.removePrefix("ask:")?.let(itemTimes::get))
     }
 }
 
@@ -376,7 +386,26 @@ private fun ItemView(item: Item, rows: List<ChatRow>, size: Float, family: FontF
  * Not a card: the orange card is only for answering a question that is open now.
  */
 @Composable
-fun QuestionView(q: QuestionItem, size: Float) {
+fun QuestionView(q: QuestionItem, size: Float, loggedAt: Long? = null) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        QuestionContent(q, size)
+        ChatTimestamp(loggedAt ?: q.at)
+    }
+}
+
+@Composable
+internal fun ChatTimestamp(at: Long?, end: Boolean = false) {
+    if (at == null || at <= 0L) return
+    val context = LocalContext.current
+    val date = java.util.Date(at)
+    val label = android.text.format.DateFormat.getMediumDateFormat(context).format(date) + " · " +
+        android.text.format.DateFormat.getTimeFormat(context).format(date)
+    Text(label, color = Palette.Muted, fontSize = 11.sp, textAlign = if (end) TextAlign.End else TextAlign.Start,
+        modifier = Modifier.fillMaxWidth())
+}
+
+@Composable
+private fun QuestionContent(q: QuestionItem, size: Float) {
     SelectionContainer {
         Column(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(QuestionLog.label(q), color = Palette.Muted, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
@@ -548,7 +577,7 @@ private fun icon(kind: String) = when (kind) {
 }
 
 @Composable
-private fun ActivityView(row: ActivityRow, live: Boolean, size: Float) {
+private fun ActivityView(row: ActivityRow, live: Boolean, size: Float, itemTimes: Map<String, Long>) {
     var open by rememberSaveable(row.key) { mutableStateOf(false) }
     val running = live && row.running
     val current = row.tools.lastOrNull { it.state == ToolState.RUNNING }
@@ -584,6 +613,9 @@ private fun ActivityView(row: ActivityRow, live: Boolean, size: Float) {
                 }
                 Text(if (open) "▾" else "▸", color = Palette.Muted, fontSize = 13.sp)
             }
+            if (!open) itemTimes[row.items.first().key]?.let { at ->
+                Box(Modifier.padding(start = 36.dp, end = 12.dp, bottom = 8.dp)) { ChatTimestamp(at) }
+            }
             if (open) {
                 Column(
                     Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, bottom = 8.dp),
@@ -595,6 +627,7 @@ private fun ActivityView(row: ActivityRow, live: Boolean, size: Float) {
                             is ThinkItem -> Box(Modifier.padding(horizontal = 6.dp)) { ThinkView(it2, size) }
                             else -> {}
                         }
+                        ChatTimestamp(itemTimes[it2.key])
                     }
                 }
             }

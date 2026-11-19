@@ -180,6 +180,7 @@ private fun HermesConversation(vm: AppViewModel, chat: HermesChat, modifier: Mod
     val rows = remember(chat.items) { rowsOf(chat.items) }
     Column(modifier) {
         Box(Modifier.weight(1f).fillMaxWidth()) { ProvideAttachments(vm::attachmentBytes) { TranscriptChat(
+            itemTimes = chat.itemTimes,
             rows = rows,
             working = chat.running,
             workingLabel = chat.status,

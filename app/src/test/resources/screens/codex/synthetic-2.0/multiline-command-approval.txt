@@ -1,0 +1,18 @@
+  + Show details
+
+  Would you like to run the following command?
+
+  Environment: local
+  Reason: May I read the synthetic sample?
+
+  $ set -e
+    label='fixture'
+    (
+      printf '%s\n' "$label"
+    )
+    printf '%s\n' 'A long quoted fixture row with spaces and punctuation: [] | !'
+    printf '%s\n' 'done'
+
+› 1. Yes, proceed (y)
+  2. No, and tell Codex what to do differently (esc)
+  Press enter to confirm or esc to cancel

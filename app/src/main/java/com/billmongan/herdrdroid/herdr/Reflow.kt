@@ -87,7 +87,7 @@ object Reflow {
         sb.append(next)
     }
 
-    fun parse(text: String): List<Seg> {
+    fun parse(text: String, antigravity: Boolean = false): List<Seg> {
         val raw = text.lines().map(::clean)
 
         // The agent's input box and status line: from the first rule or box edge among the last
@@ -100,7 +100,7 @@ object Reflow {
         val footer = raw.subList(footerAt, raw.size)
             .filterNot { isRule(it) }
             .map { l -> l.filterNot { it in BOX }.trim().removePrefix("❯").removePrefix("›").trim() }
-            .filter { it.isNotEmpty() }
+            .filter { it.isNotEmpty() && !(antigravity && it == ">") }
 
         val width = body.maxOfOrNull { it.length }?.coerceAtLeast(20) ?: 80
         val margin = body.filter { it.isNotBlank() && !isWide(it) }
@@ -168,7 +168,12 @@ object Reflow {
             flushPara()
             para = if (m != null) {
                 val mark = m.value.trim()
-                P(lead, mark, lead + m.value.length, mark == "⎿", t.substring(m.value.length), l.length)
+                // Antigravity prefixes top-level replies and activity with terminal markers.
+                // Keep the hanging indent for reflow, and leave nested bullets and tables alone.
+                val chrome = antigravity && lead == margin && (mark == "●" || mark == "○") &&
+                    m.value.last().isWhitespace()
+                P(lead, mark.takeUnless { chrome }, lead + m.value.length,
+                    mark == "⎿" || (chrome && mark == "○"), t.substring(m.value.length), l.length)
             } else {
                 P(lead, null, lead, false, t, l.length)
             }

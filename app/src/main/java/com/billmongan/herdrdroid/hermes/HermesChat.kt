@@ -65,6 +65,8 @@ class HermesChat(ssh: HerdrSsh, private val scope: CoroutineScope) {
         private set
     var items by mutableStateOf<List<Item>>(emptyList())
         private set
+    var itemTimes by mutableStateOf<Map<String, Long>>(emptyMap())
+        private set
     var running by mutableStateOf(false)
         private set
     var status by mutableStateOf("")
@@ -210,7 +212,9 @@ class HermesChat(ssh: HerdrSsh, private val scope: CoroutineScope) {
             sessionId = r.optString("session_id").ifBlank { id }
             storedId = r.optString("stored_session_id").ifBlank { id }
             title = name.ifBlank { "Hermes" }
-            items = fromTranscript(r.optJSONArray("messages") ?: JSONArray())
+            val (history, times) = fromTranscript(r.optJSONArray("messages") ?: JSONArray())
+            items = history
+            itemTimes = times
             running = r.optBoolean("running")
             liveText = null
             liveThink = null
@@ -230,6 +234,7 @@ class HermesChat(ssh: HerdrSsh, private val scope: CoroutineScope) {
                 storedId = r.optString("stored_session_id").ifBlank { null }
                 title = "New chat"
                 items = emptyList()
+                itemTimes = emptyMap()
                 running = false
                 asks = emptyList()
                 phase = HermesPhase.CHAT
@@ -245,7 +250,7 @@ class HermesChat(ssh: HerdrSsh, private val scope: CoroutineScope) {
             steer(text)
             return
         }
-        items = items + UserItem("u${seq++}", text)
+        appendLive(UserItem("u${seq++}", text))
         running = true
         status = ""
         liveText = null
@@ -255,7 +260,7 @@ class HermesChat(ssh: HerdrSsh, private val scope: CoroutineScope) {
                 gw.request("prompt.submit", JSONObject().put("session_id", sid).put("text", text), timeoutMs = 60_000)
             } catch (e: Exception) {
                 running = false
-                items = items + NoteItem("n${seq++}", "Not sent: ${e.message}")
+                appendLive(NoteItem("n${seq++}", "Not sent: ${e.message}"))
             }
         }
     }
@@ -266,9 +271,9 @@ class HermesChat(ssh: HerdrSsh, private val scope: CoroutineScope) {
         scope.launch {
             try {
                 gw.request("session.steer", JSONObject().put("session_id", sid).put("text", text))
-                items = items + NoteItem("n${seq++}", "Steered: $text")
+                appendLive(NoteItem("n${seq++}", "Steered: $text"))
             } catch (e: Exception) {
-                items = items + NoteItem("n${seq++}", "Couldn't steer: ${e.message}")
+                appendLive(NoteItem("n${seq++}", "Couldn't steer: ${e.message}"))
             }
         }
     }
@@ -345,13 +350,13 @@ class HermesChat(ssh: HerdrSsh, private val scope: CoroutineScope) {
                 val name = payload.optString("name")
                 val args = payload.optJSONObject("args")
                 val sent = if (Regex("send|message|notify|reply|deliver").containsMatchIn(name.lowercase())) mediaIn(args) else emptyList()
-                items = items + ToolItem(
+                appendLive(ToolItem(
                     key = "t$id", id = id, name = name,
                     title = if (sent.isNotEmpty()) "Sent " + sent.joinToString(", ") { it.substringAfterLast('/') } else toolTitle(name, payload.optString("context"), args),
                     kind = toolKind(name), input = args?.toString(1)?.take(4000),
                     diff = diffOf(args), patch = null, out = null, state = ToolState.RUNNING,
                     attach = sent,
-                )
+                ))
             }
             "tool.complete" -> {
                 val id = payload.optString("tool_id")
@@ -372,12 +377,12 @@ class HermesChat(ssh: HerdrSsh, private val scope: CoroutineScope) {
                 val text = payload.optString("text")
                 val reused = payload.optBoolean("response_reused")
                 if (liveText == null && text.isNotBlank() && !reused && items.lastOrNull() !is TextItem) {
-                    items = items + TextItem("a${seq++}", text)
+                    appendLive(TextItem("a${seq++}", text))
                 }
                 if (payload.optString("status") == "error" && text.isNotBlank() && liveText != null) {
-                    items = items + NoteItem("n${seq++}", text)
+                    appendLive(NoteItem("n${seq++}", text))
                 }
-                payload.optString("warning").takeIf { it.isNotBlank() }?.let { items = items + NoteItem("n${seq++}", it) }
+                payload.optString("warning").takeIf { it.isNotBlank() }?.let { appendLive(NoteItem("n${seq++}", it)) }
                 liveText = null
                 liveThink = null
                 running = false
@@ -391,6 +396,11 @@ class HermesChat(ssh: HerdrSsh, private val scope: CoroutineScope) {
         }
     }
 
+    private fun appendLive(item: Item) {
+        if (item.key !in itemTimes) itemTimes = itemTimes + (item.key to System.currentTimeMillis())
+        items = items + item
+    }
+
     private fun appendText(delta: String) {
         if (delta.isEmpty()) return
         liveThink = null
@@ -398,7 +408,7 @@ class HermesChat(ssh: HerdrSsh, private val scope: CoroutineScope) {
         if (key == null) {
             val k = "a${seq++}"
             liveText = k
-            items = items + TextItem(k, delta)
+            appendLive(TextItem(k, delta))
         } else {
             items = items.map { if (it is TextItem && it.key == key) it.copy(text = it.text + delta) else it }
         }
@@ -410,7 +420,7 @@ class HermesChat(ssh: HerdrSsh, private val scope: CoroutineScope) {
         if (key == null) {
             val k = "r${seq++}"
             liveThink = k
-            items = items + ThinkItem(k, delta, null)
+            appendLive(ThinkItem(k, delta, null))
         } else {
             items = items.map { if (it is ThinkItem && it.key == key) it.copy(text = it.text + delta) else it }
         }
@@ -438,8 +448,9 @@ class HermesChat(ssh: HerdrSsh, private val scope: CoroutineScope) {
 
     // ---- Stored history -------------------------------------------------------------------------
 
-    private fun fromTranscript(arr: JSONArray): List<Item> {
+    private fun fromTranscript(arr: JSONArray): Pair<List<Item>, Map<String, Long>> {
         val out = mutableListOf<Item>()
+        val times = mutableMapOf<String, Long>()
         for (i in 0 until arr.length()) {
             val m = arr.optJSONObject(i) ?: continue
             if (m.optString("display_kind") == "hidden") continue
@@ -447,6 +458,7 @@ class HermesChat(ssh: HerdrSsh, private val scope: CoroutineScope) {
             // The words are in "text" on some paths and in "content" on others (a string, or a list
             // of parts): a stored conversation such as the Telegram one has only "content".
             val words = hermesMessageText(m)
+            val start = out.size
             when (m.optString("role")) {
                 "user" -> words.takeIf { it.isNotBlank() }?.let { out += UserItem(key, it) }
                 "assistant" -> {
@@ -464,8 +476,12 @@ class HermesChat(ssh: HerdrSsh, private val scope: CoroutineScope) {
                 }
                 else -> words.takeIf { it.isNotBlank() }?.let { out += NoteItem(key, it.lines().first().take(160)) }
             }
+            // Gateway history timestamps are Unix seconds, with a fractional part when available.
+            hermesMessageTime(m)?.let { at ->
+                for (n in start until out.size) times[out[n].key] = at
+            }
         }
-        return out
+        return out to times
     }
 
     private fun toolKind(name: String): String {
@@ -512,6 +528,10 @@ class HermesChat(ssh: HerdrSsh, private val scope: CoroutineScope) {
         return DiffData(args.optString("path").ifBlank { args.optString("file_path") }.ifBlank { null }, old.take(4000), new.take(4000))
     }
 }
+
+internal fun hermesMessageTime(message: JSONObject): Long? = message.optDouble("timestamp")
+    .takeIf { it.isFinite() && it > 0 && it < Long.MAX_VALUE / 1000.0 }
+    ?.let { (it * 1000).toLong().takeIf { ms -> ms > 0 } }
 
 /** A transcript row's words: "text", else "content" as a string or as a list of text parts. */
 fun hermesMessageText(m: JSONObject): String {

@@ -1,0 +1,4 @@
+card: options
+blocked: false
+heading: Would you like to run the following command?
+options: Yes, proceed (y) | No, and tell Codex what to do differently (esc)
