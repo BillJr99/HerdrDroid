@@ -13,6 +13,19 @@ import org.junit.Test
  * dialog's layout (rule, tab bar, question, options with descriptions, footer).
  */
 class QuestionFormatTest {
+    @Test fun cardDispatchNeedsAnExactFreshAnswerablePrompt() {
+        val screen = javaClass.getResource("/screens/codex/synthetic-2.0/truncated-command-approval.txt")!!.readText()
+        val full = screen.lineSequence().filterNot { it.contains("lines omitted") }.joinToString("\n")
+        val shown = requireNotNull(detectPrompt(full, false, "codex"))
+        assertTrue(cardAnswerStillFits(shown, shown.copy(selected = "2")))
+        assertFalse(cardAnswerStillFits(shown, detectPrompt(full.replace("printf 'preview", "printf '#preview"), false, "codex")))
+        assertFalse(cardAnswerStillFits(shown, detectPrompt(screen, false, "codex")))
+        assertFalse(cardAnswerStillFits(shown, null))
+        val fallback = Prompt("Pick?", emptyList(), region = listOf("Pick?", "first prompt"))
+        assertTrue(cardAnswerStillFits(fallback, fallback))
+        assertFalse(cardAnswerStillFits(fallback, fallback.copy(region = listOf("Pick?", "other prompt"))))
+    }
+
     @Test fun hermesTruncatedApprovalRequiresTerminalReview() {
         val screen = """
             ╭───────────────────────────────────────────╮
@@ -36,7 +49,12 @@ class QuestionFormatTest {
         assertEquals("execute_code <<'PY'\nprint('preview')", card.shownParts().command)
         val oldEsc = com.billmongan.herdrdroid.notify.NotifyAction("demo", "p1", "esc", false, card.question, isKey = true)
         assertFalse(com.billmongan.herdrdroid.notify.notificationAnswerStillFits(card, oldEsc))
-        assertNull(detectPrompt(screen.lines().drop(2).joinToString("\n"), blocked = true, agent = "hermes"))
+        val clipped = screen.lines().drop(2).joinToString("\n")
+        val clippedCard = requireNotNull(detectPrompt(clipped, blocked = false, agent = "hermes"))
+        assertTrue(clippedCard.terminalReview)
+        assertTrue(clippedCard.choices.isEmpty())
+        assertNull(detectPrompt(clipped + "\n❯ Next request", blocked = true, agent = "hermes"))
+        assertNull(detectPrompt(clipped.substringBefore("↑/↓"), blocked = true, agent = "hermes"))
         assertNull(detectPrompt(screen + "\n❯ New message", blocked = true, agent = "hermes"))
         assertFalse(detectPrompt(screen, blocked = true, agent = "codex")?.terminalReview == true)
         assertNull(detectPrompt(screen + "\n❯ New message", blocked = false, agent = "hermes"))
@@ -57,6 +75,10 @@ class QuestionFormatTest {
         assertTrue(requireNotNull(detectPrompt(full.lines().drop(1).joinToString("\n"), blocked = true, agent = "codex")).terminalReview)
         assertEquals(listOf("y"), menuKeys(known, known.choices.first()))
         assertTrue(requireNotNull(detectPrompt(full.replace(" (y)", ""), blocked = true, agent = "codex")).terminalReview)
+        for (marker in listOf("…", "...", "│  …  │")) {
+            val shortened = screen.replace("… (12 lines omitted)", marker)
+            assertTrue("Expected terminal review for $marker", detectPrompt(shortened, false, "codex")?.terminalReview == true)
+        }
     }
 
     private val webSearch = """

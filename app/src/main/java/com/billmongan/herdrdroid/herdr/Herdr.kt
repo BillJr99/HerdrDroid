@@ -862,6 +862,11 @@ data class Prompt(
 /** What a card with no options shows when the app couldn't read the screen (1.4.2). */
 const val UNREAD_SCREEN = "(The app couldn't read this pane's screen yet. Tap Show terminal, or answer with the keys below.)"
 
+/** Dispatch identity, unlike history deduplication, must not discard punctuation or command text. */
+internal fun cardAnswerStillFits(shown: Prompt, fresh: Prompt?): Boolean =
+    !shown.terminalReview && fresh != null && !fresh.terminalReview &&
+        shown.copy(selected = null) == fresh.copy(selected = null).forCard()
+
 /** One step of Claude's multi-question dialog ("☐ Close 537", "☒ Stop hook", "✔ Submit"). */
 data class QTab(val title: String, val done: Boolean, val current: Boolean, val submit: Boolean = false)
 enum class QKind { HEADING, TEXT, COMMAND }
@@ -1574,6 +1579,7 @@ private val HERMES_APPROVAL_FOOTER =
     Regex("""^↑/↓ to select, Enter to confirm(?:\s*\(\d+s\))?$""", RegexOption.IGNORE_CASE)
 private val HERMES_EMPTY_INPUT = Regex("""^⚠(?:️)?\s*[❯›]$""")
 private val HERMES_HIDDEN_COMMAND = Regex("""^[.…]+\s*\(choose Show full command\)$""", RegexOption.IGNORE_CASE)
+private val HERMES_SHOW_COMMAND = Regex("""^(?:[❯›>]\s*)?5\. Show full command$""", RegexOption.IGNORE_CASE)
 private val CODEX_COMMAND_HEADING = Regex("""^Would you like to run the following command\?$""", RegexOption.IGNORE_CASE)
 private val CODEX_OTHER_APPROVAL = Regex(
     """^(?:Would you like to (?:make the following edits|run the following tool|allow network access|grant these permissions)|Do you want to approve network access to .+|Approve app tool call)\?$""",
@@ -1607,7 +1613,7 @@ private fun detectHermesCommandPreview(text: String): Prompt? {
     val body = rows.map { it.removePrefix("│").removeSuffix("│").trimEnd().removePrefix(" ") }
     if (!Regex("""^(?:⚠️?\s*)?Dangerous Command$""").matches(body.firstOrNull()?.trim().orEmpty())) return null
     val hidden = body.indexOfFirst { HERMES_HIDDEN_COMMAND.matches(it.trim()) }
-    if (hidden < 1 || body.drop(hidden + 1).none { it.trim().matches(Regex("""^(?:[❯›>]\s*)?5\. Show full command$""")) }) return null
+    if (hidden < 1 || body.drop(hidden + 1).none { HERMES_SHOW_COMMAND.matches(it.trim()) }) return null
     return terminalCommandReview(body.subList(1, hidden).dropWhile { it.isBlank() }.joinToString("\n"))
 }
 
@@ -1619,14 +1625,21 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     if (agent.equals("hermes", true)) {
         detectHermesCommandPreview(text)?.let { return it }
         val rows = text.lines().takeLast(80)
-        val hidden = rows.indexOfLast { HERMES_HIDDEN_COMMAND.matches(it.trim().trim('│').trim()) }
+        fun body(row: String) = row.trim().trim('│').trim()
+        val hidden = rows.indexOfLast { HERMES_HIDDEN_COMMAND.matches(body(it)) }
         if (hidden >= 0) {
             // A clipped or stale preview must not reach the generic numbered-menu parser.
             val footer = (hidden + 1..rows.lastIndex).firstOrNull { HERMES_APPROVAL_FOOTER.matches(rows[it].trim()) }
                 ?: return null
             val latest = rows.drop(footer + 1).joinToString("\n")
-            return if (latest.isBlank() || HERMES_EMPTY_INPUT.matches(latest.trim())) null
-            else detectPrompt(latest, blocked, agent, version)
+            if (latest.isNotBlank() && !HERMES_EMPTY_INPUT.matches(latest.trim())) {
+                return detectPrompt(latest, blocked, agent, version)
+            }
+            // If the heading or frame was clipped, the truncation marker, reveal option and
+            // live footer still identify a preview. Don't guess at the missing command text.
+            return if (rows.subList(hidden + 1, footer).any { HERMES_SHOW_COMMAND.matches(body(it)) }) {
+                terminalCommandReview(null)
+            } else null
         }
     }
     val rules = ParserRules.forAgent(agent, version)
@@ -1826,7 +1839,12 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
         val preview = parts?.command
         val activeFooter = below.lastOrNull { !isChrome(it) }?.trim()?.let(CODEX_FOOTER::matches) == true
         val heading = above.orEmpty().any { CODEX_COMMAND_HEADING.matches(it.text) }
-        val hidden = above.orEmpty().any { HIDDEN_CODEX_COMMAND.containsMatchIn(it.text) }
+        // The layout builder drops rows with no letters or digits. Inspect the raw command
+        // region so a standalone ellipsis cannot disappear before this check.
+        val firstOption = run.firstOrNull()?.let { raw.lastIndexOf(lines[it.first]) } ?: -1
+        val commandRows = raw.take(firstOption.coerceAtLeast(0)).map(clean)
+        val headingAt = commandRows.indexOfLast { CODEX_COMMAND_HEADING.matches(it) }
+        val hidden = headingAt >= 0 && commandRows.drop(headingAt + 1).any { HIDDEN_CODEX_COMMAND.containsMatchIn(it) }
         val explicitKeys = numbered.all { SHORTCUT_LABEL.containsMatchIn(it.label) || ESC_LABEL.containsMatchIn(it.label) }
         val approvalChoices = numbered.any { it.label.startsWith("Yes, proceed", ignoreCase = true) }
         val otherApproval = above.orEmpty().any { CODEX_OTHER_APPROVAL.matches(it.text) }

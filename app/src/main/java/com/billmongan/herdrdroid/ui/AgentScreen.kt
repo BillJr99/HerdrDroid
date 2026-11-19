@@ -134,6 +134,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     var typingAnswer by remember { mutableStateOf(false) }
     // The question a typed answer is for (the card is hidden while you type it), so the history records it there.
     var answering by remember { mutableStateOf<Prompt?>(null) }
+    var answerTarget by remember { mutableStateOf<AppViewModel.CardTarget?>(null) }
     // The "Type something." / "Other" option the typed answer goes to (1.4.0), when one was tapped.
     var answerVia by remember { mutableStateOf<com.billmongan.herdrdroid.herdr.Choice?>(null) }
     var ctrl by remember { mutableStateOf(Hold.OFF) }
@@ -251,10 +252,10 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             val via = answerVia
             val q = answering
             // A typed answer goes into the question's history once it was delivered (1.3.2).
-            if (typingAnswer && via != null && q != null) vm.answerTyped(pane, q, via, text)
-            else if (typingAnswer) vm.sendMessage(pane, text, typedAnswer = true) { vm.noteAnswer(paneId, q, text) }
-            else vm.sendMessage(pane, text)
-            message = ""; typingAnswer = false; answering = null; answerVia = null
+            if (typingAnswer) {
+                if (q != null) vm.answerTyped(answerTarget, q, via, text)
+            } else vm.sendMessage(pane, text)
+            message = ""; typingAnswer = false; answering = null; answerVia = null; answerTarget = null
             // A slash command answers on the screen (a menu, a sign-in code), not in the agent's log,
             // so show the screen and the keys to move through it.
             if (text.startsWith("/") && !live) { fullTerminal = true; commandScreen = text.substringBefore(' ') }
@@ -358,10 +359,10 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 onChoice = { c -> vm.answerChoice(paneId, p, c) },
                 onKey = { k ->
                     val label = "Pressed " + when (k) { "esc" -> "Esc"; "tab" -> "Tab"; "shift+tab" -> "Shift+Tab"; "ctrl+c" -> "Ctrl+C"; else -> k }
-                    vm.sendKeysThen(paneId, listOf(k)) { vm.noteAnswer(paneId, p, label) }
+                    vm.answerCardKey(vm.cardTarget(paneId), p, k, label)
                 },
-                onTypeAnswer = { answering = p; answerVia = null; typingAnswer = true },
-                onTypedChoice = { c -> answering = p; answerVia = c; typingAnswer = true },
+                onTypeAnswer = { answering = p; answerTarget = vm.cardTarget(paneId); answerVia = null; typingAnswer = true },
+                onTypedChoice = { c -> answering = p; answerTarget = vm.cardTarget(paneId); answerVia = c; typingAnswer = true },
                 // The terminal is always one tap away from a card, on every agent (1.4.2).
                 onShowTerminal = { hermesLive = false; fullTerminal = true; termFollow = true },
             )
