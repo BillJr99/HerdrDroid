@@ -1233,6 +1233,14 @@ internal fun PromptCard(
                     fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1)
             }
             // Each choice grows to fit its whole label; the page scrolls, the card has no scroll of its own.
+            if (p.terminalReview) {
+                Text("This preview is incomplete. Open the terminal to review the full command before answering.",
+                    color = Palette.Muted, fontSize = 12.5.sp)
+                onShowTerminal?.let { show ->
+                    TextButton(onClick = show, modifier = Modifier.fillMaxWidth()) { Text("Show terminal") }
+                }
+                return@Column
+            }
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 // The fallback card (1.4.0): the screen looked like a question no parser understood, so
                 // the card shows that part of the screen and generic keys instead of choices.

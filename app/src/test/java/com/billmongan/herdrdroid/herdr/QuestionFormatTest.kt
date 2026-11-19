@@ -13,6 +13,52 @@ import org.junit.Test
  * dialog's layout (rule, tab bar, question, options with descriptions, footer).
  */
 class QuestionFormatTest {
+    @Test fun hermesTruncatedApprovalRequiresTerminalReview() {
+        val screen = """
+            ╭───────────────────────────────────────────╮
+            │ ⚠️  Dangerous Command                     │
+            │ execute_code <<'PY'                       │
+            │ print('preview')                          │
+            │ … (choose Show full command)              │
+            │ ❯ 1. Allow once                           │
+            │   2. Allow for this session               │
+            │   3. Add to permanent allowlist           │
+            │   4. Deny                                 │
+            │   5. Show full command                    │
+            ╰───────────────────────────────────────────╯
+              ↑/↓ to select, Enter to confirm  (86224s)
+            ⚠ ❯
+        """.trimIndent()
+        val card = requireNotNull(detectPrompt(screen, blocked = true, agent = "hermes"))
+        assertEquals("Review the full command", card.question)
+        assertTrue(card.terminalReview)
+        assertTrue(card.choices.isEmpty())
+        assertEquals("execute_code <<'PY'\nprint('preview')", card.shownParts().command)
+        val oldEsc = com.billmongan.herdrdroid.notify.NotifyAction("demo", "p1", "esc", false, card.question, isKey = true)
+        assertFalse(com.billmongan.herdrdroid.notify.notificationAnswerStillFits(card, oldEsc))
+        assertNull(detectPrompt(screen.lines().drop(2).joinToString("\n"), blocked = true, agent = "hermes"))
+        assertNull(detectPrompt(screen + "\n❯ New message", blocked = true, agent = "hermes"))
+        assertFalse(detectPrompt(screen, blocked = true, agent = "codex")?.terminalReview == true)
+        assertNull(detectPrompt(screen + "\n❯ New message", blocked = false, agent = "hermes"))
+    }
+
+    @Test fun codexHiddenCommandNeverOffersShortcutOrFallbackKeys() {
+        val screen = javaClass.getResource("/screens/codex/synthetic-2.0/truncated-command-approval.txt")!!.readText()
+        val card = requireNotNull(detectPrompt(screen, blocked = false, agent = "codex"))
+        assertEquals("Review the full command", card.question)
+        assertTrue(card.terminalReview)
+        assertTrue(card.choices.isEmpty())
+        assertNull(menuKeys(card, Choice("Yes, proceed (y)", "1", false)))
+        assertNull(detectPrompt(screen + "\n› Next request", blocked = true, agent = "codex"))
+
+        val full = screen.lineSequence().filterNot { it.contains("lines omitted") }.joinToString("\n")
+        val known = requireNotNull(detectPrompt(full, blocked = false, agent = "codex"))
+        assertFalse(known.terminalReview)
+        assertTrue(requireNotNull(detectPrompt(full.lines().drop(1).joinToString("\n"), blocked = true, agent = "codex")).terminalReview)
+        assertEquals(listOf("y"), menuKeys(known, known.choices.first()))
+        assertTrue(requireNotNull(detectPrompt(full.replace(" (y)", ""), blocked = true, agent = "codex")).terminalReview)
+    }
+
     private val webSearch = """
         ┃  Web Search
         ┃  Allow OpenCode to search the web for current information?

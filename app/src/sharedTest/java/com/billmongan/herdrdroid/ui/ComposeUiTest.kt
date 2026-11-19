@@ -514,6 +514,22 @@ class ComposeUiTest {
         assertEquals("Keys", picked)
     }
 
+    @Test fun incompleteApprovalCardOnlyOffersTheTerminal() {
+        var opened = false
+        val prompt = Prompt("Review the full command", emptyList(),
+            region = listOf("1. Allow once"), terminalReview = true)
+        rule.setContent {
+            PromptCard(prompt, "Hermes", onChoice = { error("Sent a hidden choice") },
+                onKey = { error("Synthesized a key") }, onTypeAnswer = { error("Opened a typed answer") },
+                onShowTerminal = { opened = true })
+        }
+        listOf("1", "Enter", "Esc", "Ctrl+C", "Type a different answer").forEach {
+            rule.onNodeWithText(it).assertDoesNotExist()
+        }
+        rule.onNodeWithText("Show terminal").performClick()
+        rule.runOnIdle { assertTrue(opened) }
+    }
+
     @Test fun voiceSettingsRequireOptInAndStartAndStopOnlyOnExplicitTap() {
         val enabled = androidx.compose.runtime.mutableStateOf(false)
         val active = androidx.compose.runtime.mutableStateOf(false)
