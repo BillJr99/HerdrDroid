@@ -556,6 +556,62 @@ class ComposeUiTest {
         rule.onNodeWithText("Synthetic draft").assertExists()
     }
 
+    @Test fun grokQueueDoesNotSupplyMissingQuestionOrChoices() {
+        // A blocked status by itself doesn't supply a question. Deliberately make a queued
+        // message look like a menu; the queued text is never a question source.
+        grokChatWithQueue("│ ❯ │\nShift+Tab:mode")
+        rule.onNodeWithText("Queued in Grok", substring = true).assertIsDisplayed()
+        rule.onNodeWithText("Grok asks").assertDoesNotExist()
+        rule.onNodeWithText("Your answer").assertDoesNotExist()
+        rule.onAllNodesWithText("2 (●) Second draft option", substring = true).assertCountEquals(1)
+    }
+
+    @Test fun grokQuestionAndChoicesAreTogetherBeforeTheQueue() {
+        val keys = mutableListOf<String>()
+        grokChatWithQueue("""
+            ┃  ?  Which format should the report use?
+            ┃  1 (●) Plain text
+            ┃  2 (○) Markdown
+            ┃
+            1/2:answer  │  ←/→:question  │  z:type  │  Shift+X:dismiss  │  Esc:scrollback
+        """.trimIndent()) { keys.addAll(it) }
+        val question = rule.onNodeWithText("Which format should the report use?").assertExists()
+        val choice = rule.onNodeWithText("Markdown").assertExists()
+        val queuedFirst = rule.onNodeWithText("First queued message").assertExists()
+        val queuedSecond = rule.onNodeWithText("Second draft option", substring = true).assertExists()
+        fun top(node: androidx.compose.ui.test.SemanticsNodeInteraction) = node.fetchSemanticsNode().positionInRoot.y
+        assertTrue(top(question) < top(choice))
+        assertTrue("Grok's choices should not appear under the queued messages", top(choice) < top(queuedFirst))
+        assertTrue(top(queuedFirst) < top(queuedSecond))
+        rule.onNode(hasScrollToIndexAction()).performScrollToIndex(2)
+        question.assertIsDisplayed()
+        choice.assertIsDisplayed().performClick()
+        assertEquals(listOf("down", "enter"), keys)
+    }
+
+    private fun grokChatWithQueue(screen: String, onKeys: (List<String>) -> Unit = {}) {
+        val prompt = com.billmongan.herdrdroid.herdr.detectPrompt(screen, blocked = true, agent = "grok")
+        rule.setContent {
+            Box(Modifier.width(380.dp).height(700.dp)) {
+                TranscriptChat(
+                    rows = rowsOf(listOf(UserItem("delivered", "Write a report"))),
+                    working = false, workingLabel = "", agentName = "Grok",
+                    pending = listOf("First queued message", "2 (●) Second draft option"),
+                    more = false, size = 12.5f, family = FontFamily.Default,
+                    actions = ChatActions(onQuote = {}, onStop = null, queuedNote = "Queued in Grok · not yet in the session log"),
+                    footer = {
+                        prompt?.let { p ->
+                            PromptQuestion(p, agent = "Grok")
+                            PromptCard(p, agent = "Grok", onChoice = { onKeys(requireNotNull(com.billmongan.herdrdroid.herdr.menuKeys(p, it))) },
+                                onKey = {}, onTypeAnswer = {})
+                        }
+                    },
+                    state = rememberLazyListState(), modifier = Modifier.fillMaxSize(),
+                )
+            }
+        }
+    }
+
     @Test fun aReplyOpensFullScreen() {
         var opened: String? = null
         val items = listOf(UserItem("u1", "Question"), TextItem("t1", "The whole answer"))
