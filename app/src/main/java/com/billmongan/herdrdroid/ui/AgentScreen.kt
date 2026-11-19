@@ -98,6 +98,7 @@ import com.billmongan.herdrdroid.herdr.Prompt
 import com.billmongan.herdrdroid.herdr.Reflow
 import com.billmongan.herdrdroid.herdr.Seg
 import com.billmongan.herdrdroid.herdr.Status
+import com.billmongan.herdrdroid.herdr.canonicalAgent
 import com.billmongan.herdrdroid.herdr.detectPrompt
 
 /** A modifier key: off, on for the next key only (tap), or held until tapped again (long-press). */
@@ -656,6 +657,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                         color = Palette.Muted, fontSize = 15.sp)
                 } else {
                     // Agents without a readable log (Antigravity, Kiro) keep their question history here (1.3.0).
+                    val antigravity = canonicalAgent(pane?.agent.orEmpty()) == "agy"
                     // The pane's history (1.4.3, Bill): each earlier screen, then the question asked under
                     // it, oldest first, so anything newer is below a question; the live screen comes last.
                     com.billmongan.herdrdroid.transcript.QuestionLog.screenHistory(
@@ -665,7 +667,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                             is com.billmongan.herdrdroid.transcript.ScreenSnapshot -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 Text("Earlier screen", color = Palette.Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                                 ChatTimestamp(entry.at)
-                                ChatView(entry.text, null, liveSize, vm.readingFont)
+                                ChatView(entry.text, null, liveSize, vm.readingFont, antigravity = antigravity)
                             }
                             is com.billmongan.herdrdroid.transcript.QuestionItem -> QuestionView(entry, liveSize)
                         }
@@ -677,7 +679,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     // The same questions the history shows (from review): an open one's screen stays live.
                     ChatView(com.billmongan.herdrdroid.transcript.QuestionLog.liveTail(text,
                         vm.questionsFor(paneId).filter { prompt == null || it.state != com.billmongan.herdrdroid.transcript.QState.OPEN }), pending, liveSize, vm.readingFont,
-                        pendingAt = vm.lastSentAt)
+                        pendingAt = vm.lastSentAt, antigravity = antigravity)
                 }
                 promptCard()
             }
@@ -1369,8 +1371,11 @@ private fun norm(s: String) = s.filterNot { it.isWhitespace() }.take(40)
  * sideways, and the agent's own input box and status line as a quiet footer.
  */
 @Composable
-private fun ChatView(text: String, pending: String?, size: Float, font: ReadingFont, pendingAt: Long? = null) {
-    val segs = remember(text) { Reflow.parse(text) }
+private fun ChatView(
+    text: String, pending: String?, size: Float, font: ReadingFont,
+    pendingAt: Long? = null, antigravity: Boolean = false,
+) {
+    val segs = remember(text, antigravity) { Reflow.parse(text, antigravity) }
     val family: FontFamily = font.family
     val prose = if (font == ReadingFont.MONO) size else size * 1.2f
     val showPending = pending != null && segs.none { it is Seg.You && norm(it.text).startsWith(norm(pending).take(20)) }
