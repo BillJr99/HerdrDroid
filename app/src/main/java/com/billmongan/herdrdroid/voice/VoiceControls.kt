@@ -15,6 +15,14 @@ import com.billmongan.herdrdroid.ui.Speaker
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
+private const val VOICE_SPEECH_LIMIT = 3800
+
+internal fun speakCompleteReadback(text: String, speak: (String) -> Unit): Boolean {
+    if (text.length > VOICE_SPEECH_LIMIT) return false
+    speak(text)
+    return true
+}
+
 internal class VoiceControls(private val context: Context, private val vm: AppViewModel) {
     private val mutex = Mutex()
     private data class Answer(val target: AppViewModel.VoiceTarget, val prompt: Prompt, val index: Int, val expires: Long, val questionKey: String)
@@ -41,7 +49,7 @@ internal class VoiceControls(private val context: Context, private val vm: AppVi
 
     private fun say(text: String, session: String? = null, onRead: (() -> Unit)? = null) {
         lastSpoken = Spoken(text, vm.voiceTarget(), session)
-        Speaker.speak(context, "voice-${SystemClock.elapsedRealtimeNanos()}", text.take(3800), onRead)
+        Speaker.speak(context, "voice-${SystemClock.elapsedRealtimeNanos()}", text.take(VOICE_SPEECH_LIMIT), onRead)
     }
 
     fun clear() {
@@ -147,9 +155,14 @@ internal class VoiceControls(private val context: Context, private val vm: AppVi
                 val draft = messages.dictate(messages.activeTarget(::messageTargetCurrent), command.text)
                 if (draft == null) say("Start again with send a message to, followed by the pane name.")
                 else {
-                    confirmation = Confirmation(ConfirmationGrammar.MESSAGE, draft.expires) { messageTargetCurrent(draft.target) }
-                    say("Message to ${draft.label}. ${draft.text}. Say confirm message or cancel message.") {
-                        if (stillAllowed()) messages.onReadBack(draft)
+                    val readback = "Message to ${draft.label}. ${draft.text}. Say confirm message or cancel message."
+                    val started = speakCompleteReadback(readback) { fullText ->
+                        confirmation = Confirmation(ConfirmationGrammar.MESSAGE, draft.expires) { messageTargetCurrent(draft.target) }
+                        say(fullText) { if (stillAllowed()) messages.onReadBack(draft) }
+                    }
+                    if (!started) {
+                        messages.clear()
+                        say("That message is too long for me to read back in full. Start again and dictate a shorter message.")
                     }
                 }
             }

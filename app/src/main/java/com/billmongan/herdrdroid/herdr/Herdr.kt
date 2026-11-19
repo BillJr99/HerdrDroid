@@ -1189,12 +1189,14 @@ private fun inputRow(screen: String): Pair<String, String>? {
     val rule = Regex("""^[\s\u00A0╭╰├└┌]*[─━═╌┄-]{4,}""")
     fun isRule(i: Int) = i in rows.indices && rule.containsMatchIn(rows[i])
     val candidates = rows.indices.filter { lead.containsMatchIn(rows[it]) && !notInput.containsMatchIn(rows[it]) }
-    val framed = Regex("""^[\s\u00A0]*[│┃|].*[│┃|][\s\u00A0]*$""")
+    val framed = Regex("""^[\s\u00A0]*([│┃|]).*\1[\s\u00A0]*$""")
     val i = candidates.lastOrNull { isRule(it - 1) && isRule(it + 1) }
         ?: candidates.lastOrNull { framed.matches(rows[it]) }
         ?: candidates.lastOrNull { c -> rows.drop(c + 1).count { it.isNotBlank() && !rule.containsMatchIn(it) } <= 3 }
         ?: return null
-    return rawRows[i] to rows[i].replace(lead, "").trimEnd(' ', '\u00A0', '│', '┃', '|').trim()
+    val row = rows[i]
+    val content = if (framed.matches(row)) row.trimEnd().dropLast(1) else row
+    return rawRows[i] to content.replace(lead, "").trim()
 }
 
 /** One character of a styled row and how it is drawn (1.4.6). */
