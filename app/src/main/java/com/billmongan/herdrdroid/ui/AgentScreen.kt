@@ -341,35 +341,9 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
           // In the terminal view the card shrinks to one line with the way back (1.4.8, Bill: "the show
           // terminal button doesn't actually do anything"), so the terminal itself is what you see.
           CardOrTerminalBar(showingTerminal = fullTerminal, agent = pane?.agentName ?: "The agent", onBackToQuestion = { fullTerminal = false }) {
-            PromptQuestion(
-                p,
-                agent = pane?.agentName ?: "The agent",
-                // What the agent said since your last message (in full, with its images and files),
-                // and the edit waiting for approval: the last tool call in the log, still running.
-                preview = run {
-                    val items = if (structured) vm.transcriptItems else emptyList()
-                    val since = items.drop(items.indexOfLast { it is com.billmongan.herdrdroid.transcript.UserItem } + 1)
-                    val said = since.filterIsInstance<com.billmongan.herdrdroid.transcript.TextItem>().takeLast(2)
-                    val media = since.filterIsInstance<com.billmongan.herdrdroid.transcript.ImageItem>() +
-                        since.filterIsInstance<com.billmongan.herdrdroid.transcript.ToolItem>().flatMap { t ->
-                            t.attach.map { path -> com.billmongan.herdrdroid.transcript.ImageItem("att:$path", path = path, mime = com.billmongan.herdrdroid.transcript.mimeFor(path), name = path.substringAfterLast('/')) }
-                        }
-                    val edit = (items.lastOrNull { it is com.billmongan.herdrdroid.transcript.ToolItem } as? com.billmongan.herdrdroid.transcript.ToolItem)
-                        ?.takeIf { it.state == com.billmongan.herdrdroid.transcript.ToolState.RUNNING && (it.diff != null || !it.patch.isNullOrBlank()) }
-                    // A plan waiting for approval (Claude's ExitPlanMode): show the plan itself in the card.
-                    val plan = (items.lastOrNull { it is com.billmongan.herdrdroid.transcript.ToolItem && it.name == "ExitPlanMode" } as? com.billmongan.herdrdroid.transcript.ToolItem)
-                        ?.takeIf { it.state == com.billmongan.herdrdroid.transcript.ToolState.RUNNING }
-                        ?.input?.let { runCatching { org.json.JSONObject(it).optString("plan") }.getOrNull() }?.takeIf { it.isNotBlank() }
-                    if (said.isEmpty() && media.isEmpty() && edit == null && plan == null) null else ({
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            plan?.let { Text("The plan", color = Palette.Muted, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold); MarkdownText(it, liveSize, vm.readingFont.family) }
-                            if (plan == null) said.forEach { MarkdownText(it.text, liveSize, vm.readingFont.family) }
-                            media.forEach { AttachmentView(it) }
-                            edit?.let { t -> EditPreview(t, liveSize) }
-                        }
-                    })
-                },
-            )
+            // The transcript already shows prose and attachments. The parsed question has no
+            // transcript tool-call ID, so a running tool's plan or diff may belong to another turn.
+            PromptQuestion(p, agent = pane?.agentName ?: "The agent")
             Spacer(Modifier.height(10.dp))
             PromptCard(
                 p,
@@ -1133,15 +1107,10 @@ private fun ModifierKey(label: String, state: Hold, onChange: (Hold) -> Unit, mo
  * terminal. The orange [PromptCard] below it holds only the answers.
  */
 @Composable
-internal fun PromptQuestion(
-    p: Prompt,
-    agent: String,
-    /** What the agent said or wants to change, shown above the question. */
-    preview: (@Composable () -> Unit)? = null,
-) {
+internal fun PromptQuestion(p: Prompt, agent: String) {
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("$agent asks", color = Palette.OrangeInk, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
-        preview?.invoke()
+
         val parts = p.shownParts()
         if (parts.tabs.isNotEmpty()) QuestionSteps(parts)
         // The question as a heading, a command in a block of its own, the rest as plain text, in the
