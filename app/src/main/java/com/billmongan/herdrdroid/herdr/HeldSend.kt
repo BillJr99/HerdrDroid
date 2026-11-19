@@ -47,30 +47,43 @@ class HeldSendRetry(
         var why = firstWhy
         var checks = 0
         fun remaining() = windowMs - (now() - startedAt)
+        fun stopped() = cancelled()?.let {
+            log("retry stopped: $it")
+            HeldOutcome.Cancelled(it)
+        }
         fun timedOut(): HeldOutcome.TimedOut {
             log("still held after ${(now() - startedAt) / 1000} s ($checks checks): $why; reported")
             return HeldOutcome.TimedOut(why, checks)
         }
+        // Dismissal can happen during sleep, lock acquisition, or a screen read.
+        fun expired(): HeldOutcome = stopped() ?: timedOut()
         while (true) {
             val beforeSleep = remaining()
-            if (beforeSleep <= 0) return timedOut()
+            if (beforeSleep <= 0) return expired()
             sleep(minOf(everyMs, beforeSleep))
             val lockBudget = remaining()
-            if (lockBudget <= 0) return timedOut()
+            if (lockBudget <= 0) return expired()
             var release: (() -> Unit)? = null
             try {
                 // Keep ownership outside the timeout scope so a timeout racing with acquisition
                 // cannot discard the unlock callback.
                 val acquired = withTimeoutOrNull(lockBudget) { release = acquire(); true }
-                if (acquired == null || remaining() <= 0) return timedOut()
-                cancelled()?.let { log("retry stopped: $it"); return HeldOutcome.Cancelled(it) }
-                val next = try {
-                    check()
-                } catch (c: CancellationException) {
-                    throw c
-                } catch (_: Exception) {
-                    "its screen couldn't be read"
-                }
+                if (acquired == null || remaining() <= 0) return expired()
+                stopped()?.let { return it }
+                val readBudget = remaining()
+                if (readBudget <= 0) return timedOut()
+                // A completed check may return null for a clear screen; distinguish it from
+                // cancellation at the deadline. Do not apply this timeout to the send itself.
+                val checked = withTimeoutOrNull(readBudget) {
+                    Result.success(try {
+                        check()
+                    } catch (c: CancellationException) {
+                        throw c
+                    } catch (_: Exception) {
+                        "its screen couldn't be read"
+                    })
+                } ?: return expired()
+                val next = checked.getOrThrow()
                 checks++
                 if (next != null) {
                     if (next != why) log("still held: $next")
@@ -78,7 +91,7 @@ class HeldSendRetry(
                     continue
                 }
                 // A dismissal during the screen read still stops the send.
-                cancelled()?.let { log("retry stopped: $it"); return HeldOutcome.Cancelled(it) }
+                stopped()?.let { return it }
                 currentCoroutineContext().ensureActive()
                 if (remaining() <= 0) return timedOut()
                 return try {
