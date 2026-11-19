@@ -20,6 +20,7 @@ import com.billmongan.herdrdroid.ssh.HerdrSsh
 import com.billmongan.herdrdroid.store.Server
 import com.billmongan.herdrdroid.transcript.QuestionLog
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -100,6 +101,29 @@ class SuccessiveCardAnswerTest {
         assertTrue(vm.notice.orEmpty().startsWith("Already answered."))
     }
 
+    @Test fun approvalFromRecentAnsiCanBeAnsweredOnTheSameLiveCard() = fixture("codex", command("alpha-beta")) {
+        // Herdr's plain visible reader trims each row's end. Its ANSI reader can retain
+        // trailing styled cells, including the spaces on the command row in this frame.
+        ansiRows = true
+        readSelectedPane()
+        val shown = checkNotNull(detectPrompt(vm.paneText, blocked = true, agent = "codex")).forCard()
+        assertTrue(shown.choices.isNotEmpty())
+        assertFalse(shown.terminalReview)
+        assertTrue(shown.parts?.command.orEmpty().endsWith("  "))
+        answer(shown, checkNotNull(vm.paneTextTarget))
+        assertEquals(vm.notice, listOf("y"), sent)
+    }
+
+    @Test fun approvalFromRecentAnsiRefusesChangedCommandWhitespace() = fixture("codex", command("alpha-beta")) {
+        ansiRows = true
+        readSelectedPane()
+        val shown = checkNotNull(detectPrompt(vm.paneText, blocked = true, agent = "codex")).forCard()
+        ansiRows = false
+        answer(shown, checkNotNull(vm.paneTextTarget))
+        assertTrue(sent.isEmpty())
+        assertTrue(vm.notice.orEmpty().startsWith("Not sent."))
+    }
+
     @Test fun staleApprovalCannotAnswerTheNewCommand() = fixture("codex", command("alpha-beta")) {
         val stale = shown()
         frame = command("alphabeta")
@@ -135,6 +159,7 @@ class SuccessiveCardAnswerTest {
         override var connection: Any? = Any()
         val sent = mutableListOf<String>()
         var afterSend: String? = null
+        var ansiRows = false
         var terminal = "t1"
         var recentReads = 0
 
@@ -149,6 +174,7 @@ class SuccessiveCardAnswerTest {
         }
 
         fun shown() = checkNotNull(detectPrompt(frame, blocked = true, agent = agent)).forCard()
+        fun readSelectedPane() = runBlocking { vm.readPane("p1") }
         fun answer(prompt: Prompt, target: AppViewModel.CardTarget = checkNotNull(vm.cardTarget("p1"))) {
             vm.answerChoice("p1", prompt, prompt.choices.first(), target = target)
             drainUntil { !vm.answerInFlight("p1") }
@@ -184,8 +210,9 @@ class SuccessiveCardAnswerTest {
             if (expectedConnection != null) assertSame(connection, expectedConnection)
             return when {
                 command.endsWith("'pane' 'get' 'p1'") -> ok("""{"result":{"pane":$pane}}""")
-                command.contains("'pane' 'read' 'p1' '--source' 'recent'") -> { recentReads++; ok(frame) }
+                command.contains("'pane' 'read' 'p1' '--source' 'recent'") -> { recentReads++; ok(ansiFrame()) }
                 command.endsWith("'pane' 'read' 'p1' '--source' 'visible'") -> ok(frame)
+                command.endsWith("'pane' 'read' 'p1' '--source' 'visible' '--format' 'ansi'") -> ok(ansiFrame())
                 command.contains("def occupant():") && command.endsWith("'/fixture/herdr' 'p1' '$agent'") -> ok("")
                 command.contains("'pane' 'send-keys' 'p1' ") -> {
                     sent += command.substringAfter("'p1' ").replace("'", "")
@@ -194,6 +221,10 @@ class SuccessiveCardAnswerTest {
                 }
                 else -> throw AssertionError("Unexpected fixture command: $command")
             }
+        }
+
+        private fun ansiFrame() = if (!ansiRows) frame else frame.lineSequence().joinToString("\n") {
+            if (it.startsWith("$ ")) "$it\u001B[44m  \u001B[0m" else it
         }
 
         private val pane get() = """{"pane_id":"p1","workspace_id":"w1","tab_id":"tab","agent":"$agent","agent_status":"blocked","cwd":"/fixture","terminal_id":"$terminal","scroll":{"offset_from_bottom":0}}"""

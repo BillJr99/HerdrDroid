@@ -189,7 +189,7 @@ class PanePrefetchTest {
         }
 
         override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult {
-            val m = Regex("""^'/fixture/herdr' 'pane' 'read' '([^']+)' '--source' '(visible|recent)'(?: '--lines' '\d+' '--format' 'ansi')?$""")
+            val m = Regex("""^'/fixture/herdr' 'pane' 'read' '([^']+)' '--source' '(visible|recent)'(?: '--lines' '\d+')?(?: '--format' 'ansi')?$""")
                 .matchEntire(command) ?: throw AssertionError("Unexpected command: $command")
             val (id, source) = m.destructured
             reads += "$source:$id"
