@@ -20,6 +20,7 @@ import com.billmongan.herdrdroid.ssh.HerdrSsh
 import com.billmongan.herdrdroid.store.Server
 import com.billmongan.herdrdroid.transcript.QuestionLog
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -100,6 +101,59 @@ class SuccessiveCardAnswerTest {
         assertTrue(vm.notice.orEmpty().startsWith("Already answered."))
     }
 
+    @Test fun approvalFromRecentAnsiCanBeAnsweredOnTheSameLiveCard() = fixture("codex", command("alpha-beta")) {
+        // Herdr's plain visible reader trims each row's end. Its ANSI reader can retain
+        // trailing styled cells, including the spaces on the command row in this frame.
+        ansiRows = true
+        readSelectedPane()
+        val shown = checkNotNull(detectPrompt(vm.paneText, blocked = true, agent = "codex")).forCard()
+        assertTrue(shown.choices.isNotEmpty())
+        assertFalse(shown.terminalReview)
+        assertTrue(shown.parts?.command.orEmpty().endsWith("  "))
+        answer(shown, checkNotNull(vm.paneTextTarget))
+        assertEquals(vm.notice, listOf("y"), sent)
+    }
+
+    @Test fun approvalFromRecentAnsiRefusesChangedCommandWhitespace() = fixture("codex", command("alpha-beta")) {
+        ansiRows = true
+        readSelectedPane()
+        val shown = checkNotNull(detectPrompt(vm.paneText, blocked = true, agent = "codex")).forCard()
+        ansiRows = false
+        answer(shown, checkNotNull(vm.paneTextTarget))
+        assertTrue(sent.isEmpty())
+        assertTrue(vm.notice.orEmpty().startsWith("Not sent."))
+    }
+
+    @Test fun approvalRecoveredAfterFailedRecentReadCanBeAnswered() =
+        verifyRecoveredApproval(ExecResult(1, "", "fixture read failure"), boundedVisible = true)
+
+    @Test fun approvalRecoveredAfterEmptyRecentReadCanBeAnswered() =
+        verifyRecoveredApproval(ExecResult(0, "", ""), boundedVisible = false)
+
+    private fun verifyRecoveredApproval(recent: ExecResult, boundedVisible: Boolean) =
+        fixture("codex", command("alpha-beta")) {
+            recentResult = recent
+            ansiRows = true
+            readSelectedPane()
+            assertEquals(listOf(boundedVisible), discoveryVisibleReads)
+            assertTrue(sent.isEmpty())
+            val prompt = shownApproval()
+            answer(prompt, checkNotNull(vm.paneTextTarget))
+            assertEquals(vm.notice, listOf("y"), sent)
+            assertTrue(prompt.parts?.command.orEmpty().endsWith("  "))
+        }
+
+    @Test fun recoveredApprovalRefusesChangedCommandWhitespace() = fixture("codex", command("alpha-beta")) {
+        recentResult = ExecResult(0, "", "")
+        ansiRows = true
+        readSelectedPane()
+        val prompt = shownApproval()
+        ansiRows = false
+        answer(prompt, checkNotNull(vm.paneTextTarget))
+        assertEquals(vm.notice, emptyList<String>(), sent)
+        assertTrue(vm.notice.orEmpty().startsWith("Not sent."))
+    }
+
     @Test fun staleApprovalCannotAnswerTheNewCommand() = fixture("codex", command("alpha-beta")) {
         val stale = shown()
         frame = command("alphabeta")
@@ -135,8 +189,11 @@ class SuccessiveCardAnswerTest {
         override var connection: Any? = Any()
         val sent = mutableListOf<String>()
         var afterSend: String? = null
+        var ansiRows = false
         var terminal = "t1"
         var recentReads = 0
+        var recentResult: ExecResult? = null
+        val discoveryVisibleReads = mutableListOf<Boolean>()
 
         init {
             field("herdr").set(vm, Herdr(ssh, server.herdrPath, Backend.TUI, null, this))
@@ -149,6 +206,11 @@ class SuccessiveCardAnswerTest {
         }
 
         fun shown() = checkNotNull(detectPrompt(frame, blocked = true, agent = agent)).forCard()
+        fun shownApproval() = checkNotNull(detectPrompt(vm.paneText, blocked = true, agent = "codex")).forCard().also {
+            assertTrue(it.choices.isNotEmpty())
+            assertFalse(it.terminalReview)
+        }
+        fun readSelectedPane() = runBlocking { vm.readPane("p1") }
         fun answer(prompt: Prompt, target: AppViewModel.CardTarget = checkNotNull(vm.cardTarget("p1"))) {
             vm.answerChoice("p1", prompt, prompt.choices.first(), target = target)
             drainUntil { !vm.answerInFlight("p1") }
@@ -184,8 +246,11 @@ class SuccessiveCardAnswerTest {
             if (expectedConnection != null) assertSame(connection, expectedConnection)
             return when {
                 command.endsWith("'pane' 'get' 'p1'") -> ok("""{"result":{"pane":$pane}}""")
-                command.contains("'pane' 'read' 'p1' '--source' 'recent'") -> { recentReads++; ok(frame) }
-                command.endsWith("'pane' 'read' 'p1' '--source' 'visible'") -> ok(frame)
+                command.contains("'pane' 'read' 'p1' '--source' 'recent'") -> { recentReads++; recentResult ?: ok(ansiFrame()) }
+                command.contains("'pane' 'read' 'p1' '--source' 'visible'") -> {
+                    if (expectedConnection == null) discoveryVisibleReads += command.contains("'--lines'")
+                    ok(if (command.endsWith("'--format' 'ansi'")) ansiFrame() else frame)
+                }
                 command.contains("def occupant():") && command.endsWith("'/fixture/herdr' 'p1' '$agent'") -> ok("")
                 command.contains("'pane' 'send-keys' 'p1' ") -> {
                     sent += command.substringAfter("'p1' ").replace("'", "")
@@ -194,6 +259,10 @@ class SuccessiveCardAnswerTest {
                 }
                 else -> throw AssertionError("Unexpected fixture command: $command")
             }
+        }
+
+        private fun ansiFrame() = if (!ansiRows) frame else frame.lineSequence().joinToString("\n") {
+            if (it.startsWith("$ ")) "$it\u001B[44m  \u001B[0m" else it
         }
 
         private val pane get() = """{"pane_id":"p1","workspace_id":"w1","tab_id":"tab","agent":"$agent","agent_status":"blocked","cwd":"/fixture","terminal_id":"$terminal","scroll":{"offset_from_bottom":0}}"""

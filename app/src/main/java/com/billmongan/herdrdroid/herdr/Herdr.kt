@@ -272,7 +272,7 @@ class Herdr internal constructor(
     /** Only the live viewport, with no fallback into old scrollback. */
     internal suspend fun readCardViewport(id: String, connection: Any, timeoutSeconds: Long = 5): String = stripAnsi(
         if (core) runNow(hcCmd("read", id, "--lines", "80"), timeoutSeconds, connection)
-        else runNow(cmd("pane", "read", id, "--source", "visible"), timeoutSeconds, connection)
+        else runNow(visibleSnapshot(id, ansi = true), timeoutSeconds, connection)
     )
 
     /**
@@ -299,20 +299,29 @@ class Herdr internal constructor(
     private fun recentSnapshot(paneId: String, lines: Int) =
         cmd("pane", "read", paneId, "--source", "recent", "--lines", lines.toString(), "--format", "ansi")
 
+    // Card reads (including recovery) and dispatch must agree on the serializer. Plain
+    // visible text trims row endings, which can change the exact command identity.
+    private fun visibleSnapshot(paneId: String, ansi: Boolean, lines: Int? = null): String {
+        val args = mutableListOf("pane", "read", paneId, "--source", "visible")
+        if (lines != null) args += listOf("--lines", lines.toString())
+        if (ansi) args += listOf("--format", "ansi")
+        return cmd(*args.toTypedArray())
+    }
+
     suspend fun readStyled(paneId: String, lines: Int = 40): String =
         if (core) read(paneId, lines)
         else runCatching { runNow(recentSnapshot(paneId, lines), timeoutSeconds = 5) }
             .getOrElse { if (it is kotlinx.coroutines.CancellationException) throw it; read(paneId, lines) }
 
     /**
-     * Only what the pane shows now (`--source visible`), plain (1.4.8): the fallback when the usual
-     * read of its recent output fails or comes back empty, so a waiting agent's card can still be read.
+     * Only what the pane shows now (`--source visible`). Card recovery uses ANSI to keep the
+     * same glyphs and row endings as dispatch; ordinary readers still get the plain snapshot.
      */
     suspend fun readVisible(paneId: String): String = readVisible(paneId, preserveGlyphs = false)
 
     internal suspend fun readVisible(paneId: String, preserveGlyphs: Boolean): String =
         if (core) read(paneId, 60, preserveGlyphs) else screenText(
-            runNow(cmd("pane", "read", paneId, "--source", "visible"), timeoutSeconds = 5), preserveGlyphs,
+            runNow(visibleSnapshot(paneId, ansi = preserveGlyphs), timeoutSeconds = 5), preserveGlyphs,
         )
 
     private fun screenText(text: String, preserveGlyphs: Boolean) = if (preserveGlyphs) stripAnsi(text) else forPhone(text)
@@ -323,7 +332,7 @@ class Herdr internal constructor(
             screenText(runNow(recentSnapshot(paneId, lines), timeoutSeconds = 5), preserveGlyphs)
         } catch (e: HerdrError) {
             if (e.exit == -2) throw e
-            screenText(runNow(cmd("pane", "read", paneId, "--source", "visible", "--lines", lines.toString()), timeoutSeconds = 5), preserveGlyphs)
+            screenText(runNow(visibleSnapshot(paneId, ansi = preserveGlyphs, lines = lines), timeoutSeconds = 5), preserveGlyphs)
         }
 
     /**
