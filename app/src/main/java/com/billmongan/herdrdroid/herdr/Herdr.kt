@@ -1685,6 +1685,19 @@ private val HIDDEN_CODEX_COMMAND = Regex(
     RegexOption.IGNORE_CASE,
 )
 
+/** Codex's `$ ` introduces the command, not a paragraph of its explanation. */
+private fun codexCommandParts(rows: List<String>): QuestionParts? {
+    val start = rows.indexOfFirst { it.trimStart().startsWith("$ ") }
+    if (start < 1) return null
+    val first = rows[start].trimStart().removePrefix("$ ")
+    if (first.isBlank()) return null
+    val inset = rows[start].takeWhile { it.isWhitespace() }
+    val command = listOf(first) + rows.drop(start + 1).dropLastWhile { it.isBlank() }
+        .map { it.removePrefix(inset) }
+    val intro = questionParts(rows.take(start).map { QLine(it) })
+    return intro.copy(blocks = intro.blocks.take(1) + QBlock(QKind.COMMAND, command.joinToString("\n")) + intro.blocks.drop(1))
+}
+
 private fun terminalCommandReview(command: String?): Prompt = Prompt(
     question = "Review the full command",
     choices = emptyList(),
@@ -1903,7 +1916,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
         }.replace(Regex("\\s+"), " ").trim().takeIf { it.isNotEmpty() }
     }
     val question = aboveText ?: lines.lastOrNull { clean(it).endsWith("?") }?.let(clean)
-    val parts = above?.let(::questionParts)
+    var parts = above?.let(::questionParts).takeIf { aboveText != null }
     val beforeOptions = lines.take(run.firstOrNull()?.first ?: lines.size)
     val approvalHeader = beforeOptions.any { clean(it).startsWith("Do you want to ") || COMMAND_INTRO.matches(clean(it)) }
     val questionHeader = beforeOptions.any {
@@ -1934,7 +1947,10 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     // the agent went on after the card, however few lines that took (from Grok's review).
     // A box's own corner ("└────") is not activity: only a line with words counts.
     val wentOn = agentWentOn(below)
-    val approvalRows = raw.take(firstOption.coerceAtLeast(0))
+    val codex = agent.equals("codex", true)
+    val beforeMenu = raw.take(firstOption.coerceAtLeast(0))
+    val approvalRows = if (codex) beforeMenu.drop(beforeMenu.indexOfLast { CODEX_FOOTER.matches(it.trim()) } + 1)
+        else beforeMenu
     val approvalStart = approvalRows.indexOfLast { row ->
         val body = clean(row)
         when (agent?.lowercase()) {
@@ -1946,23 +1962,24 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     val approvalIdentity = if (approvalStart < 0) null else java.security.MessageDigest.getInstance("SHA-256")
         .digest(approvalRows.drop(approvalStart).joinToString("\n").toByteArray(Charsets.UTF_8))
         .joinToString("") { "%02x".format(it) }
-    if (agent.equals("codex", true) && !wentOn) {
-        val preview = parts?.command
+    if (codex && !wentOn) {
         val activeFooter = below.lastOrNull { !isChrome(it) }?.trim()?.let(CODEX_FOOTER::matches) == true
-        val heading = above.orEmpty().any { CODEX_COMMAND_HEADING.matches(it.text) }
-        // The layout builder drops rows with no letters or digits. Inspect the raw command
-        // region so a standalone ellipsis cannot disappear before this check.
-
-        val commandRows = raw.take(firstOption.coerceAtLeast(0)).map(clean)
-        val headingAt = commandRows.indexOfLast { CODEX_COMMAND_HEADING.matches(it) }
-        val hidden = headingAt >= 0 && commandRows.drop(headingAt + 1).any { HIDDEN_CODEX_COMMAND.containsMatchIn(it) }
+        val heading = approvalStart >= 0 && CODEX_COMMAND_HEADING.matches(clean(approvalRows[approvalStart]))
+        val commandRows = if (heading) approvalRows.drop(approvalStart) else emptyList()
+        val commandParts = codexCommandParts(commandRows)
+        // Inspect the raw rows: an ellipsis can be both standalone and the only sign of clipping.
+        val hidden = commandRows.drop(1).any { HIDDEN_CODEX_COMMAND.containsMatchIn(clean(it)) }
         val explicitKeys = numbered.all { SHORTCUT_LABEL.containsMatchIn(it.label) || ESC_LABEL.containsMatchIn(it.label) }
-        val approvalChoices = numbered.any { it.label.startsWith("Yes, proceed", ignoreCase = true) }
-        val otherApproval = above.orEmpty().any { CODEX_OTHER_APPROVAL.matches(it.text) }
-        if (realMenu && ((heading && (!activeFooter || numbered.size < 2 || preview.isNullOrBlank() || !explicitKeys || hidden)) ||
-                (activeFooter && approvalChoices && !otherApproval && !heading))) {
-            return if (activeFooter || blocked) terminalCommandReview(preview) else null
+        val approvalChoices = numbered.any {
+            it.label.startsWith("Yes, proceed", ignoreCase = true) ||
+                it.label.startsWith("No, and tell Codex what to do differently", ignoreCase = true)
         }
+        val otherApproval = approvalStart >= 0 && !heading
+        if (realMenu && ((heading && (!activeFooter || numbered.size < 2 || commandParts == null || !explicitKeys || hidden)) ||
+                (activeFooter && approvalChoices && !otherApproval && !heading))) {
+            return if (activeFooter || blocked) terminalCommandReview(commandParts?.command) else null
+        }
+        if (commandParts != null) parts = commandParts
     }
     if (numbered.size in 2..20 && realMenu && underCard <= MAX_UNDER_CARD && !wentOn && !rejectEcho) {
         if (agent.equals("hermes", true) && approvalIdentity == null &&
@@ -1977,7 +1994,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
         // command (esc)"), known by name or by its "Change approval defaults in /permissions" line.
         val shortcuts = agent?.lowercase() in setOf("codex", "muse") ||
             lines.takeLast(4).any { CODEX_FOOTER.containsMatchIn(it) || MUSE_CARD_FOOTER.containsMatchIn(it) }
-        return Prompt(question ?: "Choose an option", numbered, selected, escRejects = vibeCard, parts = parts.takeIf { aboveText != null }, multi = multi, shortcuts = shortcuts, approvalIdentity = approvalIdentity)
+        return Prompt(question ?: "Choose an option", numbered, selected, escRejects = vibeCard, parts = parts, multi = multi, shortcuts = shortcuts, approvalIdentity = approvalIdentity)
     }
 
     val yn = Regex("""[(\[]\s*[yY](?:es)?\s*/\s*[nN]o?\s*[)\]]""")

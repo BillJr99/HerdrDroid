@@ -49,6 +49,37 @@ class CardPreviewReadTest {
         }
     }
 
+    @Test fun workingCodexFindsAnApprovalMissingFromTheRecentCapture() = withFixture { f ->
+        val complete = resource("/screens/codex/synthetic-2.0/multiline-command-approval.txt")
+        val recent = "  + Show details\n"
+        val styledRecent = "\u001B[2m  + Show details\u001B[0m\n"
+        val styledVisible = complete.lineSequence().joinToString("\n") { "\u001B[1m$it\u001B[0m" }
+        assertNull(detectPrompt(recent, false, "codex"))
+        f.select("codex", Status.WORKING)
+        f.frames(styledRecent, styledVisible)
+        f.read()
+        assertEquals(complete, f.vm.paneText)
+        assertEquals(listOf("recent", "visible"), f.trace())
+        assertEquals(2, detectPrompt(f.vm.paneText, false, "codex")!!.choices.size)
+
+        val partial = complete.substringAfter("  $ set -e\n")
+        f.frames(recent, partial)
+        f.read()
+        assertTrue(detectPrompt(f.vm.paneText, false, "codex")!!.terminalReview)
+        assertEquals(listOf("recent", "visible"), f.trace())
+
+        f.frames(recent, "$complete\n› Next request")
+        f.read()
+        assertEquals(recent, f.vm.paneText)
+        assertEquals(listOf("recent", "visible"), f.trace())
+
+        f.select("codex", Status.WORKING, scrollOffset = 1)
+        f.frames(recent, complete)
+        f.read()
+        assertEquals(recent, f.vm.paneText)
+        assertEquals(listOf("recent"), f.trace())
+    }
+
     @Test fun blockedClaudeQuestionUpgradesARecentCaptureWithNoChoices() = withFixture { f ->
         val complete = resource("/screens/claude/captured-2026-11-13/multi-question.txt")
         val recent = "Which sample should be used?"

@@ -1434,23 +1434,28 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     ?.let { OpenUsage(serverId, paneId, visit, client, agent, it) }
             } else null
             if (!isOpen()) return
-            val blocked = pane(paneId)?.status == Status.NEEDS_YOU
+            val paneStatus = pane(paneId)?.status
+            val blocked = paneStatus == Status.NEEDS_YOU
             val version = versionOf(paneId)
             val preview = detectPrompt(recent, blocked, agent, version)
             fun canUpgrade() = foreground && isOpen() && cardOwner != null &&
                 cardOwner.client.backend == Backend.TUI && cardOwner.isCurrent(cardOwner.client) &&
                 pane(paneId)?.scrollOffset == 0
-            // A nonempty recent capture can omit part of the live dialog. Try one short,
-            // read-only viewport capture on the same connection, without waiting for another poll.
+            // A nonempty recent capture can omit Codex's entire dialog while status still says
+            // Working. Probe only the selected, live-bottom viewport on the same connection.
+            val missingCodexApproval = agent == "codex" && paneStatus == Status.WORKING && preview == null
             val liveCard = if (liveUsage == null &&
-                (preview?.terminalReview == true || (blocked && preview?.choices.isNullOrEmpty())) && canUpgrade()) {
+                (missingCodexApproval || preview?.terminalReview == true || (blocked && preview?.choices.isNullOrEmpty())) && canUpgrade()) {
                 val owner = checkNotNull(cardOwner)
                 quietly { h -> if (h === owner.client) h.readCardViewport(paneId, owner.connection, timeoutSeconds = 1) else null }
                     ?.takeIf { canUpgrade() && !it.isBlank() }
             } else null
             if (!isOpen()) return
             val livePrompt = liveCard?.let { detectPrompt(it, pane(paneId)?.status == Status.NEEDS_YOU, agent, version) }
-                ?.takeIf { !it.terminalReview && it.choices.isNotEmpty() }
+                ?.takeIf {
+                    (it.choices.isNotEmpty() && !it.terminalReview && (!missingCodexApproval || it.approvalIdentity != null)) ||
+                        (missingCodexApproval && it.terminalReview)
+                }
             val text = if (livePrompt != null) checkNotNull(liveCard) else recent
             lastAppliedPaneRead = attempt
             openingPanePreview = null
