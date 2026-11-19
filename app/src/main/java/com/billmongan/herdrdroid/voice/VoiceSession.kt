@@ -1,6 +1,10 @@
 package com.billmongan.herdrdroid.voice
 
+import com.billmongan.herdrdroid.herdr.Pane
 import com.billmongan.herdrdroid.herdr.Status
+import com.billmongan.herdrdroid.transcript.Transcript
+import com.billmongan.herdrdroid.transcript.TranscriptRead
+import org.json.JSONObject
 import com.billmongan.herdrdroid.transcript.Item
 import com.billmongan.herdrdroid.transcript.TextItem
 import com.billmongan.herdrdroid.transcript.UserItem
@@ -19,7 +23,7 @@ internal class VoiceMessageDraft<T>(private val now: () -> Long) {
     fun begin(target: T, label: String) { clear(); draft = Draft(target, label, "", now() + 45_000) }
     fun clear() { draft = null; readBack = false }
     fun isFresh(draft: Draft<T>) = now() < draft.expires
-    fun isPending() = draft?.let(::isFresh) == true
+    fun isPending(target: T?) = draft?.let { it.target == target && isFresh(it) } == true
 
     fun dictate(target: T?, text: String): Draft<T>? {
         val selected = draft
@@ -46,14 +50,19 @@ internal class NewVoiceReplies {
     private var session: String? = null
     private val seen = mutableSetOf<String>()
     private var candidate: List<TextItem> = emptyList()
-    fun clear() { session = null; seen.clear(); candidate = emptyList() }
+    fun interrupt() { candidate = emptyList() }
+    fun clear() { session = null; seen.clear(); interrupt() }
 
     fun observe(snapshot: VoiceReplySnapshot): String? {
         val items = snapshot.items
         if (session != snapshot.session) {
             clear()
             session = snapshot.session
-            seen += items.map { it.key }
+            val lastUser = items.indexOfLast { it is UserItem }
+            val inProgress = if (snapshot.status == Status.WORKING && lastUser >= 0) {
+                (items.lastOrNull() as? TextItem)?.key
+            } else null
+            seen += items.map { it.key }.filterNot { it == inProgress }
             return null
         }
         val currentTurn = items.drop(items.indexOfLast { it is UserItem } + 1)
@@ -72,4 +81,48 @@ internal class NewVoiceReplies {
         candidate = emptyList()
         return next.joinToString("\n") { it.text }
     }
+}
+
+
+/** Only a live pane identity corroborated by the transcript cursor can be spoken. */
+internal suspend fun attributedReply(
+    paneId: String,
+    agent: String,
+    cwd: String,
+    panes: suspend () -> List<Pane>,
+    transcript: suspend (Pane) -> TranscriptRead?,
+): VoiceReplySnapshot? {
+    fun select(list: List<Pane>): Pane? {
+        if (cwd.isBlank()) return null
+        val match = list.filter { it.agent == agent && it.cwd.trimEnd('/') == cwd.trimEnd('/') }.singleOrNull()
+        return match?.takeIf { it.id == paneId && !it.sessionId.isNullOrBlank() }
+    }
+    val before = select(panes()) ?: return null
+    val read = transcript(before)?.takeIf { it.ok && it.reset } ?: return null
+    val cursor = runCatching { JSONObject(read.cursor) }.getOrNull() ?: return null
+    val sessionId = before.sessionId ?: return null
+    if (cursor.has("pin") || cursor.has("pin_sid")) return null
+    val file = cursor.optString("file").substringAfterLast('/').substringAfterLast('\\')
+    val cursorMatches = when {
+        cursor.optString("sid").isNotBlank() -> cursor.optString("sid") == sessionId
+        agent == "claude" -> file == "$sessionId.jsonl"
+        agent == "codex" -> file.startsWith("rollout-") && file.endsWith("-$sessionId.jsonl")
+        else -> false
+    }
+    if (!cursorMatches) return null
+    val after = select(panes())?.takeIf { it.sessionId == sessionId } ?: return null
+    val status = if (before.status == Status.WORKING) Status.WORKING else after.status
+    return VoiceReplySnapshot(sessionId, status, Transcript.merge(emptyList(), read.items, reset = true))
+}
+
+
+internal class SelectedChatVisit {
+    @Volatile var revision: Long = 0
+        private set
+
+    fun navigate(from: String?, to: String?) {
+        if (from != to) reopen()
+    }
+
+    fun reopen() { revision++ }
 }

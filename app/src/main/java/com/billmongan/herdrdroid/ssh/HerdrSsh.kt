@@ -186,7 +186,8 @@ class HerdrSsh(
     private val lock = Mutex()
     // Keep bulk commands in order without holding the connection lock during remote I/O.
     private val bulkLock = Mutex()
-    private var client: SSHClient? = null
+    @Volatile private var client: SSHClient? = null
+    internal val connectionIdentity: Any? get() = client
     private var bridge: WsBridge? = null
 
     private fun config() = DefaultConfig().apply {
@@ -321,12 +322,17 @@ class HerdrSsh(
     }
 
     /** One command, retried once on a fresh connection only if it never reached the computer. */
-    private suspend fun runRetrying(command: String, input: ByteArray?, timeoutSeconds: Long, maxOut: Int): Triple<Int, ByteArray, ByteArray> {
+    private suspend fun runRetrying(command: String, input: ByteArray?, timeoutSeconds: Long, maxOut: Int, expectedConnection: Any? = null): Triple<Int, ByteArray, ByteArray> {
         var attempt = 0
         while (true) {
             var connection: SSHClient? = null
             try {
-                val opened = lock.withLock { open() }
+                val opened = lock.withLock {
+                    if (expectedConnection == null) open()
+                    else requireCurrentConnection(expectedConnection, client?.takeIf {
+                        it.isConnected && it.isAuthenticated && bridge?.isOpen != false
+                    })
+                }
                 connection = opened
                 return runOn(opened, command, input, timeoutSeconds, maxOut)
             } catch (e: UnconfirmedHostKey) {
@@ -341,13 +347,15 @@ class HerdrSsh(
                 throw e
             } catch (e: OutputTooLarge) {
                 throw e
+            } catch (e: ConnectionChanged) {
+                throw e
             } catch (e: AfterStart) {
                 // It reached the computer: the connection is suspect, but the command is not sent again.
                 discard(connection)
                 throw LinkDown(e.cause ?: e)
             } catch (e: Exception) {
                 discard(connection)
-                if (++attempt > 1) throw (e as? LinkDown ?: LinkDown(e))
+                if (expectedConnection != null || ++attempt > 1) throw (e as? LinkDown ?: LinkDown(e))
             }
         }
     }
@@ -381,9 +389,9 @@ class HerdrSsh(
      * Runs a short command on its own channel without waiting for other commands: the send lane.
      * Only opening the connection takes the lock, so a message goes out while a read is running.
      */
-    suspend fun execNow(command: String, timeoutSeconds: Long = 30): ExecResult = withContext(Dispatchers.IO) {
+    suspend fun execNow(command: String, timeoutSeconds: Long = 30, expectedConnection: Any? = null): ExecResult = withContext(Dispatchers.IO) {
         capped {
-            val (exit, out, err) = runRetrying(command, null, timeoutSeconds, MAX_OUT)
+            val (exit, out, err) = runRetrying(command, null, timeoutSeconds, MAX_OUT, expectedConnection)
             ExecResult(exit, out.toString(Charsets.UTF_8), err.toString(Charsets.UTF_8))
         }
     }
@@ -482,4 +490,12 @@ fun normalizeFingerprint(text: String): String? {
     val after = if (t.contains("SHA256:")) t.substringAfter("SHA256:") else t
     val m = Regex("""^([A-Za-z0-9+/]{43})=?(?=$|[^A-Za-z0-9+/=])""").find(after) ?: return null
     return "SHA256:" + m.groupValues[1]
+}
+
+
+internal class ConnectionChanged : IllegalStateException("The SSH connection changed.")
+
+internal fun <T : Any> requireCurrentConnection(expected: Any, current: T?): T {
+    if (current == null || current !== expected) throw ConnectionChanged()
+    return current
 }
