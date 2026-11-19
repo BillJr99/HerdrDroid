@@ -12,6 +12,7 @@ HerdrDroid is for people who already run agents under herdr on a computer they c
 
 - [Screenshots](#screenshots)
 - [Features](#features)
+- [Voice Control and Bluetooth](#voice-control-and-bluetooth)
 - [Supported agents](#supported-agents)
 - [Requirements](#requirements)
 - [Installing](#installing)
@@ -103,6 +104,37 @@ Taken on an Android emulator against a demo computer ("demo-box") running herdr 
 ### Staying connected
 
 When the phone sleeps or the app goes to the background, Android drops the SSH socket. The app opens a fresh connection when it comes back, and until then the top bar says **Reconnecting** in grey. Previews and reads that fail because of a dropped connection are retried quietly, and keys, messages and answers you send while it reconnects wait in a queue and go out in order. A banner appears only for something you have to act on: a server still unreachable after 15 seconds, a refused sign-in, a changed host key, or a herdr command that failed.
+
+## Voice Control and Bluetooth
+
+On Android 12 or later, open **Settings → Voice** and choose **Phone speaker and mic** or **Bluetooth speakers and mic**. For a car, enable **Phone calls** in the Android Bluetooth settings for that connection. Media audio alone cannot supply the car microphone. Select Bluetooth, then try **Read aloud** or start **hands-free** and say “Hey Herdr.” The car may display this audio as a call. HerdrDroid releases the route when speaking and listening end. If Android cannot connect the selected route, the app shows an error. Android's separate system dictation uses the system recognizer's route.
+
+Voice Control is off by default. Turn it on in **Settings → Voice**. Tap the mic for ordinary dictation into the composer. Hold the mic to open Android’s voice command prompt, or choose **Voice command** from the menu. Dictation keeps its existing draft and send controls.
+
+Commands include “switch to Codex on minipc2,” “switch to minipc2,” “read the latest reply,” “repeat that,” and “read question.” Use the names from your drawer. If several panes match, include the server name. Server switches use saved connections and still respect sign-in requirements.
+
+For a supported single-question Claude dialog, say “option two.” HerdrDroid reads the choice back. Give a second command, “confirm answer” or “cancel answer.” HerdrDroid checks the original server, pane and question before sending. Use the phone’s question card for multi-question dialogs, typed options and permission approvals.
+
+To send a message, first switch to the receiving pane. Say “send a message to Codex on minipc2,” then “dictate check the build.” Listen to the full readback, then say “confirm message” or “cancel message.” Each hands-free step needs its own “Hey Herdr” and tone. A voice draft expires in 45 seconds and cannot follow you to another pane. HerdrDroid won't force or queue a voice message; use the composer if the pane is busy, waiting on a question, or has a draft or queued message.
+
+While hands-free is on, new completed assistant text in the selected chat is read aloud once. Old chat history, your messages, and other panes aren't announced. Stop hands-free before discussing or opening anything you don't want spoken aloud.
+
+### Say “Hey Herdr” with the screen locked
+
+1. While parked, pair the phone to the car, enable Phone calls for the car in Android Bluetooth settings, and choose **Bluetooth speakers and mic** in HerdrDroid.
+2. With HerdrDroid open, choose **Settings → Voice → Start hands-free**, then return to the chat you want to hear. Allow microphone access and notifications so the session can show its **Stop** action. The first start downloads a roughly 40 MB English recognition model from Alpha Cephei and verifies its SHA-256 before use. Download it over Wi-Fi if you prefer.
+3. Wait for **Listening for Hey Herdr** in the notification. Lock the phone and put it in your pocket. Say “Hey Herdr,” wait for the tone, then say one command. To confirm an answer, wait for the readback to finish, then say “Hey Herdr,” wait for the tone, and say “confirm answer.”
+4. Stop the session from its notification or **Settings → Voice**. It also stops after an hour, when you remove the app from Recents, or when the service ends. Start it again with the app open.
+
+Hands-free recognition runs locally with [Vosk](https://alphacephei.com/vosk/) and the Apache 2.0 [English model](https://alphacephei.com/vosk/models). Android’s short dictation and voice command prompts use the phone’s configured recognition service. Hands-free requires HerdrDroid’s optional app lock to be off. The Android screen lock can stay on. Bluetooth volume, microphone pickup and interruptions depend on your phone and car. Pause the session before switching audio devices if commands stop coming through.
+
+### Try the 2.0 test build
+
+Install the signed APK over version 1.4.11 without uninstalling it, then check that your saved servers, touch controls and typed replies still work. Test Voice Control indoors first. Switch between two panes and check that chat follows the selection. Tap one choice on a harmless question and look for **Sending…**. Check that it sends just once. Open the drawer for an OpenCode and a Kiro pane and compare the model label with each pane’s footer. Kiro shows **Auto** if that is what the CLI reports.
+
+When an agent is working, tap **Steer** to send now. Tap the arrow next to it for **Send when idle**, which keeps the draft in HerdrDroid’s queue. The menu keeps the composer’s keyboard state. A message in that queue has its own **Send immediately** and **Cancel** actions. Sending early still checks for a question or someone typing in the pane. Once an agent has accepted a message into its own queue, it controls when to read it.
+
+For the parked Bluetooth test, hear a reply through the stereo, lock the Pixel with hands-free active, and try switching panes and reading a question. Try a harmless answer, cancel it once, then confirm a fresh one. Test **Stop** and a Bluetooth reconnect. If speech comes from the phone or the wake phrase goes unheard, note the active Bluetooth source, whether the phone was locked, and the hands-free notification state.
 
 ## Supported agents
 
@@ -276,27 +308,9 @@ Edit the server, choose **SSH over WebSocket**, and fill in the address (it star
 
 ## Usage limits
 
-The app keeps each agent's usage limits up to date by itself. Each agent's card shows its tightest limit in two short lines, such as "Week (all) [bar] 50%" and "resets Nov 12, 2:59am · 4m ago · +2 more", and **Usage** on the agent screen lists every limit with its full name. Settings has one switch to turn this off; with it off, the app never asks any agent about usage and shows nothing about it.
+**Usage** lists limits the app can read without typing into a pane: CLI reports (Oh My Pi and Muse) and a visible footer (Mistral Vibe). Readings are shared across panes of the same agent on a server. Agents that require typing a command into a pane do not get new automatic readings; the app won't submit a command or start a session to check usage. The usage setting turns off automatic checks and hides usage readings.
 
-It works by agent, not by pane. On each check, the app reads which agent herdr reports in every pane, groups the panes by agent, and asks one pane of each kind. The answer applies to every pane running that agent. Every check is a command the agent's own program answers, so none of them spends a model call:
-
-| Agent | Command | Closed with |
-|---|---|---|
-| Claude Code | `/usage` | Esc |
-| Codex | `/status` | (prints inline) |
-| Copilot CLI | `/usage` | (prints inline) |
-| Grok | `/usage` | Esc |
-| Antigravity | `/usage` | Esc |
-| Hermes | `/usage` (once the session has made a call) | (prints inline) |
-
-pi and OpenCode have no usage limit to read, so panes running them, plain shells, and any agent not in the table are never sent anything.
-
-Typing a usage command is the only thing the app does by itself that moves a real pane, so the checks are careful:
-
-- They run every 10 minutes for Claude Code, every 15 for Grok and Antigravity, and every 30 for the agents that print their usage into the conversation (Codex, Copilot, Hermes). Tapping refresh checks again, at most once every two minutes per agent.
-- They use only a quiet pane: herdr reports it idle or done, its screen has not changed for 45 seconds, the app sent it nothing for 45 seconds, it is not scrolled back, and it was not checked in the last 5 minutes. A pane not in front at the computer is preferred.
-- The app types the command, then reads the input line, and presses Enter only if that line holds exactly the command. If anything else was already typed there, it erases what it typed and tries again later.
-- Esc, which closes the usage screens that need it, goes out only when the screen's own "Esc to cancel" line is showing, or to an idle agent where it can't interrupt anything.
+Claude Code, Grok, Antigravity and Kiro open modal usage panels. The app skips automatic checks for these profiles because Herdr cannot atomically verify and close a panel. It never sends Escape in the background to recover one. In the agent view, **Dismiss usage** appears for recognized Claude Code and Kiro panels when the live pane and its occupant can be verified. The button checks the screen again and sends one Escape, without retrying or queuing the key. If the panel is unfamiliar, the pane is scrolled back, or the server cannot verify the pane, use **Show terminal** to inspect the screen and use the terminal keys deliberately.
 
 ## How the app treats the panes
 
@@ -317,7 +331,7 @@ Typing a usage command is the only thing the app does by itself that moves a rea
 | Keys | `herdr pane send-keys <pane> esc` (or `tab`, `up`, `ctrl+c`, `ctrl+r`, `alt+b`, ...) |
 | Answer buttons | `herdr pane send-keys` with the arrows and Enter, the option's own key, or Esc |
 | Waiting for a change (Watching) | `herdr agent wait <pane> --until <state>` |
-| A usage check | `herdr pane send-text <pane> /usage`, `herdr pane read`, then `enter` and `esc`, or `backspace` to undo |
+| An automatic usage check | Agent CLI report or `herdr pane read <pane> --source visible`; no pane input |
 | The chat view, files, processes | `python3` reading the agent's own logs, with the reader script sent over SSH |
 
 Every argument is single-quoted for the remote shell, so message text is passed as typed.
@@ -358,6 +372,14 @@ If you build for yourself without the project's key, use your own key (a standar
 
 ## Version history
 
+- **2.0.0-rc.8.** Choose Phone or Bluetooth for Read aloud and hands-free from the chat mic menu.
+- **2.0.0-rc.7.** Phone polling reads passive snapshots and leaves desktop pane scroll positions alone. Usage checks that open panels skip the focused desktop pane.
+- **2.0.0-rc.6.** Claude usage panels stay out of question cards. HerdrDroid checks that a usage panel is still open before closing it.
+- **2.0.0-rc.5.** OpenCode web-search permission prompts show their choices in a question card. HerdrDroid retries failed question-screen reads automatically. A message held for the input line shows Force send immediately beside Remove.
+- **2.0.0-rc.4.** Tap Remove next to an individual message waiting for idle, a connection or a clear input line. Long-press an unsent message to force send it or remove it. While a question card is open, a chat message waits until the agent is ready. Choose the typed answer option on the card to reply to the question.
+- **2.0.0-rc.3.** The agent drawer scrolls to the top each time you open it on a phone.
+- **2.0.0-rc.2.** Tap Steer to send immediately. Tap its arrow for Send when idle. The menu leaves focus in the composer.
+- **2.0.0-rc.1.** Adds voice commands to the composer mic and an optional locked-screen hands-free session. Question buttons show when a choice is sending and suppress repeated taps during delivery. Pane reads ignore results from a previous visit, and OpenCode and Kiro model labels use their current footers when available. Steer opens a send-options menu, and messages queued until idle can be sent early.
 - **1.4.11.** A Claude question card shows that question's own options. A message you sent with numbered lines, echoed on Claude's screen, is no longer read as the answer buttons, and on its own it never becomes a card; a question that was answered and scrolled up is not shown as live.
 - **1.4.10.** The Hermes card no longer shows its context window as usage. Hermes now separates its footer fields with " · ", so its context gauge ("422K/500K", with a bar and a percentage) was read as a usage limit; a footer with either separator, and any gauge labelled only by tokens over a limit, is skipped.
 - **1.4.9.** An answered question card left in an agent's scrollback (Grok's) is no longer shown as a live question: a card must be at the bottom of the screen, with nothing of the agent's own after it. A check of every card each agent can show: OpenCode's and Vibe's side-by-side buttons, Grok's letter-key trust and plan cards, Hermes's bracketed and checkbox rows, pi's arrow highlight, option descriptions in omp's and Kiro's menus, more standing-permission wording, and the coverage list in docs/question-cards.md.
@@ -387,7 +409,7 @@ Each release's APK is in `release/`, and the git history has the details.
 | `app/src/main/java/.../ssh/HerdrSsh.kt` | The SSH connection, host key pinning, and the command channels |
 | `app/src/main/java/.../ssh/WsBridge.kt` | SSH over a WebSocket: the local relay between the SSH library and the WebSocket |
 | `app/src/main/assets/transcript.py` | The reader sent to the computer's python3 for agent logs, history, files and processes |
-| `app/src/main/java/.../herdr/Herdr.kt` | The herdr commands, pane parsing, question and error detection, and the guarded usage check |
+| `app/src/main/java/.../herdr/Herdr.kt` | The herdr commands, pane parsing, question and error detection, and read-only usage checks |
 | `app/src/main/java/.../herdr/Reflow.kt` | Turning a terminal screen into the readable screen view |
 | `app/src/main/java/.../herdr/Quota.kt` | Each agent's usage command and the parser for its usage screen |
 | `app/src/main/java/.../store/ServerStore.kt` | Saved servers, settings, the Keystore encryption, the key migration, and keys made on the phone |

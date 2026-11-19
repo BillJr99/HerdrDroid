@@ -13,6 +13,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
     <application
         android:name=".HerdrApp"
         android:allowBackup="false"
@@ -40,6 +45,10 @@
             android:name=".notify.WatchService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+        <service
+            android:name=".voice.HandsFreeService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
         <receiver
             android:name=".notify.ActionReceiver"
             android:exported="false" />

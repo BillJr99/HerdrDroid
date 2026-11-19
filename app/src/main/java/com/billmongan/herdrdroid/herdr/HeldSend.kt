@@ -1,7 +1,10 @@
 package com.billmongan.herdrdroid.herdr
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** How a held send ended (1.4.4). */
 sealed class HeldOutcome {
@@ -25,9 +28,13 @@ sealed class HeldOutcome {
 class HeldSendRetry(
     private val windowMs: Long = 120_000L,
     private val everyMs: Long = 2_000L,
-    private val now: () -> Long = System::currentTimeMillis,
+    private val now: () -> Long = ::monotonicMillis,
     private val sleep: suspend (Long) -> Unit = { delay(it) },
 ) {
+    companion object {
+        internal fun monotonicMillis(): Long = System.nanoTime() / 1_000_000L
+    }
+
     suspend fun run(
         startedAt: Long,
         firstWhy: String,
@@ -35,27 +42,58 @@ class HeldSendRetry(
         check: suspend () -> String?,
         send: suspend () -> Unit,
         log: (String) -> Unit = {},
+        acquire: suspend () -> (() -> Unit) = { {} },
     ): HeldOutcome {
         var why = firstWhy
         var checks = 0
+        fun remaining() = windowMs - (now() - startedAt)
+        fun stopped() = cancelled()?.let {
+            log("retry stopped: $it")
+            HeldOutcome.Cancelled(it)
+        }
+        fun timedOut(): HeldOutcome.TimedOut {
+            log("still held after ${(now() - startedAt) / 1000} s ($checks checks): $why; reported")
+            return HeldOutcome.TimedOut(why, checks)
+        }
+        // Dismissal can happen during sleep, lock acquisition, or a screen read.
+        fun expired(): HeldOutcome = stopped() ?: timedOut()
         while (true) {
-            if (now() - startedAt >= windowMs) {
-                log("still held after ${(now() - startedAt) / 1000} s ($checks checks): $why; reported")
-                return HeldOutcome.TimedOut(why, checks)
-            }
-            sleep(everyMs)
-            cancelled()?.let { log("retry stopped: $it"); return HeldOutcome.Cancelled(it) }
-            val next = try {
-                check()
-            } catch (c: CancellationException) {
-                throw c
-            } catch (e: Exception) {
-                "its screen couldn't be read"
-            }
-            checks++
-            if (next == null) {
-                // The check suspended (a pane read): a dismissal in that time still stops it.
-                cancelled()?.let { log("retry stopped: $it"); return HeldOutcome.Cancelled(it) }
+            val beforeSleep = remaining()
+            if (beforeSleep <= 0) return expired()
+            sleep(minOf(everyMs, beforeSleep))
+            val lockBudget = remaining()
+            if (lockBudget <= 0) return expired()
+            var release: (() -> Unit)? = null
+            try {
+                // Keep ownership outside the timeout scope so a timeout racing with acquisition
+                // cannot discard the unlock callback.
+                val acquired = withTimeoutOrNull(lockBudget) { release = acquire(); true }
+                if (acquired == null || remaining() <= 0) return expired()
+                stopped()?.let { return it }
+                val readBudget = remaining()
+                if (readBudget <= 0) return timedOut()
+                // A completed check may return null for a clear screen; distinguish it from
+                // cancellation at the deadline. Do not apply this timeout to the send itself.
+                val checked = withTimeoutOrNull(readBudget) {
+                    Result.success(try {
+                        check()
+                    } catch (c: CancellationException) {
+                        throw c
+                    } catch (_: Exception) {
+                        "its screen couldn't be read"
+                    })
+                } ?: return expired()
+                val next = checked.getOrThrow()
+                checks++
+                if (next != null) {
+                    if (next != why) log("still held: $next")
+                    why = next
+                    continue
+                }
+                // A dismissal during the screen read still stops the send.
+                stopped()?.let { return it }
+                currentCoroutineContext().ensureActive()
+                if (remaining() <= 0) return timedOut()
                 return try {
                     send()
                     HeldOutcome.Delivered(now() - startedAt, checks).also {
@@ -67,9 +105,9 @@ class HeldSendRetry(
                     log("input line clear, but sending failed: ${e.message ?: e.javaClass.simpleName}")
                     HeldOutcome.Failed(e)
                 }
+            } finally {
+                release?.invoke()
             }
-            if (next != why) log("still held: $next")
-            why = next
         }
     }
 }

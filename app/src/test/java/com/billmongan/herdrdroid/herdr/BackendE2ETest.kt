@@ -4,8 +4,10 @@ import com.billmongan.herdrdroid.ssh.Credentials
 import com.billmongan.herdrdroid.ssh.HerdrSsh
 import com.billmongan.herdrdroid.ssh.KeySource
 import com.billmongan.herdrdroid.ssh.UnconfirmedHostKey
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -47,6 +49,44 @@ class BackendE2ETest {
             assertNotNull("hc found", d.hcPath)
             for (backend in listOf(Backend.TUI, Backend.CORE)) runFlow(ssh, backend, d.hcPath)
         } finally {
+            ssh.close()
+        }
+    }
+
+    @Test fun questionReadDoesNotWaitForBulkSshCommand() = runBlocking {
+        assumeTrue("no herdr test server", !host.isNullOrBlank())
+        val ssh = connect()
+        val control = connect()
+        val dir = control.exec("mktemp -d").out.trim()
+        require(dir.matches(Regex("/tmp/tmp\\.[A-Za-z0-9]+")))
+        val question = checkNotNull(javaClass.getResource("/screens/claude/captured-2026-11-13/multi-question.txt")).readText()
+        try {
+            assertEquals(0, control.execInput("cat > '$dir/screen'", question.toByteArray()).exit)
+            assertEquals(0, control.execInput("cat > '$dir/herdr' && chmod +x '$dir/herdr'",
+                "#!/bin/sh\ncat '$dir/screen'\n".toByteArray()).exit)
+            val bulk = async { ssh.exec(": > '$dir/started'; while [ ! -f '$dir/release' ]; do sleep 0.05; done", 12) }
+            try {
+                withTimeout(5_000) {
+                    while (control.exec("test -f '$dir/started'").exit != 0) delay(25)
+                }
+                val read = async { Herdr(ssh, "$dir/herdr").read("test-pane", 80) }
+                try {
+                    val start = System.nanoTime()
+                    val screen = withTimeout(3_000) { read.await() }
+                    val prompt = detectPrompt(screen, blocked = true, agent = "claude")
+                    assertEquals(3, prompt?.choices?.size)
+                    assertFalse("bulk command still running when choices become usable", bulk.isCompleted)
+                    println("Question read and parsed in ${(System.nanoTime() - start) / 1_000_000} ms while bulk SSH was held")
+                } finally {
+                    read.cancel()
+                }
+            } finally {
+                control.exec(": > '$dir/release'")
+                assertEquals(0, bulk.await().exit)
+            }
+        } finally {
+            control.exec("rm -f '$dir/screen' '$dir/herdr' '$dir/started' '$dir/release' && rmdir '$dir'")
+            control.close()
             ssh.close()
         }
     }

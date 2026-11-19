@@ -106,6 +106,8 @@ Select model:   type to search
         assertEquals("Credits (0.06 of 50 covered in plan)", items[0].label)
         assertEquals(0.1, items[0].usedPercent, 0.001)
         assertTrue(p.screenOpen(kiroUsage))
+        assertNotNull(dismissibleUsageFrame("kiro", kiroUsage))
+        assertNull(dismissibleUsageFrame("kiro", "$kiroUsage\nConfirm tool action\nEsc to cancel"))
         // The footer's context gauge is not a limit.
         assertTrue(parseQuota(kiroFooter).isEmpty())
     }
@@ -121,7 +123,7 @@ Select model:   type to search
     }
 
     @Test fun footerModels() {
-        assertEquals("auto", footerModel("kiro", kiroFooter))
+        assertEquals("Auto", footerModel("kiro", kiroFooter))
         assertEquals("Mistral Medium 3.5 · high", footerModel("vibe", vibeFooter))
     }
 

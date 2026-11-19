@@ -41,7 +41,7 @@ data class NotifyAction(
  * needs only the same question. A typed reply is not checked here.
  */
 fun notificationAnswerStillFits(now: com.billmongan.herdrdroid.herdr.Prompt?, a: NotifyAction): Boolean {
-    if (now == null) return false
+    if (now == null || now.terminalReview) return false
     val sameQuestion = now.question.filterNot { it.isWhitespace() } == a.question.filterNot { it.isWhitespace() }
     if (!sameQuestion) return false
     if (a.isKey) return true
@@ -143,7 +143,7 @@ object Notify {
     }
 
     /** An agent is waiting on a question; [choices] become up to two buttons, plus Esc to decline. */
-    fun needsYou(ctx: Context, serverId: String, serverLabel: String, paneId: String, agent: String, question: String, choices: List<Choice>, agentKind: String? = null) {
+    fun needsYou(ctx: Context, serverId: String, serverLabel: String, paneId: String, agent: String, question: String, choices: List<Choice>, agentKind: String? = null, terminalReview: Boolean = false) {
         if (!allowed(ctx)) return
         // Past the fingerprint window (1.3.1): the alert still comes, without the question or the
         // answer buttons; opening it asks for the fingerprint first.
@@ -167,6 +167,10 @@ object Notify {
             .setContentIntent(openIntent(ctx, serverId, paneId))
             .setAutoCancel(true)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+        if (terminalReview) {
+            runCatching { NotificationManagerCompat.from(ctx).notify(id(serverId, paneId), b.build()) }
+            return
+        }
         // One set of answer buttons (1.4.2, Bill: the pill-shaped quick replies above the buttons
         // didn't answer, and the buttons then said the question had changed): the first two choices
         // and Esc, all through the same checked path. Android shows three buttons, so there is no

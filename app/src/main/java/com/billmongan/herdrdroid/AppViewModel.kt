@@ -13,6 +13,10 @@ import com.billmongan.herdrdroid.herdr.forPhone
 import com.billmongan.herdrdroid.transcript.lastReply
 import com.billmongan.herdrdroid.transcript.toMarkdown
 import com.billmongan.herdrdroid.herdr.detectPrompt
+import com.billmongan.herdrdroid.herdr.Prompt
+import com.billmongan.herdrdroid.herdr.Choice
+import com.billmongan.herdrdroid.herdr.cardAnswerStillFits
+import com.billmongan.herdrdroid.herdr.moveKeys
 import com.billmongan.herdrdroid.hermes.HermesChat
 import com.billmongan.herdrdroid.notify.AppBus
 import com.billmongan.herdrdroid.notify.Notify
@@ -37,10 +41,13 @@ import com.billmongan.herdrdroid.herdr.Backend
 import com.billmongan.herdrdroid.herdr.detectBackend
 import com.billmongan.herdrdroid.herdr.HerdrError
 import com.billmongan.herdrdroid.herdr.Pane
+import com.billmongan.herdrdroid.herdr.recoverPaneRead
 import com.billmongan.herdrdroid.herdr.QuotaProfile
 import com.billmongan.herdrdroid.herdr.QuotaProfiles
-import com.billmongan.herdrdroid.herdr.screenOpen
 import com.billmongan.herdrdroid.herdr.QuotaReading
+import com.billmongan.herdrdroid.herdr.UsageOverlay
+import com.billmongan.herdrdroid.herdr.dismissUsageOverlay
+import com.billmongan.herdrdroid.herdr.dismissibleUsageFrame
 import com.billmongan.herdrdroid.herdr.footerModel
 import com.billmongan.herdrdroid.herdr.Status
 import com.billmongan.herdrdroid.ssh.AuthRejected
@@ -98,13 +105,26 @@ enum class Link { CONNECTED, RECONNECTING, OFFLINE }
 data class PendingHostKey(val server: Server, val password: String?, val remember: Boolean, val fingerprint: String)
 
 /** A tap the user made while the link was down, sent in order once it is back. */
-private class Queued(val paneId: String?, val label: String, val run: suspend (Herdr) -> Unit)
+private class Queued(
+    val paneId: String?,
+    val label: String,
+    val pendingId: Long?,
+    val dispatchKey: Pair<String, String>?,
+    val run: suspend (Herdr) -> Unit,
+)
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val store = ServerStore(app)
     private val prefs = AppPrefs(app)
 
-    var screen by mutableStateOf<Screen>(Screen.Servers)
+    private val chatVisit = com.billmongan.herdrdroid.voice.SelectedChatVisit()
+    private var currentScreen by mutableStateOf<Screen>(Screen.Servers)
+    var screen: Screen
+        get() = currentScreen
+        set(value) {
+            chatVisit.navigate((currentScreen as? Screen.Agent)?.paneId, (value as? Screen.Agent)?.paneId)
+            currentScreen = value
+        }
     var servers by mutableStateOf(store.all().sortedBy { it.label.lowercase() })
         private set
     var current by mutableStateOf<Server?>(null)
@@ -175,6 +195,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** The pane [paneText] was read from: a read still on its way when you switch agents is dropped. */
     var paneTextPane by mutableStateOf<String?>(null)
         private set
+    internal var paneTextTarget by mutableStateOf<CardTarget?>(null)
+        private set
     var lastSent by mutableStateOf<Pair<String, String>?>(null)
         private set
     private var lastSentAt = 0L
@@ -241,7 +263,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private var ssh: HerdrSsh? = null
     private var herdr: Herdr? = null
-    private var foreground = true
+    private var foreground by mutableStateOf(true)
     /** The app is in front (the screens' own loops read nothing while it isn't, 1.4.0). */
     val inFront: Boolean get() = foreground
 
@@ -256,17 +278,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val queue = ArrayDeque<Queued>()
     private val quotaLock = Mutex()
     private val lastQuotaTry = mutableMapOf<String, Long>()
-    /**
-     * Panes a usage check is typing into right now ("server/pane"), shared by the open server's
-     * round and the background server checks, so two checks never type into one pane at once
-     * (that sent "/usage/reasoning" to Hermes as one message, 2026-11-13).
-     */
-    private val typingInto = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    /** Duplicate explicit dismissals must not enqueue another key. */
+    private val dismissingUsage = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     /** When a background check last tried each agent ("server/agent"), read or not, so a screen with no limits on it isn't asked again every round. */
     private val backgroundTry = java.util.concurrent.ConcurrentHashMap<String, Long>()
-    /** The pane whose usage is being checked right now, shown on its card as "Checking usage…". */
-    var probingPanes by mutableStateOf<Set<String>>(emptySet())
-        private set
     private var textSizeJob: Job? = null
 
     // Reads go on in the background only while the user has alerts ("Watching") turned on.
@@ -407,7 +422,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return Credentials(key, password)
     }
 
-    fun connect(server: Server, password: String?, remember: Boolean, openAgent: Boolean = false) {
+    fun connect(server: Server, password: String?, remember: Boolean, openAgent: Boolean = false, voice: Boolean = false) {
         if (connecting) return
         connecting = true
         error = null
@@ -501,7 +516,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 // From the drawer or at startup the agent opens directly, with no stop on the tab list.
                 if (!openAgent) screen = Screen.Tabs
                 transcriptPane = null
-                refreshPanes()
+                refreshPanes(allowBackground = voice)
                 prefetchChats()
                 if (showQuotas) startQuotaChecks()
                 startWatching()
@@ -710,11 +725,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
     private val startupQuotasDone = mutableSetOf<String>()
 
-    /**
-     * The usage readings that are due on another server, checked on each background round: the same
-     * checks as the open server's (idle agents only; Enter only when the input line holds exactly
-     * the command; Oh My Pi from its command line). Readings are saved for when you open it.
-     */
+    /** Collect due CLI reports and footer readings on the background server round. */
     private suspend fun startupQuotas(s: Server, h: Herdr, fresh: List<Pane>) {
         // One check at a time per server; each reading is asked for again only when it is due.
         if (!startupQuotasDone.add(s.id)) return
@@ -729,26 +740,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val profile = QuotaProfiles.forAgent(list.first().agent) ?: continue
             val every = profile.everyMinutes * 60_000L
             if (maxOf(stored[agentKey]?.at ?: 0L, backgroundTry["${s.id}/$agentKey"] ?: 0L) > now - every) continue
-            // The open server's own round handles its agents; a check from here too could type into the same pane.
+            if (!profile.hasPassiveSource) continue
+            // Let the open server collect its own footer readings.
             if (s.id == current?.id && profile.cliCommand == null) continue
             backgroundTry["${s.id}/$agentKey"] = now
-            val items = if (profile.cliCommand != null) {
-                runCatching { h.cliQuota(profile) }.getOrNull()
-            } else if (profile.screenUsage != null) {
-                // Read off the screen (Vibe's footer): nothing typed, any status will do.
-                list.firstNotNullOfOrNull { p -> runCatching { h.screenQuota(p.id, profile) }.getOrNull()?.takeIf { it.isNotEmpty() } }
-            } else {
-                if (!h.canProbeScreens) continue
-                val target = list.filter { it.status == Status.IDLE || it.status == Status.DONE }.sortedBy { it.focused }.firstOrNull() ?: continue
-                val typingKey = "${s.id}/${target.id}"
-                if (!typingInto.add(typingKey)) continue
-                probedAt["${s.id}|${target.id}"] = System.currentTimeMillis()
-                try { runCatching { h.probeQuota(target.id, profile, working = false) }.getOrNull()?.also { r ->
-                    r.model?.let { m -> modelCache[s.id] = modelCache[s.id].orEmpty() + (target.id to m) }
-                }?.items } finally {
-                    typingInto.remove(typingKey)
-                    probedAt["${s.id}|${target.id}"] = System.currentTimeMillis()
-                }
+            val items = try {
+                h.readQuota(list.map { it.id }, profile)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
             }
             if (!items.isNullOrEmpty()) {
                 val r = QuotaReading(System.currentTimeMillis(), items)
@@ -882,13 +883,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         stashOpenChat()
         hermesPoll?.cancel()
         hermesState = null
-        closeJob?.cancel()
-        closeWatch.clear()
+        rawWorkPanes = emptyList()
+        workCounts = emptyMap()
+        busyCounts = emptyMap()
+        openUsage = null
         hermes?.close()
         hermes = null
         reconnectJob?.cancel()
         quotaJob?.cancel()
         queue.clear()
+        pendingSends = pendingSends.filterNot { it.awaitingLink }
         queuedCount = 0
         ssh?.close()
         ssh = null
@@ -1031,8 +1035,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Runs a background read. A dropped link turns into a quiet reconnect; nothing is shown. */
-    private suspend fun <T> quietly(block: suspend (Herdr) -> T): T? {
-        if (!canPoll) return null
+    private suspend fun <T> quietly(allowBackground: Boolean = false, block: suspend (Herdr) -> T): T? {
+        if (!canPoll && !(allowBackground && !locked && link == Link.CONNECTED)) return null
         val h = herdr ?: return null
         return try {
             block(h)
@@ -1049,32 +1053,33 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private val paneDispatch = com.billmongan.herdrdroid.herdr.PaneDispatch()
+
     /**
      * Runs something the user tapped. While the link is down it waits in a queue and goes out once
      * the link is back; only a real refusal from herdr is shown.
      */
-    private fun act(paneId: String?, label: String, run: suspend (Herdr) -> Unit) {
+    private fun act(paneId: String?, label: String, pendingId: Long? = null, input: Boolean = false, run: suspend (Herdr) -> Unit) {
+        val key = if (paneId != null && (pendingId != null || input)) current?.id?.let { it to paneId } else null
         viewModelScope.launch {
             if (link != Link.CONNECTED || herdr == null) {
-                enqueue(Queued(paneId, label, run))
+                enqueue(Queued(paneId, label, pendingId, key, run))
                 return@launch
             }
-            perform(Queued(paneId, label, run))
+            perform(Queued(paneId, label, pendingId, key, run))
         }
     }
 
     private suspend fun perform(q: Queued) {
         val h = herdr ?: return
-        // Never type into a pane while the app is checking that agent's usage.
-        var waited = 0
-        // A usage check types into the pane and closes its screen with Esc: a message typed then
-        // would be lost, so it waits for the check to finish completely.
-        if (q.paneId != null && q.paneId in probingPanes) com.billmongan.herdrdroid.diag.DiagLog.log("send", "waiting for a usage check in ${q.paneId} to finish")
-        while (q.paneId != null && q.paneId in probingPanes && waited < 60_000) {
-            delay(200); waited += 200
-        }
         try {
-            q.run(h)
+            val key = q.dispatchKey
+            if (key == null) q.run(h)
+            else paneDispatch.run(key) {
+                if (current?.id != key.first) return@run
+                val connected = herdr
+                if (connected != null && link == Link.CONNECTED) q.run(connected) else enqueue(q)
+            }
         } catch (c: CancellationException) {
             throw c
         } catch (e: LinkDown) {
@@ -1092,6 +1097,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun enqueue(q: Queued) {
+        q.pendingId?.let { id ->
+            if (pendingSends.none { it.id == id }) return
+            pendingSends = pendingSends.map { if (it.id == id) it.copy(awaitingLink = true) else it }
+        }
         com.billmongan.herdrdroid.diag.DiagLog.log("send", "queued until the link is back: ${q.label}")
         queue.addLast(q)
         queuedCount = queue.size
@@ -1110,8 +1119,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val agentSeenAt = mutableMapOf<String, Long>()
 
-    suspend fun refreshPanes() {
-        quietly { it.panes() }?.let { fresh0 ->
+    suspend fun refreshPanes(allowBackground: Boolean = false) {
+        val client = herdr
+        quietly(allowBackground) { it.panes() }?.let { fresh0 ->
+            if (herdr !== client) return
             // herdr sometimes reports a pane's agent as missing for a moment (while it redraws, or
             // just after a screen closes). Keep the agent last seen in that pane, so its card keeps
             // its usage and model instead of going blank until the next read.
@@ -1126,9 +1137,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     p.copy(agent = was)
                 } else p
             }
-            current?.id?.let { trackDone(it, fresh) }
+            val previous = rawWorkPanes.associateBy { it.id }
+            val unchanged = fresh.filter { p -> previous[p.id]?.sameWorkIdentity(p) == true }
+                .map { it.id }.toSet()
+            busyCounts = busyCounts.filterKeys { it in unchanged }
+            workCounts = workCounts.filterKeys { it in unchanged }
+            rawWorkPanes = fresh
             maintainChats(before, fresh)
-            panes = withBusy(fresh, busyCounts)
+            applyWorkStatus()
             current?.let { s -> noticeChanges(s.id, s.label, fresh) { herdr } }
             // Footers (each agent's model) every 30 seconds wherever you are in the app; before
             // 1.1.5 only the tab list read them, which the agent-first app rarely shows.
@@ -1142,8 +1158,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 lastPreviewsAt = System.currentTimeMillis()
                 viewModelScope.launch { runCatching { refreshPreviews() } }
             }
-            updateWidget(fresh)
-            current?.let { serverPanes = serverPanes + (it.id to panes) }
         }
     }
 
@@ -1155,7 +1169,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val agents = fresh.filter { it.agent != null }
         val lines = agents.take(5).joinToString("\n") { p ->
             val mark = when (p.status) { Status.NEEDS_YOU -> "● "; Status.WORKING -> "◐ "; else -> "○ " }
-            mark + p.agentName + (if (p.folder.isNotBlank()) " · " + p.folder else "") + " · " + com.billmongan.herdrdroid.ui.look(p.status).label
+            mark + p.agentName + (if (p.folder.isNotBlank()) " · " + p.folder else "") + " · " + com.billmongan.herdrdroid.ui.look(p.status, p.backgroundBusy).label
         }
         val needs = agents.count { it.status == Status.NEEDS_YOU }
         val working = agents.count { it.status == Status.WORKING }
@@ -1209,45 +1223,104 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var paneReadProblem by mutableStateOf<String?>(null)
         private set
 
+    private var paneReadSequence = 0L
+    private var lastAppliedPaneRead = 0L
+
+    internal data class OpenUsage(val server: String, val pane: String, val visit: Long, val client: Herdr, val agent: String, val overlay: UsageOverlay)
+    private var openUsage by mutableStateOf<OpenUsage?>(null)
+    private var closingUsage by mutableStateOf<OpenUsage?>(null)
+
+    private fun currentUsage(usage: OpenUsage): Boolean = foreground && canPoll && !locked &&
+        current?.id == usage.server && herdr === usage.client && paneVisit == usage.visit &&
+        (screen as? Screen.Agent)?.paneId == usage.pane && pane(usage.pane)?.agent == usage.agent
+
+    internal fun usageOverlayFor(paneId: String): OpenUsage? = openUsage?.takeIf {
+        it.pane == paneId && paneReadProblem == null && currentUsage(it)
+    }
+
+    internal fun usageDismissInFlight(paneId: String): Boolean = closingUsage?.let { it.pane == paneId && currentUsage(it) } == true
+
+    internal fun dismissUsage(usage: OpenUsage) {
+        if (usageOverlayFor(usage.pane) != usage || closingUsage != null) return
+        val dismissKey = "${usage.server}/${usage.pane}"
+        if (!dismissingUsage.add(dismissKey)) return
+        closingUsage = usage
+        viewModelScope.launch {
+            try {
+                val sent = quietly { h ->
+                    dismissUsageOverlay(usage.overlay, { currentUsage(usage) && usageOverlayFor(usage.pane) == usage },
+                        { h.readUsageOverlay(usage.pane, usage.agent) },
+                        { h.closeUsageOverlay(usage.pane, usage.agent, usage.overlay) })
+                } == true
+                if (currentUsage(usage)) {
+                    openUsage = null
+                    if (sent) {
+                        delay(400) // An accepted key isn't proof of closure; wait for a redraw.
+                    }
+                    if (currentUsage(usage)) {
+                        readPane(usage.pane)
+                        if (currentUsage(usage) && (!sent || paneTextPane != usage.pane || paneReadProblem != null ||
+                                dismissibleUsageFrame(usage.agent, paneText) != null)) {
+                            flash("Couldn't confirm that usage closed. Check the pane before trying again.")
+                        }
+                    }
+                }
+            } finally {
+                closingUsage = null
+                dismissingUsage.remove(dismissKey)
+            }
+        }
+    }
+
     suspend fun readPane(paneId: String) {
+        val attempt = ++paneReadSequence
         // Only for the pane open now (1.4.2, from review: a late answer for another pane set or
         // cleared the open pane's problem).
-        fun isOpen() = (screen as? Screen.Agent)?.paneId == paneId
+        val serverId = current?.id
+        val client = herdr
+        val visit = paneVisit
+        val started = android.os.SystemClock.elapsedRealtime()
+        val cardOwner = cardTarget(paneId)
+        fun isOpen() = attempt > lastAppliedPaneRead && current?.id == serverId && herdr === client &&
+            paneVisit == visit && (screen as? Screen.Agent)?.paneId == paneId
         fun problem(why: String) {
             if (!isOpen()) return
+            lastAppliedPaneRead = attempt
             if (paneReadProblem != why) com.billmongan.herdrdroid.diag.DiagLog.log("read", "$paneId: the screen couldn't be read: $why")
             paneReadProblem = why
+            paneTextTarget = null
+            openUsage = null
         }
         quietly { h ->
-            // When the read of recent output fails or comes back empty, the visible screen is read
-            // instead (1.4.8, Bill: Muse's question card said the pane couldn't be read): a waiting
-            // agent's card is at the bottom of its screen, so that is enough to answer it.
-            suspend fun fallback(why: String): String? {
-                val v = try { h.readVisible(paneId) } catch (e: Exception) {
-                    if (e is CancellationException || e is LinkDown || e is AuthRejected || e is HostKeyChanged) throw e
-                    null
-                }
-                return if (v.isNullOrBlank()) { problem(why); null } else {
-                    com.billmongan.herdrdroid.diag.DiagLog.log("read", "$paneId: $why; read the visible screen instead")
-                    v
-                }
+            val waiting = pane(paneId)?.status == Status.NEEDS_YOU
+            try {
+                readPaneScreen(h, paneId, if (waiting || paneReadProblem != null) 80 else 200)
+            } catch (e: HerdrError) {
+                problem(e.message?.take(120) ?: "the screen could not be read")
+                null
             }
-            val got = try { h.read(paneId) } catch (e: Exception) {
-                if (e is CancellationException || e is LinkDown || e is AuthRejected || e is HostKeyChanged) throw e
-                // A failed read was silent before (1.4.2: Bill's Codex card showed nothing, and the
-                // terminal view said "Loading…"): say why, in the diagnostics and the terminal view.
-                return@quietly fallback(e.message?.take(120) ?: e.javaClass.simpleName)
-            }
-            if (got.isBlank()) fallback("the screen came back empty") else got
         }?.let { text ->
-            // An empty screen is not a good read (1.4.2, from review: the blank screen Bill hit was one).
-            if (text.isBlank()) { problem("the screen came back empty"); return }
-            if (isOpen()) paneReadProblem = null
-            // Switched to another agent while this read was on its way: it isn't that agent's screen.
-            if ((screen as? Screen.Agent)?.paneId != paneId) return
+            if (!isOpen()) return
+            val agent = pane(paneId)?.agent
+            val liveUsage = if (client != null && serverId != null && agent != null && dismissibleUsageFrame(agent, text) != null) {
+                quietly { h -> if (h === client) h.readUsageOverlay(paneId, agent) else null }
+                    ?.let { OpenUsage(serverId, paneId, visit, client, agent, it) }
+            } else null
+            if (!isOpen()) return
+            lastAppliedPaneRead = attempt
+            paneReadProblem = null
+            openUsage = liveUsage
             noteInputLine(paneId, text)
             paneText = text
             paneTextPane = paneId
+            paneTextTarget = cardOwner?.takeIf { it.isCurrent(it.client) }
+            if (agent in setOf("opencode", "opencode-ursinus", "kiro", "kiro-cli")) {
+                footerModel(agent, text)?.takeIf { models[paneId] != it }?.let {
+                    models = models + (paneId to it)
+                    current?.id?.let { sid -> modelCache[sid] = models }
+                    noteModels()
+                }
+            }
             // What the question card sees, logged when it changes (sizes only, no question text).
             val status = panes.firstOrNull { it.id == paneId }?.status
             val p = com.billmongan.herdrdroid.herdr.detectPrompt(text, status == Status.NEEDS_YOU, pane(paneId)?.agent, versionOf(paneId))
@@ -1257,6 +1330,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 "dialog ${if (dialog) "open" else "not seen"}, herdr ${status?.name?.lowercase()}, " +
                     (p?.let { "${it.choices.size} choice(s) [${it.choices.joinToString(",") { c -> c.keys }}], question ${it.question.length} chars${if (it.question.endsWith("?")) " ending in ?" else ""}, highlighted ${it.selected ?: "none"}" } ?: "no card")
             if (lastPromptSig[paneId] != sig) {
+                if (p != null) com.billmongan.herdrdroid.diag.DiagLog.log("prompt", "$paneId: card read in ${android.os.SystemClock.elapsedRealtime() - started} ms")
                 lastPromptSig[paneId] = sig
                 if (sig != "none" || p == null && lastPromptSig.containsKey(paneId)) com.billmongan.herdrdroid.diag.DiagLog.log("prompt", "$paneId: $sig")
             }
@@ -1264,15 +1338,23 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
     private val lastPromptSig = mutableMapOf<String, String>()
 
+    private val paneVisit: Long get() = chatVisit.revision
+    private var paneOpenedAt = 0L
+    private var chatShownVisit = -1L
+
     fun openPane(paneId: String, why: String = "tap") {
         current?.id?.let { prefs.lastAgent = "$it|$paneId" }
         val from = (screen as? Screen.Agent)?.paneId
+        if (from == paneId) chatVisit.reopen()
+        paneOpenedAt = android.os.SystemClock.elapsedRealtime()
         if (from != null && from != paneId) com.billmongan.herdrdroid.diag.DiagLog.log("nav", "agent view $from -> $paneId ($why)")
         seenInApp["${current?.id}|$paneId"] = System.currentTimeMillis()
         saveSeen()
         paneText = ""
         paneTextPane = paneId
+        paneTextTarget = null
         paneReadProblem = null
+        openUsage = null
         current?.id?.let { questions(it, paneId) }
         resetTranscript(paneId)
         screen = Screen.Agent(paneId)
@@ -1539,15 +1621,23 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Reads what the pane's agent added to its session log since the last read. */
-    suspend fun readTranscript(paneId: String) {
+    suspend fun readTranscript(paneId: String, allowBackground: Boolean = false): Boolean {
         // Only the agent on screen: a loop left over from the agent you just left must not switch
         // the chat back to it (that showed its history, and its title, on the new agent).
-        if ((screen as? Screen.Agent)?.paneId != paneId) return
-        val p = pane(paneId) ?: return
+        if ((screen as? Screen.Agent)?.paneId != paneId) return false
+        val p = pane(paneId) ?: return false
         resetTranscript(paneId)
-        val r = quietly { it.transcript(p, transcriptCursor, transcriptScript) }
-            ?: return com.billmongan.herdrdroid.diag.DiagLog.log("chat", "$paneId: the log reader didn't run (${p.agent}, link $link)")
+        val visit = paneVisit
+        val client = herdr
+        val cursor = transcriptCursor
+        val r = quietly(allowBackground) { it.transcript(p, cursor, transcriptScript) }
+        if (r == null) {
+            com.billmongan.herdrdroid.diag.DiagLog.log("chat", "$paneId: the log reader didn't run (${p.agent}, link $link)")
+            return false
+        }
+        if (paneVisit != visit || herdr !== client || transcriptCursor != cursor || (screen as? Screen.Agent)?.paneId != paneId) return false
         applyTranscript(paneId, r)
+        return r.ok
     }
 
     /**
@@ -1558,6 +1648,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun followTranscript(paneId: String): Boolean {
         val p = pane(paneId) ?: return false
         val h = herdr ?: return false
+        val visit = paneVisit
         if (!foreground || link != Link.CONNECTED || transcriptPane != paneId || (screen as? Screen.Agent)?.paneId != paneId) return false
         val started = System.currentTimeMillis()
         var got = false
@@ -1565,7 +1656,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             h.followTranscript(p, transcriptCursor, transcriptScript, 120) { r ->
                 withContext(Dispatchers.Main) {
                     // Switched away: end this stream now rather than let it run on for minutes.
-                    if (transcriptPane != paneId || (screen as? Screen.Agent)?.paneId != paneId) throw kotlinx.coroutines.CancellationException("switched agents")
+                    if (herdr !== h || paneVisit != visit || transcriptPane != paneId || (screen as? Screen.Agent)?.paneId != paneId) throw kotlinx.coroutines.CancellationException("switched agents")
                     got = true
                     applyTranscript(paneId, r)
                 }
@@ -1615,6 +1706,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         r.title?.let { transcriptTitle = it }
         transcriptState = TranscriptMode.ON
+        if (chatShownVisit != paneVisit) {
+            chatShownVisit = paneVisit
+            com.billmongan.herdrdroid.diag.DiagLog.log("chat", "$paneId: first log refresh in ${android.os.SystemClock.elapsedRealtime() - paneOpenedAt} ms")
+        }
         // Keep the open chat current in memory, and on the phone every few seconds while it changes.
         if (r.reset || r.items.isNotEmpty()) current?.id?.let { sid ->
             val c = openChatNow(paneId)
@@ -1634,7 +1729,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             // "/model opus"), not as your message: a note that came in after it was sent clears it.
             val notes = transcriptItems.takeLast(30).filterIsInstance<com.billmongan.herdrdroid.transcript.NoteItem>().map { norm(it.text.removePrefix("/")) }
             // A send still waiting (1.4.4) was never typed: a copy of it in the log is another message (from Grok's review).
-            val seen = mine.filter { p -> !p.waiting && (
+            val seen = mine.filter { p -> !p.waiting && !p.awaitingLink && (
                 sameTextCount(p.text) > p.seenBefore ||
                     (p.text.startsWith("/") && notes.any { n -> n.startsWith(norm(p.text.removePrefix("/").substringBefore(' '))) }))
             }
@@ -1646,7 +1741,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             // doesn't show more than ten seconds after it was sent was not delivered. It stays,
             // marked, with Resend and Dismiss, instead of disappearing.
             // A send still waiting for the input line to clear (1.4.4) was never typed, so it can't be stale.
-            val stale = if (idle) mine.filter { it !in seen && !it.undelivered && !it.waiting && now - it.at > 10_000 } else emptyList()
+            val stale = if (idle) mine.filter { it !in seen && !it.removable && now - it.at > 10_000 } else emptyList()
             if (stale.isNotEmpty()) com.billmongan.herdrdroid.diag.DiagLog.log("pending", "${stale.size} sent message(s) not in the agent's log after it went idle: marked as not seen")
             if (seen.isNotEmpty() || stale.isNotEmpty()) {
                 pendingSends = pendingSends.filter { it !in seen }.map { if (it in stale) it.copy(undelivered = true) else it }
@@ -1698,44 +1793,44 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                            /** Why it was held instead of sent (1.4.0: someone is typing in that pane); Resend sends it anyway. */
                            val held: String? = null,
                            /** Held, and being retried quietly until the input line is clear (1.4.4). */
-                           val waiting: Boolean = false)
+                           val waiting: Boolean = false,
+                           val awaitingLink: Boolean = false) {
+        val removable: Boolean get() = waiting || awaitingLink || undelivered
+    }
 
-    /** Messages the agent never showed in its log (see [applyTranscript]), for Resend and Dismiss. */
-    fun undeliveredFor(paneId: String): List<Pair<Long, String>> =
-        pendingSends.filter { it.paneId == paneId && it.undelivered }
-            .map { it.id to (it.held?.let { why -> "${it.text}\n(held: $why)" } ?: it.text) }
+    fun removableSendsFor(paneId: String): List<PendingSend> =
+        pendingSends.filter { it.paneId == paneId && it.removable }
 
-    fun resendPending(id: Long) {
-        val p = pendingSends.firstOrNull { it.id == id } ?: return
+    val canForceSendPending: Boolean get() = link == Link.CONNECTED && herdr != null
+
+    fun forceSendPending(id: Long) {
+        val p = pendingSends.firstOrNull { it.id == id && it.removable } ?: return
+        if (!canForceSendPending) return
         // A pane that isn't listed keeps the message, with its Resend (1.4.4, from Grok's review).
         val target = pane(p.paneId) ?: run {
             com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${p.paneId}: Resend while the pane isn't listed; kept")
             flash("Not sent: that pane isn't open on the computer just now.")
             return
         }
-        pendingSends = pendingSends - p
-        // What the held send was to do once delivered (1.4.1, from a code review: a typed answer
-        // that was held was never recorded in the question history after Resend).
-        val then = heldThen.remove(id) ?: {}
-        // Resend is a deliberate "send it anyway", so a send held for typing isn't held again.
+        if (hasPendingQuestion(target)) return
+        val then = heldThen[id] ?: {}
+        dismissPending(id)
+        // A deliberate force send bypasses the input-line guard.
         sendMessage(target, p.text, force = true, delivered = then)
     }
 
-    /** For each held send, what to do once it is delivered (see [resendPending]). */
+    /** For each held send, what to do once it is delivered (see [forceSendPending]). */
     private val heldThen = java.util.concurrent.ConcurrentHashMap<Long, () -> Unit>()
 
-    fun dismissPending(id: Long) { heldThen.remove(id); pendingSends = pendingSends.filterNot { it.id == id } }
-
-    /** True while a message to [paneId] waits, quietly retried, for its input line to clear (1.4.4). */
-    fun waitingFor(paneId: String): Boolean = pendingSends.any { it.paneId == paneId && it.waiting }
-
-    /** Cancel on the chat's "sends when the input line is clear" note: drops every waiting send to [paneId]. */
-    fun cancelWaiting(paneId: String) {
-        val drop = pendingSends.filter { it.paneId == paneId && it.waiting }
-        if (drop.isEmpty()) return
-        com.billmongan.herdrdroid.diag.DiagLog.log("send", "to $paneId: ${drop.size} waiting message(s) cancelled")
-        drop.forEach { heldThen.remove(it.id) }
-        pendingSends = pendingSends - drop.toSet()
+    fun dismissPending(id: Long) {
+        val pending = pendingSends.firstOrNull { it.id == id && it.removable } ?: return
+        queue.removeAll { it.pendingId == id }
+        queuedCount = queue.size
+        heldThen.remove(id)
+        pendingSends = pendingSends - pending
+        if (lastSent == (pending.paneId to pending.text) &&
+            pendingSends.none { it.paneId == pending.paneId && it.text == pending.text }
+        ) lastSent = null
     }
 
     var pendingSends by mutableStateOf<List<PendingSend>>(emptyList())
@@ -1758,7 +1853,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun pendingFor(paneId: String): List<String> {
         val now = System.currentTimeMillis()
         val hasLog = transcriptPane == paneId && transcriptState == TranscriptMode.ON
-        return pendingSends.filter { it.paneId == paneId && !it.undelivered && (it.waiting || now - it.at < (if (hasLog) 15 * 60_000L else 20_000L)) }.map { it.text }
+        return pendingSends.filter { it.paneId == paneId && !it.removable && now - it.at < (if (hasLog) 15 * 60_000L else 20_000L) }.map { it.text }
     }
 
     /** The Stop button: the key each agent's own program uses to interrupt a turn. */
@@ -1864,17 +1959,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun pane(id: String): Pane? = panes.firstOrNull { it.id == id }
 
-    private val lastSentTo = java.util.concurrent.ConcurrentHashMap<String, Long>()
-
-    /** When the app may type a usage check into a pane on its own: only a quiet one (1.3.1). */
-    private val quietGate = com.billmongan.herdrdroid.herdr.QuietGate()
-
-    /** Anything the app sends a pane (a message, a key, an answer) makes it not quiet for a while. */
-    private fun noteSent(paneId: String) {
-        lastSentTo[paneId] = System.currentTimeMillis()
-        quietGate.sent("${current?.id}|$paneId", System.currentTimeMillis())
-    }
-
     /** The open computer's agent versions (1.4.0): agent kind to version. */
     var agentVersions by mutableStateOf<Map<String, String>>(emptyMap())
         private set
@@ -1974,7 +2058,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun sendMessage(pane: Pane, text: String, force: Boolean = false, delivered: () -> Unit = {}) {
-        noteSent(pane.id)
         lastSent = pane.id to text
         lastSentAt = System.currentTimeMillis()
         val pendingId = System.nanoTime()
@@ -1983,16 +2066,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             if (transcriptPane == pane.id) sameTextCount(text) else 0,
         )
         com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${pane.id} (${pane.agent ?: "shell"}, ${pane.status}): ${text.length} chars; link ${link}, ${if (herdr == null) "no client" else "client ready"}")
-        act(pane.id, "Couldn't send") { h ->
-            if (!force && pane.status != Status.NEEDS_YOU) {
-                // Behind an earlier message still waiting for this pane, so they go in the order sent (1.4.4).
-                val earlier = pendingSends.any { it.paneId == pane.id && it.waiting && it.id != pendingId }
+        act(pane.id, "Couldn't send", pendingId) { h ->
+            if (pendingSends.none { it.id == pendingId }) return@act
+            run {
+                // Behind an earlier held message unless the user explicitly chose Force send.
+                val earlier = !force && pendingSends.any { it.paneId == pane.id && it.waiting && it.id != pendingId }
                 // Read with its styles (1.4.6), so an agent's dim placeholder isn't taken for typing.
                 val screenNow = if (earlier) null else runCatching { h.readStyled(pane.id, 40) }.getOrNull()
                 // A pane that can't be read first is not typed into blind (1.4.1, from a code review).
+                val now = pane(pane.id) ?: pane
                 val why = when {
                     earlier -> "an earlier message to it is still waiting"
-                    screenNow == null -> "its screen couldn't be read first, so the app can't tell whether someone is typing there"
+                    screenNow.isNullOrBlank() -> "its screen couldn't be read first"
+                    blocksNormalSend(now, screenNow) -> "a question is open in it; answer it first"
+                    force -> null
                     else -> holdReason(pane.id, screenNow)
                 }
                 if (why != null) {
@@ -2000,10 +2087,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     // report if it fails"); reported with Resend only if it still can't go in 2 minutes.
                     com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${pane.id}: held, $why; retrying every 2 s for up to 2 min")
                     if (pendingSends.none { it.id == pendingId }) return@act
-                    pendingSends = pendingSends.map { if (it.id == pendingId) it.copy(held = why, waiting = true) else it }
+                    pendingSends = pendingSends.map { if (it.id == pendingId) it.copy(held = why, waiting = true, awaitingLink = false) else it }
                     heldThen[pendingId] = delivered
                     startHeldRetry(pane.id)
                     return@act
+                }
+            }
+            // The screen read can suspend while the user removes a reconnect-queued send.
+            val pending = pendingSends.firstOrNull { it.id == pendingId } ?: return@act
+            if (pending.awaitingLink) {
+                pendingSends = pendingSends.map {
+                    if (it.id == pendingId) it.copy(awaitingLink = false, at = System.currentTimeMillis()) else it
                 }
             }
             try {
@@ -2023,7 +2117,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun startHeldRetry(paneId: String) {
         if (heldJobs[paneId]?.isActive == true) return
-        val server = current?.id
+        val server = current?.id ?: return
         val job = viewModelScope.launch {
             while (isActive) {
                 val next = pendingSends.firstOrNull { it.paneId == paneId && it.waiting } ?: break
@@ -2035,13 +2129,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Retries one held send until it goes, times out, or is cancelled (see [HeldSendRetry]). */
-    private suspend fun retryHeld(p: PendingSend, server: String?) {
+    private suspend fun retryHeld(p: PendingSend, server: String) {
         val log = { m: String -> com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${p.paneId}: $m") }
         val agentName = pane(p.paneId)?.agentName ?: "the agent"
         var missing = 0
         val outcome = com.billmongan.herdrdroid.herdr.HeldSendRetry().run(
             // The 2 minutes start when it reaches the front of the pane's queue (from Grok's review).
-            startedAt = System.currentTimeMillis(),
+            startedAt = com.billmongan.herdrdroid.herdr.HeldSendRetry.monotonicMillis(),
             firstWhy = p.held ?: "held",
             cancelled = {
                 missing = if (pane(p.paneId) == null) missing + 1 else 0
@@ -2052,19 +2146,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     else -> null
                 }
             },
-            check = check@{
+            check = {
                 val h = herdr
                 val pn = pane(p.paneId)
                 when {
                     link != Link.CONNECTED || h == null -> "the computer isn't connected"
                     pn == null -> "the pane isn't listed just now"
-                    p.paneId in probingPanes -> "a usage check is running in it"
                     // A question that came up since is answered first, never typed into (1.4.4).
                     pn.status == Status.NEEDS_YOU -> "a question is open in it; answer it first"
                     pendingSends.any { it.paneId == p.paneId && it.waiting && it.at < p.at && it.id != p.id } -> "an earlier message to it is still waiting"
                     else -> {
-                        val screen = runCatching { h.readStyled(p.paneId, 40) }.getOrNull()
-                            ?: return@check "its screen couldn't be read"
+                        // Let HeldSendRetry handle read failures and propagate cancellation.
+                        val screen = h.readStyled(p.paneId, 40)
                         noteInputLine(p.paneId, screen)
                         // Checked again after the read, which can take a while (from Grok's review): a
                         // question or a usage check that began meanwhile is never typed into. Nothing
@@ -2072,10 +2165,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         val after = pane(p.paneId)
                         when {
                             after == null -> "the pane isn't listed just now"
-                            p.paneId in probingPanes -> "a usage check is running in it"
-                            after.status == Status.NEEDS_YOU ||
-                                com.billmongan.herdrdroid.herdr.detectPrompt(com.billmongan.herdrdroid.herdr.forPhone(screen), false, after.agent, versionOf(p.paneId)) != null ->
-                                "a question is open in it; answer it first"
+                            blocksNormalSend(after, screen) -> "a question is open in it; answer it first"
                             else -> holdReason(p.paneId, screen)
                         }
                     }
@@ -2084,11 +2174,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             send = {
                 val h = herdr ?: throw IllegalStateException("not connected")
                 val pn = pane(p.paneId) ?: throw IllegalStateException("the pane closed")
-                noteSent(p.paneId)
                 h.sendMessage(pn, p.text)
                 log("delivered to herdr (${h.lastSendRoute})")
             },
             log = log,
+            acquire = { paneDispatch.acquire(server to p.paneId) },
         )
         when (outcome) {
             is com.billmongan.herdrdroid.herdr.HeldOutcome.Delivered -> {
@@ -2107,6 +2197,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 readPane(p.paneId)
             }
             is com.billmongan.herdrdroid.herdr.HeldOutcome.TimedOut -> {
+                if (pendingSends.none { it.id == p.id && it.waiting }) return
                 pendingSends = pendingSends.map { if (it.id == p.id) it.copy(waiting = false, undelivered = true, held = outcome.why) else it }
                 error = "Not sent to $agentName: ${outcome.why}, for 2 minutes. Tap Resend to send it anyway."
             }
@@ -2133,14 +2224,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun sendKeys(paneId: String, vararg keys: String) = sendKeysThen(paneId, keys.toList()) {}
-
-    /** Sends keys, then runs [sent] once they went out (1.3.2: a key answer is recorded only then). */
-    fun sendKeysThen(paneId: String, keys: List<String>, sent: () -> Unit) {
-        noteSent(paneId)
-        act(paneId, "Couldn't send the key") { h ->
-            h.sendKeys(paneId, *keys.toTypedArray())
-            sent()
+    /** Explicit terminal input, not an answer to a rendered card. */
+    fun sendKeys(paneId: String, vararg keys: String) {
+        act(paneId, "Couldn't send the key", input = true) { h ->
+            h.sendKeys(paneId, *keys)
             readPane(paneId)
         }
     }
@@ -2150,96 +2237,288 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * highlighted option is known, so a digit is never typed into an option's text box.
      */
     /** The card each pane was last answered on from here, and when (1.4.8). */
-    private val answeredCards = java.util.concurrent.ConcurrentHashMap<String, Pair<String, Long>>()
+    private val answeredCards = java.util.concurrent.ConcurrentHashMap<Pair<String, String>, Pair<String, Long>>()
 
     /** When [sig]'s card on [paneId] was answered, if within [ANSWER_HOLD_MS]; else null. */
-    private fun answeredRecently(paneId: String, sig: String): Long? {
-        val (was, at) = answeredCards[paneId] ?: return null
+    private fun answeredRecently(paneId: String, sig: String, serverId: String? = current?.id): Long? {
+        val (was, at) = answeredCards[(serverId ?: return null) to paneId] ?: return null
         return at.takeIf { System.currentTimeMillis() - it < ANSWER_HOLD_MS && com.billmongan.herdrdroid.transcript.QuestionLog.sameCard(was, sig) }
     }
 
-    /** A pane's screen as its card is read (1.4.8): recent output, else the visible screen; null when neither reads. */
-    private suspend fun readForCard(h: Herdr, paneId: String, lines: Int = 200): String? {
-        val recent = try { h.read(paneId, lines) } catch (e: Exception) {
-            if (e is CancellationException || e is LinkDown || e is AuthRejected || e is HostKeyChanged) throw e
-            null
-        }
-        if (!recent.isNullOrBlank()) return recent
-        return try { h.readVisible(paneId).takeIf { it.isNotBlank() } } catch (e: Exception) {
-            if (e is CancellationException || e is LinkDown || e is AuthRejected || e is HostKeyChanged) throw e
-            null
-        }
-    }
+    private suspend fun readPaneScreen(h: Herdr, paneId: String, lines: Int): String =
+        recoverPaneRead(
+            recent = { h.read(paneId, lines, preserveGlyphs = true) },
+            visible = {
+                // A viewport scrolled back can show an old approval. Only read it at the bottom.
+                if ((pane(paneId)?.scrollOffset ?: 0) > 0) "" else h.readVisible(paneId, preserveGlyphs = true)
+            },
+            shortRecent = { h.read(paneId, 40, preserveGlyphs = true) },
+        )
+
+    /** Read fresh output for the card before accepting an answer. */
+    private suspend fun readForCard(h: Herdr, paneId: String, lines: Int = 80): String? =
+        try { readPaneScreen(h, paneId, lines) } catch (_: HerdrError) { null }
+
     /** A card answered this recently is not answered again: the agent may not have redrawn yet (1.4.8). */
     private val ANSWER_HOLD_MS = 8_000L
 
-    fun answerChoice(paneId: String, prompt: com.billmongan.herdrdroid.herdr.Prompt, choice: com.billmongan.herdrdroid.herdr.Choice) {
-        noteSent(paneId)
+    private var answeringCards by mutableStateOf<Set<Pair<String, String>>>(emptySet())
+
+    fun answerInFlight(paneId: String): Boolean = (current?.id to paneId) in answeringCards
+
+    // Includes the particular connection and visit so leaving and returning cannot re-arm a send.
+    internal data class VoiceTarget(
+        val server: String, val client: Herdr, val connection: Any, val visit: Long,
+        val pane: String, val agent: String, val cwd: String,
+    )
+
+    internal fun voiceTarget(): VoiceTarget? {
+        if (locked || link != Link.CONNECTED || (!foreground && current?.overWebSocket == true)) return null
+        val pane = (screen as? Screen.Agent)?.paneId?.let(::pane) ?: return null
+        val client = herdr ?: return null
+        return VoiceTarget(current?.id ?: return null, client, client.connectionIdentity ?: return null,
+            paneVisit, pane.id, pane.agent ?: return null, pane.cwd)
+    }
+
+    private val voiceComposerDrafts = mutableSetOf<Pair<String, String>>()
+
+    internal fun noteVoiceComposerDraft(server: String, pane: String, hasDraft: Boolean) {
+        if (hasDraft) voiceComposerDrafts.add(server to pane) else voiceComposerDrafts.remove(server to pane)
+    }
+
+    internal suspend fun sendVoiceMessage(target: VoiceTarget, text: String, allowed: () -> Boolean): String {
+        fun allowedHere() = allowed() && voiceTarget() == target && !answerInFlight(target.pane) &&
+            pendingSends.none { it.paneId == target.pane && (it.waiting || it.awaitingLink) } &&
+            queued.none { it.serverId == target.server && it.paneId == target.pane } &&
+            (target.server to target.pane) !in voiceComposerDrafts && prefills[target.pane].isNullOrBlank()
+        val refuse = "Not sent. Open the agent's chat and check that it is idle with no question, draft at the computer, or queued message."
+        val release = paneDispatch.tryAcquire(target.server to target.pane) ?: return refuse
+        val h = target.client
+        try {
+            if (!allowedHere()) return refuse
+            val fresh = quietly(allowBackground = true) { it.panes().singleOrNull { p -> p.id == target.pane } } ?: return refuse
+            if (!allowedHere() || fresh.agent != target.agent || fresh.cwd != target.cwd ||
+                fresh.status !in setOf(Status.IDLE, Status.DONE) || (fresh.scrollOffset ?: 0) != 0) return refuse
+            val visible = quietly(allowBackground = true) { it.readStyled(target.pane, 40) } ?: return refuse
+            if (!allowedHere() || visible.isBlank() || blocksNormalSend(fresh, visible) ||
+                com.billmongan.herdrdroid.herdr.inputLineOf(visible, fresh.agent) != "" || holdReason(fresh.id, visible) != null) return refuse
+            h.sendMessage(fresh, text, allowTerminalFallback = false, expectedConnection = target.connection)
+            return "Message sent."
+        } catch (c: CancellationException) {
+            throw c
+        } catch (_: com.billmongan.herdrdroid.ssh.ConnectionChanged) {
+            return "Not sent. The SSH connection changed."
+        } catch (e: Exception) {
+            if (e is LinkDown && herdr === h) linkLost(e)
+            return "Could not confirm delivery. Check the chat before trying again."
+        } finally {
+            release()
+        }
+    }
+
+    internal suspend fun voiceReplySnapshot(target: VoiceTarget): com.billmongan.herdrdroid.voice.VoiceReplySnapshot? {
+        if (voiceTarget() != target || !hasTranscriptReader(target.pane)) return null
+        val result = quietly(allowBackground = true) { client ->
+            com.billmongan.herdrdroid.voice.attributedReply(
+                target.pane, target.agent, target.cwd,
+                panes = { if (voiceTarget() == target) client.panes() else emptyList() },
+                transcript = { if (voiceTarget() == target) client.transcript(it, "", transcriptScript) else null },
+            )
+        }
+        return result?.takeIf { voiceTarget() == target }
+    }
+
+    internal suspend fun refreshVoiceScreen(serverId: String, paneId: String): Boolean {
+        val client = herdr ?: return false
+        val cardOwner = cardTarget(paneId)
+        val visit = paneVisit
+        if (current?.id != serverId || link != Link.CONNECTED || (screen as? Screen.Agent)?.paneId != paneId) return false
+        val attempt = ++paneReadSequence
+        val text = quietly(allowBackground = true) { readForCard(it, paneId) } ?: return false
+        if (attempt <= lastAppliedPaneRead || herdr !== client || current?.id != serverId || paneVisit != visit || (screen as? Screen.Agent)?.paneId != paneId) return false
+        lastAppliedPaneRead = attempt
+        paneReadProblem = null
+        openUsage = null // This read is recent output, not an identity-bound visible snapshot.
+        paneText = text
+        paneTextPane = paneId
+        paneTextTarget = cardOwner?.takeIf { it.isCurrent(client) }
+        val pane = pane(paneId)
+        val prompt = detectPrompt(text, pane?.status == Status.NEEDS_YOU, pane?.agent, versionOf(paneId))
+        observeQuestion(serverId, paneId, prompt, pane?.status, pane?.agentName, text)
+        return true
+    }
+
+    internal fun voiceQuestionKey(paneId: String, prompt: com.billmongan.herdrdroid.herdr.Prompt): String? {
+        if (pane(paneId)?.agent != "claude" || prompt.multi || prompt.parts?.command != null ||
+            prompt.parts?.tabs?.count { !it.submit } != 1 ||
+            prompt.choices.any { com.billmongan.herdrdroid.herdr.grantsStandingPermission(it.label) }) return null
+        val sig = com.billmongan.herdrdroid.transcript.QuestionLog.signature(prompt)
+        return questionsFor(paneId).lastOrNull {
+            it.state == com.billmongan.herdrdroid.transcript.QState.OPEN &&
+                com.billmongan.herdrdroid.transcript.QuestionLog.sameCard(it.sig, sig)
+        }?.key
+    }
+
+    private fun beginAnswer(key: Pair<String, String>): Boolean {
+        if (key in answeringCards) return false
+        answeringCards = answeringCards + key
+        return true
+    }
+
+    internal data class CardTarget(val client: Herdr, val connection: Any, val server: String, val visit: Long, val pane: Pane)
+
+    internal fun cardTarget(paneId: String): CardTarget? {
+        if ((screen as? Screen.Agent)?.paneId != paneId || locked || link != Link.CONNECTED) return null
+        val client = herdr ?: return null
+        return CardTarget(client, client.connectionIdentity ?: return null, current?.id ?: return null,
+            paneVisit, pane(paneId) ?: return null)
+    }
+
+    private fun Pane.sameCardOccupant(other: Pane) = id == other.id && agent == other.agent &&
+        sessionId == other.sessionId && terminalId == other.terminalId && tabId == other.tabId &&
+        workspaceId == other.workspaceId && cwd == other.cwd
+
+    private fun CardTarget.isCurrent(h: Herdr): Boolean = client === h && cardTarget(pane.id)?.let {
+        it.client === client && it.connection === connection && it.server == server && it.visit == visit &&
+            it.pane.sameCardOccupant(pane)
+    } == true
+
+    private suspend fun CardTarget.freshAnswer(h: Herdr, shown: Prompt): Prompt? {
+        if (shown.terminalReview || !isCurrent(h)) return null
+        val currentPane = h.cardPane(pane.id, connection) ?: return null
+        if (!isCurrent(h) || !pane.sameCardOccupant(currentPane)) return null
+        // Last remote read before input; not an atomic compare-and-send.
+        val text = h.readCardViewport(pane.id, connection).takeUnless { it.isBlank() } ?: return null
+        if (!isCurrent(h)) return null
+        return detectPrompt(text, currentPane.status == Status.NEEDS_YOU, currentPane.agent, versionOf(pane.id))
+            ?.takeIf { cardAnswerStillFits(shown, it) }
+    }
+
+    internal fun answerCardKey(target: CardTarget?, prompt: Prompt, key: String, label: String) {
+        answerCardInput(target, prompt, label) { h, t, _ ->
+            h.sendKeys(t.pane.id, key, expectedConnection = t.connection)
+            true
+        }
+    }
+
+    private fun answerCardInput(target: CardTarget?, shown: Prompt, label: String, delivered: () -> Unit = {},
+        send: suspend (Herdr, CardTarget, Prompt) -> Boolean,
+    ) {
+        val refused = "Not sent. Refresh the question or open the terminal to answer."
+        if (target == null || shown.terminalReview) { flash(refused); return }
+        val id = target.pane.id
+        answerOnce(id) { h ->
+            val fresh = target.freshAnswer(h, shown)
+            if (fresh == null || !send(h, target, fresh)) { flash(refused); return@answerOnce }
+            delivered()
+            noteAnswer(id, shown, label, serverId = target.server)
+            readPane(id)
+        }
+    }
+
+    private fun answerOnce(paneId: String, feedback: ((String) -> Unit)? = null, run: suspend (Herdr) -> Unit) {
+        val server = current?.id ?: return
+        val client = herdr
+        if (client == null || link != Link.CONNECTED) {
+            val message = "Not sent. Reconnect and check the question before trying again."
+            flash(message)
+            feedback?.invoke(message)
+            return
+        }
+        val key = server to paneId
+        val release = paneDispatch.tryAcquire(key)
+        if (release == null || !beginAnswer(key)) {
+            release?.invoke()
+            val message = "Another input is already being sent to this pane."
+            flash(message)
+            feedback?.invoke(message)
+            return
+        }
+        viewModelScope.launch {
+            try {
+                if (current?.id != server || herdr !== client) {
+                    val message = "Not sent. Refresh the question before trying again."
+                    flash(message)
+                    feedback?.invoke(message)
+                    return@launch
+                }
+                run(client)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (e is LinkDown && herdr === client) linkLost(e)
+                val message = "Could not confirm delivery. Refresh the question before trying again."
+                flash(message)
+                feedback?.invoke(message)
+                if (herdr === client && link == Link.CONNECTED) readPane(paneId)
+            } finally {
+                answeringCards = answeringCards - key
+                release()
+            }
+        }
+    }
+
+    internal fun answerChoice(paneId: String, prompt: Prompt, choice: Choice,
+        voiceQuestion: String? = null, voiceAllowed: () -> Boolean = { true }, voiceConnection: Any? = null,
+        target: CardTarget? = cardTarget(paneId), feedback: ((String) -> Unit)? = null,
+    ) {
         // The answer goes into the history only once it was sent (1.3.2, from a code review).
+        if (prompt.terminalReview) return
         if (choice.keys.startsWith("grok-privacy:")) {
-            act(paneId, "Couldn't answer") { h ->
-                answerGrokPrivacy(h, paneId, optIn = choice.keys == com.billmongan.herdrdroid.herdr.GROK_PRIVACY_IN)?.let { throw IllegalStateException(it) }
-                noteAnswer(paneId, prompt, choice.label)
-                readPane(paneId)
-                refreshPanes()
+            answerCardInput(target, prompt, choice.label) { h, t, fresh ->
+                if (choice !in fresh.choices) return@answerCardInput false
+                answerGrokPrivacy(h, paneId, optIn = choice.keys == com.billmongan.herdrdroid.herdr.GROK_PRIVACY_IN,
+                    connection = t.connection)?.let { throw IllegalStateException(it) }
+                viewModelScope.launch { refreshPanes() }
+                true
             }
             return
         }
+        fun report(message: String) { flash(message); feedback?.invoke(message) }
         val agentName = pane(paneId)?.agentName ?: "the agent"
         com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: tapped \"${choice.label.take(60)}\" (option ${choice.keys}, highlighted ${prompt.selected})")
-        act(paneId, "Couldn't answer") { h ->
-            // The keys come from the screen as it is now, not as it was drawn (1.4.3, Bill: "isn't
-            // letting me click your button"): a highlight that moved since, or a card that changed,
-            // would otherwise send the wrong keys or keys nothing answers.
-            // Read the way the card was (1.4.8, from Grok's review): recent output, or the visible screen
-            // when that fails, so the tap sees the card the card was made from.
-            val now = readForCard(h, paneId)
-            if (now.isNullOrBlank()) {
-                // Nothing is sent blind (from review): the screen couldn't be read at the tap.
-                com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: the screen couldn't be read at the tap; nothing sent")
-                withContext(Dispatchers.Main) { flash("Not sent: $agentName's screen couldn't be read just now. Try again.") }
-                return@act
+        answerOnce(paneId, feedback) { h ->
+            // Match the displayed card, but calculate its keys from the current highlight.
+            val fresh = target?.freshAnswer(h, prompt)
+            if (target == null || fresh == null || choice !in fresh.choices) {
+                report("Not sent. Refresh the question or open the terminal to answer.")
+                readPane(paneId)
+                return@answerOnce
             }
-            // Parsed the way the card was: with the pane's own status (from review).
-            val fresh = com.billmongan.herdrdroid.herdr.detectPrompt(now, pane(paneId)?.status == Status.NEEDS_YOU, pane(paneId)?.agent, versionOf(paneId))
-            val same = fresh?.choices?.firstOrNull { it.label.filterNot(Char::isWhitespace) == choice.label.filterNot(Char::isWhitespace) }
-            val use = if (fresh != null && same != null) fresh to same else prompt to choice
+            if (voiceQuestion != null && (locked || !voiceAllowed() || voiceQuestionKey(paneId, fresh) != voiceQuestion)) {
+                report("The question changed. No answer was sent.")
+                return@answerOnce
+            }
+
             // Only the card that was tapped is answered (1.4.8, Bill: "Maybe it is passing the same
             // approval to two inputs?"): Muse's next stage asks with the same options, so a second tap,
             // or a tap that lands after the screen moved on, would answer a question nobody has seen.
             val tappedSig = com.billmongan.herdrdroid.transcript.QuestionLog.signature(prompt)
-            val freshSig = fresh?.let { com.billmongan.herdrdroid.transcript.QuestionLog.signature(it) }
-            if (same != null && (freshSig == null || !com.billmongan.herdrdroid.transcript.QuestionLog.sameCard(freshSig, tappedSig))) {
-                com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: the question on screen is not the one tapped; nothing sent")
-                withContext(Dispatchers.Main) { flash("Not sent: $agentName is asking something new. Check the card and answer again.") }
-                readPane(paneId)
-                return@act
-            }
+
             val before = answeredRecently(paneId, tappedSig)
             if (before != null) {
                 com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: this card was answered ${(System.currentTimeMillis() - before) / 1000} s ago; not sent twice")
-                withContext(Dispatchers.Main) { flash("Already answered. Waiting for $agentName.") }
+                withContext(Dispatchers.Main) { report("Already answered. Waiting for $agentName.") }
                 readPane(paneId)
-                return@act
+                return@answerOnce
             }
-            if (same == null) {
-                com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: \"${choice.label.take(40)}\" is no longer on the screen; nothing sent")
-                withContext(Dispatchers.Main) { flash("Not sent: \"${choice.label.take(40)}\" is no longer on $agentName's screen.") }
-                readPane(paneId)
-                return@act
-            }
-            val keys = com.billmongan.herdrdroid.herdr.menuKeys(use.first, use.second)
+
+            // A transport error after any key is sent leaves delivery uncertain. Keep the guard
+            // active until the next screen read even when the send did not return a receipt.
+            answeredCards[target.server to paneId] = tappedSig to System.currentTimeMillis()
+            val keys = com.billmongan.herdrdroid.herdr.menuKeys(fresh, choice)
+            val connection = voiceConnection ?: target.connection
             if (keys == null) {
-                if (use.second.pressEnter) h.typeAndEnter(paneId, use.second.keys) else h.sendText(paneId, use.second.keys)
-            } else h.sendKeys(paneId, *keys.toTypedArray())
-            answeredCards[paneId] = tappedSig to System.currentTimeMillis()
-            val sent = keys?.joinToString(" ") { keyName(it) } ?: use.second.keys
+                if (choice.pressEnter) h.typeAndEnter(paneId, choice.keys, connection)
+                else h.sendText(paneId, choice.keys, connection)
+            } else h.sendKeys(paneId, *keys.toTypedArray(), expectedConnection = connection)
+            val sent = keys?.joinToString(" ") { keyName(it) } ?: choice.keys
             com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: sent $sent")
-            noteAnswer(paneId, prompt, choice.label)
+            noteAnswer(paneId, prompt, choice.label, serverId = target.server)
             // Say what went (1.4.3): a tap that answers shows it at once.
-            withContext(Dispatchers.Main) { flash("Sent $sent to $agentName: ${choice.label.take(40)}") }
+            report("Sent $sent to $agentName: ${choice.label.take(40)}")
             readPane(paneId)
-            refreshPanes()
+            viewModelScope.launch { refreshPanes() }
         }
     }
 
@@ -2261,21 +2540,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * Coding data, retention, and training"; then move to Opt in or Opt out with the arrows and
      * press Enter. Returns a problem to show, or null.
      */
-    private suspend fun answerGrokPrivacy(h: Herdr, paneId: String, optIn: Boolean): String? {
+    private suspend fun answerGrokPrivacy(h: Herdr, paneId: String, optIn: Boolean, connection: Any? = null): String? {
         var screen = h.read(paneId, 60)
         if (com.billmongan.herdrdroid.herdr.detectGrokPrivacyDialog(screen) == null) {
             val left = com.billmongan.herdrdroid.herdr.grokInputText(screen)
                 ?: return "Grok's input box isn't showing, so /privacy wasn't typed. Close what is open in Grok and try again."
             if (left.isNotEmpty()) {
                 // Backspaces clear it in any terminal program; then check that it is empty.
-                h.sendKeys(paneId, *Array(left.length + 2) { "backspace" })
+                h.sendKeys(paneId, *Array(left.length + 2) { "backspace" }, expectedConnection = connection)
                 delay(500)
                 if (!com.billmongan.herdrdroid.herdr.grokInputText(h.read(paneId, 60)).isNullOrEmpty())
                     return "Grok's input box still has text in it, so /privacy wasn't typed."
             }
-            h.sendText(paneId, "/privacy")
+            h.sendText(paneId, "/privacy", connection)
             delay(700)
-            h.sendKeys(paneId, "enter")
+            h.sendKeys(paneId, "enter", expectedConnection = connection)
             delay(1500)
             screen = h.read(paneId, 60)
         }
@@ -2283,35 +2562,35 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             ?: return "Grok's privacy settings didn't open."
         val target = dialog.choices.firstOrNull { it.label == if (optIn) "Opt in" else "Opt out" } ?: return "Grok's privacy settings changed shape."
         val keys = com.billmongan.herdrdroid.herdr.menuKeys(dialog, target) ?: return "Grok's privacy settings have no highlighted choice."
-        h.sendKeys(paneId, *keys.toTypedArray())
+        h.sendKeys(paneId, *keys.toTypedArray(), expectedConnection = connection)
         return null
     }
 
     /**
      * A typed answer to a "Type something." / "Other" option (1.4.0): move the highlight to that
-     * option, type the text there and press Enter. Without a known highlight, it is sent as a
-     * message, as "Type a different answer" does.
+     * option, verify the move, then type the text and press Enter. Without a known highlight,
+     * leave the answer to the terminal instead of guessing where to type it.
      */
-    fun answerTyped(pane: Pane, prompt: com.billmongan.herdrdroid.herdr.Prompt, choice: com.billmongan.herdrdroid.herdr.Choice, text: String) {
-        noteSent(pane.id)
-        val move = com.billmongan.herdrdroid.herdr.moveKeys(prompt, choice)
-        // Recorded only once it was sent (1.3.2).
-        if (move == null) { sendMessage(pane, text) { noteAnswer(pane.id, prompt, text) }; return }
-        act(pane.id, "Couldn't answer") { h ->
-            if (move.isNotEmpty()) h.sendKeys(pane.id, *move.toTypedArray())
-            delay(300)
-            h.sendText(pane.id, text)
-            delay(200)
-            h.sendKeys(pane.id, "enter")
-            noteAnswer(pane.id, prompt, text)
-            readPane(pane.id)
-            refreshPanes()
+    internal fun answerTyped(target: CardTarget?, prompt: Prompt, choice: Choice?, text: String, delivered: () -> Unit) {
+        answerCardInput(target, prompt, text, delivered) { h, t, fresh ->
+            val id = t.pane.id
+            if (choice != null) {
+                if (choice !in fresh.choices) return@answerCardInput false
+                val move = moveKeys(fresh, choice) ?: return@answerCardInput false
+                if (move.isNotEmpty()) {
+                    h.sendKeys(id, *move.toTypedArray(), expectedConnection = t.connection)
+                    delay(300)
+                    val moved = t.freshAnswer(h, prompt) ?: return@answerCardInput false
+                    if (moveKeys(moved, choice)?.isEmpty() != true) return@answerCardInput false
+                }
+            }
+            h.typeAndEnter(id, text, t.connection)
+            true
         }
     }
 
     fun answer(paneId: String, keys: String, pressEnter: Boolean, sent: () -> Unit = {}) {
-        noteSent(paneId)
-        act(paneId, "Couldn't answer") { h ->
+        act(paneId, "Couldn't answer", input = true) { h ->
             if (pressEnter) h.typeAndEnter(paneId, keys) else h.sendText(paneId, keys)
             sent()
             readPane(paneId)
@@ -2338,11 +2617,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { runCatching { quotaRound(force = force) } }
     }
 
-    /**
-     * For each kind of agent that can report usage without a model call, picks one pane running it
-     * that is idle (preferring one not in front at the computer), and asks it. The reading applies to every pane
-     * running that agent. Agents with no way to report usage are never sent anything.
-     */
+    /** Refresh due usage from CLI reports and visible footers, never from typed commands. */
     private suspend fun quotaRound(force: Boolean) = quotaLock.withLock {
         val serverId = current?.id ?: return@withLock
         val fresh = quietly { it.panes() } ?: return@withLock
@@ -2362,137 +2637,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val every = (QuotaProfiles.forAgent(list.first().agent)?.everyMinutes ?: 30) * 60_000L
                 val due = if (force) now - last > 2 * 60_000 else now - last > every
                 if (!due) return@launch
-                // Prefer a pane that is not in front at the computer, but use that one if it is the only
-                // choice: the check presses Enter only when the input line holds exactly its command.
-                // Idle panes first; a working pane only for an agent that answers while working (Claude).
-                val profile0 = QuotaProfiles.forAgent(list.first().agent) ?: return@launch
-                if (profile0.screenUsage != null) {
-                    // Shown on the agent's own screen: read it, type nothing, whatever the status.
-                    if (!canPoll) return@launch
-                    val items = list.firstNotNullOfOrNull { p -> quietly { it.screenQuota(p.id, profile0) }?.takeIf { it.isNotEmpty() } }
-                    lastQuotaTry[agentKey] = now
-                    if (!items.isNullOrEmpty()) {
-                        quotas = quotas + (agentKey to QuotaReading(now, items))
-                        prefs.saveQuotas(serverId, quotas)
-                        recordQuota(serverId, agentKey, QuotaReading(now, items))
-                    }
-                    return@launch
-                }
-                if (profile0.cliCommand != null) {
-                    // Asked from the command line, not the pane: no pane to choose and nothing typed.
-                    if (!canPoll) return@launch
-                    val items = quietly { it.cliQuota(profile0) }
-                    lastQuotaTry[agentKey] = now
-                    if (!items.isNullOrEmpty()) {
-                        quotas = quotas + (agentKey to QuotaReading(now, items))
-                        prefs.saveQuotas(serverId, quotas)
-                        recordQuota(serverId, agentKey, QuotaReading(now, items))
-                    }
-                    return@launch
-                }
-                // Never an agent open on screen or sent to in the last two minutes: you may be typing to it.
-                // And (1.3.1) only a quiet pane: not working, its screen unchanged and nothing sent to
-                // it for 45 s, not scrolled back, and not checked in the last 5 minutes (QuietGate).
-                val openNow = (screen as? Screen.Agent)?.paneId
-                val candidates = list.filter {
-                    (it.status == Status.IDLE || it.status == Status.DONE) && it.id != openNow && (lastSentTo[it.id] ?: 0L) < now - 120_000
-                }
-                for (c in candidates) {
-                    val vis = quietly { it.readVisible(c.id, 40) } ?: continue
-                    val rec = quietly { it.read(c.id, 40) } ?: continue
-                    quietGate.observe("$serverId|${c.id}", vis, rec, System.currentTimeMillis(), c.scrollOffset)
-                }
-                val why = candidates.associate { it.id to quietGate.verdict("$serverId|${it.id}", it.status, System.currentTimeMillis()) }
-                val target = candidates.filter { why[it.id] == null }.sortedWith(compareBy { it.focused }).firstOrNull()
-                if (target == null) {
-                    com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$agentKey on ${current?.label}: no quiet pane to check (" +
-                        list.joinToString { "${it.id} ${it.status}${if (it.id == openNow) " open" else ""}${if ((lastSentTo[it.id] ?: 0L) >= now - 120_000) " sent-to" else ""}${why[it.id]?.let { w -> ", $w" } ?: ""}" } + ")")
-                    // Not counted as a try: it is asked for again on the next round, once a pane is quiet.
-                    return@launch
-                }
-                quietGate.checked("$serverId|${target.id}", System.currentTimeMillis())
-                val profile = QuotaProfiles.forAgent(target.agent) ?: return@launch
-                if (!canPoll) return@launch
-                if (herdr?.canProbeScreens == false) {
-                    com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$agentKey on ${current?.label}: herdr-core, usage screens aren't checked")
-                    return@launch
-                }
-                com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$agentKey on ${current?.label}: checking ${target.id} (${target.status})")
-                val typingKey = "$serverId/${target.id}"
-                if (!typingInto.add(typingKey)) {
-                    com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$agentKey on ${current?.label}: ${target.id} is already being checked")
-                    return@launch
-                }
-                probingPanes = probingPanes + target.id
-                probedAt["$serverId|${target.id}"] = System.currentTimeMillis()
-                val before = quietly { it.readVisible(target.id, 40) }
-                val result = try {
-                    quietly { it.probeQuota(target.id, profile, working = target.status == Status.WORKING) }
-                } finally {
-                    probingPanes = probingPanes - target.id
-                    typingInto.remove(typingKey)
-                    probedAt["$serverId|${target.id}"] = System.currentTimeMillis()
-                }
-                // Back where it was (1.3.1): the pane's visible screen should match what it showed before.
-                if (before != null) {
-                    kotlinx.coroutines.delay(1_500)
-                    val after = quietly { it.readVisible(target.id, 40) }
-                    val same = after != null && com.billmongan.herdrdroid.herdr.QuietGate.norm(after) == com.billmongan.herdrdroid.herdr.QuietGate.norm(before)
-                    com.billmongan.herdrdroid.diag.DiagLog.log("usage", "${target.id} after the check: ${if (same) "back as it was" else "screen differs from before (the check's echo or a new line)"}")
-                }
-                if (result != null) watchForLeftoverScreen(target.id, profile)
-                result?.model?.let { models = models + (target.id to it); noteModels() }
-                result?.effort?.let { efforts = efforts + (target.id to it) }
-                val items = result?.items
-                com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$agentKey on ${current?.label}: ${when {
-                    result == null -> "nothing read (command not echoed, or the pane was busy)"
-                    items.isNullOrEmpty() -> "screen read, no limits found on it"
-                    else -> "${items.size} limit(s) read"
-                }}")
-                when {
-                    // Someone had text in that agent's input line, or the screen had no limits on it this
-                    // time (a Hermes session that hasn't made a call yet). Try again in 5 minutes.
-                    items.isNullOrEmpty() -> lastQuotaTry[agentKey] = now - (every - 5 * 60_000L).coerceAtLeast(0)
-                    else -> {
-                        lastQuotaTry[agentKey] = now
-                        quotas = quotas + (agentKey to QuotaReading(now, items))
-                        prefs.saveQuotas(serverId, quotas)
-                        recordQuota(serverId, agentKey, QuotaReading(now, items))
-                    }
+                val profile = QuotaProfiles.forAgent(list.first().agent) ?: return@launch
+                if (!profile.hasPassiveSource || !canPoll || current?.id != serverId) return@launch
+                val items = quietly { it.readQuota(list.map { pane -> pane.id }, profile) }
+                if (current?.id != serverId) return@launch
+                lastQuotaTry[agentKey] = now
+                if (!items.isNullOrEmpty()) {
+                    val reading = QuotaReading(now, items)
+                    quotas = quotas + (agentKey to reading)
+                    prefs.saveQuotas(serverId, quotas)
+                    recordQuota(serverId, agentKey, reading)
                 }
             }
         }
         jobs.joinAll()
-    }
-
-    private val closeWatch = mutableMapOf<String, Pair<QuotaProfile, Long>>()
-    private var closeJob: Job? = null
-
-    /**
-     * After the app opens an agent's usage or model screen, it keeps an eye on that pane for ten
-     * minutes and closes the screen if it is (still, or newly) open: an agent can draw it late,
-     * after the check finished. Only the screen the app opened is closed, recognised by its close
-     * hint together with its usage numbers or model line ([screenOpen]), so the Esc can't reach
-     * a permission prompt or a working agent.
-     */
-    private fun watchForLeftoverScreen(paneId: String, profile: QuotaProfile) {
-        if (profile.closeKeys.isEmpty() || profile.openMarker == null) return
-        closeWatch[paneId] = profile to System.currentTimeMillis() + 10 * 60_000
-        if (closeJob?.isActive == true) return
-        closeJob = viewModelScope.launch {
-            while (isActive && closeWatch.isNotEmpty()) {
-                delay(3_000)
-                val now = System.currentTimeMillis()
-                closeWatch.entries.removeAll { it.value.second < now }
-                for ((id, pair) in closeWatch.toMap()) {
-                    if (id in probingPanes) continue
-                    val screen = quietly { it.read(id, 60) } ?: continue
-                    if (pair.first.screenOpen(screen)) {
-                        quietly { it.sendKeys(id, *pair.first.closeKeys.toTypedArray()) }
-                    }
-                }
-            }
-        }
     }
 
     fun quotaFor(pane: Pane?): QuotaReading? =
@@ -2752,7 +2910,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     // no alert. A screen that couldn't be read still alerts, saying so.
                     if (prompt == null && text.isNotBlank()) { com.billmongan.herdrdroid.diag.DiagLog.log("watch", "${p.id}: herdr says blocked, but nothing on screen asks; no alert"); return@launch }
                     withContext(Dispatchers.Main) { if (prompt != null && prompt.choices.isNotEmpty()) observeQuestion(serverId, p.id, prompt, p.status, p.agentName, text) }
-                    Notify.needsYou(app, serverId, serverLabel, p.id, p.agentName, prompt?.question ?: "Waiting for you.", prompt?.choices.orEmpty(), p.agent)
+                    Notify.needsYou(app, serverId, serverLabel, p.id, p.agentName, prompt?.question ?: "Waiting for you.", prompt?.choices.orEmpty(), p.agent, terminalReview = prompt?.terminalReview == true)
                 }
                 // Only agents that need you notify (Bill, 2026-11-13); finishing doesn't.
                 before == Status.NEEDS_YOU -> {
@@ -2793,7 +2951,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             Notify.sending(app, a.serverId, a.paneId, "Answered", "This question was already answered.")
             return
         }
-        answerFromNotificationNow(h, a, app, serverLabel) { notifyAnswered[key] = System.currentTimeMillis() }
+        val flight = a.serverId to a.paneId
+        val release = paneDispatch.tryAcquire(flight)
+        if (release == null || !beginAnswer(flight)) {
+            release?.invoke()
+            Notify.sending(app, a.serverId, a.paneId, "Answer in progress", "An answer is already being sent to this pane.")
+            return
+        }
+        try {
+            answerFromNotificationNow(h, a, app, serverLabel) { notifyAnswered[key] = System.currentTimeMillis() }
+        } finally {
+            answeringCards = answeringCards - flight
+            release()
+        }
     }
 
     /** When each question (server, pane, question text) was last answered from its alert. */
@@ -2804,6 +2974,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (a.isReply) {
             runCatching {
                 val p = h.panes().firstOrNull { it.id == a.paneId } ?: return
+                if (p.agent?.lowercase() in setOf("codex", "hermes")) {
+                    val current = readForCard(h, p.id, NOTIFY_READ_LINES)
+                        ?.let { detectPrompt(it, p.status == Status.NEEDS_YOU, p.agent) }
+                    if (current == null || current.terminalReview || current.question.filterNot(Char::isWhitespace) !=
+                        a.question.filterNot(Char::isWhitespace)) {
+                        Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer", "The active question could not be verified.")
+                        return
+                    }
+                }
                 h.sendMessage(p, a.keys)
                 answered()
                 withContext(Dispatchers.Main) { noteAnswer(a.paneId, null, a.keys, a.serverId) }  // after the send
@@ -2833,13 +3012,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         // The same card already answered from the app or another alert a moment ago (1.4.8): not twice.
         val cardSig = now?.let { com.billmongan.herdrdroid.transcript.QuestionLog.signature(it) }
-        val before = cardSig?.let { answeredRecently(a.paneId, it) }
+        val before = cardSig?.let { answeredRecently(a.paneId, it, a.serverId) }
         if (before != null) {
             com.billmongan.herdrdroid.diag.DiagLog.log("answer", "${a.paneId}: alert tap on a card answered ${(System.currentTimeMillis() - before) / 1000} s ago; not sent twice")
             Notify.sending(app, a.serverId, a.paneId, "Already answered", "")
             return
         }
         var sent = false
+        cardSig?.let { answeredCards[a.serverId to a.paneId] = it to System.currentTimeMillis() }
         try {
             val label = now?.choices?.firstOrNull { it.keys == a.keys }?.label ?: if (a.isKey) "Pressed ${a.keys}" else a.keys
             if (a.keys.startsWith("grok-privacy:")) {
@@ -2855,7 +3035,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             else if (a.pressEnter) h.typeAndEnter(a.paneId, a.keys)
             else h.sendText(a.paneId, a.keys)
             sent = true
-            cardSig?.let { answeredCards[a.paneId] = it to System.currentTimeMillis() }
             answered()
             Notify.sending(app, a.serverId, a.paneId, "Answered", label)
             // Recorded once it was sent (1.3.2); a failure here is not a failed answer.
@@ -2900,7 +3079,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Switches to another watched server from the "needs you" list. */
-    fun switchTo(serverId: String, paneId: String?) {
+    fun switchTo(serverId: String, paneId: String?, voice: Boolean = false) {
         if (serverId == current?.id && herdr != null) { paneId?.let { openPane(it, "drawer") }; return }
         val s = servers.firstOrNull { it.id == serverId } ?: return
         if (!canSignInSilently(s)) { screen = Screen.Servers; return }
@@ -2910,7 +3089,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val backPane = (screen as? Screen.Agent)?.paneId
         pendingOpen = paneId
         if (current != null) disconnectQuietly()
-        connect(s, savedPassword(s), remember = false, openAgent = true)
+        connect(s, savedPassword(s), remember = false, openAgent = true, voice = voice)
         viewModelScope.launch {
             connectJob?.join()
             if (current == null && backServer != null && pendingHostKey == null && pendingBackendChoice == null) {
@@ -3110,30 +3289,54 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // -- Send when idle --------------------------------------------------------------------------
 
-    data class QueuedPrompt(val id: Long, val paneId: String, val text: String)
+    data class QueuedPrompt(val id: Long, val serverId: String, val paneId: String, val text: String)
 
     var queued by mutableStateOf<List<QueuedPrompt>>(emptyList())
         private set
     private var queueJob: Job? = null
 
+    internal fun blocksNormalSend(pane: Pane, screen: String): Boolean =
+        pane.status == Status.NEEDS_YOU || dismissibleUsageFrame(pane.agent, screen) != null ||
+            (pane.agent != null && detectPrompt(forPhone(screen), false, pane.agent, versionOf(pane.id)) != null)
+
+    fun hasPendingQuestion(pane: Pane): Boolean =
+        blocksNormalSend(pane, if (paneTextPane == pane.id && paneReadProblem == null) paneText else "")
+
     /** Holds a message until the pane's agent is ready, then sends it. */
     fun enqueue(paneId: String, text: String) {
-        queued = queued + QueuedPrompt(System.nanoTime(), paneId, text)
+        val serverId = current?.id ?: return
+        if (text.isBlank()) return
+        queued = queued + QueuedPrompt(System.nanoTime(), serverId, paneId, text)
         if (queueJob?.isActive == true) return
         queueJob = viewModelScope.launch {
             while (isActive && queued.isNotEmpty()) {
                 delay(3_000)
+                if (queued.none { it.serverId == current?.id } || link != Link.CONNECTED) continue
                 refreshPanes()
+                if (link != Link.CONNECTED) continue
                 for (q in queued.toList()) {
+                    if (q !in queued || q.serverId != current?.id) continue
                     val p = pane(q.paneId)
-                    if (p == null) { queued = queued - q; continue }
-                    if (p.status == Status.IDLE || p.status == Status.DONE) {
+                    if (p == null) continue
+                    if ((p.status == Status.IDLE || p.status == Status.DONE) && !hasPendingQuestion(p)) {
                         queued = queued - q
                         sendMessage(p, q.text)
                     }
                 }
             }
         }
+    }
+
+    /** Skip this app's idle wait. Normal screen and input guards still apply. */
+    fun sendQueuedImmediately(q: QueuedPrompt) {
+        if (q !in queued || q.serverId != current?.id) return
+        val target = pane(q.paneId) ?: return
+        if (link != Link.CONNECTED || hasPendingQuestion(target)) {
+            flash("Reconnect or answer the pending question before sending.")
+            return
+        }
+        queued = queued - q
+        sendMessage(target, q.text)
     }
 
     fun cancelQueued(q: QueuedPrompt) {
@@ -3148,7 +3351,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** For the cards: active subagents plus running background tasks, per pane. */
     var workCounts by mutableStateOf<Map<String, Int>>(emptyMap())
         private set
-    var busyCounts by mutableStateOf<Map<String, Int>>(emptyMap())
+    private var busyCounts by mutableStateOf<Map<String, Int>>(emptyMap())
+    private var rawWorkPanes = emptyList<Pane>()
+    private var workSweep = 0L
+
+    private fun Pane.sameWorkIdentity(other: Pane): Boolean =
+        agent == other.agent && cwd == other.cwd && sessionId == other.sessionId
+
+    private fun applyWorkStatus() {
+        panes = withBusy(rawWorkPanes, busyCounts)
+        current?.let {
+            trackDone(it.id, panes)
+            serverPanes = serverPanes + (it.id to panes)
+        }
+        updateWidget(panes)
+    }
 
     /**
      * The status a card shows: an agent herdr calls idle or done while its subagents or background
@@ -3156,19 +3373,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      */
     /**
      * Remembers, per server and pane, when it last turned done and when you last had it open, for
-     * every server (the open one and the watched ones). A new "done" begins only after real work:
-     * the app's own usage check (it types /usage into an idle agent) makes it busy for a moment,
-     * and that never counts, so an agent you already opened stays idle.
+     * every server (the open one and the watched ones).
      */
     private fun trackDone(serverId: String, list: List<Pane>) {
         val tNow = System.currentTimeMillis()
         var changed = false
         list.forEach { p ->
             val k = "$serverId|${p.id}"
-            val ownCheck = tNow - (probedAt[k] ?: 0L) < 60_000L
             when (p.status) {
                 Status.DONE -> if (!doneSince.containsKey(k)) { doneSince[k] = tNow; changed = true }
-                Status.WORKING, Status.NEEDS_YOU -> if (!ownCheck && doneSince.remove(k) != null) changed = true
+                Status.WORKING, Status.NEEDS_YOU -> if (doneSince.remove(k) != null) changed = true
                 else -> {}
             }
             // An agent open on screen when it finishes has been seen.
@@ -3177,19 +3391,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (changed) saveSeen()
     }
 
-    /** When the app last typed a usage check into each pane ("server|pane"). */
-    private val probedAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
-
     fun shownStatus(p: Pane, serverId: String? = current?.id): Status {
         val here = serverId == current?.id
         // Hermes: a conversation elsewhere (Telegram, its app) working or waiting counts here too.
-        if (here && p.agent?.lowercase() == "hermes" && p.status != Status.NEEDS_YOU) hermesState?.let { return it }
-        if (here && (p.status == Status.IDLE || p.status == Status.DONE || p.status == Status.UNKNOWN) && (busyCounts[p.id] ?: 0) > 0) return Status.WORKING
-        // The app's own usage check made it look busy for a moment: show what it was before.
-        val k0 = "$serverId|${p.id}"
-        // (The check only types into agents that are idle or done, so it was one or the other.)
-        if (p.status == Status.WORKING && System.currentTimeMillis() - (probedAt[k0] ?: 0L) < 60_000L) {
-            return if (doneSince.containsKey(k0)) shownStatus(p.copy(status = Status.DONE), serverId) else Status.IDLE
+        if (here && p.agent?.lowercase() == "hermes" && p.status != Status.NEEDS_YOU) hermesState?.let {
+            if (it == Status.NEEDS_YOU || p.status != Status.WORKING) return it
         }
         // herdr's "done" is idle but not yet seen at the computer. Opening the agent here counts as
         // seeing it, and after 30 minutes it counts as idle anyway. (The app never marks it seen in
@@ -3267,7 +3473,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     suspend fun refreshWorkCounts() {
-        quietly { it.workCounts(panes, transcriptScript) }?.let { (c, b) -> workCounts = c; busyCounts = b }
+        val client = herdr ?: return
+        val request = ++workSweep
+        val requested = rawWorkPanes.associateBy { it.id }
+        quietly { it.workCounts(requested.values.toList(), transcriptScript) }?.let { (counts, busy) ->
+            if (herdr !== client || request != workSweep) return
+            val unchanged = rawWorkPanes.filter { p ->
+                requested[p.id]?.sameWorkIdentity(p) == true
+            }.map { it.id }.toSet()
+            workCounts = counts.filterKeys { it in unchanged }
+            busyCounts = busy.filterKeys { it in unchanged }
+            applyWorkStatus()
+        }
     }
 
     /** One Claude subagent's log since [cursor] (its file is pinned in the cursor). */

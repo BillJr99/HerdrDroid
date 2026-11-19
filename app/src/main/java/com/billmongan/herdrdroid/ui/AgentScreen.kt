@@ -120,18 +120,33 @@ private fun keyName(c: Char): String? = when {
     else -> null
 }
 
+private class CardAnswerDraft(
+    val target: AppViewModel.CardTarget?, val prompt: Prompt, val choice: Choice?, val text: String = "",
+) {
+    fun withText(text: String) = CardAnswerDraft(target, prompt, choice, text)
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun AgentScreen(vm: AppViewModel, paneId: String) {
+internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (String) -> Unit = vm::readPane) {
     val pane = vm.pane(paneId)
-    var message by rememberSaveable(paneId) { mutableStateOf(vm.takePrefill(paneId) ?: "") }
+    var normalMessage by rememberSaveable(paneId) { mutableStateOf(vm.takePrefill(paneId) ?: "") }
+    val draftServer = vm.current?.id
+    // Keep answers out of the ordinary (saveable) composer. A restored message must never
+    // silently become an unbound answer or be sent as chat after losing its target.
+    var answerDraft by remember(draftServer, paneId) { mutableStateOf<CardAnswerDraft?>(null) }
+    val typingAnswer = answerDraft != null
+    val message = answerDraft?.text ?: normalMessage
+    fun editMessage(text: String) {
+        val draft = answerDraft
+        if (draft != null) answerDraft = draft.withText(text) else normalMessage = text
+    }
+    androidx.compose.runtime.SideEffect {
+        if (draftServer != null) vm.noteVoiceComposerDraft(draftServer, paneId, message.isNotBlank())
+    }
     var fullTerminal by rememberSaveable { mutableStateOf(false) }
     var confirmCtrlC by remember { mutableStateOf(false) }
-    var typingAnswer by remember { mutableStateOf(false) }
-    // The question a typed answer is for (the card is hidden while you type it), so the history records it there.
-    var answering by remember { mutableStateOf<Prompt?>(null) }
-    // The "Type something." / "Other" option the typed answer goes to (1.4.0), when one was tapped.
-    var answerVia by remember { mutableStateOf<com.billmongan.herdrdroid.herdr.Choice?>(null) }
+
     var ctrl by remember { mutableStateOf(Hold.OFF) }
     var alt by remember { mutableStateOf(Hold.OFF) }
     /** The slash command whose screen is showing, until you go back to the chat. */
@@ -145,8 +160,6 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
     /** The agent's own model menu, read off its screen, while it is open. */
     var readingPicker by remember { mutableStateOf(false) }
     var pickerMenu by remember { mutableStateOf<Prompt?>(null) }
-    /** Reading mode: the message box and extra rows step aside; a Reply button brings them back. */
-    var reading by rememberSaveable(paneId) { mutableStateOf(false) }
     /** Find in chat: what to look for, and which match is showing. */
     var finding by rememberSaveable(paneId) { mutableStateOf(false) }
     var findText by rememberSaveable(paneId) { mutableStateOf("") }
@@ -184,13 +197,20 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
             kotlinx.coroutines.delay(1_500)
         }
     }
-    // The screen itself: the terminal view, the fallback chat view, and questions the agent asks.
-    // These loops read only while the app is in front (1.4.0): behind it, the watcher does the
-    // pane checks, and the screen reads and work sweeps would only spend the battery.
-    LaunchedEffect(paneId, structured) {
-        while (true) {
-            if (vm.inFront) vm.readPane(paneId)
-            kotlinx.coroutines.delay(if (!vm.inFront) 1_000 else if (structured) 2_500 else 1_500)
+    // Questions can arrive in a working pane before its status flips to Needs you. Use the same
+    // ordered screen read (and its independent SSH channel), not a second probe or the chat log.
+    fun canReadScreen() = vm.inFront && !vm.locked && vm.link == Link.CONNECTED &&
+        (vm.screen as? Screen.Agent)?.paneId == paneId
+    val screenReadable = canReadScreen()
+    LaunchedEffect(vm, paneId, structured, screenReadable, pane?.status == Status.NEEDS_YOU) {
+        while (screenReadable && canReadScreen()) {
+            readScreen(paneId)
+            kotlinx.coroutines.delay(when {
+                vm.pane(paneId)?.status == Status.NEEDS_YOU -> 750L
+                !liveNow && vm.pane(paneId)?.status == Status.WORKING && vm.paneReadProblem == null -> 500L
+                structured -> 2_000L
+                else -> 1_500L
+            })
         }
     }
     LaunchedEffect(paneId) {
@@ -214,34 +234,49 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
         if (alt == Hold.ONCE) alt = Hold.OFF
     }
     val modifiersOn = ctrl != Hold.OFF || alt != Hold.OFF
-    fun send() {
-        if (message.isNotBlank() && pane != null) {
-            val text = message.trim()
-            val via = answerVia
-            val q = answering
-            // A typed answer goes into the question's history once it was delivered (1.3.2).
-            if (typingAnswer && via != null && q != null) vm.answerTyped(pane, q, via, text)
-            else if (typingAnswer) vm.sendMessage(pane, text) { vm.noteAnswer(paneId, q, text) }
-            else vm.sendMessage(pane, text)
-            message = ""; typingAnswer = false; answering = null; answerVia = null
-            // A slash command answers on the screen (a menu, a sign-in code), not in the agent's log,
-            // so show the screen and the keys to move through it.
-            if (text.startsWith("/") && !live) { fullTerminal = true; commandScreen = text.substringBefore(' ') }
-        }
-    }
-    val quote: (String) -> Unit = { q -> message = q.lines().joinToString("\n") { "> $it" } + "\n\n" }
+    val quote: (String) -> Unit = { q -> editMessage(q.lines().joinToString("\n") { "> $it" } + "\n\n") }
 
     // As the list shows it: Done becomes Idle once you have opened it here.
     val status = pane?.let { vm.shownStatus(it) } ?: Status.UNKNOWN
     // Only this agent's screen: never one read from the agent you just left.
     val screenText = if (vm.paneTextPane == paneId) vm.paneText else ""
+    val shownTarget = vm.paneTextTarget?.takeIf { vm.paneTextPane == paneId && vm.paneReadProblem == null }
     // Never an empty card (1.4.2): one with no options always shows the screen region or a note.
     // While the latest read failed, no card is built from the last screen: its buttons would answer
     // whatever the pane shows now (1.4.2, from review). If the agent waits, the card says the screen
     // couldn't be read and offers the keys and Show terminal.
-    val prompt: Prompt? = if (typingAnswer) null
+    val usageOverlay = vm.usageOverlayFor(paneId)
+    val dismissingUsage = vm.usageDismissInFlight(paneId)
+    val usageBlocksInput = usageOverlay != null || dismissingUsage
+    val prompt: Prompt? = if (typingAnswer || usageOverlay != null) null
         else if (vm.paneReadProblem != null) (if (status == Status.NEEDS_YOU) Prompt("This agent is waiting for you.", emptyList()).forCard() else null)
         else detectPrompt(screenText, status == Status.NEEDS_YOU, pane?.agent, vm.versionOf(paneId))?.forCard()
+    fun send() {
+        if (usageBlocksInput) return
+        val draft = answerDraft
+        if (draft != null) {
+            val text = draft.text.trim()
+            if (text.isNotEmpty() && !vm.answerInFlight(paneId)) {
+                vm.answerTyped(draft.target, draft.prompt, draft.choice, text) {
+                    if (answerDraft === draft) answerDraft = null
+                }
+            }
+            return
+        }
+        if (normalMessage.isNotBlank() && pane != null) {
+            val text = normalMessage.trim()
+            if (prompt != null || vm.hasPendingQuestion(pane)) {
+                vm.enqueue(paneId, text)
+                normalMessage = ""
+                return
+            }
+            vm.sendMessage(pane, text)
+            normalMessage = ""
+            // A slash command answers on the screen (a menu, a sign-in code), not in the agent's log,
+            // so show the screen and the keys to move through it.
+            if (text.startsWith("/") && !live) { fullTerminal = true; commandScreen = text.substringBefore(' ') }
+        }
+    }
     // An agent's error on screen (1.4.2): shown as a banner when there is no question.
     // Not from the last screen while the latest read failed (1.4.2, from review).
     val agentError: String? = remember(screenText) { com.billmongan.herdrdroid.herdr.detectAgentError(screenText) }.takeIf { prompt == null && vm.paneReadProblem == null }
@@ -336,13 +371,14 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
             PromptCard(
                 p,
                 agent = pane?.agentName ?: "The agent",
-                onChoice = { c -> vm.answerChoice(paneId, p, c) },
+                sending = vm.answerInFlight(paneId),
+                onChoice = { c -> vm.answerChoice(paneId, p, c, target = shownTarget) },
                 onKey = { k ->
                     val label = "Pressed " + when (k) { "esc" -> "Esc"; "tab" -> "Tab"; "shift+tab" -> "Shift+Tab"; "ctrl+c" -> "Ctrl+C"; else -> k }
-                    vm.sendKeysThen(paneId, listOf(k)) { vm.noteAnswer(paneId, p, label) }
+                    vm.answerCardKey(shownTarget, p, k, label)
                 },
-                onTypeAnswer = { answering = p; answerVia = null; typingAnswer = true },
-                onTypedChoice = { c -> answering = p; answerVia = c; typingAnswer = true },
+                onTypeAnswer = { answerDraft = CardAnswerDraft(shownTarget, p, null) },
+                onTypedChoice = { c -> answerDraft = CardAnswerDraft(shownTarget, p, c) },
                 // The terminal is always one tap away from a card, on every agent (1.4.2).
                 onShowTerminal = { hermesLive = false; fullTerminal = true; termFollow = true },
             )
@@ -429,7 +465,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                     ) {
                         Box(Modifier.size(7.dp).background(look(status).ink, CircleShape))
                         Text(
-                            "  " + look(status).label + " · " + (vm.modelLine(paneId) ?: pane?.folder ?: paneId),
+                            "  " + look(status, pane?.backgroundBusy == true).label + " · " + (vm.modelLine(paneId) ?: pane?.folder ?: paneId),
                             color = Palette.Muted, fontSize = 12.5.sp,
                             maxLines = 1, overflow = TextOverflow.Ellipsis,
                         )
@@ -466,7 +502,6 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                     }
                     if (pane?.agent != null) DropdownMenuItem(text = { Text("Model…") }, onClick = { menu = false; choosingModel = true })
                     if (structured && vm.transcriptItems.isNotEmpty()) DropdownMenuItem(text = { Text("Find in chat") }, onClick = { menu = false; finding = true })
-                    if (!live) DropdownMenuItem(text = { Text(if (reading) "Leave reading mode" else "Reading mode") }, onClick = { menu = false; reading = !reading })
                     DropdownMenuItem(text = { Text("Running underneath") }, onClick = { menu = false; vm.screen = Screen.Work(paneId) })
                     // 1.4.0: one pane's last screens, the parser's decision and the chat cursor, with
                     // secrets taken out, for a bug report. Only to this phone's clipboard or share sheet.
@@ -522,6 +557,11 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
         // still running, and its running subagents. Tap either for active and finished.
         HorizontalDivider(color = Palette.Line)
         ServerBanners(vm)
+        if (usageBlocksInput) {
+            UsageOverlayBanner(dismissingUsage) {
+                usageOverlay?.let(vm::dismissUsage)
+            }
+        }
         // The chat with its question history in place (1.3.0). A question still open is left out
         // while its card is showing, so it isn't on screen twice.
         val questionsNow = vm.questionsFor(paneId)
@@ -584,8 +624,6 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                 family = family,
                 actions = ChatActions(
                     onQuote = quote, onStop = pane?.let { p -> { vm.stopPane(p) } },
-                    undelivered = vm.undeliveredFor(paneId), onResend = vm::resendPending, onDismissPending = vm::dismissPending,
-                    onCancelWaiting = if (vm.waitingFor(paneId)) ({ vm.cancelWaiting(paneId) }) else null,
                     onLoadEarlier = if (vm.canLoadEarlier) ({ vm.loadEarlier(paneId) }) else null, loadingEarlier = vm.loadingEarlier,
                     queuedNote = "Queued in ${pane?.agentName ?: "the agent"} · it reads these when its current step ends",
                     onOpen = { t -> opened = t },
@@ -630,7 +668,9 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                             is com.billmongan.herdrdroid.transcript.QuestionItem -> QuestionView(entry, liveSize)
                         }
                     }
-                    val pending = vm.lastSent?.takeIf { it.first == paneId }?.second
+                    val pending = vm.lastSent?.takeIf { (id, text) ->
+                        id == paneId && vm.removableSendsFor(paneId).none { it.text == text }
+                    }?.second
                     // Under a saved history, only the part of the screen not already shown above (1.4.3, from review).
                     // The same questions the history shows (from review): an open one's screen stays live.
                     ChatView(com.billmongan.herdrdroid.transcript.QuestionLog.liveTail(text,
@@ -653,12 +693,7 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
         }
 
         // ---- Keys and the message box -------------------------------------------------------
-        if (reading && !live) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp), horizontalArrangement = Arrangement.End) {
-                Button(onClick = { reading = false }, shape = RoundedCornerShape(20.dp)) { Text("Reply") }
-            }
-        }
-        if (!live && !reading) Column(
+        if (!live) Column(
             Modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, top = if (keyboardUp) 2.dp else 6.dp, bottom = if (keyboardUp) 4.dp else 10.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
@@ -672,14 +707,45 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                     modifier = Modifier.padding(horizontal = 4.dp),
                 )
             }
-            // Messages waiting for this agent to be ready ("When idle").
-            vm.queued.filter { it.paneId == paneId }.forEach { q ->
-                Row(
-                    Modifier.fillMaxWidth().background(Palette.BlueSoft, RoundedCornerShape(12.dp)).padding(horizontal = 12.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+            val idleQueue = vm.queued.filter { it.paneId == paneId && it.serverId == vm.current?.id }
+            val unsent = vm.removableSendsFor(paneId)
+            if (idleQueue.isNotEmpty() || unsent.isNotEmpty()) {
+                Column(
+                    Modifier.heightIn(max = 160.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    Text("Queued until idle: " + q.text.lines().first(), color = Palette.Blue, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                    Text("Cancel", color = Palette.Blue, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.clickable { vm.cancelQueued(q) }.padding(start = 8.dp))
+                    idleQueue.forEach { q ->
+                        PendingMessageRow(
+                            title = "Queued until idle",
+                            text = q.text,
+                            onRemove = { vm.cancelQueued(q) },
+                            sendLabel = "Send immediately",
+                            onSend = { vm.sendQueuedImmediately(q) },
+                            sendEnabled = vm.link == Link.CONNECTED && !usageBlocksInput && prompt == null && !typingAnswer && status != Status.NEEDS_YOU,
+                        )
+                    }
+                    unsent.forEach { p ->
+                        androidx.compose.runtime.key(p.id) {
+                            PendingMessageRow(
+                                title = when {
+                                    p.awaitingLink -> "Waiting to reconnect"
+                                    p.waiting -> "Waiting for the input line"
+                                    else -> "Delivery not confirmed"
+                                },
+                                text = p.text,
+                                note = p.held,
+                                onRemove = { vm.dismissPending(p.id) },
+                                sendLabel = when {
+                                    p.waiting -> "Force send immediately"
+                                    p.undelivered -> "Resend"
+                                    else -> null
+                                },
+                                onSend = { vm.forceSendPending(p.id) },
+                                sendEnabled = vm.canForceSendPending && !usageBlocksInput && prompt == null && !typingAnswer && status != Status.NEEDS_YOU,
+                                forceSendMenu = true,
+                            )
+                        }
+                    }
                 }
             }
             if (fullTerminal) {
@@ -722,38 +788,40 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
                     if (modifiersOn && new.length == message.length + 1 && new.startsWith(message)) {
                         keyName(new.last())?.let { press(it) }
                     } else {
-                        message = new
+                        editMessage(new)
                     }
                 },
                 placeholder = if (modifiersOn) "Type a letter to send it with ${if (ctrl != Hold.OFF) "Ctrl" else "Alt"}"
+                else if (typingAnswer) if (vm.answerInFlight(paneId)) "Checking answer…" else "Type your answer"
+                else if (prompt != null || status == Status.NEEDS_YOU) "Send after answer"
                 else "Message ${pane?.agentName ?: "this tab"}",
-                canSend = message.isNotBlank() && pane != null,
+                canSend = message.isNotBlank() && pane != null && !usageBlocksInput && !(typingAnswer && vm.answerInFlight(paneId)),
                 onSend = ::send,
                 working = status == Status.WORKING,
                 onStop = pane?.let { p -> { vm.stopPane(p) } },
                 // herdr's agent prompt reaches a working agent, so a message sent now steers it.
-                steerLabel = if (pane?.agent != null) "Steer" else null,
-                onAttach = { uri -> vm.attach(uri) { path -> message = (message.trimEnd() + " " + path).trim() + " " } },
+                steerLabel = if (pane?.agent != null && !typingAnswer && prompt == null) "Steer" else null,
+                onQueueWhenIdle = if (!typingAnswer && !usageBlocksInput) ({ vm.enqueue(paneId, normalMessage.trim()); normalMessage = "" }) else null,
+                onAttach = { uri -> vm.attach(uri) { path -> editMessage((message.trimEnd() + " " + path).trim() + " ") } },
                 attachBusy = vm.uploading,
                 commands = SlashCommands.forAgent(pane?.agent),
                 // One row: Keys, Snippets and When idle live in the "⋯" menu with attach and dictate.
                 compact = true,
                 menuItems = buildList {
+                    if (typingAnswer && !vm.answerInFlight(paneId)) add("Discard answer draft" to { answerDraft = null })
                     add((if (vm.showKeys) "Hide keys" else "Show keys") to { vm.setKeysShown(!vm.showKeys) })
                     add("Snippets" to { showSnippets = true })
-                    if (status == Status.WORKING && message.isNotBlank()) add("Send when idle" to { vm.enqueue(paneId, message.trim()); message = "" })
-                    add("Reading mode" to { reading = true })
                 },
             )
         }
     }
 
     if (showSnippets) {
-        SnippetsDialog(vm, onInsert = { t -> message = if (message.isBlank()) t else message.trimEnd() + "\n" + t }, onDismiss = { showSnippets = false })
+        SnippetsDialog(vm, onInsert = { t -> editMessage(if (message.isBlank()) t else message.trimEnd() + "\n" + t) }, onDismiss = { showSnippets = false })
     }
 
     opened?.let { t ->
-        FullMessage(t, liveSize, vm.readingFont.family, onQuote = { quote(t); opened = null; reading = false }, onClose = { opened = null })
+        FullMessage(t, liveSize, vm.readingFont.family, onQuote = { quote(t); opened = null }, onClose = { opened = null })
     }
 
     if (choosingModel && pane != null) {
@@ -885,10 +953,70 @@ fun AgentScreen(vm: AppViewModel, paneId: String) {
 
 private val KEY_HEIGHT = 42.dp
 
+@Composable
+internal fun UsageOverlayBanner(dismissing: Boolean, onDismiss: () -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text("Usage panel is open", Modifier.weight(1f), color = Palette.Ink)
+        TextButton(onClick = onDismiss, enabled = !dismissing) {
+            Text(if (dismissing) "Dismissing…" else "Dismiss usage")
+        }
+    }
+}
+
 /**
  * Two rows that always fit the screen: Ctrl, Alt and the four arrows together on top, then
  * Esc, Tab, Backspace, Enter and Ctrl+C.
  */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+internal fun PendingMessageRow(
+    title: String,
+    text: String,
+    onRemove: () -> Unit,
+    sendLabel: String?,
+    onSend: (() -> Unit)?,
+    note: String? = null,
+    sendEnabled: Boolean = true,
+    forceSendMenu: Boolean = false,
+) {
+    var menu by remember { mutableStateOf(false) }
+    Column(
+        Modifier.fillMaxWidth().background(Palette.BlueSoft, RoundedCornerShape(12.dp))
+            .padding(start = 12.dp, end = 4.dp),
+    ) {
+        val content = if (forceSendMenu) Modifier.combinedClickable(
+            onClick = {},
+            onLongClickLabel = "Message options",
+            onLongClick = { menu = true },
+        ) else Modifier
+        Box(Modifier.fillMaxWidth()) {
+            Column(content.fillMaxWidth().padding(top = 6.dp)) {
+                Text(title, color = Palette.Blue, fontSize = 12.sp)
+                Text(text, color = Palette.Ink, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                note?.let { Text(it, color = Palette.Muted, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis) }
+            }
+            if (forceSendMenu) {
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Force send immediately") },
+                        enabled = sendEnabled && onSend != null,
+                        onClick = { menu = false; onSend?.invoke() },
+                    )
+                    DropdownMenuItem(text = { Text("Remove") }, onClick = { menu = false; onRemove() })
+                }
+            }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            if (sendLabel != null && onSend != null) {
+                TextButton(onClick = onSend, enabled = sendEnabled) {
+                    Text(sendLabel, fontSize = 12.sp, softWrap = false, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            TextButton(onClick = onRemove) { Text("Remove", fontSize = 12.sp, softWrap = false, maxLines = 1) }
+        }
+    }
+}
+
 @Composable
 private fun KeyPad(
     ctrl: Hold,
@@ -1107,6 +1235,7 @@ internal fun PromptCard(
     onTypedChoice: (Choice) -> Unit = { onTypeAnswer() },
     /** Switches to the terminal view (1.4.2): always offered, so the screen itself is never out of reach. */
     onShowTerminal: (() -> Unit)? = null,
+    sending: Boolean = false,
 ) {
     @Suppress("NAME_SHADOWING") val p = p.forCard()
     Surface(
@@ -1118,10 +1247,18 @@ internal fun PromptCard(
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Icon(Icons.Filled.Warning, contentDescription = null, tint = Palette.OrangeInk, modifier = Modifier.size(18.dp))
                 // One line only; the question itself is just above the card, in the chat (1.2.8).
-                Text(if (p.choices.isEmpty()) "$agent is waiting for you" else "Your answer", color = Palette.OrangeInk,
+                Text(if (sending) "Checking and sending…" else if (p.choices.isEmpty()) "$agent is waiting for you" else "Your answer", color = Palette.OrangeInk,
                     fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1)
             }
             // Each choice grows to fit its whole label; the page scrolls, the card has no scroll of its own.
+            if (p.terminalReview) {
+                Text("This preview is incomplete. Open the terminal to review the full command before answering.",
+                    color = Palette.Muted, fontSize = 12.5.sp)
+                onShowTerminal?.let { show ->
+                    TextButton(onClick = show, modifier = Modifier.fillMaxWidth()) { Text("Show terminal") }
+                }
+                return@Column
+            }
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 // The fallback card (1.4.0): the screen looked like a question no parser understood, so
                 // the card shows that part of the screen and generic keys instead of choices.
@@ -1170,6 +1307,7 @@ internal fun PromptCard(
                     val pad = PaddingValues(horizontal = 16.dp, vertical = 10.dp)
                     if (first) {
                         Button(
+                            enabled = !sending,
                             onClick = { if (typed) onTypedChoice(c) else onChoice(c) },
                             shape = RoundedCornerShape(14.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = Palette.Blue, contentColor = Palette.OnBlue),
@@ -1178,6 +1316,7 @@ internal fun PromptCard(
                         ) { body() }
                     } else {
                         OutlinedButton(
+                            enabled = !sending,
                             onClick = { if (typed) onTypedChoice(c) else onChoice(c) },
                             shape = RoundedCornerShape(14.dp),
                             contentPadding = pad,
@@ -1186,13 +1325,13 @@ internal fun PromptCard(
                     }
                 }
             }
-            if (!(p.choices.isEmpty() && p.region == listOf(com.billmongan.herdrdroid.herdr.UNREAD_SCREEN))) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (!sending && !(p.choices.isEmpty() && p.region == listOf(com.billmongan.herdrdroid.herdr.UNREAD_SCREEN))) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 KeyButton("Esc") { onKey("esc") }
                 KeyButton("Tab") { onKey("tab") }
                 KeyButton("Shift+Tab") { onKey("shift+tab") }
                 KeyButton("Ctrl+C", danger = true) { onKey("ctrl+c") }
             }
-            TextButton(onClick = onTypeAnswer, modifier = Modifier.fillMaxWidth()) { Text("Type a different answer") }
+            TextButton(onClick = onTypeAnswer, enabled = !sending, modifier = Modifier.fillMaxWidth()) { Text("Type a different answer") }
             onShowTerminal?.let { show -> TextButton(onClick = show, modifier = Modifier.fillMaxWidth()) { Text("Show terminal") } }
             Text(
                 "Each button types its key into the tab, exactly as if you typed it there. For any other " +
