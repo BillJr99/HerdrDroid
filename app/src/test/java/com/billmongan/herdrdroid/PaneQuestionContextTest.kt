@@ -17,6 +17,7 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.lifecycle.viewModelScope
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.billmongan.herdrdroid.herdr.Herdr
 import com.billmongan.herdrdroid.herdr.Pane
 import com.billmongan.herdrdroid.herdr.Status
 import com.billmongan.herdrdroid.hermes.Ask
@@ -105,6 +106,27 @@ class PaneQuestionContextTest {
         rule.onNodeWithText("+ Show details").assertDoesNotExist()
     }
 
+    @Test fun openCodeApprovalShowsCommandAndOnlyOneTimeOrRejectControls() = withPane(
+        agent = "opencode-college", frame = "opencode/derived-1.4.9/0701-permission-prompt-all-tools.txt",
+        items = listOf(reply), checkedTarget = true,
+    ) {
+        rule.onNodeWithText("npm install --prefix", substring = true).performScrollTo().assertIsDisplayed()
+        for (label in listOf("Allow once", "Reject", "Show terminal")) {
+            rule.onNode(hasText(label) and hasClickAction()).performScrollTo().assertIsDisplayed()
+        }
+        rule.onNodeWithText("Always allow").assertDoesNotExist()
+        rule.onNodeWithText("Type a different answer").assertDoesNotExist()
+    }
+
+    @Test fun openCodeQuestionChoicesAndTerminalAreReachableInChat() = withPane(
+        agent = "opencode", frame = "opencode/derived-1.4.9/0704-question-tool.txt",
+        items = listOf(reply), checkedTarget = true,
+    ) {
+        for (label in listOf("SQLite", "Postgres", "Type your own answer", "Show terminal")) {
+            rule.onNode(hasText(label) and hasClickAction()).performScrollTo().assertIsDisplayed()
+        }
+    }
+
     @Test fun incompleteApprovalStillOpensTerminalWithoutOfferingAnAnswer() = withPane(
         agent = "codex", frame = "codex/synthetic-2.0/truncated-command-approval.txt",
         items = listOf(reply),
@@ -160,6 +182,7 @@ class PaneQuestionContextTest {
         mode: TranscriptMode = TranscriptMode.ON,
         items: List<Item>,
         seedImage: Boolean = false,
+        checkedTarget: Boolean = false,
         verify: () -> Unit,
     ) {
         val text = checkNotNull(javaClass.getResource("/screens/$frame")).readText()
@@ -180,6 +203,12 @@ class PaneQuestionContextTest {
                     cache.put("file:/fixture/question-context.png", png)
                 }
                 state<String>(vm, "paneText").value = text
+                if (checkedTarget) {
+                    // Render-only fixture. SuccessiveCardAnswerTest exercises target validation and dispatch.
+                    val client = Herdr(HerdrSsh("fixture.invalid", 22, "fixture", Credentials(null, null), null, { null }), "/fixture/herdr")
+                    state<AppViewModel.CardTarget?>(vm, "paneTextTarget").value =
+                        AppViewModel.CardTarget(client, Any(), "fixture", 0, pane)
+                }
             }
             rule.setContent { AgentScreen(vm, pane.id, readScreen = { /* no live pane I/O */ }) }
             verify()

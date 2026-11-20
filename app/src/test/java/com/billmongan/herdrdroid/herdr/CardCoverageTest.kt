@@ -17,11 +17,10 @@ class CardCoverageTest {
     private fun card(agent: String, prefix: String, blocked: Boolean = true) = detectPrompt(screen(agent, prefix), blocked, agent).also { assertNotNull("$agent $prefix", it) }!!
     private fun keys(p: Prompt) = p.choices.map { menuKeys(p, it) }
 
-    @Test fun openCodesButtonsMoveRightAndRejectWithEsc() {
+    @Test fun openCodePlainFramesDoNotGuessApprovalFocusOrOfferStandingGrants() {
         val p = card("opencode", "0701-permission-prompt-all-tools.txt".substring(0, 4))
-        assertEquals(listOf("Allow once", "Always allow", "Reject"), p.choices.map { it.label })
-        assertEquals(listOf(listOf("enter"), listOf("right", "enter"), listOf("esc")), keys(p))
-        assertEquals(listOf(false, true, false), p.choices.map { grantsStandingPermission(it.label) })
+        assertEquals(listOf("Allow once", "Reject"), p.choices.map { it.label })
+        assertEquals(listOf(null, listOf("esc")), keys(p))
     }
 
     @Test fun groksTrustAndPlanAreAnsweredByLetters() {
