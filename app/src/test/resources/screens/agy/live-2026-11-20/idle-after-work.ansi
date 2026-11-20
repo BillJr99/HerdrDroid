@@ -1,0 +1,168 @@
+
+
+[0m[38;5;8m────────────────────────────────────────────────────────────[0m
+[0m[1m[38;5;4m> [hd210-agy-native-fixtures] Bill requested Herdr partners to accelerate 2.1.0. Own the disposable end-to-end Herdr transport[0m
+[0m[1m[38;5;4m  verification fixture only, not Android implementation or CI. Read ~/Documents/workspace/agent-wt/HerdrDroid-stable-210 and[0m
+[0m[1m[38;5;4m  PromptRelay.kt / Herdr.kt to identify existing send path. In a new scratch directory, verify a harmless unique text through the[0m
+[0m[1m[38;5;4m  exact installed Herdr 0.9.5 send mechanism to an isolated inert target, with two named local Herdr instances if feasible and[0m
+[0m[1m[38;5;4m  distinct exact target checks. Prepare a reusable real-transport fixture and note which checks require the APK candidate. Do not[0m
+[0m[1m[38;5;4m  input anything into live panes or connect to real remote hosts, install/configure host software, change repositories, upload,[0m
+[0m[1m[38;5;4m  sign, restart agents, or access secrets. No heavy Gradle/emulator builds because Laptop2 is swapping. Do not duplicate the mobile[0m
+[0m[1m[38;5;4m  UI/TDD lane or Grok badge lane; no subdelegation. Put sanitized fixture/receipt under[0m
+[0m[1m[38;5;4m  ~/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/ and report exact paths. Retain one writer for release refs[0m
+[0m[1m[38;5;4m  (Hermes).[0m
+
+[0m[38;5;7m────────────────────────────────────────────────────── Conversation compacted ──────────────────────────────────────────────────────[0m
+
+[0m[38;5;7m○[0m [0m[38;5;7mThought for 15m 39s[0m [0m[38;5;7m(Verifying the build output by checking the git status and grepping for specific markers in the generated...)[0m
+[0m[38;5;2m●[0m [0m[1m[38;5;3mRan[0m [0m[38;5;7m(git -C /home/user/Documents/workspace/agent-wt/HerdrDroid-stable-210 ls-files)[0m
+[0m[38;5;2m●[0m [0m[1m[38;5;3mExplored[0m 19 files [0m[38;5;7m(PromptRelay.kt, Herdr.kt, LocalPromptSend.kt, +16)[0m
+[0m[38;5;7m… 134 more actions (11 reads, 11 edits, 112 commands: 9 failed) …[0m
+[0m[38;5;1m●[0m [0m[1m[38;5;3mRan[0m 2 commands [0m[38;5;7m(+1 · rg "—" /home/user/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance: failed)[0m
+[0m[38;5;1m●[0m [0m[1m[38;5;3mRan[0m [0m[38;5;7m(grep -R "—" /home/user/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance)[0m [0m[38;5;7mfailed[0m [0m[38;5;7m(ctrl+o to expand)[0m
+
+  Session context: [0m[38;5;12mHerdr on laptop2; tab: agy; shared rules: ~/agents/AGENTS.md[0m
+
+  Completed [0m[38;5;12m[hd210-agy-native-fixtures][0m (disposable end-to-end Herdr 0.9.5 transport verification fixture and acceptance receipt
+  for HerdrDroid 2.1.0, without touching live panes, repositories, remote hosts, or heavy Gradle/emulator builds).
+
+  [0m[1m1. Identified Send Path ([0m[1m[38;5;12mHerdrDroid-stable-210[0m[1m @ [0m[1m[38;5;12m2de9f0b[0m[1m)[0m
+
+  • [0m[1mSource files[0m:
+  [0m[4m[38;5;4m~/Documents/workspace/agent-wt/HerdrDroid-stable-210/app/src/main/java/com/billmongan/herdrdroid/herdr/PromptRelay.kt:25-112[0m,
+  [0m[4m[38;5;4m~/Documents/workspace/agent-wt/HerdrDroid-stable-210/app/src/main/java/com/billmongan/herdrdroid/herdr/Herdr.kt:217-270[0m,
+  [0m[4m[38;5;4mHerdr.kt (sendPermitted/sendMessage)[0m,
+  [0m[4m[38;5;4m~/Documents/workspace/agent-wt/HerdrDroid-stable-210/app/src/main/java/com/billmongan/herdrdroid/herdr/LocalPromptSend.kt:28-61[0m,
+  [0m[4m[38;5;4m~/Documents/workspace/agent-wt/HerdrDroid-stable-210/app/src/main/java/com/billmongan/herdrdroid/herdr/PaneDispatch.kt:9-21[0m, and
+  [0m[4m[38;5;4m~/Documents/workspace/agent-wt/HerdrDroid-stable-210/app/src/main/java/com/billmongan/herdrdroid/herdr/WritePermit.kt:13-39[0m.
+  • [0m[1mExact CLI transport sequence[0m:
+      1. [0m[38;5;12mherdr 'pane' 'get' '<pane_id>'[0m ([0m[38;5;12mcardPane[0m: verifies [0m[38;5;12mscroll.offset_from_bottom == 0[0m, [0m[38;5;12magent_status[0m in [0m[38;5;12m{"idle", "done"}[0m,
+      [0m[38;5;12m!backgroundBusy[0m, and [0m[38;5;12mOccupant.sameProcessAndSession[0m across [0m[38;5;12mpane_id[0m, [0m[38;5;12mtab_id[0m, [0m[38;5;12mworkspace_id[0m, [0m[38;5;12magent[0m, [0m[38;5;12mforeground_cwd[0m, [0m[38;5;12mterminal_id[0m,
+      and [0m[38;5;12magent_session.value[0m).
+      2. Compressed [0m[38;5;12mtranscript.py __workcounts__[0m background subagent work check ([0m[38;5;12mbusy[pane.id] == 0[0m).
+      3. [0m[38;5;12mherdr 'pane' 'read' '<pane_id>' '--source' 'visible' '--format' 'ansi'[0m (verifies [0m[38;5;12minputLineOf(viewport, fresh.agent) == ""[0m,
+      [0m[38;5;12mdismissibleUsageFrame == null[0m, and [0m[38;5;12mdetectPrompt == null[0m).
+      4. Second [0m[38;5;12mherdr 'pane' 'get' '<pane_id>'[0m immediately before dispatch to narrow the read-to-write race window.
+      5. [0m[38;5;12mherdr 'agent' 'prompt' '<pane_id>' '<text>'[0m via [0m[38;5;12msendPermitted(..., allowTerminalFallback = false)[0m, claiming single-use
+      [0m[38;5;12mWritePermit.admit()[0m on the connection mutex boundary with [0m[1mno[0m fallback to [0m[38;5;12mherdr pane send-text[0m + [0m[38;5;12mherdr pane send-keys enter[0m.
+
+
+  [0m[1m2. End-to-End Multi-Instance Verification Summary ([0m[1m[38;5;12mherdr 0.9.5[0m[1m)[0m
+
+  Two isolated local Herdr 0.9.5 instances ([0m[38;5;12m--session hd210-fix-alpha[0m and [0m[38;5;12m--session hd210-fix-beta[0m) were provisioned against inert
+  stand-in targets in [0m[38;5;12m/home/user/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/scratch-hd210-fixture/[0m,
+  verified, and then stopped and deleted ([0m[38;5;12mherdr session list[0m confirmed only [0m[38;5;12mdefault[0m remains):
+
+  • [0m[1mCheck 1 (Exact delivery on Instance Alpha [0m[38;5;12mw2:p1[0m[1m)[0m: [0m[38;5;12mHD210_AGY_FIXTURE_ALPHA_P1_20261120[0m delivered via [0m[38;5;12mherdr --session hd210-fix-[0m
+  [0m[38;5;12malpha agent prompt w2:p1 ...[0m ([0m[38;5;12m{"type":"agent_prompted"}[0m, exit [0m[38;5;12m0[0m) exclusively to
+  [0m[4m[38;5;4m~/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/scratch-hd210-fixture/alpha-p1/receipt.jsonl[0m.
+  • [0m[1mCheck 2 (Cross-instance identical pane ID [0m[38;5;12mw2:p1[0m[1m on Instance Beta)[0m: [0m[38;5;12mHD210_AGY_FIXTURE_BETA_P1_20261120[0m delivered via [0m[38;5;12mherdr --[0m
+  [0m[38;5;12msession hd210-fix-beta agent prompt w2:p1 ...[0m ([0m[38;5;12m{"type":"agent_prompted"}[0m, exit [0m[38;5;12m0[0m) exclusively to
+  [0m[4m[38;5;4m~/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/scratch-hd210-fixture/beta-p1/receipt.jsonl[0m with zero bleed
+  to Alpha [0m[38;5;12mw2:p1[0m.
+  • [0m[1mCheck 3 (Same-instance sibling pane [0m[38;5;12mw2:p2[0m[1m on Instance Alpha)[0m: [0m[38;5;12mHD210_AGY_FIXTURE_ALPHA_P2_20261120[0m delivered via [0m[38;5;12mherdr --[0m
+  [0m[38;5;12msession hd210-fix-alpha agent prompt w2:p2 ...[0m ([0m[38;5;12m{"type":"agent_prompted"}[0m, exit [0m[38;5;12m0[0m) exclusively to
+  [0m[4m[38;5;4m~/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/scratch-hd210-fixture/alpha-p2/receipt.jsonl[0m with zero
+  bleed to Alpha [0m[38;5;12mw2:p1[0m or Beta [0m[38;5;12mw2:p1[0m.
+  • [0m[1mCheck 4 (Daemon foreground process identity check)[0m: When the PTY foreground process [0m[38;5;12mname[0m in [0m[38;5;12mherdr pane process-info[0m was
+  [0m[38;5;12mpython3[0m rather than canonical [0m[38;5;12mcodex[0m, [0m[38;5;12mherdr agent prompt[0m refused with exit [0m[38;5;12m1[0m ([0m[38;5;12m{"error":{"code":"agent_not_ready","message":"agent[0m
+  [0m[38;5;12mw2:p1 is no longer the pane foreground process"}}[0m).
+  • [0m[1mCheck 5 (Unsent composer draft refusal)[0m: With unsent text [0m[38;5;12mdraft in progress[0m on the [0m[38;5;12m❯ [0m row, [0m[38;5;12mpane read --source visible --format[0m
+  [0m[38;5;12mansi[0m returned [0m[38;5;12m❯ draft in progress[0m, causing [0m[38;5;12minputLineOf(viewport, "codex")[0m to return [0m[38;5;12m"draft in progress" != ""[0m and refuse before
+  calling [0m[38;5;12mherdr agent prompt[0m.
+  • [0m[1mCheck 6 (Occupant session rotation detection)[0m: Rotating [0m[38;5;12mw2:p2[0m from session [0m[38;5;12m00000000-0000-0000-0000-000000000000[0m to [0m[38;5;12m01a10000-[0m
+  [0m[38;5;12m0000-0000-0000-000000000999[0m updated [0m[38;5;12magent_session.value[0m in [0m[38;5;12mpane get[0m, causing [0m[38;5;12mOccupant.sameProcessAndSession[0m to refuse before
+  dispatch.
+  • [0m[1mCheck 7 (Blocked agent dual-layer refusal)[0m: When [0m[38;5;12mw2:p2[0m reported [0m[38;5;12m--state blocked[0m and displayed an approval card, [0m[38;5;12mpane get[0m
+  returned [0m[38;5;12m"agent_status":"blocked"[0m (refused by [0m[38;5;12mPromptRelay.idlePane()[0m) and [0m[38;5;12mherdr agent prompt[0m rejected submission at the daemon
+  boundary with exit [0m[38;5;12m1[0m ([0m[38;5;12m{"error":{"code":"agent_blocked","message":"agent w2:p2 is blocked and requires interactive input"}}[0m);
+  [0m[4m[38;5;4m~/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/scratch-hd210-fixture/alpha-p2/receipt2.jsonl[0m confirmed
+  zero prompt bytes were delivered.
+
+  [0m[1m3. Native Transport Fixture vs. APK Candidate Checks[0m
+
+  • [0m[1mProven by the native Herdr 0.9.5 fixture[0m: CLI command contracts and JSON schemas ([0m[38;5;12mpane get[0m, [0m[38;5;12mpane read --source visible --[0m
+  [0m[38;5;12mformat ansi[0m, [0m[38;5;12mpane process-info[0m, [0m[38;5;12magent prompt[0m), multi-instance socket/pane isolation across identical [0m[38;5;12mw2:p1[0m pane IDs, sibling
+  pane isolation ([0m[38;5;12mw2:p1[0m vs. [0m[38;5;12mw2:p2[0m), daemon-side [0m[38;5;12magent_not_ready[0m and [0m[38;5;12magent_blocked[0m rejections, and live preflight inputs for
+  occupant [0m[38;5;12magent_session.value[0m/[0m[38;5;12mterminal_id[0m, [0m[38;5;12mscroll.offset_from_bottom[0m, and visible composer draft detection.
+  • [0m[1mRequires the Android APK candidate[0m: Compose UI flows in [0m[38;5;12mPromptRelayDialog.kt[0m (target picker, server switcher, [0m[38;5;12mHeldSend.kt[0m
+  draft preservation across failed relays), in-process JVM [0m[38;5;12mWritePermit[0m / [0m[38;5;12mPaneDispatch[0m / SSH reconnect epoch ordering
+  ([0m[38;5;12mRelayCloseOrderTest[0m), and Android [0m[38;5;12mSpeechRecognizer[0m voice capture and confirmation UI before [0m[38;5;12mLocalPromptSend.send[0m.
+
+  [0m[1m4. Exact Artifact Paths[0m
+
+  • [0m[4m[38;5;4m~/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/REPORT.md[0m:
+  [0m[38;5;12m/home/user/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/REPORT.md[0m
+  • [0m[4m[38;5;4m~/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/fixture-receipt.json[0m:
+  [0m[38;5;12m/home/user/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/fixture-receipt.json[0m
+  • [0m[4m[38;5;4m~/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/run_herdr_transport_fixture.py[0m:
+  [0m[38;5;12m/home/user/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/run_herdr_transport_fixture.py[0m
+  • [0m[4m[38;5;4m~/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/scratch-hd210-fixture/bin/codex[0m:
+  [0m[38;5;12m/home/user/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/scratch-hd210-fixture/bin/codex[0m
+  • [0m[4m[38;5;4m~/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/scratch-hd210-fixture/alpha-p1/receipt.jsonl[0m:
+  [0m[38;5;12m/home/user/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/scratch-hd210-fixture/alpha-p1/receipt.jsonl[0m
+  • [0m[4m[38;5;4m~/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/scratch-hd210-fixture/alpha-p2/receipt.jsonl[0m:
+  [0m[38;5;12m/home/user/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/scratch-hd210-fixture/alpha-p2/receipt.jsonl[0m
+  • [0m[4m[38;5;4m~/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/scratch-hd210-fixture/alpha-p2/receipt2.jsonl[0m:
+  [0m[38;5;12m/home/user/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/scratch-hd210-fixture/alpha-p2/receipt2.jsonl[0m
+  • [0m[4m[38;5;4m~/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/scratch-hd210-fixture/beta-p1/receipt.jsonl[0m:
+  [0m[38;5;12m/home/user/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/scratch-hd210-fixture/beta-p1/receipt.jsonl[0m
+
+[0m[38;5;8m────────────────────────────────────────────────────────────[0m
+[0m[1m[38;5;4m> [kanban-32748-agy] Hermes coordinator, Bill asked eligible panes to pick up open cards. Continue your existing herdrdroid-2.1.0[0m
+[0m[1m[38;5;4m  native fixture lane from outputs/herdrdroid-2.1.0/agy-native-acceptance/REPORT.md. Exact draft head[0m
+[0m[1m[38;5;4m  0000000000000000000000000000000000000000. Do not repeat CLI-only evidence: exercise the app agent proposal, user confirmation and[0m
+[0m[1m[38;5;4m  existing SSH transport against disposable inert fixture endpoints if feasible. No production input, installs or config,[0m
+[0m[1m[38;5;4m  credentials, shared edits or GitHub writes. Return exact mode, target, test receipt, and remaining limits. Save a new sanitized[0m
+[0m[1m[38;5;4m  receipt in your own workspace or /home/user/Documents/workspace/outputs/kanban-32748/agy-receipt.md; report the exact path,[0m
+[0m[1m[38;5;4m  commands and verdict. No subdelegation.[0m
+
+[0m[38;5;7m○[0m [0m[38;5;7mThought for 13m 59s[0m [0m[38;5;7m(The stack trace points to a Java version parsing issue within the Kotlin environment. The specific error...)[0m
+[0m[38;5;2m●[0m [0m[1m[38;5;3mRan[0m 3 commands [0m[38;5;7m(+2 · git -C /home/user/Documents/workspace/agent-wt/HerdrDroid-stable-210 show --stat acd1c96)[0m
+[0m[38;5;2m●[0m [0m[1m[38;5;3mExplored[0m 8 files [0m[38;5;7m(AgentMessageFrame.kt, AgentMessageReview.kt, AgentMessageRelayTest.kt, +5)[0m
+[0m[38;5;7m… 101 more actions (19 reads, 30 edits, 52 commands: 7 failed) …[0m
+[0m[38;5;2m●[0m [0m[1m[38;5;3mRan[0m 3 commands [0m[38;5;7m(herdr --session hd21... ×3)[0m
+[0m[38;5;2m●[0m [0m[1m[38;5;3mEdited[0m 1 file [0m[38;5;7m(run_app_ssh_e2e.py)[0m [0m[38;5;7m(ctrl+o to expand)[0m
+
+[0m[38;5;1m⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 138h26m21s.[0m
+[0m[38;5;8mError ID: 00000000-0000-0000-0000-000000000000[0m
+
+[0m[38;5;8m────────────────────────────────────────────────────────────[0m
+[0m[1m[38;5;4m> Testing[0m
+
+[0m[38;5;7m────────────────────────────────────────────────────── Conversation compacted ──────────────────────────────────────────────────────[0m
+
+[0m[38;5;7m○[0m [0m[38;5;7mThought for 1m 7s[0m [0m[38;5;7m(Initial investigation reveals that `rtVersion()` can return either a `JavaVersion` object or a String repre...)[0m
+[0m[38;5;2m●[0m [0m[1m[38;5;3mRan[0m 2 commands, listed tasks [0m[38;5;7m(tail -n 30 /home/user/.gemini/antigravity-cli/brain/00000000-0000-0000-0000-000000000000/.system...)[0m
+[0m[38;5;2m●[0m [0m[1m[38;5;3mExplored[0m 2 files [0m[38;5;7m(last-error.log, run_app_ssh_e2e.py)[0m
+[0m[38;5;7m… 20 more actions (2 reads, 1 edit, 17 commands: 4 failed) …[0m
+[0m[38;5;2m●[0m [0m[1m[38;5;3mExplored[0m 1 search [0m[38;5;7m("com.intellij.util.lang.JavaVersion" "parse" "IllegalArgumentException")[0m
+[0m[38;5;2m●[0m [0m[1m[38;5;3mRan[0m 6 commands [0m[38;5;7m(python3 -c ' from pa... ×5 · python3 -c ' import ...)[0m [0m[38;5;7m(ctrl+o to expand)[0m
+
+[0m[38;5;8m────────────────────────────────────────────────────────────[0m
+[0m[1m[38;5;4m> From claude (Herdr on laptop2; tab: claude), with Bill's approval (he overrode the sender quota hold for this one message): stop[0m
+[0m[1m[38;5;4m  the kanban-32748 herdrdroid-2.1.0 app-over-SSH lane now; it is complete. Claude ran the signed 2.0.6 to 2.1.0 upgrade and the app[0m
+[0m[1m[38;5;4m  consent/send plus zero-write negatives in a disposable Docker emulator with loopback SSH; receipt[0m
+[0m[1m[38;5;4m  /home/user/Documents/workspace/outputs/herdrdroid-2.1.0/claude-final-apk-acceptance/DISPOSABLE-RUN-RECEIPT.md. Bill does not want[0m
+[0m[1m[38;5;4m  Java, Gradle or test runs on laptop2: any build or test work must run in a throwaway container on laptop (bill-dockrun). Do not[0m
+[0m[1m[38;5;4m  run more commands for this lane, and do not touch /home/user/Documents/workspace/outputs/kanban-32748/scratch; Claude is moving it[0m
+[0m[1m[38;5;4m  to ~/scratch. Reply with one line acknowledging, then stay idle.[0m
+
+[0m[38;5;7m○[0m [0m[38;5;7mThought for 6.8s[0m [0m[38;5;7m(The instruction is to stop a specific application instance. The task mentions a successful upgrade and recei...)[0m
+[0m[38;5;2m●[0m [0m[1m[38;5;3mKilled[0m 2 tasks [0m[38;5;7m(task-1577, task-1578)[0m [0m[38;5;7m(ctrl+o to expand)[0m
+
+  Acknowledged: stopping the kanban-32748 herdrdroid-2.1.0 lane now, leaving scratch untouched for Claude, and staying idle.
+
+[0m[38;5;8m────────────────────────────────────────────────────────────[0m
+[0m[1m[38;5;4m> From claude (tab: claude): Herdr routing test approved by Bill. Reply with exactly one word, ack-agy, and take no other action.[0m
+
+  ack-agy
+
+
+ [0m[38;5;3m┃[0m [0m[1mAuto is now the default agent mode[0m
+ [0m[38;5;3m┃[0m Press Shift+Tab to switch agent modes, or change Agent Mode in /config.
+ [0m[38;5;3m┃[0m [0m[38;5;8mesc to dismiss[0m
+[0m[38;5;8m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[0m[38;5;12m>[0m
+[0m[38;5;8m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[0m[38;5;8m? for shortcuts                                                                                                   [0m[2mOrchestrator (Neon)[0m
