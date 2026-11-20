@@ -40,6 +40,9 @@ object Reflow {
     private val GAP6 = Regex(""" {6,}""")
     private val GROK_THOUGHT = Regex("""Thought for \d+(?:\.\d+)?s""")
     private val GROK_PROMPT = Regex("""│\s*❯(?:\s+.*?)?\s*│""")
+    private val SELECTED_CHOICE = Regex("""[❯›]\s+(\d{1,3})[.)]\s+\S.*""")
+    private val OTHER_CHOICE = Regex("""(\d{1,3})[.)]\s+\S.*""")
+    private val TABLE_RULE = Regex("""(?:[┌├└][─┬┼┴]+[┐┤┘]|[╔╠╚][═╦╬╩]+[╗╣╝])""")
 
     /** The line without a scrollbar, a right-aligned clock, or a side panel to its right. */
     fun clean(line: String): String {
@@ -111,7 +114,24 @@ object Reflow {
                 raw.getOrNull(i + 1)?.trim()?.let { it.startsWith("╰─") && it.endsWith("─╯") && " Grok " in it } == true &&
                 raw.drop(i + 2).firstOrNull { it.isNotBlank() }?.trimStart()?.startsWith("Shift+Tab:mode") == true
         } else null
-        val footerAt = if (antigravity || grok) (agyComposer ?: grokComposer)?.minus(1) ?: raw.size else
+        // Antigravity marks the selected menu row with the same glyph as a user echo.
+        // Recognize a numbered menu only when a neighboring numbered choice confirms it.
+        val agyChoices = if (antigravity && agyComposer == null) window.lastOrNull { i ->
+            val selected = SELECTED_CHOICE.matchEntire(raw[i].trim())?.groupValues?.get(1)?.toInt()
+            selected != null && listOf(-1, 1).any { offset ->
+                val neighbor = raw.getOrNull(i + offset)?.trim()?.let(OTHER_CHOICE::matchEntire)
+                neighbor?.groupValues?.get(1)?.toInt() == selected + offset
+            }
+        }?.let { selected ->
+            var start = selected
+            var number = SELECTED_CHOICE.matchEntire(raw[selected].trim())!!.groupValues[1].toInt()
+            while (start > 0 && OTHER_CHOICE.matchEntire(raw[start - 1].trim())?.groupValues?.get(1)?.toInt() == number - 1) {
+                start--
+                number--
+            }
+            start
+        } else null
+        val footerAt = if (antigravity || grok) (agyComposer ?: grokComposer)?.minus(1) ?: agyChoices ?: raw.size else
             window.firstOrNull { i ->
                 isRule(raw[i]) || raw[i].trimStart().firstOrNull()?.let { it in CHROME_START } == true
             } ?: window.lastOrNull { PROMPT_ONLY.matches(raw[it]) } ?: raw.size
@@ -157,7 +177,7 @@ object Reflow {
             }
             val t = l.trim()
             val lead = l.length - l.trimStart().length
-            if (isRule(t)) {
+            if (isRule(t) && !((antigravity || grok) && TABLE_RULE.matches(t))) {
                 flushAll()
                 out += Seg.Rule
                 continue
