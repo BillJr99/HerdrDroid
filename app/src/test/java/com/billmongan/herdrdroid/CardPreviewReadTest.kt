@@ -1,6 +1,7 @@
 package com.billmongan.herdrdroid
 
 import android.app.Application
+import android.os.Looper
 import androidx.compose.runtime.MutableState
 import androidx.lifecycle.viewModelScope
 import androidx.test.core.app.ApplicationProvider
@@ -8,6 +9,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.billmongan.herdrdroid.herdr.Herdr
 import com.billmongan.herdrdroid.herdr.Pane
 import com.billmongan.herdrdroid.herdr.Status
+import com.billmongan.herdrdroid.herdr.codexFreeformQuestion
 import com.billmongan.herdrdroid.herdr.detectPrompt
 import com.billmongan.herdrdroid.ssh.Credentials
 import com.billmongan.herdrdroid.ssh.HerdrSsh
@@ -23,11 +25,50 @@ import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Shadows.shadowOf
 import java.io.File
 
 /** Runs against an isolated loopback SSH server with tools/card-preview/herdr.py as its CLI. */
 @RunWith(AndroidJUnit4::class)
 class CardPreviewReadTest {
+    @Test fun workingCodexFindsANativeQuestionMissingFromRecentOutput() = withFixture { f ->
+        val recent = "Codex is preparing a response."
+        f.select("codex", Status.WORKING)
+        f.frames(recent, codexFreeformQuestion)
+        f.read()
+        assertEquals(listOf("recent", "visible"), f.trace())
+        assertEquals(codexFreeformQuestion, f.vm.paneText)
+        assertTrue(detectPrompt(f.vm.paneText, false, "codex")!!.terminalReview)
+
+        val partial = codexFreeformQuestion.substringBefore("\nenter to submit")
+        f.frames(partial, codexFreeformQuestion)
+        f.read()
+        assertEquals(listOf("recent", "visible"), f.trace())
+        assertEquals(codexFreeformQuestion, f.vm.paneText)
+
+        f.frames(codexFreeformQuestion, "› Next request")
+        f.read()
+        assertEquals(listOf("recent", "visible"), f.trace())
+        assertEquals("› Next request", f.vm.paneText)
+
+        val approval = resource("/screens/codex/synthetic-2.0/multiline-command-approval.txt")
+        f.frames(codexFreeformQuestion, approval)
+        f.read()
+        assertEquals(listOf("recent", "visible"), f.trace())
+        assertEquals(approval, f.vm.paneText)
+
+        f.frames(codexFreeformQuestion, "")
+        f.read()
+        assertEquals(listOf("recent", "visible"), f.trace())
+        assertNull(f.vm.paneTextTarget)
+
+        f.select("codex", Status.WORKING, scrollOffset = 1)
+        f.frames(recent, codexFreeformQuestion)
+        f.read()
+        assertEquals(listOf("recent"), f.trace())
+        assertEquals(recent, f.vm.paneText)
+    }
+
     @Test fun workingCodexUpgradesAReviewOnlyCaptureBeforeBulkCompletes() = withFixture { f ->
         val clipped = codex()
         val complete = clipped.lineSequence().filterNot { it.contains("lines omitted") }.joinToString("\n")
@@ -160,12 +201,14 @@ class CardPreviewReadTest {
         } finally {
             fixture.vm.viewModelScope.cancel()
             fixture.ssh.close()
+            shadowOf(Looper.getMainLooper()).idle()
         }
     }
 
     private class Fixture(private val dir: File) {
         val cli = file("preview-cli").path
-        private val server = Server(id = "test", name = "Test", host = "127.0.0.1", port = 2222, user = "dev", herdrPath = cli)
+        private val server = Server(id = "test", name = "Test", host = "127.0.0.1", port = 2222,
+            user = System.getenv("HD_PREVIEW_FIXTURE_USER") ?: "dev", herdrPath = cli)
         val ssh = HerdrSsh(server.host, server.port, server.user,
             Credentials(KeySource.Imported(file("client-key").readText(), null), null),
             file("pin").readText().trim(), { null })

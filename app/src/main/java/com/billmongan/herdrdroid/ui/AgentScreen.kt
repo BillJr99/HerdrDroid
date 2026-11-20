@@ -259,7 +259,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     val waitingForHermes = vm.waitingForHermesComposer(paneId)
     val prompt: Prompt? = if (typingAnswer || usageOverlay != null) null
         else if (vm.paneReadProblem != null) (if (status == Status.NEEDS_YOU) Prompt("This agent is waiting for you.", emptyList()).forCard() else null)
-        else detectPrompt(screenText, status == Status.NEEDS_YOU, pane?.agent, vm.versionOf(paneId))?.forCard()
+        else detectPrompt(screenText, status == Status.NEEDS_YOU, pane?.agent, vm.versionOf(paneId))
+            ?.takeIf { !it.codexQuestion || shownTarget != null }?.forCard()
     fun send() {
         if (usageBlocksInput || backgroundDrawer || (openingPreview != null && prompt != null)) return
         val draft = answerDraft
@@ -1263,8 +1264,11 @@ internal fun PromptCard(
             }
             // Each choice grows to fit its whole label; the page scrolls, the card has no scroll of its own.
             if (p.terminalReview) {
-                Text(if (p.hermesClarify) "Answer this Hermes question in Terminal."
-                    else "This preview is incomplete. Open the terminal to review the full command before answering.",
+                Text(when {
+                    p.hermesClarify -> "Answer this Hermes question in Terminal."
+                    p.codexQuestion -> "Answer this Codex question in Terminal."
+                    else -> "This preview is incomplete. Open the terminal to review the full command before answering."
+                },
                     color = Palette.Muted, fontSize = 12.5.sp)
                 onShowTerminal?.let { show ->
                     TextButton(onClick = show, modifier = Modifier.fillMaxWidth()) { Text("Show terminal") }

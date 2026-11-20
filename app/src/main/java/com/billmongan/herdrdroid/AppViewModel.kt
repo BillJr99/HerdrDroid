@@ -1501,13 +1501,15 @@ class AppViewModel internal constructor(
                 pane(paneId)?.scrollOffset == 0
             // A nonempty recent capture can omit the entire dialog or just Claude's choices
             // while status still says Working. Probe only the selected, live-bottom viewport.
-            val missingCodexApproval = agent == "codex" && paneStatus == Status.WORKING && preview == null
+            val missingCodexCard = agent == "codex" && paneStatus == Status.WORKING && preview?.choices.isNullOrEmpty()
+            val recentCodexQuestion = preview?.codexQuestion == true && client?.backend == Backend.TUI
+            val requireCodexApprovalIdentity = (missingCodexCard && preview?.terminalReview != true) || recentCodexQuestion
             val unfinishedClaudePreview = agent == "claude" && paneStatus == Status.WORKING && preview?.choices.isNullOrEmpty()
             val verifyOpenCode = isOpenCode(agent) && client?.backend == Backend.TUI &&
                 (blocked || paneStatus == Status.WORKING || preview != null || openCodeBackgroundDrawer(agent, recent))
             val verifyHermesUsage = agent == "hermes"
             val liveCard = if (liveUsage == null &&
-                (verifyOpenCode || verifyHermesUsage || missingCodexApproval || unfinishedClaudePreview || preview?.terminalReview == true || (blocked && preview?.choices.isNullOrEmpty())) && canUpgrade()) {
+                (verifyOpenCode || verifyHermesUsage || missingCodexCard || unfinishedClaudePreview || preview?.terminalReview == true || (blocked && preview?.choices.isNullOrEmpty())) && canUpgrade()) {
                 val owner = checkNotNull(cardOwner)
                 quietly { h ->
                     if (h !== owner.client) return@quietly null
@@ -1518,11 +1520,12 @@ class AppViewModel internal constructor(
                     ?.takeIf { canUpgrade() && !it.isBlank() }
             } else null
             if (!isOpen()) return
-            val livePrompt = liveCard?.let { detectPrompt(it, pane(paneId)?.status == Status.NEEDS_YOU, agent, version) }
-                ?.takeIf {
-                    verifyOpenCode || (it.choices.isNotEmpty() && !it.terminalReview && (!missingCodexApproval || it.approvalIdentity != null)) ||
-                        ((missingCodexApproval || verifyHermesUsage) && it.terminalReview)
-                }
+            val liveCandidate = liveCard?.let { detectPrompt(it, pane(paneId)?.status == Status.NEEDS_YOU, agent, version) }
+            val livePrompt = liveCandidate?.takeIf {
+                verifyOpenCode || it.codexQuestion ||
+                    (it.choices.isNotEmpty() && !it.terminalReview && (!requireCodexApprovalIdentity || it.approvalIdentity != null)) ||
+                    ((requireCodexApprovalIdentity || verifyHermesUsage) && it.terminalReview)
+            }
             val liveReport = verifyHermesUsage && liveCard != null && hermesUsageEnd(liveCard) != null
             val recentReport = verifyHermesUsage && hermesUsageEnd(recent) != null
             val verifiedUsage = liveCard?.takeIf { verifyHermesUsage && livePrompt == null &&
@@ -1535,8 +1538,9 @@ class AppViewModel internal constructor(
                 if (liveReport || continued && ready) HermesUsageRead(owner, ready) else null
             }
             val recentClarify = preview?.hermesClarify == true
-            val requiresLive = verifyOpenCode || recentClarify
-            val useLive = liveCard != null && (livePrompt != null || liveReport || recentReport || verifiedUsage != null || recentClarify || verifyOpenCode &&
+            val requiresLive = verifyOpenCode || recentClarify || recentCodexQuestion
+            val codexQuestionCleared = recentCodexQuestion && liveCandidate == null
+            val useLive = liveCard != null && (livePrompt != null || liveReport || recentReport || verifiedUsage != null || recentClarify || codexQuestionCleared || verifyOpenCode &&
                 (blocked || preview != null || openCodeBackgroundDrawer(agent, recent) || openCodeBackgroundDrawer(agent, liveCard)))
             val text = if (useLive) checkNotNull(liveCard) else recent
             lastAppliedPaneRead = attempt
