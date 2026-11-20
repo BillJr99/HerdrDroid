@@ -3,6 +3,32 @@ package com.billmongan.herdrdroid.herdr
 /** The actual pane occupant and live usage frame. A public pane ID alone can be reused. */
 internal data class UsageOverlay(val occupant: String, val visible: String)
 
+// Hermes prints these reports into the transcript (classic CLI and Ink). None of these
+// headings, token counts, or neighboring key hints is evidence that Escape is safe.
+private val HERMES_USAGE_TITLE = Regex("""(?:📊\s*)?(?:(?:Session )?Token Usage|Usage)""")
+private val HERMES_USAGE_ROW = Regex("""(?:Input tokens|Output tokens|Total tokens|API calls)(?::\s*|\s+)[\d,.]+""")
+
+/** End of the last identifiable report; text below it may contain a newer, real question. */
+internal fun hermesUsageEnd(screen: String): Int? {
+    val lines = stripAnsi(screen).lines()
+    fun body(row: String) = row.trim().trim('│', '*').trim()
+    val start = lines.indexOfLast { HERMES_USAGE_TITLE.matches(body(it)) }
+    if (start < 0 || start < lines.size - 80) return null
+    val rows = lines.drop(start + 1).take(18).takeWhile {
+        val row = it.trim()
+        !row.startsWith('╰') && !row.startsWith('╭') && !row.startsWith('❯') && !row.startsWith('›')
+    }
+    val counters = rows.withIndex().filter { HERMES_USAGE_ROW.matches(body(it.value)) }
+    return counters.lastOrNull()?.index?.takeIf { counters.size >= 2 }?.let { start + 1 + it }
+}
+
+/** For rapport/dispatch only: no question inferred from prior scrollback or the report's chrome. */
+internal fun hermesUsageWaiting(screen: String): Boolean {
+    val end = hermesUsageEnd(screen) ?: return false
+    val tail = screen.lineSequence().drop(end + 1).joinToString("\n")
+    return inputLineOf(tail, "hermes") == null && detectPrompt(screen, false, "hermes") == null
+}
+
 /** No fallback read, queued key, or retry. The caller refreshes the screen after any attempt. */
 internal suspend fun dismissUsageOverlay(
     shown: UsageOverlay,

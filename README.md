@@ -376,6 +376,7 @@ If you build for yourself without the project's key, use your own key (a standar
 
 ## Version history
 
+- **2.0.5.** Hermes token reports no longer show as pending questions. Messages wait if Usage is still on screen without a composer; the app does not send a key to dismiss ordinary output. Claude checkbox cards expose a separate review or submit button when the terminal shows how to proceed. Checking a box does not submit the answers.
 - **2.0.0-rc.8.** Choose Phone or Bluetooth for Read aloud and hands-free from the chat mic menu.
 - **2.0.0-rc.7.** Phone polling reads passive snapshots and leaves desktop pane scroll positions alone. Usage checks that open panels skip the focused desktop pane.
 - **2.0.0-rc.6.** Claude usage panels stay out of question cards. HerdrDroid checks that a usage panel is still open before closing it.

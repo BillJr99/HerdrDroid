@@ -956,6 +956,8 @@ data class Prompt(
     internal val approvalIdentity: String? = null,
     /** OpenCode's permission row needs a styled, live focus read before confirming. */
     internal val openCodePermission: Boolean = false,
+    /** A native Claude checkbox footer proved what the explicit action does. */
+    internal val claudeMultiKey: String? = null,
 ) {
     /**
      * Never an empty card (1.4.2): a prompt with no choices always has something to show, the
@@ -1833,6 +1835,12 @@ private fun detectHermesCommandPreview(text: String): Prompt? {
 
 fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version: String? = null): Prompt? {
     val plain = stripAnsi(text)
+    if (agent.equals("hermes", true)) hermesUsageEnd(plain)?.let { end ->
+        // A report supersedes any old question above it, not a new card below it. A close
+        // hint alone is not a question, even when herdr still reports that it is blocked.
+        val after = plain.lines().drop(end + 1).joinToString("\n")
+        return detectPlainPrompt(after, false, agent, version)?.takeIf { it.choices.isNotEmpty() || it.terminalReview }
+    }
     if (isOpenCode(agent)) {
         if (openCodeBackgroundDrawer(agent, plain) || openCodeComposerMode(plain.lines().takeLast(20)) >= 0) return null
         detectOpenCodePermission(text, plain)?.let { return it }
@@ -2104,13 +2112,23 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
         // Vibe draws no marker on the highlighted row; a fresh card highlights the first one.
         val selected = run.firstOrNull { it.first in marked }?.second ?: if (vibeCard) "1" else null
         val multi = numbered.count { isCheckbox(it.label) } >= 2
+        val claudeMultiKey = if (agent == "claude" && multi && selected != null) {
+            val hints = below.map(clean).flatMap { it.split('·').map(String::trim) }
+            when {
+                hints.any { it.equals("Enter to submit", true) } && hints.any { it.equals("Space to toggle", true) } -> "enter"
+                hints.any { it.equals("Tab/Arrow keys to navigate", true) } && hints.any { it.equals("Space to toggle", true) } &&
+                    parts?.tabs?.let { tabs -> tabs.lastOrNull()?.submit == true && tabs.getOrNull(tabs.lastIndex - 1)?.current == true } == true -> "tab"
+                else -> null
+            }
+        } else null
         // Codex (by name, or by its "Press enter to confirm or esc to cancel" footer) answers an
         // option by the key in its label; other agents keep arrows and Enter (1.4.2, from review).
         // Muse Code (1.4.7) does the same ("Allow this stage once (y)", "... (p)", "Abort the entire
         // command (esc)"), known by name or by its "Change approval defaults in /permissions" line.
         val shortcuts = agent?.lowercase() in setOf("codex", "muse") ||
             lines.takeLast(4).any { CODEX_FOOTER.containsMatchIn(it) || MUSE_CARD_FOOTER.containsMatchIn(it) }
-        return Prompt(question ?: "Choose an option", numbered, selected, escRejects = vibeCard, parts = parts, multi = multi, shortcuts = shortcuts, approvalIdentity = approvalIdentity)
+        return Prompt(question ?: "Choose an option", numbered, selected, escRejects = vibeCard, parts = parts, multi = multi,
+            shortcuts = shortcuts, approvalIdentity = approvalIdentity, claudeMultiKey = claudeMultiKey)
     }
 
     val yn = Regex("""[(\[]\s*[yY](?:es)?\s*/\s*[nN]o?\s*[)\]]""")

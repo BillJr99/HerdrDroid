@@ -256,6 +256,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     val usageOverlay = vm.usageOverlayFor(paneId)
     val dismissingUsage = vm.usageDismissInFlight(paneId)
     val usageBlocksInput = usageOverlay != null || dismissingUsage
+    val waitingForHermes = vm.waitingForHermesComposer(paneId)
     val prompt: Prompt? = if (typingAnswer || usageOverlay != null) null
         else if (vm.paneReadProblem != null) (if (status == Status.NEEDS_YOU) Prompt("This agent is waiting for you.", emptyList()).forCard() else null)
         else detectPrompt(screenText, status == Status.NEEDS_YOU, pane?.agent, vm.versionOf(paneId))?.forCard()
@@ -273,7 +274,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         }
         if (normalMessage.isNotBlank() && pane != null) {
             val text = normalMessage.trim()
-            if (prompt != null || vm.hasPendingQuestion(pane)) {
+            if (waitingForHermes || prompt != null || vm.hasPendingQuestion(pane)) {
                 vm.enqueue(paneId, text)
                 normalMessage = ""
                 return
@@ -555,6 +556,12 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 usageOverlay?.let(vm::dismissUsage)
             }
         }
+        if (waitingForHermes && !fullTerminal && !live) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Waiting for Hermes to return to its composer after Usage.", Modifier.weight(1f), color = Palette.Muted)
+                TextButton(onClick = { fullTerminal = true; termFollow = true }) { Text("Show terminal") }
+            }
+        }
         // The chat with its question history in place (1.3.0). A question still open is left out
         // while its card is showing, so it isn't on screen twice.
         val questionsNow = vm.questionsFor(paneId)
@@ -718,7 +725,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                             onRemove = { vm.cancelQueued(q) },
                             sendLabel = "Send immediately",
                             onSend = { vm.sendQueuedImmediately(q) },
-                            sendEnabled = vm.link == Link.CONNECTED && !usageBlocksInput && prompt == null && !typingAnswer && status != Status.NEEDS_YOU,
+                            sendEnabled = vm.link == Link.CONNECTED && !usageBlocksInput && !waitingForHermes && prompt == null && !typingAnswer && status != Status.NEEDS_YOU,
                         )
                     }
                     unsent.forEach { p ->
@@ -738,7 +745,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                                     else -> null
                                 },
                                 onSend = { vm.forceSendPending(p.id) },
-                                sendEnabled = vm.canForceSendPending && !usageBlocksInput && prompt == null && !typingAnswer && status != Status.NEEDS_YOU,
+                                sendEnabled = vm.canForceSendPending && !usageBlocksInput && !waitingForHermes && prompt == null && !typingAnswer && status != Status.NEEDS_YOU,
                                 forceSendMenu = true,
                             )
                         }
@@ -755,7 +762,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     ) {
                         commandScreen?.let { c ->
                             ComposerChip("Back to chat", false) { fullTerminal = false }
-                            Text("$c: use the keys to choose", color = Palette.Muted, fontSize = 12.5.sp, maxLines = 1, softWrap = false)
+                            Text(if (c == "/usage" && pane?.agent == "hermes") "$c: usage report" else "$c: use the keys to choose",
+                                color = Palette.Muted, fontSize = 12.5.sp, maxLines = 1, softWrap = false)
                         }
                         found.urls.forEach { u ->
                             ComposerChip("Open " + u.substringAfter("://").take(40), false) {
@@ -791,6 +799,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 placeholder = if (modifiersOn) "Type a letter to send it with ${if (ctrl != Hold.OFF) "Ctrl" else "Alt"}"
                 else if (typingAnswer) if (vm.answerInFlight(paneId)) "Checking answer…" else "Type your answer"
                 else if (backgroundDrawer) "Close the background drawer to send"
+                else if (waitingForHermes) "Send when Hermes is ready"
                 else if (prompt != null || status == Status.NEEDS_YOU) "Send after answer"
                 else "Message ${pane?.agentName ?: "this tab"}",
                 canSend = message.isNotBlank() && pane != null && !usageBlocksInput && !backgroundDrawer &&
@@ -1286,7 +1295,7 @@ internal fun PromptCard(
                         KeyButton("Enter") { onKey("enter") }
                     }
                 }
-                if (p.multi) Text("Several can be picked: each option below turns its box on or off; Enter (or the agent's Submit option) sends them.",
+                if (p.multi) Text("Several can be picked. Tapping a checkbox only turns that choice on or off.",
                     color = Palette.Muted, fontSize = 12.5.sp)
                 p.choices.forEachIndexed { i, c ->
                     // Say what tapping really sends: arrows and Enter for a menu with a highlighted row,
@@ -1328,6 +1337,11 @@ internal fun PromptCard(
                             contentPadding = pad,
                             modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
                         ) { body() }
+                    }
+                }
+                p.claudeMultiKey?.let { key ->
+                    Button(onClick = { onKey(key) }, enabled = !sending, modifier = Modifier.fillMaxWidth()) {
+                        Text(if (key == "tab") "Review answers" else "Submit answers")
                     }
                 }
             }
