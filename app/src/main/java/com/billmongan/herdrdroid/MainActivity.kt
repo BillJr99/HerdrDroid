@@ -201,7 +201,7 @@ class MainActivity : FragmentActivity() {
                         com.billmongan.herdrdroid.ui.SessionDrawer(vm)
                         VerticalDivider(color = Palette.Line)
                         Box(Modifier.weight(1f).fillMaxHeight()) {
-                            androidx.compose.runtime.key(s0.paneId) { AgentScreen(vm, s0.paneId) }
+                            androidx.compose.runtime.key(vm.chatServerId, s0.paneId) { AgentScreen(vm, s0.paneId) }
                         }
                     }
                 } else if (wide && s0 == Screen.Tabs) {
@@ -211,7 +211,7 @@ class MainActivity : FragmentActivity() {
                         VerticalDivider(color = Palette.Line)
                         Box(Modifier.weight(0.58f).fillMaxHeight()) {
                             if (s0 is Screen.Agent) {
-                                androidx.compose.runtime.key(s0.paneId) { AgentScreen(vm, s0.paneId) }
+                                androidx.compose.runtime.key(vm.chatServerId, s0.paneId) { AgentScreen(vm, s0.paneId) }
                             } else {
                                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                                     Text("Choose an agent on the left.", color = Palette.Muted, fontSize = 16.sp)
@@ -258,7 +258,9 @@ class MainActivity : FragmentActivity() {
                                 }
                             },
                         ) {
-                            AgentScreen(vm, s.paneId)
+                            // Keyed by server (2.1.1): the same pane id on another server is another chat, so
+                            // its composer text (saved per pane id) never carries over.
+                            androidx.compose.runtime.key(vm.chatServerId) { AgentScreen(vm, s.paneId) }
                         }
                     }
                     Screen.Usage -> {
