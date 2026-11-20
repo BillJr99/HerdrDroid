@@ -63,6 +63,27 @@ class SuccessiveCardAnswerTest {
             assertTrue(sent.isEmpty())
         }
 
+    @Test fun newerHermesApprovalReplacesClarifyWithoutReceivingItsDigit() = fixture("hermes", hermesClarify) {
+        readSelectedPane()
+        val clarify = displayed()
+        val target = checkNotNull(vm.paneTextTarget)
+        assertTrue(clarify.hermesClarify)
+        recentResult = ExecResult(0, hermesClarify, "")
+        val approval = checkNotNull(javaClass.getResource(
+            "/screens/hermes/derived-1.4.9/1001-dangerous-command-approval.txt")).readText().trimEnd()
+        frame = "$hermesClarify\n\n$approval"
+
+        answer(clarify, target, index = 1)
+        assertTrue(vm.notice.orEmpty().startsWith("Not sent."))
+        readSelectedPane()
+        val newer = displayed()
+        assertTrue(newer.question, newer.question.contains("Dangerous Command"))
+        assertFalse(newer.hermesClarify)
+        assertFalse(newer.terminalReview)
+        assertTrue(newer.choices.isNotEmpty())
+        assertTrue(sent.isEmpty())
+    }
+
     @Test fun hermesClarifyBlocksAForcedMessageAndGenericCardInput() = fixture("hermes", hermesClarify) {
         status(Status.IDLE)
         recentResult = ExecResult(0, hermesComposer, "")

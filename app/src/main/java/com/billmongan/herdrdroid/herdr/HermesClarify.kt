@@ -39,7 +39,8 @@ internal fun hermesClarifyFrame(plain: String): HermesClarifyFrame? {
 
     // PromptZone is above the status rule and the composer is suppressed while it owns input.
     // Accept a wrapped hint, but not a newer composer, approval or other content after it.
-    val tail = if (footer < 0) emptyList() else rows.drop(footer + 1).filter { it.isNotBlank() }
+    val tailIndices = if (footer < 0) emptyList() else (footer + 1..rows.lastIndex).filter { rows[it].isNotBlank() }
+    val tail = tailIndices.map { rows[it] }
     val hintRows = tail.takeWhile { it != "Esc/Ctrl+C cancel" && !it.endsWith(" Esc/Ctrl+C cancel") }
     val hintCount = when {
         footer < 0 || rows[footer].endsWith(" cancel") || rows[footer].endsWith(" Esc back") -> 0
@@ -47,14 +48,14 @@ internal fun hermesClarifyFrame(plain: String): HermesClarifyFrame? {
         else -> 0
     }
     val after = tail.drop(hintCount)
-    val chrome = after.size <= 1 && after.all { statusRule.matches(it) }
-    if (footer >= 0 && !chrome && after.firstOrNull()?.let {
+    val statusCount = if (after.firstOrNull()?.let(statusRule::matches) == true) 1 else 0
+    val newer = after.drop(statusCount)
+    val chrome = newer.isEmpty()
+    if (footer >= 0 && newer.firstOrNull()?.let {
             it.startsWith('❯') || it.startsWith('›') || it.startsWith('╭') || it.all { c -> c in "─━═" }
         } == true) {
-        // The old native footer is no longer the bottom-most UI. Parse only the newer rows.
-        val end = if (hintCount == 0) footer else (footer + 1..rows.lastIndex)
-            .filter { rows[it].isNotBlank() }[hintCount - 1]
-        return HermesClarifyFrame(remainder = lines.drop(end + 1).joinToString("\n"))
+        // New UI follows the old native footer and its optional status rule.
+        return HermesClarifyFrame(remainder = lines.drop(tailIndices[hintCount + statusCount]).joinToString("\n"))
     }
 
     val question = rows.getOrNull(head + 1)?.takeIf { head >= 0 && it.startsWith("▸ ") }?.substring(2)

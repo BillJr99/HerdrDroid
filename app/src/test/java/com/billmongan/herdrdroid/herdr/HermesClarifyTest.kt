@@ -45,6 +45,21 @@ class HermesClarifyTest {
         }
     }
 
+    @Test fun statusRuleAfterClarifyDoesNotMaskANewerApproval() {
+        val approval = checkNotNull(javaClass.getResource(
+            "/screens/hermes/derived-1.4.9/1001-dangerous-command-approval.txt")).readText()
+        val expected = checkNotNull(detectPrompt(approval, false, "hermes"))
+        assertTrue(expected.choices.isNotEmpty())
+        assertEquals(expected, detectPrompt("$hermesClarify\n\n$approval", false, "hermes"))
+    }
+
+    @Test fun ambiguousTextAfterStatusRuleKeepsClarifyTerminalOnly() {
+        val card = checkNotNull(detectPrompt("$hermesClarify\nUnrecognized output", false, "hermes"))
+        assertTrue(card.hermesClarify)
+        assertTrue(card.terminalReview)
+        assertTrue(card.choices.isEmpty())
+    }
+
     @Test fun expiredClarifyIsNotALiveQuestionAndDoesNotMaskANewerApproval() {
         val expired = """
             (clarify timed out after 90s — continuing without an answer)
