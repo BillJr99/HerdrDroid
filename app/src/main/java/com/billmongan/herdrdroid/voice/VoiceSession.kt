@@ -10,7 +10,7 @@ import com.billmongan.herdrdroid.transcript.TextItem
 import com.billmongan.herdrdroid.transcript.UserItem
 
 internal enum class ConfirmationGrammar(val grammar: String) {
-    ANSWER("""["confirm answer","cancel answer","repeat that","[unk]"]"""),
+    ANSWER("""["confirm answer","cancel answer","confirm approval","cancel approval","repeat that","[unk]"]"""),
     MESSAGE("""["confirm message","cancel message","repeat that","[unk]"]"""),
 }
 

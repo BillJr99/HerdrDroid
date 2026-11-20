@@ -464,6 +464,9 @@ class Herdr internal constructor(
         if (core) runNow(hcCmd("keys", paneId, *keys), expectedConnection = expectedConnection)
         else runNow(cmd("pane", "send-keys", paneId, *keys), expectedConnection = expectedConnection)
 
+    internal suspend fun sendPermittedKeys(paneId: String, keys: List<String>, connection: Any, permit: WritePermit) =
+        runNow(cmd("pane", "send-keys", paneId, *keys.toTypedArray()), expectedConnection = connection, permit = permit)
+
     private fun usageSnapshotCommand(paneId: String, agent: String) =
         "$PY -c ${shq(USAGE_OVERLAY_SNAPSHOT)} $herdr ${shq(paneId)} ${shq(agent)}"
 
