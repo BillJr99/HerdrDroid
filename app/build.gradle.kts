@@ -28,7 +28,11 @@ android {
     testOptions {
         unitTests {
             isIncludeAndroidResources = true
-            all { it.systemProperty("robolectric.logging", "stdout") }
+            all {
+                it.systemProperty("robolectric.logging", "stdout")
+                // Use Maven Central's canonical host for Robolectric's runtime SDK fetches.
+                it.systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")
+            }
         }
     }
 
