@@ -38,6 +38,11 @@ object Reflow {
     private val SCROLLBAR = Regex("""\s+[█▐▌▕▏]$""")
     private val CLOCK = Regex("""\s{3,}\d{1,2}:\d{2}\s?[AaPp][Mm]$""")
     private val GAP6 = Regex(""" {6,}""")
+    private val GROK_THOUGHT = Regex("""Thought for \d+(?:\.\d+)?s""")
+    private val GROK_PROMPT = Regex("""│\s*❯(?:\s+.*?)?\s*│""")
+    private val SELECTED_CHOICE = Regex("""[❯›]\s+(\d{1,3})[.)]\s+\S.*""")
+    private val OTHER_CHOICE = Regex("""(\d{1,3})[.)]\s+\S.*""")
+    private val TABLE_RULE = Regex("""(?:[┌├└][─┬┼┴]+[┐┤┘]|[╔╠╚][═╦╬╩]+[╗╣╝])""")
 
     /** The line without a scrollbar, a right-aligned clock, or a side panel to its right. */
     fun clean(line: String): String {
@@ -87,20 +92,57 @@ object Reflow {
         sb.append(next)
     }
 
-    fun parse(text: String, antigravity: Boolean = false): List<Seg> {
+    fun parse(text: String, antigravity: Boolean = false, grok: Boolean = false): List<Seg> {
         val raw = text.lines().map(::clean)
 
         // The agent's input box and status line: from the first rule or box edge among the last
         // five lines with text on them, or else from the last input prompt there.
         val window = raw.indices.filter { raw[it].isNotBlank() }.takeLast(5)
-        val footerAt = window.firstOrNull { i ->
-            isRule(raw[i]) || raw[i].trimStart().firstOrNull()?.let { it in CHROME_START } == true
-        } ?: window.lastOrNull { PROMPT_ONLY.matches(raw[it]) } ?: raw.size
+        // Antigravity replies can end with a short table or separator when the composer is
+        // not visible. Only peel off its footer when we see a prompt between composer rules.
+        val agyComposer = if (antigravity) window.lastOrNull { i ->
+            val prompt = raw[i].trim()
+            (prompt == ">" || prompt.startsWith("> ")) &&
+                raw.getOrNull(i - 1)?.let(::isRule) == true &&
+                raw.getOrNull(i + 1)?.let(::isRule) == true &&
+                raw.drop(i + 2).any { it.contains("Shift+Tab to change mode", ignoreCase = true) }
+        } else null
+        // A Grok reply can end in a box too. Require the native prompt, model border and mode hint.
+        val grokComposer = if (grok) window.lastOrNull { i ->
+            GROK_PROMPT.matches(raw[i].trim()) &&
+                raw.getOrNull(i - 1)?.trim()?.matches(Regex("╭─+╮")) == true &&
+                raw.getOrNull(i + 1)?.trim()?.let { it.startsWith("╰─") && it.endsWith("─╯") && " Grok " in it } == true &&
+                raw.drop(i + 2).firstOrNull { it.isNotBlank() }?.trimStart()?.startsWith("Shift+Tab:mode") == true
+        } else null
+        // Antigravity marks the selected menu row with the same glyph as a user echo.
+        // Recognize a numbered menu only when a neighboring numbered choice confirms it.
+        val agyChoices = if (antigravity && agyComposer == null) window.lastOrNull { i ->
+            val selected = SELECTED_CHOICE.matchEntire(raw[i].trim())?.groupValues?.get(1)?.toInt()
+            selected != null && listOf(-1, 1).any { offset ->
+                val neighbor = raw.getOrNull(i + offset)?.trim()?.let(OTHER_CHOICE::matchEntire)
+                neighbor?.groupValues?.get(1)?.toInt() == selected + offset
+            }
+        }?.let { selected ->
+            var start = selected
+            var number = SELECTED_CHOICE.matchEntire(raw[selected].trim())!!.groupValues[1].toInt()
+            while (start > 0 && OTHER_CHOICE.matchEntire(raw[start - 1].trim())?.groupValues?.get(1)?.toInt() == number - 1) {
+                start--
+                number--
+            }
+            start
+        } else null
+        val footerAt = if (antigravity || grok) (agyComposer ?: grokComposer)?.minus(1) ?: agyChoices ?: raw.size else
+            window.firstOrNull { i ->
+                isRule(raw[i]) || raw[i].trimStart().firstOrNull()?.let { it in CHROME_START } == true
+            } ?: window.lastOrNull { PROMPT_ONLY.matches(raw[it]) } ?: raw.size
         val body = raw.subList(0, footerAt)
-        val footer = raw.subList(footerAt, raw.size)
-            .filterNot { isRule(it) }
-            .map { l -> l.filterNot { it in BOX }.trim().removePrefix("❯").removePrefix("›").trim() }
-            .filter { it.isNotEmpty() && !(antigravity && it == ">") }
+        val footer = (footerAt until raw.size)
+            .filterNot { isRule(raw[it]) }
+            .map { i ->
+                if (i == agyComposer) raw[i].trimStart().removePrefix(">").trim()
+                else raw[i].filterNot { it in BOX }.trim().removePrefix("❯").removePrefix("›").trim()
+            }
+            .filter { it.isNotEmpty() }
 
         val width = body.maxOfOrNull { it.length }?.coerceAtLeast(20) ?: 80
         val margin = body.filter { it.isNotBlank() && !isWide(it) }
@@ -135,7 +177,7 @@ object Reflow {
             }
             val t = l.trim()
             val lead = l.length - l.trimStart().length
-            if (isRule(t)) {
+            if (isRule(t) && !((antigravity || grok) && TABLE_RULE.matches(t))) {
                 flushAll()
                 out += Seg.Rule
                 continue
@@ -170,10 +212,12 @@ object Reflow {
                 val mark = m.value.trim()
                 // Antigravity prefixes top-level replies and activity with terminal markers.
                 // Keep the hanging indent for reflow, and leave nested bullets and tables alone.
+                val content = t.substring(m.value.length)
                 val chrome = antigravity && lead == margin && (mark == "●" || mark == "○") &&
                     m.value.last().isWhitespace()
-                P(lead, mark.takeUnless { chrome }, lead + m.value.length,
-                    mark == "⎿" || (chrome && mark == "○"), t.substring(m.value.length), l.length)
+                val grokThought = grok && lead == margin && mark == "◆" && GROK_THOUGHT.matches(content)
+                P(lead, mark.takeUnless { chrome || grokThought }, lead + m.value.length,
+                    mark == "⎿" || (chrome && mark == "○") || grokThought, content, l.length)
             } else {
                 P(lead, null, lead, false, t, l.length)
             }

@@ -157,6 +157,10 @@ fun keepResealed(incoming: Server, stored: Server?, oldKeysGone: Boolean = true,
 class AppPrefs(context: Context) {
     private val prefs = context.getSharedPreferences("app", Context.MODE_PRIVATE)
 
+    var agentMessagingEnabled: Boolean
+        get() = prefs.getBoolean("agentMessagingEnabled", false)
+        set(v) = prefs.edit().putBoolean("agentMessagingEnabled", v).apply()
+
     var theme: String
         get() = prefs.getString("theme", "SYSTEM") ?: "SYSTEM"
         set(v) = prefs.edit().putString("theme", v).apply()

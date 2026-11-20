@@ -13,6 +13,7 @@ import com.billmongan.herdrdroid.herdr.forPhone
 import com.billmongan.herdrdroid.transcript.lastReply
 import com.billmongan.herdrdroid.transcript.toMarkdown
 import com.billmongan.herdrdroid.herdr.detectPrompt
+import com.billmongan.herdrdroid.herdr.activePiQuestion
 import com.billmongan.herdrdroid.herdr.isOpenCode
 import com.billmongan.herdrdroid.herdr.openCodeBackgroundDrawer
 import com.billmongan.herdrdroid.herdr.openCodeEmptyComposer
@@ -21,6 +22,7 @@ import com.billmongan.herdrdroid.herdr.Choice
 import com.billmongan.herdrdroid.herdr.cardAnswerStillFits
 import com.billmongan.herdrdroid.herdr.moveKeys
 import com.billmongan.herdrdroid.hermes.HermesChat
+import com.billmongan.herdrdroid.hermes.HermesLiveState
 import com.billmongan.herdrdroid.notify.AppBus
 import com.billmongan.herdrdroid.notify.Notify
 import com.billmongan.herdrdroid.notify.NotifyAction
@@ -55,6 +57,11 @@ import com.billmongan.herdrdroid.herdr.hermesUsageEnd
 import com.billmongan.herdrdroid.herdr.hermesUsageWaiting
 import com.billmongan.herdrdroid.herdr.footerModel
 import com.billmongan.herdrdroid.herdr.Status
+import com.billmongan.herdrdroid.herdr.RelayResult
+import com.billmongan.herdrdroid.herdr.WritePermit
+import com.billmongan.herdrdroid.herdr.agentMessageFrame
+import com.billmongan.herdrdroid.herdr.hasStableOccupant
+import com.billmongan.herdrdroid.herdr.sameOccupant
 import com.billmongan.herdrdroid.ssh.AuthRejected
 import com.billmongan.herdrdroid.ssh.Credentials
 import com.billmongan.herdrdroid.ssh.HerdrSsh
@@ -72,6 +79,8 @@ import com.billmongan.herdrdroid.store.SshKeyVault
 import com.billmongan.herdrdroid.ui.ReadingFont
 import com.billmongan.herdrdroid.ui.ThemeMode
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.delay
@@ -118,16 +127,34 @@ private class Queued(
     val run: suspend (Herdr) -> Unit,
 )
 
-class AppViewModel(app: Application) : AndroidViewModel(app) {
+class AppViewModel internal constructor(
+    app: Application,
+    // Keep all adapter work in this scope; recheck cancellation at the final submission boundary.
+    // Cancellation drops pending work but cannot recall input already submitted to a destination.
+    private val runAgentMessagingSession: (suspend (CoroutineScope) -> Unit)?,
+) : AndroidViewModel(app) {
+    constructor(app: Application) : this(app, null)
+
     private val store = ServerStore(app)
     private val prefs = AppPrefs(app)
+    var agentMessagingEnabled by mutableStateOf(prefs.agentMessagingEnabled)
+        private set
+
+    fun changeAgentMessaging(on: Boolean) {
+        agentMessagingEnabled = on
+        updateAgentMessagingSession()
+        prefs.agentMessagingEnabled = on
+    }
 
     private val chatVisit = com.billmongan.herdrdroid.voice.SelectedChatVisit()
     private var currentScreen by mutableStateOf<Screen>(Screen.Servers)
     var screen: Screen
         get() = currentScreen
         set(value) {
-            if (currentScreen != value) openingPanePreview = null
+            if (currentScreen != value) {
+                clearAgentMessage()
+                openingPanePreview = null
+            }
             chatVisit.navigate((currentScreen as? Screen.Agent)?.paneId, (value as? Screen.Agent)?.paneId)
             currentScreen = value
         }
@@ -204,6 +231,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     internal var paneTextTarget by mutableStateOf<CardTarget?>(null)
         private set
     private var openCodeComposerTarget by mutableStateOf<CardTarget?>(null)
+    private var piLiveQuestion by mutableStateOf<Prompt?>(null)
+    /**
+     * A draft typed in the open pane's input box at the computer, read from its live screen (2.1.0).
+     * [actionable]: the draft's end shows and the pane reports who is in it, so Send draft can be offered.
+     */
+    internal data class PaneDraftShown(
+        val target: CardTarget, val text: String, val actionable: Boolean, val clearable: Boolean,
+        /** Why Send draft is off now ([com.billmongan.herdrdroid.herdr.draftSendBlock]), or null. */
+        val sendNote: String? = null,
+    )
+    internal var paneDraft by mutableStateOf<PaneDraftShown?>(null)
+        private set
+    /** "send" or "clear" while a draft action runs, per (server, pane). */
+    private var draftActions by mutableStateOf<Map<Pair<String, String>, String>>(emptyMap())
+    fun paneDraftBusy(paneId: String): String? = current?.id?.let { draftActions[it to paneId] }
+    /**
+     * The last styled verdict and what it was read for (2.1.0): the pane, the input line on the plain
+     * read, the occupant, the visit and the connection. The live screen is read again only when one
+     * of them changes, so a pane showing a placeholder costs one extra read, not one per poll.
+     */
+    private var draftReadFor: List<Any?>? = null
     private data class HermesUsageRead(val target: CardTarget, val composerReady: Boolean)
     private var hermesUsageRead by mutableStateOf<HermesUsageRead?>(null)
     var lastSent by mutableStateOf<Pair<String, String>?>(null)
@@ -703,6 +751,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             withContext(Dispatchers.Main) { reloadServers() }
         }
         locked = false
+        updateAgentMessagingSession()
         startBackgroundChecks()
         autoOpen()
         pendingNotification?.let { (s, p) -> pendingNotification = null; openFromNotification(s, p) }
@@ -895,7 +944,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         // The open chat is kept before the connection goes, so a reconnect shows it at once (1.2.9).
         stashOpenChat()
         hermesPoll?.cancel()
-        hermesState = null
+        hermesLiveStates = emptyList()
         rawWorkPanes = emptyList()
         workCounts = emptyMap()
         busyCounts = emptyMap()
@@ -944,6 +993,32 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- Staying connected ------------------------------------------------------------------
 
+    // The existing polling flag defaults to foreground for legacy behavior. Messaging instead
+    // waits for the first real foreground event and never runs under background Watching.
+    private var agentMessagingForeground by mutableStateOf(false)
+    private var agentMessagingActivation: Job? = null
+    private var agentMessagingRunning: Job? = null
+
+    private fun updateAgentMessagingSession() {
+        if (!agentMessagingEnabled || !agentMessagingForeground || locked) {
+            clearAgentMessage()
+            agentMessagingActivation?.cancel()
+            agentMessagingActivation = null
+            return
+        }
+        val runSession = runAgentMessagingSession ?: return
+        if (agentMessagingActivation != null) return // No automatic restart within this activation.
+        val previous = agentMessagingRunning
+        val next = viewModelScope.launch(start = CoroutineStart.LAZY) {
+            // A canceled activation that never started must not hide older in-flight cleanup.
+            previous?.join()
+            agentMessagingRunning = coroutineContext[Job]
+            runSession(this)
+        }
+        agentMessagingActivation = next
+        next.start()
+    }
+
     /** The app is visible again. After more than a few seconds away the old socket is likely dead,
      *  so it is replaced before any poll can stall on it. */
     fun onForeground(handsFreeActive: Boolean = false) {
@@ -956,6 +1031,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             ssh?.reset()
             linkLost(null)
         }
+        agentMessagingForeground = true
+        updateAgentMessagingSession()
     }
 
     internal fun onHandsFreeEnded() {
@@ -968,11 +1045,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (!locked && vaultNeedsUnlock()) {
             writeGate.revokeAll()
             locked = true
+            updateAgentMessagingSession()
             clearPanePrefetch()
         }
     }
 
     fun onBackground() {
+        agentMessagingForeground = false
+        updateAgentMessagingSession()
         foreground = false
         clearPanePrefetch()
         backgroundAt = System.currentTimeMillis()
@@ -993,6 +1073,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun linkLost(e: Exception?) {
         if (herdr == null) return
         if (link == Link.CONNECTED) {
+            clearAgentMessage()
             clearPanePrefetch()
             link = Link.RECONNECTING
             downSince = System.currentTimeMillis()
@@ -1411,6 +1492,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val visit = paneVisit
         val started = android.os.SystemClock.elapsedRealtime()
         val cardOwner = cardTarget(paneId)
+        val messageArm = agentMessage(paneId)?.takeIf { it.text == null }
         fun isOpen() = attempt > lastAppliedPaneRead && current?.id == serverId && herdr === client &&
             paneVisit == visit && (screen as? Screen.Agent)?.paneId == paneId
         fun problem(why: String) {
@@ -1421,8 +1503,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             openingPanePreview = null
             paneTextTarget = null
             openCodeComposerTarget = null
+            piLiveQuestion = null
             hermesUsageRead = null
             openUsage = null
+            paneDraft = null
+            draftReadFor = null
         }
         quietly { h ->
             val waiting = pane(paneId)?.status == Status.NEEDS_YOU
@@ -1451,30 +1536,38 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             fun canUpgrade() = foreground && isOpen() && cardOwner != null &&
                 cardOwner.client.backend == Backend.TUI && cardOwner.isCurrent(cardOwner.client) &&
                 pane(paneId)?.scrollOffset == 0
-            // A nonempty recent capture can omit the entire dialog or just Claude's choices
+            // A nonempty recent capture can omit the entire dialog or just its choices
             // while status still says Working. Probe only the selected, live-bottom viewport.
-            val missingCodexApproval = agent == "codex" && paneStatus == Status.WORKING && preview == null
-            val unfinishedClaudePreview = agent == "claude" && paneStatus == Status.WORKING && preview?.choices.isNullOrEmpty()
+            val missingCodexCard = agent == "codex" && paneStatus == Status.WORKING && preview?.choices.isNullOrEmpty()
+            val recentCodexQuestion = preview?.codexQuestion == true && client?.backend == Backend.TUI
+            val requireCodexApprovalIdentity = (missingCodexCard && preview?.terminalReview != true) || recentCodexQuestion
+            val unfinishedChoicePreview = agent in setOf("claude", "agy") &&
+                paneStatus == Status.WORKING && preview?.choices.isNullOrEmpty()
             val verifyOpenCode = isOpenCode(agent) && client?.backend == Backend.TUI &&
                 (blocked || paneStatus == Status.WORKING || preview != null || openCodeBackgroundDrawer(agent, recent))
             val verifyHermesUsage = agent == "hermes"
+            val verifyPi = paneNow != null && requiresLivePiQuestion(paneNow)
             val liveCard = if (liveUsage == null &&
-                (verifyOpenCode || verifyHermesUsage || missingCodexApproval || unfinishedClaudePreview || preview?.terminalReview == true || (blocked && preview?.choices.isNullOrEmpty())) && canUpgrade()) {
+                (verifyOpenCode || verifyHermesUsage || verifyPi || missingCodexCard || unfinishedChoicePreview || preview?.terminalReview == true || (blocked && preview?.choices.isNullOrEmpty())) && canUpgrade()) {
                 val owner = checkNotNull(cardOwner)
                 quietly { h ->
                     if (h !== owner.client) return@quietly null
-                    if (verifyHermesUsage && (!com.billmongan.herdrdroid.herdr.hasStableOccupant(owner.pane) ||
+                    if ((verifyHermesUsage || verifyPi) && (!com.billmongan.herdrdroid.herdr.hasStableOccupant(owner.pane) ||
                             h.cardPane(paneId, owner.connection)?.sameCardOccupant(owner.pane) != true || !canUpgrade())) return@quietly null
                     h.readCardViewport(paneId, owner.connection, timeoutSeconds = 1)
                 }
                     ?.takeIf { canUpgrade() && !it.isBlank() }
             } else null
             if (!isOpen()) return
-            val livePrompt = liveCard?.let { detectPrompt(it, pane(paneId)?.status == Status.NEEDS_YOU, agent, version) }
-                ?.takeIf {
-                    verifyOpenCode || (it.choices.isNotEmpty() && !it.terminalReview && (!missingCodexApproval || it.approvalIdentity != null)) ||
-                        ((missingCodexApproval || verifyHermesUsage) && it.terminalReview)
-                }
+            val liveCandidate = liveCard?.let {
+                if (verifyPi) activePiQuestion(it, version)
+                else detectPrompt(it, pane(paneId)?.status == Status.NEEDS_YOU, agent, version)
+            }
+            val livePrompt = liveCandidate?.takeIf {
+                verifyOpenCode || it.codexQuestion ||
+                    (it.choices.isNotEmpty() && !it.terminalReview && (!requireCodexApprovalIdentity || it.approvalIdentity != null)) ||
+                    ((requireCodexApprovalIdentity || verifyHermesUsage) && it.terminalReview)
+            }
             val liveReport = verifyHermesUsage && liveCard != null && hermesUsageEnd(liveCard) != null
             val recentReport = verifyHermesUsage && hermesUsageEnd(recent) != null
             val verifiedUsage = liveCard?.takeIf { verifyHermesUsage && livePrompt == null &&
@@ -1487,18 +1580,23 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 if (liveReport || continued && ready) HermesUsageRead(owner, ready) else null
             }
             val recentClarify = preview?.hermesClarify == true
-            val requiresLive = verifyOpenCode || recentClarify
-            val useLive = liveCard != null && (livePrompt != null || liveReport || recentReport || verifiedUsage != null || recentClarify || verifyOpenCode &&
+            val requiresLive = verifyOpenCode || recentClarify || recentCodexQuestion || verifyPi
+            val codexQuestionCleared = recentCodexQuestion && liveCandidate == null
+            val useLive = liveCard != null && (livePrompt != null || verifyPi && preview != null || liveReport || recentReport || verifiedUsage != null || recentClarify || codexQuestionCleared || verifyOpenCode &&
                 (blocked || preview != null || openCodeBackgroundDrawer(agent, recent) || openCodeBackgroundDrawer(agent, liveCard)))
             val text = if (useLive) checkNotNull(liveCard) else recent
             lastAppliedPaneRead = attempt
             openingPanePreview = null
             paneReadProblem = null
+            if (messageArm != null && currentAgentMessage === messageArm && agentMessageSourceCurrent(messageArm)) {
+                agentMessageFrame(recent, messageArm.code)?.let { currentAgentMessage = messageArm.copy(text = it) }
+            }
             openUsage = liveUsage
             noteInputLine(paneId, text)
             paneText = text
             paneTextPane = paneId
-            paneTextTarget = cardOwner?.takeIf { it.isCurrent(it.client) && (!requiresLive || useLive) }
+            paneTextTarget = cardOwner?.takeIf { it.isCurrent(it.client) && (!requiresLive || useLive) && (!verifyPi || livePrompt != null) }
+            piLiveQuestion = livePrompt?.takeIf { verifyPi && paneTextTarget != null }
             openCodeComposerTarget = paneTextTarget?.takeIf { useLive && verifyOpenCode && openCodeEmptyComposer(text) }
             hermesUsageRead = verifiedUsage
             if (agent in setOf("opencode", "opencode-ursinus", "kiro", "kiro-cli")) {
@@ -1526,6 +1624,99 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 lastPromptSig[paneId] = sig
                 if (sig != "none" || p == null && lastPromptSig.containsKey(paneId)) com.billmongan.herdrdroid.diag.DiagLog.log("prompt", "$paneId: $sig")
             }
+            readPaneDraft(paneId, text, p, cardOwner) {
+                attempt == lastAppliedPaneRead && current?.id == serverId && herdr === client &&
+                    paneVisit == visit && (screen as? Screen.Agent)?.paneId == paneId
+            }
+        }
+    }
+
+    /**
+     * The draft card (2.1.0): only when the screen just read shows text in the agent's input box is
+     * the live viewport read with its styles, so a placeholder is never shown as a draft. Nothing is
+     * read or shown otherwise, and nothing is ever typed from here.
+     */
+    private suspend fun readPaneDraft(paneId: String, text: String, question: Prompt?, owner: CardTarget?, stillShown: () -> Boolean) {
+        val now = pane(paneId)
+        val agent = now?.agent
+        val eligible = owner != null && foreground && !locked && owner.client.backend == Backend.TUI &&
+            owner.isCurrent(owner.client) && question == null && agent != null && now.status != Status.NEEDS_YOU &&
+            (now.scrollOffset ?: 0) == 0 && (!com.billmongan.herdrdroid.herdr.inputLineOf(text, agent).isNullOrEmpty() ||
+                com.billmongan.herdrdroid.herdr.composerDraftOf(text, agent) != null)
+        if (!eligible) { if (stillShown()) { paneDraft = null; draftReadFor = null }; return }
+        val o = checkNotNull(owner)
+        val plain = com.billmongan.herdrdroid.herdr.composerDraftOf(text, agent)?.text
+            ?: com.billmongan.herdrdroid.herdr.inputLineOf(text, agent)
+        val key = listOf(paneId, plain, com.billmongan.herdrdroid.herdr.Occupant.of(o.pane), o.visit, o.connection, now.status)
+        if (key == draftReadFor) {
+            // Same plain line, occupant and status: the last verdict stands (a draft keeps its card).
+            if (paneDraft?.target?.pane?.id != paneId && paneDraft != null) paneDraft = null
+            return
+        }
+        val live = quietly { h -> if (h === o.client) h.readStyledViewport(paneId, o.connection, timeoutSeconds = 2) else null }
+        if (!stillShown()) return
+        val draft = live?.takeIf { o.isCurrent(o.client) && detectPrompt(forPhone(it), false, agent, versionOf(paneId)) == null }
+            ?.let { com.billmongan.herdrdroid.herdr.composerDraftOf(it, agent) }
+        // A failed read is not a verdict: read again next time.
+        draftReadFor = key.takeIf { live != null }
+        paneDraft = draft?.let {
+            val shown = PaneDraftShown(o, it.text, it.bounded && com.billmongan.herdrdroid.herdr.hasStableOccupant(o.pane),
+                // A suggestion list may be in the box's buffer: no Clear either.
+                com.billmongan.herdrdroid.herdr.canClearDraft(agent) && !it.menu,
+                com.billmongan.herdrdroid.herdr.draftSendBlock(it, now.status, now.agentName))
+            paneDraft?.takeIf { d -> d == shown } ?: shown
+        }
+    }
+
+    private val paneDraftAction by lazy { com.billmongan.herdrdroid.herdr.PaneDraftAction(paneDispatch, writeGate) }
+
+    /** Send draft: Enter once, after the same checks as any write (2.1.0). Only on a tap. */
+    internal fun sendPaneDraft(shown: PaneDraftShown) = paneDraftAct(shown, clear = false)
+
+    /** Clear draft: Backspace only, after the user confirmed (2.1.0). Only on a tap. */
+    internal fun clearPaneDraft(shown: PaneDraftShown) = paneDraftAct(shown, clear = true)
+
+    private fun paneDraftAct(shown: PaneDraftShown, clear: Boolean) {
+        // The card may have been redrawn since the tap; the action itself re-reads the pane and
+        // acts only on the text that was shown.
+        val target = shown.target
+        val lane = target.server to target.pane.id
+        if (lane in draftActions) {
+            flash("Wait: the last Send draft or Clear draft for this pane is still running.")
+            return
+        }
+        if (!shown.actionable || (clear && !shown.clearable)) return
+        val h = target.client
+        val agentName = target.pane.agentName
+        draftActions = draftActions + (lane to if (clear) "clear" else "send")
+        viewModelScope.launch {
+            fun allowed() = !locked && foreground && link == Link.CONNECTED && herdr === h && target.isCurrent(h)
+            // Through [quietly], so a dropped link reconnects; a failed read is null, a failed write throws.
+            val port = object : com.billmongan.herdrdroid.herdr.PaneDraftAction.Port {
+                override suspend fun pane(id: String) = quietly { if (it === h) it.cardPane(id, target.connection) else null }
+                override suspend fun viewport(id: String) =
+                    quietly { if (it === h) it.readStyledViewport(id, target.connection, timeoutSeconds = 3) else null }
+                override suspend fun keys(id: String, keys: List<String>, permit: WritePermit) {
+                    quietly { if (it === h) { it.sendPermittedKeys(id, keys, target.connection, permit); true } else null }
+                        ?: throw IllegalStateException("the keys could not be sent")
+                }
+                override suspend fun pause(ms: Long) = delay(ms)
+            }
+            val outcome = try {
+                if (clear) paneDraftAction.clear(target.server, target.pane, shown.text, ::allowed, port)
+                else paneDraftAction.send(target.server, target.pane, shown.text, ::allowed, port)
+            } finally {
+                draftActions = draftActions - lane
+                draftReadFor = null
+            }
+            com.billmongan.herdrdroid.diag.DiagLog.log("draft", "${target.pane.id}: ${if (clear) "clear" else "send"} ${outcome.name.lowercase()} (${shown.text.length} chars)")
+            val said = com.billmongan.herdrdroid.herdr.draftOutcomeText(outcome, agentName, clear)
+            when (outcome) {
+                com.billmongan.herdrdroid.herdr.PaneDraftAction.Outcome.UNCERTAIN,
+                com.billmongan.herdrdroid.herdr.PaneDraftAction.Outcome.PARTIAL -> error = said
+                else -> flash(said)
+            }
+            if (target.isCurrent(h)) readPane(target.pane.id)
         }
     }
     private val lastPromptSig = mutableMapOf<String, String>()
@@ -1546,8 +1737,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         paneTextPane = paneId
         paneTextTarget = null
         openCodeComposerTarget = null
+        piLiveQuestion = null
         paneReadProblem = null
         openUsage = null
+        paneDraft = null
+        draftReadFor = null
         current?.id?.let { questions(it, paneId) }
         resetTranscript(paneId)
         screen = Screen.Agent(paneId)
@@ -2118,14 +2312,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- Hermes through its gateway ------------------------------------------------------------
 
-    /** The native Hermes chat for this server, made and connected on first use. */
-    /**
-     * What Hermes's conversations are doing, from its gateway (Telegram, the CLI, the app): any one
-     * working makes the Hermes pane show Working, any one waiting on you makes it Needs you.
-     * Asked every 15 seconds while a server with a Hermes pane is open.
-     */
-    var hermesState by mutableStateOf<Status?>(null)
-        private set
+    // Keep one snapshot so the aggregate wait and its attribution cannot get out of sync.
+    private var hermesLiveStates by mutableStateOf<List<HermesLiveState>>(emptyList())
+    private val hermesState: Status? get() = when {
+        hermesLiveStates.any { it.status == "waiting" } -> Status.NEEDS_YOU
+        hermesLiveStates.any { it.status == "working" || it.status == "streaming" || it.status == "starting" } -> Status.WORKING
+        else -> null
+    }
     private var hermesPoll: Job? = null
 
     private fun pollHermes() {
@@ -2133,25 +2326,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         hermesPoll = viewModelScope.launch {
             while (isActive) {
                 val hasHermes = panes.any { it.agent?.lowercase() == "hermes" }
-                if (hasHermes && foreground && herdr != null) {
-                    val states = hermesChat()?.liveStates()
-                    val next = when {
-                        states == null -> null
-                        states.any { it.second == "waiting" } -> Status.NEEDS_YOU
-                        states.any { it.second in setOf("working", "streaming", "starting") } -> Status.WORKING
-                        else -> null
-                    }
-                    if (next != hermesState) {
-                        com.billmongan.herdrdroid.diag.DiagLog.log("hermes", "conversations: " +
-                            (states?.joinToString { "${it.second}" } ?: "gateway not answering") + " -> ${next ?: "pane status"}")
-                        hermesState = next
-                    }
-                } else hermesState = null
+                val before = hermesState
+                val states = if (hasHermes && foreground && herdr != null) hermesChat()?.liveStates() else null
+                if (!isActive) return@launch // Do not restore a closed server's snapshot after cancellation.
+                hermesLiveStates = states.orEmpty()
+                val next = hermesState
+                if (next != before) {
+                    com.billmongan.herdrdroid.diag.DiagLog.log("hermes", "conversations: " +
+                        (states?.joinToString { it.status } ?: "gateway not answering") + " -> ${next ?: "pane status"}")
+                }
                 delay(15_000)
             }
         }
     }
 
+    /** The native Hermes chat for this server, made and connected on first use. */
     fun hermesChat(): HermesChat? {
         hermes?.let { return it }
         val s = ssh ?: return null
@@ -2249,17 +2438,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun holdReason(paneId: String, screen: String): String? {
         // The agent's own hint in an empty line ("Press up to edit queued messages") is not typing (1.4.4).
-        val now = com.billmongan.herdrdroid.herdr.inputLineOf(screen, pane(paneId)?.agent) ?: return null
+        val agent = pane(paneId)?.agent
+        // A draft of several lines can hide the one-row input line (2.1.0): it is still typing.
+        val now = com.billmongan.herdrdroid.herdr.inputLineOf(screen, agent)
+            ?: return com.billmongan.herdrdroid.herdr.composerDraftOf(screen, agent)?.let { DRAFT_HOLD }
         // The row taken for the input line is the highlighted option of a menu (Kiro's unnumbered
         // approval card, "❯ Yes, single permission"): a question, not text typed at the computer.
         // Still not typed into, but said as it is (1.4.1, from a code review).
         if (now.isNotEmpty() && com.billmongan.herdrdroid.herdr.detectUnnumberedMenu(com.billmongan.herdrdroid.herdr.forPhone(screen))?.choices?.any { it.label.trim() == now } == true)
             return "a question is open in it (\"${now.take(40)}\"); answer it first"
-        if (now.isNotEmpty()) return "something is already typed in its input line at the computer (\"${now.take(40)}\")"
+        if (now.isNotEmpty()) return DRAFT_HOLD
+        // Rows typed under an empty first row (2.1.0), as the voice and relay sends judge it.
+        if (com.billmongan.herdrdroid.herdr.composerDraftOf(screen, agent) != null) return DRAFT_HOLD
         val at = typedAt[paneId]
         if (at != null && System.currentTimeMillis() - at < 4_000) return "someone was typing in it a moment ago"
         return null
     }
+
+    /** Why a send waits for a draft at the computer (2.1.0): the chat's draft card shows it, with Send draft and Clear draft. */
+    private val DRAFT_HOLD = "a draft is typed in its input box at the computer (the chat's Draft in the pane card can send or clear it)"
 
     fun sendMessage(pane: Pane, text: String, force: Boolean = false, delivered: () -> Unit = {}) {
         lastSent = pane.id to text
@@ -2564,17 +2761,120 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     internal suspend fun sendRemotePrompt(target: RemotePromptTarget, text: String, allowed: () -> Boolean) =
         promptRelay.send(target.route, text) { allowed() && remotePromptCurrent(target) }
 
+    internal data class AgentMessage(val source: CardTarget, val code: String, val deadline: Long, val text: String? = null)
+    internal data class AgentMessageRoute(val request: AgentMessage, val destination: RemotePromptTarget)
+    @Volatile private var activeAgentMessageCode: String? = null
+    private var currentAgentMessage by mutableStateOf<AgentMessage?>(null)
+    private var agentMessageExpiry: Job? = null
+    private var agentMessagePermit: WritePermit? = null
+
+    private fun clearAgentMessage() {
+        agentMessagePermit?.revoke()
+        agentMessagePermit = null
+        activeAgentMessageCode = null
+        currentAgentMessage = null
+        agentMessageExpiry?.cancel()
+        agentMessageExpiry = null
+    }
+
+    private fun agentMessageSource(paneId: String): CardTarget? =
+        if (!agentMessagingEnabled || !agentMessagingForeground || locked) null
+        else cardTarget(paneId)?.takeIf { it.client.backend == Backend.TUI &&
+            it.pane.scrollOffset == 0 && hasStableOccupant(it.pane) }
+
+    private fun agentMessageSourceCurrent(request: AgentMessage): Boolean =
+        activeAgentMessageCode == request.code && android.os.SystemClock.elapsedRealtime() < request.deadline &&
+            agentMessageSource(request.source.pane.id)?.let { now ->
+                now.server == request.source.server && now.visit == request.source.visit &&
+                    now.client === request.source.client && now.connection === request.source.connection &&
+                    sameOccupant(now.pane, request.source.pane)
+            } == true
+
+    internal fun canArmAgentMessage(paneId: String) = agentMessageSource(paneId) != null
+
+    internal fun armAgentMessage(paneId: String): Boolean {
+        val source = agentMessageSource(paneId) ?: return false
+        clearAgentMessage()
+        val code = java.util.UUID.randomUUID().toString().replace("-", "")
+        val window = 300_000L
+        activeAgentMessageCode = code
+        currentAgentMessage = AgentMessage(source, code, android.os.SystemClock.elapsedRealtime() + window)
+        agentMessageExpiry = viewModelScope.launch { delay(window); clearAgentMessage() }
+        return true
+    }
+
+    internal fun agentMessage(paneId: String): AgentMessage? = currentAgentMessage?.takeIf {
+        it.source.pane.id == paneId && agentMessageSourceCurrent(it)
+    }
+
+    internal fun dismissAgentMessage(request: AgentMessage) {
+        if (request.code == activeAgentMessageCode) clearAgentMessage()
+    }
+
+    private fun agentMessageDestinationCurrent(serverId: String, expected: Pane): Boolean =
+        fleetStates[serverId]?.panes?.singleOrNull { it.id == expected.id }?.let {
+            sameOccupant(it, expected) && it.status in setOf(Status.IDLE, Status.DONE) && !it.backgroundBusy
+        } == true
+
+    internal fun agentMessageDestinations(request: AgentMessage): List<Session> =
+        if (currentAgentMessage !== request || request.text == null || !agentMessageSourceCurrent(request)) emptyList()
+        else sessions().filter { it.server.id != request.source.server && relayPort(it.server.id)?.connectionIdentity != null &&
+            hasStableOccupant(it.pane) && agentMessageDestinationCurrent(it.server.id, it.pane) }
+
+    internal suspend fun bindAgentMessage(request: AgentMessage, selected: Session): AgentMessageRoute? {
+        if (selected !in agentMessageDestinations(request)) return null
+        val target = bindRemotePrompt(selected) ?: return null
+        if (currentAgentMessage !== request || !agentMessageSourceCurrent(request) ||
+            !agentMessageDestinationCurrent(target.route.server, target.route.pane)) return null
+        return AgentMessageRoute(request, target)
+    }
+
+    internal suspend fun confirmAgentMessage(request: AgentMessage, bound: AgentMessageRoute): RelayResult {
+        val text = request.text ?: return RelayResult.REFUSED
+        if (currentAgentMessage !== request || bound.request !== request || !agentMessageSourceCurrent(request)) return RelayResult.REFUSED
+        currentAgentMessage = null // Spend the proposal before any suspension; no retry on any outcome.
+        val destination = bound.destination
+        val source = request.source
+        val job = kotlinx.coroutines.currentCoroutineContext()[Job]
+        fun admitted() = job?.isActive != false && agentMessageSourceCurrent(request) &&
+            agentMessageDestinationCurrent(destination.route.server, destination.route.pane)
+        val permit = WritePermit(::admitted)
+        agentMessagePermit = permit
+        try {
+            if (!admitted() || !remotePromptCurrent(destination)) return RelayResult.REFUSED
+            val fresh = source.client.cardPane(source.pane.id, source.connection) ?: return RelayResult.REFUSED
+            if (!sameOccupant(fresh, source.pane)) return RelayResult.REFUSED
+            return promptRelay.send(destination.route, text, authorizedWrite = permit) {
+                admitted() && remotePromptCurrent(destination)
+            }
+        } catch (c: kotlinx.coroutines.CancellationException) {
+            throw c
+        } catch (_: Exception) {
+            return RelayResult.REFUSED
+        } finally {
+            dismissAgentMessage(request)
+        }
+    }
+
     internal suspend fun sendVoiceMessage(target: VoiceTarget, text: String, allowed: () -> Boolean): String {
         fun allowedHere() = allowed() && voiceTarget() == target && promptLaneClear(target.server, target.pane)
         val refuse = "Not sent. Open the agent's chat and check that it is idle with no question, draft at the computer, or queued message."
         val h = target.client
+        var draftSeen = false
         val port = object : com.billmongan.herdrdroid.herdr.LocalPromptSend.Port {
             override suspend fun pane(id: String) =
                 quietly(allowBackground = true) { if (it === h) it.panes().singleOrNull { p -> p.id == id } else null }
             override suspend fun viewport(id: String) =
                 quietly(allowBackground = true) { if (it === h) it.readStyled(id, 40) else null }
-            override fun blocked(fresh: Pane, viewport: String) = blocksNormalSend(fresh, viewport) ||
-                com.billmongan.herdrdroid.herdr.inputLineOf(viewport, fresh.agent) != "" || holdReason(fresh.id, viewport) != null
+            override fun blocked(fresh: Pane, viewport: String): Boolean {
+                if (blocksNormalSend(fresh, viewport)) return true
+                val line = com.billmongan.herdrdroid.herdr.inputLineOf(viewport, fresh.agent)
+                if (!line.isNullOrEmpty() || com.billmongan.herdrdroid.herdr.composerDraftOf(viewport, fresh.agent) != null) {
+                    draftSeen = true
+                    return true
+                }
+                return line != "" || holdReason(fresh.id, viewport) != null
+            }
             override suspend fun send(fresh: Pane, text: String, permit: com.billmongan.herdrdroid.herdr.WritePermit) =
                 h.sendPermitted(fresh, text, target.connection, permit)
         }
@@ -2582,7 +2882,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         (result.failure as? LinkDown)?.let { if (herdr === h) linkLost(it) }
         return when (result.outcome) {
             com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.SENT -> "Message sent."
-            com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.REFUSED -> refuse
+            com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.REFUSED ->
+                if (draftSeen) "Not sent. Text is already typed in the agent's input box at the computer. Its chat shows the draft with Send draft and Clear draft." else refuse
             com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.NO_IDENTITY ->
                 "Not sent. This server doesn't report which session is in the pane, so a voice message can't be checked against the one read back."
             com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.CONNECTION_CHANGED -> "Not sent. The SSH connection changed."
@@ -2683,29 +2984,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun CardTarget.freshAnswer(h: Herdr, shown: Prompt): Prompt? {
         if (shown.terminalReview || !isCurrent(h)) return null
-        if (shown.hermesClarify && (!foreground || h.backend != Backend.TUI || pane.scrollOffset != 0 ||
+        val guardedChoice = shown.hermesClarify || shown.openCodeQuestionFrame != null
+        if (guardedChoice && (!foreground || h.backend != Backend.TUI || pane.scrollOffset != 0 ||
                 !com.billmongan.herdrdroid.herdr.hasStableOccupant(pane))) return null
         val currentPane = h.cardPane(pane.id, connection) ?: return null
         if (!isCurrent(h) || !pane.sameCardOccupant(currentPane)) return null
         // Last remote read before input; not an atomic compare-and-send.
         if (isOpenCode(pane.agent) && currentPane.scrollOffset != 0) return null
-        val text = (if (isOpenCode(pane.agent)) h.readStyledViewport(pane.id, connection)
+        // Muse's quota warning shows its highlight only in colour (2.1.0): read with styles to find it.
+        val text = (if (isOpenCode(pane.agent) || shown.museQuota) h.readStyledViewport(pane.id, connection)
             else h.readCardViewport(pane.id, connection)).takeUnless { it.isBlank() } ?: return null
-        if (!isCurrent(h) || shown.hermesClarify && !foreground) return null
-        return detectPrompt(text, currentPane.status == Status.NEEDS_YOU, currentPane.agent, versionOf(pane.id))
-            ?.takeIf { cardAnswerStillFits(shown, it) }
+        if (!isCurrent(h) || guardedChoice && !foreground) return null
+        val live = if (pane.agent == "pi" && h.backend == Backend.TUI &&
+            (pane.status == Status.WORKING || currentPane.status == Status.WORKING)) activePiQuestion(text, versionOf(pane.id))
+        else detectPrompt(text, currentPane.status == Status.NEEDS_YOU, currentPane.agent, versionOf(pane.id))
+        return live?.takeIf { cardAnswerStillFits(shown, it) }
     }
 
     internal fun answerCardKey(target: CardTarget?, prompt: Prompt, key: String, label: String) {
-        val claudeMultiAction = prompt.claudeMultiKey == key
-        answerCardInput(target, prompt, label) { h, t, fresh ->
-            if (claudeMultiAction) {
-                if (t.pane.agent != "claude" || fresh.claudeMultiKey != key || fresh.selected == null) return@answerCardInput false
-                if (key == "enter") {
-                    if (recentAnswerAge(t.server, t.pane.id) { cardAnswerStillFits(it, fresh) } != null) return@answerCardInput false
-                    rememberCardAnswer(t.server, t.pane.id, fresh)
-                }
-            }
+        answerCardInput(target, prompt, label) { h, t, _ ->
             h.sendKeys(t.pane.id, key, expectedConnection = t.connection)
             true
         }
@@ -2715,7 +3012,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         send: suspend (Herdr, CardTarget, Prompt) -> Boolean,
     ) {
         val refused = "Not sent. Refresh the question or open the terminal to answer."
-        if (target == null || shown.terminalReview || shown.hermesClarify) { flash(refused); return }
+        if (target == null || shown.terminalReview || shown.hermesClarify || shown.openCodeQuestionFrame != null) { flash(refused); return }
         val id = target.pane.id
         answerOnce(id) { h ->
             val fresh = target.freshAnswer(h, shown)
@@ -2791,19 +3088,29 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         answerOnce(paneId, feedback) { h ->
             // Match the displayed card, but calculate its keys from the current highlight.
             val fresh = target?.freshAnswer(h, prompt)
-            if (target == null || fresh == null || choice !in fresh.choices) {
+            if (target == null || fresh == null || (choice !in fresh.choices && choice != fresh.claudeCheckboxAction)) {
                 report("Not sent. Refresh the question or open the terminal to answer.")
                 readPane(paneId)
                 return@answerOnce
             }
             val keys = if (voiceAllowed == null) com.billmongan.herdrdroid.herdr.menuKeys(fresh, choice)
                 else com.billmongan.herdrdroid.voice.voiceCardKeys(fresh, choice)
+            if (fresh.claudeCheckboxAction != null && keys == null) {
+                report("Not sent. Open Terminal to verify the selected row.")
+                return@answerOnce
+            }
             if (fresh.hermesClarify && (keys == null || voiceAllowed != null)) {
                 report("Not sent. Open Chat to choose an answer.")
                 return@answerOnce
             }
             if (target.pane.agent == "claude" && choice.label.equals("Submit answers", true) && keys?.lastOrNull() != "enter") {
                 report("Not sent. Open Terminal to verify the selected submit row.")
+                return@answerOnce
+            }
+            // Muse's quota warning (2.1.0): only arrows from a highlight seen in the live styled read,
+            // never a typed digit.
+            if (fresh.museQuota && keys == null) {
+                report("Not sent. The app couldn't see which option Muse has highlighted. Open Terminal to choose.")
                 return@answerOnce
             }
             if (fresh.openCodePermission && keys == null) {
@@ -2852,7 +3159,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 // The live card may never have appeared in a chat poll. Record it only after delivery.
                 observeQuestion(target.server, paneId, fresh, target.pane.status, agentName)
             }
-            noteAnswer(paneId, prompt, choice.label, serverId = target.server)
+            // Next and Submit here only advance the dialog, not answer or confirm it.
+            if (choice != fresh.claudeCheckboxAction) noteAnswer(paneId, prompt, choice.label, serverId = target.server)
             // Say what went (1.4.3): a tap that answers shows it at once.
             report("Sent $sent to $agentName: ${choice.label.take(40)}")
             readPane(paneId)
@@ -3248,7 +3556,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     // no alert. A screen that couldn't be read still alerts, saying so.
                     if (prompt == null && text.isNotBlank()) { com.billmongan.herdrdroid.diag.DiagLog.log("watch", "${p.id}: herdr says blocked, but nothing on screen asks; no alert"); return@launch }
                     withContext(Dispatchers.Main) { if (prompt != null && prompt.choices.isNotEmpty()) observeQuestion(serverId, p.id, prompt, p.status, p.agentName, text) }
-                    Notify.needsYou(app, serverId, serverLabel, p.id, p.agentName, prompt?.question ?: "Waiting for you.", prompt?.choices.orEmpty(), p.agent, terminalReview = prompt?.let { it.terminalReview || it.hermesClarify } == true)
+                    Notify.needsYou(app, serverId, serverLabel, p.id, p.agentName, prompt?.question ?: "Waiting for you.", prompt?.choices.orEmpty(), p.agent,
+                        terminalReview = prompt?.let { it.terminalReview || it.hermesClarify || it.openCodeQuestionFrame != null } == true)
                 }
                 // Only agents that need you notify (Bill, 2026-11-13); finishing doesn't.
                 before == Status.NEEDS_YOU -> {
@@ -3342,7 +3651,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         // The same depth and agent the alert was made with (1.4.2, from review).
         val now = detectPrompt(text, blocked = true, agent = a.agent)
-        if (now == null || now.openCodePermission || !notificationAnswerStillFits(now, a)) {
+        // Muse's quota warning is answered only from the chat card, whose live read finds its highlight.
+        if (now == null || now.openCodePermission || now.museQuota || !notificationAnswerStillFits(now, a)) {
             // The question's words still on screen but not read as that card: say the app couldn't
             // tell, rather than that it changed.
             val stillThere = a.question.isNotBlank() && text.filterNot { it.isWhitespace() }.contains(a.question.filterNot { it.isWhitespace() }.take(60))
@@ -3822,14 +4132,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (changed) saveSeen()
     }
 
+    internal fun requiresLivePiQuestion(pane: Pane): Boolean =
+        pane.agent == "pi" && pane.status == Status.WORKING && herdr?.backend == Backend.TUI
+
+    internal fun currentPiQuestion(pane: Pane): Prompt? = piLiveQuestion?.takeIf {
+        foreground && paneReadProblem == null && paneTextPane == pane.id && pane.scrollOffset == 0 &&
+            paneTextTarget?.let { target -> target.pane.sameCardOccupant(pane) && target.isCurrent(target.client) } == true
+    }
+
     fun shownStatus(p: Pane, serverId: String? = current?.id): Status {
         val here = serverId == current?.id
+        if (here && requiresLivePiQuestion(p) && currentPiQuestion(p) != null) return Status.NEEDS_YOU
         if (here && p.status == Status.NEEDS_YOU && hermesState != Status.NEEDS_YOU) {
             currentHermesUsage(p)?.let { return if (it.composerReady) hermesState ?: Status.IDLE else Status.WORKING }
         }
-        // Hermes: a conversation elsewhere (Telegram, its app) working or waiting counts here too.
+        // A DONE badge only ignores waits proven to belong to other stored conversations.
+        // This display exception does not relax the gateway wait in either terminal send guard.
         if (here && p.agent?.lowercase() == "hermes" && p.status != Status.NEEDS_YOU) hermesState?.let {
-            if (it == Status.NEEDS_YOU || p.status != Status.WORKING) return it
+            if (it == Status.NEEDS_YOU) {
+                if (p.status != Status.DONE || !hermesWaitsAreElsewhere(p)) return it
+            } else if (p.status != Status.WORKING) return it
         }
         // herdr's "done" is idle but not yet seen at the computer. Opening the agent here counts as
         // seeing it, and after 30 minutes it counts as idle anyway. (The app never marks it seen in
@@ -3841,6 +4163,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         return p.status
     }
+
+    private fun hermesWaitsAreElsewhere(pane: Pane): Boolean {
+        val key = pane.sessionId?.takeIf { it.isNotBlank() } ?: return false
+        val states = hermesLiveStates
+        // The pane may be outside this inventory or its reported ID may be stale.
+        // Require a unique stored-key match; do not guess from runtime ID or current.
+        return states.count { it.sessionKey == key } == 1 &&
+            states.none { it.status == "waiting" && (it.sessionKey == null || it.sessionKey == key) }
+    }
+
     private fun withBusy(list: List<Pane>, busy: Map<String, Int>): List<Pane> = com.billmongan.herdrdroid.herdr.withBusy(list, busy)
     // When each pane last turned done, and when you last had it open here ("server|pane"). Kept
     // across launches and reconnects, so an agent you opened stays idle until it works again.

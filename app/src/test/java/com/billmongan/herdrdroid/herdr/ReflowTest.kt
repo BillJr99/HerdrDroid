@@ -37,6 +37,57 @@ class ReflowTest {
     }
 
     @Test
+    fun antigravityKeepsShortTablesInChatWithAndWithoutComposer() {
+        val table = listOf("┌───┬───┐", "│ A │ B │", "└───┴───┘")
+        val reply = listOf("● Here's the result:") + table
+        val rule = "────────────────────────────────"
+        val withComposer = reply + listOf(rule, "> draft text", rule, "Shift+Tab to change mode")
+        for (screen in listOf(reply, withComposer)) {
+            val segs = Reflow.parse(screen.joinToString("\n"), antigravity = true)
+            assertEquals(table, segs.filterIsInstance<Seg.Code>().single().lines)
+            assertEquals("Here's the result:", segs.filterIsInstance<Seg.Para>().single().text)
+            assertEquals(if (screen === reply) emptyList() else listOf(Seg.Footer(listOf("draft text", "Shift+Tab to change mode"))),
+                segs.filterIsInstance<Seg.Footer>())
+        }
+    }
+
+    @Test
+    fun antigravityDoesNotMistakeQuotedOutputForComposer() {
+        val rule = "────────────────────────────────"
+        val screen = listOf("● Example input:", rule, "> keep this text", rule).joinToString("\n")
+        val segs = Reflow.parse(screen, antigravity = true)
+        assertEquals(listOf(Seg.You("keep this text")), segs.filterIsInstance<Seg.You>())
+        assertEquals(emptyList<Seg.Footer>(), segs.filterIsInstance<Seg.Footer>())
+    }
+
+    @Test
+    fun antigravityApprovalChoiceIsNotAUserMessage() {
+        val screen = """
+            Run this command?
+            ${'$'} go test ./...
+
+            ❯ 1. Yes, run command
+              2. Yes, and always allow in this conversation
+              3. Yes, and always allow (Persist to settings.json)
+              4. No, and tell Antigravity what to do differently
+        """.trimIndent()
+        val segs = Reflow.parse(screen, antigravity = true)
+        assertTrue(segs.none { it is Seg.You })
+        assertEquals("1. Yes, run command", segs.filterIsInstance<Seg.Footer>().single().lines.first())
+    }
+
+    @Test
+    fun wideTableBordersSurviveInPaneSpecificChat() {
+        val table = listOf("┌────────────────────┬────────────────────┐",
+            "│ A                  │ B                  │", "└────────────────────┴────────────────────┘")
+        for (antigravity in listOf(true, false)) {
+            val segs = Reflow.parse((listOf("Results:") + table).joinToString("\n"),
+                antigravity = antigravity, grok = !antigravity)
+            assertEquals(table, segs.filterIsInstance<Seg.Code>().single().lines)
+        }
+    }
+
+    @Test
     fun grokScrollbarClockAndWrappedParagraph() {
         val w = 118
         val screen = listOf(
@@ -71,6 +122,24 @@ class ReflowTest {
         val footer = segs.last() as Seg.Footer
         assertEquals(listOf("Grok 4.7 (high)", "Shift+Tab:mode    Ctrl+.:shortcuts"), footer.lines)
         assertTrue(segs.none { it is Seg.Code })
+    }
+
+    @Test
+    fun grokShortReplyKeepsTableAndSeparatesNativeComposer() {
+        val table = listOf("┌───┬───┐", "│ A │ B │", "└───┴───┘")
+        val reply = listOf("◆ Thought for 2.1s", "", "Here is the result:") + table
+        val composer = listOf("╭────────────────────────────╮", "│ ❯ draft                   │",
+            "╰────────── Grok 4.7 (high) ─╯", "Shift+Tab:mode  │  Ctrl+.:shortcuts")
+        for (footer in listOf(emptyList(), composer)) {
+            val segs = Reflow.parse((reply + footer).joinToString("\n"), grok = true)
+            assertEquals(table, segs.filterIsInstance<Seg.Code>().single().lines)
+            val paras = segs.filterIsInstance<Seg.Para>()
+            assertTrue(paras.first().detail)
+            assertEquals("Here is the result:", paras.last().text)
+            assertEquals(if (footer.isEmpty()) emptyList() else listOf(Seg.Footer(listOf(
+                "draft", "Grok 4.7 (high)", "Shift+Tab:mode    Ctrl+.:shortcuts"))),
+                segs.filterIsInstance<Seg.Footer>())
+        }
     }
 
     @Test

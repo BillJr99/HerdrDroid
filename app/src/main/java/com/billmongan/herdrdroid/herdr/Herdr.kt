@@ -106,6 +106,8 @@ class Herdr internal constructor(
         val connection: Any?
         suspend fun bulk(command: String): com.billmongan.herdrdroid.ssh.ExecResult
         suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): com.billmongan.herdrdroid.ssh.ExecResult
+        suspend fun input(command: String, input: ByteArray, expectedConnection: Any): com.billmongan.herdrdroid.ssh.ExecResult =
+            error("Unexpected command with stdin")
     }
     // The path is the user's setting; "~" stays unquoted so the remote shell expands it.
     // Left at the default, herdr is looked up the way hc is: on the PATH, else in ~/.local/bin, where
@@ -249,7 +251,9 @@ class Herdr internal constructor(
             runNow(cmd("pane", "read", id, "--source", "visible", "--format", "ansi"), 5, connection)
         override suspend fun hasWork(pane: Pane, connection: Any): Boolean {
             val arg = org.json.JSONArray(listOf(listOf(pane.id, pane.agent.orEmpty(), pane.cwd, pane.sessionId.orEmpty()))).toString()
-            val r = ssh.execInput("$PYZ __workcounts__ ${shq(arg)}", z(script), 8, connection)
+            val command = "$PYZ __workcounts__ ${shq(arg)}"
+            val input = z(script)
+            val r = commands?.input(command, input, connection) ?: ssh.execInput(command, input, 8, connection)
             if (r.exit != 0) return true
             // Missing or malformed evidence is not an idle result.
             val counts = JSONObject(r.out)
@@ -950,16 +954,22 @@ data class Prompt(
     val horizontal: Boolean = false,
     /** OpenCode binds number keys to select and submit an option. */
     val numberKeys: Boolean = false,
-    /** An incomplete approval preview is reviewable only in the terminal. */
+    /** The prompt can only be reviewed or answered in Terminal. */
     val terminalReview: Boolean = false,
     /** Exact pre-layout approval material. Never rendered or used as history text. */
     internal val approvalIdentity: String? = null,
     /** OpenCode's permission row needs a styled, live focus read before confirming. */
     internal val openCodePermission: Boolean = false,
-    /** A native Claude checkbox footer proved what the explicit action does. */
-    internal val claudeMultiKey: String? = null,
+    /** Exact text of the native single-select question frame, excluding ANSI and row-end padding. */
+    internal val openCodeQuestionFrame: String? = null,
+    /** Claude renders this unnumbered button between the checkboxes and "Chat about this". */
+    internal val claudeCheckboxAction: Choice? = null,
     /** Native Hermes clarify choices are available only from a guarded Chat card. */
     internal val hermesClarify: Boolean = false,
+    /** Codex request_user_input overlay, not a numbered approval menu. */
+    internal val codexQuestion: Boolean = false,
+    /** Muse Code's quota warning: its highlight shows only in colour, so it is answered from a styled live read (2.1.0). */
+    internal val museQuota: Boolean = false,
 ) {
     /**
      * Never an empty card (1.4.2): a prompt with no choices always has something to show, the
@@ -969,6 +979,12 @@ data class Prompt(
 
     /** [parts], or the same layout read from the question's text. */
     fun shownParts(): QuestionParts = parts ?: questionParts(listOf(QLine(question)))
+
+    /** Include the native navigation button in Chat only, not in notifications or answer history. */
+    internal fun answerRows(): List<Choice> = claudeCheckboxAction?.let { action ->
+        val (checkboxes, rest) = choices.partition { isCheckbox(it.label) }
+        checkboxes + action + rest
+    } ?: choices
 }
 
 /** What a card with no options shows when the app couldn't read the screen (1.4.2). */
@@ -1220,6 +1236,162 @@ private fun inputRow(screen: String): Pair<String, String>? {
     return rawRows[i] to content.replace(lead, "").trim()
 }
 
+/**
+ * What is typed in an agent's input box, all of its lines (2.1.0, Bill: "when a draft is in the pane
+ * text box, maybe show it in chat view and give me the option to send or clear it there"). The first
+ * row is found and judged the way [inputLineOf] judges it (prompt glyph, box edges, placeholders);
+ * the rows under it count as the draft only inside a box whose end the screen shows:
+ * - between box rules (Claude Code, Hermes): down to the next rule of the same span as the one
+ *   above the prompt, with only a short footer under it. A typed "----" or a shorter rule inside
+ *   the draft is text, not the box's edge. Claude indents its continuation rows under the text;
+ *   Hermes's prompt_toolkit box starts them at column 0.
+ * - inside a "│ ... │" frame (Grok, older Claude): framed rows down to the bottom edge.
+ * - Codex, unboxed, its "›" at column 0: indented rows down to the blank row above its footer.
+ * Text drawn as a placeholder or a ghost suggestion (faint, grey, or Hermes's italic) is left out.
+ * [ComposerDraft.bounded] is false when rows under the first could be more of the draft or could be
+ * the agent's footer; the app then shows what it read but never sends keys for it.
+ * [ComposerDraft.menu] is true when a list of commands or suggestions shows under the box, where
+ * Enter would pick the highlighted one. Null when the input box is empty, shows only a placeholder,
+ * or can't be found.
+ */
+internal data class ComposerDraft(val text: String, val bounded: Boolean, val menu: Boolean = false)
+
+private const val MAX_DRAFT_ROWS = 30
+/** A box rule: only box-drawing lines (no ASCII "-"), at least 20 wide; a corner may start or end it. */
+private val DRAFT_BOX_RULE = Regex("""^([\s ]*)([╭╰├└┌]?[─━═]{20,}[╮╯┤┘┐]?)[\s ]*$""")
+private val DRAFT_FRAMED = Regex("""^[\s ]*([│┃|]).*\1[\s ]*$""")
+private val DRAFT_FRAME_EDGE = Regex("""^[\s ]*[│┃|]""")
+private val DRAFT_BOTTOM_EDGE = Regex("""^[\s ]*[╰└]""")
+private val DRAFT_TOP_EDGE = Regex("""^[\s ]*[╭┌]""")
+private val DRAFT_NOT_INPUT = Regex("""^[\s │┃|]*(?:[>❯›»]\s*\d{1,2}[.)]\s|>>)""")
+/** The prompt glyph at column 0, as Codex and other unboxed agents draw it. */
+private val DRAFT_LEAD_AT_ZERO = Regex("""^[>❯›»][\s ]*""")
+/** A row of a command or suggestion list ("/clear  Clear the conversation", "@src/main.kt"). */
+private val DRAFT_MENU_ROW = Regex("""^[\s │┃|❯›>▸▶]*[/@][\w.:/-]+(\s{2,}\S.*)?[\s │┃|]*$""")
+
+/** [text], a piece of the stripped [raw] row, without a ghost suggestion at its end (styled reads only). */
+private fun withoutGhost(raw: String, text: String, from: Int, agent: String?): String {
+    if (!raw.contains('\u001B') || text.isEmpty()) return text
+    val chars = styledChars(raw)
+    val plain = chars.joinToString("") { it.ch.toString() }
+    if (plain != raw.replace(ANSI_SEQ, "")) return text
+    val start = plain.indexOf(text, from).takeIf { it >= 0 } ?: return text
+    val hermes = agent?.lowercase() == "hermes"
+    var keep = text.length
+    while (keep > 0) {
+        val c = chars[start + keep - 1]
+        if (c.ch.isWhitespace() || c.faint || c.grey || (hermes && c.italic)) keep-- else break
+    }
+    return text.substring(0, keep).trimEnd()
+}
+
+internal fun composerDraftOf(screen: String, agent: String? = null): ComposerDraft? {
+    val rawRows = screen.lines().map { it.replace("\r", "") }.takeLast(48)
+    val rows = rawRows.map { it.replace(ANSI_SEQ, "") }
+    /** Where a box rule starts and how wide it is, or null for any other row. */
+    fun span(i: Int): IntRange? = rows.getOrNull(i)?.let(DRAFT_BOX_RULE::matchEntire)?.let {
+        val at = it.groupValues[1].length
+        at until at + it.groupValues[2].length
+    }
+    fun sameSpan(a: IntRange, b: IntRange) = kotlin.math.abs(a.first - b.first) <= 2 && kotlin.math.abs(a.last - b.last) <= 3
+    fun isEdge(i: Int) = span(i) != null || rows.getOrNull(i)?.let { DRAFT_TOP_EDGE.containsMatchIn(it) || DRAFT_BOTTOM_EDGE.containsMatchIn(it) } == true
+    /** The rows under the box: a short footer, and no other prompt row or box. */
+    fun footer(i: Int): List<String>? {
+        val under = rows.drop(i + 1)
+        if (under.count { it.isNotBlank() } > 5) return null
+        if (under.any { INPUT_LEAD.containsMatchIn(it) && !DRAFT_MENU_ROW.matches(it) }) return null
+        return under
+    }
+    fun menuIn(under: List<String>) = under.any { DRAFT_MENU_ROW.matches(it) }
+    val candidates = rows.indices.filter { INPUT_LEAD.containsMatchIn(rows[it]) && !DRAFT_NOT_INPUT.containsMatchIn(rows[it]) }
+    if (candidates.isEmpty()) return null
+
+    fun build(first: Int, rest: List<Int>, bounded: Boolean, menu: Boolean): ComposerDraft? {
+        val row = rows[first]
+        val frame = DRAFT_FRAMED.matches(row)
+        val content = if (frame) row.trimEnd().dropLast(1) else row
+        val leadLen = INPUT_LEAD.find(content)?.range?.last?.plus(1) ?: return null
+        val raw = rawRows[first]
+        val rawTyped = content.substring(leadLen).trim()
+        // The box's own indent before continuation rows: the width of what comes before the text
+        // on the first row ("❯ ", or "│ ❯ " less the frame edge).
+        val barAt = if (frame) content.indexOfFirst { it == '│' || it == '┃' || it == '|' } else -1
+        val indent = leadLen - (barAt + 1)
+        // Suggestion or command rows (a popup under the text) are not the draft, nor counted for Backspace.
+        val more = rest.filterNot { DRAFT_MENU_ROW.matches(rows[it]) }.map { i ->
+            var t = rows[i].trimEnd()
+            var at = 0
+            if (frame) {
+                val edge = DRAFT_FRAME_EDGE.find(t)
+                if (edge != null) { at = edge.range.last + 1; t = t.substring(at) }
+                if (t.isNotEmpty() && t.last() in "│┃|") t = t.dropLast(1)
+            }
+            val pad = minOf(t.takeWhile { it == ' ' || it == ' ' }.length, indent)
+            withoutGhost(rawRows[i], t.drop(pad).trimEnd(), at + pad, agent)
+        }.dropLastWhile { it.isBlank() }
+        if (more.all { it.isBlank() }) {
+            // A placeholder shows only in an empty box, so it is judged on a one-row draft only.
+            if (rawTyped.isEmpty()) return null
+            if (raw.contains('\u001B')) { if (isPlaceholderText(raw, rawTyped, agent)) return null }
+            else if (isComposerHint(agent, rawTyped)) return null
+        }
+        val typed = withoutGhost(raw, rawTyped, leadLen, agent)
+        val text = (listOf(typed) + more).joinToString("\n").trim('\n')
+        if (text.isBlank()) return null
+        return ComposerDraft(text, bounded, menu)
+    }
+
+    // Between box rules: the prompt row right under one, closed by the last rule of the same span
+    // that has only a footer under it. A typed line of dashes as wide as the box looks just like
+    // that edge, so with more than one such rule the end can't be told: shown, not acted on.
+    for (c in candidates.asReversed()) {
+        val open = span(c - 1) ?: continue
+        val closes = (c + 1 until minOf(rows.size, c + 1 + MAX_DRAFT_ROWS)).filter { i -> span(i)?.let { sameSpan(it, open) } == true }
+        val close = closes.lastOrNull { footer(it) != null } ?: continue
+        val under = footer(close) ?: continue
+        val rest = (c + 1 until close).toList()
+        return build(c, rest, bounded = closes.first() == close, menu = menuIn(under) || rest.any { DRAFT_MENU_ROW.matches(rows[it]) })
+    }
+    // Inside a frame: framed rows down to its bottom edge.
+    for (c in candidates.asReversed()) {
+        if (!DRAFT_FRAMED.matches(rows[c])) continue
+        var end = c + 1
+        while (end < rows.size && end - c <= MAX_DRAFT_ROWS && DRAFT_FRAMED.matches(rows[end]) && span(end) == null) end++
+        val closed = end < rows.size && (DRAFT_BOTTOM_EDGE.containsMatchIn(rows[end]) || span(end) != null)
+        val opened = c > 0 && (span(c - 1) != null || DRAFT_TOP_EDGE.containsMatchIn(rows[c - 1]))
+        val under = footer(end) ?: continue
+        // More of a frame, or another edge, under the one it stopped at: that was an inner rule
+        // (a divider, or typed dashes), and the end can't be told.
+        val more = rows.drop(end + 1).any { DRAFT_FRAMED.matches(it) || DRAFT_BOTTOM_EDGE.containsMatchIn(it) || DRAFT_BOX_RULE.matches(it) }
+        val rest = (c + 1 until end).toList()
+        return build(c, rest, bounded = closed && opened && !more, menu = menuIn(under) || rest.any { DRAFT_MENU_ROW.matches(rows[it]) })
+    }
+    // No box: the lowest prompt row, its glyph at column 0, with only a short footer under it.
+    // A "  > quoted" row of the draft is not a prompt row.
+    val c = candidates.lastOrNull { DRAFT_LEAD_AT_ZERO.containsMatchIn(rows[it]) } ?: return null
+    // Text right above it may be the start of what it belongs to (a quote in the output).
+    val clearAbove = c == 0 || rows[c - 1].isBlank() || isEdge(c - 1)
+    val below = rows.drop(c + 1)
+    if (below.count { it.isNotBlank() } > 3 + MAX_DRAFT_ROWS) return null
+    if (agent?.lowercase() == "codex") {
+        // Codex: the draft's rows are indented under it, then a blank row, then its footer block.
+        val lastBlank = below.indexOfLast { it.isBlank() }
+        val tail = below.drop(lastBlank + 1)
+        if (lastBlank in 0..MAX_DRAFT_ROWS && tail.count { it.isNotBlank() } <= 3 &&
+            below.take(lastBlank).all { it.isBlank() || it.startsWith("  ") }) {
+            val rest = (c + 1 until c + 1 + lastBlank).toList()
+            // A popup list under the text (slash commands, files) is not the draft.
+            val menu = menuIn(tail) || rest.any { DRAFT_MENU_ROW.matches(rows[it]) }
+            return build(c, rest, bounded = clearAbove, menu = menu)
+        }
+    }
+    if (below.count { it.isNotBlank() } > 3) return null
+    // Rows right under it may be more of the draft or the footer: shown, but not acted on.
+    val next = below.firstOrNull()
+    val single = next == null || next.isBlank() || isEdge(c + 1)
+    return build(c, emptyList(), bounded = single && clearAbove, menu = menuIn(below))
+}
+
 /** One character of a styled row and how it is drawn (1.4.6). */
 private data class Styled(val ch: Char, val faint: Boolean, val italic: Boolean, val grey: Boolean, val background: List<Int>)
 
@@ -1324,6 +1496,9 @@ fun isTypedAnswerChoice(label: String): Boolean = OTHER_LABEL.matches(label.trim
 private val CHECKBOX = Regex("""^(\[[ xX✓✔]\]|[☐☑☒◻◼□■])\s+""")
 fun isCheckbox(label: String): Boolean = CHECKBOX.containsMatchIn(label.trim())
 
+private const val CLAUDE_CHECKBOX_ACTION = "claude:checkbox-action"
+private val CLAUDE_CHECKBOX_BUTTON = Regex("""^([❯›])?\s+(Next|Submit)\s*$""")
+
 /** An option whose own label says Esc answers it: "No, and tell Codex what to do differently (esc)". */
 private val ESC_LABEL = Regex("""\((?:esc)\b[^)]*\)""", RegexOption.IGNORE_CASE)
 private val REJECT_LABEL = Regex("""^(deny|reject|no)\b""", RegexOption.IGNORE_CASE)
@@ -1408,8 +1583,9 @@ internal fun agentWentOn(below: List<String>): Boolean = below.any { l ->
 /** A key hint line ("ctrl+g to edit", "esc to cancel", "enter to submit"), 1.4.9. */
 private val KEY_HINT_LINE = Regex("""^(ctrl|shift|alt|cmd|esc|enter|tab|space|↑|↓|←|→)\b|\b(to|·)\s*(cancel|select|navigate|submit|confirm|edit)\b""", RegexOption.IGNORE_CASE)
 /** A whole keyboard hint, not a sentence that happens to mention an action. */
+private const val CARD_HINT = """(?:(?:(?:ctrl|shift|alt|cmd)[+-][a-z0-9]+|esc|enter|tab(?:/arrow keys)?|space|arrow keys|[↑↓←→/]+)\s+(?:to\s+)?(?:cancel|reject|select|navigate|submit|confirm|toggle|edit(?: in editor)?)|ctrl\+g to edit in [a-z0-9_][a-z0-9_.+-]*)"""
 private val STANDALONE_CARD_HINT = Regex(
-    """^(?:(?:ctrl|shift|alt|cmd)[+-][a-z0-9]+|esc|enter|tab(?:/arrow keys)?|space|arrow keys|[↑↓←→/]+)\s+(?:to\s+)?(?:cancel|reject|select|navigate|submit|confirm|toggle|edit(?: in editor)?)(?:\s*[·|]\s*(?:(?:ctrl|shift|alt|cmd)[+-][a-z0-9]+|esc|enter|tab(?:/arrow keys)?|space|arrow keys|[↑↓←→/]+)\s+(?:to\s+)?(?:cancel|reject|select|navigate|submit|confirm|toggle|edit(?: in editor)?))*$""",
+    """^$CARD_HINT(?:\s*[·|]\s*$CARD_HINT)*$""",
     RegexOption.IGNORE_CASE,
 )
 private val TYPED_ANSWER_HINT = Regex("""type your|other""", RegexOption.IGNORE_CASE)
@@ -1423,6 +1599,14 @@ private val SHORTCUT_LABEL = Regex("""\(([a-z])\)\s*$""")
 /** The keys that pick [choice]: arrows from the highlighted option, then Enter; null to type it. */
 fun menuKeys(prompt: Prompt, choice: Choice): List<String>? {
     if (prompt.terminalReview) return null
+    if (prompt.claudeCheckboxAction != null) {
+        val rows = prompt.answerRows()
+        val from = rows.indexOfFirst { it.keys == prompt.selected }
+        val to = rows.indexOf(choice)
+        if (from < 0 || to < 0) return null
+        val key = if (to > from) "down" else "up"
+        return List(kotlin.math.abs(to - from)) { key } + if (isCheckbox(choice.label)) "space" else "enter"
+    }
     if (prompt.numberKeys && choice in prompt.choices) return listOf(choice.keys)
     // "No, and tell Copilot what to do differently (Esc to stop)": Enter on that row does nothing in
     // Copilot, and in Codex and Claude it opens a feedback box; Esc answers it in all three. Vibe's
@@ -1468,6 +1652,15 @@ private val VIBE_CARD_FOOTER = Regex("""↑↓/jk navigate.*(Esc reject|Enter se
 
 fun showsQuestionDialog(text: String): Boolean =
     text.lines().filter { it.isNotBlank() }.takeLast(6).any { QUESTION_FOOTER.containsMatchIn(it) }
+
+private val PI_SELECT_FOOTER = Regex("""↑↓\s+navigate\s+enter select\s+escape/ctrl\+c cancel""", RegexOption.IGNORE_CASE)
+
+/** Pi's native select footer must still be at the bottom; a footer in old output is not a card. */
+internal fun activePiQuestion(text: String, version: String?): Prompt? {
+    val footer = text.lines().lastOrNull { !isChrome(it) }?.trim() ?: return null
+    if (!PI_SELECT_FOOTER.matches(footer)) return null
+    return detectPrompt(text, blocked = false, agent = "pi", version = version)?.takeIf { it.choices.isNotEmpty() }
+}
 
 /**
  * The permission mode an agent shows in its footer: "plan", "accept edits", "auto" or "bypass".
@@ -1754,6 +1947,53 @@ private fun detectOpenCodePermission(styled: String, text: String): Prompt? {
 }
 private val OPENCODE_WEB_SEARCH_OPTION = Regex("""^(?:[❯›>]\s*)?([1-3])[.]\s+(.+)$""")
 
+private val OPENCODE_QUESTION_FOOTER = Regex("""(⇆\s+tab\s+)?(↑↓\s+select\s+)?enter\s+(submit|confirm|toggle)\s+esc\s+dismiss""")
+private val OPENCODE_QUESTION_OPTION = Regex("""([1-9])\. (\S.*)""")
+
+/** Native QuestionPrompt (OpenCode v1.19.6, packages/tui/src/routes/session/question.tsx).
+ * A digit selects directly, without depending on color-only focus. Only a complete single-select
+ * frame (no tabs, review, or custom editor) has that digit-to-submit contract.
+ */
+private fun detectOpenCodeQuestion(text: String): Prompt? {
+    val rows = text.lines().takeLast(80).map(String::trimEnd).dropLastWhile(String::isBlank)
+    val footer = rows.indexOfLast { it != "┃" }
+    if (footer < 0) return null
+    if (!rows[footer].startsWith("┃  ")) return null
+    val (tabs, selection, enter) = OPENCODE_QUESTION_FOOTER.matchEntire(rows[footer].removePrefix("┃  "))
+        ?.destructured ?: return null
+    // Keep legacy, glyph-focused confirm fixtures on their existing arrow/Enter path.
+    if (tabs.isEmpty() && selection.isNotEmpty() && enter == "confirm") return null
+    fun review(question: String = "OpenCode has a question") = Prompt(question, emptyList(), terminalReview = true)
+    if (tabs.isNotEmpty() || selection.isEmpty() || enter != "submit") return review()
+
+    // The renderer has a spacer above the question, between it and the options, and before the
+    // footer. Require all three: otherwise the viewport may start partway through the question.
+    val panel = rows.take(footer).takeLastWhile { it.startsWith("┃") }
+    val end = panel.indexOfLast { it != "┃" } + 1
+    if (end == 0 || end == panel.size) return review()
+    val divider = (end - 1 downTo 0).firstOrNull { panel[it] == "┃" } ?: return review()
+    val top = (divider - 1 downTo 0).firstOrNull { panel[it] == "┃" } ?: return review()
+    val heading = panel.subList(top + 1, divider)
+    if (heading.isEmpty() || heading.any { !it.startsWith("┃  ") || OPENCODE_QUESTION_OPTION.matches(it.removePrefix("┃  ")) }) return review()
+    val question = heading.joinToString(" ") { it.removePrefix("┃  ").trimStart() }
+    val choices = mutableListOf<Choice>()
+    var custom = false
+    for (row in panel.subList(divider + 1, end)) {
+        // Even an empty focused custom editor displays a placeholder below the custom row.
+        // Do not send digits to a textarea or accept any unrecognized continuation there.
+        if (custom) return review(question)
+        if (row.startsWith("┃     ") && choices.isNotEmpty()) continue // option description
+        val option = OPENCODE_QUESTION_OPTION.matchEntire(row.removePrefix("┃  ")) ?: return review(question)
+        val (digit, label) = option.destructured
+        if (digit.toInt() != choices.size + 1) return review(question)
+        if (label == "Type your own answer") custom = true
+        else choices += Choice(label, digit, false)
+    }
+    if (choices.isEmpty()) return review(question)
+    return Prompt(question, choices, numberKeys = true,
+        openCodeQuestionFrame = (panel.subList(top, panel.size) + rows[footer]).joinToString("\n"))
+}
+
 /** OpenCode highlights this picker with color alone. Its numbered keys select and submit directly. */
 private fun detectOpenCodeWebSearch(text: String): Prompt? {
     val lines = text.lineSequence().toList().takeLast(20).map { it.trim().trim('│', '┃', '|').trim() }
@@ -1794,6 +2034,14 @@ private val HIDDEN_CODEX_COMMAND = Regex(
     """^(?:…|\.{3})(?:\s|$)|^(?:\[|\()?(?:\d+\s+(?:lines?|characters?)\s+(?:omitted|hidden)|command (?:truncated|hidden))\b|(?:…|\.{3})$""",
     RegexOption.IGNORE_CASE,
 )
+
+// https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/tui/src/bottom_pane/request_user_input/mod.rs
+private val CODEX_QUESTION_PROGRESS = Regex("""Question [1-9]\d*/[1-9]\d*(?: \([1-9]\d* unanswered\))?(?: · auto-resolves in .+)?""")
+private val CODEX_QUESTION_SUBMIT = Regex("""[^\s|]+(?: [^\s|]+){0,2} to submit (?:answer|all)""")
+private val CODEX_QUESTION_CONTINUATION = Regex("""←/→ to navigate questions|⌃p / ⌃n change question|\S+ to interrupt""")
+private val CODEX_QUESTION_OPTION = Regex("""(?:›\s+|[0-9]+\.\s).*""")
+private const val CODEX_UNANSWERED_TITLE = "Submit with unanswered questions?"
+private const val CODEX_UNANSWERED_FOOTER = "Press enter to confirm or esc to go back"
 
 /** Codex's `$ ` introduces the command, not a paragraph of its explanation. */
 private fun codexCommandParts(rows: List<String>): QuestionParts? {
@@ -1843,8 +2091,11 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
         val after = plain.lines().drop(end + 1).joinToString("\n")
         return detectPlainPrompt(after, false, agent, version)?.takeIf { it.choices.isNotEmpty() || it.terminalReview }
     }
+    // Before the styles are stripped: they are the only mark of Muse's highlighted option (2.1.0).
+    if (agent.equals("muse", true)) detectMuseQuotaDialog(text)?.let { return it }
     if (isOpenCode(agent)) {
         if (openCodeBackgroundDrawer(agent, plain) || openCodeComposerMode(plain.lines().takeLast(20)) >= 0) return null
+        detectOpenCodeQuestion(plain)?.let { return it }
         detectOpenCodePermission(text, plain)?.let { return it }
     }
     return detectPlainPrompt(plain, blocked, agent, version)
@@ -1852,6 +2103,37 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
 
 private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, version: String?): Prompt? {
     if ((agent == null || agent.equals("claude", true)) && claudeUsageOpen(text)) return null
+    if (agent.equals("codex", true)) {
+        val rows = text.lines().takeLast(80)
+        fun hints(row: String) = row.split('|').map(String::trim)
+        val head = rows.indexOfLast { CODEX_QUESTION_PROGRESS.matches(it.trim()) || it.trim() == CODEX_UNANSWERED_TITLE }
+        val footer = (head + 1..rows.lastIndex).lastOrNull { at ->
+            rows[at].trim() == CODEX_UNANSWERED_FOOTER || hints(rows[at]).any(CODEX_QUESTION_SUBMIT::matches)
+        } ?: -1
+        if (head >= 0 || footer >= 0) {
+            val confirmation = (head >= 0 && rows[head].trim() == CODEX_UNANSWERED_TITLE) ||
+                (footer >= 0 && rows[footer].trim() == CODEX_UNANSWERED_FOOTER)
+            val newer = if (footer >= 0) (footer + 1..rows.lastIndex).firstOrNull { at ->
+                !isChrome(rows[at]) && !hints(rows[at]).all(CODEX_QUESTION_CONTINUATION::matches)
+            } else (head + 1..rows.lastIndex).firstOrNull { at ->
+                CODEX_COMMAND_HEADING.matches(rows[at].trim()) || CODEX_OTHER_APPROVAL.matches(rows[at].trim()) ||
+                    (INPUT_ROW_UNDER.containsMatchIn(rows[at]) && !TYPED_ANSWER_HINT.containsMatchIn(rows[at]))
+            }
+            // Leave newer UI to the ordinary parser. A clipped native overlay must not
+            // fall through as a generic actionable menu based on its numbered rows.
+            if (newer != null) return detectPlainPrompt(rows.drop(newer).joinToString("\n"), false, agent, version)
+            if (footer < 0 && !confirmation) return null
+            val question = when {
+                confirmation -> CODEX_UNANSWERED_TITLE
+                head < 0 -> "Codex has a question"
+                else -> rows.subList(head + 1, footer).map(String::trim)
+                    .takeWhile { it.isNotBlank() && !CODEX_QUESTION_OPTION.matches(it) }
+                    .joinToString(" ").ifBlank { "Codex has a question" }
+            }
+            // Enter can move focus, advance a step or submit, depending on the native overlay.
+            return Prompt(question, emptyList(), terminalReview = true, codexQuestion = true)
+        }
+    }
     val openCode = isOpenCode(agent)
     if (openCode) {
         detectOpenCodeWebSearch(text)?.let { return it }
@@ -2061,16 +2343,45 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
     // rows (❯ › > ▶, or a filled radio), a question dialog's footer, or Vibe's card footer. A reply
     // that lists steps and ends with "?" is prose, not a question card (1.2.7, Bill: "choices like
     // first, second, then, but they weren't mutually exclusive options").
-    if (dialogAt >= 0 && run.none { it.first in marked }) {
+    // Claude Code 2.1.326 renders Next/Submit separately from the numbered inputs. Down from
+    // the final checkbox focuses it; Enter activates only the focused button. The label in the
+    // tab bar and the generic Enter hint do not identify that button.
+    val checkboxCount = numbered.takeWhile { isCheckbox(it.label) }.size
+    val actionButton = if (agent.equals("claude", true) && dialogAt >= 0 && checkboxCount >= 2 &&
+        numbered.take(checkboxCount).map { it.keys.toIntOrNull() } == (1..checkboxCount).toList() &&
+        numbered.drop(checkboxCount).let { it.isEmpty() || it.singleOrNull()?.label == "Chat about this" }) {
+        val end = run[checkboxCount - 1].first
+        val footer = lines.indexOfLast { row ->
+            val hints = clean(row).split('·').map(String::trim)
+            STANDALONE_CARD_HINT.matches(clean(row)) && "Enter to select" in hints && "Esc to cancel" in hints &&
+                hints.any { it == "Tab/Arrow keys to navigate" || it == "↑/↓ to navigate" || it == "↑↓ to navigate" }
+        }
+        if (footer <= end) null else {
+            val buttons = (end + 1 until footer).mapNotNull { i ->
+                CLAUDE_CHECKBOX_BUTTON.matchEntire(lines[i])?.let { i to it }
+            }
+            buttons.singleOrNull()?.takeIf { (i, button) ->
+                // A number after the button may only be Claude's optional Chat row. No unknown
+                // intervening controls or second focus marker can authorize an action.
+                (end + 1 until footer).all { j -> j == i || isChrome(lines[j]) ||
+                    j < i && lines[j].startsWith("      ") && !INPUT_ROW_UNDER.containsMatchIn(lines[j]) ||
+                    j > i && checkboxCount < run.size && j == run.last().first } &&
+                    run.count { it.first in marked } + (if (button.groupValues[1].isNotEmpty()) 1 else 0) == 1
+            }
+        }
+    } else null
+    if (dialogAt >= 0 && run.none { it.first in marked } && actionButton == null) {
         return Prompt(question ?: "This agent is waiting for you.", emptyList(), region = raw.takeLast(16))
     }
     val vibeCard = lines.takeLast(6).any { VIBE_CARD_FOOTER.containsMatchIn(it) }
-    val realMenu = run.any { it.first in marked } || showsQuestionDialog(activeText) || vibeCard
+    val realMenu = run.any { it.first in marked } || actionButton != null || showsQuestionDialog(activeText) || vibeCard
     // A card is at the bottom of the screen: under its last option only a few lines (a description,
     // a footer, the card's frame). A card with more under it is an old one left in the scrollback
     // after it was answered (1.4.9, Bill: "Grok is stuck on another fake question box"): Grok's
     // "(●)" stays drawn there, so it looked like a live question while Grok was back at work.
-    val below = run.lastOrNull()?.let { (at, _, _) -> lines.drop(at + 1) } ?: emptyList()
+    val below = run.lastOrNull()?.let { (at, _, _) ->
+        lines.drop(maxOf(at, actionButton?.first ?: at) + 1)
+    } ?: emptyList()
     val underCard = below.count { clean(it).any(Char::isLetterOrDigit) }
     // The agent's own activity ("● …", a spinner, a status line) or its input row under the options means
     // the agent went on after the card, however few lines that took (from Grok's review).
@@ -2115,17 +2426,10 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
             numbered.any { it.label.equals("Allow once", true) } &&
             numbered.any { it.label.equals("Deny", true) }) return terminalCommandReview(null)
         // Vibe draws no marker on the highlighted row; a fresh card highlights the first one.
-        val selected = run.firstOrNull { it.first in marked }?.second ?: if (vibeCard) "1" else null
+        val selected = if (actionButton?.second?.groupValues?.get(1)?.isNotEmpty() == true) CLAUDE_CHECKBOX_ACTION
+            else run.firstOrNull { it.first in marked }?.second ?: if (vibeCard) "1" else null
         val multi = numbered.count { isCheckbox(it.label) } >= 2
-        val claudeMultiKey = if (agent == "claude" && multi && selected != null) {
-            val hints = below.map(clean).flatMap { it.split('·').map(String::trim) }
-            when {
-                hints.any { it.equals("Enter to submit", true) } && hints.any { it.equals("Space to toggle", true) } -> "enter"
-                hints.any { it.equals("Tab/Arrow keys to navigate", true) } && hints.any { it.equals("Space to toggle", true) } &&
-                    parts?.tabs?.let { tabs -> tabs.lastOrNull()?.submit == true && tabs.getOrNull(tabs.lastIndex - 1)?.current == true } == true -> "tab"
-                else -> null
-            }
-        } else null
+        val checkboxAction = actionButton?.let { Choice(it.second.groupValues[2], CLAUDE_CHECKBOX_ACTION, false) }
         // Codex (by name, or by its "Press enter to confirm or esc to cancel" footer) answers an
         // option by the key in its label; other agents keep arrows and Enter (1.4.2, from review).
         // Muse Code (1.4.7) does the same ("Allow this stage once (y)", "... (p)", "Abort the entire
@@ -2133,7 +2437,7 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
         val shortcuts = agent?.lowercase() in setOf("codex", "muse") ||
             lines.takeLast(4).any { CODEX_FOOTER.containsMatchIn(it) || MUSE_CARD_FOOTER.containsMatchIn(it) }
         return Prompt(question ?: "Choose an option", numbered, selected, escRejects = vibeCard, parts = parts, multi = multi,
-            shortcuts = shortcuts, approvalIdentity = approvalIdentity, claudeMultiKey = claudeMultiKey)
+            shortcuts = shortcuts, approvalIdentity = approvalIdentity, claudeCheckboxAction = checkboxAction)
     }
 
     val yn = Regex("""[(\[]\s*[yY](?:es)?\s*/\s*[nN]o?\s*[)\]]""")
