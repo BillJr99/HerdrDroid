@@ -2991,7 +2991,8 @@ class AppViewModel internal constructor(
         if (!isCurrent(h) || !pane.sameCardOccupant(currentPane)) return null
         // Last remote read before input; not an atomic compare-and-send.
         if (isOpenCode(pane.agent) && currentPane.scrollOffset != 0) return null
-        val text = (if (isOpenCode(pane.agent)) h.readStyledViewport(pane.id, connection)
+        // Muse's quota warning shows its highlight only in colour (2.1.0): read with styles to find it.
+        val text = (if (isOpenCode(pane.agent) || shown.museQuota) h.readStyledViewport(pane.id, connection)
             else h.readCardViewport(pane.id, connection)).takeUnless { it.isBlank() } ?: return null
         if (!isCurrent(h) || guardedChoice && !foreground) return null
         val live = if (pane.agent == "pi" && h.backend == Backend.TUI &&
@@ -3104,6 +3105,12 @@ class AppViewModel internal constructor(
             }
             if (target.pane.agent == "claude" && choice.label.equals("Submit answers", true) && keys?.lastOrNull() != "enter") {
                 report("Not sent. Open Terminal to verify the selected submit row.")
+                return@answerOnce
+            }
+            // Muse's quota warning (2.1.0): only arrows from a highlight seen in the live styled read,
+            // never a typed digit.
+            if (fresh.museQuota && keys == null) {
+                report("Not sent. The app couldn't see which option Muse has highlighted. Open Terminal to choose.")
                 return@answerOnce
             }
             if (fresh.openCodePermission && keys == null) {
@@ -3644,7 +3651,8 @@ class AppViewModel internal constructor(
         }
         // The same depth and agent the alert was made with (1.4.2, from review).
         val now = detectPrompt(text, blocked = true, agent = a.agent)
-        if (now == null || now.openCodePermission || !notificationAnswerStillFits(now, a)) {
+        // Muse's quota warning is answered only from the chat card, whose live read finds its highlight.
+        if (now == null || now.openCodePermission || now.museQuota || !notificationAnswerStillFits(now, a)) {
             // The question's words still on screen but not read as that card: say the app couldn't
             // tell, rather than that it changed.
             val stillThere = a.question.isNotBlank() && text.filterNot { it.isWhitespace() }.contains(a.question.filterNot { it.isWhitespace() }.take(60))

@@ -614,6 +614,56 @@ class SuccessiveCardAnswerTest {
         assertTrue(sent.isEmpty())
     }
 
+    // ---- 2.1.0: Muse Code's quota warning as a question card --------------------------------
+
+    private val museQuota: String get() = checkNotNull(javaClass.classLoader?.getResource("screens/muse/derived-2.1.0/quota-fast-full.txt")).readText()
+
+    /** The warning read with styles: option [hi] bold and blue, the others plain. */
+    private fun museStyled(hi: Int?): String {
+        var n = 0
+        return museQuota.lines().joinToString("\n") { row ->
+            if (com.billmongan.herdrdroid.herdr.MUSE_QUOTA_TITLES.any { row.trimStart().startsWith(it) } && row.startsWith("  ") && !row.startsWith("    ")) {
+                n++
+                if (n == hi) "  \u001B[1;38;2;120;170;255m${row.trimStart()}\u001B[0m" else "  \u001B[38;2;230;230;230m${row.trimStart()}\u001B[0m"
+            } else row
+        }
+    }
+
+    @Test fun museQuotaWarningIsACardAnsweredOnlyOnATap() = fixture("muse", museQuota) {
+        for (st in listOf(Status.NEEDS_YOU, Status.IDLE)) {
+            status(st)
+            ansiOverride = museStyled(1)
+            readSelectedPane()
+            assertTrue(sent.isEmpty())
+            val card = displayed()
+            assertTrue(card.museQuota)
+            assertEquals(4, card.choices.size)
+        }
+        val card = displayed()
+        val both = card.choices.first { it.label.startsWith("Both") }
+        vm.answerChoice("p1", card, both, target = checkNotNull(vm.paneTextTarget))
+        drainUntil { !vm.answerInFlight("p1") }
+        assertEquals(listOf("down down enter"), sent)
+    }
+
+    @Test fun museQuotaKeepGoingDismissesAndAnUnknownHighlightSendsNothing() = fixture("muse", museQuota) {
+        status(Status.IDLE)
+        ansiOverride = museStyled(null)
+        readSelectedPane()
+        val card = displayed()
+        vm.answerChoice("p1", card, card.choices.last(), target = checkNotNull(vm.paneTextTarget))
+        drainUntil { !vm.answerInFlight("p1") }
+        assertTrue(sent.isEmpty())
+        assertTrue(vm.notice.orEmpty(), vm.notice.orEmpty().startsWith("Not sent."))
+
+        ansiOverride = museStyled(2)
+        readSelectedPane()
+        val again = displayed()
+        vm.answerChoice("p1", again, again.choices.last(), target = checkNotNull(vm.paneTextTarget))
+        drainUntil { !vm.answerInFlight("p1") }
+        assertEquals(listOf("down down enter"), sent)
+    }
+
     // ---- 2.1.0: a draft in the pane's input box, sent or cleared from the chat --------------
 
     private val draftRule = "─".repeat(60)
@@ -1204,7 +1254,10 @@ class SuccessiveCardAnswerTest {
         /** Rows starting "› " drawn as Codex draws a placeholder: a bold glyph, then faint text. */
         var ansiPlaceholder = false
 
-        private fun ansiFrame() = if (ansiPlaceholder) frame.lineSequence().joinToString("\n") {
+        /** What a read with styles returns, when set (2.1.0, Muse's colour-only highlight). */
+        var ansiOverride: String? = null
+
+        private fun ansiFrame() = if (ansiOverride != null) ansiOverride!! else if (ansiPlaceholder) frame.lineSequence().joinToString("\n") {
             if (it.startsWith("› ")) "\u001B[1m› \u001B[0m\u001B[2m${it.removePrefix("› ")}\u001B[0m" else it
         } else if (!ansiRows) frame else frame.lineSequence().joinToString("\n") {
             if (it.startsWith("$ ")) "$it\u001B[44m  \u001B[0m" else it

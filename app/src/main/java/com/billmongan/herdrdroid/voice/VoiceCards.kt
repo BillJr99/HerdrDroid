@@ -19,7 +19,8 @@ private val clipped = Regex("""…|\.\.\.|\b(?:truncated|show full command)\b"""
 internal fun voiceCardKeys(prompt: Prompt, choice: Choice): List<String>? {
     val parts = prompt.parts
     val tabs = parts?.tabs.orEmpty()
-    if (prompt.terminalReview || prompt.hermesClarify || prompt.openCodeQuestionFrame != null ||
+    // Muse's quota warning (2.1.0) can turn on data use: answered from the chat card only.
+    if (prompt.terminalReview || prompt.hermesClarify || prompt.openCodeQuestionFrame != null || prompt.museQuota ||
         prompt.multi || choice !in prompt.choices || tabs.count { !it.submit } > 1 ||
         tabs.any { it.current && it.submit } || prompt.choices.any { isCheckbox(it.label) } ||
         isTypedAnswerChoice(choice.label) || grantsStandingPermission(choice.label) ||

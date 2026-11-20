@@ -1,0 +1,15 @@
+◆ Ran command · Run the unit tests · ✓ · 41s · ctrl+o
+
+  You're using your quota fast
+  At this pace your 5-hour quota runs out in about 40 minutes (resets at 3:10 PM)
+
+  Switch to Spark — about 5× more turns
+    Spark becomes your default model. Switch back anytime with /model.
+  Turn on contributor mode — about 2.5× more turns
+    Session content may be used for product improvement.
+  Both — over 10× more turns
+    Spark becomes your default; session content may be used for product improvement. Terms of Service
+     (https://dev.meta.ai/legal/terms-of-service)
+  Keep going
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  muse-wonder-full-1.0 · max · ~/agents/muse · Launch overrides

@@ -968,6 +968,8 @@ data class Prompt(
     internal val hermesClarify: Boolean = false,
     /** Codex request_user_input overlay, not a numbered approval menu. */
     internal val codexQuestion: Boolean = false,
+    /** Muse Code's quota warning: its highlight shows only in colour, so it is answered from a styled live read (2.1.0). */
+    internal val museQuota: Boolean = false,
 ) {
     /**
      * Never an empty card (1.4.2): a prompt with no choices always has something to show, the
@@ -2089,6 +2091,8 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
         val after = plain.lines().drop(end + 1).joinToString("\n")
         return detectPlainPrompt(after, false, agent, version)?.takeIf { it.choices.isNotEmpty() || it.terminalReview }
     }
+    // Before the styles are stripped: they are the only mark of Muse's highlighted option (2.1.0).
+    if (agent.equals("muse", true)) detectMuseQuotaDialog(text)?.let { return it }
     if (isOpenCode(agent)) {
         if (openCodeBackgroundDrawer(agent, plain) || openCodeComposerMode(plain.lines().takeLast(20)) >= 0) return null
         detectOpenCodeQuestion(plain)?.let { return it }
