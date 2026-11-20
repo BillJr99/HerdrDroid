@@ -351,11 +351,14 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
           CardOrTerminalBar(showingTerminal = fullTerminal, agent = pane?.agentName ?: "The agent", onBackToQuestion = { fullTerminal = false }) {
             // The transcript already shows prose and attachments. The parsed question has no
             // transcript tool-call ID, so a running tool's plan or diff may belong to another turn.
-            PromptQuestion(p, agent = pane?.agentName ?: "The agent")
+            // The screen the card was read from, for its layout only (2.1.1); never while a read failed.
+            val cardScreen = screenText.takeIf { vm.paneReadProblem == null }
+            PromptQuestion(p, agent = pane?.agentName ?: "The agent", screen = cardScreen)
             Spacer(Modifier.height(10.dp))
             PromptCard(
                 p,
                 agent = pane?.agentName ?: "The agent",
+                optionNotes = remember(cardScreen, p) { CardFormat.optionNotes(cardScreen, p.choices) },
                 sending = vm.answerInFlight(paneId),
                 readOnlyPreview = openingPreview != null ||
                     ((com.billmongan.herdrdroid.herdr.isOpenCode(pane?.agent) || p.hermesClarify) && shownTarget == null && !p.terminalReview),
@@ -1157,31 +1160,15 @@ private fun ModifierKey(label: String, state: Hold, onChange: (Hold) -> Unit, mo
  * terminal. The orange [PromptCard] below it holds only the answers.
  */
 @Composable
-internal fun PromptQuestion(p: Prompt, agent: String) {
+internal fun PromptQuestion(p: Prompt, agent: String, screen: String? = null) {
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("$agent asks", color = Palette.OrangeInk, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
 
         val parts = p.shownParts()
         if (parts.tabs.isNotEmpty()) QuestionSteps(parts)
-        // The question as a heading, a command in a block of its own, the rest as plain text, in the
-        // order the agent drew them (1.2.9).
-        SelectionContainer {
-            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                parts.blocks.forEach { b ->
-                    when (b.kind) {
-                        com.billmongan.herdrdroid.herdr.QKind.HEADING -> Text(b.text, fontSize = 17.sp,
-                            fontWeight = FontWeight.SemiBold, lineHeight = 24.sp, color = Palette.Ink)
-                        com.billmongan.herdrdroid.herdr.QKind.TEXT -> Text(b.text, fontSize = 15.sp,
-                            lineHeight = 21.sp, color = Palette.Ink)
-                        com.billmongan.herdrdroid.herdr.QKind.COMMAND -> Surface(shape = RoundedCornerShape(10.dp),
-                            color = Palette.Code, border = BorderStroke(1.dp, Palette.Line), modifier = Modifier.fillMaxWidth()) {
-                            Text(b.text, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, fontSize = 13.5.sp,
-                                lineHeight = 19.sp, color = Palette.Ink, modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp))
-                        }
-                    }
-                }
-            }
-        }
+        // The question first, then paragraphs, lists, commands and diffs laid out for the phone
+        // (2.1.1); Show raw gives the parser's text as before (1.2.9).
+        CardBody(parts, screen)
     }
 }
 
@@ -1269,6 +1256,8 @@ internal fun PromptCard(
     onShowTerminal: (() -> Unit)? = null,
     sending: Boolean = false,
     readOnlyPreview: Boolean = false,
+    /** The line an agent draws under an option, by its keys (2.1.1): shown under the label, display only. */
+    optionNotes: Map<String, String> = emptyMap(),
 ) {
     @Suppress("NAME_SHADOWING") val p = p.forCard()
     Surface(
@@ -1346,8 +1335,14 @@ internal fun PromptCard(
                     val first = c.keys == (p.selected ?: p.choices.firstOrNull()?.keys?.takeUnless { p.openCodePermission })
                     val body: @Composable () -> Unit = {
                         Column(Modifier.fillMaxWidth()) {
-                            Text(c.label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, lineHeight = 20.sp,
+                            // A key hint ("(esc)") or tail reads quieter; the label's text is unchanged (2.1.1).
+                            Text(optionLabel(c.label, if (first) Palette.OnBlue.copy(alpha = 0.8f) else Palette.Muted),
+                                fontSize = 15.sp, fontWeight = FontWeight.SemiBold, lineHeight = 20.sp,
                                 color = if (first) Palette.OnBlue else Palette.Ink)
+                            optionNotes[c.keys]?.let { note ->
+                                Text(note, fontSize = 13.sp, lineHeight = 18.sp,
+                                    color = if (first) Palette.OnBlue.copy(alpha = 0.9f) else Palette.Muted)
+                            }
                             Text(what, fontSize = 12.sp, color = if (first) Palette.OnBlue.copy(alpha = 0.8f) else Palette.Muted)
                             // Standing permission (1.4.0): say so before it is tapped.
                             if (caution) Text("Caution: this lets the agent do it again without asking you.", fontSize = 12.sp,
