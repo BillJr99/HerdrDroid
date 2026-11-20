@@ -13,6 +13,9 @@ import com.billmongan.herdrdroid.herdr.forPhone
 import com.billmongan.herdrdroid.transcript.lastReply
 import com.billmongan.herdrdroid.transcript.toMarkdown
 import com.billmongan.herdrdroid.herdr.detectPrompt
+import com.billmongan.herdrdroid.herdr.isOpenCode
+import com.billmongan.herdrdroid.herdr.openCodeBackgroundDrawer
+import com.billmongan.herdrdroid.herdr.openCodeEmptyComposer
 import com.billmongan.herdrdroid.herdr.Prompt
 import com.billmongan.herdrdroid.herdr.Choice
 import com.billmongan.herdrdroid.herdr.cardAnswerStillFits
@@ -198,6 +201,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
     internal var paneTextTarget by mutableStateOf<CardTarget?>(null)
         private set
+    private var openCodeComposerTarget by mutableStateOf<CardTarget?>(null)
     var lastSent by mutableStateOf<Pair<String, String>?>(null)
         private set
     var lastSentAt by mutableStateOf(0L)
@@ -1412,6 +1416,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             paneReadProblem = why
             openingPanePreview = null
             paneTextTarget = null
+            openCodeComposerTarget = null
             openUsage = null
         }
         quietly { h ->
@@ -1445,8 +1450,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             // while status still says Working. Probe only the selected, live-bottom viewport.
             val missingCodexApproval = agent == "codex" && paneStatus == Status.WORKING && preview == null
             val unfinishedClaudePreview = agent == "claude" && paneStatus == Status.WORKING && preview?.choices.isNullOrEmpty()
+            val verifyOpenCode = isOpenCode(agent) && client?.backend == Backend.TUI &&
+                (blocked || paneStatus == Status.WORKING || preview != null || openCodeBackgroundDrawer(agent, recent))
             val liveCard = if (liveUsage == null &&
-                (missingCodexApproval || unfinishedClaudePreview || preview?.terminalReview == true || (blocked && preview?.choices.isNullOrEmpty())) && canUpgrade()) {
+                (verifyOpenCode || missingCodexApproval || unfinishedClaudePreview || preview?.terminalReview == true || (blocked && preview?.choices.isNullOrEmpty())) && canUpgrade()) {
                 val owner = checkNotNull(cardOwner)
                 quietly { h -> if (h === owner.client) h.readCardViewport(paneId, owner.connection, timeoutSeconds = 1) else null }
                     ?.takeIf { canUpgrade() && !it.isBlank() }
@@ -1454,10 +1461,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             if (!isOpen()) return
             val livePrompt = liveCard?.let { detectPrompt(it, pane(paneId)?.status == Status.NEEDS_YOU, agent, version) }
                 ?.takeIf {
-                    (it.choices.isNotEmpty() && !it.terminalReview && (!missingCodexApproval || it.approvalIdentity != null)) ||
+                    verifyOpenCode || (it.choices.isNotEmpty() && !it.terminalReview && (!missingCodexApproval || it.approvalIdentity != null)) ||
                         (missingCodexApproval && it.terminalReview)
                 }
-            val text = if (livePrompt != null) checkNotNull(liveCard) else recent
+            val useLive = liveCard != null && (livePrompt != null || verifyOpenCode &&
+                (blocked || preview != null || openCodeBackgroundDrawer(agent, recent) || openCodeBackgroundDrawer(agent, liveCard)))
+            val text = if (useLive) checkNotNull(liveCard) else recent
             lastAppliedPaneRead = attempt
             openingPanePreview = null
             paneReadProblem = null
@@ -1465,7 +1474,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             noteInputLine(paneId, text)
             paneText = text
             paneTextPane = paneId
-            paneTextTarget = cardOwner?.takeIf { it.isCurrent(it.client) }
+            paneTextTarget = cardOwner?.takeIf { it.isCurrent(it.client) && (!verifyOpenCode || useLive) }
+            openCodeComposerTarget = paneTextTarget?.takeIf { useLive && verifyOpenCode && openCodeEmptyComposer(text) }
             if (agent in setOf("opencode", "opencode-ursinus", "kiro", "kiro-cli")) {
                 footerModel(agent, text)?.takeIf { models[paneId] != it }?.let {
                     models = models + (paneId to it)
@@ -1476,7 +1486,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             // What the question card sees, logged when it changes (sizes only, no question text).
             val status = panes.firstOrNull { it.id == paneId }?.status
             val p = when {
-                livePrompt != null -> livePrompt
+                useLive -> livePrompt
+                verifyOpenCode -> null // Recent output does not establish that an OpenCode card is current.
                 (status == Status.NEEDS_YOU) == blocked && pane(paneId)?.agent == agent && versionOf(paneId) == version -> preview
                 else -> detectPrompt(text, status == Status.NEEDS_YOU, pane(paneId)?.agent, versionOf(paneId))
             }
@@ -1509,6 +1520,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         paneText = ""
         paneTextPane = paneId
         paneTextTarget = null
+        openCodeComposerTarget = null
         paneReadProblem = null
         openUsage = null
         current?.id?.let { questions(it, paneId) }
@@ -2234,17 +2246,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${pane.id} (${pane.agent ?: "shell"}, ${pane.status}): ${text.length} chars; link ${link}, ${if (herdr == null) "no client" else "client ready"}")
         act(pane.id, "Couldn't send", pendingId) { h ->
             if (pendingSends.none { it.id == pendingId }) return@act
+            val verifyOpenCode = isOpenCode(pane.agent) && h.backend == Backend.TUI
+            var openCodeRead: OpenCodeSendRead? = null
             run {
                 // Behind an earlier held message unless the user explicitly chose Force send.
                 val earlier = !force && pendingSends.any { it.paneId == pane.id && it.waiting && it.id != pendingId }
                 // Read with its styles (1.4.6), so an agent's dim placeholder isn't taken for typing.
-                val screenNow = if (earlier) null else runCatching { h.readStyled(pane.id, 40) }.getOrNull()
+                val screenNow = if (earlier) null else if (verifyOpenCode) {
+                    openCodeRead = try { readOpenCodeForSend(h, pane) } catch (_: HerdrError) { null }
+                    openCodeRead?.text
+                } else runCatching { h.readStyled(pane.id, 40) }.getOrNull()
                 // A pane that can't be read first is not typed into blind (1.4.1, from a code review).
                 val now = pane(pane.id) ?: pane
                 val why = when {
                     earlier -> "an earlier message to it is still waiting"
                     screenNow.isNullOrBlank() -> "its screen couldn't be read first"
-                    blocksNormalSend(now, screenNow) -> "a question is open in it; answer it first"
+                    openCodeBackgroundDrawer(now.agent, screenNow) -> "its background drawer is open; close it in Terminal"
+                    blocksNormalSend(now, screenNow, openCodeRead != null) ||
+                        openCodeRead?.pane?.let { blocksNormalSend(it, screenNow, true) } == true -> "a question is open in it; answer it first"
                     force -> null
                     else -> holdReason(pane.id, screenNow)
                 }
@@ -2267,7 +2286,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             try {
-                h.sendMessage(pane, text)
+                val checked = openCodeRead
+                h.sendMessage(checked?.pane ?: pane, text, expectedConnection = checked?.connection)
                 com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${pane.id}: delivered to herdr (${h.lastSendRoute})")
                 delivered()
             } catch (e: Exception) {
@@ -2302,6 +2322,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val closeEpoch = writeGate.epoch(closeKey)
         fun closing() = writeGate.isClosing(closeKey) || writeGate.epoch(closeKey) != closeEpoch
         var missing = 0
+        var openCodeRead: OpenCodeSendRead? = null
         val outcome = com.billmongan.herdrdroid.herdr.HeldSendRetry().run(
             // The 2 minutes start when it reaches the front of the pane's queue (from Grok's review).
             startedAt = com.billmongan.herdrdroid.herdr.HeldSendRetry.monotonicMillis(),
@@ -2323,11 +2344,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     link != Link.CONNECTED || h == null -> "the computer isn't connected"
                     pn == null -> "the pane isn't listed just now"
                     // A question that came up since is answered first, never typed into (1.4.4).
-                    pn.status == Status.NEEDS_YOU -> "a question is open in it; answer it first"
+                    pn.status == Status.NEEDS_YOU && !(isOpenCode(pn.agent) && h.backend == Backend.TUI) -> "a question is open in it; answer it first"
                     pendingSends.any { it.paneId == p.paneId && it.waiting && it.at < p.at && it.id != p.id } -> "an earlier message to it is still waiting"
                     else -> {
                         // Let HeldSendRetry handle read failures and propagate cancellation.
-                        val screen = h.readStyled(p.paneId, 40)
+                        val verifyOpenCode = isOpenCode(pn.agent) && h.backend == Backend.TUI
+                        val checked = if (verifyOpenCode) readOpenCodeForSend(h, pn) else null
+                        openCodeRead = checked
+                        val screen = if (verifyOpenCode) checked?.text ?: return@run "its screen couldn't be read first"
+                            else h.readStyled(p.paneId, 40)
                         noteInputLine(p.paneId, screen)
                         // Checked again after the read, which can take a while (from Grok's review): a
                         // question or a usage check that began meanwhile is never typed into. Nothing
@@ -2337,7 +2362,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                             // Its tab may have been closed during the read.
                             closing() -> "its tab is being closed"
                             after == null -> "the pane isn't listed just now"
-                            blocksNormalSend(after, screen) -> "a question is open in it; answer it first"
+                            openCodeBackgroundDrawer(after.agent, screen) -> "its background drawer is open; close it in Terminal"
+                            blocksNormalSend(after, screen, checked != null) ||
+                                checked?.pane?.let { blocksNormalSend(it, screen, true) } == true -> "a question is open in it; answer it first"
                             else -> holdReason(p.paneId, screen)
                         }
                     }
@@ -2346,7 +2373,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             send = {
                 val h = herdr ?: throw IllegalStateException("not connected")
                 val pn = pane(p.paneId) ?: throw IllegalStateException("the pane closed")
-                h.sendMessage(pn, p.text)
+                val checked = openCodeRead
+                h.sendMessage(checked?.pane ?: pn, p.text, expectedConnection = checked?.connection)
                 log("delivered to herdr (${h.lastSendRoute})")
             },
             log = log,
@@ -2624,7 +2652,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val currentPane = h.cardPane(pane.id, connection) ?: return null
         if (!isCurrent(h) || !pane.sameCardOccupant(currentPane)) return null
         // Last remote read before input; not an atomic compare-and-send.
-        val text = h.readCardViewport(pane.id, connection).takeUnless { it.isBlank() } ?: return null
+        if (isOpenCode(pane.agent) && currentPane.scrollOffset != 0) return null
+        val text = (if (isOpenCode(pane.agent)) h.readStyledViewport(pane.id, connection)
+            else h.readCardViewport(pane.id, connection)).takeUnless { it.isBlank() } ?: return null
         if (!isCurrent(h)) return null
         return detectPrompt(text, currentPane.status == Status.NEEDS_YOU, currentPane.agent, versionOf(pane.id))
             ?.takeIf { cardAnswerStillFits(shown, it) }
@@ -2723,6 +2753,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             val keys = if (voiceAllowed == null) com.billmongan.herdrdroid.herdr.menuKeys(fresh, choice)
                 else com.billmongan.herdrdroid.voice.voiceCardKeys(fresh, choice)
+            if (fresh.openCodePermission && keys == null) {
+                report("Not sent. Open Terminal to verify the selected permission button.")
+                return@answerOnce
+            }
             if (voiceAllowed != null && (!voiceAllowed() || keys == null)) {
                 report("The question changed. No answer was sent.")
                 return@answerOnce
@@ -3255,7 +3289,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         // The same depth and agent the alert was made with (1.4.2, from review).
         val now = detectPrompt(text, blocked = true, agent = a.agent)
-        if (now == null || !notificationAnswerStillFits(now, a)) {
+        if (now == null || now.openCodePermission || !notificationAnswerStillFits(now, a)) {
             // The question's words still on screen but not read as that card: say the app couldn't
             // tell, rather than that it changed.
             val stillThere = a.question.isNotBlank() && text.filterNot { it.isWhitespace() }.contains(a.question.filterNot { it.isWhitespace() }.take(60))
@@ -3564,12 +3598,35 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
     private var queueJob: Job? = null
 
-    internal fun blocksNormalSend(pane: Pane, screen: String): Boolean =
-        pane.status == Status.NEEDS_YOU || dismissibleUsageFrame(pane.agent, screen) != null ||
+    internal fun blocksNormalSend(pane: Pane, screen: String, liveOpenCode: Boolean = false): Boolean =
+        (pane.status == Status.NEEDS_YOU && !(liveOpenCode && isOpenCode(pane.agent) && openCodeEmptyComposer(screen))) ||
+            openCodeBackgroundDrawer(pane.agent, screen) ||
+            dismissibleUsageFrame(pane.agent, screen) != null ||
             (pane.agent != null && detectPrompt(forPhone(screen), false, pane.agent, versionOf(pane.id)) != null)
 
+    internal fun openCodeComposerIsCurrent(pane: Pane): Boolean = openCodeComposerTarget?.let {
+        paneReadProblem == null && paneTextPane == pane.id && pane.scrollOffset == 0 &&
+            it.pane.sameCardOccupant(pane) && it.isCurrent(it.client)
+    } == true
+
     fun hasPendingQuestion(pane: Pane): Boolean =
-        blocksNormalSend(pane, if (paneTextPane == pane.id && paneReadProblem == null) paneText else "")
+        blocksNormalSend(pane, if (paneTextPane == pane.id && paneReadProblem == null) paneText else "",
+            openCodeComposerIsCurrent(pane))
+
+    private data class OpenCodeSendRead(val pane: Pane, val connection: Any, val text: String)
+
+    private suspend fun readOpenCodeForSend(h: Herdr, expected: Pane): OpenCodeSendRead? {
+        val connection = h.connectionIdentity ?: return null
+        val server = current?.id ?: return null
+        if (!com.billmongan.herdrdroid.herdr.hasStableOccupant(expected)) return null
+        fun sameTarget() = herdr === h && h.connectionIdentity === connection && current?.id == server &&
+            pane(expected.id)?.sameCardOccupant(expected) == true
+        if (!sameTarget()) return null
+        val fresh = h.cardPane(expected.id, connection) ?: return null
+        if (!fresh.sameCardOccupant(expected) || !sameTarget()) return null
+        val text = h.readStyledViewport(expected.id, connection)
+        return OpenCodeSendRead(fresh, connection, text).takeIf { text.isNotBlank() && sameTarget() }
+    }
 
     /** Holds a message until the pane's agent is ready, then sends it. */
     fun enqueue(paneId: String, text: String) {
