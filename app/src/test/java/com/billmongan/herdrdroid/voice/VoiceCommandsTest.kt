@@ -23,9 +23,14 @@ class VoiceCommandsTest {
         assertEquals("minipc2", voiceName("mini PC two"))
         assertEquals(VoiceCommand.Choose(1), parseVoiceCommand("Choose option two"))
         assertEquals(VoiceCommand.Choose(9), parseVoiceCommand("Option 10"))
+        assertEquals(VoiceCommand.Choose(0), parseVoiceCommand("Answer option one"))
     }
 
     @Test fun requiresExplicitCommandsAndConfirmation() {
+        assertEquals("ListQuestions", parseVoiceCommand("List questions").toString())
+        assertEquals(VoiceCommand.ReadQuestion, parseVoiceCommand("Read the pending approval"))
+        assertEquals(VoiceCommand.Confirm, parseVoiceCommand("Confirm approval"))
+        assertEquals(VoiceCommand.Cancel, parseVoiceCommand("Cancel approval"))
         assertEquals(VoiceCommand.ReadQuestion, parseVoiceCommand("Read the pending question"))
         assertEquals(VoiceCommand.Confirm, parseVoiceCommand("Confirm answer"))
         assertEquals(VoiceCommand.Cancel, parseVoiceCommand("Cancel answer"))
