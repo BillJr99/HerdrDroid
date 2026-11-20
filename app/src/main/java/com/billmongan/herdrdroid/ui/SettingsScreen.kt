@@ -119,7 +119,7 @@ fun SettingsScreen(vm: AppViewModel, back: Screen) {
                     Switch(checked = vm.agentMessagingEnabled, onCheckedChange = null)
                 }
                 Text(
-                    "Messaging is not available in this build. This setting saves your preference only.",
+                    "Listen for a proposal from the selected Herdr pane while the app is open and unlocked. Nothing is sent until you choose a destination and tap Send message.",
                     color = Palette.Muted, fontSize = 13.sp,
                 )
             }

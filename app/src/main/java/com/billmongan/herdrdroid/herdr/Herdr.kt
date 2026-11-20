@@ -106,6 +106,8 @@ class Herdr internal constructor(
         val connection: Any?
         suspend fun bulk(command: String): com.billmongan.herdrdroid.ssh.ExecResult
         suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): com.billmongan.herdrdroid.ssh.ExecResult
+        suspend fun input(command: String, input: ByteArray, expectedConnection: Any): com.billmongan.herdrdroid.ssh.ExecResult =
+            error("Unexpected command with stdin")
     }
     // The path is the user's setting; "~" stays unquoted so the remote shell expands it.
     // Left at the default, herdr is looked up the way hc is: on the PATH, else in ~/.local/bin, where
@@ -249,7 +251,9 @@ class Herdr internal constructor(
             runNow(cmd("pane", "read", id, "--source", "visible", "--format", "ansi"), 5, connection)
         override suspend fun hasWork(pane: Pane, connection: Any): Boolean {
             val arg = org.json.JSONArray(listOf(listOf(pane.id, pane.agent.orEmpty(), pane.cwd, pane.sessionId.orEmpty()))).toString()
-            val r = ssh.execInput("$PYZ __workcounts__ ${shq(arg)}", z(script), 8, connection)
+            val command = "$PYZ __workcounts__ ${shq(arg)}"
+            val input = z(script)
+            val r = commands?.input(command, input, connection) ?: ssh.execInput(command, input, 8, connection)
             if (r.exit != 0) return true
             // Missing or malformed evidence is not an idle result.
             val counts = JSONObject(r.out)

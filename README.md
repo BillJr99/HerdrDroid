@@ -105,6 +105,22 @@ Taken on an Android emulator against a demo computer ("demo-box") running herdr 
 
 When the phone sleeps or the app goes to the background, Android drops the SSH socket. The app opens a fresh connection when it comes back, and until then the top bar says **Reconnecting** in grey. Previews and reads that fail because of a dropped connection are retried quietly, and keys, messages and answers you send while it reconnects wait in a queue and go out in order. A banner appears only for something you have to act on: a server still unreachable after 15 seconds, a refused sign-in, a changed host key, or a herdr command that failed.
 
+## Agent proposals across servers
+
+On the phone, enable **Settings → Agent cross-server messaging** (off by default). Open the source agent's Herdr TUI pane, then choose **More → Listen for agent proposal**. Tap **Copy proposal instructions** and provide those instructions to that agent in its normal chat; let the agent decide what to propose. Keep the pane open at the live bottom. The app listens for one proposal for up to five minutes, using its existing pane reads. It needs no host installation or changes to Herdr, SSH, or agent configuration.
+
+For example, an agent that wants to propose `The build is ready for review.` can render this plain fenced block, substituting the phone's one-use code on both marker lines:
+
+```text
+HDMSG1 1234567890abcdef1234567890abcdef
+HD> VGhlIGJ1aWxkIGlzIHJlYWR5IGZvciByZXZpZXcu
+HDEND 1234567890abcdef1234567890abcdef
+```
+
+The body is standard padded Base64 of the literal UTF-8 message (up to 1,024 bytes), split into lines of at most 40 encoded characters with an `HD> ` prefix. Keep the marker lines intact. It carries no destination, command, or authorization. A matching code ties output to a listen window; it does **not** authenticate an agent or exclude another process that can write to that pane. Treat the proposal as untrusted and never include secrets. Ordinary terminal and chat retention still applies to what the agent prints.
+
+Tap **Review agent proposal**, read the exact decoded text, choose an idle agent on another server from connected Fleet destinations (**Watch my other servers too**), and separately tap **Send message**. Leaving the pane, backgrounding or locking the app, disabling the setting, or expiry cancels pending approval. The app never sends a proposal over voice, from a notification, in the background, or by typing into the destination terminal. A send is one attempt; if delivery is uncertain, check the destination before proposing again.
+
 ## Voice Control and Bluetooth
 
 On Android 12 or later, open **Settings → Voice** and choose **Phone speaker and mic** or **Bluetooth speakers and mic**. For a car, enable **Phone calls** in the Android Bluetooth settings for that connection. Media audio alone cannot supply the car microphone. Select Bluetooth, then try **Read aloud** or start **hands-free** and say “Hey Herdr.” The car may display this audio as a call. HerdrDroid releases the route when speaking and listening end. If Android cannot connect the selected route, the app shows an error. Android's separate system dictation uses the system recognizer's route.

@@ -69,13 +69,13 @@ internal class PromptRelay(
         }
     }
 
-    suspend fun send(target: Target, text: String, allowed: () -> Boolean): RelayResult {
+    suspend fun send(target: Target, text: String, authorizedWrite: WritePermit = WritePermit(), allowed: () -> Boolean): RelayResult {
         val key = target.server to target.pane.id
         fun valid() = allowed() && isCurrent(target) && !gate.isClosing(key) && clearToSend(target.server, target.pane.id)
         val clean = text.isNotBlank() && text.none { it != '\n' && it != '\t' && it.isISOControl() }
         if (!clean || !valid()) return RelayResult.REFUSED
         val release = dispatch.tryAcquire(key) ?: return RelayResult.REFUSED
-        val permit = gate.open(key) ?: run { release(); return RelayResult.REFUSED }
+        val permit = gate.open(key, authorizedWrite) ?: run { release(); return RelayResult.REFUSED }
         try {
             val port = target.port
             suspend fun idlePane(): Pane? = port.pane(target.pane.id, target.connection)?.takeIf {

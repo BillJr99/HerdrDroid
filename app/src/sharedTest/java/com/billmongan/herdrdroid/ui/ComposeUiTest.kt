@@ -61,6 +61,25 @@ import org.junit.runner.RunWith
 class ComposeUiTest {
     @get:Rule val rule = createComposeRule()
 
+    @Test fun agentProposalReviewShowsExactTextAndNeedsASelectedDestinationAndSeparateSend() {
+        val destinations = listOf("Claude on Other server", "Codex on Another server")
+        val sends = mutableListOf<String>()
+        val text = "Review the build.\nKeep  both spaces."
+        rule.setContent {
+            AgentMessageReview("Claude on Source server", text, destinations, onDismiss = {},
+                onSelect = { true }, onSend = { sends += it; com.billmongan.herdrdroid.herdr.RelayResult.UNCERTAIN })
+        }
+        rule.onNodeWithText(text).assertIsDisplayed()
+        rule.onNodeWithText("Claude on Source server", substring = true).assertIsDisplayed()
+        rule.onNodeWithText("Send message").assertIsNotEnabled()
+        rule.onNodeWithText(destinations[1]).performClick()
+        rule.runOnIdle { assertTrue(sends.isEmpty()) }
+        rule.onNodeWithText("Send message").performClick()
+        rule.onNodeWithText("Could not confirm delivery.", substring = true).assertIsDisplayed()
+        rule.onNodeWithText("Send message").assertIsNotEnabled()
+        rule.runOnIdle { assertEquals(listOf(destinations[1]), sends) }
+    }
+
     @Test fun agentMessagingSettingsDefaultOffAndPersistExplicitChoice() {
         val app = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.app.Application>()
         val prefs = app.getSharedPreferences("app", android.content.Context.MODE_PRIVATE)

@@ -56,6 +56,11 @@ import com.billmongan.herdrdroid.herdr.hermesUsageEnd
 import com.billmongan.herdrdroid.herdr.hermesUsageWaiting
 import com.billmongan.herdrdroid.herdr.footerModel
 import com.billmongan.herdrdroid.herdr.Status
+import com.billmongan.herdrdroid.herdr.RelayResult
+import com.billmongan.herdrdroid.herdr.WritePermit
+import com.billmongan.herdrdroid.herdr.agentMessageFrame
+import com.billmongan.herdrdroid.herdr.hasStableOccupant
+import com.billmongan.herdrdroid.herdr.sameOccupant
 import com.billmongan.herdrdroid.ssh.AuthRejected
 import com.billmongan.herdrdroid.ssh.Credentials
 import com.billmongan.herdrdroid.ssh.HerdrSsh
@@ -145,7 +150,10 @@ class AppViewModel internal constructor(
     var screen: Screen
         get() = currentScreen
         set(value) {
-            if (currentScreen != value) openingPanePreview = null
+            if (currentScreen != value) {
+                clearAgentMessage()
+                openingPanePreview = null
+            }
             chatVisit.navigate((currentScreen as? Screen.Agent)?.paneId, (value as? Screen.Agent)?.paneId)
             currentScreen = value
         }
@@ -966,17 +974,18 @@ class AppViewModel internal constructor(
 
     // The existing polling flag defaults to foreground for legacy behavior. Messaging instead
     // waits for the first real foreground event and never runs under background Watching.
-    private var agentMessagingForeground = false
+    private var agentMessagingForeground by mutableStateOf(false)
     private var agentMessagingActivation: Job? = null
     private var agentMessagingRunning: Job? = null
 
     private fun updateAgentMessagingSession() {
-        val runSession = runAgentMessagingSession ?: return
         if (!agentMessagingEnabled || !agentMessagingForeground || locked) {
+            clearAgentMessage()
             agentMessagingActivation?.cancel()
             agentMessagingActivation = null
             return
         }
+        val runSession = runAgentMessagingSession ?: return
         if (agentMessagingActivation != null) return // No automatic restart within this activation.
         val previous = agentMessagingRunning
         val next = viewModelScope.launch(start = CoroutineStart.LAZY) {
@@ -1043,6 +1052,7 @@ class AppViewModel internal constructor(
     private fun linkLost(e: Exception?) {
         if (herdr == null) return
         if (link == Link.CONNECTED) {
+            clearAgentMessage()
             clearPanePrefetch()
             link = Link.RECONNECTING
             downSince = System.currentTimeMillis()
@@ -1461,6 +1471,7 @@ class AppViewModel internal constructor(
         val visit = paneVisit
         val started = android.os.SystemClock.elapsedRealtime()
         val cardOwner = cardTarget(paneId)
+        val messageArm = agentMessage(paneId)?.takeIf { it.text == null }
         fun isOpen() = attempt > lastAppliedPaneRead && current?.id == serverId && herdr === client &&
             paneVisit == visit && (screen as? Screen.Agent)?.paneId == paneId
         fun problem(why: String) {
@@ -1553,6 +1564,9 @@ class AppViewModel internal constructor(
             lastAppliedPaneRead = attempt
             openingPanePreview = null
             paneReadProblem = null
+            if (messageArm != null && currentAgentMessage === messageArm && agentMessageSourceCurrent(messageArm)) {
+                agentMessageFrame(recent, messageArm.code)?.let { currentAgentMessage = messageArm.copy(text = it) }
+            }
             openUsage = liveUsage
             noteInputLine(paneId, text)
             paneText = text
@@ -2624,6 +2638,101 @@ class AppViewModel internal constructor(
 
     internal suspend fun sendRemotePrompt(target: RemotePromptTarget, text: String, allowed: () -> Boolean) =
         promptRelay.send(target.route, text) { allowed() && remotePromptCurrent(target) }
+
+    internal data class AgentMessage(val source: CardTarget, val code: String, val deadline: Long, val text: String? = null)
+    internal data class AgentMessageRoute(val request: AgentMessage, val destination: RemotePromptTarget)
+    @Volatile private var activeAgentMessageCode: String? = null
+    private var currentAgentMessage by mutableStateOf<AgentMessage?>(null)
+    private var agentMessageExpiry: Job? = null
+    private var agentMessagePermit: WritePermit? = null
+
+    private fun clearAgentMessage() {
+        agentMessagePermit?.revoke()
+        agentMessagePermit = null
+        activeAgentMessageCode = null
+        currentAgentMessage = null
+        agentMessageExpiry?.cancel()
+        agentMessageExpiry = null
+    }
+
+    private fun agentMessageSource(paneId: String): CardTarget? =
+        if (!agentMessagingEnabled || !agentMessagingForeground || locked) null
+        else cardTarget(paneId)?.takeIf { it.client.backend == Backend.TUI &&
+            it.pane.scrollOffset == 0 && hasStableOccupant(it.pane) }
+
+    private fun agentMessageSourceCurrent(request: AgentMessage): Boolean =
+        activeAgentMessageCode == request.code && android.os.SystemClock.elapsedRealtime() < request.deadline &&
+            agentMessageSource(request.source.pane.id)?.let { now ->
+                now.server == request.source.server && now.visit == request.source.visit &&
+                    now.client === request.source.client && now.connection === request.source.connection &&
+                    sameOccupant(now.pane, request.source.pane)
+            } == true
+
+    internal fun canArmAgentMessage(paneId: String) = agentMessageSource(paneId) != null
+
+    internal fun armAgentMessage(paneId: String): Boolean {
+        val source = agentMessageSource(paneId) ?: return false
+        clearAgentMessage()
+        val code = java.util.UUID.randomUUID().toString().replace("-", "")
+        val window = 300_000L
+        activeAgentMessageCode = code
+        currentAgentMessage = AgentMessage(source, code, android.os.SystemClock.elapsedRealtime() + window)
+        agentMessageExpiry = viewModelScope.launch { delay(window); clearAgentMessage() }
+        return true
+    }
+
+    internal fun agentMessage(paneId: String): AgentMessage? = currentAgentMessage?.takeIf {
+        it.source.pane.id == paneId && agentMessageSourceCurrent(it)
+    }
+
+    internal fun dismissAgentMessage(request: AgentMessage) {
+        if (request.code == activeAgentMessageCode) clearAgentMessage()
+    }
+
+    private fun agentMessageDestinationCurrent(serverId: String, expected: Pane): Boolean =
+        fleetStates[serverId]?.panes?.singleOrNull { it.id == expected.id }?.let {
+            sameOccupant(it, expected) && it.status in setOf(Status.IDLE, Status.DONE) && !it.backgroundBusy
+        } == true
+
+    internal fun agentMessageDestinations(request: AgentMessage): List<Session> =
+        if (currentAgentMessage !== request || request.text == null || !agentMessageSourceCurrent(request)) emptyList()
+        else sessions().filter { it.server.id != request.source.server && relayPort(it.server.id)?.connectionIdentity != null &&
+            hasStableOccupant(it.pane) && agentMessageDestinationCurrent(it.server.id, it.pane) }
+
+    internal suspend fun bindAgentMessage(request: AgentMessage, selected: Session): AgentMessageRoute? {
+        if (selected !in agentMessageDestinations(request)) return null
+        val target = bindRemotePrompt(selected) ?: return null
+        if (currentAgentMessage !== request || !agentMessageSourceCurrent(request) ||
+            !agentMessageDestinationCurrent(target.route.server, target.route.pane)) return null
+        return AgentMessageRoute(request, target)
+    }
+
+    internal suspend fun confirmAgentMessage(request: AgentMessage, bound: AgentMessageRoute): RelayResult {
+        val text = request.text ?: return RelayResult.REFUSED
+        if (currentAgentMessage !== request || bound.request !== request || !agentMessageSourceCurrent(request)) return RelayResult.REFUSED
+        currentAgentMessage = null // Spend the proposal before any suspension; no retry on any outcome.
+        val destination = bound.destination
+        val source = request.source
+        val job = kotlinx.coroutines.currentCoroutineContext()[Job]
+        fun admitted() = job?.isActive != false && agentMessageSourceCurrent(request) &&
+            agentMessageDestinationCurrent(destination.route.server, destination.route.pane)
+        val permit = WritePermit(::admitted)
+        agentMessagePermit = permit
+        try {
+            if (!admitted() || !remotePromptCurrent(destination)) return RelayResult.REFUSED
+            val fresh = source.client.cardPane(source.pane.id, source.connection) ?: return RelayResult.REFUSED
+            if (!sameOccupant(fresh, source.pane)) return RelayResult.REFUSED
+            return promptRelay.send(destination.route, text, authorizedWrite = permit) {
+                admitted() && remotePromptCurrent(destination)
+            }
+        } catch (c: kotlinx.coroutines.CancellationException) {
+            throw c
+        } catch (_: Exception) {
+            return RelayResult.REFUSED
+        } finally {
+            dismissAgentMessage(request)
+        }
+    }
 
     internal suspend fun sendVoiceMessage(target: VoiceTarget, text: String, allowed: () -> Boolean): String {
         fun allowedHere() = allowed() && voiceTarget() == target && promptLaneClear(target.server, target.pane)
