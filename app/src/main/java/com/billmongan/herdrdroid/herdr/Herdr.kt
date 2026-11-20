@@ -956,8 +956,8 @@ data class Prompt(
     internal val approvalIdentity: String? = null,
     /** OpenCode's permission row needs a styled, live focus read before confirming. */
     internal val openCodePermission: Boolean = false,
-    /** A native Claude checkbox footer proved what the explicit action does. */
-    internal val claudeMultiKey: String? = null,
+    /** Claude renders this unnumbered button between the checkboxes and "Chat about this". */
+    internal val claudeCheckboxAction: Choice? = null,
     /** Native Hermes clarify choices are available only from a guarded Chat card. */
     internal val hermesClarify: Boolean = false,
     /** Codex request_user_input overlay, not a numbered approval menu. */
@@ -971,6 +971,12 @@ data class Prompt(
 
     /** [parts], or the same layout read from the question's text. */
     fun shownParts(): QuestionParts = parts ?: questionParts(listOf(QLine(question)))
+
+    /** Include the native navigation button in Chat only, not in notifications or answer history. */
+    internal fun answerRows(): List<Choice> = claudeCheckboxAction?.let { action ->
+        val (checkboxes, rest) = choices.partition { isCheckbox(it.label) }
+        checkboxes + action + rest
+    } ?: choices
 }
 
 /** What a card with no options shows when the app couldn't read the screen (1.4.2). */
@@ -1326,6 +1332,9 @@ fun isTypedAnswerChoice(label: String): Boolean = OTHER_LABEL.matches(label.trim
 private val CHECKBOX = Regex("""^(\[[ xX✓✔]\]|[☐☑☒◻◼□■])\s+""")
 fun isCheckbox(label: String): Boolean = CHECKBOX.containsMatchIn(label.trim())
 
+private const val CLAUDE_CHECKBOX_ACTION = "claude:checkbox-action"
+private val CLAUDE_CHECKBOX_BUTTON = Regex("""^([❯›])?\s+(Next|Submit)\s*$""")
+
 /** An option whose own label says Esc answers it: "No, and tell Codex what to do differently (esc)". */
 private val ESC_LABEL = Regex("""\((?:esc)\b[^)]*\)""", RegexOption.IGNORE_CASE)
 private val REJECT_LABEL = Regex("""^(deny|reject|no)\b""", RegexOption.IGNORE_CASE)
@@ -1425,6 +1434,14 @@ private val SHORTCUT_LABEL = Regex("""\(([a-z])\)\s*$""")
 /** The keys that pick [choice]: arrows from the highlighted option, then Enter; null to type it. */
 fun menuKeys(prompt: Prompt, choice: Choice): List<String>? {
     if (prompt.terminalReview) return null
+    if (prompt.claudeCheckboxAction != null) {
+        val rows = prompt.answerRows()
+        val from = rows.indexOfFirst { it.keys == prompt.selected }
+        val to = rows.indexOf(choice)
+        if (from < 0 || to < 0) return null
+        val key = if (to > from) "down" else "up"
+        return List(kotlin.math.abs(to - from)) { key } + if (isCheckbox(choice.label)) "space" else "enter"
+    }
     if (prompt.numberKeys && choice in prompt.choices) return listOf(choice.keys)
     // "No, and tell Copilot what to do differently (Esc to stop)": Enter on that row does nothing in
     // Copilot, and in Codex and Claude it opens a feedback box; Esc answers it in all three. Vibe's
@@ -2093,16 +2110,45 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
     // rows (❯ › > ▶, or a filled radio), a question dialog's footer, or Vibe's card footer. A reply
     // that lists steps and ends with "?" is prose, not a question card (1.2.7, Bill: "choices like
     // first, second, then, but they weren't mutually exclusive options").
-    if (dialogAt >= 0 && run.none { it.first in marked }) {
+    // Claude Code 2.1.326 renders Next/Submit separately from the numbered inputs. Down from
+    // the final checkbox focuses it; Enter activates only the focused button. The label in the
+    // tab bar and the generic Enter hint do not identify that button.
+    val checkboxCount = numbered.takeWhile { isCheckbox(it.label) }.size
+    val actionButton = if (agent.equals("claude", true) && dialogAt >= 0 && checkboxCount >= 2 &&
+        numbered.take(checkboxCount).map { it.keys.toIntOrNull() } == (1..checkboxCount).toList() &&
+        numbered.drop(checkboxCount).let { it.isEmpty() || it.singleOrNull()?.label == "Chat about this" }) {
+        val end = run[checkboxCount - 1].first
+        val footer = lines.indexOfLast { row ->
+            val hints = clean(row).split('·').map(String::trim)
+            STANDALONE_CARD_HINT.matches(clean(row)) && "Enter to select" in hints && "Esc to cancel" in hints &&
+                hints.any { it == "Tab/Arrow keys to navigate" || it == "↑/↓ to navigate" || it == "↑↓ to navigate" }
+        }
+        if (footer <= end) null else {
+            val buttons = (end + 1 until footer).mapNotNull { i ->
+                CLAUDE_CHECKBOX_BUTTON.matchEntire(lines[i])?.let { i to it }
+            }
+            buttons.singleOrNull()?.takeIf { (i, button) ->
+                // A number after the button may only be Claude's optional Chat row. No unknown
+                // intervening controls or second focus marker can authorize an action.
+                (end + 1 until footer).all { j -> j == i || isChrome(lines[j]) ||
+                    j < i && lines[j].startsWith("      ") && !INPUT_ROW_UNDER.containsMatchIn(lines[j]) ||
+                    j > i && checkboxCount < run.size && j == run.last().first } &&
+                    run.count { it.first in marked } + (if (button.groupValues[1].isNotEmpty()) 1 else 0) == 1
+            }
+        }
+    } else null
+    if (dialogAt >= 0 && run.none { it.first in marked } && actionButton == null) {
         return Prompt(question ?: "This agent is waiting for you.", emptyList(), region = raw.takeLast(16))
     }
     val vibeCard = lines.takeLast(6).any { VIBE_CARD_FOOTER.containsMatchIn(it) }
-    val realMenu = run.any { it.first in marked } || showsQuestionDialog(activeText) || vibeCard
+    val realMenu = run.any { it.first in marked } || actionButton != null || showsQuestionDialog(activeText) || vibeCard
     // A card is at the bottom of the screen: under its last option only a few lines (a description,
     // a footer, the card's frame). A card with more under it is an old one left in the scrollback
     // after it was answered (1.4.9, Bill: "Grok is stuck on another fake question box"): Grok's
     // "(●)" stays drawn there, so it looked like a live question while Grok was back at work.
-    val below = run.lastOrNull()?.let { (at, _, _) -> lines.drop(at + 1) } ?: emptyList()
+    val below = run.lastOrNull()?.let { (at, _, _) ->
+        lines.drop(maxOf(at, actionButton?.first ?: at) + 1)
+    } ?: emptyList()
     val underCard = below.count { clean(it).any(Char::isLetterOrDigit) }
     // The agent's own activity ("● …", a spinner, a status line) or its input row under the options means
     // the agent went on after the card, however few lines that took (from Grok's review).
@@ -2147,17 +2193,10 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
             numbered.any { it.label.equals("Allow once", true) } &&
             numbered.any { it.label.equals("Deny", true) }) return terminalCommandReview(null)
         // Vibe draws no marker on the highlighted row; a fresh card highlights the first one.
-        val selected = run.firstOrNull { it.first in marked }?.second ?: if (vibeCard) "1" else null
+        val selected = if (actionButton?.second?.groupValues?.get(1)?.isNotEmpty() == true) CLAUDE_CHECKBOX_ACTION
+            else run.firstOrNull { it.first in marked }?.second ?: if (vibeCard) "1" else null
         val multi = numbered.count { isCheckbox(it.label) } >= 2
-        val claudeMultiKey = if (agent == "claude" && multi && selected != null) {
-            val hints = below.map(clean).flatMap { it.split('·').map(String::trim) }
-            when {
-                hints.any { it.equals("Enter to submit", true) } && hints.any { it.equals("Space to toggle", true) } -> "enter"
-                hints.any { it.equals("Tab/Arrow keys to navigate", true) } && hints.any { it.equals("Space to toggle", true) } &&
-                    parts?.tabs?.let { tabs -> tabs.lastOrNull()?.submit == true && tabs.getOrNull(tabs.lastIndex - 1)?.current == true } == true -> "tab"
-                else -> null
-            }
-        } else null
+        val checkboxAction = actionButton?.let { Choice(it.second.groupValues[2], CLAUDE_CHECKBOX_ACTION, false) }
         // Codex (by name, or by its "Press enter to confirm or esc to cancel" footer) answers an
         // option by the key in its label; other agents keep arrows and Enter (1.4.2, from review).
         // Muse Code (1.4.7) does the same ("Allow this stage once (y)", "... (p)", "Abort the entire
@@ -2165,7 +2204,7 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
         val shortcuts = agent?.lowercase() in setOf("codex", "muse") ||
             lines.takeLast(4).any { CODEX_FOOTER.containsMatchIn(it) || MUSE_CARD_FOOTER.containsMatchIn(it) }
         return Prompt(question ?: "Choose an option", numbered, selected, escRejects = vibeCard, parts = parts, multi = multi,
-            shortcuts = shortcuts, approvalIdentity = approvalIdentity, claudeMultiKey = claudeMultiKey)
+            shortcuts = shortcuts, approvalIdentity = approvalIdentity, claudeCheckboxAction = checkboxAction)
     }
 
     val yn = Regex("""[(\[]\s*[yY](?:es)?\s*/\s*[nN]o?\s*[)\]]""")

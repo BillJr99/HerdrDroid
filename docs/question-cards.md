@@ -6,6 +6,8 @@ For every card: the options are read in screen order; the highlighted one is the
 
 Claude's question tabs bound the AskUserQuestion card: options are read only below that bar, and conversation after its footer makes it an old card. An echoed numbered message alone supplies no choices. If the dialog is visible but its selected option cannot be read, the app shows the screen fallback instead of borrowing a list from the conversation. The session-log reader takes options from each tool call's JSON and matches results by call id; user-message text is not parsed as options.
 
+When Claude displays a checkbox question's **Next** or **Submit** button, Chat shows it as a separate row after the checkboxes. Tapping a checkbox only toggles it. Tapping **Next** or **Submit** moves to that terminal button and presses Enter; if Claude opens a review, **Submit answers** there takes a separate tap. Chat does not infer a button from the Submit tab or keyboard hints alone. The checkbox fixture is reconstructed from Claude Code 2.1.326's renderer and input handler with sample labels, not captured from a live pane.
+
 | Agent | Card | Source | Options | Answered by | Standing permission | Esc |
 |---|---|---|---|---|---|---|
 | Claude Code | bash permission | captured | 3 | ↑/↓ + Enter, Enter, Esc | 1 | yes |
