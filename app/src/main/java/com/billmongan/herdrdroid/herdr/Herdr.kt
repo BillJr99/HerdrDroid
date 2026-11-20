@@ -1315,7 +1315,8 @@ internal fun composerDraftOf(screen: String, agent: String? = null): ComposerDra
         // on the first row ("❯ ", or "│ ❯ " less the frame edge).
         val barAt = if (frame) content.indexOfFirst { it == '│' || it == '┃' || it == '|' } else -1
         val indent = leadLen - (barAt + 1)
-        val more = rest.map { i ->
+        // Suggestion or command rows (a popup under the text) are not the draft, nor counted for Backspace.
+        val more = rest.filterNot { DRAFT_MENU_ROW.matches(rows[it]) }.map { i ->
             var t = rows[i].trimEnd()
             var at = 0
             if (frame) {
@@ -1338,13 +1339,16 @@ internal fun composerDraftOf(screen: String, agent: String? = null): ComposerDra
         return ComposerDraft(text, bounded, menu)
     }
 
-    // Between box rules: the prompt row right under one, closed by the next rule of the same span.
+    // Between box rules: the prompt row right under one, closed by the last rule of the same span
+    // that has only a footer under it. A typed line of dashes as wide as the box looks just like
+    // that edge, so with more than one such rule the end can't be told: shown, not acted on.
     for (c in candidates.asReversed()) {
         val open = span(c - 1) ?: continue
-        val close = (c + 1 until minOf(rows.size, c + 1 + MAX_DRAFT_ROWS)).firstOrNull { i -> span(i)?.let { sameSpan(it, open) } == true }
-            ?: continue
+        val closes = (c + 1 until minOf(rows.size, c + 1 + MAX_DRAFT_ROWS)).filter { i -> span(i)?.let { sameSpan(it, open) } == true }
+        val close = closes.lastOrNull { footer(it) != null } ?: continue
         val under = footer(close) ?: continue
-        return build(c, (c + 1 until close).toList(), bounded = true, menu = menuIn(under))
+        val rest = (c + 1 until close).toList()
+        return build(c, rest, bounded = closes.first() == close, menu = menuIn(under) || rest.any { DRAFT_MENU_ROW.matches(rows[it]) })
     }
     // Inside a frame: framed rows down to its bottom edge.
     for (c in candidates.asReversed()) {
@@ -1354,7 +1358,11 @@ internal fun composerDraftOf(screen: String, agent: String? = null): ComposerDra
         val closed = end < rows.size && (DRAFT_BOTTOM_EDGE.containsMatchIn(rows[end]) || span(end) != null)
         val opened = c > 0 && (span(c - 1) != null || DRAFT_TOP_EDGE.containsMatchIn(rows[c - 1]))
         val under = footer(end) ?: continue
-        return build(c, (c + 1 until end).toList(), bounded = closed && opened, menu = menuIn(under))
+        // More of a frame, or another edge, under the one it stopped at: that was an inner rule
+        // (a divider, or typed dashes), and the end can't be told.
+        val more = rows.drop(end + 1).any { DRAFT_FRAMED.matches(it) || DRAFT_BOTTOM_EDGE.containsMatchIn(it) || DRAFT_BOX_RULE.matches(it) }
+        val rest = (c + 1 until end).toList()
+        return build(c, rest, bounded = closed && opened && !more, menu = menuIn(under) || rest.any { DRAFT_MENU_ROW.matches(rows[it]) })
     }
     // No box: the lowest prompt row, its glyph at column 0, with only a short footer under it.
     // A "  > quoted" row of the draft is not a prompt row.
