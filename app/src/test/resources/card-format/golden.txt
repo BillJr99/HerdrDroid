@@ -1,0 +1,571 @@
+##### agy/derived-1.4.9/1101-run-command.txt
+HEADLINE Run this command?
+CODE wrap
+  | go test ./... (in /home/user/work/demo)
+OPTION Yes, run command
+OPTION Yes, and always allow in this conversation for commands that start with 'go test'
+OPTION Yes, and always allow for commands that start with 'go test' (Persist to settings.json)
+OPTION No, and tell Antigravity what to do differently
+##### claude/captured-2.1.329/background-awaiting-input.txt
+HEADLINE Claude's session is in the background, and its sessions list shows a session waiting for your input. Its question shows once you return to it.
+##### claude/captured-2.1.329/multi-question-first.txt
+HEADLINE The nightly report job is blocked only on a rollback path for its saved state, since the update rewrites the config, the local database and the scheduler state. The helper refused to copy private records. How should I make the rollback copy before upgrading?
+OPTION Private byte copy (Recommended)
+  NOTE Copy the whole state folder except caches into a private folder on this machine's own disk, never opened or read. Restoring it rolls back exactly, and nothing leaves the machine.
+OPTION Copy without private files
+  NOTE Copy the settings, the database and the schedule but skip private files. A rollback would need those left in place by hand.
+OPTION Skip the backup
+  NOTE Upgrade without a copy. A rollback would mean reinstalling and setting it up again from the notes.
+OPTION Type something.
+OPTION Chat about this
+##### claude/captured-2.1.329/multi-question-second-moved.txt
+HEADLINE Upgrading means restarting the report service and the helper itself. The helper is in the middle of a long job right now. When may I restart the helper?
+OPTION Interrupt now
+  NOTE Stop the current job, upgrade, and start it again afterwards.
+OPTION Wait until it is idle (Recommended)
+  NOTE Check every few minutes and restart only once the current job has finished.
+OPTION Type something.
+OPTION Chat about this
+##### claude/captured-2.1.329/multi-question-second.txt
+HEADLINE Upgrading means restarting the report service and the helper itself. The helper is in the middle of a long job right now. When may I restart the helper?
+OPTION Interrupt now
+  NOTE Stop the current job, upgrade, and start it again afterwards.
+OPTION Wait until it is idle (Recommended)
+  NOTE Check every few minutes and restart only once the current job has finished.
+OPTION Type something.
+OPTION Chat about this
+##### claude/captured-2.1.329/multi-question-short-chat.txt
+HEADLINE Upgrading means restarting the report service and the helper itself. The helper is in the middle of a long job right now. When may I restart the helper?
+OPTION Interrupt now
+  NOTE Stop the current job, upgrade, and start it again afterwards.
+OPTION Wait until it is idle (Recommended)
+  NOTE Check every few minutes and restart only once the current job has finished.
+OPTION Type something.
+OPTION Chat about this
+##### claude/captured-2.1.329/single-question.txt
+HEADLINE The sender is on a stale hold for one of the helpers, which is also waiting on a permission prompt for a local test. Its lane is a test I already finished in a throwaway container. How should I redirect it?
+OPTION Cancel and stop the lane (Recommended)
+  NOTE Answer No on its pending prompt, tell it the lane is done with a pointer to my receipt, and move its scratch folder away once it is idle.
+OPTION Cancel and redo it in a container
+  NOTE Same, but keep the lane and run all of its work only inside a throwaway container.
+OPTION Leave it
+  NOTE Do nothing for now.
+OPTION Type something.
+OPTION Chat about this
+##### claude/captured-2026-11-13/bash-permission.txt
+HEADLINE Do you want to proceed?
+CODE wrap
+  | mkdir -p sub && date > sub/now.txt
+PROSE Create the folder and write the date
+OPTION Yes
+OPTION Yes, and don't ask again for mkdir commands in /tmp/t
+OPTION No, and tell Claude what to do differently ~ (esc)~
+##### claude/captured-2026-11-13/multi-question.txt
+HEADLINE Close residue 537 (the duplicate stop hook entry)?
+PROSE Both differences were repaired in the working copy, so closing it only updates the tracker.
+OPTION Close it
+  NOTE Mark 537 resolved now.
+OPTION Keep it open
+  NOTE Leave it for a later pass.
+OPTION Type something.
+##### claude/derived-1.4.9/0101-file-edit-create-overwrite-approval-with.txt
+HEADLINE Do you want to make this edit to app.py?
+PROSE Edit file
+CODE wrap
+  | src/app.py
+DIFF
+  | 12      def greet(name):
+  | 13 -        return "hi " + name
+  | 13 +        return f"Hello, {name}!"
+OPTION Yes
+OPTION Yes, and switch to accept edits (auto-approve file edits and common file commands) for this session
+OPTION No, and tell Claude what to do differently ~ (esc)~
+##### claude/derived-1.4.9/0102-bash-approval-scope-variants-beyond-the-.txt
+HEADLINE Do you want to proceed?
+CODE wrap
+  | cat config/demo.yaml && ls /home/user/work/demo/logs
+PROSE Show the config and list the logs
+OPTION Yes
+OPTION Yes, allow reading from logs/ from this project
+OPTION No, and tell Claude what to do differently ~ (esc)~
+##### claude/derived-1.4.9/0103-webfetch-domain-approval.txt
+HEADLINE Do you want to allow Claude to fetch this content?
+PROSE Fetch
+CODE wrap
+  | https://docs.example.com/guide
+PROSE Claude wants to fetch content from docs.example.com
+OPTION Yes
+OPTION Yes, and don't ask again for docs.example.com
+OPTION No, and tell Claude what to do differently ~ (esc)~
+##### claude/derived-1.4.9/0104-sandbox-network-request.txt
+HEADLINE Do you want to allow this connection?
+PROSE Network request outside of sandbox
+CAPTION Host:
+CODE wrap
+  | registry.example.org
+OPTION Yes
+OPTION Yes, and don't ask again for registry.example.org in any project (user settings)
+OPTION No, and tell Claude what to do differently ~ (esc)~
+##### claude/derived-1.4.9/0105-mcp-tool-approval.txt
+HEADLINE Do you want to proceed?
+PROSE Tool use
+PROSE demo-notes - search_notes(query: "release checklist") (MCP)
+OPTION Yes
+OPTION Yes, and don’t ask again for: mcp__demo-notes__search_notes
+OPTION No, and tell Claude what to do differently ~ (esc)~
+##### claude/derived-1.4.9/0106-use-skill-approval.txt
+HEADLINE Use this skill?
+PROSE demo-release-notes: Draft release notes from merged changes
+PROSE Do you want to proceed?
+OPTION Yes
+OPTION Yes, and don’t ask again for: Skill(demo-release-notes)
+OPTION No, and tell Claude what to do differently ~ (esc)~
+##### claude/derived-1.4.9/0107-exit-plan-mode-ready-to-code.txt
+HEADLINE Claude has written up a plan and is ready to execute. Would you like to proceed?
+CAPTION Here is Claude's plan:
+SUBHEAD Add greeting endpoint
+LIST
+  1. Add GET /hello to src/app.py
+  2. Add a test in tests/test_app.py
+OPTION Yes, clear context (34% used) and auto-accept edits
+OPTION Yes, auto-accept edits
+OPTION Yes, manually approve edits
+OPTION No, keep planning
+##### claude/derived-1.4.9/0108-enter-plan-mode.txt
+HEADLINE Enter plan mode?
+PROSE Claude wants to enter plan mode to explore and design an implementation approach.
+LIST
+  · Identify existing patterns
+  · Design an implementation strategy
+  · Present a plan for your approval
+PROSE No code changes will be made until you approve the plan.
+OPTION Yes, enter plan mode
+OPTION No, start implementing now
+##### claude/derived-1.4.9/0109-askuserquestion-multi-select-review-and--2.txt
+HEADLINE Which test runners should demo-box use?
+OPTION [ ] pytest
+  NOTE Fast, plugin based
+OPTION [ ] tox
+  NOTE Matrix across versions
+OPTION [ ] Type something.
+OPTION Chat about this
+##### claude/derived-1.4.9/0109-askuserquestion-multi-select-review-and-.txt
+HEADLINE Ready to submit your answers?
+PROSE Review your answers
+PROSE Which language for the demo?: Python
+PROSE Which test runners?: pytest, tox
+OPTION Submit answers
+OPTION Cancel
+##### claude/derived-1.4.9/0111-custom-api-key-detected.txt
+HEADLINE Do you want to use this API key?
+OPTION Yes
+OPTION No (recommended)
+##### claude/derived-checkbox-2.1.326/next.txt
+HEADLINE Which runners should the sample use?
+OPTION [ ] pytest
+OPTION [ ] tox
+OPTION [ ] Type something.
+OPTION Chat about this
+##### claude/synthetic-question-boundaries/message-and-question.txt
+HEADLINE Which color should the sample use?
+OPTION Blue
+  NOTE Use a cool color.
+OPTION Orange
+  NOTE Use a warm color.
+OPTION Type something.
+##### codex/captured-2026-11-13/run-command.txt
+HEADLINE Would you like to run the following command?
+CODE wrap
+  | bill-pane-send.py --list | head -2
+LABEL Environment = local
+LABEL Reason = May I rerun this setup check outside the sandbox because sandbox restrictions prevented it from running normally?
+OPTION Yes, proceed ~ (y)~
+OPTION Yes, and don't ask again for commands that start with `bill-pane-send.py --list` ~ (p)~
+OPTION No, and tell Codex what to do differently ~ (esc)~
+##### codex/captured-2026-11-14/edit-approval.txt
+HEADLINE Would you like to make the following edits?
+LABEL Description = Apply proposed file edits
+CAPTION Destination:
+CODE wrap
+  | /home/user/agents/codex/cv-tours/c20/out/course-site-lambdacalculus2-8.json
+OPTION Yes, proceed ~ (y)~
+OPTION Yes, and don't ask again for these files ~ (a)~
+OPTION No, and tell Codex what to do differently ~ (esc)~
+##### codex/derived-1.4.9/0201-run-command-session-only-and-skip-varian.txt
+HEADLINE Would you like to run the following command?
+CODE wrap
+  | make -C /home/user/work/demo build
+LABEL Reason = Run the demo build outside the sandbox
+OPTION Yes, proceed ~ (y)~
+OPTION Yes, and don't ask again for this command in this session ~ (a)~
+OPTION No, continue without running it ~ (d)~
+OPTION No, and tell Codex what to do differently ~ (esc)~
+##### codex/derived-1.4.9/0202-network-access-real-wording.txt
+HEADLINE Do you want to approve network access to "registry.example.org"?
+LABEL Reason = The install step downloads packages.
+OPTION Yes, just this once ~ (y)~
+OPTION Yes, and allow this host for this conversation ~ (a)~
+OPTION Yes, and allow this host in the future ~ (p)~
+OPTION No, and block this host in the future ~ (b)~
+OPTION No, and tell Codex what to do differently ~ (esc)~
+##### codex/derived-1.4.9/0203-mcp-app-tool-approval.txt
+HEADLINE Approve app tool call?
+PROSE mcp tool: demo-notes/search_notes {"query": "release checklist"}
+OPTION Allow
+  NOTE Run the tool and continue.
+OPTION Allow for this session
+  NOTE Run the tool and remember this choice for this session.
+OPTION Allow and don't ask me again
+  NOTE Run the tool and remember this choice for future tool calls.
+OPTION Cancel
+  NOTE Cancel this tool call.
+##### codex/derived-1.4.9/0204-grant-additional-permissions.txt
+HEADLINE Would you like to grant these permissions?
+LABEL Permissions = write /home/user/work/demo/out, network
+OPTION Yes, grant these permissions for this turn ~ (y)~
+OPTION Yes, grant these permissions for this session ~ (a)~
+OPTION No, and tell Codex what to do differently ~ (esc)~
+##### codex/derived-1.4.9/0206-request-user-input-multi-question-2.txt
+HEADLINE Submit with unanswered questions?
+##### codex/derived-1.4.9/0206-request-user-input-multi-question.txt
+CAPTION Question 1/2  Database
+HEADLINE Which database should demo-box use?
+OPTION SQLite (Recommended)
+  NOTE Single file, no server
+OPTION Postgres
+  NOTE Needs a running server
+OPTION None of the above
+  NOTE Optionally, add details in notes (tab)
+##### codex/derived-1.4.9/0207-plan-mode-implement-this-plan.txt
+HEADLINE Implement this plan?
+OPTION Yes, implement this plan
+  NOTE Switch to Default and start coding
+OPTION Fresh thread with this plan
+OPTION No, stay in Plan mode
+##### codex/derived-1.4.9/0208-rate-limit-model-switch-and-workspace-li.txt
+CAPTION Approaching rate limits
+HEADLINE Switch to demo-mini for lower credit usage?
+OPTION Switch to demo-mini
+  NOTE Uses fewer credits for upcoming turns
+OPTION Keep current model
+OPTION Keep current model (never show again)
+  NOTE Hide future rate limit reminders about switching models
+##### codex/synthetic-1.4.2/mcp-approval.txt
+HEADLINE Would you like to run the following tool?
+CAPTION Server:
+CODE wrap
+  | workstation
+CAPTION Tool:
+CODE wrap
+  | search_notes
+LABEL Arguments = {"query": "HerdrDroid"}
+OPTION Yes, proceed ~ (y)~
+OPTION Yes, and don't ask again for this tool ~ (a)~
+OPTION No, and tell Codex what to do differently ~ (esc)~
+##### codex/synthetic-1.4.2/network-approval.txt
+HEADLINE Would you like to allow network access?
+CAPTION Host:
+CODE wrap
+  | registry.npmjs.org
+LABEL Reason = The command needs to download packages.
+OPTION Yes, allow this time ~ (y)~
+OPTION Yes, and don't ask again for this host ~ (a)~
+OPTION No, and tell Codex what to do differently ~ (esc)~
+##### codex/synthetic-2.0/multiline-command-approval.txt
+HEADLINE Would you like to run the following command?
+CODE
+  | set -e
+  |   label='fixture'
+  |   (
+  |     printf '%s\n' "$label"
+  |   )
+  |   printf '%s\n' 'A long quoted fixture row with spaces and punctuation: [] | !'
+  |   printf '%s\n' 'done'
+LABEL Environment = local
+LABEL Reason = May I read the synthetic sample?
+OPTION Yes, proceed ~ (y)~
+OPTION No, and tell Codex what to do differently ~ (esc)~
+##### codex/synthetic-2.0/truncated-command-approval.txt
+HEADLINE Review the full command
+CODE
+  | printf 'preview\\n'
+  | … (12 lines omitted)
+##### copilot/captured-2026-11-13/run-command.txt
+HEADLINE Do you want to run this command?
+CODE wrap
+  | mkdir -p sub && date > sub/now.txt
+PROSE Create timestamp file
+OPTION Yes
+OPTION Yes, and don't ask again for `mkdir` in this directory (/tmp/t/copilot)
+OPTION No, and tell Copilot what to do differently ~ (Esc to stop)~
+##### copilot/derived-1.4.9/0401-file-create-edit-delete-move.txt
+HEADLINE Do you want to edit app.py?
+PROSE Edit file
+CODE wrap
+  | src/app.py
+DIFF
+  | 13 -    return "hi " + name
+  | 13 +    return f"Hello, {name}!"
+OPTION Yes
+OPTION Yes, and don't ask again for file operations in this repo (demo)
+OPTION No, and tell Copilot what to do differently ~ (Esc to stop)~
+##### copilot/derived-1.4.9/0402-shell-session-approval-and-sandbox-bypas.txt
+HEADLINE Do you want to run this command outside the sandbox?
+OPTION Run this command outside of the sandbox
+OPTION Run this command outside of the sandbox, and disable the sandbox for the rest of this session
+OPTION No, and tell Copilot what to do differently ~ (Esc to stop)~
+##### copilot/derived-1.4.9/0403-mcp-tool.txt
+HEADLINE Do you want to run this tool?
+CODE wrap
+  | {"query": "release checklist"}
+PROSE demo-notes: search_notes
+OPTION Yes
+OPTION Yes, and don't ask again for tool "search_notes" from "demo-notes" in this directory (/home/user/work/demo)
+OPTION Yes, and approve all tools from server demo-notes for the rest of the running session
+OPTION No, and tell Copilot what to do differently ~ (Esc to stop)~
+##### copilot/derived-1.4.9/0407-question-ask-user.txt
+HEADLINE Which database should demo-box use?
+PROSE Question
+OPTION SQLite
+OPTION Postgres
+OPTION Other (type your answer)
+##### copilot/derived-1.4.9/0408-exit-plan-mode.txt
+HEADLINE Choose an option
+OPTION Accept plan and continue in Autopilot execution mode
+OPTION Accept plan and continue in Interactive execution mode (Manual Approval for this session; future defaults unchanged)
+OPTION Exit to Interactive execution mode without running the plan
+OPTION Suggest changes
+##### grok/captured-2026-11-13/privacy-banner.txt
+HEADLINE Help improve Grok: share coding data with SpaceXAI?
+OPTION Opt out (keep it off)
+OPTION Opt in
+##### grok/captured-2026-11-13/ssh-permission.txt
+HEADLINE Check SSH to devbox in batch mode
+CODE wrap
+  | ssh -o BatchMode=yes -o ConnectTimeout=5 user@192.0.2.26 true; echo "EXIT:$?"
+OPTION Yes, and don't ask again for anything (always-approve mode)
+OPTION Yes, proceed
+OPTION No, reject (type to add feedback)
+##### grok/captured-2026-11-15/python-approval.txt
+HEADLINE Show exact diff lines with markers
+CODE
+  | python3 - << 'PY'
+  | from pathlib import Path
+  | p = Path("/home/user/agents/grok/reviews/herdrdroid-1.4.3-fixes2.diff")
+  | text = p.read_text()
+PROSE ... Ctrl-F to expand
+OPTION Yes, and don't ask again for anything (always-approve mode)
+OPTION Yes, proceed
+OPTION No, reject (type to add feedback)
+OPTION Never allow: python3 -
+##### grok/captured-2026-11-15b/scan-approval.txt
+HEADLINE Scan recordings and compare published player
+CODE
+  | python3 - << 'PY'
+  | import gzip, json, re, pathlib
+  | files = [
+  | "/home/user/work/demo-course/viz/sessions/demo-docker-sharing.j
+PROSE ... Ctrl-F to expand
+OPTION Yes, and don't ask again for anything (always-approve mode)
+OPTION Yes, proceed
+OPTION No, reject (type to add feedback)
+OPTION Never allow: python3 -
+##### grok/derived-1.4.9/0302-file-edit-approval.txt
+HEADLINE Edit src/app.py
+DIFF
+  | @@ -12,2 +12,2 @@
+  | -    return "hi " + name
+  | +    return f"Hello, {name}!"
+OPTION Yes, and don't ask again for anything (always-approve mode)
+OPTION Yes, allow all edits during this session
+OPTION Yes, proceed
+OPTION No, reject (type to add feedback)
+##### grok/derived-1.4.9/0303-mcp-tool-approval-with-scope.txt
+HEADLINE demo-notes: search_notes
+CODE wrap
+  | {"query":"release checklist"}
+OPTION Yes, and don't ask again for anything (always-approve mode)
+OPTION Yes, proceed
+OPTION Always allow: demo-notes/search_notes
+OPTION No, reject (type to add feedback)
+OPTION Never allow: demo-notes/search_notes
+##### grok/derived-1.4.9/0305-question-card-ask-user-question.txt
+HEADLINE Which database should demo-box use?
+OPTION SQLite
+OPTION Postgres
+OPTION Other (type your own answer)
+##### grok/derived-1.4.9/0306-plan-approval.txt
+HEADLINE Approve the plan: Add greeting endpoint?
+OPTION Approve
+OPTION Request changes
+OPTION Comment
+OPTION Quit plan
+##### grok/derived-1.4.9/0307-trust-this-folder-startup.txt
+HEADLINE Do you trust the contents of this directory?
+OPTION Yes, proceed
+OPTION No, quit
+##### hermes/derived-1.4.9/1001-dangerous-command-approval.txt
+HEADLINE ⚠️  Dangerous Command
+CODE wrap
+  | rm -rf /home/user/work/demo/build
+OPTION Allow once
+OPTION Allow for this session
+OPTION Add to permanent allowlist
+OPTION Deny
+##### hermes/derived-1.4.9/1002-clarify-multi-question-batch.txt
+CAPTION SQLite
+HEADLINE Which test runners?
+OPTION [ ] pytest
+OPTION [x] tox
+OPTION [ ] Other (type your answer)
+##### hermes/derived-1.4.9/1003-slash-command-confirm.txt
+HEADLINE Confirm action
+PROSE Reloading MCP servers rebuilds the tool set for this session.
+OPTION Approve Once ~  -  reload now~
+OPTION Always Approve ~  -  reload now and silence this prompt~
+OPTION Cancel ~  -  leave MCP tools unchanged~
+##### kiro/captured-2026-11-13/shell-approval.txt
+HEADLINE Shell requires approval
+CODE wrap
+  | mkdir -p sub && date > sub/now.txt
+OPTION Yes, single permission
+OPTION Trust, always allow in this session
+OPTION No ~ (Tab to edit)~
+##### kiro/derived-1.4.9/0901-default-page-label-set.txt
+HEADLINE Shell requires approval
+CODE wrap
+  | git push origin demo-branch
+OPTION Allow once
+OPTION Create allow rule to approve future similar actions
+OPTION Deny once
+OPTION Create deny rule to block future similar actions
+##### kiro/derived-1.4.9/0902-trust-options-page-and-scope-page.txt
+HEADLINE shell requires approval · trust options
+OPTION Trust "git push origin demo-branch"
+OPTION Trust "git push"
+OPTION Trust entire tool (shell)
+##### muse/captured-2026-11-15/command-approval.txt
+HEADLINE Would you like to run the following command?
+CODE wrap
+  | sudo -n chmod -R 777 /home/user/agents/muse/probe-dir
+PROSE Stage 1/1
+LABEL Current argv = ["sudo","-n","chmod","-R","777","/home/user/agents/muse/probe-dir"]
+OPTION Allow this stage once ~ (y)~
+OPTION Always allow in this workspace: sudo -n chmod ... ~ (p)~
+OPTION Abort the entire command ~ (esc)~
+##### muse/captured-2026-11-15/proceed-approval.txt
+HEADLINE Would you like to run the following command?
+CODE
+  | B=/home/user/work/demo-repo-terminal-mode
+  | grep -rn "prefers-reduced-motion\|autoplay" "$B/course/viz/viewer/" || echo "no reduced-motion handling in viewer"
+  | echo ---unit-tests.log---
+  | cat /home/user/work/outputs/terminal-mode/unit-tests.log
+  | echo ---browser-check.log---
+  | cat /home/user/work/outputs/terminal-mode/browser-check.log
+OPTION Yes, proceed ~ (y)~
+OPTION No, and tell Muse Code what to do differently ~ (esc)~
+##### muse/captured-2026-11-20/quota-fast.txt
+HEADLINE Muse Code: you're using your quota fast
+LABEL Switch to Spark = Spark becomes your default model. Switch back anytime with /model.
+LABEL Both = Spark becomes your default; session content may be used for product improvement. Terms of Service (https://dev.meta.ai/legal/terms-of-service)
+PROSE Keep going closes this and changes nothing.
+OPTION Switch to Spark — about 5× more turns
+OPTION Both — over 10× more turns
+OPTION Keep going
+##### muse/derived-1.4.9/1201-other-approval-kinds.txt
+HEADLINE Would you like to allow this network access?
+CAPTION Host:
+CODE wrap
+  | registry.example.org:443
+LABEL Reason = install demo dependencies
+OPTION Allow once ~ (y)~
+OPTION Allow for this session ~ (s)~
+OPTION Always allow this network destination ~ (p)~
+OPTION Reject ~ (esc)~
+##### muse/derived-1.4.9/1202-workspace-trust.txt
+HEADLINE Do you trust this workspace?
+LABEL Workspace = /home/user/work/demo
+LABEL Trust target = /home/user/work/demo
+PROSE Trusting allows project-local skills, rules, hooks, and plugin config to load before the model runs. Only trust this workspace when you trust its contents.
+OPTION Trust and continue
+OPTION Quit
+##### muse/derived-2.1.0/quota-fast-full.txt
+HEADLINE You're using your quota fast
+PROSE At this pace your 5-hour quota runs out in about 40 minutes (resets at 3:10 PM)
+LABEL Switch to Spark = Spark becomes your default model. Switch back anytime with /model.
+LABEL Turn on contributor mode = Session content may be used for product improvement.
+LABEL Both = Spark becomes your default; session content may be used for product improvement. Terms of Service (https://dev.meta.ai/legal/terms-of-service)
+PROSE Keep going closes this and changes nothing.
+OPTION Switch to Spark — about 5× more turns
+OPTION Turn on contributor mode — about 2.5× more turns
+OPTION Both — over 10× more turns
+OPTION Keep going
+##### omp/derived-1.4.9/0601-plan-review-exit-plan-mode.txt
+HEADLINE Review plan: Add greeting endpoint
+OPTION Approve and execute
+OPTION Approve and compact context
+OPTION Approve and keep context
+OPTION Refine plan
+OPTION Save plan
+##### omp/derived-1.4.9/0602-ask-dialog-questions-tabs-multi-select.txt
+HEADLINE Which database should demo-box use?
+OPTION SQLite (Recommended)
+OPTION Postgres
+OPTION Other (type your own)
+OPTION Chat about this
+##### opencode/derived-1.4.9/0701-permission-prompt-all-tools-2.txt
+HEADLINE Permission required
+PROSE ← Access external directory /home/user/work/shared
+CAPTION Patterns
+LIST
+  - /home/user/work/shared/*
+OPTION Allow once
+OPTION Reject
+##### opencode/derived-1.4.9/0701-permission-prompt-all-tools.txt
+HEADLINE Permission required
+SUBHEAD Shell command
+CODE wrap
+  | npm install --prefix /home/user/work/demo
+OPTION Allow once
+OPTION Reject
+##### opencode/derived-1.4.9/0702-always-allow-confirmation-page.txt
+HEADLINE Permission required
+##### opencode/derived-1.4.9/0703-reject-with-feedback-subagent-requests.txt
+HEADLINE Reject permission
+##### opencode/derived-1.4.9/0704-question-tool.txt
+HEADLINE Which database should demo-box use?
+OPTION SQLite
+OPTION Postgres
+OPTION Type your own answer
+##### pi/derived-1.4.9/0501-rm-rsync-delete-gate-local-extension-pi-.txt
+HEADLINE rm -r /home/user/work/demo/build
+OPTION Yes
+OPTION No
+##### pi/derived-1.4.9/0502-project-trust.txt
+HEADLINE execute project extensions.
+OPTION Trust
+OPTION Trust parent folder (/home/user/work)
+OPTION Trust (this session only)
+OPTION Do not trust
+OPTION Do not trust (this session only)
+##### vibe/captured-2026-11-13/bash-permission.txt
+HEADLINE Permission for the file_system.bash tool (shell syntax requiring approval: redirection)
+CODE wrap
+  | mkdir -p sub && date > sub/now.txt
+OPTION Allow once
+OPTION Allow for remainder of this session
+OPTION Always allow
+OPTION Deny
+##### vibe/derived-1.4.9/0801-trust-this-folder.txt
+HEADLINE Trust this folder?
+PROSE Malicious configs can modify AI behavior, exfiltrate data, run destructive commands, or silently alter your code.
+CAPTION Detected in current folder:
+CODE wrap
+  | .vibe/config.toml
+OPTION Yes
+OPTION No
+##### vibe/derived-1.4.9/0802-ask-user-question.txt
+HEADLINE Which database should demo-box use?
+OPTION SQLite
+OPTION Postgres
+OPTION Other
