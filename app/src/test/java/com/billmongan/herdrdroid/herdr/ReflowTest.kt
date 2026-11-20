@@ -61,6 +61,33 @@ class ReflowTest {
     }
 
     @Test
+    fun antigravityApprovalChoiceIsNotAUserMessage() {
+        val screen = """
+            Run this command?
+            ${'$'} go test ./...
+
+            ❯ 1. Yes, run command
+              2. Yes, and always allow in this conversation
+              3. Yes, and always allow (Persist to settings.json)
+              4. No, and tell Antigravity what to do differently
+        """.trimIndent()
+        val segs = Reflow.parse(screen, antigravity = true)
+        assertTrue(segs.none { it is Seg.You })
+        assertEquals("1. Yes, run command", segs.filterIsInstance<Seg.Footer>().single().lines.first())
+    }
+
+    @Test
+    fun wideTableBordersSurviveInPaneSpecificChat() {
+        val table = listOf("┌────────────────────┬────────────────────┐",
+            "│ A                  │ B                  │", "└────────────────────┴────────────────────┘")
+        for (antigravity in listOf(true, false)) {
+            val segs = Reflow.parse((listOf("Results:") + table).joinToString("\n"),
+                antigravity = antigravity, grok = !antigravity)
+            assertEquals(table, segs.filterIsInstance<Seg.Code>().single().lines)
+        }
+    }
+
+    @Test
     fun grokScrollbarClockAndWrappedParagraph() {
         val w = 118
         val screen = listOf(
