@@ -18,6 +18,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -36,20 +37,26 @@ import androidx.compose.ui.unit.sp
  *
  * [canAct] is false when the app can't see where the draft ends or who is in the pane: the text is
  * shown with the way to the terminal and no buttons that type. [canClear] is false for agents whose
- * input box the app hasn't checked for a safe clear.
+ * input box the app hasn't checked for a safe clear. [sendNote], when set, says why Send draft is off.
+ *
+ * The confirmation holds the [draft] as it was when Clear draft was tapped, shows its text, and is
+ * dismissed if the draft on screen changes meanwhile, so it never clears something else.
  */
 @Composable
-internal fun PaneDraftCard(
+internal fun <T> PaneDraftCard(
     agent: String,
+    draft: T,
     text: String,
     canAct: Boolean,
     canClear: Boolean,
     busy: String?,
-    onSend: () -> Unit,
-    onClear: () -> Unit,
+    sendNote: String?,
+    onSend: (T) -> Unit,
+    onClear: (T) -> Unit,
     onShowTerminal: () -> Unit,
 ) {
-    var confirmClear by remember { mutableStateOf(false) }
+    var confirmClear by remember { mutableStateOf<Pair<T, String>?>(null) }
+    LaunchedEffect(text) { if (confirmClear?.second != text) confirmClear = null }
     Surface(
         shape = RoundedCornerShape(14.dp), color = Palette.BlueSoft, border = BorderStroke(1.dp, Palette.Blue),
         modifier = Modifier.fillMaxWidth().testTag("pane-draft-card"),
@@ -77,11 +84,12 @@ internal fun PaneDraftCard(
                 )
                 TextButton(onClick = onShowTerminal) { Text("Show terminal") }
             } else {
+                if (sendNote != null) Text(sendNote, color = Palette.Muted, fontSize = 12.5.sp)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onSend, enabled = busy == null) {
+                    if (sendNote == null) Button(onClick = { onSend(draft) }, enabled = busy == null) {
                         Text(if (busy == "send") "Sending…" else "Send draft")
                     }
-                    if (canClear) OutlinedButton(onClick = { confirmClear = true }, enabled = busy == null,
+                    if (canClear) OutlinedButton(onClick = { confirmClear = draft to text }, enabled = busy == null,
                         modifier = Modifier.testTag("pane-draft-clear")) {
                         Text(if (busy == "clear") "Clearing…" else "Clear draft")
                     }
@@ -89,17 +97,23 @@ internal fun PaneDraftCard(
             }
         }
     }
-    if (confirmClear) {
+    confirmClear?.let { (captured, capturedText) ->
         AlertDialog(
-            onDismissRequest = { confirmClear = false },
+            onDismissRequest = { confirmClear = null },
             title = { Text("Clear the draft?") },
             text = {
-                Text("This deletes the text typed in $agent's input box at the computer. The app can't bring it back. Enter is not pressed.")
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("This deletes this text from $agent's input box at the computer. The app can't bring it back. Enter is not pressed.")
+                    Text(
+                        capturedText, fontFamily = FontFamily.Monospace, fontSize = 13.sp,
+                        modifier = Modifier.heightIn(max = 160.dp).verticalScroll(rememberScrollState()).testTag("pane-draft-confirm-text"),
+                    )
+                }
             },
             confirmButton = {
-                Button(onClick = { confirmClear = false; onClear() }, modifier = Modifier.testTag("pane-draft-confirm-clear")) { Text("Clear draft") }
+                Button(onClick = { confirmClear = null; onClear(captured) }, modifier = Modifier.testTag("pane-draft-confirm-clear")) { Text("Clear draft") }
             },
-            dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Keep it") } },
+            dismissButton = { TextButton(onClick = { confirmClear = null }) { Text("Keep it") } },
         )
     }
 }

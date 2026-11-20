@@ -236,12 +236,22 @@ class AppViewModel internal constructor(
      * A draft typed in the open pane's input box at the computer, read from its live screen (2.1.0).
      * [actionable]: the draft's end shows and the pane reports who is in it, so Send draft can be offered.
      */
-    internal data class PaneDraftShown(val target: CardTarget, val text: String, val actionable: Boolean, val clearable: Boolean)
+    internal data class PaneDraftShown(
+        val target: CardTarget, val text: String, val actionable: Boolean, val clearable: Boolean,
+        /** Why Send draft is off now ([com.billmongan.herdrdroid.herdr.draftSendBlock]), or null. */
+        val sendNote: String? = null,
+    )
     internal var paneDraft by mutableStateOf<PaneDraftShown?>(null)
         private set
-    /** "send" or "clear" while a draft action runs. */
-    var paneDraftBusy by mutableStateOf<String?>(null)
-        private set
+    /** "send" or "clear" while a draft action runs, per (server, pane). */
+    private var draftActions by mutableStateOf<Map<Pair<String, String>, String>>(emptyMap())
+    fun paneDraftBusy(paneId: String): String? = current?.id?.let { draftActions[it to paneId] }
+    /**
+     * The last styled verdict and what it was read for (2.1.0): the pane, the input line on the plain
+     * read, the occupant, the visit and the connection. The live screen is read again only when one
+     * of them changes, so a pane showing a placeholder costs one extra read, not one per poll.
+     */
+    private var draftReadFor: List<Any?>? = null
     private data class HermesUsageRead(val target: CardTarget, val composerReady: Boolean)
     private var hermesUsageRead by mutableStateOf<HermesUsageRead?>(null)
     var lastSent by mutableStateOf<Pair<String, String>?>(null)
@@ -1497,6 +1507,7 @@ class AppViewModel internal constructor(
             hermesUsageRead = null
             openUsage = null
             paneDraft = null
+            draftReadFor = null
         }
         quietly { h ->
             val waiting = pane(paneId)?.status == Status.NEEDS_YOU
@@ -1632,16 +1643,27 @@ class AppViewModel internal constructor(
             owner.isCurrent(owner.client) && question == null && agent != null && now.status != Status.NEEDS_YOU &&
             (now.scrollOffset ?: 0) == 0 && (!com.billmongan.herdrdroid.herdr.inputLineOf(text, agent).isNullOrEmpty() ||
                 com.billmongan.herdrdroid.herdr.composerDraftOf(text, agent) != null)
-        if (!eligible) { if (stillShown()) paneDraft = null; return }
+        if (!eligible) { if (stillShown()) { paneDraft = null; draftReadFor = null }; return }
         val o = checkNotNull(owner)
+        val plain = com.billmongan.herdrdroid.herdr.composerDraftOf(text, agent)?.text
+            ?: com.billmongan.herdrdroid.herdr.inputLineOf(text, agent)
+        val key = listOf(paneId, plain, com.billmongan.herdrdroid.herdr.Occupant.of(o.pane), o.visit, o.connection, now.status)
+        if (key == draftReadFor) {
+            // Same plain line, occupant and status: the last verdict stands (a draft keeps its card).
+            if (paneDraft?.target?.pane?.id != paneId && paneDraft != null) paneDraft = null
+            return
+        }
         val live = quietly { h -> if (h === o.client) h.readStyledViewport(paneId, o.connection, timeoutSeconds = 2) else null }
         if (!stillShown()) return
         val draft = live?.takeIf { o.isCurrent(o.client) && detectPrompt(forPhone(it), false, agent, versionOf(paneId)) == null }
             ?.let { com.billmongan.herdrdroid.herdr.composerDraftOf(it, agent) }
+        // A failed read is not a verdict: read again next time.
+        draftReadFor = key.takeIf { live != null }
         paneDraft = draft?.let {
-            val same = paneDraft?.takeIf { d -> d.target == o && d.text == it.text }
-            same ?: PaneDraftShown(o, it.text, it.bounded && com.billmongan.herdrdroid.herdr.hasStableOccupant(o.pane),
-                com.billmongan.herdrdroid.herdr.canClearDraft(agent))
+            val shown = PaneDraftShown(o, it.text, it.bounded && com.billmongan.herdrdroid.herdr.hasStableOccupant(o.pane),
+                com.billmongan.herdrdroid.herdr.canClearDraft(agent),
+                com.billmongan.herdrdroid.herdr.draftSendBlock(it, now.status, now.agentName))
+            paneDraft?.takeIf { d -> d == shown } ?: shown
         }
     }
 
@@ -1656,18 +1678,26 @@ class AppViewModel internal constructor(
     private fun paneDraftAct(shown: PaneDraftShown, clear: Boolean) {
         // The card may have been redrawn since the tap; the action itself re-reads the pane and
         // acts only on the text that was shown.
-        if (paneDraftBusy != null || !shown.actionable || (clear && !shown.clearable)) return
         val target = shown.target
+        val lane = target.server to target.pane.id
+        if (lane in draftActions) {
+            flash("Wait: the last Send draft or Clear draft for this pane is still running.")
+            return
+        }
+        if (!shown.actionable || (clear && !shown.clearable)) return
         val h = target.client
         val agentName = target.pane.agentName
-        paneDraftBusy = if (clear) "clear" else "send"
+        draftActions = draftActions + (lane to if (clear) "clear" else "send")
         viewModelScope.launch {
             fun allowed() = !locked && foreground && link == Link.CONNECTED && herdr === h && target.isCurrent(h)
+            // Through [quietly], so a dropped link reconnects; a failed read is null, a failed write throws.
             val port = object : com.billmongan.herdrdroid.herdr.PaneDraftAction.Port {
-                override suspend fun pane(id: String) = h.cardPane(id, target.connection)
-                override suspend fun viewport(id: String) = h.readStyledViewport(id, target.connection, timeoutSeconds = 3)
+                override suspend fun pane(id: String) = quietly { if (it === h) it.cardPane(id, target.connection) else null }
+                override suspend fun viewport(id: String) =
+                    quietly { if (it === h) it.readStyledViewport(id, target.connection, timeoutSeconds = 3) else null }
                 override suspend fun keys(id: String, keys: List<String>, permit: WritePermit) {
-                    h.sendPermittedKeys(id, keys, target.connection, permit)
+                    quietly { if (it === h) { it.sendPermittedKeys(id, keys, target.connection, permit); true } else null }
+                        ?: throw IllegalStateException("the keys could not be sent")
                 }
                 override suspend fun pause(ms: Long) = delay(ms)
             }
@@ -1675,7 +1705,8 @@ class AppViewModel internal constructor(
                 if (clear) paneDraftAction.clear(target.server, target.pane, shown.text, ::allowed, port)
                 else paneDraftAction.send(target.server, target.pane, shown.text, ::allowed, port)
             } finally {
-                paneDraftBusy = null
+                draftActions = draftActions - lane
+                draftReadFor = null
             }
             com.billmongan.herdrdroid.diag.DiagLog.log("draft", "${target.pane.id}: ${if (clear) "clear" else "send"} ${outcome.name.lowercase()} (${shown.text.length} chars)")
             val said = com.billmongan.herdrdroid.herdr.draftOutcomeText(outcome, agentName, clear)
@@ -1709,6 +1740,7 @@ class AppViewModel internal constructor(
         paneReadProblem = null
         openUsage = null
         paneDraft = null
+        draftReadFor = null
         current?.id?.let { questions(it, paneId) }
         resetTranscript(paneId)
         screen = Screen.Agent(paneId)
@@ -2415,6 +2447,8 @@ class AppViewModel internal constructor(
         if (now.isNotEmpty() && com.billmongan.herdrdroid.herdr.detectUnnumberedMenu(com.billmongan.herdrdroid.herdr.forPhone(screen))?.choices?.any { it.label.trim() == now } == true)
             return "a question is open in it (\"${now.take(40)}\"); answer it first"
         if (now.isNotEmpty()) return DRAFT_HOLD
+        // Rows typed under an empty first row (2.1.0), as the voice and relay sends judge it.
+        if (com.billmongan.herdrdroid.herdr.composerDraftOf(screen, agent) != null) return DRAFT_HOLD
         val at = typedAt[paneId]
         if (at != null && System.currentTimeMillis() - at < 4_000) return "someone was typing in it a moment ago"
         return null

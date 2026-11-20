@@ -70,6 +70,46 @@ class PaneDraftTest {
         assertEquals(ComposerDraft("hello there\nsecond line", true), composerDraftOf(grok, "grok"))
     }
 
+    @Test fun `rule-like rows typed in a draft are text, not the box's edge`() {
+        val plan = claude("❯ Plan:", "  ----", "  rm the old backups")
+        assertEquals(ComposerDraft("Plan:\n----\nrm the old backups", true), composerDraftOf(plan, "claude"))
+        val quote = hermes("❯ intro", "----", "> quote")
+        assertEquals(ComposerDraft("intro\n----\n> quote", true), composerDraftOf(quote, "hermes"))
+        // A shorter box-drawing line inside the draft is not the closing rule either.
+        val short = hermes("❯ intro", "─".repeat(30), "more")
+        assertEquals("intro\n${"─".repeat(30)}\nmore", composerDraftOf(short, "hermes")?.text)
+        // A full-width rule further down is not the box's edge when more than a footer follows it.
+        val tall = (listOf(rule, "❯ old", rule) + List(8) { "  output $it" } + listOf(rule, "❯ ", rule, "  ? for shortcuts")).joinToString("\n")
+        assertNull(composerDraftOf(tall, "claude"))
+    }
+
+    @Test fun `unboxed prompt rows need the glyph at column zero and a clear row above`() {
+        assertEquals(ComposerDraft("first\n> quoted", true), composerDraftOf(codex("› first", "  > quoted"), "codex"))
+        // Text right above the prompt row: it may be part of the output, so it is shown but not acted on.
+        val joined = "• Ran the tests.\n› quoted from the agent\n\n  GPT-6.1-Sol default · ~/agents/codex"
+        assertEquals(false, composerDraftOf(joined, "codex")?.bounded)
+        assertNull(composerDraftOf("output\n  > indented quote\n", "kiro"))
+    }
+
+    @Test fun `a ghost suggestion after the typed text is left out`() {
+        assertEquals("fix the", composerDraftOf(claude("$e[0m$e[38;2;153;153;153m❯ $e[0mfix the$e[2m failing test$e[0m"), "claude")?.text)
+        assertEquals("check", composerDraftOf(hermes("$e[0m❯ $e[0mcheck$e[3m$e[38;5;136m the cron$e[0m"), "hermes")?.text)
+    }
+
+    @Test fun `Send draft is off where Enter could pick a command or the agent is busy`() {
+        fun block(text: String, status: Status = Status.IDLE, menu: Boolean = false) =
+            draftSendBlock(ComposerDraft(text, true, menu), status, "Claude")
+        assertNull(block("fix the build"))
+        assertNull(block("fix the build", Status.DONE))
+        for (t in listOf("/cl", "/clear", "!ls", "look at @src", "open /tmp")) assertTrue(t, block(t)!!.contains("command"))
+        assertTrue(block("fix it", menu = true)!!.contains("command"))
+        assertTrue(block("fix it", Status.WORKING)!!.contains("idle"))
+        // A command list under the box marks the draft.
+        val menu = claude("❯ /c", footer = "  /clear              Clear conversation history\n  /compact            Compact the conversation")
+        assertEquals(true, composerDraftOf(menu, "claude")?.menu)
+        assertEquals(false, composerDraftOf(claude("❯ fix it"), "claude")?.menu)
+    }
+
     // ---- Send and Clear ---------------------------------------------------------------------
 
     private val shown = Pane("w2:p1", "w2:t1", "w2", "hermes", Status.IDLE, "Hermes", "/home/u", scrollOffset = 0,
@@ -103,6 +143,18 @@ class PaneDraftTest {
         val host = Host(shown, listOf(draftScreen))
         assertEquals(PaneDraftAction.Outcome.UNCERTAIN, action().send("srv", shown, draftText, { true }, host))
         assertEquals(listOf(listOf("enter")), host.writes)
+    }
+
+    @Test fun `send refuses a slash command, a command list or a busy agent without typing`() = runBlocking {
+        for ((pane, screen, text) in listOf(
+            Triple(shown, hermes("❯ /clear"), "/clear"),
+            Triple(shown, hermes("❯ look at @src"), "look at @src"),
+            Triple(shown.copy(status = Status.WORKING), draftScreen, draftText),
+        )) {
+            val host = Host(pane, listOf(screen, emptyScreen))
+            assertEquals(text, PaneDraftAction.Outcome.NOT_SENDABLE, action().send("srv", shown, text, { true }, host))
+            assertTrue(host.writes.isEmpty())
+        }
     }
 
     @Test fun `send is refused when the draft or the occupant changed`() = runBlocking {
@@ -152,9 +204,16 @@ class PaneDraftTest {
 
     @Test fun `clear repeats only while the draft shrinks and is bounded`() = runBlocking {
         // The cursor was mid-text: the first round leaves the tail, the second empties it.
-        val shrinking = Host(shown, listOf(draftScreen, hermes("❯ vault push"), emptyScreen))
+        // Some Backspaces were dropped: what is left is the start of the draft, so it goes on.
+        val shrinking = Host(shown, listOf(draftScreen, hermes("❯ Please draft the reply"), emptyScreen))
         assertEquals(PaneDraftAction.Outcome.CLEARED, action().clear("srv", shown, draftText, { true }, shrinking))
-        assertEquals(listOf(draftText.length, "vault push".length), shrinking.writes.map { it.size })
+        assertEquals(listOf(draftText.length, "Please draft the reply".length), shrinking.writes.map { it.size })
+
+        // The cursor was mid-text: what is left is not the start of what was shown (it may never
+        // have been shown), so it stops after one round.
+        val midText = Host(shown, listOf(draftScreen, hermes("❯ vault push")))
+        assertEquals(PaneDraftAction.Outcome.PARTIAL, action().clear("srv", shown, draftText, { true }, midText))
+        assertEquals(1, midText.writes.size)
 
         // Backspace that deletes nothing: one round, then it stops and says so.
         val stuck = Host(shown, listOf(draftScreen))
@@ -167,7 +226,7 @@ class PaneDraftTest {
         assertEquals(PaneDraftAction.Outcome.PARTIAL, action().clear("srv", shown, long, { true }, slow))
         assertEquals(PaneDraftAction.MAX_CLEAR_ROUNDS, slow.writes.size)
 
-        for (h in listOf(shrinking, stuck, slow)) assertFalse("enter" in h.writes.flatten())
+        for (h in listOf(shrinking, midText, stuck, slow)) assertFalse("enter" in h.writes.flatten())
         assertTrue(listOf(shrinking, stuck, slow).all { h -> h.writes.all { it.size <= PaneDraftAction.MAX_KEYS_PER_ROUND } })
     }
 

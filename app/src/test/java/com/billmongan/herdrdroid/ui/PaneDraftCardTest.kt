@@ -20,10 +20,34 @@ class PaneDraftCardTest {
 
     private var sends = 0
     private var clears = 0
+    private val cleared = mutableListOf<String>()
+    private val text = androidx.compose.runtime.mutableStateOf("first line\nsecond line")
 
-    private fun show(canAct: Boolean = true, canClear: Boolean = true) = rule.setContent {
-        PaneDraftCard("Hermes", "first line\nsecond line", canAct, canClear, busy = null,
-            onSend = { sends++ }, onClear = { clears++ }, onShowTerminal = {})
+    private fun show(canAct: Boolean = true, canClear: Boolean = true, sendNote: String? = null) = rule.setContent {
+        val t = text.value
+        PaneDraftCard("Hermes", draft = t, text = t, canAct = canAct, canClear = canClear, busy = null, sendNote = sendNote,
+            onSend = { sends++ }, onClear = { clears++; cleared += it }, onShowTerminal = {})
+    }
+
+    @Test fun confirmClearsTheCapturedDraftAndADraftChangeDismissesIt() {
+        show()
+        rule.onNodeWithTag("pane-draft-clear").performClick()
+        rule.onNodeWithTag("pane-draft-confirm-text").assertIsDisplayed()
+        rule.onNodeWithTag("pane-draft-confirm-clear").performClick()
+        assertEquals(listOf("first line\nsecond line"), cleared)
+
+        rule.onNodeWithTag("pane-draft-clear").performClick()
+        rule.onNodeWithText("Clear the draft?").assertIsDisplayed()
+        text.value = "something else"
+        rule.waitForIdle()
+        rule.onAllNodesWithText("Clear the draft?").assertCountEquals(0)
+        assertEquals(1, clears)
+    }
+
+    @Test fun aSendNoteReplacesSendDraft() {
+        show(sendNote = "Send draft is off: Enter could pick a highlighted command or suggestion instead.")
+        rule.onAllNodesWithText("Send draft").assertCountEquals(0)
+        rule.onNodeWithTag("pane-draft-clear").assertIsDisplayed()
     }
 
     @Test fun clearAsksFirstAndKeepItDoesNothing() {

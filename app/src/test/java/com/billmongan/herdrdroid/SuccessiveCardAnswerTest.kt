@@ -624,7 +624,7 @@ class SuccessiveCardAnswerTest {
         val deadline = System.nanoTime() + 5_000_000_000L
         do {
             shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(200))
-            if (vm.paneDraftBusy == null) return
+            if (vm.paneDraftBusy("p1") == null) return
             Thread.sleep(1)
         } while (System.nanoTime() < deadline)
         fail("Draft action did not finish")
@@ -654,6 +654,40 @@ class SuccessiveCardAnswerTest {
         assertEquals(1, sent.size)
         assertEquals(List("two lines\nof draft".length) { "backspace" }, sent.single().split(' '))
         assertEquals("Draft cleared from Hermes's input box.", vm.notice)
+    }
+
+    @Test fun clearDraftIsRefusedWhenTheOccupantChanges() = fixture("hermes", hermesBox("❯ two lines", "of draft")) {
+        status(Status.IDLE)
+        readSelectedPane()
+        val draft = checkNotNull(vm.paneDraft)
+        terminal = "t2" // Another terminal is in the pane now.
+        status(Status.IDLE)
+        vm.clearPaneDraft(draft)
+        waitForDraftAction()
+        assertTrue(sent.isEmpty())
+        assertTrue(vm.notice.orEmpty(), vm.notice.orEmpty().startsWith("Not cleared:"))
+    }
+
+    @Test fun aSlashCommandDraftHasNoSendButClearStays() = fixture("hermes", hermesBox("❯ /clear")) {
+        status(Status.IDLE)
+        readSelectedPane()
+        val draft = checkNotNull(vm.paneDraft)
+        assertTrue(draft.sendNote.orEmpty().contains("command"))
+        assertTrue(draft.clearable)
+        vm.sendPaneDraft(draft)
+        waitForDraftAction()
+        assertTrue(sent.isEmpty())
+    }
+
+    @Test fun aPlaceholderIsReadWithStylesOnceNotEveryPoll() = fixture("codex", "› Explain this codebase\n\n  footer") {
+        status(Status.IDLE)
+        ansiPlaceholder = true
+        readSelectedPane()
+        val first = guardedVisibleReads
+        readSelectedPane()
+        readSelectedPane()
+        assertNull(vm.paneDraft)
+        assertEquals(first, guardedVisibleReads)
     }
 
     @Test fun draftChangedAtTheComputerIsNotSent() = fixture("hermes", hermesBox("❯ first version")) {
@@ -1165,7 +1199,12 @@ class SuccessiveCardAnswerTest {
             }
         }
 
-        private fun ansiFrame() = if (!ansiRows) frame else frame.lineSequence().joinToString("\n") {
+        /** Rows starting "› " drawn as Codex draws a placeholder: a bold glyph, then faint text. */
+        var ansiPlaceholder = false
+
+        private fun ansiFrame() = if (ansiPlaceholder) frame.lineSequence().joinToString("\n") {
+            if (it.startsWith("› ")) "\u001B[1m› \u001B[0m\u001B[2m${it.removePrefix("› ")}\u001B[0m" else it
+        } else if (!ansiRows) frame else frame.lineSequence().joinToString("\n") {
             if (it.startsWith("$ ")) "$it\u001B[44m  \u001B[0m" else it
         }
 

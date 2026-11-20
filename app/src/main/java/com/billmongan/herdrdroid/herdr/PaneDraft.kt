@@ -46,6 +46,8 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
         PARTIAL,
         /** A key went, but the app could not see the result. Never retried. */
         UNCERTAIN,
+        /** Send only: Enter could pick a highlighted command or suggestion, or the agent isn't idle. Nothing was typed. */
+        NOT_SENDABLE,
     }
 
     companion object {
@@ -82,8 +84,10 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
 
     /** Presses Enter once, only if the box still holds [shownText]. */
     suspend fun send(server: String, shown: Pane, shownText: String, allowed: () -> Boolean, port: Port): Outcome =
-        guarded(server, shown, shownText, allowed, port) { fresh ->
-            val permit = gate.open(server to shown.id) ?: return@guarded Outcome.REFUSED
+        guarded(server, shown, shownText, allowed, port) { fresh, draft ->
+            if (draftSendBlock(draft, fresh.status, fresh.agentName) != null) return@guarded Outcome.NOT_SENDABLE
+            // The permit re-checks [allowed] at the transport, right before the key goes.
+            val permit = gate.open(server to shown.id, WritePermit(allowed)) ?: return@guarded Outcome.REFUSED
             try {
                 if (!allowed()) return@guarded Outcome.REFUSED
                 port.keys(shown.id, listOf("enter"), permit)
@@ -108,17 +112,19 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
 
     /**
      * Presses Backspace as many times as the draft has characters, then reads the box again; up to
-     * [MAX_CLEAR_ROUNDS] rounds, each only while the box still shows a shorter draft than before.
+     * [MAX_CLEAR_ROUNDS] rounds, each only while the box still shows a strict start of the text the
+     * last round saw (some Backspaces were dropped), so no text that was never shown is deleted.
      * Never presses Enter.
      */
     suspend fun clear(server: String, shown: Pane, shownText: String, allowed: () -> Boolean, port: Port): Outcome {
         if (!canClearDraft(shown.agent)) return Outcome.REFUSED
-        return guarded(server, shown, shownText, allowed, port) { _ ->
+        return guarded(server, shown, shownText, allowed, port) { _, _ ->
             var left = shownText
             var pressed = false
             for (round in 1..MAX_CLEAR_ROUNDS) {
                 val count = left.length.coerceIn(1, MAX_KEYS_PER_ROUND)
-                val permit = gate.open(server to shown.id) ?: return@guarded if (pressed) Outcome.UNCERTAIN else Outcome.REFUSED
+                val permit = gate.open(server to shown.id, WritePermit(allowed))
+                    ?: return@guarded if (pressed) Outcome.UNCERTAIN else Outcome.REFUSED
                 try {
                     if (!allowed()) return@guarded if (pressed) Outcome.UNCERTAIN else Outcome.REFUSED
                     port.keys(shown.id, List(count) { "backspace" }, permit)
@@ -139,8 +145,9 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
                 if (!ready(shown, fresh)) return@guarded Outcome.UNCERTAIN
                 if (emptyBox(fresh!!, after)) return@guarded Outcome.CLEARED
                 val still = draftOn(fresh, after) ?: return@guarded Outcome.UNCERTAIN
-                // Backspace that deleted nothing (the cursor at the start, a different key mode) stops it.
-                if (!still.bounded || still.text.length >= left.length) return@guarded Outcome.PARTIAL
+                // Backspace from the end leaves the start of what was there. Anything else (the cursor
+                // mid-text, text that was never shown, nothing deleted) stops it.
+                if (!still.bounded || still.text.length >= left.length || !left.startsWith(still.text)) return@guarded Outcome.PARTIAL
                 left = still.text
             }
             Outcome.PARTIAL
@@ -149,7 +156,7 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
 
     private suspend fun guarded(
         server: String, shown: Pane, shownText: String, allowed: () -> Boolean, port: Port,
-        act: suspend (Pane) -> Outcome,
+        act: suspend (Pane, ComposerDraft) -> Outcome,
     ): Outcome {
         val key = server to shown.id
         if (!hasStableOccupant(shown) || shownText.isBlank()) return Outcome.REFUSED
@@ -167,7 +174,7 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
             // The occupant may have been replaced while the screen was read.
             val last = port.pane(shown.id)
             if (!valid() || !ready(shown, last)) return Outcome.REFUSED
-            return act(last!!)
+            return act(last!!, now)
         } catch (c: CancellationException) {
             throw c
         } catch (_: ConnectionChanged) {
@@ -190,7 +197,26 @@ internal fun draftOutcomeText(outcome: PaneDraftAction.Outcome, agent: String, c
         "${if (clear) "Not cleared" else "Not sent"}: $agent isn't ready (a question, a scrolled-back screen, another send, or a screen that couldn't be read). Nothing was typed."
     PaneDraftAction.Outcome.PARTIAL ->
         "Some of the draft is still in $agent's input box (the cursor may not have been at the end). Enter was not pressed. Clear the rest in Terminal."
+    PaneDraftAction.Outcome.NOT_SENDABLE ->
+        "Not sent: Enter could pick a highlighted command or suggestion instead, or $agent isn't idle. Nothing was typed."
     PaneDraftAction.Outcome.UNCERTAIN ->
         if (clear) "Backspace was pressed, but the app couldn't confirm that $agent's input box is empty. Enter was not pressed. Check Terminal."
         else "Enter was pressed once, but the app couldn't confirm the draft went. Check the chat before trying again."
+}
+
+/**
+ * Why Send draft is off for [draft] now, or null (2.1.0). Enter in a box that shows a command or
+ * suggestion list, or whose draft starts a command ("/", "!") or ends in a "/" or "@" word, may
+ * pick the highlighted entry (a /clear, say) rather than send the text. And only an idle agent
+ * gets it, as with a relayed prompt.
+ */
+internal fun draftSendBlock(draft: ComposerDraft, status: Status?, agent: String): String? {
+    val text = draft.text.trim()
+    val last = text.split(Regex("""\s+""")).lastOrNull().orEmpty()
+    return when {
+        draft.menu || text.startsWith("/") || text.startsWith("!") || last.startsWith("/") || last.startsWith("@") ->
+            "Send draft is off: Enter could pick a highlighted command or suggestion instead. Finish it or clear it at the computer."
+        status != Status.IDLE && status != Status.DONE -> "Send draft is available when $agent is idle."
+        else -> null
+    }
 }
