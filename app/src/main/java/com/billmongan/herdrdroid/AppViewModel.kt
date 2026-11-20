@@ -1514,18 +1514,19 @@ class AppViewModel internal constructor(
             fun canUpgrade() = foreground && isOpen() && cardOwner != null &&
                 cardOwner.client.backend == Backend.TUI && cardOwner.isCurrent(cardOwner.client) &&
                 pane(paneId)?.scrollOffset == 0
-            // A nonempty recent capture can omit the entire dialog or just Claude's choices
+            // A nonempty recent capture can omit the entire dialog or just its choices
             // while status still says Working. Probe only the selected, live-bottom viewport.
             val missingCodexCard = agent == "codex" && paneStatus == Status.WORKING && preview?.choices.isNullOrEmpty()
             val recentCodexQuestion = preview?.codexQuestion == true && client?.backend == Backend.TUI
             val requireCodexApprovalIdentity = (missingCodexCard && preview?.terminalReview != true) || recentCodexQuestion
-            val unfinishedClaudePreview = agent == "claude" && paneStatus == Status.WORKING && preview?.choices.isNullOrEmpty()
+            val unfinishedChoicePreview = agent in setOf("claude", "agy") &&
+                paneStatus == Status.WORKING && preview?.choices.isNullOrEmpty()
             val verifyOpenCode = isOpenCode(agent) && client?.backend == Backend.TUI &&
                 (blocked || paneStatus == Status.WORKING || preview != null || openCodeBackgroundDrawer(agent, recent))
             val verifyHermesUsage = agent == "hermes"
             val verifyPi = paneNow != null && requiresLivePiQuestion(paneNow)
             val liveCard = if (liveUsage == null &&
-                (verifyOpenCode || verifyHermesUsage || verifyPi || missingCodexCard || unfinishedClaudePreview || preview?.terminalReview == true || (blocked && preview?.choices.isNullOrEmpty())) && canUpgrade()) {
+                (verifyOpenCode || verifyHermesUsage || verifyPi || missingCodexCard || unfinishedChoicePreview || preview?.terminalReview == true || (blocked && preview?.choices.isNullOrEmpty())) && canUpgrade()) {
                 val owner = checkNotNull(cardOwner)
                 quietly { h ->
                     if (h !== owner.client) return@quietly null
