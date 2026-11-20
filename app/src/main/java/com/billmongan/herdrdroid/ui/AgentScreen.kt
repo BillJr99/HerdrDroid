@@ -2,6 +2,7 @@ package com.billmongan.herdrdroid.ui
 
 import androidx.compose.ui.platform.LocalClipboardManager
 import com.billmongan.herdrdroid.herdr.screenLinks
+import com.billmongan.herdrdroid.herdr.openCodeBackgroundDrawer
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.material.icons.filled.MoreVert
@@ -238,11 +239,15 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     val quote: (String) -> Unit = { q -> editMessage(q.lines().joinToString("\n") { "> $it" } + "\n\n") }
 
     // As the list shows it: Done becomes Idle once you have opened it here.
-    val status = pane?.let { vm.shownStatus(it) } ?: Status.UNKNOWN
+    val status = pane?.let {
+        val reported = vm.shownStatus(it)
+        if (reported == Status.NEEDS_YOU && vm.openCodeComposerIsCurrent(it)) Status.IDLE else reported
+    } ?: Status.UNKNOWN
     // Only this agent's screen: never one read from the agent you just left.
     val liveScreenText = if (vm.paneTextPane == paneId) vm.paneText else ""
     val openingPreview = vm.prefetchedPaneText(paneId)
     val screenText = openingPreview ?: liveScreenText
+    val backgroundDrawer = vm.paneReadProblem == null && openCodeBackgroundDrawer(pane?.agent, screenText)
     val shownTarget = vm.paneTextTarget?.takeIf { vm.paneTextPane == paneId && vm.paneReadProblem == null }
     // Never an empty card (1.4.2): one with no options always shows the screen region or a note.
     // While the latest read failed, no card is built from the last screen: its buttons would answer
@@ -255,7 +260,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         else if (vm.paneReadProblem != null) (if (status == Status.NEEDS_YOU) Prompt("This agent is waiting for you.", emptyList()).forCard() else null)
         else detectPrompt(screenText, status == Status.NEEDS_YOU, pane?.agent, vm.versionOf(paneId))?.forCard()
     fun send() {
-        if (usageBlocksInput || (openingPreview != null && prompt != null)) return
+        if (usageBlocksInput || backgroundDrawer || (openingPreview != null && prompt != null)) return
         val draft = answerDraft
         if (draft != null) {
             val text = draft.text.trim()
@@ -349,7 +354,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 p,
                 agent = pane?.agentName ?: "The agent",
                 sending = vm.answerInFlight(paneId),
-                readOnlyPreview = openingPreview != null,
+                readOnlyPreview = openingPreview != null ||
+                    (com.billmongan.herdrdroid.herdr.isOpenCode(pane?.agent) && shownTarget == null && !p.terminalReview),
                 onChoice = { c -> vm.answerChoice(paneId, p, c, target = shownTarget) },
                 onKey = { k ->
                     val label = "Pressed " + when (k) { "esc" -> "Esc"; "tab" -> "Tab"; "shift+tab" -> "Shift+Tab"; "ctrl+c" -> "Ctrl+C"; else -> k }
@@ -361,7 +367,12 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 onShowTerminal = { hermesLive = false; fullTerminal = true; termFollow = true },
             )
           }
-        } ?: agentError?.let { why ->
+        } ?: if (backgroundDrawer && !fullTerminal) {
+            Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                Text("OpenCode's background drawer is open. Close it in Terminal to resume chat.", color = Palette.Muted)
+                TextButton(onClick = { hermesLive = false; fullTerminal = true; termFollow = true }) { Text("Show terminal") }
+            }
+        } else agentError?.let { why ->
             // An agent's error (1.4.2): a banner with the way to the terminal, never a question card.
             Surface(shape = RoundedCornerShape(14.dp), color = Palette.OrangeSoft, border = BorderStroke(1.dp, Palette.Orange)) {
                 Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -779,9 +790,10 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 },
                 placeholder = if (modifiersOn) "Type a letter to send it with ${if (ctrl != Hold.OFF) "Ctrl" else "Alt"}"
                 else if (typingAnswer) if (vm.answerInFlight(paneId)) "Checking answer…" else "Type your answer"
+                else if (backgroundDrawer) "Close the background drawer to send"
                 else if (prompt != null || status == Status.NEEDS_YOU) "Send after answer"
                 else "Message ${pane?.agentName ?: "this tab"}",
-                canSend = message.isNotBlank() && pane != null && !usageBlocksInput &&
+                canSend = message.isNotBlank() && pane != null && !usageBlocksInput && !backgroundDrawer &&
                     (openingPreview == null || prompt == null) && !(typingAnswer && vm.answerInFlight(paneId)),
                 onSend = ::send,
                 working = status == Status.WORKING,
@@ -1280,10 +1292,14 @@ internal fun PromptCard(
                     // Say what tapping really sends: arrows and Enter for a menu with a highlighted row,
                     // Esc for a "(esc)" option, otherwise the key itself (1.2.7; it always said "sends N").
                     val typed = com.billmongan.herdrdroid.herdr.isTypedAnswerChoice(c.label)
-                    val what = if (typed) "moves there, then you type your answer" else keysLabel(com.billmongan.herdrdroid.herdr.menuKeys(p, c), c)
+                    val what = when {
+                        typed -> "moves there, then you type your answer"
+                        p.openCodePermission && c.keys == "1" -> "checks the live selection before confirming"
+                        else -> keysLabel(com.billmongan.herdrdroid.herdr.menuKeys(p, c), c)
+                    }
                     val caution = com.billmongan.herdrdroid.herdr.grantsStandingPermission(c.label)
                     // The highlighted row (the one Enter picks) is the blue one, not always the first.
-                    val first = c.keys == (p.selected ?: p.choices.firstOrNull()?.keys)
+                    val first = c.keys == (p.selected ?: p.choices.firstOrNull()?.keys?.takeUnless { p.openCodePermission })
                     val body: @Composable () -> Unit = {
                         Column(Modifier.fillMaxWidth()) {
                             Text(c.label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, lineHeight = 20.sp,
@@ -1315,13 +1331,13 @@ internal fun PromptCard(
                     }
                 }
             }
-            if (!sending && !(p.choices.isEmpty() && p.region == listOf(com.billmongan.herdrdroid.herdr.UNREAD_SCREEN))) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (!p.openCodePermission && !sending && !(p.choices.isEmpty() && p.region == listOf(com.billmongan.herdrdroid.herdr.UNREAD_SCREEN))) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 KeyButton("Esc") { onKey("esc") }
                 KeyButton("Tab") { onKey("tab") }
                 KeyButton("Shift+Tab") { onKey("shift+tab") }
                 KeyButton("Ctrl+C", danger = true) { onKey("ctrl+c") }
             }
-            TextButton(onClick = onTypeAnswer, enabled = !sending, modifier = Modifier.fillMaxWidth()) { Text("Type a different answer") }
+            if (!p.openCodePermission) TextButton(onClick = onTypeAnswer, enabled = !sending, modifier = Modifier.fillMaxWidth()) { Text("Type a different answer") }
             onShowTerminal?.let { show -> TextButton(onClick = show, modifier = Modifier.fillMaxWidth()) { Text("Show terminal") } }
             Text(
                 "Each button types its key into the tab, exactly as if you typed it there. For any other " +

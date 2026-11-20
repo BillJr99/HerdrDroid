@@ -14,8 +14,8 @@ android {
         applicationId = "com.billmongan.herdrdroid"
         minSdk = 26
         targetSdk = 34
-        versionCode = 109
-        versionName = "2.0.3"
+        versionCode = 110
+        versionName = "2.0.4"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -28,7 +28,11 @@ android {
     testOptions {
         unitTests {
             isIncludeAndroidResources = true
-            all { it.systemProperty("robolectric.logging", "stdout") }
+            all {
+                it.systemProperty("robolectric.logging", "stdout")
+                // Use Maven Central's canonical host for Robolectric's runtime SDK fetches.
+                it.systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")
+            }
         }
     }
 

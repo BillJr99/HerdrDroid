@@ -30,6 +30,123 @@ import org.robolectric.Shadows.shadowOf
 
 @RunWith(AndroidJUnit4::class)
 class SuccessiveCardAnswerTest {
+    @Test fun openCodeBackgroundDrawerIsNotAQuestionAndDoesNotReceiveChat() =
+        fixture("opencode-ursinus", openCodeDrawer) {
+            recentResult = ExecResult(0, openCodePermission, "")
+            readSelectedPane()
+            assertEquals(openCodeDrawer, vm.paneText)
+            assertNull(detectPrompt(vm.paneText, true, "opencode-ursinus"))
+            assertTrue(vm.questionsFor("p1").isEmpty())
+            assertTrue(vm.blocksNormalSend(checkNotNull(vm.pane("p1")).copy(status = Status.WORKING), frame))
+            assertTrue(sent.isEmpty())
+
+            // Close/redraw is simulated externally; observation must never dismiss the drawer.
+            frame = openCodeComposer
+            readSelectedPane()
+            assertFalse(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+            assertTrue(sent.isEmpty())
+        }
+
+    @Test fun openCodeStaleBlockedStatusAndRecentPermissionDoNotHoldNormalChat() =
+        fixture("opencode", openCodeComposer) {
+            recentResult = ExecResult(0, openCodePermission, "")
+            readSelectedPane()
+
+            assertEquals(1, guardedVisibleReads)
+            assertEquals(openCodeComposer, vm.paneText)
+            assertFalse(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+            assertTrue(vm.questionsFor("p1").isEmpty())
+            assertTrue(sent.isEmpty())
+
+            var delivered = false
+            vm.sendMessage(checkNotNull(vm.pane("p1")), "Fixture chat") { delivered = true }
+            drainUntil { delivered || vm.pendingSends.any { it.waiting } }
+            assertTrue(delivered)
+            assertEquals(listOf("text:Fixture chat", "enter"), sent)
+        }
+
+    @Test fun openCodePermissionAppearingBeforeSendStillHoldsChat() = fixture("opencode", openCodeComposer) {
+        recentResult = ExecResult(0, openCodeComposer, "")
+        readSelectedPane()
+        assertFalse(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+        frame = openCodePermission
+
+        vm.sendMessage(checkNotNull(vm.pane("p1")), "Fixture chat")
+        drainUntil { sent.isNotEmpty() || vm.pendingSends.any { it.waiting } }
+        assertTrue(sent.isEmpty())
+        assertTrue(vm.pendingSends.single().waiting)
+
+        readSelectedPane()
+        assertEquals(listOf("Allow once", "Reject"), shown().choices.map { it.label })
+        assertEquals(openCodePermission, vm.paneText)
+        assertTrue(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+    }
+
+    @Test fun nativeOpenCodeApprovalUsesFreshFocusAndNeverOffersStandingPermission() {
+        for (agent in listOf("opencode", "opencode-ursinus")) fixture(agent, openCodePermission) {
+            status(Status.WORKING)
+            recentResult = ExecResult(0, "Preparing the next step", "")
+            readSelectedPane()
+            val card = displayed()
+            assertEquals(listOf("Allow once", "Reject"), card.choices.map { it.label })
+            assertTrue(card.shownParts().command.orEmpty().contains(approvalCommand))
+            assertTrue(sent.isEmpty())
+            frame = focusedPermission("Always allow")
+            answer(card, checkNotNull(vm.paneTextTarget))
+            assertEquals(listOf("left enter"), sent)
+        }
+    }
+
+    @Test fun nativeOpenCodeRejectDoesNotConfirmTheHighlightedApproval() = fixture("opencode", openCodePermission) {
+        readSelectedPane()
+        val card = displayed()
+        frame = focusedPermission("Allow once")
+        answer(card, checkNotNull(vm.paneTextTarget), index = 1)
+        assertEquals(listOf("esc"), sent)
+    }
+
+    @Test fun nativeOpenCodeApprovalRefusesUnverifiedFocusChangedCommandDrawerAndOccupant() =
+        fixture("opencode-ursinus", openCodePermission) {
+            readSelectedPane()
+            val card = displayed()
+            val target = checkNotNull(vm.paneTextTarget)
+            answer(card, target)
+            assertTrue(sent.isEmpty())
+            frame = focusedPermission("Allow once").replace("pip install", "pip  install")
+            answer(card, target)
+            assertTrue(sent.isEmpty())
+            frame = openCodeDrawer
+            answer(card, target)
+            assertTrue(sent.isEmpty())
+            frame = focusedPermission("Allow once")
+            terminal = "replacement"
+            answer(card, target)
+            assertTrue(sent.isEmpty())
+        }
+
+    @Test fun nativeOpenCodeClippedApprovalIsTerminalOnly() = fixture("opencode", openCodePermission.replace(approvalCommand, "…")) {
+        readSelectedPane()
+        val card = displayed()
+        assertTrue(card.terminalReview)
+        assertTrue(card.choices.isEmpty())
+        assertTrue(sent.isEmpty())
+    }
+
+    @Test fun nativeOpenCodeQuestionUsesFreshSelection() {
+        for (agent in listOf("opencode", "opencode-ursinus")) fixture(agent, openCodeQuestion) {
+            status(Status.WORKING)
+            recentResult = ExecResult(0, "Preparing a question", "")
+            readSelectedPane()
+            val card = displayed()
+            assertEquals("Which database should the fixture use?", card.question)
+            assertEquals(listOf("SQLite", "Postgres", "Type your own answer"), card.choices.map { it.label })
+            assertTrue(sent.isEmpty())
+            frame = openCodeQuestion.replace(">1.", " 1.").replace(" 2.", ">2.")
+            answer(card, checkNotNull(vm.paneTextTarget))
+            assertEquals(listOf("up enter"), sent)
+        }
+    }
+
     @Test fun workingClaudeDiscoversAQuestionFromTheLiveViewport() = fixture("claude", firstStep) {
         val card = frame
         val recent = "Claude is preparing a response."
@@ -372,6 +489,7 @@ class SuccessiveCardAnswerTest {
         init {
             field("herdr").set(vm, Herdr(ssh, server.herdrPath, Backend.TUI, null, this))
             state("current", server)
+
             status(Status.NEEDS_YOU)
             field("lastWorkAt").setLong(vm, Long.MAX_VALUE)
             field("lastPreviewsAt").setLong(vm, Long.MAX_VALUE)
@@ -384,13 +502,14 @@ class SuccessiveCardAnswerTest {
         ))
 
         fun shown() = checkNotNull(detectPrompt(frame, blocked = true, agent = agent)).forCard()
+        fun displayed() = checkNotNull(detectPrompt(vm.paneText, blocked = false, agent = agent)).forCard()
         fun shownApproval() = checkNotNull(detectPrompt(vm.paneText, blocked = true, agent = "codex")).forCard().also {
             assertTrue(it.choices.isNotEmpty())
             assertFalse(it.terminalReview)
         }
         fun readSelectedPane() = runBlocking { vm.readPane("p1") }
-        fun answer(prompt: Prompt, target: AppViewModel.CardTarget = checkNotNull(vm.cardTarget("p1"))) {
-            vm.answerChoice("p1", prompt, prompt.choices.first(), target = target)
+        fun answer(prompt: Prompt, target: AppViewModel.CardTarget = checkNotNull(vm.cardTarget("p1")), index: Int = 0) {
+            vm.answerChoice("p1", prompt, prompt.choices[index], target = target)
             drainUntil { !vm.answerInFlight("p1") }
         }
 
@@ -431,6 +550,10 @@ class SuccessiveCardAnswerTest {
                     ok(if (command.endsWith("'--format' 'ansi'")) ansiFrame() else frame)
                 }
                 command.contains("def occupant():") && command.endsWith("'/fixture/herdr' 'p1' '$agent'") -> ok("")
+                command.contains("'pane' 'send-text' 'p1' ") -> {
+                    sent += "text:" + command.substringAfter("'p1' ").removeSurrounding("'")
+                    ok("")
+                }
                 command.contains("'pane' 'send-keys' 'p1' ") -> {
                     sent += command.substringAfter("'p1' ").replace("'", "")
                     afterSend?.let { frame = it }
@@ -452,6 +575,47 @@ class SuccessiveCardAnswerTest {
     }
 
     private companion object {
+        val openCodeComposer = """
+            Should I continue with the report?
+
+            ┃  Ask anything...
+            ┃  Build · Fixture Model
+            ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+            ~/fixture              tab agents  ctrl+p commands
+        """.trimIndent()
+
+        const val approvalCommand = "/fixture/.venv/bin/python -m pip install fixture"
+        val openCodePermission = """
+            ┃  △ Permission required
+            ┃  # Shell command
+            ┃  ${'$'} $approvalCommand
+            ┃  Allow once   Always allow   Reject                    ⇆ select  enter confirm
+        """.trimIndent()
+
+        // OpenCode colors the selected button but does not change its text.
+        fun focusedPermission(focus: String) = listOf("Allow once", "Always allow", "Reject").fold(openCodePermission) { text, label ->
+            val color = if (label == focus) 44 else 49
+            text.replace(label, "\u001B[${color}m$label\u001B[0m")
+        }
+
+        val openCodeQuestion = """
+            ┃  Which database should the fixture use?
+            ┃
+            ┃  >1. SQLite
+            ┃   2. Postgres
+            ┃   3. Type your own answer
+            ┃
+            ┃  ↑↓ select  enter confirm  esc dismiss
+        """.trimIndent()
+
+        // Synthetic reconstruction from the reported structural markers, not a live capture.
+        val openCodeDrawer = """
+            Press ctrl+b to move running work to the background
+            Subagents     Shell     Terminals
+            No background work
+            esc     show inactive ctrl+a tabs
+        """.trimIndent()
+
         val firstStep = """
             ←  ☐ Color  ☐ Size  ✔ Submit  →
             Which option should the sample use?
