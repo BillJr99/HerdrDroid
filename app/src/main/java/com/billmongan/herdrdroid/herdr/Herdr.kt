@@ -950,7 +950,7 @@ data class Prompt(
     val horizontal: Boolean = false,
     /** OpenCode binds number keys to select and submit an option. */
     val numberKeys: Boolean = false,
-    /** An incomplete approval preview is reviewable only in the terminal. */
+    /** The prompt can only be reviewed or answered in Terminal. */
     val terminalReview: Boolean = false,
     /** Exact pre-layout approval material. Never rendered or used as history text. */
     internal val approvalIdentity: String? = null,
@@ -960,6 +960,8 @@ data class Prompt(
     internal val claudeMultiKey: String? = null,
     /** Native Hermes clarify choices are available only from a guarded Chat card. */
     internal val hermesClarify: Boolean = false,
+    /** Codex request_user_input overlay, not a numbered approval menu. */
+    internal val codexQuestion: Boolean = false,
 ) {
     /**
      * Never an empty card (1.4.2): a prompt with no choices always has something to show, the
@@ -1795,6 +1797,12 @@ private val HIDDEN_CODEX_COMMAND = Regex(
     RegexOption.IGNORE_CASE,
 )
 
+// https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/tui/src/bottom_pane/request_user_input/mod.rs
+private val CODEX_QUESTION_PROGRESS = Regex("""Question [1-9]\d*/[1-9]\d*(?: \([1-9]\d* unanswered\))?(?: · auto-resolves in .+)?""")
+private val CODEX_QUESTION_SUBMIT = Regex("""[^\s|]+(?: [^\s|]+){0,2} to submit (?:answer|all)""")
+private val CODEX_QUESTION_CONTINUATION = Regex("""←/→ to navigate questions|⌃p / ⌃n change question|\S+ to interrupt""")
+private val CODEX_QUESTION_OPTION = Regex("""(?:›\s+|[0-9]+\.\s).*""")
+
 /** Codex's `$ ` introduces the command, not a paragraph of its explanation. */
 private fun codexCommandParts(rows: List<String>): QuestionParts? {
     val start = rows.indexOfFirst { it.trimStart().startsWith("$ ") }
@@ -1852,6 +1860,30 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
 
 private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, version: String?): Prompt? {
     if ((agent == null || agent.equals("claude", true)) && claudeUsageOpen(text)) return null
+    if (agent.equals("codex", true)) {
+        val rows = text.lines().takeLast(80)
+        val head = rows.indexOfLast { CODEX_QUESTION_PROGRESS.matches(it.trim()) }
+        if (head >= 0) {
+            fun hints(row: String) = row.split('|').map(String::trim)
+            val footer = (head + 1..rows.lastIndex).lastOrNull { at ->
+                hints(rows[at]).any(CODEX_QUESTION_SUBMIT::matches)
+            } ?: -1
+            val newer = if (footer >= 0) (footer + 1..rows.lastIndex).firstOrNull { at ->
+                !isChrome(rows[at]) && !hints(rows[at]).all(CODEX_QUESTION_CONTINUATION::matches)
+            } else (head + 1..rows.lastIndex).firstOrNull { at ->
+                CODEX_COMMAND_HEADING.matches(rows[at].trim()) || CODEX_OTHER_APPROVAL.matches(rows[at].trim())
+            }
+            // Leave newer UI to the ordinary parser. A clipped native overlay must not
+            // fall through as a generic actionable menu based on its numbered rows.
+            if (newer != null) return detectPlainPrompt(rows.drop(newer).joinToString("\n"), false, agent, version)
+            if (footer < 0) return null
+            val question = rows.subList(head + 1, footer).map(String::trim)
+                .takeWhile { it.isNotBlank() && !CODEX_QUESTION_OPTION.matches(it) }
+                .joinToString(" ").ifBlank { "Codex has a question" }
+            // Enter can move focus, advance a step or submit, depending on the native overlay.
+            return Prompt(question, emptyList(), terminalReview = true, codexQuestion = true)
+        }
+    }
     val openCode = isOpenCode(agent)
     if (openCode) {
         detectOpenCodeWebSearch(text)?.let { return it }

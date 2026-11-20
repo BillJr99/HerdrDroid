@@ -7,13 +7,17 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.lifecycle.viewModelScope
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.billmongan.herdrdroid.herdr.Pane
 import com.billmongan.herdrdroid.herdr.Status
+import com.billmongan.herdrdroid.herdr.codexFreeformQuestion
 import com.billmongan.herdrdroid.herdr.detectPrompt
 import com.billmongan.herdrdroid.ui.AgentScreen
+import com.billmongan.herdrdroid.ui.PromptCard
+import com.billmongan.herdrdroid.ui.PromptQuestion
 import kotlinx.coroutines.cancel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -32,6 +36,24 @@ class SelectedCardLatencyTest {
 
     @Test fun codexApprovalAppearsBeforeTheNextSlowChatPoll() =
         verifyAppearance("codex", "/screens/codex/captured-2026-11-13/run-command.txt")
+
+    @Test fun nativeCodexQuestionOffersTerminalWithoutSynthesizingInput() {
+        val prompt = checkNotNull(detectPrompt(codexFreeformQuestion, false, "codex"))
+        var opened = false
+        rule.setContent {
+            androidx.compose.foundation.layout.Column {
+                PromptQuestion(prompt, agent = "Codex")
+                PromptCard(prompt, agent = "Codex", onChoice = { error("Sent a choice") },
+                    onKey = { error("Synthesized input") }, onTypeAnswer = { error("Opened a draft") },
+                    onShowTerminal = { opened = true })
+            }
+        }
+        rule.onNodeWithText("Share details.").assertIsDisplayed()
+        rule.onNodeWithText("Answer this Codex question in Terminal.").assertIsDisplayed()
+        rule.onNodeWithText("Enter").assertDoesNotExist()
+        rule.onNodeWithText("Show terminal").performClick()
+        rule.runOnIdle { assertTrue(opened) }
+    }
 
     @Test fun idleCadenceIsUnchangedAndOnlyTheForegroundSelectionIsRead() {
         val vm = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
