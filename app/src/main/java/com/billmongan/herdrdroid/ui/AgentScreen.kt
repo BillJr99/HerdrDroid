@@ -259,6 +259,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     val waitingForHermes = vm.waitingForHermesComposer(paneId)
     val prompt: Prompt? = if (typingAnswer || usageOverlay != null) null
         else if (vm.paneReadProblem != null) (if (status == Status.NEEDS_YOU) Prompt("This agent is waiting for you.", emptyList()).forCard() else null)
+        else if (pane != null && vm.requiresLivePiQuestion(pane)) vm.currentPiQuestion(pane)?.forCard()
         else detectPrompt(screenText, status == Status.NEEDS_YOU, pane?.agent, vm.versionOf(paneId))
             ?.takeIf { !it.codexQuestion || shownTarget != null }?.forCard()
     fun send() {

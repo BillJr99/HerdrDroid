@@ -41,7 +41,7 @@ data class NotifyAction(
  * needs only the same question. A typed reply is not checked here.
  */
 fun notificationAnswerStillFits(now: com.billmongan.herdrdroid.herdr.Prompt?, a: NotifyAction): Boolean {
-    if (now == null || now.terminalReview || now.hermesClarify) return false
+    if (now == null || now.terminalReview || now.hermesClarify || now.openCodeQuestionFrame != null) return false
     val sameQuestion = now.question.filterNot { it.isWhitespace() } == a.question.filterNot { it.isWhitespace() }
     if (!sameQuestion) return false
     if (a.isKey) return true

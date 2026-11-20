@@ -7,10 +7,13 @@ import androidx.lifecycle.viewModelScope
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.billmongan.herdrdroid.herdr.Backend
+import com.billmongan.herdrdroid.herdr.Choice
 import com.billmongan.herdrdroid.herdr.Herdr
 import com.billmongan.herdrdroid.herdr.Pane
 import com.billmongan.herdrdroid.herdr.Prompt
 import com.billmongan.herdrdroid.herdr.Status
+import com.billmongan.herdrdroid.herdr.codexUnansweredConfirmation
+import com.billmongan.herdrdroid.herdr.codexWrappedQuestion
 import com.billmongan.herdrdroid.herdr.detectPrompt
 import com.billmongan.herdrdroid.herdr.hermesClarify
 import com.billmongan.herdrdroid.notify.AppBus
@@ -31,6 +34,66 @@ import org.robolectric.Shadows.shadowOf
 
 @RunWith(AndroidJUnit4::class)
 class SuccessiveCardAnswerTest {
+    @Test fun livePiQuestionOverridesWorkingUntilDismissed() = fixture("pi", piQuestion) {
+        status(Status.WORKING)
+        readSelectedPane()
+        assertEquals("Trust", displayed().choices.first().label)
+        assertEquals(Status.WORKING, vm.pane("p1")?.status)
+        assertEquals(Status.NEEDS_YOU, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+        assertTrue(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+        assertEquals(Status.WORKING, vm.shownStatus(checkNotNull(vm.pane("p1")), "other-server"))
+        assertEquals(1, guardedVisibleReads)
+
+        val card = displayed()
+        val target = checkNotNull(vm.paneTextTarget)
+        recentResult = ExecResult(0, piQuestion, "")
+        frame = "Continuing after the question."
+        readSelectedPane()
+        assertEquals(Status.WORKING, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+        assertFalse(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+        answer(card, target)
+        assertTrue(sent.isEmpty())
+    }
+
+    @Test fun piQuestionInVisibleButNotRecentOutputOverridesWorking() = fixture("pi", piQuestion) {
+        status(Status.WORKING)
+        recentResult = ExecResult(0, "Preparing a question", "")
+        readSelectedPane()
+        assertEquals(Status.NEEDS_YOU, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+        assertEquals("Trust", displayed().choices.first().label)
+        assertEquals(1, guardedVisibleReads)
+        assertTrue(sent.isEmpty())
+    }
+
+    @Test fun incompleteOrScrolledPiQuestionDoesNotOverrideWorking() = fixture("pi", piQuestion) {
+        status(Status.WORKING)
+        recentResult = ExecResult(0, piQuestion, "")
+        for (visible in listOf("", "↑↓ navigate  enter select  escape/ctrl+c cancel", "$piQuestion\nContinuing after the question.")) {
+            frame = visible
+            readSelectedPane()
+            assertEquals(Status.WORKING, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+            assertNull(vm.paneTextTarget)
+        }
+        frame = piQuestion
+        liveScrollOffset = 3
+        readSelectedPane()
+        assertEquals(Status.WORKING, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+        assertNull(vm.paneTextTarget)
+        assertTrue(sent.isEmpty())
+    }
+
+    @Test fun piQuestionStatusDoesNotFollowAReplacedOccupant() = fixture("pi", piQuestion) {
+        status(Status.WORKING)
+        readSelectedPane()
+        val card = displayed()
+        val target = checkNotNull(vm.paneTextTarget)
+        terminal = "replacement"
+        status(Status.WORKING)
+        assertEquals(Status.WORKING, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+        answer(card, target)
+        assertTrue(sent.isEmpty())
+    }
+
     @Test fun hermesClarifyFromVisibleViewportSendsOnlyOneDigitForLiveChoice() =
         fixture("hermes", hermesClarify) {
             status(Status.WORKING)
@@ -309,6 +372,33 @@ class SuccessiveCardAnswerTest {
         assertEquals(listOf("down space", "enter", "down down down enter", "up enter"), sent)
     }
 
+    @Test fun claudeConfiguredEditorHintPreservesNextAndSubmitOnFreshRead() = fixture("claude", claudeNext) {
+        for (label in listOf("Next", "Submit")) {
+            val base = claudeNext.replace("    Next", "    $label")
+            val typed = base.replace("❯ 1.", "  1.").replace("  3. [ ] Type", "❯ 3. [ ] Type")
+                .replace(" · Esc to cancel", " · ctrl+g to edit in vim · Esc to cancel")
+            frame = typed
+            readSelectedPane()
+            val card = displayed()
+            val row = card.answerRows().singleOrNull { it.label == label }
+            assertNotNull("Missing $label on the custom-answer row", row)
+            val target = checkNotNull(vm.paneTextTarget)
+            val prior = sent.toList()
+            fun tap() {
+                vm.answerChoice("p1", card, checkNotNull(row), target = target)
+                drainUntil { !vm.answerInFlight("p1") }
+            }
+            frame = typed.replace("ctrl+g to edit in vim", "ctrl+g to edit in vim before continuing")
+            tap()
+            assertEquals(prior, sent)
+            frame = typed
+            afterSend = if (label == "Submit") claudeReview else null
+            tap()
+            assertEquals(prior + "down enter", sent)
+            if (label == "Submit") assertEquals("Submit answers", shown().choices.first().label)
+        }
+    }
+
     @Test fun claudeCheckboxActionMissingOrAmbiguousIsNotAnAnswerRow() {
         fun labels(frame: String, agent: String = "claude") = detectPrompt(frame, true, agent)?.answerRows().orEmpty().map { it.label }
         assertTrue("Next" in labels(claudeNext))
@@ -449,6 +539,72 @@ class SuccessiveCardAnswerTest {
             answer(card, checkNotNull(vm.paneTextTarget))
             assertEquals(listOf("up enter"), sent)
         }
+    }
+
+    @Test fun clippedCodexQuestionProbesTheLiveViewportWithoutSendingKeys() = fixture("codex", codexUnansweredConfirmation) {
+        status(Status.WORKING)
+        val clipped = codexWrappedQuestion.substringAfter('\n')
+        recentResult = ExecResult(0, clipped, "")
+        readSelectedPane()
+        assertEquals(1, guardedVisibleReads)
+        assertEquals(codexUnansweredConfirmation, vm.paneText)
+        val card = displayed()
+        assertTrue(card.terminalReview)
+        val target = checkNotNull(vm.paneTextTarget)
+        vm.answerChoice("p1", card, Choice("Proceed", "1", true), target = target)
+        vm.answerCardKey(target, card, "enter", "Proceed")
+        assertTrue(sent.isEmpty())
+
+        frame = "› Next request"
+        readSelectedPane()
+        assertEquals(2, guardedVisibleReads)
+        assertEquals(frame, vm.paneText)
+        assertNull(detectPrompt(vm.paneText, false, "codex"))
+        assertTrue(sent.isEmpty())
+    }
+
+    @Test fun nativeOpenCodeColorOnlyQuestionSendsOneDigitFromChat() {
+        for (agent in listOf("opencode", "opencode-ursinus")) fixture(agent, nativeQuestion(1)) {
+            status(Status.WORKING)
+            recentResult = ExecResult(0, "Preparing a question", "")
+            readSelectedPane()
+            val card = displayed()
+            assertEquals("Which database should the fixture use?", card.question)
+            assertTrue(sent.isEmpty())
+            val target = checkNotNull(vm.paneTextTarget)
+            frame = nativeQuestion(2)
+            answer(card, target, index = 1)
+            assertEquals(vm.notice, listOf("2"), sent)
+        }
+    }
+
+    @Test fun nativeOpenCodeQuestionRefusesChangedClippedEditingOrReplacedViewport() = fixture("opencode", nativeQuestion(1)) {
+        readSelectedPane()
+        val card = displayed()
+        val target = checkNotNull(vm.paneTextTarget)
+        // Keep scrollback readable even when the final live viewport is unavailable.
+        recentResult = ExecResult(0, nativeQuestion(1), "")
+        for (changed in listOf(
+            nativeQuestion(2).replace("Server database", "Different database"),
+            nativeQuestion(2).replace("Which database should the fixture use?", ""),
+            nativeQuestion(3).replace("┃  ↑↓ select", "┃      Type your own answer\n┃  ↑↓ select"),
+            nativeQuestion(2).replace("enter submit", "enter toggle"),
+            openCodePermission, openCodeDrawer, openCodeComposer, "",
+        )) {
+            frame = changed
+            answer(card, target, index = 1)
+            assertTrue(vm.notice.orEmpty().startsWith("Not sent."))
+        }
+        frame = nativeQuestion(2)
+        liveScrollOffset = 1
+        answer(card, target, index = 1)
+        liveScrollOffset = 0
+        terminal = "replacement"
+        answer(card, target, index = 1)
+        terminal = "t1"
+        connection = Any()
+        answer(card, target, index = 1)
+        assertTrue(sent.isEmpty())
     }
 
     @Test fun workingClaudeDiscoversAQuestionFromTheLiveViewport() = fixture("claude", firstStep) {
@@ -899,7 +1055,7 @@ class SuccessiveCardAnswerTest {
         }
 
         private val pane get() = """{"pane_id":"p1","workspace_id":"w1","tab_id":"tab","agent":"$agent","agent_status":"${when (statusNow) {
-            Status.IDLE -> "idle"; Status.DONE -> "done"; else -> "blocked"
+            Status.IDLE -> "idle"; Status.DONE -> "done"; Status.WORKING -> "working"; else -> "blocked"
         }}","cwd":"/fixture","terminal_id":"$terminal","scroll":{"offset_from_bottom":$liveScrollOffset}}"""
         private fun ok(out: String) = ExecResult(0, out, "")
         private fun field(name: String) = AppViewModel::class.java.getDeclaredField(name).apply { isAccessible = true }
@@ -908,6 +1064,8 @@ class SuccessiveCardAnswerTest {
     }
 
     private companion object {
+        val piQuestion = checkNotNull(SuccessiveCardAnswerTest::class.java.getResource(
+            "/screens/pi/derived-1.4.9/0502-project-trust.txt")).readText().trimEnd()
         val claudeMulti = screenFixture("0109-askuserquestion-multi-select-review-and--2")
         val claudeNext = checkNotNull(SuccessiveCardAnswerTest::class.java.getResource(
             "/screens/claude/derived-checkbox-2.1.326/next.txt")).readText().trimEnd()
@@ -958,6 +1116,24 @@ class SuccessiveCardAnswerTest {
             ┃
             ┃  ↑↓ select  enter confirm  esc dismiss
         """.trimIndent()
+
+        // Source-derived OpenCode QuestionPrompt: color-only focus, descriptions, and single-select footer.
+        fun nativeQuestion(focus: Int) = """
+            ┃
+            ┃  Which database should the fixture use?
+            ┃
+            ┃  ${nativeOption(1, "SQLite", focus)}
+            ┃     Local database
+            ┃  ${nativeOption(2, "Postgres", focus)}
+            ┃     Server database
+            ┃  ${nativeOption(3, "Type your own answer", focus)}
+            ┃
+            ┃  ↑↓ select  enter submit  esc dismiss
+            ┃
+        """.trimIndent()
+
+        private fun nativeOption(i: Int, label: String, focus: Int) =
+            if (i == focus) "\u001B[44m$i. $label\u001B[0m" else "$i. $label"
 
         // Synthetic reconstruction from the reported structural markers, not a live capture.
         val openCodeDrawer = """
