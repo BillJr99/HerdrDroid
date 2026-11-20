@@ -93,14 +93,27 @@ object Reflow {
         // The agent's input box and status line: from the first rule or box edge among the last
         // five lines with text on them, or else from the last input prompt there.
         val window = raw.indices.filter { raw[it].isNotBlank() }.takeLast(5)
-        val footerAt = window.firstOrNull { i ->
-            isRule(raw[i]) || raw[i].trimStart().firstOrNull()?.let { it in CHROME_START } == true
-        } ?: window.lastOrNull { PROMPT_ONLY.matches(raw[it]) } ?: raw.size
+        // Antigravity replies can end with a short table or separator when the composer is
+        // not visible. Only peel off its footer when we see a prompt between composer rules.
+        val agyComposer = if (antigravity) window.lastOrNull { i ->
+            val prompt = raw[i].trim()
+            (prompt == ">" || prompt.startsWith("> ")) &&
+                raw.getOrNull(i - 1)?.let(::isRule) == true &&
+                raw.getOrNull(i + 1)?.let(::isRule) == true &&
+                raw.drop(i + 2).any { it.contains("Shift+Tab to change mode", ignoreCase = true) }
+        } else null
+        val footerAt = if (antigravity) agyComposer?.minus(1) ?: raw.size else
+            window.firstOrNull { i ->
+                isRule(raw[i]) || raw[i].trimStart().firstOrNull()?.let { it in CHROME_START } == true
+            } ?: window.lastOrNull { PROMPT_ONLY.matches(raw[it]) } ?: raw.size
         val body = raw.subList(0, footerAt)
-        val footer = raw.subList(footerAt, raw.size)
-            .filterNot { isRule(it) }
-            .map { l -> l.filterNot { it in BOX }.trim().removePrefix("❯").removePrefix("›").trim() }
-            .filter { it.isNotEmpty() && !(antigravity && it == ">") }
+        val footer = (footerAt until raw.size)
+            .filterNot { isRule(raw[it]) }
+            .map { i ->
+                if (i == agyComposer) raw[i].trimStart().removePrefix(">").trim()
+                else raw[i].filterNot { it in BOX }.trim().removePrefix("❯").removePrefix("›").trim()
+            }
+            .filter { it.isNotEmpty() }
 
         val width = body.maxOfOrNull { it.length }?.coerceAtLeast(20) ?: 80
         val margin = body.filter { it.isNotBlank() && !isWide(it) }
