@@ -30,6 +30,90 @@ import org.robolectric.Shadows.shadowOf
 
 @RunWith(AndroidJUnit4::class)
 class SuccessiveCardAnswerTest {
+    @Test fun hermesUsageInLiveViewportIsNotTheOldQuestionAndSendsNoKey() = fixture("hermes", hermesUsage) {
+        recentResult = ExecResult(0, firstStep, "")
+        readSelectedPane()
+        assertEquals(hermesUsage, vm.paneText)
+        assertNull(detectPrompt(vm.paneText, true, "hermes"))
+        assertTrue(vm.questionsFor("p1").isEmpty())
+        assertNull(vm.usageOverlayFor("p1"))
+        assertTrue(sent.isEmpty())
+    }
+
+    @Test fun hermesUsageHoldsEvenAForcedSendUntilLiveComposerReturns() = fixture("hermes", hermesUsage) {
+        val composer = "$hermesUsage\n──────────\n❯\n──────────\n☤ fixture · 1K/100K"
+        status(Status.DONE)
+        // Recent output looks ready even though the live viewport has no composer.
+        recentResult = ExecResult(0, composer, "")
+        vm.sendMessage(checkNotNull(vm.pane("p1")), "fixture follow-up", force = true)
+        drainUntil { sent.isNotEmpty() || vm.pendingSends.any { it.waiting } }
+        assertTrue("writes=$sent, pending=${vm.pendingSends}", vm.pendingSends.single().waiting)
+        assertTrue(sent.isEmpty())
+        frame = "Redrawing…" // Clearing the report isn't proof that the composer returned.
+        shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(3))
+        assertTrue(sent.isEmpty())
+        frame = composer
+        shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(3))
+        drainUntil { sent.isNotEmpty() }
+        assertEquals(listOf("prompt:fixture follow-up"), sent)
+    }
+
+    @Test fun hermesUsageQueuedMessageWaitsForComposerAndDoesNotHideLaterRealQuestion() = fixture("hermes", hermesUsage) {
+        status(Status.DONE)
+        readSelectedPane()
+        vm.enqueue("p1", "queued follow-up")
+        vm.sendQueuedImmediately(vm.queued.single())
+        shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(4))
+        assertEquals("queued follow-up", vm.queued.single().text)
+        assertTrue(sent.isEmpty())
+
+        val approval = checkNotNull(javaClass.getResource(
+            "/screens/hermes/derived-1.4.9/1001-dangerous-command-approval.txt")).readText().trimEnd()
+        frame = "$hermesUsage\n$approval"
+        readSelectedPane()
+        assertTrue(shown().choices.isNotEmpty())
+        assertEquals("queued follow-up", vm.queued.single().text)
+        assertTrue(sent.isEmpty())
+
+        frame = "$hermesUsage\n──────────\n❯\n──────────\n☤ fixture · 1K/100K"
+        readSelectedPane()
+        shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(4))
+        drainUntil { sent.isNotEmpty() }
+        assertTrue(vm.queued.isEmpty())
+        assertEquals(listOf("prompt:queued follow-up"), sent)
+    }
+
+    @Test fun claudeMultiSelectDoesNotSubmitUntilFreshReviewChoiceIsTapped() = fixture("claude", claudeMulti) {
+        readSelectedPane()
+        val target = checkNotNull(vm.paneTextTarget)
+        assertTrue(sent.isEmpty())
+        afterSend = claudeMulti.replace("[ ] pytest", "[x] pytest")
+        answer(shown(), target)
+        assertEquals(listOf("space"), sent)
+
+        afterSend = claudeReview
+        vm.answerCardKey(target, shown(), "tab", "Review answers")
+        drainUntil { !vm.answerInFlight("p1") }
+        assertEquals(listOf("space", "tab"), sent)
+        val review = shown()
+        assertEquals("Submit answers", review.choices.first().label)
+
+        afterSend = null
+        frame = claudeReview.replace("→ Python", "→ Rust")
+        answer(review, target)
+        frame = claudeReview
+        terminal = "replacement"
+        answer(review, target)
+        terminal = "t1"
+        vm.answerChoice("another-pane", review, review.choices.first(), target = target)
+        assertEquals(listOf("space", "tab"), sent)
+
+        frame = claudeReview.replace("❯ 1.", "  1.").replace("  2.", "❯ 2.")
+        answer(review, target)
+        answer(review, target)
+        assertEquals(listOf("space", "tab", "up enter"), sent)
+    }
+
     @Test fun openCodeBackgroundDrawerIsNotAQuestionAndDoesNotReceiveChat() =
         fixture("opencode-college", openCodeDrawer) {
             recentResult = ExecResult(0, openCodePermission, "")
@@ -497,9 +581,13 @@ class SuccessiveCardAnswerTest {
             shadowOf(Looper.getMainLooper()).idle()
         }
 
-        fun status(status: Status, scrollOffset: Int = 0) = state("panes", listOf(
+        private var statusNow = Status.NEEDS_YOU
+        fun status(status: Status, scrollOffset: Int = 0) {
+            statusNow = status
+            state("panes", listOf(
             Pane("p1", "tab", "w1", agent, status, "", "/fixture", scrollOffset = scrollOffset, terminalId = terminal)
-        ))
+            ))
+        }
 
         fun shown() = checkNotNull(detectPrompt(frame, blocked = true, agent = agent)).forCard()
         fun displayed() = checkNotNull(detectPrompt(vm.paneText, blocked = false, agent = agent)).forCard()
@@ -550,6 +638,10 @@ class SuccessiveCardAnswerTest {
                     ok(if (command.endsWith("'--format' 'ansi'")) ansiFrame() else frame)
                 }
                 command.contains("def occupant():") && command.endsWith("'/fixture/herdr' 'p1' '$agent'") -> ok("")
+                command.contains("'agent' 'prompt' 'p1' ") && agent == "hermes" -> {
+                    sent += "prompt:" + command.substringAfter("'p1' ").removeSurrounding("'")
+                    ok("")
+                }
                 command.contains("'pane' 'send-text' 'p1' ") -> {
                     sent += "text:" + command.substringAfter("'p1' ").removeSurrounding("'")
                     ok("")
@@ -567,7 +659,9 @@ class SuccessiveCardAnswerTest {
             if (it.startsWith("$ ")) "$it\u001B[44m  \u001B[0m" else it
         }
 
-        private val pane get() = """{"pane_id":"p1","workspace_id":"w1","tab_id":"tab","agent":"$agent","agent_status":"blocked","cwd":"/fixture","terminal_id":"$terminal","scroll":{"offset_from_bottom":0}}"""
+        private val pane get() = """{"pane_id":"p1","workspace_id":"w1","tab_id":"tab","agent":"$agent","agent_status":"${when (statusNow) {
+            Status.IDLE -> "idle"; Status.DONE -> "done"; else -> "blocked"
+        }}","cwd":"/fixture","terminal_id":"$terminal","scroll":{"offset_from_bottom":0}}"""
         private fun ok(out: String) = ExecResult(0, out, "")
         private fun field(name: String) = AppViewModel::class.java.getDeclaredField(name).apply { isAccessible = true }
         @Suppress("UNCHECKED_CAST")
@@ -575,6 +669,21 @@ class SuccessiveCardAnswerTest {
     }
 
     private companion object {
+        val claudeMulti = screenFixture("0109-askuserquestion-multi-select-review-and--2")
+        val claudeReview = screenFixture("0109-askuserquestion-multi-select-review-and-")
+        fun screenFixture(name: String) = checkNotNull(SuccessiveCardAnswerTest::class.java.getResource(
+            "/screens/claude/derived-1.4.9/$name.txt")).readText().trimEnd()
+
+        val hermesUsage = """
+            Session Token Usage
+            ───────────────────
+            Model: fixture
+            Input tokens: 1,024
+            Output tokens: 25
+            Total tokens: 1,049
+            API calls: 2
+            Current context: 1,024 / 100,000 (1%)
+        """.trimIndent()
         val openCodeComposer = """
             Should I continue with the report?
 

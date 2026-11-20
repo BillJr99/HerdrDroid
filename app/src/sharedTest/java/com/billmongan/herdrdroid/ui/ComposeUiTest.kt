@@ -340,6 +340,39 @@ class ComposeUiTest {
         assertEquals(listOf("2"), picked)
     }
 
+    @Test fun claudeMultiSelectReviewAndSubmitAreReachable() {
+        val review = androidx.compose.runtime.mutableStateOf(false)
+        val input = mutableListOf<String>()
+        val select = checkNotNull(com.billmongan.herdrdroid.herdr.detectPrompt("""
+            ←  ☐ Runners  ✔ Submit  →
+            Which test runners should demo-box use?
+            ❯ 1. [ ] pytest
+              2. [ ] tox
+            Enter to select · Space to toggle · Tab/Arrow keys to navigate · Esc to cancel
+        """.trimIndent(), true, "claude"))
+        val submit = checkNotNull(com.billmongan.herdrdroid.herdr.detectPrompt("""
+            ←  ☒ Runners  ✔ Submit  →
+            Review your answers
+
+            Ready to submit your answers?
+            ❯ 1. Submit answers
+              2. Cancel
+        """.trimIndent(), true, "claude"))
+        rule.setContent {
+            androidx.compose.foundation.layout.Column(Modifier.fillMaxSize().verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+                val p = if (review.value) submit else select
+                PromptCard(p, agent = "Claude", onChoice = { input += checkNotNull(com.billmongan.herdrdroid.herdr.menuKeys(p, it)) },
+                    onKey = { input += it; if (it == "tab") review.value = true }, onTypeAnswer = {})
+            }
+        }
+        rule.onNodeWithText("[ ] pytest").performScrollTo().performClick()
+        assertEquals(listOf("space"), input)
+        rule.onNodeWithText("Review answers").performScrollTo().assertIsDisplayed().performClick()
+        assertEquals(listOf("space", "tab"), input)
+        rule.onNodeWithText("Submit answers").performScrollTo().assertIsDisplayed().performClick()
+        assertEquals(listOf("space", "tab", "enter"), input)
+    }
+
     /** 1.2.9: Claude's tab bar becomes "Question 1 of 4" and chips; a command gets its own block. */
     @Test fun multiQuestionStepsAndCommandBlock() {
         val p = Prompt("Close residue 537? Both were repaired.", listOf(Choice("Close it", "1", false), Choice("Keep it", "2", false)), selected = "1",
