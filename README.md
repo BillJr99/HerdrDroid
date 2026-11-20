@@ -111,9 +111,11 @@ On Android 12 or later, open **Settings → Voice** and choose **Phone speaker a
 
 Voice Control is off by default. Turn it on in **Settings → Voice**. Tap the mic for ordinary dictation into the composer. Hold the mic to open Android’s voice command prompt, or choose **Voice command** from the menu. Dictation keeps its existing draft and send controls.
 
-Commands include “switch to Codex on minipc2,” “switch to minipc2,” “read the latest reply,” “repeat that,” and “read question.” Use the names from your drawer. If several panes match, include the server name. Server switches use saved connections and still respect sign-in requirements.
+Commands include “Switch to Codex on Mini PC,” “Switch to Mini PC,” “Read the latest reply,” and “Repeat that.” Use the names from your drawer. If several panes match, include the server name. Server switches use saved connections and still respect sign-in requirements.
 
-For a supported single-question Claude dialog, say “option two.” HerdrDroid reads the choice back. Give a second command, “confirm answer” or “cancel answer.” HerdrDroid checks the original server, pane and question before sending. Use the phone’s question card for multi-question dialogs, typed options and permission approvals.
+Say “List questions” to hear questions and approvals verified on connected panes, including Fleet connections. The scan is bounded and says when it couldn't verify every pane. Switch to the pane you want, then say “Read question” to hear the card and its numbered options. You can also go straight to “Answer option one” (or “Option 1”) in the open chat without listing or reading first. Listen to the full destination, card context and choice, then say “Confirm answer” or “Cancel answer.” For approvals, “Read approval,” “Confirm approval,” and “Cancel approval” are aliases.
+
+Voice can pick supported single-choice answers, one-time approvals, and denials. Use the phone for standing permission, typed answers, multi-question or multi-select dialogs, and anything incomplete or ambiguous. Confirmation expires 45 seconds after readback. HerdrDroid rechecks the live card and its pane, connection, and occupant before sending; it never queues a voice answer.
 
 To send directly to another server, say “Send a message to Codex on Mini PC,” replacing **Codex** and **Mini PC** with the pane and server names in the drawer. Say “Dictate check the build,” listen to the full destination and message readback, then say “Confirm message” or “Cancel message.” Each hands-free step needs its own “Hey Herdr” and tone. A voice draft expires after 45 seconds of waiting for the next step and is invalidated by navigation or a destination connection change. For a pane on the current server, open that pane first.
 

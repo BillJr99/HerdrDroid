@@ -80,6 +80,34 @@ class CardPreviewReadTest {
         assertEquals(listOf("recent"), f.trace())
     }
 
+    @Test fun workingClaudeFindsAQuestionMissingFromRecentOutput() = withFixture { f ->
+        val complete = resource("/screens/claude/captured-2026-11-13/multi-question.txt")
+        val recent = "Claude is preparing a response."
+        assertNull(detectPrompt(recent, false, "claude"))
+        assertTrue(detectPrompt(complete, false, "claude")!!.choices.isNotEmpty())
+        f.select("claude", Status.WORKING)
+        f.frames(recent, complete)
+        f.read()
+        assertEquals(listOf("recent", "visible"), f.trace())
+        assertEquals(complete, f.vm.paneText)
+
+        f.frames(recent, "❯ Next request")
+        f.read()
+        assertEquals(listOf("recent", "visible"), f.trace())
+        assertEquals(recent, f.vm.paneText)
+
+        f.frames(complete, "❯ Next request")
+        f.read()
+        assertEquals(listOf("recent"), f.trace())
+        assertEquals(complete, f.vm.paneText)
+
+        f.select("claude", Status.WORKING, scrollOffset = 1)
+        f.frames(recent, complete)
+        f.read()
+        assertEquals(listOf("recent"), f.trace())
+        assertEquals(recent, f.vm.paneText)
+    }
+
     @Test fun blockedClaudeQuestionUpgradesARecentCaptureWithNoChoices() = withFixture { f ->
         val complete = resource("/screens/claude/captured-2026-11-13/multi-question.txt")
         val recent = "Which sample should be used?"

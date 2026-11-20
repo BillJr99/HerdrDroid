@@ -31,9 +31,9 @@ object Speaker {
     var speakingKey by androidx.compose.runtime.mutableStateOf<String?>(null)
         private set
 
-    fun speak(context: Context, key: String, text: String, onRead: (() -> Unit)? = null) {
+    fun speak(context: Context, key: String, text: String, onRead: (() -> Unit)? = null, verbatim: Boolean = false) {
         if (speakingKey == key) { stop(); return }
-        val clean = speakable(text)
+        val clean = if (verbatim) text else speakable(text)
         appContext = context.applicationContext
         audio = appContext?.getSystemService(AudioManager::class.java)
         this.onRead = onRead
