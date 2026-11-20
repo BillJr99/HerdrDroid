@@ -91,7 +91,9 @@ internal class PromptRelay(
             if (!valid() || dismissibleUsageFrame(fresh.agent, viewport) != null || detectPrompt(forPhone(viewport), false, fresh.agent) != null)
                 return RelayResult.REFUSED
             val line = inputLineOf(viewport, fresh.agent)
-            if (line != "") return if (!line.isNullOrEmpty() || composerDraftOf(viewport, fresh.agent) != null) RelayResult.DRAFT else RelayResult.REFUSED
+            // A draft of several rows whose first row is empty is a draft too.
+            val draft = composerDraftOf(viewport, fresh.agent) != null
+            if (line != "" || draft) return if (!line.isNullOrEmpty() || draft) RelayResult.DRAFT else RelayResult.REFUSED
             // This recheck narrows, but does not eliminate, the server-side read/write race.
             val ready = idlePane() ?: return RelayResult.REFUSED
             if (!valid()) return RelayResult.REFUSED

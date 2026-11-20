@@ -395,12 +395,15 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             vm.paneReadProblem == null && vm.paneTextPane == paneId && it.target.pane.id == paneId }?.let { d ->
             PaneDraftCard(
                 agent = pane?.agentName ?: "The agent",
+                draft = d,
                 text = d.text,
                 canAct = d.actionable,
                 canClear = d.clearable,
-                busy = vm.paneDraftBusy,
-                onSend = { vm.sendPaneDraft(d) },
-                onClear = { vm.clearPaneDraft(d) },
+                busy = vm.paneDraftBusy(paneId),
+                sendNote = d.sendNote,
+                onSend = { shown -> vm.sendPaneDraft(shown) },
+                // The draft captured when Clear draft was tapped, not whatever shows at confirm.
+                onClear = { captured -> vm.clearPaneDraft(captured) },
                 onShowTerminal = { hermesLive = false; fullTerminal = true; termFollow = true },
             )
         }
