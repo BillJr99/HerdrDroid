@@ -259,7 +259,9 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     val waitingForHermes = vm.waitingForHermesComposer(paneId)
     val prompt: Prompt? = if (typingAnswer || usageOverlay != null) null
         else if (vm.paneReadProblem != null) (if (status == Status.NEEDS_YOU) Prompt("This agent is waiting for you.", emptyList()).forCard() else null)
-        else detectPrompt(screenText, status == Status.NEEDS_YOU, pane?.agent, vm.versionOf(paneId))?.forCard()
+        else if (pane != null && vm.requiresLivePiQuestion(pane)) vm.currentPiQuestion(pane)?.forCard()
+        else detectPrompt(screenText, status == Status.NEEDS_YOU, pane?.agent, vm.versionOf(paneId))
+            ?.takeIf { !it.codexQuestion || shownTarget != null }?.forCard()
     fun send() {
         if (usageBlocksInput || backgroundDrawer || (openingPreview != null && prompt != null)) return
         val draft = answerDraft
@@ -387,6 +389,24 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 }
             }
         }
+        // 2.1.0: a draft typed at the computer, with Send draft and Clear draft. Only while no
+        // question is open, from this pane's own latest read.
+        vm.paneDraft?.takeIf { prompt == null && !fullTerminal && !backgroundDrawer && usageOverlay == null &&
+            vm.paneReadProblem == null && vm.paneTextPane == paneId && it.target.pane.id == paneId }?.let { d ->
+            PaneDraftCard(
+                agent = pane?.agentName ?: "The agent",
+                draft = d,
+                text = d.text,
+                canAct = d.actionable,
+                canClear = d.clearable,
+                busy = vm.paneDraftBusy(paneId),
+                sendNote = d.sendNote,
+                onSend = { shown -> vm.sendPaneDraft(shown) },
+                // The draft captured when Clear draft was tapped, not whatever shows at confirm.
+                onClear = { captured -> vm.clearPaneDraft(captured) },
+                onShowTerminal = { hermesLive = false; fullTerminal = true; termFollow = true },
+            )
+        }
     }
 
     Column(Modifier.fillMaxSize().background(Palette.Ground).systemBarsPadding().imePadding()) {
@@ -486,6 +506,12 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     // of the chat, out of sight when the chat sits at the bottom, so it seemed to do nothing
                     // (Bill, 2026-11-13). Every agent's usage is on the screen below.
                     DropdownMenuItem(text = { Text("Usage history, all agents") }, onClick = { menu = false; vm.screen = Screen.Usage })
+                    if (!live && vm.canArmAgentMessage(paneId) && vm.agentMessage(paneId) == null) {
+                        DropdownMenuItem(text = { Text("Listen for agent proposal") }, onClick = {
+                            menu = false
+                            vm.armAgentMessage(paneId)
+                        })
+                    }
                     if (pane != null) DropdownMenuItem(text = { Text("Files") }, onClick = { menu = false; vm.openFiles(pane.cwd.ifBlank { "~" }) })
                     if (pane?.agent != null && vm.hasTranscriptReader(paneId)) {
                         DropdownMenuItem(text = { Text("History") }, onClick = { menu = false; vm.screen = Screen.History(paneId) })
@@ -547,6 +573,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         // still running, and its running subagents. Tap either for active and finished.
         HorizontalDivider(color = Palette.Line)
         ServerBanners(vm)
+        if (!live) AgentMessagePanel(vm, paneId)
         if (openingPreview != null) {
             Text("Checking the live pane…", color = Palette.Muted, fontSize = 12.5.sp,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
@@ -656,7 +683,9 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                         color = Palette.Muted, fontSize = 15.sp)
                 } else {
                     // Agents without a readable log (Antigravity, Kiro) keep their question history here (1.3.0).
-                    val antigravity = canonicalAgent(pane?.agent.orEmpty()) == "agy"
+                    val chatAgent = canonicalAgent(pane?.agent.orEmpty())
+                    val antigravity = chatAgent == "agy"
+                    val grok = chatAgent == "grok"
                     // The pane's history (1.4.3, Bill): each earlier screen, then the question asked under
                     // it, oldest first, so anything newer is below a question; the live screen comes last.
                     com.billmongan.herdrdroid.transcript.QuestionLog.screenHistory(
@@ -666,7 +695,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                             is com.billmongan.herdrdroid.transcript.ScreenSnapshot -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 Text("Earlier screen", color = Palette.Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                                 ChatTimestamp(entry.at)
-                                ChatView(entry.text, null, liveSize, vm.readingFont, antigravity = antigravity)
+                                ChatView(entry.text, null, liveSize, vm.readingFont, antigravity = antigravity, grok = grok)
                             }
                             is com.billmongan.herdrdroid.transcript.QuestionItem -> QuestionView(entry, liveSize)
                         }
@@ -678,7 +707,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     // The same questions the history shows (from review): an open one's screen stays live.
                     ChatView(com.billmongan.herdrdroid.transcript.QuestionLog.liveTail(text,
                         vm.questionsFor(paneId).filter { prompt == null || it.state != com.billmongan.herdrdroid.transcript.QState.OPEN }), pending, liveSize, vm.readingFont,
-                        pendingAt = vm.lastSentAt, antigravity = antigravity)
+                        pendingAt = vm.lastSentAt, antigravity = antigravity, grok = grok)
                 }
                 promptCard()
             }
@@ -1263,8 +1292,11 @@ internal fun PromptCard(
             }
             // Each choice grows to fit its whole label; the page scrolls, the card has no scroll of its own.
             if (p.terminalReview) {
-                Text(if (p.hermesClarify) "Answer this Hermes question in Terminal."
-                    else "This preview is incomplete. Open the terminal to review the full command before answering.",
+                Text(when {
+                    p.hermesClarify -> "Answer this Hermes question in Terminal."
+                    p.codexQuestion -> "Answer this Codex question in Terminal."
+                    else -> "This preview is incomplete. Open the terminal to review the full command before answering."
+                },
                     color = Palette.Muted, fontSize = 12.5.sp)
                 onShowTerminal?.let { show ->
                     TextButton(onClick = show, modifier = Modifier.fillMaxWidth()) { Text("Show terminal") }
@@ -1300,7 +1332,7 @@ internal fun PromptCard(
                     color = Palette.Muted, fontSize = 12.5.sp)
                 if (p.multi) Text("Several can be picked. Tapping a checkbox only turns that choice on or off.",
                     color = Palette.Muted, fontSize = 12.5.sp)
-                p.choices.forEachIndexed { i, c ->
+                p.answerRows().forEach { c ->
                     // Say what tapping really sends: arrows and Enter for a menu with a highlighted row,
                     // Esc for a "(esc)" option, otherwise the key itself (1.2.7; it always said "sends N").
                     val typed = !p.hermesClarify && com.billmongan.herdrdroid.herdr.isTypedAnswerChoice(c.label)
@@ -1340,11 +1372,6 @@ internal fun PromptCard(
                             contentPadding = pad,
                             modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
                         ) { body() }
-                    }
-                }
-                p.claudeMultiKey?.let { key ->
-                    Button(onClick = { onKey(key) }, enabled = !sending, modifier = Modifier.fillMaxWidth()) {
-                        Text(if (key == "tab") "Review answers" else "Submit answers")
                     }
                 }
             }
@@ -1391,9 +1418,9 @@ private fun norm(s: String) = s.filterNot { it.isWhitespace() }.take(40)
 @Composable
 private fun ChatView(
     text: String, pending: String?, size: Float, font: ReadingFont,
-    pendingAt: Long? = null, antigravity: Boolean = false,
+    pendingAt: Long? = null, antigravity: Boolean = false, grok: Boolean = false,
 ) {
-    val segs = remember(text, antigravity) { Reflow.parse(text, antigravity) }
+    val segs = remember(text, antigravity, grok) { Reflow.parse(text, antigravity, grok) }
     val family: FontFamily = font.family
     val prose = if (font == ReadingFont.MONO) size else size * 1.2f
     val showPending = pending != null && segs.none { it is Seg.You && norm(it.text).startsWith(norm(pending).take(20)) }

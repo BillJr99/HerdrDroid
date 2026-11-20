@@ -64,8 +64,10 @@ class CardCoverageTest {
         val mcp = card("codex", "0203")
         assertEquals(4, mcp.choices.size)
         assertEquals(listOf(false, true, true, false), mcp.choices.map { grantsStandingPermission(it.label) })
-        // The footer's "esc to interrupt" is the card's own hint, not the agent working on (from review).
-        assertEquals(3, card("codex", "0206-request-user-input-multi-question.txt".substring(0, 4)).choices.size)
+        // The native submit confirmation is not an approval, even in the older derived fixture.
+        val confirmation = card("codex", "0206-request-user-input-multi-question-2.txt")
+        assertTrue(confirmation.terminalReview)
+        assertTrue(confirmation.choices.isEmpty())
     }
 
     @Test fun claudesCurlyApostropheRowsCarryTheCaution() {

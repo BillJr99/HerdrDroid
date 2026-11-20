@@ -1,0 +1,8 @@
+  Switch to Spark — about 5× more turns
+    Spark becomes your default model. Switch back anytime with /model.
+  Both — over 10× more turns
+    Spark becomes your default; session content may be used for product improvement. Terms of Service
+     (https://dev.meta.ai/legal/terms-of-service)
+  Keep going
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  muse-wonder-full-1.0 · max · ~/agents/muse · Launch overrides

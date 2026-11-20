@@ -7,10 +7,13 @@ import androidx.lifecycle.viewModelScope
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.billmongan.herdrdroid.herdr.Backend
+import com.billmongan.herdrdroid.herdr.Choice
 import com.billmongan.herdrdroid.herdr.Herdr
 import com.billmongan.herdrdroid.herdr.Pane
 import com.billmongan.herdrdroid.herdr.Prompt
 import com.billmongan.herdrdroid.herdr.Status
+import com.billmongan.herdrdroid.herdr.codexUnansweredConfirmation
+import com.billmongan.herdrdroid.herdr.codexWrappedQuestion
 import com.billmongan.herdrdroid.herdr.detectPrompt
 import com.billmongan.herdrdroid.herdr.hermesClarify
 import com.billmongan.herdrdroid.notify.AppBus
@@ -31,6 +34,66 @@ import org.robolectric.Shadows.shadowOf
 
 @RunWith(AndroidJUnit4::class)
 class SuccessiveCardAnswerTest {
+    @Test fun livePiQuestionOverridesWorkingUntilDismissed() = fixture("pi", piQuestion) {
+        status(Status.WORKING)
+        readSelectedPane()
+        assertEquals("Trust", displayed().choices.first().label)
+        assertEquals(Status.WORKING, vm.pane("p1")?.status)
+        assertEquals(Status.NEEDS_YOU, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+        assertTrue(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+        assertEquals(Status.WORKING, vm.shownStatus(checkNotNull(vm.pane("p1")), "other-server"))
+        assertEquals(1, guardedVisibleReads)
+
+        val card = displayed()
+        val target = checkNotNull(vm.paneTextTarget)
+        recentResult = ExecResult(0, piQuestion, "")
+        frame = "Continuing after the question."
+        readSelectedPane()
+        assertEquals(Status.WORKING, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+        assertFalse(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+        answer(card, target)
+        assertTrue(sent.isEmpty())
+    }
+
+    @Test fun piQuestionInVisibleButNotRecentOutputOverridesWorking() = fixture("pi", piQuestion) {
+        status(Status.WORKING)
+        recentResult = ExecResult(0, "Preparing a question", "")
+        readSelectedPane()
+        assertEquals(Status.NEEDS_YOU, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+        assertEquals("Trust", displayed().choices.first().label)
+        assertEquals(1, guardedVisibleReads)
+        assertTrue(sent.isEmpty())
+    }
+
+    @Test fun incompleteOrScrolledPiQuestionDoesNotOverrideWorking() = fixture("pi", piQuestion) {
+        status(Status.WORKING)
+        recentResult = ExecResult(0, piQuestion, "")
+        for (visible in listOf("", "↑↓ navigate  enter select  escape/ctrl+c cancel", "$piQuestion\nContinuing after the question.")) {
+            frame = visible
+            readSelectedPane()
+            assertEquals(Status.WORKING, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+            assertNull(vm.paneTextTarget)
+        }
+        frame = piQuestion
+        liveScrollOffset = 3
+        readSelectedPane()
+        assertEquals(Status.WORKING, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+        assertNull(vm.paneTextTarget)
+        assertTrue(sent.isEmpty())
+    }
+
+    @Test fun piQuestionStatusDoesNotFollowAReplacedOccupant() = fixture("pi", piQuestion) {
+        status(Status.WORKING)
+        readSelectedPane()
+        val card = displayed()
+        val target = checkNotNull(vm.paneTextTarget)
+        terminal = "replacement"
+        status(Status.WORKING)
+        assertEquals(Status.WORKING, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+        answer(card, target)
+        assertTrue(sent.isEmpty())
+    }
+
     @Test fun hermesClarifyFromVisibleViewportSendsOnlyOneDigitForLiveChoice() =
         fixture("hermes", hermesClarify) {
             status(Status.WORKING)
@@ -63,7 +126,7 @@ class SuccessiveCardAnswerTest {
             assertTrue(sent.isEmpty())
         }
 
-    @Test fun newerHermesApprovalReplacesClarifyWithoutReceivingItsDigit() = fixture("hermes", hermesClarify) {
+    @Test fun newerHermesApprovalReplacesClarifyWithoutReceivingItsDigit() = bothMessagingSettings("hermes", hermesClarify) {
         readSelectedPane()
         val clarify = displayed()
         val target = checkNotNull(vm.paneTextTarget)
@@ -100,7 +163,7 @@ class SuccessiveCardAnswerTest {
         assertTrue(sent.isEmpty())
     }
 
-    @Test fun recentOnlyHermesClarifyDoesNotCreateAQuestionFromScrollback() = fixture("hermes", hermesComposer) {
+    @Test fun recentOnlyHermesClarifyDoesNotCreateAQuestionFromScrollback() = bothMessagingSettings("hermes", hermesComposer) {
         status(Status.IDLE)
         recentResult = ExecResult(0, hermesClarify, "")
         readSelectedPane()
@@ -184,6 +247,54 @@ class SuccessiveCardAnswerTest {
         assertTrue(displayed().choices.isNotEmpty())
     }
 
+    @Test fun doneHermesPaneShowsItsOwnGatewayWait() = fixture("hermes", hermesComposer) {
+        status(Status.DONE, sessionId = "pane-stored-session")
+        gatewaySnapshot("""{"sessions":[
+            {"id":"other-runtime","session_key":"other-stored-session","status":"waiting"},
+            {"id":"pane-runtime","session_key":"pane-stored-session","status":"waiting","current":false}
+        ]}""")
+        val pane = checkNotNull(vm.pane("p1"))
+        assertEquals(Status.NEEDS_YOU, vm.shownStatus(pane))
+        assertTrue(vm.hasPendingQuestion(pane))
+        vm.sendMessage(pane, "must not reach the approval")
+        drainUntil { vm.pendingSends.any { it.waiting } || sent.isNotEmpty() }
+        assertTrue(sent.isEmpty())
+    }
+
+    @Test fun doneHermesPaneKeepsDoneForAnUnrelatedGatewayWait() = fixture("hermes", hermesComposer) {
+        status(Status.DONE, sessionId = "pane-stored-session")
+        gatewaySnapshot("""{"sessions":[
+            {"id":"other-runtime","session_key":"other-stored-session","status":"waiting","current":true},
+            {"id":"pane-runtime","session_key":"pane-stored-session","status":"idle","current":false}
+        ]}""")
+        val pane = checkNotNull(vm.pane("p1"))
+        assertEquals(Status.DONE, vm.shownStatus(pane))
+        assertTrue("a badge correction is not send authorization", vm.hasPendingQuestion(pane))
+        status(Status.NEEDS_YOU, sessionId = "pane-stored-session")
+        assertEquals(Status.NEEDS_YOU, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+    }
+
+    @Test fun doneHermesPaneKeepsConservativeWaitWhenIdentityIsMissing() = fixture("hermes", hermesComposer) {
+        status(Status.DONE)
+        gatewaySnapshot("""{"sessions":[
+            {"id":"other-runtime","session_key":"other-stored-session","status":"waiting"}
+        ]}""")
+        assertEquals(Status.NEEDS_YOU, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+
+        status(Status.DONE, sessionId = "pane-stored-session")
+        // A runtime ID alone does not establish a stored-key binding to this inventory.
+        gatewaySnapshot("""{"sessions":[
+            {"id":"pane-stored-session","session_key":"other-stored-session","status":"waiting"}
+        ]}""")
+        assertEquals(Status.NEEDS_YOU, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+
+        gatewaySnapshot("""{"sessions":[
+            {"id":"other-runtime","session_key":null,"status":"waiting"},
+            {"id":"pane-runtime","session_key":"pane-stored-session","status":"idle"}
+        ]}""")
+        assertEquals(Status.NEEDS_YOU, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+    }
+
     @Test fun hermesUsageDoesNotOverrideGatewayApprovalOrAuthorizeAReplacement() = fixture("hermes", hermesUsage) {
         status(Status.IDLE)
         readSelectedPane()
@@ -191,13 +302,13 @@ class SuccessiveCardAnswerTest {
         recentResult = ExecResult(0, hermesUsage, "")
         frame = hermesComposer
         readSelectedPane()
-        gatewayStatus(Status.NEEDS_YOU)
+        gatewaySnapshot("""{"sessions":[{"status":"waiting"}]}""")
         assertEquals(Status.NEEDS_YOU, vm.shownStatus(checkNotNull(vm.pane("p1"))))
         shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(4))
         assertTrue(sent.isEmpty())
         assertEquals(1, vm.queued.size)
 
-        gatewayStatus(null)
+        gatewaySnapshot("""{"sessions":[]}""")
         terminal = "replacement"
         status(Status.IDLE)
         readSelectedPane()
@@ -250,18 +361,46 @@ class SuccessiveCardAnswerTest {
         assertEquals(listOf("prompt:queued follow-up"), sent)
     }
 
-    @Test fun claudeMultiSelectDoesNotSubmitUntilFreshReviewChoiceIsTapped() = fixture("claude", claudeMulti) {
+    @Test fun claudeCheckboxActionsDispatchOnlyTheirNativeRows() = fixture("claude", claudeNext) {
         readSelectedPane()
         val target = checkNotNull(vm.paneTextTarget)
         assertTrue(sent.isEmpty())
-        afterSend = claudeMulti.replace("[ ] pytest", "[x] pytest")
-        answer(shown(), target)
-        assertEquals(listOf("space"), sent)
+        afterSend = claudeNext.replace("[ ] tox", "[✓] tox")
+        answer(displayed(), target, index = 1)
+        assertEquals(listOf("down space"), sent)
+
+        fun tap(card: Prompt, label: String) {
+            val row = checkNotNull(card.answerRows().firstOrNull { it.label == label }) { "Missing $label" }
+            vm.answerChoice("p1", card, row, target = target)
+            drainUntil { !vm.answerInFlight("p1") }
+        }
+        val next = displayed()
+        val checked = frame
+        val submitFrame = claudeNext.replace("☐ Runners", "☒ Runners").replace("    Next", "    Submit")
+        frame = submitFrame
+        tap(next, "Next")
+        frame = checked.replace("    Next", "    Next\n    Submit")
+        tap(next, "Next")
+        frame = checked.replace("    Next\n", "")
+        tap(next, "Next")
+        frame = checked
+        terminal = "replacement"
+        tap(next, "Next")
+        terminal = "t1"
+        liveScrollOffset = 1
+        tap(next, "Next")
+        liveScrollOffset = 0
+        assertEquals(listOf("down space"), sent)
+
+        // Focus moved since the card was shown. Read the live highlight, not the captured one.
+        frame = checked.replace("❯ 1.", "  1.").replace("    Next", "❯   Next")
+        afterSend = submitFrame
+        tap(next, "Next")
+        assertEquals(listOf("down space", "enter"), sent)
 
         afterSend = claudeReview
-        vm.answerCardKey(target, shown(), "tab", "Review answers")
-        drainUntil { !vm.answerInFlight("p1") }
-        assertEquals(listOf("space", "tab"), sent)
+        tap(displayed(), "Submit")
+        assertEquals(listOf("down space", "enter", "down down down enter"), sent)
         val review = shown()
         assertEquals("Submit answers", review.choices.first().label)
 
@@ -273,12 +412,64 @@ class SuccessiveCardAnswerTest {
         answer(review, target)
         terminal = "t1"
         vm.answerChoice("another-pane", review, review.choices.first(), target = target)
-        assertEquals(listOf("space", "tab"), sent)
+        assertEquals(listOf("down space", "enter", "down down down enter"), sent)
 
         frame = claudeReview.replace("❯ 1.", "  1.").replace("  2.", "❯ 2.")
         answer(review, target)
         answer(review, target)
-        assertEquals(listOf("space", "tab", "up enter"), sent)
+        assertEquals(listOf("down space", "enter", "down down down enter", "up enter"), sent)
+    }
+
+    @Test fun claudeConfiguredEditorHintPreservesNextAndSubmitOnFreshRead() = fixture("claude", claudeNext) {
+        for (label in listOf("Next", "Submit")) {
+            val base = claudeNext.replace("    Next", "    $label")
+            val typed = base.replace("❯ 1.", "  1.").replace("  3. [ ] Type", "❯ 3. [ ] Type")
+                .replace(" · Esc to cancel", " · ctrl+g to edit in vim · Esc to cancel")
+            frame = typed
+            readSelectedPane()
+            val card = displayed()
+            val row = card.answerRows().singleOrNull { it.label == label }
+            assertNotNull("Missing $label on the custom-answer row", row)
+            val target = checkNotNull(vm.paneTextTarget)
+            val prior = sent.toList()
+            fun tap() {
+                vm.answerChoice("p1", card, checkNotNull(row), target = target)
+                drainUntil { !vm.answerInFlight("p1") }
+            }
+            frame = typed.replace("ctrl+g to edit in vim", "ctrl+g to edit in vim before continuing")
+            tap()
+            assertEquals(prior, sent)
+            frame = typed
+            afterSend = if (label == "Submit") claudeReview else null
+            tap()
+            assertEquals(prior + "down enter", sent)
+            if (label == "Submit") assertEquals("Submit answers", shown().choices.first().label)
+        }
+    }
+
+    @Test fun claudeCheckboxActionMissingOrAmbiguousIsNotAnAnswerRow() {
+        fun labels(frame: String, agent: String = "claude") = detectPrompt(frame, true, agent)?.answerRows().orEmpty().map { it.label }
+        assertTrue("Next" in labels(claudeNext))
+        for (frame in listOf(claudeMulti, claudeNext.replace("    Next\n", ""),
+            claudeNext.replace("    Next", "    Next\n    Submit"),
+            claudeNext.replace("    Next", "❯   Next"), // two visible focus markers
+            "$claudeNext\n──────────\n❯\n──────────")) {
+            assertTrue(labels(frame).none { it == "Next" || it == "Submit" })
+        }
+        assertFalse("Next" in labels(claudeNext, "codex"))
+    }
+
+    @Test fun claudeCheckboxActionIsNotReplayedAfterAnUnconfirmedDelivery() = fixture("claude", claudeNext) {
+        readSelectedPane()
+        val target = checkNotNull(vm.paneTextTarget)
+        val card = displayed()
+        val next = card.answerRows().single { it.label == "Next" }
+        failAfterSend = true
+        repeat(2) {
+            vm.answerChoice("p1", card, next, target = target)
+            drainUntil { !vm.answerInFlight("p1") }
+        }
+        assertEquals(listOf("down down down enter"), sent)
     }
 
     @Test fun openCodeBackgroundDrawerIsNotAQuestionAndDoesNotReceiveChat() =
@@ -299,7 +490,7 @@ class SuccessiveCardAnswerTest {
         }
 
     @Test fun openCodeStaleBlockedStatusAndRecentPermissionDoNotHoldNormalChat() =
-        fixture("opencode", openCodeComposer) {
+        bothMessagingSettings("opencode", openCodeComposer) {
             recentResult = ExecResult(0, openCodePermission, "")
             readSelectedPane()
 
@@ -398,6 +589,224 @@ class SuccessiveCardAnswerTest {
         }
     }
 
+    @Test fun clippedCodexQuestionProbesTheLiveViewportWithoutSendingKeys() = fixture("codex", codexUnansweredConfirmation) {
+        status(Status.WORKING)
+        val clipped = codexWrappedQuestion.substringAfter('\n')
+        recentResult = ExecResult(0, clipped, "")
+        readSelectedPane()
+        assertEquals(1, guardedVisibleReads)
+        assertEquals(codexUnansweredConfirmation, vm.paneText)
+        val card = displayed()
+        assertTrue(card.terminalReview)
+        val target = checkNotNull(vm.paneTextTarget)
+        vm.answerChoice("p1", card, Choice("Proceed", "1", true), target = target)
+        vm.answerCardKey(target, card, "enter", "Proceed")
+        assertTrue(sent.isEmpty())
+
+        frame = "› Next request"
+        readSelectedPane()
+        // 2.1.0: text in the input box is a draft, so the live viewport is read once more, with its
+        // styles, for the draft card. Reading it types nothing.
+        assertEquals(3, guardedVisibleReads)
+        assertEquals(frame, vm.paneText)
+        assertNull(detectPrompt(vm.paneText, false, "codex"))
+        assertEquals("Next request", vm.paneDraft?.text)
+        assertTrue(sent.isEmpty())
+    }
+
+    // ---- 2.1.0: Muse Code's quota warning as a question card --------------------------------
+
+    private val museQuota: String get() = checkNotNull(javaClass.classLoader?.getResource("screens/muse/derived-2.1.0/quota-fast-full.txt")).readText()
+
+    /** The warning read with styles: option [hi] bold and blue, the others plain. */
+    private fun museStyled(hi: Int?): String {
+        var n = 0
+        return museQuota.lines().joinToString("\n") { row ->
+            if (com.billmongan.herdrdroid.herdr.MUSE_QUOTA_TITLES.any { row.trimStart().startsWith(it) } && row.startsWith("  ") && !row.startsWith("    ")) {
+                n++
+                if (n == hi) "  \u001B[1;38;2;120;170;255m${row.trimStart()}\u001B[0m" else "  \u001B[38;2;230;230;230m${row.trimStart()}\u001B[0m"
+            } else row
+        }
+    }
+
+    @Test fun museQuotaWarningIsACardAnsweredOnlyOnATap() = fixture("muse", museQuota) {
+        for (st in listOf(Status.NEEDS_YOU, Status.IDLE)) {
+            status(st)
+            ansiOverride = museStyled(1)
+            readSelectedPane()
+            assertTrue(sent.isEmpty())
+            val card = displayed()
+            assertTrue(card.museQuota)
+            assertEquals(4, card.choices.size)
+        }
+        val card = displayed()
+        val both = card.choices.first { it.label.startsWith("Both") }
+        vm.answerChoice("p1", card, both, target = checkNotNull(vm.paneTextTarget))
+        drainUntil { !vm.answerInFlight("p1") }
+        assertEquals(listOf("down down enter"), sent)
+    }
+
+    @Test fun museQuotaKeepGoingDismissesAndAnUnknownHighlightSendsNothing() = fixture("muse", museQuota) {
+        status(Status.IDLE)
+        ansiOverride = museStyled(null)
+        readSelectedPane()
+        val card = displayed()
+        vm.answerChoice("p1", card, card.choices.last(), target = checkNotNull(vm.paneTextTarget))
+        drainUntil { !vm.answerInFlight("p1") }
+        assertTrue(sent.isEmpty())
+        assertTrue(vm.notice.orEmpty(), vm.notice.orEmpty().startsWith("Not sent."))
+
+        ansiOverride = museStyled(2)
+        readSelectedPane()
+        val again = displayed()
+        vm.answerChoice("p1", again, again.choices.last(), target = checkNotNull(vm.paneTextTarget))
+        drainUntil { !vm.answerInFlight("p1") }
+        assertEquals(listOf("down down enter"), sent)
+    }
+
+    // ---- 2.1.0: a draft in the pane's input box, sent or cleared from the chat --------------
+
+    private val draftRule = "─".repeat(60)
+    private fun hermesBox(vararg rows: String) =
+        (listOf("  ┊ review done", draftRule) + rows + listOf(draftRule, " ☤ gpt-6.1-sol · 295K/500K")).joinToString("\n")
+
+    private fun Fixture.waitForDraftAction() {
+        val deadline = System.nanoTime() + 5_000_000_000L
+        do {
+            shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(200))
+            if (vm.paneDraftBusy("p1") == null) return
+            Thread.sleep(1)
+        } while (System.nanoTime() < deadline)
+        fail("Draft action did not finish")
+    }
+
+    @Test fun hermesDraftIsShownAndSendDraftPressesEnterOnce() = fixture("hermes", hermesBox("❯ Please draft the reply", "about the vault push")) {
+        status(Status.IDLE)
+        readSelectedPane()
+        val draft = checkNotNull(vm.paneDraft)
+        assertEquals("Please draft the reply\nabout the vault push", draft.text)
+        assertTrue(draft.actionable && draft.clearable)
+        assertTrue(sent.isEmpty())
+        afterSend = hermesBox("❯ ")
+        vm.sendPaneDraft(draft)
+        waitForDraftAction()
+        assertEquals(listOf("enter"), sent)
+        assertEquals("Draft sent to Hermes.", vm.notice)
+    }
+
+    @Test fun clearDraftPressesOnlyBackspace() = fixture("hermes", hermesBox("❯ two lines", "of draft")) {
+        status(Status.IDLE)
+        readSelectedPane()
+        val draft = checkNotNull(vm.paneDraft)
+        afterSend = hermesBox("❯ ")
+        vm.clearPaneDraft(draft)
+        waitForDraftAction()
+        assertEquals(1, sent.size)
+        // The probe: a few Backspaces, read back; the box was empty after them.
+        assertEquals(List(minOf("two lines\nof draft".length, com.billmongan.herdrdroid.herdr.PaneDraftAction.CLEAR_PROBE)) { "backspace" },
+            sent.single().split(' '))
+        assertEquals("Draft cleared from Hermes's input box.", vm.notice)
+    }
+
+    @Test fun clearDraftIsRefusedWhenTheOccupantChanges() = fixture("hermes", hermesBox("❯ two lines", "of draft")) {
+        status(Status.IDLE)
+        readSelectedPane()
+        val draft = checkNotNull(vm.paneDraft)
+        terminal = "t2" // Another terminal is in the pane now.
+        status(Status.IDLE)
+        vm.clearPaneDraft(draft)
+        waitForDraftAction()
+        assertTrue(sent.isEmpty())
+        assertTrue(vm.notice.orEmpty(), vm.notice.orEmpty().startsWith("Not cleared:"))
+    }
+
+    @Test fun aSlashCommandDraftHasNoSendButClearStays() = fixture("hermes", hermesBox("❯ /clear")) {
+        status(Status.IDLE)
+        readSelectedPane()
+        val draft = checkNotNull(vm.paneDraft)
+        assertTrue(draft.sendNote.orEmpty().contains("command"))
+        assertTrue(draft.clearable)
+        vm.sendPaneDraft(draft)
+        waitForDraftAction()
+        assertTrue(sent.isEmpty())
+    }
+
+    @Test fun aPlaceholderIsReadWithStylesOnceNotEveryPoll() = fixture("codex", "› Explain this codebase\n\n  footer") {
+        status(Status.IDLE)
+        ansiPlaceholder = true
+        readSelectedPane()
+        val first = guardedVisibleReads
+        readSelectedPane()
+        readSelectedPane()
+        assertNull(vm.paneDraft)
+        assertEquals(first, guardedVisibleReads)
+    }
+
+    @Test fun draftChangedAtTheComputerIsNotSent() = fixture("hermes", hermesBox("❯ first version")) {
+        status(Status.IDLE)
+        readSelectedPane()
+        val draft = checkNotNull(vm.paneDraft)
+        frame = hermesBox("❯ first version, edited")
+        vm.sendPaneDraft(draft)
+        waitForDraftAction()
+        assertTrue(sent.isEmpty())
+        assertTrue(vm.notice.orEmpty(), vm.notice.orEmpty().startsWith("Not sent: the draft changed"))
+    }
+
+    @Test fun noDraftNoCardAndNoExtraRead() = fixture("hermes", hermesBox("❯ ")) {
+        status(Status.IDLE)
+        readSelectedPane()
+        val reads = guardedVisibleReads
+        readSelectedPane()
+        assertNull(vm.paneDraft)
+        assertTrue(sent.isEmpty())
+        assertEquals(reads * 2, guardedVisibleReads)
+    }
+
+    @Test fun nativeOpenCodeColorOnlyQuestionSendsOneDigitFromChat() {
+        for (agent in listOf("opencode", "opencode-college")) fixture(agent, nativeQuestion(1)) {
+            status(Status.WORKING)
+            recentResult = ExecResult(0, "Preparing a question", "")
+            readSelectedPane()
+            val card = displayed()
+            assertEquals("Which database should the fixture use?", card.question)
+            assertTrue(sent.isEmpty())
+            val target = checkNotNull(vm.paneTextTarget)
+            frame = nativeQuestion(2)
+            answer(card, target, index = 1)
+            assertEquals(vm.notice, listOf("2"), sent)
+        }
+    }
+
+    @Test fun nativeOpenCodeQuestionRefusesChangedClippedEditingOrReplacedViewport() = fixture("opencode", nativeQuestion(1)) {
+        readSelectedPane()
+        val card = displayed()
+        val target = checkNotNull(vm.paneTextTarget)
+        // Keep scrollback readable even when the final live viewport is unavailable.
+        recentResult = ExecResult(0, nativeQuestion(1), "")
+        for (changed in listOf(
+            nativeQuestion(2).replace("Server database", "Different database"),
+            nativeQuestion(2).replace("Which database should the fixture use?", ""),
+            nativeQuestion(3).replace("┃  ↑↓ select", "┃      Type your own answer\n┃  ↑↓ select"),
+            nativeQuestion(2).replace("enter submit", "enter toggle"),
+            openCodePermission, openCodeDrawer, openCodeComposer, "",
+        )) {
+            frame = changed
+            answer(card, target, index = 1)
+            assertTrue(vm.notice.orEmpty().startsWith("Not sent."))
+        }
+        frame = nativeQuestion(2)
+        liveScrollOffset = 1
+        answer(card, target, index = 1)
+        liveScrollOffset = 0
+        terminal = "replacement"
+        answer(card, target, index = 1)
+        terminal = "t1"
+        connection = Any()
+        answer(card, target, index = 1)
+        assertTrue(sent.isEmpty())
+    }
+
     @Test fun workingClaudeDiscoversAQuestionFromTheLiveViewport() = fixture("claude", firstStep) {
         val card = frame
         val recent = "Claude is preparing a response."
@@ -461,7 +870,7 @@ class SuccessiveCardAnswerTest {
         assertTrue(sent.isEmpty())
     }
 
-    @Test fun voiceStagesVisibleApprovalDirectlyAndSendsOnlyAfterFullReadback() = fixture("codex", command("alpha-beta")) {
+    @Test fun voiceStagesVisibleApprovalDirectlyAndSendsOnlyAfterFullReadback() = bothMessagingSettings("codex", command("alpha-beta")) {
         recentResult = ExecResult(0, "Working on the report", "")
         assertTrue(shown().choices.isNotEmpty())
         speak("option 1")
@@ -706,6 +1115,22 @@ class SuccessiveCardAnswerTest {
         assertTrue(vm.notice.orEmpty().startsWith("Not sent."))
     }
 
+    private fun bothMessagingSettings(agent: String, frame: String, test: Fixture.() -> Unit) {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val prefs = app.getSharedPreferences("app", Application.MODE_PRIVATE)
+        try {
+            for (enabled in listOf(false, true)) {
+                fixture(agent, frame) {
+                    vm.changeAgentMessaging(enabled)
+                    assertEquals(enabled, vm.agentMessagingEnabled)
+                    test()
+                }
+            }
+        } finally {
+            prefs.edit().remove("agentMessagingEnabled").apply()
+        }
+    }
+
     private fun fixture(agent: String, frame: String, test: Fixture.() -> Unit) {
         val f = Fixture(agent, frame)
         try {
@@ -727,6 +1152,7 @@ class SuccessiveCardAnswerTest {
         var afterSend: String? = null
         var ansiRows = false
         var terminal = "t1"
+        var liveScrollOffset = 0
         var recentReads = 0
         var recentResult: ExecResult? = null
         val discoveryVisibleReads = mutableListOf<Boolean>()
@@ -749,14 +1175,15 @@ class SuccessiveCardAnswerTest {
         }
 
         private var statusNow = Status.NEEDS_YOU
-        fun status(status: Status, scrollOffset: Int = 0) {
+        fun status(status: Status, scrollOffset: Int = 0, sessionId: String? = null) {
             statusNow = status
             state("panes", listOf(
-            Pane("p1", "tab", "w1", agent, status, "", "/fixture", scrollOffset = scrollOffset, terminalId = terminal)
+            Pane("p1", "tab", "w1", agent, status, "", "/fixture", sessionId = sessionId, scrollOffset = scrollOffset, terminalId = terminal)
             ))
         }
 
-        fun gatewayStatus(status: Status?) = state("hermesState", status)
+        fun gatewaySnapshot(json: String) = state("hermesLiveStates",
+            com.billmongan.herdrdroid.hermes.HermesLiveState.fromResult(org.json.JSONObject(json)))
 
         fun shown() = checkNotNull(detectPrompt(frame, blocked = true, agent = agent)).forCard()
         fun displayed() = checkNotNull(detectPrompt(vm.paneText, blocked = false, agent = agent)).forCard()
@@ -824,13 +1251,21 @@ class SuccessiveCardAnswerTest {
             }
         }
 
-        private fun ansiFrame() = if (!ansiRows) frame else frame.lineSequence().joinToString("\n") {
+        /** Rows starting "› " drawn as Codex draws a placeholder: a bold glyph, then faint text. */
+        var ansiPlaceholder = false
+
+        /** What a read with styles returns, when set (2.1.0, Muse's colour-only highlight). */
+        var ansiOverride: String? = null
+
+        private fun ansiFrame() = if (ansiOverride != null) ansiOverride!! else if (ansiPlaceholder) frame.lineSequence().joinToString("\n") {
+            if (it.startsWith("› ")) "\u001B[1m› \u001B[0m\u001B[2m${it.removePrefix("› ")}\u001B[0m" else it
+        } else if (!ansiRows) frame else frame.lineSequence().joinToString("\n") {
             if (it.startsWith("$ ")) "$it\u001B[44m  \u001B[0m" else it
         }
 
         private val pane get() = """{"pane_id":"p1","workspace_id":"w1","tab_id":"tab","agent":"$agent","agent_status":"${when (statusNow) {
-            Status.IDLE -> "idle"; Status.DONE -> "done"; else -> "blocked"
-        }}","cwd":"/fixture","terminal_id":"$terminal","scroll":{"offset_from_bottom":0}}"""
+            Status.IDLE -> "idle"; Status.DONE -> "done"; Status.WORKING -> "working"; else -> "blocked"
+        }}","cwd":"/fixture","terminal_id":"$terminal","scroll":{"offset_from_bottom":$liveScrollOffset}}"""
         private fun ok(out: String) = ExecResult(0, out, "")
         private fun field(name: String) = AppViewModel::class.java.getDeclaredField(name).apply { isAccessible = true }
         @Suppress("UNCHECKED_CAST")
@@ -838,7 +1273,11 @@ class SuccessiveCardAnswerTest {
     }
 
     private companion object {
+        val piQuestion = checkNotNull(SuccessiveCardAnswerTest::class.java.getResource(
+            "/screens/pi/derived-1.4.9/0502-project-trust.txt")).readText().trimEnd()
         val claudeMulti = screenFixture("0109-askuserquestion-multi-select-review-and--2")
+        val claudeNext = checkNotNull(SuccessiveCardAnswerTest::class.java.getResource(
+            "/screens/claude/derived-checkbox-2.1.326/next.txt")).readText().trimEnd()
         val claudeReview = screenFixture("0109-askuserquestion-multi-select-review-and-")
         fun screenFixture(name: String) = checkNotNull(SuccessiveCardAnswerTest::class.java.getResource(
             "/screens/claude/derived-1.4.9/$name.txt")).readText().trimEnd()
@@ -886,6 +1325,24 @@ class SuccessiveCardAnswerTest {
             ┃
             ┃  ↑↓ select  enter confirm  esc dismiss
         """.trimIndent()
+
+        // Source-derived OpenCode QuestionPrompt: color-only focus, descriptions, and single-select footer.
+        fun nativeQuestion(focus: Int) = """
+            ┃
+            ┃  Which database should the fixture use?
+            ┃
+            ┃  ${nativeOption(1, "SQLite", focus)}
+            ┃     Local database
+            ┃  ${nativeOption(2, "Postgres", focus)}
+            ┃     Server database
+            ┃  ${nativeOption(3, "Type your own answer", focus)}
+            ┃
+            ┃  ↑↓ select  enter submit  esc dismiss
+            ┃
+        """.trimIndent()
+
+        private fun nativeOption(i: Int, label: String, focus: Int) =
+            if (i == focus) "\u001B[44m$i. $label\u001B[0m" else "$i. $label"
 
         // Synthetic reconstruction from the reported structural markers, not a live capture.
         val openCodeDrawer = """

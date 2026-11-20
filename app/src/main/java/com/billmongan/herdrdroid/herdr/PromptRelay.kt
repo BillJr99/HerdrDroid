@@ -42,6 +42,8 @@ internal enum class RelayResult(val feedback: String) {
     SENT("Message sent."),
     REFUSED("Not sent. Check that the destination is still connected and idle, with no question, draft, or queued message."),
     UNCERTAIN("Could not confirm delivery. Check the destination chat before trying again."),
+    /** 2.1.0: text is typed in the destination's input box; its chat shows it with Send draft and Clear draft. */
+    DRAFT("Not sent. Text is already typed in the destination's input box at the computer. Open that agent's chat to send or clear the draft, then try again."),
 }
 
 internal class PromptRelay(
@@ -69,13 +71,13 @@ internal class PromptRelay(
         }
     }
 
-    suspend fun send(target: Target, text: String, allowed: () -> Boolean): RelayResult {
+    suspend fun send(target: Target, text: String, authorizedWrite: WritePermit = WritePermit(), allowed: () -> Boolean): RelayResult {
         val key = target.server to target.pane.id
         fun valid() = allowed() && isCurrent(target) && !gate.isClosing(key) && clearToSend(target.server, target.pane.id)
         val clean = text.isNotBlank() && text.none { it != '\n' && it != '\t' && it.isISOControl() }
         if (!clean || !valid()) return RelayResult.REFUSED
         val release = dispatch.tryAcquire(key) ?: return RelayResult.REFUSED
-        val permit = gate.open(key) ?: run { release(); return RelayResult.REFUSED }
+        val permit = gate.open(key, authorizedWrite) ?: run { release(); return RelayResult.REFUSED }
         try {
             val port = target.port
             suspend fun idlePane(): Pane? = port.pane(target.pane.id, target.connection)?.takeIf {
@@ -86,9 +88,12 @@ internal class PromptRelay(
             val fresh = idlePane() ?: return RelayResult.REFUSED
             if (!valid() || port.hasWork(fresh, target.connection) || !valid()) return RelayResult.REFUSED
             val viewport = port.viewport(fresh.id, target.connection)
-            if (!valid() || inputLineOf(viewport, fresh.agent) != "" ||
-                dismissibleUsageFrame(fresh.agent, viewport) != null || detectPrompt(forPhone(viewport), false, fresh.agent) != null)
+            if (!valid() || dismissibleUsageFrame(fresh.agent, viewport) != null || detectPrompt(forPhone(viewport), false, fresh.agent) != null)
                 return RelayResult.REFUSED
+            val line = inputLineOf(viewport, fresh.agent)
+            // A draft of several rows whose first row is empty is a draft too.
+            val draft = composerDraftOf(viewport, fresh.agent) != null
+            if (line != "" || draft) return if (!line.isNullOrEmpty() || draft) RelayResult.DRAFT else RelayResult.REFUSED
             // This recheck narrows, but does not eliminate, the server-side read/write race.
             val ready = idlePane() ?: return RelayResult.REFUSED
             if (!valid()) return RelayResult.REFUSED

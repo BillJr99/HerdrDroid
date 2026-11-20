@@ -1,0 +1,5 @@
+card: options
+blocked: false
+heading: You're using your quota fast
+options: Switch to Spark — about 5× more turns | Turn on contributor mode — about 2.5× more turns | Both — over 10× more turns | Keep going
+source: derived for 2.1.0 from Muse Code 1.4.24's program strings (exact text; layout inferred from the capture; the window, minutes and time are examples)
