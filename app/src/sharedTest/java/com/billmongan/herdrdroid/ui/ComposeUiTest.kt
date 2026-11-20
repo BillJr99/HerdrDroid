@@ -9,6 +9,8 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Text
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotFocused
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -32,6 +34,9 @@ import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.lifecycle.viewModelScope
+import com.billmongan.herdrdroid.AppViewModel
+import com.billmongan.herdrdroid.Screen
 import com.billmongan.herdrdroid.herdr.Choice
 import com.billmongan.herdrdroid.herdr.Pane
 import com.billmongan.herdrdroid.herdr.Prompt
@@ -41,6 +46,7 @@ import com.billmongan.herdrdroid.herdr.Status
 import com.billmongan.herdrdroid.transcript.TextItem
 import com.billmongan.herdrdroid.transcript.UserItem
 import com.billmongan.herdrdroid.transcript.rowsOf
+import kotlinx.coroutines.cancel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -54,6 +60,29 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class ComposeUiTest {
     @get:Rule val rule = createComposeRule()
+
+    @Test fun agentMessagingSettingsDefaultOffAndPersistExplicitChoice() {
+        val app = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.app.Application>()
+        val prefs = app.getSharedPreferences("app", android.content.Context.MODE_PRIVATE)
+        val before = prefs.all["agentMessagingEnabled"]
+        prefs.edit().remove("agentMessagingEnabled").commit()
+        val vm = rule.runOnUiThread { AppViewModel(app) }
+        try {
+            rule.setContent { SettingsScreen(vm, Screen.Servers) }
+            val toggle = rule.onNodeWithText("Agent cross-server messaging")
+            toggle.performScrollTo().assertIsDisplayed().assertIsOff()
+            toggle.performClick().assertIsOn()
+            rule.runOnIdle { assertTrue(prefs.getBoolean("agentMessagingEnabled", false)) }
+            toggle.performClick().assertIsOff()
+            rule.runOnIdle { assertEquals(false, prefs.getBoolean("agentMessagingEnabled", true)) }
+        } finally {
+            rule.runOnUiThread { vm.viewModelScope.cancel() }
+            val editor = prefs.edit()
+            if (before is Boolean) editor.putBoolean("agentMessagingEnabled", before)
+            else editor.remove("agentMessagingEnabled")
+            editor.commit()
+        }
+    }
 
     private fun localDateTime(at: Long): String {
         val context = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().targetContext

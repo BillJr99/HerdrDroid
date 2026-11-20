@@ -72,6 +72,8 @@ import com.billmongan.herdrdroid.store.SshKeyVault
 import com.billmongan.herdrdroid.ui.ReadingFont
 import com.billmongan.herdrdroid.ui.ThemeMode
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.delay
@@ -118,9 +120,24 @@ private class Queued(
     val run: suspend (Herdr) -> Unit,
 )
 
-class AppViewModel(app: Application) : AndroidViewModel(app) {
+class AppViewModel internal constructor(
+    app: Application,
+    // Keep all adapter work in this scope; recheck cancellation at the final submission boundary.
+    // Cancellation drops pending work but cannot recall input already submitted to a destination.
+    private val runAgentMessagingSession: (suspend (CoroutineScope) -> Unit)?,
+) : AndroidViewModel(app) {
+    constructor(app: Application) : this(app, null)
+
     private val store = ServerStore(app)
     private val prefs = AppPrefs(app)
+    var agentMessagingEnabled by mutableStateOf(prefs.agentMessagingEnabled)
+        private set
+
+    fun changeAgentMessaging(on: Boolean) {
+        agentMessagingEnabled = on
+        updateAgentMessagingSession()
+        prefs.agentMessagingEnabled = on
+    }
 
     private val chatVisit = com.billmongan.herdrdroid.voice.SelectedChatVisit()
     private var currentScreen by mutableStateOf<Screen>(Screen.Servers)
@@ -703,6 +720,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             withContext(Dispatchers.Main) { reloadServers() }
         }
         locked = false
+        updateAgentMessagingSession()
         startBackgroundChecks()
         autoOpen()
         pendingNotification?.let { (s, p) -> pendingNotification = null; openFromNotification(s, p) }
@@ -944,6 +962,31 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- Staying connected ------------------------------------------------------------------
 
+    // The existing polling flag defaults to foreground for legacy behavior. Messaging instead
+    // waits for the first real foreground event and never runs under background Watching.
+    private var agentMessagingForeground = false
+    private var agentMessagingActivation: Job? = null
+    private var agentMessagingRunning: Job? = null
+
+    private fun updateAgentMessagingSession() {
+        val runSession = runAgentMessagingSession ?: return
+        if (!agentMessagingEnabled || !agentMessagingForeground || locked) {
+            agentMessagingActivation?.cancel()
+            agentMessagingActivation = null
+            return
+        }
+        if (agentMessagingActivation != null) return // No automatic restart within this activation.
+        val previous = agentMessagingRunning
+        val next = viewModelScope.launch(start = CoroutineStart.LAZY) {
+            // A canceled activation that never started must not hide older in-flight cleanup.
+            previous?.join()
+            agentMessagingRunning = coroutineContext[Job]
+            runSession(this)
+        }
+        agentMessagingActivation = next
+        next.start()
+    }
+
     /** The app is visible again. After more than a few seconds away the old socket is likely dead,
      *  so it is replaced before any poll can stall on it. */
     fun onForeground(handsFreeActive: Boolean = false) {
@@ -956,6 +999,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             ssh?.reset()
             linkLost(null)
         }
+        agentMessagingForeground = true
+        updateAgentMessagingSession()
     }
 
     internal fun onHandsFreeEnded() {
@@ -968,11 +1013,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (!locked && vaultNeedsUnlock()) {
             writeGate.revokeAll()
             locked = true
+            updateAgentMessagingSession()
             clearPanePrefetch()
         }
     }
 
     fun onBackground() {
+        agentMessagingForeground = false
+        updateAgentMessagingSession()
         foreground = false
         clearPanePrefetch()
         backgroundAt = System.currentTimeMillis()

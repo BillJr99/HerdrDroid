@@ -63,7 +63,7 @@ class SuccessiveCardAnswerTest {
             assertTrue(sent.isEmpty())
         }
 
-    @Test fun newerHermesApprovalReplacesClarifyWithoutReceivingItsDigit() = fixture("hermes", hermesClarify) {
+    @Test fun newerHermesApprovalReplacesClarifyWithoutReceivingItsDigit() = bothMessagingSettings("hermes", hermesClarify) {
         readSelectedPane()
         val clarify = displayed()
         val target = checkNotNull(vm.paneTextTarget)
@@ -100,7 +100,7 @@ class SuccessiveCardAnswerTest {
         assertTrue(sent.isEmpty())
     }
 
-    @Test fun recentOnlyHermesClarifyDoesNotCreateAQuestionFromScrollback() = fixture("hermes", hermesComposer) {
+    @Test fun recentOnlyHermesClarifyDoesNotCreateAQuestionFromScrollback() = bothMessagingSettings("hermes", hermesComposer) {
         status(Status.IDLE)
         recentResult = ExecResult(0, hermesClarify, "")
         readSelectedPane()
@@ -299,7 +299,7 @@ class SuccessiveCardAnswerTest {
         }
 
     @Test fun openCodeStaleBlockedStatusAndRecentPermissionDoNotHoldNormalChat() =
-        fixture("opencode", openCodeComposer) {
+        bothMessagingSettings("opencode", openCodeComposer) {
             recentResult = ExecResult(0, openCodePermission, "")
             readSelectedPane()
 
@@ -461,7 +461,7 @@ class SuccessiveCardAnswerTest {
         assertTrue(sent.isEmpty())
     }
 
-    @Test fun voiceStagesVisibleApprovalDirectlyAndSendsOnlyAfterFullReadback() = fixture("codex", command("alpha-beta")) {
+    @Test fun voiceStagesVisibleApprovalDirectlyAndSendsOnlyAfterFullReadback() = bothMessagingSettings("codex", command("alpha-beta")) {
         recentResult = ExecResult(0, "Working on the report", "")
         assertTrue(shown().choices.isNotEmpty())
         speak("option 1")
@@ -704,6 +704,22 @@ class SuccessiveCardAnswerTest {
         answer(prompt, old)
         assertTrue(sent.isEmpty())
         assertTrue(vm.notice.orEmpty().startsWith("Not sent."))
+    }
+
+    private fun bothMessagingSettings(agent: String, frame: String, test: Fixture.() -> Unit) {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val prefs = app.getSharedPreferences("app", Application.MODE_PRIVATE)
+        try {
+            for (enabled in listOf(false, true)) {
+                fixture(agent, frame) {
+                    vm.changeAgentMessaging(enabled)
+                    assertEquals(enabled, vm.agentMessagingEnabled)
+                    test()
+                }
+            }
+        } finally {
+            prefs.edit().remove("agentMessagingEnabled").apply()
+        }
     }
 
     private fun fixture(agent: String, frame: String, test: Fixture.() -> Unit) {
