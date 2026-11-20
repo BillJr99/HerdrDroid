@@ -970,6 +970,8 @@ data class Prompt(
     internal val codexQuestion: Boolean = false,
     /** Muse Code's quota warning: its highlight shows only in colour, so it is answered from a styled live read (2.1.0). */
     internal val museQuota: Boolean = false,
+    /** Claude's session moved to the background behind its sessions list (2.1.1): Esc returns to it. */
+    internal val claudeBackground: Boolean = false,
 ) {
     /**
      * Never an empty card (1.4.2): a prompt with no choices always has something to show, the
@@ -2101,8 +2103,42 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     return detectPlainPrompt(plain, blocked, agent, version)
 }
 
+/**
+ * Claude Code's sessions list (2.1.1, Bill: "Claude might have had a question in chat that was not a
+ * card but I couldn't see it in terminal view"). Left on an empty composer ("← for agents") moves the
+ * session to the background and fills the screen with the list, and a question the session asks
+ * then waits there ("Needs input", "1 awaiting input") without its dialog on screen. Captured from
+ * Claude Code 2.1.329 in a throwaway container.
+ */
+private val CLAUDE_BACKGROUND_HINT = Regex("""^Your session moved to the background\b.*\besc returns to it\b""", RegexOption.IGNORE_CASE)
+private val CLAUDE_AWAITING = Regex("""(?:^|\s)(\d{1,3}) awaiting input$""")
+
+internal fun claudeBackgroundList(text: String): Prompt? {
+    val rows = text.lines().takeLast(80).map { it.trim() }
+    val hint = rows.indexOfLast { CLAUDE_BACKGROUND_HINT.containsMatchIn(it) }
+    if (hint < 0) return null
+    // A question dialog below the hint is the session itself, back on screen: the usual parser reads it.
+    if (rows.drop(hint + 1).any { QUESTION_FOOTER.containsMatchIn(it) }) return null
+    val count = rows.take(hint).firstNotNullOfOrNull { CLAUDE_AWAITING.find(it) }
+    val waiting = count?.groupValues?.get(1)?.toIntOrNull() ?: 0
+    val question = if (waiting > 0) "Claude's session is in the background, and its sessions list shows " +
+        (if (waiting == 1) "a session" else "$waiting sessions") + " waiting for your input. Its question shows once you return to it."
+        else "Claude's session is in the background, so its sessions list fills the screen. Return to it before sending anything."
+    // Only lines that stay the same between reads, so the card's Esc passes the fresh-read check.
+    val region = listOfNotNull(rows[hint], count?.value?.trim())
+    return Prompt(question, emptyList(), region = region, claudeBackground = true)
+}
+
+/** Claude Code's cue for a question held back while text is typed in its input box (2.1.329 bundle). */
+private const val CLAUDE_DRAFT_CUE = "Claude has a question for you. It shows once you send or clear what you're typing."
+
+/** Whether Claude shows that a question waits behind the draft in its input box. */
+internal fun claudeQuestionBehindDraft(text: String): Boolean =
+    stripAnsi(text).lines().takeLast(80).any { it.trim().trim('│', '┃', '|').trim() == CLAUDE_DRAFT_CUE }
+
 private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, version: String?): Prompt? {
     if ((agent == null || agent.equals("claude", true)) && claudeUsageOpen(text)) return null
+    if (agent.equals("claude", true)) claudeBackgroundList(text)?.let { return it }
     if (agent.equals("codex", true)) {
         val rows = text.lines().takeLast(80)
         fun hints(row: String) = row.split('|').map(String::trim)
