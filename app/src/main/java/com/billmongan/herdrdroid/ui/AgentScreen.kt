@@ -488,6 +488,12 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     // of the chat, out of sight when the chat sits at the bottom, so it seemed to do nothing
                     // (Bill, 2026-11-13). Every agent's usage is on the screen below.
                     DropdownMenuItem(text = { Text("Usage history, all agents") }, onClick = { menu = false; vm.screen = Screen.Usage })
+                    if (!live && vm.canArmAgentMessage(paneId) && vm.agentMessage(paneId) == null) {
+                        DropdownMenuItem(text = { Text("Listen for agent proposal") }, onClick = {
+                            menu = false
+                            vm.armAgentMessage(paneId)
+                        })
+                    }
                     if (pane != null) DropdownMenuItem(text = { Text("Files") }, onClick = { menu = false; vm.openFiles(pane.cwd.ifBlank { "~" }) })
                     if (pane?.agent != null && vm.hasTranscriptReader(paneId)) {
                         DropdownMenuItem(text = { Text("History") }, onClick = { menu = false; vm.screen = Screen.History(paneId) })
@@ -549,6 +555,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         // still running, and its running subagents. Tap either for active and finished.
         HorizontalDivider(color = Palette.Line)
         ServerBanners(vm)
+        if (!live) AgentMessagePanel(vm, paneId)
         if (openingPreview != null) {
             Text("Checking the live pane…", color = Palette.Muted, fontSize = 12.5.sp,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
