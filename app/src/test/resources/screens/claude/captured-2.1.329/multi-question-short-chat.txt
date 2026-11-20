@@ -1,0 +1,47 @@
+
+ ▐▛███▛█   Claude Code v2.1.329
+▝▜██████▀  Opus 4.1 · API Usage Billing
+ ▝▝   ▝▝   /proj
+
+⚠ Claude Opus 4.1 now runs as the latest Opus · /model to change
+
+▎ Auto mode is now Claude Code's default permission mode.
+▎ Auto mode lets Claude handle permission prompts automatically. Claude checks each tool call for risky actions and prompt injection
+▎ before executing, runs the ones it assesses as lower-risk, and blocks the rest.
+▎ https://code.claude.com/docs/en/permission-modes
+
+❯ Please ask me the questions.
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Backup  ☐ Restart  ☐ Follow-up  ☐ Checks  ✔ Submit  →
+
+│ Upgrading means restarting the report service and the helper itself. The helper is in the middle of a long job right now. When may I
+│ restart the helper?
+
+❯ 1. Interrupt now
+     Stop the current job, upgrade, and start it again afterwards.
+  2. Wait until it is idle (Recommended)
+     Check every few minutes and restart only once the current job has finished.
+  3. Type something.
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
