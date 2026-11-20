@@ -626,6 +626,32 @@ class ComposeUiTest {
         rule.runOnIdle { assertTrue(opened) }
     }
 
+    @Test fun hermesClarifyOffersPresetTapAndTerminalButNoGenericKeys() {
+        val prompt = checkNotNull(com.billmongan.herdrdroid.herdr.detectPrompt("""
+            ask 1 question
+            ▸ Which database?
+              ▸ 1. SQLite
+                2. Postgres
+                3. Other (type your answer)
+            0/1 answered · ↑/↓ select · Enter confirm and continue · Tab/Shift+Tab switch question · Esc/Ctrl+C cancel
+        """.trimIndent(), false, "hermes"))
+        val picked = mutableListOf<String>()
+        var opened = false
+        rule.setContent {
+            androidx.compose.foundation.layout.Column(Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+                PromptCard(prompt, "Hermes", onChoice = { picked += it.keys },
+                    onKey = { error("Generic key") }, onTypeAnswer = { error("Typed answer") },
+                    onShowTerminal = { opened = true })
+            }
+        }
+        listOf("Enter", "Esc", "Ctrl+C", "Type a different answer", "Other (type your answer)").forEach {
+            rule.onNodeWithText(it).assertDoesNotExist()
+        }
+        rule.onNodeWithText("Postgres").performScrollTo().performClick()
+        rule.onNodeWithText("Show terminal").performScrollTo().performClick()
+        rule.runOnIdle { assertEquals(listOf("2"), picked); assertTrue(opened) }
+    }
+
     @Test fun voiceSettingsRequireOptInAndStartAndStopOnlyOnExplicitTap() {
         val enabled = androidx.compose.runtime.mutableStateOf(false)
         val active = androidx.compose.runtime.mutableStateOf(false)
