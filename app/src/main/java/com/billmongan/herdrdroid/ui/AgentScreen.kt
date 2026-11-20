@@ -1432,6 +1432,7 @@ private fun ChatView(
                     Seg.Gap -> Spacer(Modifier.height(6.dp))
                     Seg.Rule -> HorizontalDivider(color = Palette.Line, modifier = Modifier.padding(vertical = 6.dp))
                     is Seg.You -> YouBubble(s.text, prose)
+                    is Seg.Activity -> ScreenActivity(s)
                     is Seg.Code -> Surface(
                         shape = RoundedCornerShape(12.dp),
                         color = Palette.Code,
@@ -1494,6 +1495,55 @@ private fun ChatView(
             if (showPending) {
                 YouBubble(pending!!, prose, sending = true)
                 ChatTimestamp(pendingAt, end = true)
+            }
+        }
+    }
+}
+
+/**
+ * Antigravity's thinking and tool-call lines, folded into one chip (2.1.1), like the activity row
+ * the agents with a transcript get. Tap it for the steps, one per line, with their arguments.
+ */
+@Composable
+private fun ScreenActivity(a: Seg.Activity) {
+    var open by rememberSaveable(a.steps.firstOrNull()?.title, a.steps.size) { mutableStateOf(false) }
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = Palette.Activity,
+        border = BorderStroke(1.dp, Palette.Line),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+    ) {
+        Column {
+            Row(
+                Modifier.fillMaxWidth().clickable { open = !open }.padding(horizontal = 12.dp, vertical = 9.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (a.running) {
+                    androidx.compose.material3.CircularProgressIndicator(strokeWidth = 2.dp, color = Palette.Blue, modifier = Modifier.size(14.dp))
+                } else {
+                    Text(if (a.failed > 0) "!" else "✓", color = if (a.failed > 0) Palette.OrangeInk else Palette.Green,
+                        fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                }
+                Column(Modifier.weight(1f).padding(start = 10.dp)) {
+                    Text(a.summary, color = Palette.Ink, fontSize = 14.sp, fontWeight = FontWeight.Medium,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    val last = a.steps.lastOrNull { it.kind != com.billmongan.herdrdroid.herdr.AgyMeta.Kind.THINK } ?: a.steps.last()
+                    Text(last.title + (last.detail?.let { " ($it)" } ?: ""), color = Palette.Muted, fontSize = 12.5.sp,
+                        fontFamily = Fonts.Mono, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Text(if (open) "▾" else "▸", color = Palette.Muted, fontSize = 13.sp)
+            }
+            if (open) Column(
+                Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                a.steps.forEach { st ->
+                    Column {
+                        Text(st.title + if (st.failed > 0 && st.kind != com.billmongan.herdrdroid.herdr.AgyMeta.Kind.MORE) " · failed" else "",
+                            color = if (st.failed > 0) Palette.OrangeInk else Palette.Ink, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                        st.detail?.let { Text(it, color = Palette.Muted, fontSize = 12.sp, fontFamily = Fonts.Mono) }
+                    }
+                }
             }
         }
     }
