@@ -3,6 +3,7 @@ package com.billmongan.herdrdroid.ui
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -102,6 +103,23 @@ fun SettingsScreen(vm: AppViewModel, back: Screen) {
                 Text(
                     "One unlock (fingerprint or the phone's screen lock) when the app starts, for every server. After it, " +
                         "the app checks all your servers at once: whether each is up, its agents, and their usage limits.",
+                    color = Palette.Muted, fontSize = 13.sp,
+                )
+            }
+            Section("Agent messaging") {
+                Row(
+                    Modifier.fillMaxWidth().toggleable(
+                        value = vm.agentMessagingEnabled,
+                        role = Role.Switch,
+                        onValueChange = vm::changeAgentMessaging,
+                    ),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Agent cross-server messaging", color = Palette.Ink, fontSize = 16.sp, modifier = Modifier.weight(1f))
+                    Switch(checked = vm.agentMessagingEnabled, onCheckedChange = null)
+                }
+                Text(
+                    "Messaging is not available in this build. This setting saves your preference only.",
                     color = Palette.Muted, fontSize = 13.sp,
                 )
             }
