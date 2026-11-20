@@ -369,37 +369,50 @@ class ComposeUiTest {
         assertEquals(listOf("2"), picked)
     }
 
-    @Test fun claudeMultiSelectReviewAndSubmitAreReachable() {
-        val review = androidx.compose.runtime.mutableStateOf(false)
+    @Test fun claudeCheckboxActionsAreAnswerRowsAndReviewRequiresAnotherTap() {
+        val step = androidx.compose.runtime.mutableIntStateOf(0)
         val input = mutableListOf<String>()
-        val select = checkNotNull(com.billmongan.herdrdroid.herdr.detectPrompt("""
-            ←  ☐ Runners  ✔ Submit  →
+        fun parse(frame: String) = checkNotNull(com.billmongan.herdrdroid.herdr.detectPrompt(frame, true, "claude"))
+        val frame = """
+            ←  ☐ Runners  ☐ Reports  ✔ Submit  →
             Which test runners should demo-box use?
             ❯ 1. [ ] pytest
               2. [ ] tox
-            Enter to select · Space to toggle · Tab/Arrow keys to navigate · Esc to cancel
-        """.trimIndent(), true, "claude"))
-        val submit = checkNotNull(com.billmongan.herdrdroid.herdr.detectPrompt("""
+                Next
+
+            Enter to select · Tab/Arrow keys to navigate · Esc to cancel
+        """.trimIndent()
+        val select = parse(frame)
+        val last = parse(frame.replace("[ ] tox\n    Next", "[ ] tox\n    Submit"))
+        val review = parse("""
             ←  ☒ Runners  ✔ Submit  →
             Review your answers
 
             Ready to submit your answers?
             ❯ 1. Submit answers
               2. Cancel
-        """.trimIndent(), true, "claude"))
+        """.trimIndent())
         rule.setContent {
             androidx.compose.foundation.layout.Column(Modifier.fillMaxSize().verticalScroll(androidx.compose.foundation.rememberScrollState())) {
-                val p = if (review.value) submit else select
-                PromptCard(p, agent = "Claude", onChoice = { input += checkNotNull(com.billmongan.herdrdroid.herdr.menuKeys(p, it)) },
-                    onKey = { input += it; if (it == "tab") review.value = true }, onTypeAnswer = {})
+                val p = listOf(select, last, review)[step.intValue]
+                PromptCard(p, agent = "Claude", onChoice = {
+                    input += checkNotNull(com.billmongan.herdrdroid.herdr.menuKeys(p, it))
+                    if (it.label == "Next" || it.label == "Submit") step.intValue++
+                }, onKey = { error("Expected an answer row, not a raw key") }, onTypeAnswer = {})
             }
         }
         rule.onNodeWithText("[ ] pytest").performScrollTo().performClick()
         assertEquals(listOf("space"), input)
-        rule.onNodeWithText("Review answers").performScrollTo().assertIsDisplayed().performClick()
-        assertEquals(listOf("space", "tab"), input)
+        rule.onNodeWithText("Review answers").assertDoesNotExist()
+        val tox = rule.onNodeWithText("[ ] tox").performScrollTo()
+        val next = rule.onNodeWithText("Next").performScrollTo()
+        assertTrue(tox.fetchSemanticsNode().positionInRoot.y < next.fetchSemanticsNode().positionInRoot.y)
+        next.assertIsDisplayed().performClick()
+        assertEquals(listOf("space", "down", "down", "enter"), input)
+        rule.onNodeWithText("Submit").performScrollTo().assertIsDisplayed().performClick()
+        assertEquals(listOf("space", "down", "down", "enter", "down", "down", "enter"), input)
         rule.onNodeWithText("Submit answers").performScrollTo().assertIsDisplayed().performClick()
-        assertEquals(listOf("space", "tab", "enter"), input)
+        assertEquals(listOf("space", "down", "down", "enter", "down", "down", "enter", "enter"), input)
     }
 
     /** 1.2.9: Claude's tab bar becomes "Question 1 of 4" and chips; a command gets its own block. */

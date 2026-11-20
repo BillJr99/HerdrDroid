@@ -1,0 +1,12 @@
+←  ☐ Runners  ☐ Reports  ✔ Submit  →
+
+Which runners should the sample use?
+
+❯ 1. [ ] pytest
+  2. [ ] tox
+  3. [ ] Type something.
+    Next
+──────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel

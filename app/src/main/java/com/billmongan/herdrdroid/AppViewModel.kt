@@ -2749,15 +2749,7 @@ class AppViewModel internal constructor(
     }
 
     internal fun answerCardKey(target: CardTarget?, prompt: Prompt, key: String, label: String) {
-        val claudeMultiAction = prompt.claudeMultiKey == key
-        answerCardInput(target, prompt, label) { h, t, fresh ->
-            if (claudeMultiAction) {
-                if (t.pane.agent != "claude" || fresh.claudeMultiKey != key || fresh.selected == null) return@answerCardInput false
-                if (key == "enter") {
-                    if (recentAnswerAge(t.server, t.pane.id) { cardAnswerStillFits(it, fresh) } != null) return@answerCardInput false
-                    rememberCardAnswer(t.server, t.pane.id, fresh)
-                }
-            }
+        answerCardInput(target, prompt, label) { h, t, _ ->
             h.sendKeys(t.pane.id, key, expectedConnection = t.connection)
             true
         }
@@ -2843,13 +2835,17 @@ class AppViewModel internal constructor(
         answerOnce(paneId, feedback) { h ->
             // Match the displayed card, but calculate its keys from the current highlight.
             val fresh = target?.freshAnswer(h, prompt)
-            if (target == null || fresh == null || choice !in fresh.choices) {
+            if (target == null || fresh == null || (choice !in fresh.choices && choice != fresh.claudeCheckboxAction)) {
                 report("Not sent. Refresh the question or open the terminal to answer.")
                 readPane(paneId)
                 return@answerOnce
             }
             val keys = if (voiceAllowed == null) com.billmongan.herdrdroid.herdr.menuKeys(fresh, choice)
                 else com.billmongan.herdrdroid.voice.voiceCardKeys(fresh, choice)
+            if (fresh.claudeCheckboxAction != null && keys == null) {
+                report("Not sent. Open Terminal to verify the selected row.")
+                return@answerOnce
+            }
             if (fresh.hermesClarify && (keys == null || voiceAllowed != null)) {
                 report("Not sent. Open Chat to choose an answer.")
                 return@answerOnce
@@ -2904,7 +2900,8 @@ class AppViewModel internal constructor(
                 // The live card may never have appeared in a chat poll. Record it only after delivery.
                 observeQuestion(target.server, paneId, fresh, target.pane.status, agentName)
             }
-            noteAnswer(paneId, prompt, choice.label, serverId = target.server)
+            // Next and Submit here only advance the dialog, not answer or confirm it.
+            if (choice != fresh.claudeCheckboxAction) noteAnswer(paneId, prompt, choice.label, serverId = target.server)
             // Say what went (1.4.3): a tap that answers shows it at once.
             report("Sent $sent to $agentName: ${choice.label.take(40)}")
             readPane(paneId)

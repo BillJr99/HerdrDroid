@@ -1304,7 +1304,7 @@ internal fun PromptCard(
                     color = Palette.Muted, fontSize = 12.5.sp)
                 if (p.multi) Text("Several can be picked. Tapping a checkbox only turns that choice on or off.",
                     color = Palette.Muted, fontSize = 12.5.sp)
-                p.choices.forEachIndexed { i, c ->
+                p.answerRows().forEach { c ->
                     // Say what tapping really sends: arrows and Enter for a menu with a highlighted row,
                     // Esc for a "(esc)" option, otherwise the key itself (1.2.7; it always said "sends N").
                     val typed = !p.hermesClarify && com.billmongan.herdrdroid.herdr.isTypedAnswerChoice(c.label)
@@ -1344,11 +1344,6 @@ internal fun PromptCard(
                             contentPadding = pad,
                             modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
                         ) { body() }
-                    }
-                }
-                p.claudeMultiKey?.let { key ->
-                    Button(onClick = { onKey(key) }, enabled = !sending, modifier = Modifier.fillMaxWidth()) {
-                        Text(if (key == "tab") "Review answers" else "Submit answers")
                     }
                 }
             }

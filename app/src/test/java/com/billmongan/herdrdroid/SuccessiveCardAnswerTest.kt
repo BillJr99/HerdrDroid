@@ -250,18 +250,46 @@ class SuccessiveCardAnswerTest {
         assertEquals(listOf("prompt:queued follow-up"), sent)
     }
 
-    @Test fun claudeMultiSelectDoesNotSubmitUntilFreshReviewChoiceIsTapped() = fixture("claude", claudeMulti) {
+    @Test fun claudeCheckboxActionsDispatchOnlyTheirNativeRows() = fixture("claude", claudeNext) {
         readSelectedPane()
         val target = checkNotNull(vm.paneTextTarget)
         assertTrue(sent.isEmpty())
-        afterSend = claudeMulti.replace("[ ] pytest", "[x] pytest")
-        answer(shown(), target)
-        assertEquals(listOf("space"), sent)
+        afterSend = claudeNext.replace("[ ] tox", "[✓] tox")
+        answer(displayed(), target, index = 1)
+        assertEquals(listOf("down space"), sent)
+
+        fun tap(card: Prompt, label: String) {
+            val row = checkNotNull(card.answerRows().firstOrNull { it.label == label }) { "Missing $label" }
+            vm.answerChoice("p1", card, row, target = target)
+            drainUntil { !vm.answerInFlight("p1") }
+        }
+        val next = displayed()
+        val checked = frame
+        val submitFrame = claudeNext.replace("☐ Runners", "☒ Runners").replace("    Next", "    Submit")
+        frame = submitFrame
+        tap(next, "Next")
+        frame = checked.replace("    Next", "    Next\n    Submit")
+        tap(next, "Next")
+        frame = checked.replace("    Next\n", "")
+        tap(next, "Next")
+        frame = checked
+        terminal = "replacement"
+        tap(next, "Next")
+        terminal = "t1"
+        liveScrollOffset = 1
+        tap(next, "Next")
+        liveScrollOffset = 0
+        assertEquals(listOf("down space"), sent)
+
+        // Focus moved since the card was shown. Read the live highlight, not the captured one.
+        frame = checked.replace("❯ 1.", "  1.").replace("    Next", "❯   Next")
+        afterSend = submitFrame
+        tap(next, "Next")
+        assertEquals(listOf("down space", "enter"), sent)
 
         afterSend = claudeReview
-        vm.answerCardKey(target, shown(), "tab", "Review answers")
-        drainUntil { !vm.answerInFlight("p1") }
-        assertEquals(listOf("space", "tab"), sent)
+        tap(displayed(), "Submit")
+        assertEquals(listOf("down space", "enter", "down down down enter"), sent)
         val review = shown()
         assertEquals("Submit answers", review.choices.first().label)
 
@@ -273,12 +301,37 @@ class SuccessiveCardAnswerTest {
         answer(review, target)
         terminal = "t1"
         vm.answerChoice("another-pane", review, review.choices.first(), target = target)
-        assertEquals(listOf("space", "tab"), sent)
+        assertEquals(listOf("down space", "enter", "down down down enter"), sent)
 
         frame = claudeReview.replace("❯ 1.", "  1.").replace("  2.", "❯ 2.")
         answer(review, target)
         answer(review, target)
-        assertEquals(listOf("space", "tab", "up enter"), sent)
+        assertEquals(listOf("down space", "enter", "down down down enter", "up enter"), sent)
+    }
+
+    @Test fun claudeCheckboxActionMissingOrAmbiguousIsNotAnAnswerRow() {
+        fun labels(frame: String, agent: String = "claude") = detectPrompt(frame, true, agent)?.answerRows().orEmpty().map { it.label }
+        assertTrue("Next" in labels(claudeNext))
+        for (frame in listOf(claudeMulti, claudeNext.replace("    Next\n", ""),
+            claudeNext.replace("    Next", "    Next\n    Submit"),
+            claudeNext.replace("    Next", "❯   Next"), // two visible focus markers
+            "$claudeNext\n──────────\n❯\n──────────")) {
+            assertTrue(labels(frame).none { it == "Next" || it == "Submit" })
+        }
+        assertFalse("Next" in labels(claudeNext, "codex"))
+    }
+
+    @Test fun claudeCheckboxActionIsNotReplayedAfterAnUnconfirmedDelivery() = fixture("claude", claudeNext) {
+        readSelectedPane()
+        val target = checkNotNull(vm.paneTextTarget)
+        val card = displayed()
+        val next = card.answerRows().single { it.label == "Next" }
+        failAfterSend = true
+        repeat(2) {
+            vm.answerChoice("p1", card, next, target = target)
+            drainUntil { !vm.answerInFlight("p1") }
+        }
+        assertEquals(listOf("down down down enter"), sent)
     }
 
     @Test fun openCodeBackgroundDrawerIsNotAQuestionAndDoesNotReceiveChat() =
@@ -743,6 +796,7 @@ class SuccessiveCardAnswerTest {
         var afterSend: String? = null
         var ansiRows = false
         var terminal = "t1"
+        var liveScrollOffset = 0
         var recentReads = 0
         var recentResult: ExecResult? = null
         val discoveryVisibleReads = mutableListOf<Boolean>()
@@ -846,7 +900,7 @@ class SuccessiveCardAnswerTest {
 
         private val pane get() = """{"pane_id":"p1","workspace_id":"w1","tab_id":"tab","agent":"$agent","agent_status":"${when (statusNow) {
             Status.IDLE -> "idle"; Status.DONE -> "done"; else -> "blocked"
-        }}","cwd":"/fixture","terminal_id":"$terminal","scroll":{"offset_from_bottom":0}}"""
+        }}","cwd":"/fixture","terminal_id":"$terminal","scroll":{"offset_from_bottom":$liveScrollOffset}}"""
         private fun ok(out: String) = ExecResult(0, out, "")
         private fun field(name: String) = AppViewModel::class.java.getDeclaredField(name).apply { isAccessible = true }
         @Suppress("UNCHECKED_CAST")
@@ -855,6 +909,8 @@ class SuccessiveCardAnswerTest {
 
     private companion object {
         val claudeMulti = screenFixture("0109-askuserquestion-multi-select-review-and--2")
+        val claudeNext = checkNotNull(SuccessiveCardAnswerTest::class.java.getResource(
+            "/screens/claude/derived-checkbox-2.1.326/next.txt")).readText().trimEnd()
         val claudeReview = screenFixture("0109-askuserquestion-multi-select-review-and-")
         fun screenFixture(name: String) = checkNotNull(SuccessiveCardAnswerTest::class.java.getResource(
             "/screens/claude/derived-1.4.9/$name.txt")).readText().trimEnd()
