@@ -958,6 +958,8 @@ data class Prompt(
     internal val openCodePermission: Boolean = false,
     /** A native Claude checkbox footer proved what the explicit action does. */
     internal val claudeMultiKey: String? = null,
+    /** Native Hermes clarify choices are available only from a guarded Chat card. */
+    internal val hermesClarify: Boolean = false,
 ) {
     /**
      * Never an empty card (1.4.2): a prompt with no choices always has something to show, the
@@ -1855,6 +1857,9 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
         detectOpenCodeWebSearch(text)?.let { return it }
     }
     if (agent.equals("hermes", true)) {
+        hermesClarifyFrame(text)?.let { frame ->
+            return frame.card ?: detectPlainPrompt(frame.remainder, false, agent, version)
+        }
         detectHermesCommandPreview(text)?.let { return it }
         val rows = text.lines().takeLast(80)
         fun body(row: String) = row.trim().trim('│').trim()

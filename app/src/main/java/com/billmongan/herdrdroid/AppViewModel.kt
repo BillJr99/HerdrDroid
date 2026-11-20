@@ -1486,7 +1486,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val continued = (blocked || recentReport) && currentHermesUsage(owner.pane) != null
                 if (liveReport || continued && ready) HermesUsageRead(owner, ready) else null
             }
-            val useLive = liveCard != null && (livePrompt != null || liveReport || recentReport || verifiedUsage != null || verifyOpenCode &&
+            val recentClarify = preview?.hermesClarify == true
+            val requiresLive = verifyOpenCode || recentClarify
+            val useLive = liveCard != null && (livePrompt != null || liveReport || recentReport || verifiedUsage != null || recentClarify || verifyOpenCode &&
                 (blocked || preview != null || openCodeBackgroundDrawer(agent, recent) || openCodeBackgroundDrawer(agent, liveCard)))
             val text = if (useLive) checkNotNull(liveCard) else recent
             lastAppliedPaneRead = attempt
@@ -1496,7 +1498,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             noteInputLine(paneId, text)
             paneText = text
             paneTextPane = paneId
-            paneTextTarget = cardOwner?.takeIf { it.isCurrent(it.client) && (!verifyOpenCode || useLive) }
+            paneTextTarget = cardOwner?.takeIf { it.isCurrent(it.client) && (!requiresLive || useLive) }
             openCodeComposerTarget = paneTextTarget?.takeIf { useLive && verifyOpenCode && openCodeEmptyComposer(text) }
             hermesUsageRead = verifiedUsage
             if (agent in setOf("opencode", "opencode-college", "kiro", "kiro-cli")) {
@@ -1510,7 +1512,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val status = panes.firstOrNull { it.id == paneId }?.status
             val p = when {
                 useLive -> livePrompt
-                verifyOpenCode -> null // Recent output does not establish that an OpenCode card is current.
+                requiresLive -> null // Recent output does not establish that this card is current.
                 (status == Status.NEEDS_YOU) == blocked && pane(paneId)?.agent == agent && versionOf(paneId) == version -> preview
                 else -> detectPrompt(text, status == Status.NEEDS_YOU, pane(paneId)?.agent, versionOf(paneId))
             }
@@ -2681,13 +2683,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun CardTarget.freshAnswer(h: Herdr, shown: Prompt): Prompt? {
         if (shown.terminalReview || !isCurrent(h)) return null
+        if (shown.hermesClarify && (!foreground || h.backend != Backend.TUI || pane.scrollOffset != 0 ||
+                !com.billmongan.herdrdroid.herdr.hasStableOccupant(pane))) return null
         val currentPane = h.cardPane(pane.id, connection) ?: return null
         if (!isCurrent(h) || !pane.sameCardOccupant(currentPane)) return null
         // Last remote read before input; not an atomic compare-and-send.
         if (isOpenCode(pane.agent) && currentPane.scrollOffset != 0) return null
         val text = (if (isOpenCode(pane.agent)) h.readStyledViewport(pane.id, connection)
             else h.readCardViewport(pane.id, connection)).takeUnless { it.isBlank() } ?: return null
-        if (!isCurrent(h)) return null
+        if (!isCurrent(h) || shown.hermesClarify && !foreground) return null
         return detectPrompt(text, currentPane.status == Status.NEEDS_YOU, currentPane.agent, versionOf(pane.id))
             ?.takeIf { cardAnswerStillFits(shown, it) }
     }
@@ -2711,7 +2715,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         send: suspend (Herdr, CardTarget, Prompt) -> Boolean,
     ) {
         val refused = "Not sent. Refresh the question or open the terminal to answer."
-        if (target == null || shown.terminalReview) { flash(refused); return }
+        if (target == null || shown.terminalReview || shown.hermesClarify) { flash(refused); return }
         val id = target.pane.id
         answerOnce(id) { h ->
             val fresh = target.freshAnswer(h, shown)
@@ -2794,6 +2798,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             val keys = if (voiceAllowed == null) com.billmongan.herdrdroid.herdr.menuKeys(fresh, choice)
                 else com.billmongan.herdrdroid.voice.voiceCardKeys(fresh, choice)
+            if (fresh.hermesClarify && (keys == null || voiceAllowed != null)) {
+                report("Not sent. Open Chat to choose an answer.")
+                return@answerOnce
+            }
             if (target.pane.agent == "claude" && choice.label.equals("Submit answers", true) && keys?.lastOrNull() != "enter") {
                 report("Not sent. Open Terminal to verify the selected submit row.")
                 return@answerOnce
@@ -3240,7 +3248,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     // no alert. A screen that couldn't be read still alerts, saying so.
                     if (prompt == null && text.isNotBlank()) { com.billmongan.herdrdroid.diag.DiagLog.log("watch", "${p.id}: herdr says blocked, but nothing on screen asks; no alert"); return@launch }
                     withContext(Dispatchers.Main) { if (prompt != null && prompt.choices.isNotEmpty()) observeQuestion(serverId, p.id, prompt, p.status, p.agentName, text) }
-                    Notify.needsYou(app, serverId, serverLabel, p.id, p.agentName, prompt?.question ?: "Waiting for you.", prompt?.choices.orEmpty(), p.agent, terminalReview = prompt?.terminalReview == true)
+                    Notify.needsYou(app, serverId, serverLabel, p.id, p.agentName, prompt?.question ?: "Waiting for you.", prompt?.choices.orEmpty(), p.agent, terminalReview = prompt?.let { it.terminalReview || it.hermesClarify } == true)
                 }
                 // Only agents that need you notify (Bill, 2026-11-13); finishing doesn't.
                 before == Status.NEEDS_YOU -> {
@@ -3307,7 +3315,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 if (p.agent?.lowercase() in setOf("codex", "hermes")) {
                     val current = readForCard(h, p.id, NOTIFY_READ_LINES)
                         ?.let { detectPrompt(it, p.status == Status.NEEDS_YOU, p.agent) }
-                    if (current == null || current.terminalReview || current.question.filterNot(Char::isWhitespace) !=
+                    if (current == null || current.terminalReview || current.hermesClarify || current.question.filterNot(Char::isWhitespace) !=
                         a.question.filterNot(Char::isWhitespace)) {
                         Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer", "The active question could not be verified.")
                         return
