@@ -1,0 +1,168 @@
+
+
+────────────────────────────────────────────────────────────
+> [hd210-agy-native-fixtures] Bill requested Herdr partners to accelerate 2.1.0. Own the disposable end-to-end Herdr transport
+  verification fixture only, not Android implementation or CI. Read ~/Documents/workspace/agent-wt/HerdrDroid-stable-210 and
+  PromptRelay.kt / Herdr.kt to identify existing send path. In a new scratch directory, verify a harmless unique text through the
+  exact installed Herdr 0.9.5 send mechanism to an isolated inert target, with two named local Herdr instances if feasible and
+  distinct exact target checks. Prepare a reusable real-transport fixture and note which checks require the APK candidate. Do not
+  input anything into live panes or connect to real remote hosts, install/configure host software, change repositories, upload,
+  sign, restart agents, or access secrets. No heavy Gradle/emulator builds because MiniPC2 is swapping. Do not duplicate the mobile
+  UI/TDD lane or Grok badge lane; no subdelegation. Put sanitized fixture/receipt under
+  ~/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/ and report exact paths. Retain one writer for release refs
+  (Hermes).
+
+────────────────────────────────────────────────────── Conversation compacted ──────────────────────────────────────────────────────
+
+○ Thought for 15m 39s (Verifying the build output by checking the git status and grepping for specific markers in the generated...)
+● Ran (git -C /home/user/Documents/workspace/agent-wt/HerdrDroid-stable-210 ls-files)
+● Explored 19 files (PromptRelay.kt, Herdr.kt, LocalPromptSend.kt, +16)
+… 134 more actions (11 reads, 11 edits, 112 commands: 9 failed) …
+● Ran 2 commands (+1 · rg "—" /home/user/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance: failed)
+● Ran (grep -R "—" /home/user/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance) failed (ctrl+o to expand)
+
+  Session context: Herdr on minipc2; tab: agy; shared rules: ~/agents/AGENTS.md
+
+  Completed [hd210-agy-native-fixtures] (disposable end-to-end Herdr 0.9.5 transport verification fixture and acceptance receipt
+  for HerdrDroid 2.1.0, without touching live panes, repositories, remote hosts, or heavy Gradle/emulator builds).
+
+  1. Identified Send Path (HerdrDroid-stable-210 @ 2de9f0b)
+
+  • Source files:
+  ~/Documents/workspace/agent-wt/HerdrDroid-stable-210/app/src/main/java/com/billmongan/herdrdroid/herdr/PromptRelay.kt:25-112,
+  ~/Documents/workspace/agent-wt/HerdrDroid-stable-210/app/src/main/java/com/billmongan/herdrdroid/herdr/Herdr.kt:217-270,
+  Herdr.kt (sendPermitted/sendMessage),
+  ~/Documents/workspace/agent-wt/HerdrDroid-stable-210/app/src/main/java/com/billmongan/herdrdroid/herdr/LocalPromptSend.kt:28-61,
+  ~/Documents/workspace/agent-wt/HerdrDroid-stable-210/app/src/main/java/com/billmongan/herdrdroid/herdr/PaneDispatch.kt:9-21, and
+  ~/Documents/workspace/agent-wt/HerdrDroid-stable-210/app/src/main/java/com/billmongan/herdrdroid/herdr/WritePermit.kt:13-39.
+  • Exact CLI transport sequence:
+      1. herdr 'pane' 'get' '<pane_id>' (cardPane: verifies scroll.offset_from_bottom == 0, agent_status in {"idle", "done"},
+      !backgroundBusy, and Occupant.sameProcessAndSession across pane_id, tab_id, workspace_id, agent, foreground_cwd, terminal_id,
+      and agent_session.value).
+      2. Compressed transcript.py __workcounts__ background subagent work check (busy[pane.id] == 0).
+      3. herdr 'pane' 'read' '<pane_id>' '--source' 'visible' '--format' 'ansi' (verifies inputLineOf(viewport, fresh.agent) == "",
+      dismissibleUsageFrame == null, and detectPrompt == null).
+      4. Second herdr 'pane' 'get' '<pane_id>' immediately before dispatch to narrow the read-to-write race window.
+      5. herdr 'agent' 'prompt' '<pane_id>' '<text>' via sendPermitted(..., allowTerminalFallback = false), claiming single-use
+      WritePermit.admit() on the connection mutex boundary with no fallback to herdr pane send-text + herdr pane send-keys enter.
+
+
+  2. End-to-End Multi-Instance Verification Summary (herdr 0.9.5)
+
+  Two isolated local Herdr 0.9.5 instances (--session hd210-fix-alpha and --session hd210-fix-beta) were provisioned against inert
+  stand-in targets in /home/user/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/scratch-hd210-fixture/,
+  verified, and then stopped and deleted (herdr session list confirmed only default remains):
+
+  • Check 1 (Exact delivery on Instance Alpha w2:p1): HD210_AGY_FIXTURE_ALPHA_P1_20261120 delivered via herdr --session hd210-fix-
+  alpha agent prompt w2:p1 ... ({"type":"agent_prompted"}, exit 0) exclusively to
+  ~/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/scratch-hd210-fixture/alpha-p1/receipt.jsonl.
+  • Check 2 (Cross-instance identical pane ID w2:p1 on Instance Beta): HD210_AGY_FIXTURE_BETA_P1_20261120 delivered via herdr --
+  session hd210-fix-beta agent prompt w2:p1 ... ({"type":"agent_prompted"}, exit 0) exclusively to
+  ~/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/scratch-hd210-fixture/beta-p1/receipt.jsonl with zero bleed
+  to Alpha w2:p1.
+  • Check 3 (Same-instance sibling pane w2:p2 on Instance Alpha): HD210_AGY_FIXTURE_ALPHA_P2_20261120 delivered via herdr --
+  session hd210-fix-alpha agent prompt w2:p2 ... ({"type":"agent_prompted"}, exit 0) exclusively to
+  ~/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/scratch-hd210-fixture/alpha-p2/receipt.jsonl with zero
+  bleed to Alpha w2:p1 or Beta w2:p1.
+  • Check 4 (Daemon foreground process identity check): When the PTY foreground process name in herdr pane process-info was
+  python3 rather than canonical codex, herdr agent prompt refused with exit 1 ({"error":{"code":"agent_not_ready","message":"agent
+  w2:p1 is no longer the pane foreground process"}}).
+  • Check 5 (Unsent composer draft refusal): With unsent text draft in progress on the ❯  row, pane read --source visible --format
+  ansi returned ❯ draft in progress, causing inputLineOf(viewport, "codex") to return "draft in progress" != "" and refuse before
+  calling herdr agent prompt.
+  • Check 6 (Occupant session rotation detection): Rotating w2:p2 from session 00000000-0000-0000-0000-000000000000 to 01a10000-
+  0000-0000-0000-000000000999 updated agent_session.value in pane get, causing Occupant.sameProcessAndSession to refuse before
+  dispatch.
+  • Check 7 (Blocked agent dual-layer refusal): When w2:p2 reported --state blocked and displayed an approval card, pane get
+  returned "agent_status":"blocked" (refused by PromptRelay.idlePane()) and herdr agent prompt rejected submission at the daemon
+  boundary with exit 1 ({"error":{"code":"agent_blocked","message":"agent w2:p2 is blocked and requires interactive input"}});
+  ~/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/scratch-hd210-fixture/alpha-p2/receipt2.jsonl confirmed
+  zero prompt bytes were delivered.
+
+  3. Native Transport Fixture vs. APK Candidate Checks
+
+  • Proven by the native Herdr 0.9.5 fixture: CLI command contracts and JSON schemas (pane get, pane read --source visible --
+  format ansi, pane process-info, agent prompt), multi-instance socket/pane isolation across identical w2:p1 pane IDs, sibling
+  pane isolation (w2:p1 vs. w2:p2), daemon-side agent_not_ready and agent_blocked rejections, and live preflight inputs for
+  occupant agent_session.value/terminal_id, scroll.offset_from_bottom, and visible composer draft detection.
+  • Requires the Android APK candidate: Compose UI flows in PromptRelayDialog.kt (target picker, server switcher, HeldSend.kt
+  draft preservation across failed relays), in-process JVM WritePermit / PaneDispatch / SSH reconnect epoch ordering
+  (RelayCloseOrderTest), and Android SpeechRecognizer voice capture and confirmation UI before LocalPromptSend.send.
+
+  4. Exact Artifact Paths
+
+  • ~/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/REPORT.md:
+  /home/user/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/REPORT.md
+  • ~/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/fixture-receipt.json:
+  /home/user/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/fixture-receipt.json
+  • ~/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/run_herdr_transport_fixture.py:
+  /home/user/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/run_herdr_transport_fixture.py
+  • ~/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/scratch-hd210-fixture/bin/codex:
+  /home/user/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/scratch-hd210-fixture/bin/codex
+  • ~/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/scratch-hd210-fixture/alpha-p1/receipt.jsonl:
+  /home/user/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/scratch-hd210-fixture/alpha-p1/receipt.jsonl
+  • ~/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/scratch-hd210-fixture/alpha-p2/receipt.jsonl:
+  /home/user/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/scratch-hd210-fixture/alpha-p2/receipt.jsonl
+  • ~/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/scratch-hd210-fixture/alpha-p2/receipt2.jsonl:
+  /home/user/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/scratch-hd210-fixture/alpha-p2/receipt2.jsonl
+  • ~/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/scratch-hd210-fixture/beta-p1/receipt.jsonl:
+  /home/user/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/scratch-hd210-fixture/beta-p1/receipt.jsonl
+
+────────────────────────────────────────────────────────────
+> [kanban-32748-agy] Hermes coordinator, Bill asked eligible panes to pick up open cards. Continue your existing herdrdroid-2.1.0
+  native fixture lane from outputs/herdrdroid-2.1.0/agy-native-acceptance/REPORT.md. Exact draft head
+  0000000000000000000000000000000000000000. Do not repeat CLI-only evidence: exercise the app agent proposal, user confirmation and
+  existing SSH transport against disposable inert fixture endpoints if feasible. No production input, installs or config,
+  credentials, shared edits or GitHub writes. Return exact mode, target, test receipt, and remaining limits. Save a new sanitized
+  receipt in your own workspace or /home/user/Documents/workspace/outputs/kanban-32748/agy-receipt.md; report the exact path,
+  commands and verdict. No subdelegation.
+
+○ Thought for 13m 59s (The stack trace points to a Java version parsing issue within the Kotlin environment. The specific error...)
+● Ran 3 commands (+2 · git -C /home/user/Documents/workspace/agent-wt/HerdrDroid-stable-210 show --stat acd1c96)
+● Explored 8 files (AgentMessageFrame.kt, AgentMessageReview.kt, AgentMessageRelayTest.kt, +5)
+… 101 more actions (19 reads, 30 edits, 52 commands: 7 failed) …
+● Ran 3 commands (herdr --session hd21... ×3)
+● Edited 1 file (run_app_ssh_e2e.py) (ctrl+o to expand)
+
+⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 138h26m21s.
+Error ID: 00000000-0000-0000-0000-000000000000
+
+────────────────────────────────────────────────────────────
+> Testing
+
+────────────────────────────────────────────────────── Conversation compacted ──────────────────────────────────────────────────────
+
+○ Thought for 1m 7s (Initial investigation reveals that `rtVersion()` can return either a `JavaVersion` object or a String repre...)
+● Ran 2 commands, listed tasks (tail -n 30 /home/user/.gemini/antigravity-cli/brain/00000000-0000-0000-0000-000000000000/.system...)
+● Explored 2 files (last-error.log, run_app_ssh_e2e.py)
+… 20 more actions (2 reads, 1 edit, 17 commands: 4 failed) …
+● Explored 1 search ("com.intellij.util.lang.JavaVersion" "parse" "IllegalArgumentException")
+● Ran 6 commands (python3 -c ' from pa... ×5 · python3 -c ' import ...) (ctrl+o to expand)
+
+────────────────────────────────────────────────────────────
+> From claude (Herdr on minipc2; tab: claude), with Bill's approval (he overrode the sender quota hold for this one message): stop
+  the kanban-32748 herdrdroid-2.1.0 app-over-SSH lane now; it is complete. Claude ran the signed 2.0.6 to 2.1.0 upgrade and the app
+  consent/send plus zero-write negatives in a disposable Docker emulator with loopback SSH; receipt
+  /home/user/Documents/workspace/outputs/herdrdroid-2.1.0/claude-final-apk-acceptance/DISPOSABLE-RUN-RECEIPT.md. Bill does not want
+  Java, Gradle or test runs on minipc2: any build or test work must run in a throwaway container on minipc (bill-dockrun). Do not
+  run more commands for this lane, and do not touch /home/user/Documents/workspace/outputs/kanban-32748/scratch; Claude is moving it
+  to ~/scratch. Reply with one line acknowledging, then stay idle.
+
+○ Thought for 6.8s (The instruction is to stop a specific application instance. The task mentions a successful upgrade and recei...)
+● Killed 2 tasks (task-1577, task-1578) (ctrl+o to expand)
+
+  Acknowledged: stopping the kanban-32748 herdrdroid-2.1.0 lane now, leaving scratch untouched for Claude, and staying idle.
+
+────────────────────────────────────────────────────────────
+> From claude (tab: claude): Herdr routing test approved by Bill. Reply with exactly one word, ack-agy, and take no other action.
+
+  ack-agy
+
+
+ ┃ Auto is now the default agent mode
+ ┃ Press Shift+Tab to switch agent modes, or change Agent Mode in /config.
+ ┃ esc to dismiss
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+>
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+? for shortcuts                                                                                                   Orchestrator (Neon)
