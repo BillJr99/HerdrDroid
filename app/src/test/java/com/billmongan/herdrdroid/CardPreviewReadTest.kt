@@ -188,6 +188,46 @@ class CardPreviewReadTest {
         assertEquals(complete, f.vm.paneText)
     }
 
+    @Test fun workingAntigravityFindsAnApprovalMissingFromRecentOutput() = withFixture { f ->
+        val complete = resource("/screens/agy/derived-1.4.9/1101-run-command.txt")
+        val recent = "Antigravity is preparing a response."
+        val partial = complete.substringBefore("❯ 1.")
+        assertNotEquals(complete, partial)
+        assertNull(detectPrompt(recent, false, "agy"))
+        assertTrue(detectPrompt(partial, false, "agy")?.choices.orEmpty().isEmpty())
+        assertEquals(4, detectPrompt(complete, false, "agy")!!.choices.size)
+        f.select("agy", Status.WORKING)
+        for (preview in listOf(recent, partial)) {
+            f.frames(preview, complete)
+            f.read()
+            assertEquals(listOf("recent", "visible"), f.trace())
+            assertEquals(complete, f.vm.paneText)
+            assertNotNull(f.vm.paneTextTarget)
+        }
+    }
+
+    @Test fun antigravityProbeDoesNotPromoteInactiveOrIncompleteFrames() = withFixture { f ->
+        val complete = resource("/screens/agy/derived-1.4.9/1101-run-command.txt")
+        val recent = "Antigravity is preparing a response."
+        f.select("agy", Status.WORKING)
+        for (visible in listOf("", " > Next request", complete.substringBefore("❯ 1."))) {
+            f.frames(recent, visible)
+            f.read()
+            assertEquals(listOf("recent", "visible"), f.trace())
+            assertEquals(recent, f.vm.paneText)
+        }
+        f.frames(complete, " > Next request")
+        f.read()
+        assertEquals(listOf("recent"), f.trace())
+        assertEquals(complete, f.vm.paneText)
+
+        f.select("agy", Status.WORKING, scrollOffset = 1)
+        f.frames(recent, complete)
+        f.read()
+        assertEquals(listOf("recent"), f.trace())
+        assertEquals(recent, f.vm.paneText)
+    }
+
     private fun codex() = resource("/screens/codex/synthetic-2.0/truncated-command-approval.txt")
     private fun resource(path: String) = checkNotNull(javaClass.getResource(path)).readText()
 
