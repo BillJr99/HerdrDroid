@@ -247,6 +247,54 @@ class SuccessiveCardAnswerTest {
         assertTrue(displayed().choices.isNotEmpty())
     }
 
+    @Test fun doneHermesPaneShowsItsOwnGatewayWait() = fixture("hermes", hermesComposer) {
+        status(Status.DONE, sessionId = "pane-stored-session")
+        gatewaySnapshot("""{"sessions":[
+            {"id":"other-runtime","session_key":"other-stored-session","status":"waiting"},
+            {"id":"pane-runtime","session_key":"pane-stored-session","status":"waiting","current":false}
+        ]}""")
+        val pane = checkNotNull(vm.pane("p1"))
+        assertEquals(Status.NEEDS_YOU, vm.shownStatus(pane))
+        assertTrue(vm.hasPendingQuestion(pane))
+        vm.sendMessage(pane, "must not reach the approval")
+        drainUntil { vm.pendingSends.any { it.waiting } || sent.isNotEmpty() }
+        assertTrue(sent.isEmpty())
+    }
+
+    @Test fun doneHermesPaneKeepsDoneForAnUnrelatedGatewayWait() = fixture("hermes", hermesComposer) {
+        status(Status.DONE, sessionId = "pane-stored-session")
+        gatewaySnapshot("""{"sessions":[
+            {"id":"other-runtime","session_key":"other-stored-session","status":"waiting","current":true},
+            {"id":"pane-runtime","session_key":"pane-stored-session","status":"idle","current":false}
+        ]}""")
+        val pane = checkNotNull(vm.pane("p1"))
+        assertEquals(Status.DONE, vm.shownStatus(pane))
+        assertTrue("a badge correction is not send authorization", vm.hasPendingQuestion(pane))
+        status(Status.NEEDS_YOU, sessionId = "pane-stored-session")
+        assertEquals(Status.NEEDS_YOU, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+    }
+
+    @Test fun doneHermesPaneKeepsConservativeWaitWhenIdentityIsMissing() = fixture("hermes", hermesComposer) {
+        status(Status.DONE)
+        gatewaySnapshot("""{"sessions":[
+            {"id":"other-runtime","session_key":"other-stored-session","status":"waiting"}
+        ]}""")
+        assertEquals(Status.NEEDS_YOU, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+
+        status(Status.DONE, sessionId = "pane-stored-session")
+        // A runtime ID alone does not establish a stored-key binding to this inventory.
+        gatewaySnapshot("""{"sessions":[
+            {"id":"pane-stored-session","session_key":"other-stored-session","status":"waiting"}
+        ]}""")
+        assertEquals(Status.NEEDS_YOU, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+
+        gatewaySnapshot("""{"sessions":[
+            {"id":"other-runtime","session_key":null,"status":"waiting"},
+            {"id":"pane-runtime","session_key":"pane-stored-session","status":"idle"}
+        ]}""")
+        assertEquals(Status.NEEDS_YOU, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+    }
+
     @Test fun hermesUsageDoesNotOverrideGatewayApprovalOrAuthorizeAReplacement() = fixture("hermes", hermesUsage) {
         status(Status.IDLE)
         readSelectedPane()
@@ -254,13 +302,13 @@ class SuccessiveCardAnswerTest {
         recentResult = ExecResult(0, hermesUsage, "")
         frame = hermesComposer
         readSelectedPane()
-        gatewayStatus(Status.NEEDS_YOU)
+        gatewaySnapshot("""{"sessions":[{"status":"waiting"}]}""")
         assertEquals(Status.NEEDS_YOU, vm.shownStatus(checkNotNull(vm.pane("p1"))))
         shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(4))
         assertTrue(sent.isEmpty())
         assertEquals(1, vm.queued.size)
 
-        gatewayStatus(null)
+        gatewaySnapshot("""{"sessions":[]}""")
         terminal = "replacement"
         status(Status.IDLE)
         readSelectedPane()
@@ -975,14 +1023,15 @@ class SuccessiveCardAnswerTest {
         }
 
         private var statusNow = Status.NEEDS_YOU
-        fun status(status: Status, scrollOffset: Int = 0) {
+        fun status(status: Status, scrollOffset: Int = 0, sessionId: String? = null) {
             statusNow = status
             state("panes", listOf(
-            Pane("p1", "tab", "w1", agent, status, "", "/fixture", scrollOffset = scrollOffset, terminalId = terminal)
+            Pane("p1", "tab", "w1", agent, status, "", "/fixture", sessionId = sessionId, scrollOffset = scrollOffset, terminalId = terminal)
             ))
         }
 
-        fun gatewayStatus(status: Status?) = state("hermesState", status)
+        fun gatewaySnapshot(json: String) = state("hermesLiveStates",
+            com.billmongan.herdrdroid.hermes.HermesLiveState.fromResult(org.json.JSONObject(json)))
 
         fun shown() = checkNotNull(detectPrompt(frame, blocked = true, agent = agent)).forCard()
         fun displayed() = checkNotNull(detectPrompt(vm.paneText, blocked = false, agent = agent)).forCard()

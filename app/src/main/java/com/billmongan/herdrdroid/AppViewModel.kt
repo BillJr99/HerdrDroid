@@ -22,6 +22,7 @@ import com.billmongan.herdrdroid.herdr.Choice
 import com.billmongan.herdrdroid.herdr.cardAnswerStillFits
 import com.billmongan.herdrdroid.herdr.moveKeys
 import com.billmongan.herdrdroid.hermes.HermesChat
+import com.billmongan.herdrdroid.hermes.HermesLiveState
 import com.billmongan.herdrdroid.notify.AppBus
 import com.billmongan.herdrdroid.notify.Notify
 import com.billmongan.herdrdroid.notify.NotifyAction
@@ -923,7 +924,7 @@ class AppViewModel internal constructor(
         // The open chat is kept before the connection goes, so a reconnect shows it at once (1.2.9).
         stashOpenChat()
         hermesPoll?.cancel()
-        hermesState = null
+        hermesLiveStates = emptyList()
         rawWorkPanes = emptyList()
         workCounts = emptyMap()
         busyCounts = emptyMap()
@@ -2193,14 +2194,13 @@ class AppViewModel internal constructor(
 
     // ---- Hermes through its gateway ------------------------------------------------------------
 
-    /** The native Hermes chat for this server, made and connected on first use. */
-    /**
-     * What Hermes's conversations are doing, from its gateway (Telegram, the CLI, the app): any one
-     * working makes the Hermes pane show Working, any one waiting on you makes it Needs you.
-     * Asked every 15 seconds while a server with a Hermes pane is open.
-     */
-    var hermesState by mutableStateOf<Status?>(null)
-        private set
+    // Keep one snapshot so the aggregate wait and its attribution cannot get out of sync.
+    private var hermesLiveStates by mutableStateOf<List<HermesLiveState>>(emptyList())
+    private val hermesState: Status? get() = when {
+        hermesLiveStates.any { it.status == "waiting" } -> Status.NEEDS_YOU
+        hermesLiveStates.any { it.status == "working" || it.status == "streaming" || it.status == "starting" } -> Status.WORKING
+        else -> null
+    }
     private var hermesPoll: Job? = null
 
     private fun pollHermes() {
@@ -2208,25 +2208,21 @@ class AppViewModel internal constructor(
         hermesPoll = viewModelScope.launch {
             while (isActive) {
                 val hasHermes = panes.any { it.agent?.lowercase() == "hermes" }
-                if (hasHermes && foreground && herdr != null) {
-                    val states = hermesChat()?.liveStates()
-                    val next = when {
-                        states == null -> null
-                        states.any { it.second == "waiting" } -> Status.NEEDS_YOU
-                        states.any { it.second in setOf("working", "streaming", "starting") } -> Status.WORKING
-                        else -> null
-                    }
-                    if (next != hermesState) {
-                        com.billmongan.herdrdroid.diag.DiagLog.log("hermes", "conversations: " +
-                            (states?.joinToString { "${it.second}" } ?: "gateway not answering") + " -> ${next ?: "pane status"}")
-                        hermesState = next
-                    }
-                } else hermesState = null
+                val before = hermesState
+                val states = if (hasHermes && foreground && herdr != null) hermesChat()?.liveStates() else null
+                if (!isActive) return@launch // Do not restore a closed server's snapshot after cancellation.
+                hermesLiveStates = states.orEmpty()
+                val next = hermesState
+                if (next != before) {
+                    com.billmongan.herdrdroid.diag.DiagLog.log("hermes", "conversations: " +
+                        (states?.joinToString { it.status } ?: "gateway not answering") + " -> ${next ?: "pane status"}")
+                }
                 delay(15_000)
             }
         }
     }
 
+    /** The native Hermes chat for this server, made and connected on first use. */
     fun hermesChat(): HermesChat? {
         hermes?.let { return it }
         val s = ssh ?: return null
@@ -4007,9 +4003,12 @@ class AppViewModel internal constructor(
         if (here && p.status == Status.NEEDS_YOU && hermesState != Status.NEEDS_YOU) {
             currentHermesUsage(p)?.let { return if (it.composerReady) hermesState ?: Status.IDLE else Status.WORKING }
         }
-        // Hermes: a conversation elsewhere (Telegram, its app) working or waiting counts here too.
+        // A DONE badge only ignores waits proven to belong to other stored conversations.
+        // This display exception does not relax the gateway wait in either terminal send guard.
         if (here && p.agent?.lowercase() == "hermes" && p.status != Status.NEEDS_YOU) hermesState?.let {
-            if (it == Status.NEEDS_YOU || p.status != Status.WORKING) return it
+            if (it == Status.NEEDS_YOU) {
+                if (p.status != Status.DONE || !hermesWaitsAreElsewhere(p)) return it
+            } else if (p.status != Status.WORKING) return it
         }
         // herdr's "done" is idle but not yet seen at the computer. Opening the agent here counts as
         // seeing it, and after 30 minutes it counts as idle anyway. (The app never marks it seen in
@@ -4021,6 +4020,16 @@ class AppViewModel internal constructor(
         }
         return p.status
     }
+
+    private fun hermesWaitsAreElsewhere(pane: Pane): Boolean {
+        val key = pane.sessionId?.takeIf { it.isNotBlank() } ?: return false
+        val states = hermesLiveStates
+        // The pane may be outside this inventory or its reported ID may be stale.
+        // Require a unique stored-key match; do not guess from runtime ID or current.
+        return states.count { it.sessionKey == key } == 1 &&
+            states.none { it.status == "waiting" && (it.sessionKey == null || it.sessionKey == key) }
+    }
+
     private fun withBusy(list: List<Pane>, busy: Map<String, Int>): List<Pane> = com.billmongan.herdrdroid.herdr.withBusy(list, busy)
     // When each pane last turned done, and when you last had it open here ("server|pane"). Kept
     // across launches and reconnects, so an agent you opened stays idle until it works again.

@@ -31,6 +31,20 @@ data class HermesSession(
     val model: String?,
 )
 
+internal data class HermesLiveState(val sessionKey: String?, val status: String) {
+    companion object {
+        fun fromResult(result: JSONObject): List<HermesLiveState> {
+            val rows = result.optJSONArray("sessions") ?: return emptyList()
+            return (0 until rows.length()).map { index ->
+                val row = rows.getJSONObject(index)
+                // Herdr reports the stored session ID, not the gateway runtime ID.
+                val key = (row.opt("session_key") as? String)?.takeIf { it.isNotBlank() }
+                HermesLiveState(key, row.optString("status"))
+            }
+        }
+    }
+}
+
 /** Something Hermes is waiting on you for. */
 sealed interface Ask {
     val id: Any
@@ -189,11 +203,10 @@ class HermesChat(ssh: HerdrSsh, private val scope: CoroutineScope) {
      * Every live Hermes conversation's state ("working", "waiting", "idle", ...), from the gateway's
      * session.active_list. Null when the gateway can't be asked.
      */
-    suspend fun liveStates(): List<Pair<String, String>>? = runCatching {
+    internal suspend fun liveStates(): List<HermesLiveState>? = runCatching {
         if (phase == HermesPhase.CONNECTING || phase == HermesPhase.OFFLINE) return null
         val r = gw.request("session.active_list", JSONObject(), timeoutMs = 15_000)
-        val arr = r.optJSONArray("sessions") ?: JSONArray()
-        (0 until arr.length()).map { arr.getJSONObject(it) }.map { it.optString("title").ifBlank { it.optString("source") } to it.optString("status") }
+        HermesLiveState.fromResult(r)
     }.getOrNull()
 
     fun showPicker() {
