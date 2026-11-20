@@ -356,7 +356,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 agent = pane?.agentName ?: "The agent",
                 sending = vm.answerInFlight(paneId),
                 readOnlyPreview = openingPreview != null ||
-                    (com.billmongan.herdrdroid.herdr.isOpenCode(pane?.agent) && shownTarget == null && !p.terminalReview),
+                    ((com.billmongan.herdrdroid.herdr.isOpenCode(pane?.agent) || p.hermesClarify) && shownTarget == null && !p.terminalReview),
                 onChoice = { c -> vm.answerChoice(paneId, p, c, target = shownTarget) },
                 onKey = { k ->
                     val label = "Pressed " + when (k) { "esc" -> "Esc"; "tab" -> "Tab"; "shift+tab" -> "Shift+Tab"; "ctrl+c" -> "Ctrl+C"; else -> k }
@@ -1263,7 +1263,8 @@ internal fun PromptCard(
             }
             // Each choice grows to fit its whole label; the page scrolls, the card has no scroll of its own.
             if (p.terminalReview) {
-                Text("This preview is incomplete. Open the terminal to review the full command before answering.",
+                Text(if (p.hermesClarify) "Answer this Hermes question in Terminal."
+                    else "This preview is incomplete. Open the terminal to review the full command before answering.",
                     color = Palette.Muted, fontSize = 12.5.sp)
                 onShowTerminal?.let { show ->
                     TextButton(onClick = show, modifier = Modifier.fillMaxWidth()) { Text("Show terminal") }
@@ -1295,12 +1296,14 @@ internal fun PromptCard(
                         KeyButton("Enter") { onKey("enter") }
                     }
                 }
+                if (p.hermesClarify) Text("Use Terminal to type a custom answer or cancel.",
+                    color = Palette.Muted, fontSize = 12.5.sp)
                 if (p.multi) Text("Several can be picked. Tapping a checkbox only turns that choice on or off.",
                     color = Palette.Muted, fontSize = 12.5.sp)
                 p.choices.forEachIndexed { i, c ->
                     // Say what tapping really sends: arrows and Enter for a menu with a highlighted row,
                     // Esc for a "(esc)" option, otherwise the key itself (1.2.7; it always said "sends N").
-                    val typed = com.billmongan.herdrdroid.herdr.isTypedAnswerChoice(c.label)
+                    val typed = !p.hermesClarify && com.billmongan.herdrdroid.herdr.isTypedAnswerChoice(c.label)
                     val what = when {
                         typed -> "moves there, then you type your answer"
                         p.openCodePermission && c.keys == "1" -> "checks the live selection before confirming"
@@ -1345,15 +1348,15 @@ internal fun PromptCard(
                     }
                 }
             }
-            if (!p.openCodePermission && !sending && !(p.choices.isEmpty() && p.region == listOf(com.billmongan.herdrdroid.herdr.UNREAD_SCREEN))) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (!p.hermesClarify && !p.openCodePermission && !sending && !(p.choices.isEmpty() && p.region == listOf(com.billmongan.herdrdroid.herdr.UNREAD_SCREEN))) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 KeyButton("Esc") { onKey("esc") }
                 KeyButton("Tab") { onKey("tab") }
                 KeyButton("Shift+Tab") { onKey("shift+tab") }
                 KeyButton("Ctrl+C", danger = true) { onKey("ctrl+c") }
             }
-            if (!p.openCodePermission) TextButton(onClick = onTypeAnswer, enabled = !sending, modifier = Modifier.fillMaxWidth()) { Text("Type a different answer") }
+            if (!p.hermesClarify && !p.openCodePermission) TextButton(onClick = onTypeAnswer, enabled = !sending, modifier = Modifier.fillMaxWidth()) { Text("Type a different answer") }
             onShowTerminal?.let { show -> TextButton(onClick = show, modifier = Modifier.fillMaxWidth()) { Text("Show terminal") } }
-            Text(
+            if (!p.hermesClarify) Text(
                 "Each button types its key into the tab, exactly as if you typed it there. For any other " +
                     "combination, turn on Ctrl or Alt below and type the letter.",
                 color = Palette.Muted,
