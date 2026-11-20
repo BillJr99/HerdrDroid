@@ -38,6 +38,8 @@ object Reflow {
     private val SCROLLBAR = Regex("""\s+[█▐▌▕▏]$""")
     private val CLOCK = Regex("""\s{3,}\d{1,2}:\d{2}\s?[AaPp][Mm]$""")
     private val GAP6 = Regex(""" {6,}""")
+    private val GROK_THOUGHT = Regex("""Thought for \d+(?:\.\d+)?s""")
+    private val GROK_PROMPT = Regex("""│\s*❯(?:\s+.*?)?\s*│""")
 
     /** The line without a scrollbar, a right-aligned clock, or a side panel to its right. */
     fun clean(line: String): String {
@@ -87,7 +89,7 @@ object Reflow {
         sb.append(next)
     }
 
-    fun parse(text: String, antigravity: Boolean = false): List<Seg> {
+    fun parse(text: String, antigravity: Boolean = false, grok: Boolean = false): List<Seg> {
         val raw = text.lines().map(::clean)
 
         // The agent's input box and status line: from the first rule or box edge among the last
@@ -102,7 +104,14 @@ object Reflow {
                 raw.getOrNull(i + 1)?.let(::isRule) == true &&
                 raw.drop(i + 2).any { it.contains("Shift+Tab to change mode", ignoreCase = true) }
         } else null
-        val footerAt = if (antigravity) agyComposer?.minus(1) ?: raw.size else
+        // A Grok reply can end in a box too. Require the native prompt, model border and mode hint.
+        val grokComposer = if (grok) window.lastOrNull { i ->
+            GROK_PROMPT.matches(raw[i].trim()) &&
+                raw.getOrNull(i - 1)?.trim()?.matches(Regex("╭─+╮")) == true &&
+                raw.getOrNull(i + 1)?.trim()?.let { it.startsWith("╰─") && it.endsWith("─╯") && " Grok " in it } == true &&
+                raw.drop(i + 2).firstOrNull { it.isNotBlank() }?.trimStart()?.startsWith("Shift+Tab:mode") == true
+        } else null
+        val footerAt = if (antigravity || grok) (agyComposer ?: grokComposer)?.minus(1) ?: raw.size else
             window.firstOrNull { i ->
                 isRule(raw[i]) || raw[i].trimStart().firstOrNull()?.let { it in CHROME_START } == true
             } ?: window.lastOrNull { PROMPT_ONLY.matches(raw[it]) } ?: raw.size
@@ -183,10 +192,12 @@ object Reflow {
                 val mark = m.value.trim()
                 // Antigravity prefixes top-level replies and activity with terminal markers.
                 // Keep the hanging indent for reflow, and leave nested bullets and tables alone.
+                val content = t.substring(m.value.length)
                 val chrome = antigravity && lead == margin && (mark == "●" || mark == "○") &&
                     m.value.last().isWhitespace()
-                P(lead, mark.takeUnless { chrome }, lead + m.value.length,
-                    mark == "⎿" || (chrome && mark == "○"), t.substring(m.value.length), l.length)
+                val grokThought = grok && lead == margin && mark == "◆" && GROK_THOUGHT.matches(content)
+                P(lead, mark.takeUnless { chrome || grokThought }, lead + m.value.length,
+                    mark == "⎿" || (chrome && mark == "○") || grokThought, content, l.length)
             } else {
                 P(lead, null, lead, false, t, l.length)
             }

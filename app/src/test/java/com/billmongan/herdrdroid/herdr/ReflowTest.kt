@@ -98,6 +98,24 @@ class ReflowTest {
     }
 
     @Test
+    fun grokShortReplyKeepsTableAndSeparatesNativeComposer() {
+        val table = listOf("┌───┬───┐", "│ A │ B │", "└───┴───┘")
+        val reply = listOf("◆ Thought for 2.1s", "", "Here is the result:") + table
+        val composer = listOf("╭────────────────────────────╮", "│ ❯ draft                   │",
+            "╰────────── Grok 4.7 (high) ─╯", "Shift+Tab:mode  │  Ctrl+.:shortcuts")
+        for (footer in listOf(emptyList(), composer)) {
+            val segs = Reflow.parse((reply + footer).joinToString("\n"), grok = true)
+            assertEquals(table, segs.filterIsInstance<Seg.Code>().single().lines)
+            val paras = segs.filterIsInstance<Seg.Para>()
+            assertTrue(paras.first().detail)
+            assertEquals("Here is the result:", paras.last().text)
+            assertEquals(if (footer.isEmpty()) emptyList() else listOf(Seg.Footer(listOf(
+                "draft", "Grok 4.7 (high)", "Shift+Tab:mode    Ctrl+.:shortcuts"))),
+                segs.filterIsInstance<Seg.Footer>())
+        }
+    }
+
+    @Test
     fun claudeBulletsDetailsUserAndFooter() {
         val screen = listOf(
             "❯ Could we line up the arrow keys at the bottom with the other keys like control alt so that the arrows are on",
