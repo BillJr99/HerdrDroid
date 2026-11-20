@@ -1661,7 +1661,8 @@ class AppViewModel internal constructor(
         draftReadFor = key.takeIf { live != null }
         paneDraft = draft?.let {
             val shown = PaneDraftShown(o, it.text, it.bounded && com.billmongan.herdrdroid.herdr.hasStableOccupant(o.pane),
-                com.billmongan.herdrdroid.herdr.canClearDraft(agent),
+                // A suggestion list may be in the box's buffer: no Clear either.
+                com.billmongan.herdrdroid.herdr.canClearDraft(agent) && !it.menu,
                 com.billmongan.herdrdroid.herdr.draftSendBlock(it, now.status, now.agentName))
             paneDraft?.takeIf { d -> d == shown } ?: shown
         }

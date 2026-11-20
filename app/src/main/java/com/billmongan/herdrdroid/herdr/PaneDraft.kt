@@ -52,7 +52,9 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
 
     companion object {
         /** Backspace rounds for Clear, each re-reading the box first. */
-        const val MAX_CLEAR_ROUNDS = 4
+        const val MAX_CLEAR_ROUNDS = 6
+        /** Backspaces in Clear's first round, a probe read back before any larger batch. */
+        const val CLEAR_PROBE = 8
         /** Backspaces in one write. */
         const val MAX_KEYS_PER_ROUND = 2_000
         private const val SETTLE_MS = 600L
@@ -111,18 +113,21 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
         }
 
     /**
-     * Presses Backspace as many times as the draft has characters, then reads the box again; up to
+     * Presses a few Backspaces ([CLEAR_PROBE]) and reads the box again, then as many as are left; up to
      * [MAX_CLEAR_ROUNDS] rounds, each only while the box still shows a strict start of the text the
      * last round saw (some Backspaces were dropped), so no text that was never shown is deleted.
      * Never presses Enter.
      */
     suspend fun clear(server: String, shown: Pane, shownText: String, allowed: () -> Boolean, port: Port): Outcome {
         if (!canClearDraft(shown.agent)) return Outcome.REFUSED
-        return guarded(server, shown, shownText, allowed, port) { _, _ ->
+        return guarded(server, shown, shownText, allowed, port) { _, draft ->
+            // A suggestion list may be part of the box's buffer: nothing is typed then.
+            if (draft.menu) return@guarded Outcome.NOT_SENDABLE
             var left = shownText
             var pressed = false
             for (round in 1..MAX_CLEAR_ROUNDS) {
-                val count = left.length.coerceIn(1, MAX_KEYS_PER_ROUND)
+                // First a few, read back; then the rest, once they removed what was expected.
+                val count = (if (round == 1) minOf(left.length, CLEAR_PROBE) else left.length).coerceIn(1, MAX_KEYS_PER_ROUND)
                 val permit = gate.open(server to shown.id, WritePermit(allowed))
                     ?: return@guarded if (pressed) Outcome.UNCERTAIN else Outcome.REFUSED
                 try {
@@ -145,9 +150,11 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
                 if (!ready(shown, fresh)) return@guarded Outcome.UNCERTAIN
                 if (emptyBox(fresh!!, after)) return@guarded Outcome.CLEARED
                 val still = draftOn(fresh, after) ?: return@guarded Outcome.UNCERTAIN
-                // Backspace from the end leaves the start of what was there. Anything else (the cursor
-                // mid-text, text that was never shown, nothing deleted) stops it.
-                if (!still.bounded || still.text.length >= left.length || !left.startsWith(still.text)) return@guarded Outcome.PARTIAL
+                // Backspace from the end leaves the start of what was there, shorter by at most the
+                // keys sent (fewer if some were dropped). Anything else (the cursor mid-text, text
+                // that was never shown, more deleted than sent, nothing deleted) stops it.
+                val removed = left.length - still.text.length
+                if (!still.bounded || still.menu || removed !in 1..count || !left.startsWith(still.text)) return@guarded Outcome.PARTIAL
                 left = still.text
             }
             Outcome.PARTIAL
@@ -198,7 +205,8 @@ internal fun draftOutcomeText(outcome: PaneDraftAction.Outcome, agent: String, c
     PaneDraftAction.Outcome.PARTIAL ->
         "Some of the draft is still in $agent's input box (the cursor may not have been at the end). Enter was not pressed. Clear the rest in Terminal."
     PaneDraftAction.Outcome.NOT_SENDABLE ->
-        "Not sent: Enter could pick a highlighted command or suggestion instead, or $agent isn't idle. Nothing was typed."
+        if (clear) "Not cleared: a command or suggestion list shows in $agent's input box. Nothing was typed. Close it at the computer first."
+        else "Not sent: Enter could pick a highlighted command or suggestion instead, or $agent isn't idle. Nothing was typed."
     PaneDraftAction.Outcome.UNCERTAIN ->
         if (clear) "Backspace was pressed, but the app couldn't confirm that $agent's input box is empty. Enter was not pressed. Check Terminal."
         else "Enter was pressed once, but the app couldn't confirm the draft went. Check the chat before trying again."

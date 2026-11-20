@@ -652,7 +652,9 @@ class SuccessiveCardAnswerTest {
         vm.clearPaneDraft(draft)
         waitForDraftAction()
         assertEquals(1, sent.size)
-        assertEquals(List("two lines\nof draft".length) { "backspace" }, sent.single().split(' '))
+        // The probe: a few Backspaces, read back; the box was empty after them.
+        assertEquals(List(minOf("two lines\nof draft".length, com.billmongan.herdrdroid.herdr.PaneDraftAction.CLEAR_PROBE)) { "backspace" },
+            sent.single().split(' '))
         assertEquals("Draft cleared from Hermes's input box.", vm.notice)
     }
 

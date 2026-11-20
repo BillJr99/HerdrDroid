@@ -83,6 +83,21 @@ class PaneDraftTest {
         assertNull(composerDraftOf(tall, "claude"))
     }
 
+    @Test fun `a typed line of dashes as wide as the box makes the end unknown`() {
+        val dashes = "─".repeat(60)
+        val boxed = hermes("❯ Please ship it", dashes, "now")
+        assertEquals(ComposerDraft("Please ship it\n$dashes\nnow", false), composerDraftOf(boxed, "hermes"))
+        assertEquals(false, composerDraftOf(claude("❯ Please ship it", dashes, "  now"), "claude")?.bounded)
+        // The same in a frame whose top edge is short: a full-width divider inside it.
+        val top = "╭" + "─".repeat(10) + "╮"
+        val framed = "out\n$top\n│ ❯ Please ship it   │\n├${"─".repeat(60)}┤\n│   now              │\n╰${"─".repeat(60)}╯\n  Shift+Tab:mode"
+        assertEquals(false, composerDraftOf(framed, "grok")?.bounded)
+        // One rule of that width, the box's own: as before.
+        assertEquals(ComposerDraft("Please ship it\nnow", true), composerDraftOf(hermes("❯ Please ship it", "now"), "hermes"))
+        val plainFrame = "out\n$top\n│ ❯ Please ship it   │\n│   now              │\n╰${"─".repeat(60)}╯\n  Shift+Tab:mode"
+        assertEquals(ComposerDraft("Please ship it\nnow", true), composerDraftOf(plainFrame, "grok"))
+    }
+
     @Test fun `unboxed prompt rows need the glyph at column zero and a clear row above`() {
         assertEquals(ComposerDraft("first\n> quoted", true), composerDraftOf(codex("› first", "  > quoted"), "codex"))
         // Text right above the prompt row: it may be part of the output, so it is shown but not acted on.
@@ -194,31 +209,60 @@ class PaneDraftTest {
         assertTrue(host.writes.isEmpty())
     }
 
-    @Test fun `clear presses only Backspace and stops when the box is empty`() = runBlocking {
-        val host = Host(shown, listOf(draftScreen, emptyScreen))
-        assertEquals(PaneDraftAction.Outcome.CLEARED, action().clear("srv", shown, draftText, { true }, host))
-        assertEquals(1, host.writes.size)
-        assertEquals(draftText.length, host.writes.single().size)
-        assertTrue(host.writes.flatten().all { it == "backspace" })
+    /**
+     * A Hermes box over a real buffer: Backspace deletes from its end, [drop] keys of the first
+     * write are lost on the way, and [extra] more characters than were sent vanish on the first one.
+     */
+    private inner class Buffer(var text: String, val drop: Int = 0, val extra: Int = 0) : PaneDraftAction.Port {
+        val writes = mutableListOf<List<String>>()
+        override suspend fun pane(id: String) = shown
+        override suspend fun viewport(id: String): String {
+            val lines = text.split("\n")
+            return hermes(*(listOf("❯ " + lines.first()) + lines.drop(1)).toTypedArray())
+        }
+        override suspend fun keys(id: String, keys: List<String>, permit: WritePermit) {
+            permit.admit()
+            writes += keys
+            val n = keys.size - (if (writes.size == 1) drop else 0) + (if (writes.size == 1) extra else 0)
+            text = text.dropLast(n.coerceAtMost(text.length))
+        }
+        override suspend fun pause(ms: Long) {}
     }
 
-    @Test fun `clear repeats only while the draft shrinks and is bounded`() = runBlocking {
-        // The cursor was mid-text: the first round leaves the tail, the second empties it.
-        // Some Backspaces were dropped: what is left is the start of the draft, so it goes on.
-        val shrinking = Host(shown, listOf(draftScreen, hermes("❯ Please draft the reply"), emptyScreen))
-        assertEquals(PaneDraftAction.Outcome.CLEARED, action().clear("srv", shown, draftText, { true }, shrinking))
-        assertEquals(listOf(draftText.length, "Please draft the reply".length), shrinking.writes.map { it.size })
+    @Test fun `clear probes with a few Backspaces, reads back, then sends the rest`() = runBlocking {
+        val buffer = Buffer(draftText)
+        assertEquals(PaneDraftAction.Outcome.CLEARED, action().clear("srv", shown, draftText, { true }, buffer))
+        assertEquals(listOf(PaneDraftAction.CLEAR_PROBE, draftText.length - PaneDraftAction.CLEAR_PROBE), buffer.writes.map { it.size })
+        assertTrue(buffer.writes.flatten().all { it == "backspace" })
+        // A short draft: the probe is the whole of it.
+        val short = Buffer("hi")
+        assertEquals(PaneDraftAction.Outcome.CLEARED, action().clear("srv", shown, "hi", { true }, short))
+        assertEquals(listOf(2), short.writes.map { it.size })
+    }
 
-        // The cursor was mid-text: what is left is not the start of what was shown (it may never
-        // have been shown), so it stops after one round.
-        val midText = Host(shown, listOf(draftScreen, hermes("❯ vault push")))
-        assertEquals(PaneDraftAction.Outcome.PARTIAL, action().clear("srv", shown, draftText, { true }, midText))
-        assertEquals(1, midText.writes.size)
+    @Test fun `clear goes on after dropped keys but stops on anything else`() = runBlocking {
+        // Three keys of the probe were lost: the rest is still a start of the draft, so it goes on.
+        val dropped = Buffer(draftText, drop = 3)
+        assertEquals(PaneDraftAction.Outcome.CLEARED, action().clear("srv", shown, draftText, { true }, dropped))
+        assertEquals(listOf(8, draftText.length - 5), dropped.writes.map { it.size })
+
+        // More went than was sent (text off screen, the cursor elsewhere): it stops after the probe.
+        val more = Buffer(draftText, extra = 4)
+        assertEquals(PaneDraftAction.Outcome.PARTIAL, action().clear("srv", shown, draftText, { true }, more))
+        assertEquals(listOf(8), more.writes.map { it.size })
+
+        // Seven of eight went: still the start of the draft, so the rest follows.
+        val midText = Host(shown, listOf(draftScreen, hermes("❯ Please draft the reply", "about the vau"), emptyScreen))
+        assertEquals(PaneDraftAction.Outcome.CLEARED, action().clear("srv", shown, draftText, { true }, midText))
+        // The cursor was mid-text: what is left is not the start of what was shown.
+        val cut = Host(shown, listOf(draftScreen, hermes("❯ ease draft the reply", "about the vault push")))
+        assertEquals(PaneDraftAction.Outcome.PARTIAL, action().clear("srv", shown, draftText, { true }, cut))
+        assertEquals(1, cut.writes.size)
 
         // Backspace that deletes nothing: one round, then it stops and says so.
         val stuck = Host(shown, listOf(draftScreen))
         assertEquals(PaneDraftAction.Outcome.PARTIAL, action().clear("srv", shown, draftText, { true }, stuck))
-        assertEquals(1, stuck.writes.size)
+        assertEquals(listOf(8), stuck.writes.map { it.size })
 
         // Always a little shorter, never empty: at most MAX_CLEAR_ROUNDS writes.
         val long = "x".repeat(40)
@@ -226,8 +270,20 @@ class PaneDraftTest {
         assertEquals(PaneDraftAction.Outcome.PARTIAL, action().clear("srv", shown, long, { true }, slow))
         assertEquals(PaneDraftAction.MAX_CLEAR_ROUNDS, slow.writes.size)
 
-        for (h in listOf(shrinking, midText, stuck, slow)) assertFalse("enter" in h.writes.flatten())
-        assertTrue(listOf(shrinking, stuck, slow).all { h -> h.writes.all { it.size <= PaneDraftAction.MAX_KEYS_PER_ROUND } })
+        for (h in listOf(midText, cut, stuck, slow)) assertFalse("enter" in h.writes.flatten())
+        for (b in listOf(dropped, more)) assertFalse("enter" in b.writes.flatten())
+        assertTrue(listOf(cut, stuck, slow).all { h -> h.writes.all { it.size <= PaneDraftAction.MAX_KEYS_PER_ROUND } })
+    }
+
+    @Test fun `a suggestion list is not draft text and turns Send and Clear off`() = runBlocking {
+        val screen = codex("› open @src", "  @src/App.kt", "  @src/main.kt")
+        assertEquals(ComposerDraft("open @src", true, menu = true), composerDraftOf(screen, "codex"))
+        val codexPane = shown.copy(agent = "codex")
+        val host = Host(codexPane, listOf(screen, codex("› ")))
+        assertEquals(PaneDraftAction.Outcome.NOT_SENDABLE, action().clear("srv", codexPane, "open @src", { true }, host))
+        assertEquals(PaneDraftAction.Outcome.NOT_SENDABLE, action().send("srv", codexPane, "open @src", { true }, host))
+        assertTrue(host.writes.isEmpty())
+        assertTrue(draftOutcomeText(PaneDraftAction.Outcome.NOT_SENDABLE, "Codex", clear = true).startsWith("Not cleared"))
     }
 
     @Test fun `clear is refused without a known safe clear or for a changed occupant`() = runBlocking {
