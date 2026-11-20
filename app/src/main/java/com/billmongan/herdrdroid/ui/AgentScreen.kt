@@ -393,6 +393,11 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         // question is open, from this pane's own latest read.
         vm.paneDraft?.takeIf { prompt == null && !fullTerminal && !backgroundDrawer && usageOverlay == null &&
             vm.paneReadProblem == null && vm.paneTextPane == paneId && it.target.pane.id == paneId }?.let { d ->
+            // Claude holds a question back while a draft is in its input box (2.1.1): say so here.
+            if (pane?.agent == "claude" && com.billmongan.herdrdroid.herdr.claudeQuestionBehindDraft(screenText))
+                Text("Claude has a question waiting behind this draft. Send or clear the draft to see it.",
+                    color = Palette.OrangeInk, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
             PaneDraftCard(
                 agent = pane?.agentName ?: "The agent",
                 draft = d,
@@ -592,7 +597,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         // The chat with its question history in place (1.3.0). A question still open is left out
         // while its card is showing, so it isn't on screen twice.
         val questionsNow = vm.questionsFor(paneId)
-        val cardUp = prompt != null
+        // Claude's sessions-list card (2.1.1) is not the question itself: the question stays in the chat.
+        val cardUp = prompt != null && !prompt.claudeBackground
         // Placed again when item times or the clock offset change, not only the items (1.4.3, from review).
         val chatItems = remember(vm.transcriptItems, questionsNow, cardUp, vm.transcriptTimes, vm.transcriptSeen, vm.hostOffsets) {
             com.billmongan.herdrdroid.transcript.QuestionLog.withQuestions(vm.transcriptItems, questionsNow, vm.transcriptTimes, vm.hostOffsetMs(), vm.transcriptSeen)
@@ -1298,6 +1304,23 @@ internal fun PromptCard(
                     else -> "This preview is incomplete. Open the terminal to review the full command before answering."
                 },
                     color = Palette.Muted, fontSize = 12.5.sp)
+                onShowTerminal?.let { show ->
+                    TextButton(onClick = show, modifier = Modifier.fillMaxWidth()) { Text("Show terminal") }
+                }
+                return@Column
+            }
+            // Claude's session behind its sessions list (2.1.1): its own hint says Esc returns to it,
+            // and then its question dialog shows and becomes the usual card. Nothing is sent until tapped.
+            if (p.claudeBackground) {
+                Text("Its terminal shows Claude's sessions list instead of the session, so its question isn't on screen. " +
+                    "Esc returns to the session.", color = Palette.Muted, fontSize = 12.5.sp)
+                Button(
+                    enabled = !sending,
+                    onClick = { onKey("esc") },
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Palette.Blue, contentColor = Palette.OnBlue),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                ) { Text("Return to the session (Esc)", fontSize = 15.sp, fontWeight = FontWeight.SemiBold) }
                 onShowTerminal?.let { show ->
                     TextButton(onClick = show, modifier = Modifier.fillMaxWidth()) { Text("Show terminal") }
                 }
