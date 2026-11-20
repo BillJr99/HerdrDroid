@@ -271,9 +271,12 @@ class Herdr internal constructor(
 
     /** Only the live viewport, with no fallback into old scrollback. */
     internal suspend fun readCardViewport(id: String, connection: Any, timeoutSeconds: Long = 5): String = stripAnsi(
+        readStyledViewport(id, connection, timeoutSeconds)
+    )
+
+    internal suspend fun readStyledViewport(id: String, connection: Any, timeoutSeconds: Long = 5): String =
         if (core) runNow(hcCmd("read", id, "--lines", "80"), timeoutSeconds, connection)
         else runNow(visibleSnapshot(id, ansi = true), timeoutSeconds, connection)
-    )
 
     /**
      * The pane's screen as it is shown at the computer (`--source visible`), which moves nothing
@@ -439,8 +442,8 @@ class Herdr internal constructor(
                 lastSendRoute = "agent prompt refused; typed with send-text + enter"
             }
         }
-        runNow(cmd("pane", "send-text", pane.id, text))
-        runNow(cmd("pane", "send-keys", pane.id, "enter"))
+        runNow(cmd("pane", "send-text", pane.id, text), expectedConnection = expectedConnection)
+        runNow(cmd("pane", "send-keys", pane.id, "enter"), expectedConnection = expectedConnection)
     }
 
     /**
@@ -951,6 +954,8 @@ data class Prompt(
     val terminalReview: Boolean = false,
     /** Exact pre-layout approval material. Never rendered or used as history text. */
     internal val approvalIdentity: String? = null,
+    /** OpenCode's permission row needs a styled, live focus read before confirming. */
+    internal val openCodePermission: Boolean = false,
 ) {
     /**
      * Never an empty card (1.4.2): a prompt with no choices always has something to show, the
@@ -1212,7 +1217,7 @@ private fun inputRow(screen: String): Pair<String, String>? {
 }
 
 /** One character of a styled row and how it is drawn (1.4.6). */
-private data class Styled(val ch: Char, val faint: Boolean, val italic: Boolean, val grey: Boolean)
+private data class Styled(val ch: Char, val faint: Boolean, val italic: Boolean, val grey: Boolean, val background: List<Int>)
 
 /** A colour that reads as grey: the three channels within 28 of each other, of middle brightness. */
 private fun greyRgb(r: Int, g: Int, b: Int): Boolean =
@@ -1230,6 +1235,7 @@ private fun grey256(n: Int): Boolean = when (n) {
 private fun styledChars(row: String): List<Styled> {
     val out = ArrayList<Styled>(row.length)
     var faint = false; var italic = false; var grey = false
+    var background = emptyList<Int>()
     var i = 0
     while (i < row.length) {
         val m = if (row[i] == '\u001B') ANSI_SEQ.find(row, i)?.takeIf { it.range.first == i } else null
@@ -1240,7 +1246,7 @@ private fun styledChars(row: String): List<Styled> {
                 var k = 0
                 while (k < ps.size) {
                     when (val c = ps[k]) {
-                        0 -> { faint = false; italic = false; grey = false }
+                        0 -> { faint = false; italic = false; grey = false; background = emptyList() }
                         2 -> faint = true
                         22 -> faint = false
                         3 -> italic = true
@@ -1253,7 +1259,12 @@ private fun styledChars(row: String): List<Styled> {
                             if (ps.getOrNull(k + 1) == 2 && k + 4 < ps.size) { grey = greyRgb(ps[k + 2], ps[k + 3], ps[k + 4]); k += 4 }
                             else if (ps.getOrNull(k + 1) == 5 && k + 2 < ps.size) { grey = grey256(ps[k + 2]); k += 2 }
                         }
-                        48 -> k += if (ps.getOrNull(k + 1) == 2) 4 else if (ps.getOrNull(k + 1) == 5) 2 else 0
+                        in 40..47, in 100..107 -> background = listOf(c)
+                        49 -> background = emptyList()
+                        48 -> {
+                            val n = if (ps.getOrNull(k + 1) == 2) 4 else if (ps.getOrNull(k + 1) == 5) 2 else 0
+                            if (n > 0 && k + n < ps.size) { background = ps.subList(k, k + n + 1); k += n }
+                        }
                         else -> {}
                     }
                     k++
@@ -1262,7 +1273,7 @@ private fun styledChars(row: String): List<Styled> {
             i = m.range.last + 1
             continue
         }
-        out += Styled(row[i], faint, italic, grey)
+        out += Styled(row[i], faint, italic, grey, background)
         i++
     }
     return out
@@ -1652,8 +1663,91 @@ private val AGENT_CRASHES = listOf(
 /** A shell's prompt: "tester@host:~/work$", "user@devbox2:~ %" (a bare "$" is too easily something else). */
 private val SHELL_PROMPT = Regex("""^[\w.-]+@[\w.-]+(:\S*)?\s?[$#%]\s*$""")
 
+internal fun isOpenCode(agent: String?): Boolean = agent?.lowercase() in setOf("opencode", "opencode-college")
+
+private val OPENCODE_DRAWER_TABS = Regex("""\bSubagents\b.*\bShell\b.*\bTerminals\b""", RegexOption.IGNORE_CASE)
+private val OPENCODE_DRAWER_FOOTER = Regex("""\besc\b.*\bshow inactive\s+ctrl\+a\s+tabs\b""", RegexOption.IGNORE_CASE)
+
+/** This drawer owns keyboard input, but offers no approval or question choices. */
+internal fun openCodeBackgroundDrawer(agent: String?, screen: String): Boolean {
+    if (!isOpenCode(agent)) return false
+    val rows = stripAnsi(screen).lineSequence().filter { it.any(Char::isLetterOrDigit) }.toList().takeLast(20)
+    return rows.lastOrNull()?.let(OPENCODE_DRAWER_FOOTER::containsMatchIn) == true &&
+        rows.dropLast(1).any(OPENCODE_DRAWER_TABS::containsMatchIn)
+}
+
+private val OPENCODE_COMMANDS = Regex("""\bctrl\+p\s+commands\b""", RegexOption.IGNORE_CASE)
+private val OPENCODE_MODE = Regex("""^[┃│]\s+(Build|Plan)(?:\s+·)?\s+[^┃│]+[┃│]?.*$""")
+private val OPENCODE_EMPTY_HINT = Regex("""^\s*[┃│]\s+Ask anything(?:\.\.\.|…)\s*(?:[┃│].*)?$""")
+
+/** The normal OpenCode composer draws model/mode above its commands footer, not modal controls. */
+private fun openCodeComposerMode(rows: List<String>): Int {
+    val footer = rows.indexOfLast { it.isNotBlank() }
+    if (footer < 1 || !OPENCODE_COMMANDS.containsMatchIn(rows[footer])) return -1
+    return (footer - 1 downTo maxOf(0, footer - 3)).firstOrNull { i ->
+        OPENCODE_MODE.matches(rows[i].trim()) && rows.subList(i + 1, footer).all {
+            it.isBlank() || it.trimStart().startsWith("╹")
+        }
+    } ?: -1
+}
+
+/** A positively identified empty composer, required before typing despite stale blocked metadata. */
+internal fun openCodeEmptyComposer(screen: String): Boolean {
+    val rows = stripAnsi(screen).lines().takeLast(20)
+    val mode = openCodeComposerMode(rows)
+    if (mode < 1) return false
+    return (mode - 1 downTo maxOf(0, mode - 4)).any { i ->
+        OPENCODE_EMPTY_HINT.matches(rows[i]) && rows.subList(i + 1, mode).all {
+            it.isBlank() || it.trim().let { row -> row == "┃" || row == "│" }
+        }
+    }
+}
+
 private val OPENCODE_WEB_SEARCH_FOOTER =
     Regex("""^↑/?↓\s+select\s+enter\s+submit\s+esc\s+dismiss$""", RegexOption.IGNORE_CASE)
+
+private val OPENCODE_PERMISSION_TITLE = Regex("""^(?:△\s+)?(?:Permission required|Reject permission)$""")
+private val OPENCODE_PERMISSION_BUTTONS = Regex("""(Allow once)\s{3,}(?:(Always allow)\s{3,})?(Reject)$""")
+private val OPENCODE_PERMISSION_HINT = Regex("""(?:⇆|←→)\s+select\s+enter\s+confirm$""")
+
+private fun detectOpenCodePermission(styled: String, text: String): Prompt? {
+    fun clean(row: String) = row.trim().trim('┃', '│', '|').trim()
+    val rows = text.lines()
+    val footer = rows.indexOfLast { clean(it).isNotEmpty() }
+    if (footer < 0) return null
+    val hint = OPENCODE_PERMISSION_HINT.find(clean(rows[footer]))
+    val title = (footer downTo maxOf(0, footer - 60)).firstOrNull { OPENCODE_PERMISSION_TITLE.matches(clean(rows[it])) }
+    if (title == null && (hint == null || !clean(rows[footer]).contains("Allow once"))) return null
+    if (title != null && agentWentOn(rows.subList(title + 1, footer + 1))) return null
+    val region = rows.subList(title ?: footer, footer + 1)
+    val heading = title?.let { clean(rows[it]).removePrefix("△ ") } ?: "Permission required"
+    fun review() = Prompt(heading, emptyList(), region = region.map(::clean), terminalReview = true)
+    if (title == null || heading != "Permission required" || hint == null) return review()
+    val onFooter = clean(rows[footer]).substring(0, hint.range.first).trimEnd()
+    val buttonRow = if (onFooter.isBlank() || !onFooter.contains("Allow once")) footer - 1 else footer
+    if (buttonRow <= title) return review()
+    val buttons = OPENCODE_PERMISSION_BUTTONS.find(if (buttonRow == footer) onFooter else clean(rows[buttonRow])) ?: return review()
+    val body = rows.subList(title + 1, buttonRow).map(::clean).filter(String::isNotEmpty)
+    if (body.isEmpty() || body.any { '…' in it || "..." in it } || body.last().trim() in listOf("$", "# Shell command")) return review()
+    val labels = listOfNotNull(buttons.groups[1]?.value, buttons.groups[2]?.value, buttons.groups[3]?.value)
+    val styledRow = styled.lines().getOrNull(buttonRow).orEmpty()
+    val chars = styledChars(styledRow)
+    val plain = chars.joinToString("") { it.ch.toString() }
+    val fills = labels.map { label ->
+        val at = plain.indexOf(label)
+        if (at < 0 || plain.lastIndexOf(label) != at) null
+        else chars.subList(at, at + label.length).map { it.background }.distinct().singleOrNull()
+    }
+    // OpenCode highlights with background color, not a glyph. Only trust a unique fill
+    // against two matching unselected buttons; plain or ambiguous frames cannot approve.
+    val focused = if (fills.size == 3 && fills.none { it == null } && fills.distinct().size == 2)
+        fills.indexOfFirst { fill -> fills.count { it == fill } == 1 }.takeIf { it >= 0 }?.let { (it + 1).toString() }
+        else null
+    return Prompt(heading, labels.mapIndexedNotNull { i, label ->
+        if (label == "Always allow") null else Choice(label, (i + 1).toString(), false)
+    }, focused, escRejects = true, parts = questionParts((listOf(heading) + body).map { QLine(it) }),
+        horizontal = true, approvalIdentity = rows.subList(title, buttonRow).joinToString("\n"), openCodePermission = true)
+}
 private val OPENCODE_WEB_SEARCH_OPTION = Regex("""^(?:[❯›>]\s*)?([1-3])[.]\s+(.+)$""")
 
 /** OpenCode highlights this picker with color alone. Its numbered keys select and submit directly. */
@@ -1738,8 +1832,18 @@ private fun detectHermesCommandPreview(text: String): Prompt? {
 }
 
 fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version: String? = null): Prompt? {
+    val plain = stripAnsi(text)
+    if (isOpenCode(agent)) {
+        if (openCodeBackgroundDrawer(agent, plain) || openCodeComposerMode(plain.lines().takeLast(20)) >= 0) return null
+        detectOpenCodePermission(text, plain)?.let { return it }
+    }
+    return detectPlainPrompt(plain, blocked, agent, version)
+}
+
+private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, version: String?): Prompt? {
     if ((agent == null || agent.equals("claude", true)) && claudeUsageOpen(text)) return null
-    if (agent?.lowercase() in setOf("opencode", "opencode-college")) {
+    val openCode = isOpenCode(agent)
+    if (openCode) {
         detectOpenCodeWebSearch(text)?.let { return it }
     }
     if (agent.equals("hermes", true)) {
@@ -2065,7 +2169,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     // bottom that asks. After a dialog has scrolled into history, herdr can still report it as
     // blocked; don't let that status turn subsequent prose into a new card. A current footer or
     // other recognized prompt controls still work without waiting for the status to change.
-    if ((footer && !rejectEcho) || (blocked && asks && !pastDialog)) {
+    if ((footer && !rejectEcho) || (blocked && asks && !pastDialog && !openCode)) {
         val region = raw.dropLastWhile { it.isBlank() }.takeLast(16).map { clean(it) }.dropWhile { it.isEmpty() }
         val fallbackQuestion = if (rejectEcho) askingLine?.value?.let(clean) else question
         return Prompt(fallbackQuestion ?: "This agent is waiting for you.", emptyList(), region = region.takeIf { r -> r.any { it.isNotBlank() } } ?: listOf(UNREAD_SCREEN))
