@@ -26,7 +26,35 @@ internal val codexWrappedQuestion = """
     ←/→ to navigate questions | esc to interrupt
 """.trimIndent()
 
+// rust-v0.169.0 request_user_input_unanswered_confirmation snapshot, without padding.
+internal val codexUnansweredConfirmation = """
+    Submit with unanswered questions?
+    2 unanswered questions
+
+    › 1. Proceed  Submit with 2 unanswered questions
+      2. Go back  Return to the first unanswered question
+
+    Press enter to confirm or esc to go back
+""".trimIndent()
+
 class CodexQuestionTest {
+    @Test fun clippedProgressHeadingDoesNotExposeGenericKeys() {
+        val clipped = codexWrappedQuestion.substringAfter('\n')
+        val card = checkNotNull(detectPrompt(clipped, false, "codex"))
+        assertTrue(card.terminalReview)
+        assertTrue(card.codexQuestion)
+        assertTrue(card.answerRows().isEmpty())
+        assertNull(menuKeys(card, Choice("Option 2", "2", false)))
+    }
+
+    @Test fun unansweredConfirmationIsTerminalOnlyEvenWhenClipped() {
+        for (frame in listOf(codexUnansweredConfirmation, codexUnansweredConfirmation.substringAfter('\n'))) {
+            val card = checkNotNull(detectPrompt(frame, true, "codex"))
+            assertTrue(card.terminalReview)
+            assertTrue(card.codexQuestion)
+            assertTrue(card.answerRows().isEmpty())
+        }
+    }
     @Test fun nativeQuestionIsVisibleWithoutBlockedStatusAndDoesNotOfferKeys() {
         for ((frame, question) in listOf(codexFreeformQuestion to "Share details.", codexWrappedQuestion to "Choose an option.")) {
             val card = detectPrompt(frame, false, "codex")
@@ -43,7 +71,9 @@ class CodexQuestionTest {
             "/screens/codex/synthetic-2.0/multiline-command-approval.txt")).readText()
         val expected = checkNotNull(detectPrompt(approval, false, "codex"))
         assertTrue(expected.choices.isNotEmpty())
-        for (old in listOf(codexWrappedQuestion, codexWrappedQuestion.substringBefore("\ntab to add notes"))) {
+        for (old in listOf(codexWrappedQuestion, codexWrappedQuestion.substringBefore("\ntab to add notes"),
+            codexWrappedQuestion.substringAfter('\n'), codexUnansweredConfirmation,
+            codexUnansweredConfirmation.substringBefore("\nPress enter"))) {
             assertEquals(expected, detectPrompt("$old\n\n$approval", false, "codex"))
             assertNull(detectPrompt("$old\n\n› Next request", false, "codex"))
         }

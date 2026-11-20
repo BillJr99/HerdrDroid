@@ -13,6 +13,7 @@ import com.billmongan.herdrdroid.herdr.forPhone
 import com.billmongan.herdrdroid.transcript.lastReply
 import com.billmongan.herdrdroid.transcript.toMarkdown
 import com.billmongan.herdrdroid.herdr.detectPrompt
+import com.billmongan.herdrdroid.herdr.activePiQuestion
 import com.billmongan.herdrdroid.herdr.isOpenCode
 import com.billmongan.herdrdroid.herdr.openCodeBackgroundDrawer
 import com.billmongan.herdrdroid.herdr.openCodeEmptyComposer
@@ -221,6 +222,7 @@ class AppViewModel internal constructor(
     internal var paneTextTarget by mutableStateOf<CardTarget?>(null)
         private set
     private var openCodeComposerTarget by mutableStateOf<CardTarget?>(null)
+    private var piLiveQuestion by mutableStateOf<Prompt?>(null)
     private data class HermesUsageRead(val target: CardTarget, val composerReady: Boolean)
     private var hermesUsageRead by mutableStateOf<HermesUsageRead?>(null)
     var lastSent by mutableStateOf<Pair<String, String>?>(null)
@@ -1469,6 +1471,7 @@ class AppViewModel internal constructor(
             openingPanePreview = null
             paneTextTarget = null
             openCodeComposerTarget = null
+            piLiveQuestion = null
             hermesUsageRead = null
             openUsage = null
         }
@@ -1508,19 +1511,23 @@ class AppViewModel internal constructor(
             val verifyOpenCode = isOpenCode(agent) && client?.backend == Backend.TUI &&
                 (blocked || paneStatus == Status.WORKING || preview != null || openCodeBackgroundDrawer(agent, recent))
             val verifyHermesUsage = agent == "hermes"
+            val verifyPi = paneNow != null && requiresLivePiQuestion(paneNow)
             val liveCard = if (liveUsage == null &&
-                (verifyOpenCode || verifyHermesUsage || missingCodexCard || unfinishedClaudePreview || preview?.terminalReview == true || (blocked && preview?.choices.isNullOrEmpty())) && canUpgrade()) {
+                (verifyOpenCode || verifyHermesUsage || verifyPi || missingCodexCard || unfinishedClaudePreview || preview?.terminalReview == true || (blocked && preview?.choices.isNullOrEmpty())) && canUpgrade()) {
                 val owner = checkNotNull(cardOwner)
                 quietly { h ->
                     if (h !== owner.client) return@quietly null
-                    if (verifyHermesUsage && (!com.billmongan.herdrdroid.herdr.hasStableOccupant(owner.pane) ||
+                    if ((verifyHermesUsage || verifyPi) && (!com.billmongan.herdrdroid.herdr.hasStableOccupant(owner.pane) ||
                             h.cardPane(paneId, owner.connection)?.sameCardOccupant(owner.pane) != true || !canUpgrade())) return@quietly null
                     h.readCardViewport(paneId, owner.connection, timeoutSeconds = 1)
                 }
                     ?.takeIf { canUpgrade() && !it.isBlank() }
             } else null
             if (!isOpen()) return
-            val liveCandidate = liveCard?.let { detectPrompt(it, pane(paneId)?.status == Status.NEEDS_YOU, agent, version) }
+            val liveCandidate = liveCard?.let {
+                if (verifyPi) activePiQuestion(it, version)
+                else detectPrompt(it, pane(paneId)?.status == Status.NEEDS_YOU, agent, version)
+            }
             val livePrompt = liveCandidate?.takeIf {
                 verifyOpenCode || it.codexQuestion ||
                     (it.choices.isNotEmpty() && !it.terminalReview && (!requireCodexApprovalIdentity || it.approvalIdentity != null)) ||
@@ -1538,9 +1545,9 @@ class AppViewModel internal constructor(
                 if (liveReport || continued && ready) HermesUsageRead(owner, ready) else null
             }
             val recentClarify = preview?.hermesClarify == true
-            val requiresLive = verifyOpenCode || recentClarify || recentCodexQuestion
+            val requiresLive = verifyOpenCode || recentClarify || recentCodexQuestion || verifyPi
             val codexQuestionCleared = recentCodexQuestion && liveCandidate == null
-            val useLive = liveCard != null && (livePrompt != null || liveReport || recentReport || verifiedUsage != null || recentClarify || codexQuestionCleared || verifyOpenCode &&
+            val useLive = liveCard != null && (livePrompt != null || verifyPi && preview != null || liveReport || recentReport || verifiedUsage != null || recentClarify || codexQuestionCleared || verifyOpenCode &&
                 (blocked || preview != null || openCodeBackgroundDrawer(agent, recent) || openCodeBackgroundDrawer(agent, liveCard)))
             val text = if (useLive) checkNotNull(liveCard) else recent
             lastAppliedPaneRead = attempt
@@ -1550,7 +1557,8 @@ class AppViewModel internal constructor(
             noteInputLine(paneId, text)
             paneText = text
             paneTextPane = paneId
-            paneTextTarget = cardOwner?.takeIf { it.isCurrent(it.client) && (!requiresLive || useLive) }
+            paneTextTarget = cardOwner?.takeIf { it.isCurrent(it.client) && (!requiresLive || useLive) && (!verifyPi || livePrompt != null) }
+            piLiveQuestion = livePrompt?.takeIf { verifyPi && paneTextTarget != null }
             openCodeComposerTarget = paneTextTarget?.takeIf { useLive && verifyOpenCode && openCodeEmptyComposer(text) }
             hermesUsageRead = verifiedUsage
             if (agent in setOf("opencode", "opencode-college", "kiro", "kiro-cli")) {
@@ -1598,6 +1606,7 @@ class AppViewModel internal constructor(
         paneTextPane = paneId
         paneTextTarget = null
         openCodeComposerTarget = null
+        piLiveQuestion = null
         paneReadProblem = null
         openUsage = null
         current?.id?.let { questions(it, paneId) }
@@ -2735,7 +2744,8 @@ class AppViewModel internal constructor(
 
     private suspend fun CardTarget.freshAnswer(h: Herdr, shown: Prompt): Prompt? {
         if (shown.terminalReview || !isCurrent(h)) return null
-        if (shown.hermesClarify && (!foreground || h.backend != Backend.TUI || pane.scrollOffset != 0 ||
+        val guardedChoice = shown.hermesClarify || shown.openCodeQuestionFrame != null
+        if (guardedChoice && (!foreground || h.backend != Backend.TUI || pane.scrollOffset != 0 ||
                 !com.billmongan.herdrdroid.herdr.hasStableOccupant(pane))) return null
         val currentPane = h.cardPane(pane.id, connection) ?: return null
         if (!isCurrent(h) || !pane.sameCardOccupant(currentPane)) return null
@@ -2743,9 +2753,11 @@ class AppViewModel internal constructor(
         if (isOpenCode(pane.agent) && currentPane.scrollOffset != 0) return null
         val text = (if (isOpenCode(pane.agent)) h.readStyledViewport(pane.id, connection)
             else h.readCardViewport(pane.id, connection)).takeUnless { it.isBlank() } ?: return null
-        if (!isCurrent(h) || shown.hermesClarify && !foreground) return null
-        return detectPrompt(text, currentPane.status == Status.NEEDS_YOU, currentPane.agent, versionOf(pane.id))
-            ?.takeIf { cardAnswerStillFits(shown, it) }
+        if (!isCurrent(h) || guardedChoice && !foreground) return null
+        val live = if (pane.agent == "pi" && h.backend == Backend.TUI &&
+            (pane.status == Status.WORKING || currentPane.status == Status.WORKING)) activePiQuestion(text, versionOf(pane.id))
+        else detectPrompt(text, currentPane.status == Status.NEEDS_YOU, currentPane.agent, versionOf(pane.id))
+        return live?.takeIf { cardAnswerStillFits(shown, it) }
     }
 
     internal fun answerCardKey(target: CardTarget?, prompt: Prompt, key: String, label: String) {
@@ -2759,7 +2771,7 @@ class AppViewModel internal constructor(
         send: suspend (Herdr, CardTarget, Prompt) -> Boolean,
     ) {
         val refused = "Not sent. Refresh the question or open the terminal to answer."
-        if (target == null || shown.terminalReview || shown.hermesClarify) { flash(refused); return }
+        if (target == null || shown.terminalReview || shown.hermesClarify || shown.openCodeQuestionFrame != null) { flash(refused); return }
         val id = target.pane.id
         answerOnce(id) { h ->
             val fresh = target.freshAnswer(h, shown)
@@ -3297,7 +3309,8 @@ class AppViewModel internal constructor(
                     // no alert. A screen that couldn't be read still alerts, saying so.
                     if (prompt == null && text.isNotBlank()) { com.billmongan.herdrdroid.diag.DiagLog.log("watch", "${p.id}: herdr says blocked, but nothing on screen asks; no alert"); return@launch }
                     withContext(Dispatchers.Main) { if (prompt != null && prompt.choices.isNotEmpty()) observeQuestion(serverId, p.id, prompt, p.status, p.agentName, text) }
-                    Notify.needsYou(app, serverId, serverLabel, p.id, p.agentName, prompt?.question ?: "Waiting for you.", prompt?.choices.orEmpty(), p.agent, terminalReview = prompt?.let { it.terminalReview || it.hermesClarify } == true)
+                    Notify.needsYou(app, serverId, serverLabel, p.id, p.agentName, prompt?.question ?: "Waiting for you.", prompt?.choices.orEmpty(), p.agent,
+                        terminalReview = prompt?.let { it.terminalReview || it.hermesClarify || it.openCodeQuestionFrame != null } == true)
                 }
                 // Only agents that need you notify (Bill, 2026-11-13); finishing doesn't.
                 before == Status.NEEDS_YOU -> {
@@ -3871,8 +3884,17 @@ class AppViewModel internal constructor(
         if (changed) saveSeen()
     }
 
+    internal fun requiresLivePiQuestion(pane: Pane): Boolean =
+        pane.agent == "pi" && pane.status == Status.WORKING && herdr?.backend == Backend.TUI
+
+    internal fun currentPiQuestion(pane: Pane): Prompt? = piLiveQuestion?.takeIf {
+        foreground && paneReadProblem == null && paneTextPane == pane.id && pane.scrollOffset == 0 &&
+            paneTextTarget?.let { target -> target.pane.sameCardOccupant(pane) && target.isCurrent(target.client) } == true
+    }
+
     fun shownStatus(p: Pane, serverId: String? = current?.id): Status {
         val here = serverId == current?.id
+        if (here && requiresLivePiQuestion(p) && currentPiQuestion(p) != null) return Status.NEEDS_YOU
         if (here && p.status == Status.NEEDS_YOU && hermesState != Status.NEEDS_YOU) {
             currentHermesUsage(p)?.let { return if (it.composerReady) hermesState ?: Status.IDLE else Status.WORKING }
         }

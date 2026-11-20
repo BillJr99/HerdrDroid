@@ -956,6 +956,8 @@ data class Prompt(
     internal val approvalIdentity: String? = null,
     /** OpenCode's permission row needs a styled, live focus read before confirming. */
     internal val openCodePermission: Boolean = false,
+    /** Exact text of the native single-select question frame, excluding ANSI and row-end padding. */
+    internal val openCodeQuestionFrame: String? = null,
     /** Claude renders this unnumbered button between the checkboxes and "Chat about this". */
     internal val claudeCheckboxAction: Choice? = null,
     /** Native Hermes clarify choices are available only from a guarded Chat card. */
@@ -1419,8 +1421,9 @@ internal fun agentWentOn(below: List<String>): Boolean = below.any { l ->
 /** A key hint line ("ctrl+g to edit", "esc to cancel", "enter to submit"), 1.4.9. */
 private val KEY_HINT_LINE = Regex("""^(ctrl|shift|alt|cmd|esc|enter|tab|space|↑|↓|←|→)\b|\b(to|·)\s*(cancel|select|navigate|submit|confirm|edit)\b""", RegexOption.IGNORE_CASE)
 /** A whole keyboard hint, not a sentence that happens to mention an action. */
+private const val CARD_HINT = """(?:(?:(?:ctrl|shift|alt|cmd)[+-][a-z0-9]+|esc|enter|tab(?:/arrow keys)?|space|arrow keys|[↑↓←→/]+)\s+(?:to\s+)?(?:cancel|reject|select|navigate|submit|confirm|toggle|edit(?: in editor)?)|ctrl\+g to edit in [a-z0-9_][a-z0-9_.+-]*)"""
 private val STANDALONE_CARD_HINT = Regex(
-    """^(?:(?:ctrl|shift|alt|cmd)[+-][a-z0-9]+|esc|enter|tab(?:/arrow keys)?|space|arrow keys|[↑↓←→/]+)\s+(?:to\s+)?(?:cancel|reject|select|navigate|submit|confirm|toggle|edit(?: in editor)?)(?:\s*[·|]\s*(?:(?:ctrl|shift|alt|cmd)[+-][a-z0-9]+|esc|enter|tab(?:/arrow keys)?|space|arrow keys|[↑↓←→/]+)\s+(?:to\s+)?(?:cancel|reject|select|navigate|submit|confirm|toggle|edit(?: in editor)?))*$""",
+    """^$CARD_HINT(?:\s*[·|]\s*$CARD_HINT)*$""",
     RegexOption.IGNORE_CASE,
 )
 private val TYPED_ANSWER_HINT = Regex("""type your|other""", RegexOption.IGNORE_CASE)
@@ -1487,6 +1490,15 @@ private val VIBE_CARD_FOOTER = Regex("""↑↓/jk navigate.*(Esc reject|Enter se
 
 fun showsQuestionDialog(text: String): Boolean =
     text.lines().filter { it.isNotBlank() }.takeLast(6).any { QUESTION_FOOTER.containsMatchIn(it) }
+
+private val PI_SELECT_FOOTER = Regex("""↑↓\s+navigate\s+enter select\s+escape/ctrl\+c cancel""", RegexOption.IGNORE_CASE)
+
+/** Pi's native select footer must still be at the bottom; a footer in old output is not a card. */
+internal fun activePiQuestion(text: String, version: String?): Prompt? {
+    val footer = text.lines().lastOrNull { !isChrome(it) }?.trim() ?: return null
+    if (!PI_SELECT_FOOTER.matches(footer)) return null
+    return detectPrompt(text, blocked = false, agent = "pi", version = version)?.takeIf { it.choices.isNotEmpty() }
+}
 
 /**
  * The permission mode an agent shows in its footer: "plan", "accept edits", "auto" or "bypass".
@@ -1773,6 +1785,53 @@ private fun detectOpenCodePermission(styled: String, text: String): Prompt? {
 }
 private val OPENCODE_WEB_SEARCH_OPTION = Regex("""^(?:[❯›>]\s*)?([1-3])[.]\s+(.+)$""")
 
+private val OPENCODE_QUESTION_FOOTER = Regex("""(⇆\s+tab\s+)?(↑↓\s+select\s+)?enter\s+(submit|confirm|toggle)\s+esc\s+dismiss""")
+private val OPENCODE_QUESTION_OPTION = Regex("""([1-9])\. (\S.*)""")
+
+/** Native QuestionPrompt (OpenCode v1.19.6, packages/tui/src/routes/session/question.tsx).
+ * A digit selects directly, without depending on color-only focus. Only a complete single-select
+ * frame (no tabs, review, or custom editor) has that digit-to-submit contract.
+ */
+private fun detectOpenCodeQuestion(text: String): Prompt? {
+    val rows = text.lines().takeLast(80).map(String::trimEnd).dropLastWhile(String::isBlank)
+    val footer = rows.indexOfLast { it != "┃" }
+    if (footer < 0) return null
+    if (!rows[footer].startsWith("┃  ")) return null
+    val (tabs, selection, enter) = OPENCODE_QUESTION_FOOTER.matchEntire(rows[footer].removePrefix("┃  "))
+        ?.destructured ?: return null
+    // Keep legacy, glyph-focused confirm fixtures on their existing arrow/Enter path.
+    if (tabs.isEmpty() && selection.isNotEmpty() && enter == "confirm") return null
+    fun review(question: String = "OpenCode has a question") = Prompt(question, emptyList(), terminalReview = true)
+    if (tabs.isNotEmpty() || selection.isEmpty() || enter != "submit") return review()
+
+    // The renderer has a spacer above the question, between it and the options, and before the
+    // footer. Require all three: otherwise the viewport may start partway through the question.
+    val panel = rows.take(footer).takeLastWhile { it.startsWith("┃") }
+    val end = panel.indexOfLast { it != "┃" } + 1
+    if (end == 0 || end == panel.size) return review()
+    val divider = (end - 1 downTo 0).firstOrNull { panel[it] == "┃" } ?: return review()
+    val top = (divider - 1 downTo 0).firstOrNull { panel[it] == "┃" } ?: return review()
+    val heading = panel.subList(top + 1, divider)
+    if (heading.isEmpty() || heading.any { !it.startsWith("┃  ") || OPENCODE_QUESTION_OPTION.matches(it.removePrefix("┃  ")) }) return review()
+    val question = heading.joinToString(" ") { it.removePrefix("┃  ").trimStart() }
+    val choices = mutableListOf<Choice>()
+    var custom = false
+    for (row in panel.subList(divider + 1, end)) {
+        // Even an empty focused custom editor displays a placeholder below the custom row.
+        // Do not send digits to a textarea or accept any unrecognized continuation there.
+        if (custom) return review(question)
+        if (row.startsWith("┃     ") && choices.isNotEmpty()) continue // option description
+        val option = OPENCODE_QUESTION_OPTION.matchEntire(row.removePrefix("┃  ")) ?: return review(question)
+        val (digit, label) = option.destructured
+        if (digit.toInt() != choices.size + 1) return review(question)
+        if (label == "Type your own answer") custom = true
+        else choices += Choice(label, digit, false)
+    }
+    if (choices.isEmpty()) return review(question)
+    return Prompt(question, choices, numberKeys = true,
+        openCodeQuestionFrame = (panel.subList(top, panel.size) + rows[footer]).joinToString("\n"))
+}
+
 /** OpenCode highlights this picker with color alone. Its numbered keys select and submit directly. */
 private fun detectOpenCodeWebSearch(text: String): Prompt? {
     val lines = text.lineSequence().toList().takeLast(20).map { it.trim().trim('│', '┃', '|').trim() }
@@ -1819,6 +1878,8 @@ private val CODEX_QUESTION_PROGRESS = Regex("""Question [1-9]\d*/[1-9]\d*(?: \([
 private val CODEX_QUESTION_SUBMIT = Regex("""[^\s|]+(?: [^\s|]+){0,2} to submit (?:answer|all)""")
 private val CODEX_QUESTION_CONTINUATION = Regex("""←/→ to navigate questions|⌃p / ⌃n change question|\S+ to interrupt""")
 private val CODEX_QUESTION_OPTION = Regex("""(?:›\s+|[0-9]+\.\s).*""")
+private const val CODEX_UNANSWERED_TITLE = "Submit with unanswered questions?"
+private const val CODEX_UNANSWERED_FOOTER = "Press enter to confirm or esc to go back"
 
 /** Codex's `$ ` introduces the command, not a paragraph of its explanation. */
 private fun codexCommandParts(rows: List<String>): QuestionParts? {
@@ -1870,6 +1931,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     }
     if (isOpenCode(agent)) {
         if (openCodeBackgroundDrawer(agent, plain) || openCodeComposerMode(plain.lines().takeLast(20)) >= 0) return null
+        detectOpenCodeQuestion(plain)?.let { return it }
         detectOpenCodePermission(text, plain)?.let { return it }
     }
     return detectPlainPrompt(plain, blocked, agent, version)
@@ -1879,24 +1941,31 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
     if ((agent == null || agent.equals("claude", true)) && claudeUsageOpen(text)) return null
     if (agent.equals("codex", true)) {
         val rows = text.lines().takeLast(80)
-        val head = rows.indexOfLast { CODEX_QUESTION_PROGRESS.matches(it.trim()) }
-        if (head >= 0) {
-            fun hints(row: String) = row.split('|').map(String::trim)
-            val footer = (head + 1..rows.lastIndex).lastOrNull { at ->
-                hints(rows[at]).any(CODEX_QUESTION_SUBMIT::matches)
-            } ?: -1
+        fun hints(row: String) = row.split('|').map(String::trim)
+        val head = rows.indexOfLast { CODEX_QUESTION_PROGRESS.matches(it.trim()) || it.trim() == CODEX_UNANSWERED_TITLE }
+        val footer = (head + 1..rows.lastIndex).lastOrNull { at ->
+            rows[at].trim() == CODEX_UNANSWERED_FOOTER || hints(rows[at]).any(CODEX_QUESTION_SUBMIT::matches)
+        } ?: -1
+        if (head >= 0 || footer >= 0) {
+            val confirmation = (head >= 0 && rows[head].trim() == CODEX_UNANSWERED_TITLE) ||
+                (footer >= 0 && rows[footer].trim() == CODEX_UNANSWERED_FOOTER)
             val newer = if (footer >= 0) (footer + 1..rows.lastIndex).firstOrNull { at ->
                 !isChrome(rows[at]) && !hints(rows[at]).all(CODEX_QUESTION_CONTINUATION::matches)
             } else (head + 1..rows.lastIndex).firstOrNull { at ->
-                CODEX_COMMAND_HEADING.matches(rows[at].trim()) || CODEX_OTHER_APPROVAL.matches(rows[at].trim())
+                CODEX_COMMAND_HEADING.matches(rows[at].trim()) || CODEX_OTHER_APPROVAL.matches(rows[at].trim()) ||
+                    (INPUT_ROW_UNDER.containsMatchIn(rows[at]) && !TYPED_ANSWER_HINT.containsMatchIn(rows[at]))
             }
             // Leave newer UI to the ordinary parser. A clipped native overlay must not
             // fall through as a generic actionable menu based on its numbered rows.
             if (newer != null) return detectPlainPrompt(rows.drop(newer).joinToString("\n"), false, agent, version)
-            if (footer < 0) return null
-            val question = rows.subList(head + 1, footer).map(String::trim)
-                .takeWhile { it.isNotBlank() && !CODEX_QUESTION_OPTION.matches(it) }
-                .joinToString(" ").ifBlank { "Codex has a question" }
+            if (footer < 0 && !confirmation) return null
+            val question = when {
+                confirmation -> CODEX_UNANSWERED_TITLE
+                head < 0 -> "Codex has a question"
+                else -> rows.subList(head + 1, footer).map(String::trim)
+                    .takeWhile { it.isNotBlank() && !CODEX_QUESTION_OPTION.matches(it) }
+                    .joinToString(" ").ifBlank { "Codex has a question" }
+            }
             // Enter can move focus, advance a step or submit, depending on the native overlay.
             return Prompt(question, emptyList(), terminalReview = true, codexQuestion = true)
         }

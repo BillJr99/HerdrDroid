@@ -32,7 +32,7 @@ When Claude displays a checkbox question's **Next** or **Submit** button, Chat s
 | Codex | mcp app tool approval | from the program | 4 | ↑/↓ + Enter, Enter | 2 | no |
 | Codex | grant additional permissions | from the program | 3 | its letter shortcut, Esc | 1 | yes |
 | Codex | request user input multi question | from the program | 3 | ↑/↓ + Enter, Enter | 0 | no |
-| Codex | request user input multi question 2 | from the program | 3 | ↑/↓ + Enter, Enter | 0 | no |
+| Codex | request user input: submit with unanswered questions | from the program | 0 in Chat | Terminal only | 0 | no |
 | Codex | plan mode implement this plan | from the program | 3 | ↑/↓ + Enter, Enter | 0 | no |
 | Codex | rate limit model switch and workspace li | from the program | 3 | ↑/↓ + Enter, Enter | 1 | no |
 | Grok | privacy banner | captured | 2 | its letter | 0 | no |
