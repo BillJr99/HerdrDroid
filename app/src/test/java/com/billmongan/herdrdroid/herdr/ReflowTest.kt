@@ -37,6 +37,30 @@ class ReflowTest {
     }
 
     @Test
+    fun antigravityKeepsShortTablesInChatWithAndWithoutComposer() {
+        val table = listOf("┌───┬───┐", "│ A │ B │", "└───┴───┘")
+        val reply = listOf("● Here's the result:") + table
+        val rule = "────────────────────────────────"
+        val withComposer = reply + listOf(rule, "> draft text", rule, "Shift+Tab to change mode")
+        for (screen in listOf(reply, withComposer)) {
+            val segs = Reflow.parse(screen.joinToString("\n"), antigravity = true)
+            assertEquals(table, segs.filterIsInstance<Seg.Code>().single().lines)
+            assertEquals("Here's the result:", segs.filterIsInstance<Seg.Para>().single().text)
+            assertEquals(if (screen === reply) emptyList() else listOf(Seg.Footer(listOf("draft text", "Shift+Tab to change mode"))),
+                segs.filterIsInstance<Seg.Footer>())
+        }
+    }
+
+    @Test
+    fun antigravityDoesNotMistakeQuotedOutputForComposer() {
+        val rule = "────────────────────────────────"
+        val screen = listOf("● Example input:", rule, "> keep this text", rule).joinToString("\n")
+        val segs = Reflow.parse(screen, antigravity = true)
+        assertEquals(listOf(Seg.You("keep this text")), segs.filterIsInstance<Seg.You>())
+        assertEquals(emptyList<Seg.Footer>(), segs.filterIsInstance<Seg.Footer>())
+    }
+
+    @Test
     fun grokScrollbarClockAndWrappedParagraph() {
         val w = 118
         val screen = listOf(
