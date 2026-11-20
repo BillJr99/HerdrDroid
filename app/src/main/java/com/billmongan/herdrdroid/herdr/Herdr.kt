@@ -1234,6 +1234,103 @@ private fun inputRow(screen: String): Pair<String, String>? {
     return rawRows[i] to content.replace(lead, "").trim()
 }
 
+/**
+ * What is typed in an agent's input box, all of its lines (2.1.0, Bill: "when a draft is in the pane
+ * text box, maybe show it in chat view and give me the option to send or clear it there"). The first
+ * row is found and judged the way [inputLineOf] judges it (prompt glyph, box edges, placeholders);
+ * the rows under it count as the draft only inside a box whose end the screen shows:
+ * - between rule lines (Claude Code, Hermes): every row down to the closing rule. Claude indents
+ *   its continuation rows under the text; Hermes's prompt_toolkit box starts them at column 0.
+ * - inside a "│ ... │" frame (Grok, older Claude): framed rows down to the bottom edge.
+ * - Codex, unboxed: indented rows down to the blank row above its footer.
+ * [ComposerDraft.bounded] is false when rows under the first could be more of the draft or could be
+ * the agent's footer; the app then shows what it read but never sends keys for it. Null when the
+ * input box is empty, shows only a placeholder, or can't be found.
+ */
+internal data class ComposerDraft(val text: String, val bounded: Boolean)
+
+private const val MAX_DRAFT_ROWS = 30
+
+internal fun composerDraftOf(screen: String, agent: String? = null): ComposerDraft? {
+    val rawRows = screen.lines().map { it.replace("\r", "") }.takeLast(48)
+    val rows = rawRows.map { it.replace(ANSI_SEQ, "") }
+    val rule = Regex("""^[\s\u00A0╭╰├└┌]*[─━═╌┄-]{4,}""")
+    val framed = Regex("""^[\s\u00A0]*([│┃|]).*\1[\s\u00A0]*$""")
+    val bottomEdge = Regex("""^[\s\u00A0]*[╰└]""")
+    val notInput = Regex("""^[\s\u00A0│┃|]*(?:[>❯›»]\s*\d{1,2}[.)]\s|>>)""")
+    fun isRule(i: Int) = i in rows.indices && rule.containsMatchIn(rows[i])
+    // A box is the input box only at the bottom of the screen: a short footer under it at most.
+    fun footerAfter(i: Int) = rows.drop(i + 1).count { it.isNotBlank() } <= 5
+    val candidates = rows.indices.filter { INPUT_LEAD.containsMatchIn(rows[it]) && !notInput.containsMatchIn(rows[it]) }
+    if (candidates.isEmpty()) return null
+
+    fun build(first: Int, rest: List<String>, bounded: Boolean): ComposerDraft? {
+        val row = rows[first]
+        val frame = framed.matches(row)
+        val content = if (frame) row.trimEnd().dropLast(1) else row
+        val leadLen = INPUT_LEAD.find(content)?.range?.last?.plus(1) ?: return null
+        val typed = content.substring(leadLen).trim()
+        // The box's own indent before continuation rows: the width of what comes before the text
+        // on the first row ("❯ ", or "│ ❯ " less the frame edge).
+        val barAt = if (frame) content.indexOfFirst { it == '│' || it == '┃' || it == '|' } else -1
+        val indent = leadLen - (barAt + 1)
+        val edge = Regex("""^[\s\u00A0]*[│┃|]""")
+        val more = rest.map { r ->
+            var t = r.trimEnd()
+            if (frame) {
+                t = t.replaceFirst(edge, "")
+                if (t.isNotEmpty() && t.last() in "│┃|") t = t.dropLast(1)
+            }
+            val pad = t.takeWhile { it == ' ' || it == '\u00A0' }.length
+            t.drop(minOf(pad, indent)).trimEnd()
+        }.dropLastWhile { it.isBlank() }
+        if (more.all { it.isBlank() }) {
+            // A placeholder shows only in an empty box, so it is judged on a one-row draft only.
+            val raw = rawRows[first]
+            if (typed.isEmpty()) return null
+            if (raw.contains('\u001B')) { if (isPlaceholderText(raw, typed, agent)) return null }
+            else if (isComposerHint(agent, typed)) return null
+            return ComposerDraft(typed, bounded)
+        }
+        return ComposerDraft((listOf(typed) + more).joinToString("\n").trim('\n'), bounded)
+    }
+
+    // Between rule lines: the closing rule is the first one under the prompt row.
+    for (c in candidates.asReversed()) {
+        if (!isRule(c - 1)) continue
+        val close = (c + 1 until minOf(rows.size, c + 1 + MAX_DRAFT_ROWS)).firstOrNull { isRule(it) } ?: continue
+        if (!footerAfter(close)) continue
+        return build(c, rows.subList(c + 1, close), bounded = true)
+    }
+    // Inside a frame: framed rows down to its bottom edge.
+    for (c in candidates.asReversed()) {
+        if (!framed.matches(rows[c])) continue
+        var end = c + 1
+        while (end < rows.size && end - c <= MAX_DRAFT_ROWS && framed.matches(rows[end]) && !isRule(end)) end++
+        val closed = end < rows.size && (bottomEdge.containsMatchIn(rows[end]) || isRule(end))
+        val opened = c > 0 && (isRule(c - 1) || Regex("""^[\s\u00A0]*[╭┌]""").containsMatchIn(rows[c - 1]))
+        if (!footerAfter(end)) continue
+        return build(c, rows.subList(c + 1, end), bounded = closed && opened)
+    }
+    // No box: the lowest prompt row with only a short footer under it, as [inputLineOf] takes it.
+    val c = candidates.last()
+    val below = rows.drop(c + 1)
+    if (below.count { it.isNotBlank() && !rule.containsMatchIn(it) } > 3 + MAX_DRAFT_ROWS) return null
+    if (agent?.lowercase() == "codex") {
+        // Codex: the draft's rows are indented under it, then a blank row, then its footer block.
+        val lastBlank = below.indexOfLast { it.isBlank() }
+        if (lastBlank in 0..MAX_DRAFT_ROWS && below.drop(lastBlank + 1).count { it.isNotBlank() } <= 3 &&
+            below.take(lastBlank).all { it.isBlank() || it.startsWith("  ") }) {
+            return build(c, below.take(lastBlank), bounded = true)
+        }
+    }
+    if (below.count { it.isNotBlank() && !rule.containsMatchIn(it) } > 3) return null
+    // Rows right under it may be more of the draft or the footer: shown, but not acted on.
+    val next = below.firstOrNull()
+    val single = next == null || next.isBlank() || rule.containsMatchIn(next)
+    return build(c, emptyList(), bounded = single)
+}
+
 /** One character of a styled row and how it is drawn (1.4.6). */
 private data class Styled(val ch: Char, val faint: Boolean, val italic: Boolean, val grey: Boolean, val background: List<Int>)
 
