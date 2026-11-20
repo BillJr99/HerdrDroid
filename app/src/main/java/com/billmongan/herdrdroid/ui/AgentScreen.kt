@@ -389,6 +389,21 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 }
             }
         }
+        // 2.1.0: a draft typed at the computer, with Send draft and Clear draft. Only while no
+        // question is open, from this pane's own latest read.
+        vm.paneDraft?.takeIf { prompt == null && !fullTerminal && !backgroundDrawer && usageOverlay == null &&
+            vm.paneReadProblem == null && vm.paneTextPane == paneId && it.target.pane.id == paneId }?.let { d ->
+            PaneDraftCard(
+                agent = pane?.agentName ?: "The agent",
+                text = d.text,
+                canAct = d.actionable,
+                canClear = d.clearable,
+                busy = vm.paneDraftBusy,
+                onSend = { vm.sendPaneDraft(d) },
+                onClear = { vm.clearPaneDraft(d) },
+                onShowTerminal = { hermesLive = false; fullTerminal = true; termFollow = true },
+            )
+        }
     }
 
     Column(Modifier.fillMaxSize().background(Palette.Ground).systemBarsPadding().imePadding()) {

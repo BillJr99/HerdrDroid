@@ -232,6 +232,16 @@ class AppViewModel internal constructor(
         private set
     private var openCodeComposerTarget by mutableStateOf<CardTarget?>(null)
     private var piLiveQuestion by mutableStateOf<Prompt?>(null)
+    /**
+     * A draft typed in the open pane's input box at the computer, read from its live screen (2.1.0).
+     * [actionable]: the draft's end shows and the pane reports who is in it, so Send draft can be offered.
+     */
+    internal data class PaneDraftShown(val target: CardTarget, val text: String, val actionable: Boolean, val clearable: Boolean)
+    internal var paneDraft by mutableStateOf<PaneDraftShown?>(null)
+        private set
+    /** "send" or "clear" while a draft action runs. */
+    var paneDraftBusy by mutableStateOf<String?>(null)
+        private set
     private data class HermesUsageRead(val target: CardTarget, val composerReady: Boolean)
     private var hermesUsageRead by mutableStateOf<HermesUsageRead?>(null)
     var lastSent by mutableStateOf<Pair<String, String>?>(null)
@@ -1486,6 +1496,7 @@ class AppViewModel internal constructor(
             piLiveQuestion = null
             hermesUsageRead = null
             openUsage = null
+            paneDraft = null
         }
         quietly { h ->
             val waiting = pane(paneId)?.status == Status.NEEDS_YOU
@@ -1602,6 +1613,78 @@ class AppViewModel internal constructor(
                 lastPromptSig[paneId] = sig
                 if (sig != "none" || p == null && lastPromptSig.containsKey(paneId)) com.billmongan.herdrdroid.diag.DiagLog.log("prompt", "$paneId: $sig")
             }
+            readPaneDraft(paneId, text, p, cardOwner) {
+                attempt == lastAppliedPaneRead && current?.id == serverId && herdr === client &&
+                    paneVisit == visit && (screen as? Screen.Agent)?.paneId == paneId
+            }
+        }
+    }
+
+    /**
+     * The draft card (2.1.0): only when the screen just read shows text in the agent's input box is
+     * the live viewport read with its styles, so a placeholder is never shown as a draft. Nothing is
+     * read or shown otherwise, and nothing is ever typed from here.
+     */
+    private suspend fun readPaneDraft(paneId: String, text: String, question: Prompt?, owner: CardTarget?, stillShown: () -> Boolean) {
+        val now = pane(paneId)
+        val agent = now?.agent
+        val eligible = owner != null && foreground && !locked && owner.client.backend == Backend.TUI &&
+            owner.isCurrent(owner.client) && question == null && agent != null && now.status != Status.NEEDS_YOU &&
+            (now.scrollOffset ?: 0) == 0 && (!com.billmongan.herdrdroid.herdr.inputLineOf(text, agent).isNullOrEmpty() ||
+                com.billmongan.herdrdroid.herdr.composerDraftOf(text, agent) != null)
+        if (!eligible) { if (stillShown()) paneDraft = null; return }
+        val o = checkNotNull(owner)
+        val live = quietly { h -> if (h === o.client) h.readStyledViewport(paneId, o.connection, timeoutSeconds = 2) else null }
+        if (!stillShown()) return
+        val draft = live?.takeIf { o.isCurrent(o.client) && detectPrompt(forPhone(it), false, agent, versionOf(paneId)) == null }
+            ?.let { com.billmongan.herdrdroid.herdr.composerDraftOf(it, agent) }
+        paneDraft = draft?.let {
+            val same = paneDraft?.takeIf { d -> d.target == o && d.text == it.text }
+            same ?: PaneDraftShown(o, it.text, it.bounded && com.billmongan.herdrdroid.herdr.hasStableOccupant(o.pane),
+                com.billmongan.herdrdroid.herdr.canClearDraft(agent))
+        }
+    }
+
+    private val paneDraftAction by lazy { com.billmongan.herdrdroid.herdr.PaneDraftAction(paneDispatch, writeGate) }
+
+    /** Send draft: Enter once, after the same checks as any write (2.1.0). Only on a tap. */
+    internal fun sendPaneDraft(shown: PaneDraftShown) = paneDraftAct(shown, clear = false)
+
+    /** Clear draft: Backspace only, after the user confirmed (2.1.0). Only on a tap. */
+    internal fun clearPaneDraft(shown: PaneDraftShown) = paneDraftAct(shown, clear = true)
+
+    private fun paneDraftAct(shown: PaneDraftShown, clear: Boolean) {
+        // The card may have been redrawn since the tap; the action itself re-reads the pane and
+        // acts only on the text that was shown.
+        if (paneDraftBusy != null || !shown.actionable || (clear && !shown.clearable)) return
+        val target = shown.target
+        val h = target.client
+        val agentName = target.pane.agentName
+        paneDraftBusy = if (clear) "clear" else "send"
+        viewModelScope.launch {
+            fun allowed() = !locked && foreground && link == Link.CONNECTED && herdr === h && target.isCurrent(h)
+            val port = object : com.billmongan.herdrdroid.herdr.PaneDraftAction.Port {
+                override suspend fun pane(id: String) = h.cardPane(id, target.connection)
+                override suspend fun viewport(id: String) = h.readStyledViewport(id, target.connection, timeoutSeconds = 3)
+                override suspend fun keys(id: String, keys: List<String>, permit: WritePermit) {
+                    h.sendPermittedKeys(id, keys, target.connection, permit)
+                }
+                override suspend fun pause(ms: Long) = delay(ms)
+            }
+            val outcome = try {
+                if (clear) paneDraftAction.clear(target.server, target.pane, shown.text, ::allowed, port)
+                else paneDraftAction.send(target.server, target.pane, shown.text, ::allowed, port)
+            } finally {
+                paneDraftBusy = null
+            }
+            com.billmongan.herdrdroid.diag.DiagLog.log("draft", "${target.pane.id}: ${if (clear) "clear" else "send"} ${outcome.name.lowercase()} (${shown.text.length} chars)")
+            val said = com.billmongan.herdrdroid.herdr.draftOutcomeText(outcome, agentName, clear)
+            when (outcome) {
+                com.billmongan.herdrdroid.herdr.PaneDraftAction.Outcome.UNCERTAIN,
+                com.billmongan.herdrdroid.herdr.PaneDraftAction.Outcome.PARTIAL -> error = said
+                else -> flash(said)
+            }
+            if (target.isCurrent(h)) readPane(target.pane.id)
         }
     }
     private val lastPromptSig = mutableMapOf<String, String>()
@@ -1625,6 +1708,7 @@ class AppViewModel internal constructor(
         piLiveQuestion = null
         paneReadProblem = null
         openUsage = null
+        paneDraft = null
         current?.id?.let { questions(it, paneId) }
         resetTranscript(paneId)
         screen = Screen.Agent(paneId)
@@ -2321,17 +2405,23 @@ class AppViewModel internal constructor(
      */
     private fun holdReason(paneId: String, screen: String): String? {
         // The agent's own hint in an empty line ("Press up to edit queued messages") is not typing (1.4.4).
-        val now = com.billmongan.herdrdroid.herdr.inputLineOf(screen, pane(paneId)?.agent) ?: return null
+        val agent = pane(paneId)?.agent
+        // A draft of several lines can hide the one-row input line (2.1.0): it is still typing.
+        val now = com.billmongan.herdrdroid.herdr.inputLineOf(screen, agent)
+            ?: return com.billmongan.herdrdroid.herdr.composerDraftOf(screen, agent)?.let { DRAFT_HOLD }
         // The row taken for the input line is the highlighted option of a menu (Kiro's unnumbered
         // approval card, "❯ Yes, single permission"): a question, not text typed at the computer.
         // Still not typed into, but said as it is (1.4.1, from a code review).
         if (now.isNotEmpty() && com.billmongan.herdrdroid.herdr.detectUnnumberedMenu(com.billmongan.herdrdroid.herdr.forPhone(screen))?.choices?.any { it.label.trim() == now } == true)
             return "a question is open in it (\"${now.take(40)}\"); answer it first"
-        if (now.isNotEmpty()) return "something is already typed in its input line at the computer (\"${now.take(40)}\")"
+        if (now.isNotEmpty()) return DRAFT_HOLD
         val at = typedAt[paneId]
         if (at != null && System.currentTimeMillis() - at < 4_000) return "someone was typing in it a moment ago"
         return null
     }
+
+    /** Why a send waits for a draft at the computer (2.1.0): the chat's draft card shows it, with Send draft and Clear draft. */
+    private val DRAFT_HOLD = "a draft is typed in its input box at the computer (the chat's Draft in the pane card can send or clear it)"
 
     fun sendMessage(pane: Pane, text: String, force: Boolean = false, delivered: () -> Unit = {}) {
         lastSent = pane.id to text
@@ -2735,13 +2825,21 @@ class AppViewModel internal constructor(
         fun allowedHere() = allowed() && voiceTarget() == target && promptLaneClear(target.server, target.pane)
         val refuse = "Not sent. Open the agent's chat and check that it is idle with no question, draft at the computer, or queued message."
         val h = target.client
+        var draftSeen = false
         val port = object : com.billmongan.herdrdroid.herdr.LocalPromptSend.Port {
             override suspend fun pane(id: String) =
                 quietly(allowBackground = true) { if (it === h) it.panes().singleOrNull { p -> p.id == id } else null }
             override suspend fun viewport(id: String) =
                 quietly(allowBackground = true) { if (it === h) it.readStyled(id, 40) else null }
-            override fun blocked(fresh: Pane, viewport: String) = blocksNormalSend(fresh, viewport) ||
-                com.billmongan.herdrdroid.herdr.inputLineOf(viewport, fresh.agent) != "" || holdReason(fresh.id, viewport) != null
+            override fun blocked(fresh: Pane, viewport: String): Boolean {
+                if (blocksNormalSend(fresh, viewport)) return true
+                val line = com.billmongan.herdrdroid.herdr.inputLineOf(viewport, fresh.agent)
+                if (!line.isNullOrEmpty() || com.billmongan.herdrdroid.herdr.composerDraftOf(viewport, fresh.agent) != null) {
+                    draftSeen = true
+                    return true
+                }
+                return line != "" || holdReason(fresh.id, viewport) != null
+            }
             override suspend fun send(fresh: Pane, text: String, permit: com.billmongan.herdrdroid.herdr.WritePermit) =
                 h.sendPermitted(fresh, text, target.connection, permit)
         }
@@ -2749,7 +2847,8 @@ class AppViewModel internal constructor(
         (result.failure as? LinkDown)?.let { if (herdr === h) linkLost(it) }
         return when (result.outcome) {
             com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.SENT -> "Message sent."
-            com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.REFUSED -> refuse
+            com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.REFUSED ->
+                if (draftSeen) "Not sent. Text is already typed in the agent's input box at the computer. Its chat shows the draft with Send draft and Clear draft." else refuse
             com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.NO_IDENTITY ->
                 "Not sent. This server doesn't report which session is in the pane, so a voice message can't be checked against the one read back."
             com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.CONNECTION_CHANGED -> "Not sent. The SSH connection changed."

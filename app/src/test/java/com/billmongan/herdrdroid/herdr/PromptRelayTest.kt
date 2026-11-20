@@ -91,10 +91,13 @@ class PromptRelayTest {
             assertEquals(RelayResult.REFUSED, relay.send(target, "test") { true })
         }
         remote.pane = pane
-        for (viewport in listOf("", "no composer", "❯ unsent input", "❯ 1. Yes\n  2. No")) {
+        for (viewport in listOf("", "no composer", "❯ 1. Yes\n  2. No")) {
             remote.viewport = viewport
             assertEquals(RelayResult.REFUSED, relay.send(target, "test") { true })
         }
+        // 2.1.0: a draft is still not typed over, and the refusal names it.
+        remote.viewport = "❯ unsent input"
+        assertEquals(RelayResult.DRAFT, relay.send(target, "test") { true })
         remote.viewport = "❯ "
         remote.busy = true
         assertEquals(RelayResult.REFUSED, relay.send(target, "test") { true })

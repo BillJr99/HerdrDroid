@@ -605,10 +605,76 @@ class SuccessiveCardAnswerTest {
 
         frame = "› Next request"
         readSelectedPane()
-        assertEquals(2, guardedVisibleReads)
+        // 2.1.0: text in the input box is a draft, so the live viewport is read once more, with its
+        // styles, for the draft card. Reading it types nothing.
+        assertEquals(3, guardedVisibleReads)
         assertEquals(frame, vm.paneText)
         assertNull(detectPrompt(vm.paneText, false, "codex"))
+        assertEquals("Next request", vm.paneDraft?.text)
         assertTrue(sent.isEmpty())
+    }
+
+    // ---- 2.1.0: a draft in the pane's input box, sent or cleared from the chat --------------
+
+    private val draftRule = "─".repeat(60)
+    private fun hermesBox(vararg rows: String) =
+        (listOf("  ┊ review done", draftRule) + rows + listOf(draftRule, " ☤ gpt-6.1-sol · 295K/500K")).joinToString("\n")
+
+    private fun Fixture.waitForDraftAction() {
+        val deadline = System.nanoTime() + 5_000_000_000L
+        do {
+            shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(200))
+            if (vm.paneDraftBusy == null) return
+            Thread.sleep(1)
+        } while (System.nanoTime() < deadline)
+        fail("Draft action did not finish")
+    }
+
+    @Test fun hermesDraftIsShownAndSendDraftPressesEnterOnce() = fixture("hermes", hermesBox("❯ Please draft the reply", "about the vault push")) {
+        status(Status.IDLE)
+        readSelectedPane()
+        val draft = checkNotNull(vm.paneDraft)
+        assertEquals("Please draft the reply\nabout the vault push", draft.text)
+        assertTrue(draft.actionable && draft.clearable)
+        assertTrue(sent.isEmpty())
+        afterSend = hermesBox("❯ ")
+        vm.sendPaneDraft(draft)
+        waitForDraftAction()
+        assertEquals(listOf("enter"), sent)
+        assertEquals("Draft sent to Hermes.", vm.notice)
+    }
+
+    @Test fun clearDraftPressesOnlyBackspace() = fixture("hermes", hermesBox("❯ two lines", "of draft")) {
+        status(Status.IDLE)
+        readSelectedPane()
+        val draft = checkNotNull(vm.paneDraft)
+        afterSend = hermesBox("❯ ")
+        vm.clearPaneDraft(draft)
+        waitForDraftAction()
+        assertEquals(1, sent.size)
+        assertEquals(List("two lines\nof draft".length) { "backspace" }, sent.single().split(' '))
+        assertEquals("Draft cleared from Hermes's input box.", vm.notice)
+    }
+
+    @Test fun draftChangedAtTheComputerIsNotSent() = fixture("hermes", hermesBox("❯ first version")) {
+        status(Status.IDLE)
+        readSelectedPane()
+        val draft = checkNotNull(vm.paneDraft)
+        frame = hermesBox("❯ first version, edited")
+        vm.sendPaneDraft(draft)
+        waitForDraftAction()
+        assertTrue(sent.isEmpty())
+        assertTrue(vm.notice.orEmpty(), vm.notice.orEmpty().startsWith("Not sent: the draft changed"))
+    }
+
+    @Test fun noDraftNoCardAndNoExtraRead() = fixture("hermes", hermesBox("❯ ")) {
+        status(Status.IDLE)
+        readSelectedPane()
+        val reads = guardedVisibleReads
+        readSelectedPane()
+        assertNull(vm.paneDraft)
+        assertTrue(sent.isEmpty())
+        assertEquals(reads * 2, guardedVisibleReads)
     }
 
     @Test fun nativeOpenCodeColorOnlyQuestionSendsOneDigitFromChat() {
