@@ -1441,12 +1441,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             fun canUpgrade() = foreground && isOpen() && cardOwner != null &&
                 cardOwner.client.backend == Backend.TUI && cardOwner.isCurrent(cardOwner.client) &&
                 pane(paneId)?.scrollOffset == 0
-            // A nonempty recent capture can omit the entire dialog while status still says
-            // Working. Probe only the selected, live-bottom viewport on the same connection.
+            // A nonempty recent capture can omit the entire dialog or just Claude's choices
+            // while status still says Working. Probe only the selected, live-bottom viewport.
             val missingCodexApproval = agent == "codex" && paneStatus == Status.WORKING && preview == null
-            val missingClaudeQuestion = agent == "claude" && paneStatus == Status.WORKING && preview == null
+            val unfinishedClaudePreview = agent == "claude" && paneStatus == Status.WORKING && preview?.choices.isNullOrEmpty()
             val liveCard = if (liveUsage == null &&
-                (missingCodexApproval || missingClaudeQuestion || preview?.terminalReview == true || (blocked && preview?.choices.isNullOrEmpty())) && canUpgrade()) {
+                (missingCodexApproval || unfinishedClaudePreview || preview?.terminalReview == true || (blocked && preview?.choices.isNullOrEmpty())) && canUpgrade()) {
                 val owner = checkNotNull(cardOwner)
                 quietly { h -> if (h === owner.client) h.readCardViewport(paneId, owner.connection, timeoutSeconds = 1) else null }
                     ?.takeIf { canUpgrade() && !it.isBlank() }

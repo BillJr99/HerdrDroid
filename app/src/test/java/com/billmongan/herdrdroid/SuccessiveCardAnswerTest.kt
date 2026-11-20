@@ -61,6 +61,38 @@ class SuccessiveCardAnswerTest {
         assertTrue(sent.isEmpty())
     }
 
+    @Test fun workingClaudeRecoversAnIncompleteQuestionFromTheLiveViewport() = fixture("claude", firstStep) {
+        val complete = frame
+        val partial = complete.lineSequence().filterNot { it.trimStart().matches(Regex("❯?\\s*[123]\\. .*")) }
+            .joinToString("\n")
+        assertTrue(checkNotNull(detectPrompt(partial, false, "claude")).choices.isEmpty())
+        status(Status.WORKING)
+        recentResult = ExecResult(0, partial, "")
+
+        readSelectedPane()
+
+        assertEquals(1, recentReads)
+        assertEquals(1, guardedVisibleReads)
+        assertEquals(complete, vm.paneText)
+        assertEquals(listOf("Blue", "Orange", "Type something."),
+            detectPrompt(vm.paneText, false, "claude")?.choices?.map { it.label })
+
+        for (incomplete in listOf(partial, "", "❯ Next request")) {
+            frame = incomplete
+            readSelectedPane()
+            assertEquals(partial, vm.paneText)
+            assertTrue(checkNotNull(detectPrompt(vm.paneText, false, "claude")).choices.isEmpty())
+        }
+        assertEquals(4, guardedVisibleReads)
+
+        status(Status.WORKING, scrollOffset = 1)
+        frame = complete
+        readSelectedPane()
+        assertEquals(4, guardedVisibleReads)
+        assertEquals(partial, vm.paneText)
+        assertTrue(sent.isEmpty())
+    }
+
     @Test fun voiceStagesVisibleApprovalDirectlyAndSendsOnlyAfterFullReadback() = fixture("codex", command("alpha-beta")) {
         recentResult = ExecResult(0, "Working on the report", "")
         assertTrue(shown().choices.isNotEmpty())
@@ -308,7 +340,13 @@ class SuccessiveCardAnswerTest {
 
     private fun fixture(agent: String, frame: String, test: Fixture.() -> Unit) {
         val f = Fixture(agent, frame)
-        try { f.test() } finally { f.vm.viewModelScope.cancel() }
+        try {
+            f.test()
+        } finally {
+            f.vm.viewModelScope.cancel()
+            // Finish queued Compose snapshot dispatch before Robolectric resets the shared looper.
+            shadowOf(Looper.getMainLooper()).idle()
+        }
     }
 
     private class Fixture(private val agent: String, var frame: String) : Herdr.Commands {
