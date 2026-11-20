@@ -12,6 +12,7 @@ import com.billmongan.herdrdroid.herdr.Pane
 import com.billmongan.herdrdroid.herdr.Prompt
 import com.billmongan.herdrdroid.herdr.Status
 import com.billmongan.herdrdroid.herdr.detectPrompt
+import com.billmongan.herdrdroid.herdr.hermesClarify
 import com.billmongan.herdrdroid.notify.AppBus
 import com.billmongan.herdrdroid.notify.NotifyAction
 import com.billmongan.herdrdroid.ssh.Credentials
@@ -30,6 +31,84 @@ import org.robolectric.Shadows.shadowOf
 
 @RunWith(AndroidJUnit4::class)
 class SuccessiveCardAnswerTest {
+    @Test fun hermesClarifyFromVisibleViewportSendsOnlyOneDigitForLiveChoice() =
+        fixture("hermes", hermesClarify) {
+            status(Status.WORKING)
+            recentResult = ExecResult(0, "Preparing a question", "")
+            readSelectedPane()
+            assertEquals(1, guardedVisibleReads)
+            val card = displayed()
+            val target = checkNotNull(vm.paneTextTarget)
+            assertTrue(sent.isEmpty())
+            repeat(2) { answer(card, target, index = 1) }
+            assertEquals(listOf("2"), sent)
+        }
+
+    @Test fun hermesClarifyNeverSendsToChangedOrReplacementViewport() =
+        fixture("hermes", hermesClarify) {
+            readSelectedPane()
+            val card = displayed()
+            val target = checkNotNull(vm.paneTextTarget)
+            val original = frame
+            recentResult = ExecResult(0, original, "")
+            for (changed in listOf(original.replace("Postgres", "PostgreSQL"),
+                original.replace("▸ 1.", "  1."), hermesComposer, "")) {
+                frame = changed
+                answer(card, target)
+                assertTrue(vm.notice.orEmpty().startsWith("Not sent."))
+            }
+            frame = original
+            terminal = "replacement"
+            answer(card, target)
+            assertTrue(sent.isEmpty())
+        }
+
+    @Test fun newerHermesApprovalReplacesClarifyWithoutReceivingItsDigit() = fixture("hermes", hermesClarify) {
+        readSelectedPane()
+        val clarify = displayed()
+        val target = checkNotNull(vm.paneTextTarget)
+        assertTrue(clarify.hermesClarify)
+        recentResult = ExecResult(0, hermesClarify, "")
+        val approval = checkNotNull(javaClass.getResource(
+            "/screens/hermes/derived-1.4.9/1001-dangerous-command-approval.txt")).readText().trimEnd()
+        frame = "$hermesClarify\n\n$approval"
+
+        answer(clarify, target, index = 1)
+        assertTrue(vm.notice.orEmpty().startsWith("Not sent."))
+        readSelectedPane()
+        val newer = displayed()
+        assertTrue(newer.question, newer.question.contains("Dangerous Command"))
+        assertFalse(newer.hermesClarify)
+        assertFalse(newer.terminalReview)
+        assertTrue(newer.choices.isNotEmpty())
+        assertTrue(sent.isEmpty())
+    }
+
+    @Test fun hermesClarifyBlocksAForcedMessageAndGenericCardInput() = fixture("hermes", hermesClarify) {
+        status(Status.IDLE)
+        recentResult = ExecResult(0, hermesComposer, "")
+        vm.sendMessage(checkNotNull(vm.pane("p1")), "not an answer", force = true)
+        drainUntil { vm.pendingSends.any { it.waiting } || sent.isNotEmpty() }
+        assertTrue(vm.pendingSends.single().waiting)
+        readSelectedPane()
+        val card = displayed()
+        val target = checkNotNull(vm.paneTextTarget)
+        vm.answerCardKey(target, card, "enter", "generic Enter")
+        vm.answerTyped(target, card, null, "draft") { error("Typed reply sent") }
+        recentResult = ExecResult(0, hermesClarify, "")
+        alert(card)
+        assertTrue(sent.isEmpty())
+    }
+
+    @Test fun recentOnlyHermesClarifyDoesNotCreateAQuestionFromScrollback() = fixture("hermes", hermesComposer) {
+        status(Status.IDLE)
+        recentResult = ExecResult(0, hermesClarify, "")
+        readSelectedPane()
+        assertEquals(hermesComposer, vm.paneText)
+        assertTrue(vm.questionsFor("p1").isEmpty())
+        assertTrue(sent.isEmpty())
+    }
+
     @Test fun hermesUsageInLiveViewportIsNotTheOldQuestionAndSendsNoKey() = fixture("hermes", hermesUsage) {
         recentResult = ExecResult(0, firstStep, "")
         readSelectedPane()
