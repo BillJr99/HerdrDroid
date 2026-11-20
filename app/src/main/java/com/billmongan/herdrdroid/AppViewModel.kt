@@ -204,6 +204,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     internal var paneTextTarget by mutableStateOf<CardTarget?>(null)
         private set
     private var openCodeComposerTarget by mutableStateOf<CardTarget?>(null)
+    private data class HermesUsageRead(val target: CardTarget, val composerReady: Boolean)
+    private var hermesUsageRead by mutableStateOf<HermesUsageRead?>(null)
     var lastSent by mutableStateOf<Pair<String, String>?>(null)
         private set
     var lastSentAt by mutableStateOf(0L)
@@ -1419,6 +1421,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             openingPanePreview = null
             paneTextTarget = null
             openCodeComposerTarget = null
+            hermesUsageRead = null
             openUsage = null
         }
         quietly { h ->
@@ -1458,7 +1461,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val liveCard = if (liveUsage == null &&
                 (verifyOpenCode || verifyHermesUsage || missingCodexApproval || unfinishedClaudePreview || preview?.terminalReview == true || (blocked && preview?.choices.isNullOrEmpty())) && canUpgrade()) {
                 val owner = checkNotNull(cardOwner)
-                quietly { h -> if (h === owner.client) h.readCardViewport(paneId, owner.connection, timeoutSeconds = 1) else null }
+                quietly { h ->
+                    if (h !== owner.client) return@quietly null
+                    if (verifyHermesUsage && (!com.billmongan.herdrdroid.herdr.hasStableOccupant(owner.pane) ||
+                            h.cardPane(paneId, owner.connection)?.sameCardOccupant(owner.pane) != true || !canUpgrade())) return@quietly null
+                    h.readCardViewport(paneId, owner.connection, timeoutSeconds = 1)
+                }
                     ?.takeIf { canUpgrade() && !it.isBlank() }
             } else null
             if (!isOpen()) return
@@ -1467,8 +1475,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     verifyOpenCode || (it.choices.isNotEmpty() && !it.terminalReview && (!missingCodexApproval || it.approvalIdentity != null)) ||
                         ((missingCodexApproval || verifyHermesUsage) && it.terminalReview)
                 }
-            val useLive = liveCard != null && (livePrompt != null || verifyHermesUsage &&
-                (hermesUsageEnd(liveCard) != null || hermesUsageEnd(recent) != null) || verifyOpenCode &&
+            val liveReport = verifyHermesUsage && liveCard != null && hermesUsageEnd(liveCard) != null
+            val recentReport = verifyHermesUsage && hermesUsageEnd(recent) != null
+            val verifiedUsage = liveCard?.takeIf { verifyHermesUsage && livePrompt == null &&
+                detectPrompt(it, false, "hermes", version) == null }?.let { live ->
+                val ready = emptyHermesUsageComposer(live)
+                val owner = checkNotNull(cardOwner)
+                // Only a previously verified live report can explain a composer-only redraw.
+                // Once native status catches up and the report scrolls away, drop that context.
+                val continued = (blocked || recentReport) && currentHermesUsage(owner.pane) != null
+                if (liveReport || continued && ready) HermesUsageRead(owner, ready) else null
+            }
+            val useLive = liveCard != null && (livePrompt != null || liveReport || recentReport || verifiedUsage != null || verifyOpenCode &&
                 (blocked || preview != null || openCodeBackgroundDrawer(agent, recent) || openCodeBackgroundDrawer(agent, liveCard)))
             val text = if (useLive) checkNotNull(liveCard) else recent
             lastAppliedPaneRead = attempt
@@ -1480,6 +1498,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             paneTextPane = paneId
             paneTextTarget = cardOwner?.takeIf { it.isCurrent(it.client) && (!verifyOpenCode || useLive) }
             openCodeComposerTarget = paneTextTarget?.takeIf { useLive && verifyOpenCode && openCodeEmptyComposer(text) }
+            hermesUsageRead = verifiedUsage
             if (agent in setOf("opencode", "opencode-college", "kiro", "kiro-cli")) {
                 footerModel(agent, text)?.takeIf { models[paneId] != it }?.let {
                     models = models + (paneId to it)
@@ -2270,8 +2289,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     screenNow.isNullOrBlank() -> "its screen couldn't be read first"
                     now.agent == "hermes" && hermesUsageWaiting(screenNow) -> "Hermes hasn't returned to its composer after Usage"
                     openCodeBackgroundDrawer(now.agent, screenNow) -> "its background drawer is open; close it in Terminal"
-                    blocksNormalSend(now, screenNow, openCodeRead != null) ||
-                        openCodeRead?.pane?.let { blocksNormalSend(it, screenNow, true) } == true -> "a question is open in it; answer it first"
+                    checkedSendBlocked(now, screenNow, openCodeRead) -> "a question is open in it; answer it first"
                     verifyHermes && now.status != Status.WORKING &&
                         com.billmongan.herdrdroid.herdr.inputLineOf(screenNow, "hermes") == null -> "Hermes's composer isn't visible yet"
                     force -> null
@@ -2355,7 +2373,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     link != Link.CONNECTED || h == null -> "the computer isn't connected"
                     pn == null -> "the pane isn't listed just now"
                     // A question that came up since is answered first, never typed into (1.4.4).
-                    pn.status == Status.NEEDS_YOU && !(isOpenCode(pn.agent) && h.backend == Backend.TUI) -> "a question is open in it; answer it first"
+                    pn.status == Status.NEEDS_YOU && !(h.backend == Backend.TUI &&
+                        (isOpenCode(pn.agent) || pn.agent == "hermes")) -> "a question is open in it; answer it first"
                     pendingSends.any { it.paneId == p.paneId && it.waiting && it.at < p.at && it.id != p.id } -> "an earlier message to it is still waiting"
                     else -> {
                         // Let HeldSendRetry handle read failures and propagate cancellation.
@@ -2376,8 +2395,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                             after == null -> "the pane isn't listed just now"
                             after.agent == "hermes" && hermesUsageWaiting(screen) -> "Hermes hasn't returned to its composer after Usage"
                             openCodeBackgroundDrawer(after.agent, screen) -> "its background drawer is open; close it in Terminal"
-                            blocksNormalSend(after, screen, checked != null) ||
-                                checked?.pane?.let { blocksNormalSend(it, screen, true) } == true -> "a question is open in it; answer it first"
+                            checkedSendBlocked(after, screen, checked) -> "a question is open in it; answer it first"
                             pn.agent == "hermes" && com.billmongan.herdrdroid.herdr.inputLineOf(screen, "hermes") == null -> "Hermes's composer isn't visible yet"
                             else -> holdReason(p.paneId, screen)
                         }
@@ -3619,7 +3637,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // -- Send when idle --------------------------------------------------------------------------
 
-    data class QueuedPrompt(val id: Long, val serverId: String, val paneId: String, val text: String)
+    data class QueuedPrompt(val id: Long, val serverId: String, val paneId: String, val text: String,
+                            internal val hermesTarget: Pane? = null)
 
     var queued by mutableStateOf<List<QueuedPrompt>>(emptyList())
         private set
@@ -3637,14 +3656,50 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             it.pane.sameCardOccupant(pane) && it.isCurrent(it.client)
     } == true
 
-    fun hasPendingQuestion(pane: Pane): Boolean =
-        blocksNormalSend(pane, if (paneTextPane == pane.id && paneReadProblem == null) paneText else "",
+    private fun currentHermesUsage(pane: Pane): HermesUsageRead? = hermesUsageRead?.takeIf {
+        foreground && paneReadProblem == null && paneTextPane == pane.id && pane.scrollOffset == 0 &&
+            it.target.pane.sameCardOccupant(pane) && it.target.isCurrent(it.target.client)
+    }
+
+    // A normal Hermes footer and an empty editor, not just a '>' row in output. Never take this
+    // exceptional route through a draft, even for Force send.
+    private fun emptyHermesUsageComposer(screen: String): Boolean {
+        val bottom = com.billmongan.herdrdroid.herdr.stripAnsi(screen).lines().asReversed().asSequence().map { it.trim() }
+            .filter { it.isNotBlank() && !it.all { c -> c in "─━═" } }.take(2)
+            .toList()
+        return bottom.size == 2 && bottom[0].startsWith("☤ ") &&
+            (bottom[1].startsWith('❯') || bottom[1].startsWith('›')) &&
+            com.billmongan.herdrdroid.herdr.inputLineOf(screen, "hermes") == ""
+    }
+
+    fun hasPendingQuestion(pane: Pane): Boolean {
+        if (pane.agent == "hermes" && hermesState == Status.NEEDS_YOU) return true
+        val effective = if (pane.status == Status.NEEDS_YOU && currentHermesUsage(pane)?.composerReady == true)
+            pane.copy(status = Status.IDLE) else pane
+        return blocksNormalSend(effective, if (paneTextPane == pane.id && paneReadProblem == null) paneText else "",
             openCodeComposerIsCurrent(pane))
+    }
 
     internal fun waitingForHermesComposer(paneId: String): Boolean = pane(paneId)?.agent == "hermes" &&
         paneTextPane == paneId && paneReadProblem == null && hermesUsageWaiting(paneText)
 
     private data class OpenCodeSendRead(val pane: Pane, val connection: Any, val text: String)
+
+    private fun checkedSendBlocked(pane: Pane, screen: String, checked: OpenCodeSendRead?): Boolean {
+        if (pane.agent == "hermes" && hermesState == Status.NEEDS_YOU) return true
+        val recovered = pane.agent == "hermes" && checked != null &&
+            pane.status in hermesUsageSendStates && checked.pane.status in hermesUsageSendStates && emptyHermesUsageComposer(screen) &&
+            (hermesUsageEnd(screen) != null || currentHermesUsage(pane)?.target?.connection === checked.connection)
+        // Keep the checked pane's true status for transport: agent prompt rejects blocked panes.
+        // Only this fresh empty-composer check permits the guarded text/Enter route in that case.
+        fun blocked(p: Pane) = blocksNormalSend(
+            if (recovered && p.status == Status.NEEDS_YOU) p.copy(status = Status.IDLE) else p,
+            screen, checked != null,
+        )
+        return blocked(pane) || checked?.pane?.let { blocked(it) } == true
+    }
+
+    private val hermesUsageSendStates = setOf(Status.NEEDS_YOU, Status.IDLE, Status.DONE)
 
     private suspend fun readOpenCodeForSend(h: Herdr, expected: Pane): OpenCodeSendRead? {
         val connection = h.connectionIdentity ?: return null
@@ -3663,7 +3718,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun enqueue(paneId: String, text: String) {
         val serverId = current?.id ?: return
         if (text.isBlank()) return
-        queued = queued + QueuedPrompt(System.nanoTime(), serverId, paneId, text)
+        queued = queued + QueuedPrompt(System.nanoTime(), serverId, paneId, text, pane(paneId)?.takeIf { it.agent == "hermes" })
         if (queueJob?.isActive == true) return
         queueJob = viewModelScope.launch {
             while (isActive && queued.isNotEmpty()) {
@@ -3675,7 +3730,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     if (q !in queued || q.serverId != current?.id) continue
                     val p = pane(q.paneId)
                     if (p == null) continue
-                    if ((p.status == Status.IDLE || p.status == Status.DONE) && !hasPendingQuestion(p) && !waitingForHermesComposer(p.id)) {
+                    if (q.hermesTarget?.sameCardOccupant(p) == false) continue
+                    val ready = p.status == Status.IDLE || p.status == Status.DONE ||
+                        p.status == Status.NEEDS_YOU && currentHermesUsage(p)?.composerReady == true
+                    if (ready && !hasPendingQuestion(p) && !waitingForHermesComposer(p.id)) {
                         queued = queued - q
                         sendMessage(p, q.text)
                     }
@@ -3688,6 +3746,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun sendQueuedImmediately(q: QueuedPrompt) {
         if (q !in queued || q.serverId != current?.id) return
         val target = pane(q.paneId) ?: return
+        if (q.hermesTarget?.sameCardOccupant(target) == false) {
+            flash("Not sent: the Hermes pane changed. Cancel the queued message to remove it.")
+            return
+        }
         if (waitingForHermesComposer(target.id)) {
             flash("Waiting for Hermes to return to its composer after Usage.")
             return
@@ -3754,6 +3816,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun shownStatus(p: Pane, serverId: String? = current?.id): Status {
         val here = serverId == current?.id
+        if (here && p.status == Status.NEEDS_YOU && hermesState != Status.NEEDS_YOU) {
+            currentHermesUsage(p)?.let { return if (it.composerReady) hermesState ?: Status.IDLE else Status.WORKING }
+        }
         // Hermes: a conversation elsewhere (Telegram, its app) working or waiting counts here too.
         if (here && p.agent?.lowercase() == "hermes" && p.status != Status.NEEDS_YOU) hermesState?.let {
             if (it == Status.NEEDS_YOU || p.status != Status.WORKING) return it

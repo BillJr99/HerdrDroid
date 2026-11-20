@@ -37,7 +37,95 @@ class SuccessiveCardAnswerTest {
         assertNull(detectPrompt(vm.paneText, true, "hermes"))
         assertTrue(vm.questionsFor("p1").isEmpty())
         assertNull(vm.usageOverlayFor("p1"))
+        assertEquals(Status.WORKING, vm.shownStatus(checkNotNull(vm.pane("p1"))))
         assertTrue(sent.isEmpty())
+    }
+
+    @Test fun hermesUsageQueueDrainsWhenComposerReturnsEvenWithStaleBlockedStatus() = fixture("hermes", hermesUsage) {
+        readSelectedPane()
+        vm.enqueue("p1", "queued follow-up")
+        vm.sendQueuedImmediately(vm.queued.single())
+        shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(4))
+        assertTrue(sent.isEmpty())
+        assertEquals(1, vm.queued.size)
+
+        recentResult = ExecResult(0, hermesUsage, "")
+        frame = hermesComposer
+        readSelectedPane()
+        assertEquals(Status.IDLE, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+        recentResult = ExecResult(0, "Old scrollback without Usage", "")
+        readSelectedPane()
+        assertEquals(hermesComposer, vm.paneText)
+        shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(4))
+        drainUntil { sent.isNotEmpty() }
+        assertTrue(vm.queued.isEmpty())
+        shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(4))
+        assertEquals(listOf("text:queued follow-up", "enter"), sent)
+    }
+
+    @Test fun hermesUsageHeldSendRetriesWhenComposerReturnsWithStaleBlockedStatus() = fixture("hermes", hermesUsage) {
+        readSelectedPane()
+        vm.sendMessage(checkNotNull(vm.pane("p1")), "held follow-up", force = true)
+        drainUntil { vm.pendingSends.any { it.waiting } }
+        assertTrue(sent.isEmpty())
+        frame = "$hermesUsage\n${hermesComposer.replace("❯", "❯ remote draft")}"
+        shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(3))
+        assertTrue(sent.isEmpty())
+        frame = "$hermesUsage\n$hermesComposer"
+        shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(3))
+        drainUntil { sent.isNotEmpty() }
+        assertEquals(listOf("text:held follow-up", "enter"), sent)
+    }
+
+    @Test fun hermesUsageFromRecentOnlyDoesNotOverrideBlockedStatus() = fixture("hermes", hermesComposer) {
+        recentResult = ExecResult(0, hermesUsage, "")
+        readSelectedPane()
+        assertEquals(Status.NEEDS_YOU, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+        vm.enqueue("p1", "do not send based on scrollback")
+        vm.sendQueuedImmediately(vm.queued.single())
+        shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(4))
+        assertEquals(1, vm.queued.size)
+        assertTrue(sent.isEmpty())
+    }
+
+    @Test fun hermesUsageComposerProofCannotSendThroughANewApproval() = fixture("hermes", hermesUsage) {
+        readSelectedPane()
+        recentResult = ExecResult(0, hermesUsage, "")
+        frame = hermesComposer
+        readSelectedPane()
+        assertFalse(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+
+        frame = checkNotNull(javaClass.getResource(
+            "/screens/hermes/derived-1.4.9/1001-dangerous-command-approval.txt")).readText().trimEnd()
+        vm.sendMessage(checkNotNull(vm.pane("p1")), "do not paste into the approval", force = true)
+        drainUntil { vm.pendingSends.any { it.waiting } || sent.isNotEmpty() }
+        assertTrue(sent.isEmpty())
+        readSelectedPane()
+        assertEquals(Status.NEEDS_YOU, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+        assertTrue(displayed().choices.isNotEmpty())
+    }
+
+    @Test fun hermesUsageDoesNotOverrideGatewayApprovalOrAuthorizeAReplacement() = fixture("hermes", hermesUsage) {
+        status(Status.IDLE)
+        readSelectedPane()
+        vm.enqueue("p1", "original occupant only")
+        recentResult = ExecResult(0, hermesUsage, "")
+        frame = hermesComposer
+        readSelectedPane()
+        gatewayStatus(Status.NEEDS_YOU)
+        assertEquals(Status.NEEDS_YOU, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+        shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(4))
+        assertTrue(sent.isEmpty())
+        assertEquals(1, vm.queued.size)
+
+        gatewayStatus(null)
+        terminal = "replacement"
+        status(Status.IDLE)
+        readSelectedPane()
+        vm.sendQueuedImmediately(vm.queued.single())
+        shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(4))
+        assertTrue(sent.isEmpty())
+        assertEquals(1, vm.queued.size)
     }
 
     @Test fun hermesUsageHoldsEvenAForcedSendUntilLiveComposerReturns() = fixture("hermes", hermesUsage) {
@@ -589,6 +677,8 @@ class SuccessiveCardAnswerTest {
             ))
         }
 
+        fun gatewayStatus(status: Status?) = state("hermesState", status)
+
         fun shown() = checkNotNull(detectPrompt(frame, blocked = true, agent = agent)).forCard()
         fun displayed() = checkNotNull(detectPrompt(vm.paneText, blocked = false, agent = agent)).forCard()
         fun shownApproval() = checkNotNull(detectPrompt(vm.paneText, blocked = true, agent = "codex")).forCard().also {
@@ -684,6 +774,7 @@ class SuccessiveCardAnswerTest {
             API calls: 2
             Current context: 1,024 / 100,000 (1%)
         """.trimIndent()
+        const val hermesComposer = "──────────\n❯\n──────────\n☤ fixture · 1K/100K"
         val openCodeComposer = """
             Should I continue with the report?
 
