@@ -19,6 +19,8 @@ import com.billmongan.herdrdroid.ssh.ExecResult
 import com.billmongan.herdrdroid.ssh.HerdrSsh
 import com.billmongan.herdrdroid.store.Server
 import com.billmongan.herdrdroid.transcript.QuestionLog
+import com.billmongan.herdrdroid.voice.VoiceControls
+import com.billmongan.herdrdroid.voice.ConfirmationGrammar
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
@@ -28,6 +30,133 @@ import org.robolectric.Shadows.shadowOf
 
 @RunWith(AndroidJUnit4::class)
 class SuccessiveCardAnswerTest {
+    @Test fun workingClaudeDiscoversAQuestionFromTheLiveViewport() = fixture("claude", firstStep) {
+        val card = frame
+        val recent = "Claude is preparing a response."
+        status(Status.WORKING)
+        recentResult = ExecResult(0, recent, "")
+        readSelectedPane()
+        assertEquals(1, guardedVisibleReads)
+        assertEquals(card, vm.paneText)
+        assertTrue(detectPrompt(vm.paneText, false, "claude")!!.choices.isNotEmpty())
+
+        for (nonCard in listOf("", "❯ Next request")) {
+            frame = nonCard
+            readSelectedPane()
+            assertEquals(recent, vm.paneText)
+        }
+        assertEquals(3, guardedVisibleReads)
+
+        recentResult = ExecResult(0, card, "")
+        readSelectedPane()
+        assertEquals(3, guardedVisibleReads)
+        assertEquals(card, vm.paneText)
+
+        status(Status.WORKING, scrollOffset = 1)
+        recentResult = ExecResult(0, recent, "")
+        frame = card
+        readSelectedPane()
+        assertEquals(3, guardedVisibleReads)
+        assertEquals(recent, vm.paneText)
+        assertTrue(sent.isEmpty())
+    }
+
+    @Test fun voiceStagesVisibleApprovalDirectlyAndSendsOnlyAfterFullReadback() = fixture("codex", command("alpha-beta")) {
+        recentResult = ExecResult(0, "Working on the report", "")
+        assertTrue(shown().choices.isNotEmpty())
+        speak("option 1")
+        assertEquals(0, recentReads)
+        assertTrue(spoken.contains("Fixture") && spoken.contains("echo alpha-beta") && spoken.contains("Yes, proceed"))
+        assertNull(voice.confirmationGrammar())
+        assertTrue(sent.isEmpty())
+        completeSpeech()
+        assertEquals(ConfirmationGrammar.ANSWER, voice.confirmationGrammar())
+        speak("confirm answer")
+        drainUntil { !vm.answerInFlight("p1") }
+        assertEquals(spoken, listOf("y"), sent)
+        speak("confirm answer")
+        assertEquals(listOf("y"), sent)
+    }
+
+    @Test fun voiceRefusesChangedApprovalButCanStageDenialWithAStandingAlternative() = fixture("codex", command("alpha-beta")) {
+        frame = frame.replace("  2. No", "  2. Yes, and don't ask again (a)\n  3. No")
+        speak("answer option two")
+        completeSpeech()
+        assertNull(voice.confirmationGrammar())
+        speak("answer option one")
+        completeSpeech()
+        frame = frame.replace("alpha-beta", "alphabeta")
+        speak("confirm answer")
+        drainUntil { !vm.answerInFlight("p1") }
+        assertTrue(sent.isEmpty())
+        speak("answer option three")
+        completeSpeech()
+        speak("confirm answer")
+        drainUntil { !vm.answerInFlight("p1") }
+        assertEquals(spoken, listOf("esc"), sent)
+    }
+
+    @Test fun voiceListsOnlyVerifiedCardsAndRefusesAReplacedOccupant() = fixture("claude", firstStep.replace("  ☐ Size", "")) {
+        speak("list questions")
+        assertTrue(spoken, spoken.contains("Which option should the sample use?"))
+        assertTrue(sent.isEmpty())
+        speak("read question")
+        assertTrue(spoken, spoken.contains("Option 2. Orange"))
+        speak("option 1")
+        completeSpeech()
+        terminal = "t2"
+        speak("confirm answer")
+        drainUntil { !vm.answerInFlight("p1") }
+        assertTrue(sent.isEmpty())
+        speak("list questions")
+        assertTrue(spoken, spoken.contains("could not verify", ignoreCase = true))
+    }
+
+    @Test fun voiceRefusesAStaleDisplayedCardBeforeStaging() = fixture("codex", command("alpha-beta")) {
+        readSelectedPane()
+        assertNotNull(vm.paneTextTarget)
+        frame = command("alphabeta")
+        speak("option 1")
+        completeSpeech()
+        assertNull(voice.confirmationGrammar())
+        speak("confirm answer")
+        assertTrue(sent.isEmpty())
+    }
+
+    @Test fun voiceRefusesEarlyConfirmationCancellationAndTypedOrMultiChoice() = fixture("claude", firstStep) {
+        speak("option 1")
+        completeSpeech()
+        assertNull(voice.confirmationGrammar()) // Multi-question dialog.
+        frame = frame.replace("  ☐ Size", "")
+        speak("option 3")
+        completeSpeech()
+        assertNull(voice.confirmationGrammar()) // Typed option.
+        speak("option 1")
+        speak("confirm answer") // Readback never completed.
+        assertTrue(sent.isEmpty())
+        speak("option 1")
+        completeSpeech()
+        speak("cancel answer")
+        speak("confirm answer")
+        assertTrue(sent.isEmpty())
+    }
+
+    @Test fun voiceUsesLiveHighlightAndDoesNotRepeatUnconfirmedDelivery() = fixture("claude", firstStep.replace("  ☐ Size", "")) {
+        speak("option 2")
+        completeSpeech()
+        frame = frame.replace("❯ 1. Blue", "  1. Blue").replace("  2. Orange", "❯ 2. Orange")
+        failAfterSend = true
+        speak("confirm answer")
+        drainUntil { !vm.answerInFlight("p1") }
+        assertTrue(spoken, spoken.startsWith("Could not confirm delivery"))
+        assertEquals(listOf("enter"), sent)
+        speak("option 2")
+        completeSpeech()
+        speak("confirm answer")
+        drainUntil { !vm.answerInFlight("p1") }
+        assertEquals(listOf("enter"), sent)
+    }
+
     @Test fun successiveClaudeTabsWithIdenticalQuestionAndOptionsBothSend() = fixture("claude", firstStep) {
         val first = shown()
         answer(first)
@@ -188,22 +317,33 @@ class SuccessiveCardAnswerTest {
         private val ssh = HerdrSsh(server.host, server.port, server.user, Credentials(null, null), null, { null })
         override var connection: Any? = Any()
         val sent = mutableListOf<String>()
+        var failAfterSend = false
         var afterSend: String? = null
         var ansiRows = false
         var terminal = "t1"
         var recentReads = 0
         var recentResult: ExecResult? = null
         val discoveryVisibleReads = mutableListOf<Boolean>()
+        var guardedVisibleReads = 0
+        var spoken = ""
+        private var speechDone: (() -> Unit)? = null
+        val voice = VoiceControls(vm, { _, text, _, done -> spoken = text; speechDone = done }, { false })
+        fun speak(command: String) = runBlocking { voice.handle(command) }
+        fun completeSpeech() { speechDone?.invoke(); speechDone = null }
 
         init {
             field("herdr").set(vm, Herdr(ssh, server.herdrPath, Backend.TUI, null, this))
             state("current", server)
-            state("panes", listOf(Pane("p1", "tab", "w1", agent, Status.NEEDS_YOU, "", "/fixture", scrollOffset = 0, terminalId = terminal)))
+            status(Status.NEEDS_YOU)
             field("lastWorkAt").setLong(vm, Long.MAX_VALUE)
             field("lastPreviewsAt").setLong(vm, Long.MAX_VALUE)
             vm.screen = Screen.Agent("p1")
             shadowOf(Looper.getMainLooper()).idle()
         }
+
+        fun status(status: Status, scrollOffset: Int = 0) = state("panes", listOf(
+            Pane("p1", "tab", "w1", agent, status, "", "/fixture", scrollOffset = scrollOffset, terminalId = terminal)
+        ))
 
         fun shown() = checkNotNull(detectPrompt(frame, blocked = true, agent = agent)).forCard()
         fun shownApproval() = checkNotNull(detectPrompt(vm.paneText, blocked = true, agent = "codex")).forCard().also {
@@ -249,13 +389,14 @@ class SuccessiveCardAnswerTest {
                 command.contains("'pane' 'read' 'p1' '--source' 'recent'") -> { recentReads++; recentResult ?: ok(ansiFrame()) }
                 command.contains("'pane' 'read' 'p1' '--source' 'visible'") -> {
                     if (expectedConnection == null) discoveryVisibleReads += command.contains("'--lines'")
+                    else guardedVisibleReads++
                     ok(if (command.endsWith("'--format' 'ansi'")) ansiFrame() else frame)
                 }
                 command.contains("def occupant():") && command.endsWith("'/fixture/herdr' 'p1' '$agent'") -> ok("")
                 command.contains("'pane' 'send-keys' 'p1' ") -> {
                     sent += command.substringAfter("'p1' ").replace("'", "")
                     afterSend?.let { frame = it }
-                    ok("")
+                    if (failAfterSend) ExecResult(1, "", "fixture lost acknowledgement") else ok("")
                 }
                 else -> throw AssertionError("Unexpected fixture command: $command")
             }

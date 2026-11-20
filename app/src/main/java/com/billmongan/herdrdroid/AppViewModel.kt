@@ -1441,11 +1441,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             fun canUpgrade() = foreground && isOpen() && cardOwner != null &&
                 cardOwner.client.backend == Backend.TUI && cardOwner.isCurrent(cardOwner.client) &&
                 pane(paneId)?.scrollOffset == 0
-            // A nonempty recent capture can omit Codex's entire dialog while status still says
+            // A nonempty recent capture can omit the entire dialog while status still says
             // Working. Probe only the selected, live-bottom viewport on the same connection.
             val missingCodexApproval = agent == "codex" && paneStatus == Status.WORKING && preview == null
+            val missingClaudeQuestion = agent == "claude" && paneStatus == Status.WORKING && preview == null
             val liveCard = if (liveUsage == null &&
-                (missingCodexApproval || preview?.terminalReview == true || (blocked && preview?.choices.isNullOrEmpty())) && canUpgrade()) {
+                (missingCodexApproval || missingClaudeQuestion || preview?.terminalReview == true || (blocked && preview?.choices.isNullOrEmpty())) && canUpgrade()) {
                 val owner = checkNotNull(cardOwner)
                 quietly { h -> if (h === owner.client) h.readCardViewport(paneId, owner.connection, timeoutSeconds = 1) else null }
                     ?.takeIf { canUpgrade() && !it.isBlank() }
@@ -2539,35 +2540,59 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return result?.takeIf { voiceTarget() == target }
     }
 
-    internal suspend fun refreshVoiceScreen(serverId: String, paneId: String): Boolean {
-        val client = herdr ?: return false
-        val cardOwner = cardTarget(paneId)
-        val visit = paneVisit
-        if (current?.id != serverId || link != Link.CONNECTED || (screen as? Screen.Agent)?.paneId != paneId) return false
-        val attempt = ++paneReadSequence
-        val text = quietly(allowBackground = true) { readForCard(it, paneId) } ?: return false
-        if (attempt <= lastAppliedPaneRead || herdr !== client || current?.id != serverId || paneVisit != visit || (screen as? Screen.Agent)?.paneId != paneId) return false
-        lastAppliedPaneRead = attempt
-        paneReadProblem = null
-        openUsage = null // This read is recent output, not an identity-bound visible snapshot.
-        paneText = text
-        paneTextPane = paneId
-        paneTextTarget = cardOwner?.takeIf { it.isCurrent(client) }
-        val pane = pane(paneId)
-        val prompt = detectPrompt(text, pane?.status == Status.NEEDS_YOU, pane?.agent, versionOf(paneId))
-        observeQuestion(serverId, paneId, prompt, pane?.status, pane?.agentName, text)
-        return true
+    internal data class VoiceCardRead(val prompt: Prompt?)
+
+    internal fun voiceCardTarget(): CardTarget? = voiceTarget()?.let { cardTarget(it.pane) }
+
+    internal fun voiceCardCurrent(target: CardTarget): Boolean =
+        voiceTarget() != null && target.isCurrent(target.client)
+
+    internal suspend fun readVoiceCard(target: CardTarget): VoiceCardRead? =
+        readVoiceViewport(target.pane, target.client, target.connection, versionOf(target.pane.id)) {
+            voiceCardCurrent(target)
+        }
+
+    /** If Chat already shows an actionable card, a spoken option must mean the same thing on it. */
+    internal fun voiceCardFitsChat(target: CardTarget, live: Prompt): Boolean {
+        if (!voiceCardCurrent(target)) return false
+        val displayed = paneTextTarget?.takeIf { it.isCurrent(target.client) && it.pane.id == target.pane.id }
+            ?.let { detectPrompt(paneText, pane(target.pane.id)?.status == Status.NEEDS_YOU,
+                target.pane.agent, versionOf(target.pane.id)) }
+        return displayed?.takeIf { it.choices.isNotEmpty() && !it.terminalReview }
+            ?.let { cardAnswerStillFits(it, live) } ?: true
     }
 
-    internal fun voiceQuestionKey(paneId: String, prompt: com.billmongan.herdrdroid.herdr.Prompt): String? {
-        if (pane(paneId)?.agent != "claude" || prompt.multi || prompt.parts?.command != null ||
-            prompt.parts?.tabs?.count { !it.submit } != 1 ||
-            prompt.choices.any { com.billmongan.herdrdroid.herdr.grantsStandingPermission(it.label) }) return null
-        val sig = com.billmongan.herdrdroid.transcript.QuestionLog.signature(prompt)
-        return questionsFor(paneId).lastOrNull {
-            it.state == com.billmongan.herdrdroid.transcript.QState.OPEN &&
-                com.billmongan.herdrdroid.transcript.QuestionLog.sameCard(it.sig, sig)
-        }?.key
+    // Fleet discovery is read-only. A drawer row or cached status alone cannot verify a card.
+    internal suspend fun readListedVoiceCard(session: Session): VoiceCardRead? {
+        val (server, pane) = session
+        val client = clientFor(server.id) ?: return null
+        val connection = client.connectionIdentity ?: return null
+        return readVoiceViewport(pane, client, connection, versionOf(pane.id).takeIf { session.current }) {
+            !locked && (foreground || !server.overWebSocket) && clientFor(server.id) === client &&
+                client.connectionIdentity === connection &&
+                if (session.current) current == server && link == Link.CONNECTED &&
+                    pane(pane.id)?.sameCardOccupant(pane) == true
+                else fleetStates[server.id]?.let { it.server == server && it.error == null &&
+                    it.panes.singleOrNull { other -> other.id == pane.id }?.sameCardOccupant(pane) == true } == true
+        }
+    }
+
+    private suspend fun readVoiceViewport(pane: Pane, client: Herdr, connection: Any, version: String?,
+        current: () -> Boolean,
+    ): VoiceCardRead? {
+        if (!current() || client.backend != Backend.TUI || (pane.terminalId == null && pane.sessionId == null)) return null
+        return try {
+            val fresh = client.cardPane(pane.id, connection) ?: return null
+            if (!current() || !pane.sameCardOccupant(fresh)) return null
+            val text = client.readCardViewport(pane.id, connection)
+            if (!current() || text.isBlank()) return null
+            VoiceCardRead(detectPrompt(text, fresh.status == Status.NEEDS_YOU, fresh.agent, version)
+                ?.takeIf { it.terminalReview || it.choices.isNotEmpty() })
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun beginAnswer(key: Pair<String, String>): Boolean {
@@ -2670,12 +2695,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     internal fun answerChoice(paneId: String, prompt: Prompt, choice: Choice,
-        voiceQuestion: String? = null, voiceAllowed: () -> Boolean = { true }, voiceConnection: Any? = null,
+        voiceAllowed: (() -> Boolean)? = null,
         target: CardTarget? = cardTarget(paneId), feedback: ((String) -> Unit)? = null,
     ) {
         // The answer goes into the history only once it was sent (1.3.2, from a code review).
         if (prompt.terminalReview) return
-        if (choice.keys.startsWith("grok-privacy:")) {
+        if (choice.keys.startsWith("grok-privacy:") && voiceAllowed == null) {
             answerCardInput(target, prompt, choice.label) { h, t, fresh ->
                 if (choice !in fresh.choices) return@answerCardInput false
                 answerGrokPrivacy(h, paneId, optIn = choice.keys == com.billmongan.herdrdroid.herdr.GROK_PRIVACY_IN,
@@ -2696,7 +2721,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 readPane(paneId)
                 return@answerOnce
             }
-            if (voiceQuestion != null && (locked || !voiceAllowed() || voiceQuestionKey(paneId, fresh) != voiceQuestion)) {
+            val keys = if (voiceAllowed == null) com.billmongan.herdrdroid.herdr.menuKeys(fresh, choice)
+                else com.billmongan.herdrdroid.voice.voiceCardKeys(fresh, choice)
+            if (voiceAllowed != null && (!voiceAllowed() || keys == null)) {
                 report("The question changed. No answer was sent.")
                 return@answerOnce
             }
@@ -2711,15 +2738,33 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
             // A transport error can leave delivery uncertain. Suppress another send to this same
             // card even when no receipt came back; a distinct live card can still be answered.
-            rememberCardAnswer(target.server, paneId, fresh)
-            val keys = com.billmongan.herdrdroid.herdr.menuKeys(fresh, choice)
-            val connection = voiceConnection ?: target.connection
-            if (keys == null) {
-                if (choice.pressEnter) h.typeAndEnter(paneId, choice.keys, connection)
+            val connection = target.connection
+            if (voiceAllowed != null) {
+                val key = target.server to paneId
+                val permit = writeGate.open(key)
+                if (permit == null) { report("Not sent. This pane is closing."); return@answerOnce }
+                try {
+                    if (!voiceAllowed()) { report("No answer was sent."); return@answerOnce }
+                    rememberCardAnswer(target.server, paneId, fresh)
+                    h.sendPermittedKeys(paneId, checkNotNull(keys), connection, permit)
+                } catch (_: com.billmongan.herdrdroid.herdr.WriteRevoked) {
+                    report("Not sent. Voice control stopped or the pane closed.")
+                    return@answerOnce
+                } finally {
+                    writeGate.finish(key, permit)
+                }
+            } else {
+                rememberCardAnswer(target.server, paneId, fresh)
+                if (keys != null) h.sendKeys(paneId, *keys.toTypedArray(), expectedConnection = connection)
+                else if (choice.pressEnter) h.typeAndEnter(paneId, choice.keys, connection)
                 else h.sendText(paneId, choice.keys, connection)
-            } else h.sendKeys(paneId, *keys.toTypedArray(), expectedConnection = connection)
+            }
             val sent = keys?.joinToString(" ") { keyName(it) } ?: choice.keys
             com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: sent $sent")
+            if (voiceAllowed != null && target.isCurrent(h)) {
+                // The live card may never have appeared in a chat poll. Record it only after delivery.
+                observeQuestion(target.server, paneId, fresh, target.pane.status, agentName)
+            }
             noteAnswer(paneId, prompt, choice.label, serverId = target.server)
             // Say what went (1.4.3): a tap that answers shows it at once.
             report("Sent $sent to $agentName: ${choice.label.take(40)}")

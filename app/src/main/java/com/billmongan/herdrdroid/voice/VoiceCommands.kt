@@ -6,6 +6,7 @@ import java.util.Locale
 internal sealed interface VoiceCommand {
     data class Switch(val name: String, val server: String? = null) : VoiceCommand
     data class Choose(val index: Int) : VoiceCommand
+    data object ListQuestions : VoiceCommand
     data object ReadQuestion : VoiceCommand
     data object ReadReply : VoiceCommand
     data object Confirm : VoiceCommand
@@ -19,7 +20,7 @@ internal sealed interface VoiceCommand {
 
 internal val voiceCommandHelp = listOf(
     "Switch to Codex on Laptop", "Switch to Laptop", "Read the latest reply",
-    "Repeat that", "Read question", "Option two", "Confirm answer", "Cancel answer",
+    "Repeat that", "List questions", "Read question", "Answer option one", "Confirm answer", "Cancel answer",
     "Send a message to Codex on Laptop", "Dictate check the build", "Confirm message", "Cancel message",
 )
 
@@ -38,17 +39,20 @@ internal fun parseVoiceCommand(text: String): VoiceCommand? {
         ?.let { return VoiceCommand.Dictate(it) }
     val words = text.lowercase(Locale.ROOT).trim().trimEnd('.', '?', '!').replace(Regex("\\s+"), " ")
     return when (words) {
-        "read the pending question", "read the question", "read question" -> VoiceCommand.ReadQuestion
+        "list questions", "list pending questions", "list approvals", "list pending approvals" -> VoiceCommand.ListQuestions
+        "read the pending question", "read the question", "read pending question", "read question",
+        "read the pending approval", "read the approval", "read pending approval", "read approval" -> VoiceCommand.ReadQuestion
         "read the latest reply", "read latest reply", "read reply" -> VoiceCommand.ReadReply
         "repeat", "repeat that", "repeat the last message" -> VoiceCommand.Repeat
         "confirm message" -> VoiceCommand.ConfirmMessage
         "cancel message" -> VoiceCommand.CancelMessage
-        "confirm answer" -> VoiceCommand.Confirm
-        "cancel answer" -> VoiceCommand.Cancel
+        "confirm answer", "confirm approval" -> VoiceCommand.Confirm
+        "cancel answer", "cancel approval" -> VoiceCommand.Cancel
         else -> {
-            val number = Regex("^(?:choose |select )?option (.+)$").matchEntire(words)?.groupValues?.get(1)
+            val number = Regex("^(?:answer |choose |select )?option (.+)$").matchEntire(words)?.groupValues?.get(1)
             if (number != null) {
-                val named = listOf("one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten")
+                val named = listOf("one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+                    "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty")
                 return (number.toIntOrNull() ?: (named.indexOf(number) + 1))
                     .takeIf { it > 0 }?.let { VoiceCommand.Choose(it - 1) }
             }
