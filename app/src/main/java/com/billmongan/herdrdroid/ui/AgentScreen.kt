@@ -581,6 +581,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         // still running, and its running subagents. Tap either for active and finished.
         HorizontalDivider(color = Palette.Line)
         ServerBanners(vm)
+        // A held send's problem shows only in its own pane's chat, on its own server (2.1.2).
+        vm.sendNoticeFor(paneId)?.let { ErrorBanner(it) { vm.dismissSendNotice(paneId) } }
         if (!live) AgentMessagePanel(vm, paneId)
         if (openingPreview != null) {
             Text("Checking the live pane…", color = Palette.Muted, fontSize = 12.5.sp,
