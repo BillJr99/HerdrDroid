@@ -24,6 +24,7 @@ import com.billmongan.herdrdroid.ui.proposalInstructions
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import org.junit.After
+import org.junit.Before
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -41,28 +42,36 @@ class CrossServerHermesDestinationTest {
     @get:Rule val rule = createComposeRule()
 
     private val app = ApplicationProvider.getApplicationContext<Application>()
-    private val vm = AppViewModel(app)
+    private lateinit var vm: AppViewModel
     private val source = Source()
     private val minipc2 = Minipc2()
     private val exact = "Hermes, please check tonight's cron run."
 
-    init {
-        vm.onForeground()
-        field(vm, "herdr").set(vm, source.client)
-        state(vm, "servers", listOf(source.server, minipc2.server))
-        state(vm, "current", source.server)
-        state(vm, "panes", listOf(source.pane))
-        vm.screen = Screen.Agent("p1")
-        val fleet = Fleet(vm.viewModelScope, { Credentials(null, null) }, { null }, {})
-        // The watcher's panes come from the real herdr parse of minipc2's pane and tab lists.
-        val watched = runBlocking { minipc2.client.panes() }
-        state(fleet, "states", mapOf(minipc2.server.id to FleetState(minipc2.server, watched, null, 0)))
-        field(fleet, "clients").set(fleet, mutableMapOf(minipc2.server.id to (minipc2.ssh to minipc2.client)))
-        field(vm, "fleet").set(vm, fleet)
+    // The view model is made inside the compose rule, on the UI thread, as ComposeUiTest and
+    // ServersBackUiTest make theirs. Made in the test's constructor, it started its coroutines and
+    // wrote its Compose state before the rule's test environment existed; this was one of only two
+    // Compose test classes that did so, and with it the full suite's later Compose tests timed out
+    // with AppNotIdleException (CardBodyTest, ComposeUiTest, PaneDraftCardTest and others).
+    @Before fun open() {
+        rule.runOnUiThread {
+            vm = AppViewModel(app)
+            vm.onForeground()
+            field(vm, "herdr").set(vm, source.client)
+            state(vm, "servers", listOf(source.server, minipc2.server))
+            state(vm, "current", source.server)
+            state(vm, "panes", listOf(source.pane))
+            vm.screen = Screen.Agent("p1")
+            val fleet = Fleet(vm.viewModelScope, { Credentials(null, null) }, { null }, {})
+            // The watcher's panes come from the real herdr parse of minipc2's pane and tab lists.
+            val watched = runBlocking { minipc2.client.panes() }
+            state(fleet, "states", mapOf(minipc2.server.id to FleetState(minipc2.server, watched, null, 0)))
+            field(fleet, "clients").set(fleet, mutableMapOf(minipc2.server.id to (minipc2.ssh to minipc2.client)))
+            field(vm, "fleet").set(vm, fleet)
+        }
     }
 
     @After fun close() {
-        vm.viewModelScope.cancel()
+        rule.runOnUiThread { vm.viewModelScope.cancel() }
         shadowOf(Looper.getMainLooper()).idle()
     }
 
