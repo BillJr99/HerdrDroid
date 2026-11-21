@@ -1,0 +1,3 @@
+card: none
+blocked: false
+source: captured 2026-11-21 for 2.1.4: Claude Code 2.1.329 (the binary installed on minipc2) run in a throwaway container on minipc under tmux at 120x40, against a local mock of the Messages API that returned neutral text; tmux capture-pane. Every row is as Claude drew it (real); the question and the answer text are the mock's (neutral, made up for the capture). No live pane was read. After Esc: the panel is gone and the composer is back.

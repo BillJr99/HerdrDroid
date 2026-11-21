@@ -240,6 +240,15 @@ class AppPrefs(context: Context) {
         get() = prefs.getString("quotaHistory", "{}") ?: "{}"
         set(v) = prefs.edit().putString("quotaHistory", v).apply()
 
+    /**
+     * Usage dialogs the app opened and hasn't yet confirmed closed (2.1.4), as a JSON array of
+     * {server, pane, agent, at, failures}: kept so that after the app is closed or killed the next
+     * check or send closes it first.
+     */
+    var usageLeftOpen: String
+        get() = prefs.getString("usageLeftOpen", "[]") ?: "[]"
+        set(v) = prefs.edit().putString("usageLeftOpen", v).apply()
+
     /** What the home-screen widget shows, written whenever the app reads its agents. */
     var widgetState: String
         get() = prefs.getString("widgetState", "{}") ?: "{}"

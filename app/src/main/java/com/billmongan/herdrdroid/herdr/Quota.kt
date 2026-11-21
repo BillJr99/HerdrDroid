@@ -177,20 +177,112 @@ private val CLAUDE_USAGE_DETAIL = Regex("""\d+(?:\.\d+)?%\s+(?:used|left)|\brese
 private val CLAUDE_INPUT = Regex("""^[❯›>]""")
 private val CLAUDE_OPTION = Regex("""^\d+[.)]\s""")
 
-/** Only known live layouts may authorize an explicit Escape. */
+/**
+ * Only known live layouts may authorize an explicit Escape. For Claude that is its usage panel, or
+ * (2.1.4) its /btw side-question panel ([claudeBtwOverlay]), which Esc closes the same way.
+ */
 internal fun dismissibleUsageFrame(agent: String?, visible: String): List<String>? = when (agent) {
     "claude" -> claudeUsageFrame(visible)?.takeIf { frame ->
         CLAUDE_USAGE_HEADER.matches(frame.first()) && frame.drop(1).dropLast(1).all {
             CLAUDE_USAGE_SECTION.matches(it) || CLAUDE_USAGE_ROW.matches(it) ||
                 it == "Session" || CLAUDE_USAGE_COST.matches(it)
         }
-    }
+    } ?: claudeBtwOverlay(visible)?.let { listOf("/btw " + it.question) + it.body }
     "kiro" -> {
         val lines = overlayLines(visible)
         val top = lines.indexOfLast { it == "/usage" }
         lines.drop(top.coerceAtLeast(0)).takeIf { top >= 0 && KIRO_USAGE.matches(it.joinToString("\n")) }
     }
+    "grok" -> grokUsageFrame(visible)
+    "agy" -> agyUsageFrame(visible)
     else -> null
+}
+
+/**
+ * Grok 1.0.92's session/usage dialog (2.1.4): a light box drawn over the chat whose last row is
+ * "Tab switch  |  ↑/↓ scroll  |  c copy session ID  |  Esc close", with Grok's own composer box and
+ * shortcut hint still drawn under it. The box may sit to the right of chat text, so its rows are
+ * found by the column of the footer's left border. Below the box only blank rows, Grok's composer
+ * box (empty: a draft is never under it) and its "Shift+Tab:mode" hint may follow.
+ */
+private fun grokUsageFrame(visible: String): List<String>? {
+    val rows = stripAnsi(visible).lines().map { it.trimEnd() }.takeLast(60)
+    val footerAt = rows.indexOfLast { GROK_USAGE_FOOTER.containsMatchIn(it) }
+    if (footerAt < 0) return null
+    val footerRow = rows[footerAt]
+    val hit = GROK_USAGE_FOOTER.find(footerRow) ?: return null
+    val col = footerRow.lastIndexOf('│', hit.range.first)
+    if (col < 0 || footerRow.substring(col + 1, hit.range.first).isNotBlank()) return null
+    val right = footerRow.indexOf('│', hit.range.last + 1)
+    if (right < 0 || footerRow.substring(hit.range.last + 1, right).isNotBlank()) return null
+    fun at(row: String, c: Char) = row.length > col && row[col] == c
+    val bottomAt = (footerAt + 1 until rows.size).firstOrNull { rows[it].isNotBlank() } ?: return null
+    val bottom = rows[bottomAt]
+    if (!at(bottom, '└') || bottom.length <= right || bottom[right] != '┘' || bottom.substring(col + 1, right).any { it != '─' }) return null
+    var topAt = -1
+    for (i in footerAt - 1 downTo 0) {
+        val r = rows[i]
+        if (at(r, '┌')) { topAt = i; break }
+        if (!at(r, '│') || r.length <= right || r[right] != '│') return null
+    }
+    if (topAt < 0 || rows[topAt].length <= right || rows[topAt][right] != '┐') return null
+    // Nothing but Grok's own chrome under the box: an empty composer and its hint line.
+    val under = rows.drop(bottomAt + 1).map { it.trim() }.filter { it.isNotEmpty() }
+    if (!under.all { it.startsWith('╭') || it.startsWith('╰') || GROK_EMPTY_COMPOSER.matches(it) || it.startsWith("Shift+Tab:mode") }) return null
+    return rows.subList(topAt, bottomAt + 1).map { it.substring(col.coerceAtMost(it.length)).trim() }
+}
+
+private val GROK_USAGE_FOOTER = Regex("""Tab switch\s+[|│]\s+↑/↓ scroll\s+[|│]\s+c copy session ID\s+[|│]\s+Esc close""")
+private val GROK_EMPTY_COMPOSER = Regex("""^│\s*❯\s*│$""")
+
+/**
+ * Antigravity's usage screen (2.1.4): limits read as bare percentages over its scroll footer
+ * "↑/↓ Scroll · pgup/pgdown Page · ctrl+end Bottom · ctrl+home Top · esc Close", with at most its
+ * model footer under it (the layout in QuotaTest.antigravityFooterUnderDialog).
+ */
+private fun agyUsageFrame(visible: String): List<String>? {
+    val rows = stripAnsi(visible).lines().map { it.trim() }.takeLast(60)
+    val footerAt = rows.indexOfLast { it == AGY_USAGE_FOOTER }
+    if (footerAt < 0) return null
+    val under = rows.drop(footerAt + 1).filter { it.isNotEmpty() }
+    if (under.size > 1 || under.any { !AGY_MODEL_FOOTER.matches(it) }) return null
+    val body = rows.subList(0, footerAt)
+    if (parseQuota(body.joinToString("\n"), bareMeansLeft = true).isEmpty()) return null
+    return rows.subList((footerAt - 20).coerceAtLeast(0), footerAt + 1)
+}
+
+private const val AGY_USAGE_FOOTER = "↑/↓ Scroll · pgup/pgdown Page · ctrl+end Bottom · ctrl+home Top · esc Close"
+private val AGY_MODEL_FOOTER = Regex("""^[^│·]+·\s*(?:minimal|low|medium|high|xhigh|max)$""")
+
+/**
+ * The usage dialogs the app may open and must close (2.1.4): the agents whose usage command in
+ * [QuotaProfiles] draws a modal screen that Esc closes. Codex's /status, Copilot's and Hermes's
+ * /usage print into the conversation and leave nothing open.
+ */
+internal val USAGE_DIALOG_AGENTS = setOf("claude", "kiro", "grok", "agy")
+
+/** True when [text], sent to [agent], is that agent's usage command, which opens its usage dialog. */
+internal fun opensUsageDialog(agent: String?, text: String): Boolean {
+    val a = agent?.let(::canonicalAgent) ?: return false
+    if (a !in USAGE_DIALOG_AGENTS) return false
+    val p = QuotaProfiles.forAgent(a) ?: return false
+    return p.closeKeys.isNotEmpty() && text.trim().substringBefore(' ').equals(p.command, ignoreCase = true)
+}
+
+/**
+ * A loose sign that an agent's usage dialog is still drawn, used only to refuse to call it closed
+ * (never to send a key): its own close hint is on screen even though the strict layout didn't match.
+ */
+internal fun usageDialogHint(agent: String?, visible: String): Boolean {
+    val tail = stripAnsi(visible).lines().takeLast(40).joinToString("\n")
+    return when (agent) {
+        "grok" -> tail.contains("c copy session ID") && tail.contains("Esc close")
+        "agy" -> tail.contains("esc Close")
+        "kiro" -> tail.contains("esc to close", ignoreCase = true) && tail.contains("/usage")
+        "claude" -> claudeUsageOpen(tail) || tail.lines().lastOrNull { it.isNotBlank() }?.trim()?.endsWith("Esc to close") == true &&
+            tail.lines().any { it.startsWith("  /btw ") }
+        else -> false
+    }
 }
 
 private val CLAUDE_USAGE_COST = Regex("""Total cost:\s+\$[\d,.]+""")
@@ -230,6 +322,9 @@ object QuotaProfiles {
         ),
         QuotaProfile(setOf("codex"), "/status", emptyList(), 2_500),
         QuotaProfile(setOf("copilot"), "/usage", emptyList(), 3_000),
+        // Grok's /usage opens a session/usage dialog over the chat that only Esc closes; while it is
+        // open, typed text goes nowhere (2026-11-21). The app types this only when you send it from
+        // the composer, and then closes it and checks that it closed ([closeUsageAndVerify]).
         QuotaProfile(
             setOf("grok"), "/usage", listOf("esc"), 3_000,
             openMarker = Regex("Esc close", RegexOption.IGNORE_CASE), everyMinutes = 15,

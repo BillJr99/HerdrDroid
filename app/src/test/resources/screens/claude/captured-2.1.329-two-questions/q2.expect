@@ -1,0 +1,4 @@
+card: options
+blocked: false
+options: You connect first (Recommended) | Trust on first use | Type something. | Chat about this
+source: captured 2026-11-21 for 2.1.4: Claude Code 2.1.329 (the binary installed on minipc2) run in a throwaway container on minipc under tmux at 134x47, against a local mock of the Messages API whose AskUserQuestion call had the same shape as the one the claude pane asked at 18:18 UTC (two questions with headers "Allow rule" and "Host key", three and two options with descriptions). Every row is as Claude drew it (real). The question and option text is that call's, with the host name, user, paths and agent names replaced by neutral ones (reconstructed), keeping the lengths close and the backticks. Question 2 after question 1 was answered with Enter.
