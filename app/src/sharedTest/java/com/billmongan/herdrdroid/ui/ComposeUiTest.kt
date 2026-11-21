@@ -80,6 +80,26 @@ class ComposeUiTest {
         rule.runOnIdle { assertEquals(listOf(destinations[1]), sends) }
     }
 
+    /** 2.1.1 acceptance D2: four FixtureB panes were eligible and the review showed three (six here, past the old 160 dp box). */
+    @Test fun agentProposalListsEveryEligibleDestinationAtFullHeight() {
+        val destinations = listOf(
+            "Codex · 1 on FixtureB · 10.0.2.2:2202 · w1:p1",
+            "Codex · ph-b3 on FixtureB · 10.0.2.2:2202 · w1:p3",
+            "Hermes · ph-b4 on FixtureB · 10.0.2.2:2202 · w1:p4",
+            "Codex · sib-b2 on FixtureB · 10.0.2.2:2202 · w1:p2",
+            "Claude · cl-b5 on FixtureC · 10.0.2.2:2203 · w1:p1",
+            "Grok · gk-b6 on FixtureC · 10.0.2.2:2203 · w1:p2",
+        )
+        val picked = mutableListOf<String>()
+        rule.setContent {
+            Box(Modifier.height(800.dp).width(360.dp)) { DestinationChoices(destinations, enabled = true) { picked += it } }
+        }
+        // No inner scroll box: every row is on screen without scrolling.
+        destinations.forEach { rule.onNodeWithText(it).assertIsDisplayed() }
+        rule.onNodeWithText(destinations[5]).performClick()
+        rule.runOnIdle { assertEquals(listOf(destinations[5]), picked) }
+    }
+
     @Test fun agentMessagingSettingsDefaultOffAndPersistExplicitChoice() {
         val app = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.app.Application>()
         val prefs = app.getSharedPreferences("app", android.content.Context.MODE_PRIVATE)

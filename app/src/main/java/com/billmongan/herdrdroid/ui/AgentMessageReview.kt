@@ -4,7 +4,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -95,19 +94,15 @@ internal fun AgentMessageReview(
                 Text(text, fontFamily = FontFamily.Monospace)
                 if (!started) {
                     Text(if (destinations.isEmpty()) "No eligible destination in Fleet." else "Choose a destination on another server:")
-                    Column(Modifier.heightIn(max = 160.dp).verticalScroll(rememberScrollState())) {
-                        destinations.forEach { label ->
-                            TextButton(enabled = !checking, onClick = {
-                                if (checking || started) return@TextButton
-                                selected = null
-                                checking = true
-                                selectFailed = false
-                                scope.launch {
-                                    try {
-                                        if (onSelect(label)) selected = label else selectFailed = true
-                                    } finally { checking = false }
-                                }
-                            }) { Text(label) }
+                    DestinationChoices(destinations, enabled = !checking) { label ->
+                        if (checking || started) return@DestinationChoices
+                        selected = null
+                        checking = true
+                        selectFailed = false
+                        scope.launch {
+                            try {
+                                if (onSelect(label)) selected = label else selectFailed = true
+                            } finally { checking = false }
                         }
                     }
                 }
@@ -130,4 +125,19 @@ internal fun AgentMessageReview(
         },
         dismissButton = { TextButton(enabled = !inFlight, onClick = onDismiss) { Text(if (started) "Close" else "Cancel") } },
     )
+}
+
+/**
+ * Every eligible destination, one row each, at its full height (2.1.2, 2.1.1 acceptance D2). The
+ * list was its own 160 dp scroll box inside the dialog's scroll: with four destinations on
+ * FixtureB the fourth (b2, sorted last) sat below that box's edge with nothing to say it was there,
+ * so the review looked as if it listed three. The dialog's one scroll now holds them all.
+ */
+@Composable
+internal fun DestinationChoices(destinations: List<String>, enabled: Boolean, onPick: (String) -> Unit) {
+    Column {
+        destinations.forEach { label ->
+            TextButton(enabled = enabled, onClick = { onPick(label) }) { Text(label) }
+        }
+    }
 }
