@@ -129,6 +129,9 @@ private class Queued(
     val serverId: String? = null,
 )
 
+/** 2.1.4: how often the cross-server notice loop looks for agents to tell. */
+private const val NOTICE_TICK_MS = 30_000L
+
 class AppViewModel internal constructor(
     app: Application,
     // Keep all adapter work in this scope; recheck cancellation at the final submission boundary.
@@ -3079,13 +3082,23 @@ class AppViewModel internal constructor(
     internal val notifier = com.billmongan.herdrdroid.herdr.CrossServerNotifier(noticeLedger, { noticeClock() })
     /** Off in tests that drive [noticeTick] themselves. */
     internal var noticeLoopAllowed = true
+    /**
+     * The wait between notice passes. It suspends without holding the main thread: no work is
+     * queued on the main looper while it waits. Tests replace it, so no real 30-second delay loop
+     * runs in a test that does not ask for one.
+     */
+    internal var noticeTicker: suspend () -> Unit = { delay(NOTICE_TICK_MS) }
     private var noticeLoop: Job? = null
     private val noticeLock = Mutex()
     private val noticeForced = mutableSetOf<String>()
-    private val NOTICE_TICK_MS = 30_000L
 
     private fun noticeActive() = agentMessagingEnabled && crossServerNotice && agentMessagingForeground && !locked
 
+    /**
+     * The notice loop runs only while cross-server messaging and the notice are both on, the app is
+     * in the foreground and unlocked; any change away from that cancels it. Each pass reads Compose
+     * state, so the pass itself runs on the main thread, but nothing runs between passes.
+     */
     private fun updateNoticeLoop() {
         if (!noticeActive()) {
             noticeLoop?.cancel()
@@ -3094,11 +3107,12 @@ class AppViewModel internal constructor(
             return
         }
         if (!noticeLoopAllowed || noticeLoop?.isActive == true) return
-        // The first tick runs at once, so turning the feature on tells the agents.
-        noticeLoop = viewModelScope.launch {
-            while (isActive) {
+        // The first pass is posted at once, so turning the feature on tells the agents, but it
+        // never runs inside the call (a settings tap or a lifecycle callback) that started it.
+        noticeLoop = viewModelScope.launch(Dispatchers.Main) {
+            while (isActive && noticeActive()) {
                 noticeTick()
-                delay(NOTICE_TICK_MS)
+                noticeTicker()
             }
         }
     }

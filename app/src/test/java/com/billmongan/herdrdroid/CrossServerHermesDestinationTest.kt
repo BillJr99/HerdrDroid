@@ -55,6 +55,8 @@ class CrossServerHermesDestinationTest {
     @Before fun open() {
         rule.runOnUiThread {
             vm = AppViewModel(app)
+            // Only the proposal path here; the 2.1.4 notice has its own tests.
+            vm.changeCrossServerNotice(false)
             vm.onForeground()
             field(vm, "herdr").set(vm, source.client)
             state(vm, "servers", listOf(source.server, minipc2.server))

@@ -22,9 +22,11 @@ import com.billmongan.herdrdroid.ssh.*
 import com.billmongan.herdrdroid.store.AppPrefs
 import com.billmongan.herdrdroid.store.Server
 import com.billmongan.herdrdroid.ui.CrossServerNoticeSettings
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import org.junit.After
+import org.junit.Before
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -41,33 +43,41 @@ class CrossServerNoticeDeliveryTest {
     @get:Rule val rule = createComposeRule()
 
     private val app = ApplicationProvider.getApplicationContext<Application>()
-    private val vm = AppViewModel(app)
+    private lateinit var vm: AppViewModel
     private val minipc = Endpoint("minipc", listOf(Row("p1", "w1:t1", "claude", "claude", "s-claude")))
     private val minipc2 = Endpoint("minipc2", listOf(
         Row("w2:p9", "w2:t6", "hermes", "claude", "s-hermes"),
         Row("w2:p5", "w2:t2", "reviewer", "claude", "s-review"),
     ))
-    private val fleet = Fleet(vm.viewModelScope, { Credentials(null, null) }, { null }, {})
+    private lateinit var fleet: Fleet
     private var now = 10_000_000_000L
 
-    init {
-        vm.noticeLoopAllowed = false
-        vm.noticeClock = { now }
-        vm.onForeground()
-        field(vm, "herdr").set(vm, minipc.client)
-        state(vm, "servers", listOf(minipc.server, minipc2.server))
-        state(vm, "current", minipc.server)
-        state(vm, "panes", minipc.panes())
-        vm.screen = Screen.Tabs
-        watch()
-        field(fleet, "clients").set(fleet, mutableMapOf(minipc2.server.id to (minipc2.ssh to minipc2.client)))
-        field(vm, "fleet").set(vm, fleet)
+    // Made inside the compose rule, on the UI thread, as ComposeUiTest makes its view models: made
+    // in the test's constructor, before the rule's environment existed, the suite's later Compose
+    // tests timed out with AppNotIdleException. The loop's wait never sleeps for real here.
+    @Before fun open() {
+        rule.runOnUiThread {
+            vm = AppViewModel(app)
+            fleet = Fleet(vm.viewModelScope, { Credentials(null, null) }, { null }, {})
+            vm.noticeLoopAllowed = false
+            vm.noticeTicker = { awaitCancellation() }
+            vm.noticeClock = { now }
+            vm.onForeground()
+            field(vm, "herdr").set(vm, minipc.client)
+            state(vm, "servers", listOf(minipc.server, minipc2.server))
+            state(vm, "current", minipc.server)
+            state(vm, "panes", minipc.panes())
+            vm.screen = Screen.Tabs
+            watch()
+            field(fleet, "clients").set(fleet, mutableMapOf(minipc2.server.id to (minipc2.ssh to minipc2.client)))
+            field(vm, "fleet").set(vm, fleet)
+        }
     }
 
     private fun watch() = state(fleet, "states", mapOf(minipc2.server.id to FleetState(minipc2.server, minipc2.panes(), null, 0)))
 
     @After fun close() {
-        vm.viewModelScope.cancel()
+        rule.runOnUiThread { vm.viewModelScope.cancel() }
         shadowOf(Looper.getMainLooper()).idle()
     }
 
@@ -224,6 +234,7 @@ class CrossServerNoticeDeliveryTest {
         now += 5 * 3_600_000
         val restarted = AppViewModel(app)
         restarted.noticeLoopAllowed = false
+        restarted.noticeTicker = { awaitCancellation() }
         restarted.noticeClock = { now }
         restarted.onForeground()
         field(restarted, "herdr").set(restarted, minipc.client)
