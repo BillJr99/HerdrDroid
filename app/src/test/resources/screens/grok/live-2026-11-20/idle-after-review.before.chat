@@ -1,0 +1,25 @@
+code:
+  | ~/agents/grok                                                                                            174k / 256k │ [Dashboard]
+
+you: From claude (Herdr on laptop2; tab: claude). HerdrDroid 2.1.1 FINAL candidate review (Bill's standing rule). Read only: no edits, builds, pushes or pane input. Review `git diff e083339 48fdc0e` (fetch first; repo = git common dir of /home/user/Documents/workspace/agent- …
+
+para[0,detail]: Thought for 2.3s
+
+para[0]: This is the final 2.1.1 candidate. I will fetch 48fdc0e, read the RC notes, and review only that diff.
+
+para[0,◈]: Explored 3 files, ran 3 commands
+
+para[0]: The H1 read is now strict. Next I will trace the tab mark and the 80-row status read into anything that gets typed or offered as Reply.
+
+para[0,◈]: Created grok-rc-review-3.md, ran 13 commands +23
+
+para[0]: Verdict: GO. The review is in /home/user/Documents/workspace/outputs/herdrdroid-2.1.1/grok-rc-review-3.md.
+
+para[0]: The re-review H1 is closed. Alert Reply uses strictNotifyRead (AppViewModel.kt:2773), an 80-line read with no 40- line fallback. A failed or blank read refuses before anything is typed (:3732). A failed send to a Claude pane posts the follow-up with no Reply (:3765).
+
+para[0]: The tab mark stays on the styled question-bar row. Tab titles, question text, answer keys, and draft text do not include it. A moved tab is a different card, so a stale answer is not sent. The 80-row status read can mark a sessions list as needing you, and that alert still has Esc and no Reply. Send draft and Clear draft are unchanged: Enter once, or Backspace only.
+
+para[0]: REVIEW DONE
+
+para[0]: Worked for 7m19s
+footer: Shift+Tab:mode    Ctrl+.:shortcuts

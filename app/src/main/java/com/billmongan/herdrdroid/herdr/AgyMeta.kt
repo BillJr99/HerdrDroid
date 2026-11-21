@@ -66,7 +66,7 @@ object AgyMeta {
         return null
     }
 
-    private fun kindOf(head: String): Kind {
+    internal fun kindOf(head: String): Kind {
         val verb = head.substringBefore(' ').lowercase()
         return when (verb) {
             "ran", "executed", "started", "killed", "stopped" -> if ("task" in head.substringBefore(',')) Kind.TASK else Kind.SHELL
