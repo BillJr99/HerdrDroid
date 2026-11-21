@@ -6,7 +6,7 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
-    <!-- "Open" on an APK an agent sent hands it to the installer; Android asks once to allow it. -->
+    <!-- "Open" on an APK an agent sent, and an in-app update (2.1.4), hand it to the installer; Android asks once to allow it. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- Alerts when an agent needs you, and the "Watching" service that keeps them coming. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -51,6 +51,10 @@
             android:foregroundServiceType="microphone" />
         <receiver
             android:name=".notify.ActionReceiver"
+            android:exported="false" />
+        <!-- Android's installer reports an in-app update's progress here (2.1.4). -->
+        <receiver
+            android:name=".update.UpdateInstallReceiver"
             android:exported="false" />
         <!-- The home-screen widget: what the app last saw on the open server. -->
         <receiver
