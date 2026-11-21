@@ -581,6 +581,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         // still running, and its running subagents. Tap either for active and finished.
         HorizontalDivider(color = Palette.Line)
         ServerBanners(vm)
+        // A held send's problem shows only in its own pane's chat, on its own server (2.1.2).
+        vm.sendNoticeFor(paneId)?.let { ErrorBanner(it) { vm.dismissSendNotice(paneId) } }
         if (!live) AgentMessagePanel(vm, paneId)
         if (openingPreview != null) {
             Text("Checking the live pane…", color = Palette.Muted, fontSize = 12.5.sp,
@@ -704,7 +706,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                             is com.billmongan.herdrdroid.transcript.ScreenSnapshot -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 Text("Earlier screen", color = Palette.Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                                 ChatTimestamp(entry.at)
-                                ChatView(entry.text, null, liveSize, vm.readingFont, antigravity = antigravity, grok = grok)
+                                ChatView(entry.text, null, liveSize, vm.readingFont, antigravity = antigravity, grok = grok, agent = chatAgent)
                             }
                             is com.billmongan.herdrdroid.transcript.QuestionItem -> QuestionView(entry, liveSize)
                         }
@@ -716,7 +718,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     // The same questions the history shows (from review): an open one's screen stays live.
                     ChatView(com.billmongan.herdrdroid.transcript.QuestionLog.liveTail(text,
                         vm.questionsFor(paneId).filter { prompt == null || it.state != com.billmongan.herdrdroid.transcript.QState.OPEN }), pending, liveSize, vm.readingFont,
-                        pendingAt = vm.lastSentAt, antigravity = antigravity, grok = grok)
+                        pendingAt = vm.lastSentAt, antigravity = antigravity, grok = grok, agent = chatAgent)
                 }
                 promptCard()
             }
@@ -1290,6 +1292,8 @@ internal fun PromptCard(
                 Text(when {
                     p.hermesClarify -> "Answer this Hermes question in Terminal."
                     p.codexQuestion -> "Answer this Codex question in Terminal."
+                    // 2.1.2: a question the app reads but can't answer for you (several questions or answers).
+                    p.openCodeForm -> "Answer this OpenCode question in Terminal: it asks more than one question or takes more than one answer, which the app can't send for you."
                     else -> "This preview is incomplete. Open the terminal to review the full command before answering."
                 },
                     color = Palette.Muted, fontSize = 12.5.sp)
@@ -1393,13 +1397,32 @@ internal fun PromptCard(
                     }
                 }
             }
+            // 2.1.2: OpenCode's question takes your own words too, on its last row: the card offers that row as well.
+            p.openCodeCustom?.let { digit ->
+                val custom = Choice("Type your own answer", digit, false)
+                OutlinedButton(
+                    enabled = !sending,
+                    onClick = { onTypedChoice(custom) },
+                    shape = RoundedCornerShape(14.dp),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                ) {
+                    Column(Modifier.fillMaxWidth()) {
+                        Text(custom.label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, lineHeight = 20.sp, color = Palette.Ink)
+                        Text("opens its answer row, then you type your answer", fontSize = 12.sp, color = Palette.Muted)
+                    }
+                }
+            }
             if (!p.hermesClarify && !p.openCodePermission && !sending && !(p.choices.isEmpty() && p.region == listOf(com.billmongan.herdrdroid.herdr.UNREAD_SCREEN))) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 KeyButton("Esc") { onKey("esc") }
-                KeyButton("Tab") { onKey("tab") }
-                KeyButton("Shift+Tab") { onKey("shift+tab") }
-                KeyButton("Ctrl+C", danger = true) { onKey("ctrl+c") }
+                // OpenCode's question dialog takes Esc ("esc dismiss") and its digits, nothing else from here (2.1.2).
+                if (p.openCodeQuestionFrame == null) {
+                    KeyButton("Tab") { onKey("tab") }
+                    KeyButton("Shift+Tab") { onKey("shift+tab") }
+                    KeyButton("Ctrl+C", danger = true) { onKey("ctrl+c") }
+                }
             }
-            if (!p.hermesClarify && !p.openCodePermission) TextButton(onClick = onTypeAnswer, enabled = !sending, modifier = Modifier.fillMaxWidth()) { Text("Type a different answer") }
+            if (!p.hermesClarify && !p.openCodePermission && p.openCodeQuestionFrame == null) TextButton(onClick = onTypeAnswer, enabled = !sending, modifier = Modifier.fillMaxWidth()) { Text("Type a different answer") }
             onShowTerminal?.let { show -> TextButton(onClick = show, modifier = Modifier.fillMaxWidth()) { Text("Show terminal") } }
             if (!p.hermesClarify) Text(
                 "Each button types its key into the tab, exactly as if you typed it there. For any other " +
@@ -1436,9 +1459,9 @@ private fun norm(s: String) = s.filterNot { it.isWhitespace() }.take(40)
 @Composable
 private fun ChatView(
     text: String, pending: String?, size: Float, font: ReadingFont,
-    pendingAt: Long? = null, antigravity: Boolean = false, grok: Boolean = false,
+    pendingAt: Long? = null, antigravity: Boolean = false, grok: Boolean = false, agent: String? = null,
 ) {
-    val segs = remember(text, antigravity, grok) { Reflow.parse(text, antigravity, grok) }
+    val segs = remember(text, antigravity, grok, agent) { Reflow.parse(text, antigravity, grok, agent) }
     val family: FontFamily = font.family
     val prose = if (font == ReadingFont.MONO) size else size * 1.2f
     val showPending = pending != null && segs.none { it is Seg.You && norm(it.text).startsWith(norm(pending).take(20)) }

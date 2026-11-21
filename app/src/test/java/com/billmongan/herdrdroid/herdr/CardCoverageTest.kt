@@ -19,8 +19,8 @@ class CardCoverageTest {
 
     @Test fun openCodePlainFramesDoNotGuessApprovalFocusOrOfferStandingGrants() {
         val p = card("opencode", "0701-permission-prompt-all-tools.txt".substring(0, 4))
-        assertEquals(listOf("Allow once", "Reject"), p.choices.map { it.label })
-        assertEquals(listOf(null, listOf("esc")), keys(p))
+        assertEquals(listOf("Allow once", "Always allow", "Reject"), p.choices.map { it.label })
+        assertEquals(listOf(null, null, listOf("esc")), keys(p))
     }
 
     @Test fun groksTrustAndPlanAreAnsweredByLetters() {

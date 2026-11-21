@@ -275,6 +275,32 @@ class PaneDraftTest {
         assertTrue(listOf(cut, stuck, slow).all { h -> h.writes.all { it.size <= PaneDraftAction.MAX_KEYS_PER_ROUND } })
     }
 
+    @Test fun `clear goes on when the probe ends at a space the screen doesn't show`() = runBlocking {
+        // 2.1.1 acceptance D4: eight Backspaces leave "HD211 draft " and the box shows "HD211 draft".
+        val text = "HD211 draft clear rc"
+        val buffer = Buffer(text)
+        assertEquals(PaneDraftAction.Outcome.CLEARED, action().clear("srv", shown, text, { true }, buffer))
+        assertEquals(listOf(8, 12), buffer.writes.map { it.size })
+        // Read back with the trailing space trimmed by the render, as on the emulator.
+        val trimmed = Host(shown, listOf(hermes("❯ $text"), hermes("❯ HD211 draft"), emptyScreen))
+        assertEquals(PaneDraftAction.Outcome.CLEARED, action().clear("srv", shown, text, { true }, trimmed))
+        assertEquals(listOf(8, 12), trimmed.writes.map { it.size })
+        // Several spaces at the cut: still never more Backspaces than the box can hold.
+        val spaces = "fix it      clear"
+        val wide = Host(shown, listOf(hermes("❯ $spaces"), hermes("❯ fix it"), emptyScreen))
+        assertEquals(PaneDraftAction.Outcome.CLEARED, action().clear("srv", shown, spaces, { true }, wide))
+        assertEquals(listOf(8, 9), wide.writes.map { it.size })
+        // A cut past the space is more than was sent: it stops after the probe.
+        val over = Host(shown, listOf(hermes("❯ $text"), hermes("❯ HD211 draf")))
+        assertEquals(PaneDraftAction.Outcome.PARTIAL, action().clear("srv", shown, text, { true }, over))
+        assertEquals(listOf(8), over.writes.map { it.size })
+        // A remainder that isn't the start of the draft still stops it.
+        val mid = Host(shown, listOf(hermes("❯ $text"), hermes("❯ D211 draft")))
+        assertEquals(PaneDraftAction.Outcome.PARTIAL, action().clear("srv", shown, text, { true }, mid))
+        for (h in listOf(trimmed, wide, over, mid)) assertFalse("enter" in h.writes.flatten())
+        assertFalse("enter" in buffer.writes.flatten())
+    }
+
     @Test fun `a suggestion list is not draft text and turns Send and Clear off`() = runBlocking {
         val screen = codex("› open @src", "  @src/App.kt", "  @src/main.kt")
         assertEquals(ComposerDraft("open @src", true, menu = true), composerDraftOf(screen, "codex"))

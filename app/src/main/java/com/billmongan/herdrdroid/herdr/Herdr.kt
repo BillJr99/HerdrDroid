@@ -31,7 +31,17 @@ data class Pane(
     val sessionId: String? = null,
     val terminalId: String? = null,
     val backgroundBusy: Boolean = false,
+    /**
+     * What herdr itself said (done or idle) when the app marks an OpenCode pane as needing you
+     * because its screen shows a permission dialog (2.1.2). herdr skips screen detection for
+     * OpenCode, so [status] then says NEEDS_YOU for the drawer, the list and the alert only:
+     * sends keep the route herdr's own status picks ([sendStatus]), and herdr waits use it too.
+     */
+    val screenNeedsYouFrom: Status? = null,
 ) {
+    /** The status that picks how a message goes out: herdr's own, not the screen's (2.1.2). */
+    val sendStatus: Status get() = screenNeedsYouFrom ?: status
+
     val agentName: String
         get() = when (agent?.lowercase()) {
             null, "" -> title.ifBlank { "Shell" }
@@ -226,16 +236,12 @@ class Herdr internal constructor(
         // 2.1.1: the read is long enough to reach past the blank rows a short conversation leaves
         // under a fullscreen dialog (showsQuestionDialog looks at the last rows with text), and
         // Claude's sessions list with a session awaiting input counts as needing you too.
-        val askable = list.filter { it.agent == "claude" && it.status != Status.NEEDS_YOU }
+        // 2.1.2: herdr skips screen detection for OpenCode and calls a pane with a permission dialog
+        // done or idle, so those panes are read in the same round trip and marked for display only.
+        val askable = screenAskable(list)
         val marked = if (askable.isEmpty()) list else {
             val tails = runCatching { previews(askable.map { it.id }, CLAUDE_STATUS_READ_LINES) }.getOrDefault(emptyMap())
-            list.map { p ->
-                val why = if (p in askable) tails[p.id]?.tail?.let(::claudeNeedsYouReason) else null
-                if (why != null) {
-                    com.billmongan.herdrdroid.diag.DiagLog.log("prompt", "${p.id}: $why while herdr says ${p.status.name.lowercase()}; treating it as needs you")
-                    p.copy(status = Status.NEEDS_YOU)
-                } else p
-            }
+            markScreenNeedsYou(list, tails.mapValues { it.value.tail })
         }
         val order = listOf(Status.NEEDS_YOU, Status.WORKING, Status.DONE, Status.IDLE, Status.UNKNOWN)
         panes0Cache = marked
@@ -359,6 +365,21 @@ class Herdr internal constructor(
 
     private fun screenText(text: String, preserveGlyphs: Boolean) = if (preserveGlyphs) stripAnsi(text) else forPhone(text)
 
+    /**
+     * The notification's strict read (2.1.2) with its styles kept: the same [read] (the bottom
+     * [lines] rows, no card-recovery fallback), as ANSI, so an OpenCode permission's highlighted
+     * button can be seen before a key goes in. herdr-core gives plain text, where no button counts
+     * as highlighted.
+     */
+    internal suspend fun readStrictStyled(paneId: String, lines: Int): String =
+        if (core) read(paneId, lines, preserveGlyphs = true)
+        else try {
+            runNow(recentSnapshot(paneId, lines), timeoutSeconds = 5)
+        } catch (e: HerdrError) {
+            if (e.exit == -2) throw e
+            runNow(visibleSnapshot(paneId, ansi = true, lines = lines), timeoutSeconds = 5)
+        }
+
     suspend fun read(paneId: String, lines: Int = 200, preserveGlyphs: Boolean = false): String =
         if (core) screenText(runNow(hcCmd("read", paneId, "--lines", lines.toString()), timeoutSeconds = 5), preserveGlyphs)
         else try {
@@ -379,9 +400,8 @@ class Herdr internal constructor(
         if (core) return null
         val agents = panes.filter { it.agent != null }
         if (agents.isEmpty()) return null
-        val names = mapOf(Status.IDLE to "idle", Status.WORKING to "working", Status.NEEDS_YOU to "blocked", Status.DONE to "done")
         val body = agents.joinToString("") { p ->
-            val until = names.filterKeys { it != p.status }.values.joinToString(" ") { "--until $it" }
+            val until = waitUntilStates(p).joinToString(" ") { "--until $it" }
             "( $herdr agent wait ${shq(p.id)} $until --timeout $timeoutMs >/dev/null 2>&1 && echo ${shq("@@chg " + p.id)} ) & pids=\"\$pids \$!\"; "
         }
         // The first wait's own status is the script's (1.4.1, from a second review: a trailing
@@ -408,7 +428,11 @@ class Herdr internal constructor(
         val script = ids.joinToString("; ") { id ->
             "echo ${shq("@@herdrdroid@@$id")}; ${if (core) hcCmd("read", id, "--lines", lines.toString()) else recentSnapshot(id, lines)} 2>/dev/null"
         }
-        val out = forPhone(ssh.exec(script).out)
+        return parsePreviews(forPhone((commands?.bulk(script) ?: ssh.exec(script)).out))
+    }
+
+    /** Splits [previews]' output at each pane's marker. */
+    internal fun parsePreviews(out: String): Map<String, Peek> {
         val result = mutableMapOf<String, Peek>()
         var current: String? = null
         val buf = StringBuilder()
@@ -419,10 +443,17 @@ class Herdr internal constructor(
             }
             buf.clear()
         }
+        // A read with --format ansi ends without a newline (2.1.2, from the 2.1.1 acceptance), so the
+        // next pane's marker can follow the last row of the one before on the same line. Taken only at
+        // the line's start, it was missed: every later pane's rows went to the first, whose drawer
+        // entry then showed another pane's model line ("GPT-6.2-Sol · default" from FixtureB's b3).
+        val mark = "@@herdrdroid@@"
         for (line in out.lines()) {
-            if (line.startsWith("@@herdrdroid@@")) {
+            val at = line.indexOf(mark)
+            if (at >= 0) {
+                if (at > 0) buf.appendLine(line.substring(0, at))
                 flush()
-                current = line.removePrefix("@@herdrdroid@@")
+                current = line.substring(at + mark.length)
             } else {
                 buf.appendLine(line)
             }
@@ -449,20 +480,23 @@ class Herdr internal constructor(
     private suspend fun sendMessage(
         pane: Pane, text: String, allowTerminalFallback: Boolean, expectedConnection: Any?, permit: WritePermit?,
     ) {
-        require(allowTerminalFallback || (pane.agent != null && pane.status in setOf(Status.IDLE, Status.DONE)))
+        // herdr's own status picks the route: an OpenCode pane marked needs-you from its screen
+        // keeps the send it had (2.1.2).
+        val status = pane.sendStatus
+        require(allowTerminalFallback || (pane.agent != null && status in setOf(Status.IDLE, Status.DONE)))
         require(permit == null || (!allowTerminalFallback && expectedConnection != null))
         lastSendRoute = when {
             core -> "hc send"
-            pane.agent != null && pane.status != Status.NEEDS_YOU -> "herdr agent prompt"
+            pane.agent != null && status != Status.NEEDS_YOU -> "herdr agent prompt"
             else -> "herdr pane send-text + enter"
         }
         if (core) {
             // hc send pastes and presses Enter; it refuses a terminal waiting on a question
             // unless forced, and a message sent then is meant as the answer.
-            if (pane.status == Status.NEEDS_YOU) runNow(hcCmd("send", "--force", pane.id, text)) else runNow(hcCmd("send", pane.id, text), expectedConnection = expectedConnection, permit = permit)
+            if (status == Status.NEEDS_YOU) runNow(hcCmd("send", "--force", pane.id, text)) else runNow(hcCmd("send", pane.id, text), expectedConnection = expectedConnection, permit = permit)
             return
         }
-        if (pane.agent != null && pane.status != Status.NEEDS_YOU) {
+        if (pane.agent != null && status != Status.NEEDS_YOU) {
             try {
                 runNow(cmd("agent", "prompt", pane.id, text), expectedConnection = expectedConnection, permit = permit)
                 return
@@ -988,6 +1022,16 @@ data class Prompt(
     internal val openCodePermission: Boolean = false,
     /** Exact text of the native single-select question frame, excluding ANSI and row-end padding. */
     internal val openCodeQuestionFrame: String? = null,
+    /**
+     * The digit of a native OpenCode question's "Type your own answer" row (2.1.2): the question
+     * takes free text, typed after that digit opens its editor. Not one of [choices].
+     */
+    internal val openCodeCustom: String? = null,
+    /**
+     * An OpenCode question the app reads but only Terminal can answer (2.1.2): several questions
+     * (tabs), several answers (checkboxes), or a frame the parser could not prove complete.
+     */
+    internal val openCodeForm: Boolean = false,
     /** Claude renders this unnumbered button between the checkboxes and "Chat about this". */
     internal val claudeCheckboxAction: Choice? = null,
     /** Native Hermes clarify choices are available only from a guarded Chat card. */
@@ -1516,8 +1560,44 @@ internal fun composerDraftOf(screen: String, agent: String? = null): ComposerDra
     return build(c, emptyList(), bounded = single && clearAbove, menu = menuIn(below))
 }
 
+/**
+ * Where Claude Code's or Hermes's input box starts on [screen] (2.1.2, 2.1.1 acceptance finding 5):
+ * the index in `screen.lines()` of the rule that opens the box, found the way [composerDraftOf]
+ * finds a boxed draft (a prompt row right under an opening rule, closed by a rule of the same span
+ * with only a short footer under it, Claude's helper list set aside), whether the box is empty,
+ * shows a placeholder or holds a draft. Null for other agents or when no such box shows. The chat
+ * built from the screen ends its prose there, so the box's text is never taken for a sent message.
+ */
+internal fun composerBoxStart(screen: String, agent: String?): Int? {
+    if (agent?.lowercase() !in setOf("claude", "hermes")) return null
+    val all = withoutClaudeAgentList(screen.lines().map { it.replace("\r", "") })
+    val offset = maxOf(0, all.size - 48)
+    val rows = all.takeLast(48).map { it.replace(ANSI_SEQ, "") }
+    fun span(i: Int): IntRange? = rows.getOrNull(i)?.let(DRAFT_BOX_RULE::matchEntire)?.let {
+        val at = it.groupValues[1].length
+        at until at + it.groupValues[2].length
+    }
+    fun openSpan(i: Int): IntRange? = span(i) ?: rows.getOrNull(i)?.let(DRAFT_TITLED_RULE::matchEntire)?.let {
+        val at = it.groupValues[1].length
+        at until at + it.groupValues[2].length
+    }
+    fun sameSpan(a: IntRange, b: IntRange) = kotlin.math.abs(a.first - b.first) <= 2 && kotlin.math.abs(a.last - b.last) <= 3
+    fun footer(i: Int): Boolean {
+        val under = rows.drop(i + 1)
+        return under.count { it.isNotBlank() } <= 5 && under.none { INPUT_LEAD.containsMatchIn(it) && !DRAFT_MENU_ROW.matches(it) }
+    }
+    val candidates = rows.indices.filter { INPUT_LEAD.containsMatchIn(rows[it]) && !DRAFT_NOT_INPUT.containsMatchIn(rows[it]) }
+    for (c in candidates.asReversed()) {
+        val open = openSpan(c - 1) ?: continue
+        val closes = (c + 1 until minOf(rows.size, c + 1 + MAX_DRAFT_ROWS)).filter { i -> span(i)?.let { sameSpan(it, open) } == true }
+        if (closes.none { footer(it) }) continue
+        return offset + c - 1
+    }
+    return null
+}
+
 /** One character of a styled row and how it is drawn (1.4.6). */
-private data class Styled(val ch: Char, val faint: Boolean, val italic: Boolean, val grey: Boolean, val background: List<Int>, val colored: Boolean = false)
+private data class Styled(val ch: Char, val faint: Boolean, val italic: Boolean, val grey: Boolean, val background: List<Int>, val colored: Boolean = false, val reverse: Boolean = false)
 
 /** A colour that reads as grey: the three channels within 28 of each other, of middle brightness. */
 private fun greyRgb(r: Int, g: Int, b: Int): Boolean =
@@ -1537,6 +1617,8 @@ private fun styledChars(row: String): List<Styled> {
     var faint = false; var italic = false; var grey = false
     // A foreground colour other than the terminal's default is set (2.1.1).
     var colored = false
+    // Reverse video (SGR 7): how Kiro draws its cursor block (2.1.2).
+    var reverse = false
     var background = emptyList<Int>()
     var i = 0
     while (i < row.length) {
@@ -1548,11 +1630,13 @@ private fun styledChars(row: String): List<Styled> {
                 var k = 0
                 while (k < ps.size) {
                     when (val c = ps[k]) {
-                        0 -> { faint = false; italic = false; grey = false; colored = false; background = emptyList() }
+                        0 -> { faint = false; italic = false; grey = false; colored = false; reverse = false; background = emptyList() }
                         2 -> faint = true
                         22 -> faint = false
                         3 -> italic = true
                         23 -> italic = false
+                        7 -> reverse = true
+                        27 -> reverse = false
                         39 -> { grey = false; colored = false }
                         in 30..37 -> { grey = false; colored = true }
                         90 -> { grey = true; colored = true }
@@ -1575,7 +1659,7 @@ private fun styledChars(row: String): List<Styled> {
             i = m.range.last + 1
             continue
         }
-        out += Styled(row[i], faint, italic, grey, background, colored)
+        out += Styled(row[i], faint, italic, grey, background, colored, reverse)
         i++
     }
     return out
@@ -1605,7 +1689,30 @@ fun isPlaceholderText(raw: String, typed: String, agent: String?): Boolean {
     val seen = chars.subList(start, start + typed.length).filter { !it.ch.isWhitespace() }
     if (seen.isEmpty()) return false
     if (seen.all { it.faint || it.grey || (hermes && it.italic) }) return true
+    if (cursorBeforeHint(chars, leadEnd, start, typed, agent)) return true
     return isStyledHint(agent, typed) && seen.all { it.colored || it.faint || it.italic }
+}
+
+/**
+ * 2.1.2 (Bill, 2026-11-21: "Kiro just has the 'ask a question or describe a task' question in its
+ * box"): Kiro can draw its hint in the default colour, after the cursor block (one reverse-video
+ * space right after the marker). Typed text puts the cursor after the text, so the row is empty
+ * only when the first cell after the marker is that cursor cell and the rest is exactly the
+ * agent's known hint ([isComposerHint]). The same words with the cursor after them, or any other
+ * text behind the cursor, are typing.
+ */
+private fun cursorBeforeHint(chars: List<Styled>, leadEnd: Int, start: Int, typed: String, agent: String?): Boolean {
+    if (!isComposerHint(agent, typed)) return false
+    // The marker's own run of spaces, which INPUT_LEAD took in: the cursor cell must be the first
+    // reverse cell in it and the cell right before the hint; no other cell before it is reverse.
+    val lead = chars.subList(0, leadEnd)
+    val marker = lead.indexOfLast { it.ch in ">❯›»" }
+    if (marker < 0 || start != leadEnd || start - 1 <= marker) return false
+    val cursor = chars[start - 1]
+    if (!cursor.reverse || cursor.ch != ' ') return false
+    if (chars.subList(marker + 1, start - 1).any { it.reverse || !it.ch.isWhitespace() }) return false
+    // Nothing after the hint is drawn as the cursor (that would be the cursor after typed words).
+    return chars.subList(start, chars.size).none { it.reverse }
 }
 
 /** A choice that grants standing permission ("always allow", "don't ask again"); the card adds a caution (1.4.0). */
@@ -1795,6 +1902,67 @@ internal const val CLAUDE_STATUS_READ_LINES = 80
  * ([CLAUDE_STATUS_READ_LINES] rows), or null: its question dialog is open, or its sessions list
  * shows a session awaiting input (2.1.1).
  */
+/**
+ * The herdr states [Herdr.waitForChange] waits for on [p]: every state but the one herdr reports.
+ * herdr's own status (2.1.2): waiting until "done" on a pane herdr already calls done, but the app
+ * shows as needing you, would end at once and poll without a pause.
+ */
+internal fun waitUntilStates(p: Pane): List<String> {
+    val names = mapOf(Status.IDLE to "idle", Status.WORKING to "working", Status.NEEDS_YOU to "blocked", Status.DONE to "done")
+    return names.filterKeys { it != (p.screenNeedsYouFrom ?: p.status) }.values.toList()
+}
+
+/**
+ * The panes whose screen [Herdr.panes] reads for a dialog herdr didn't report: Claude panes not
+ * already waiting, and OpenCode panes herdr calls done or idle (2.1.2).
+ */
+internal fun screenAskable(list: List<Pane>): List<Pane> = list.filter {
+    (it.agent == "claude" && it.status != Status.NEEDS_YOU) ||
+        (isOpenCode(it.agent) && it.status in setOf(Status.DONE, Status.IDLE))
+}
+
+/**
+ * [list] with each [screenAskable] pane whose screen tail in [tails] shows it needs you marked
+ * NEEDS_YOU. A Claude pane is promoted as before; an OpenCode pane only for display and alerts,
+ * keeping herdr's status in [Pane.screenNeedsYouFrom] for the send route (2.1.2).
+ */
+internal fun markScreenNeedsYou(list: List<Pane>, tails: Map<String, String>): List<Pane> {
+    val askable = screenAskable(list).map { it.id }.toSet()
+    return list.map { p ->
+        val tail = tails[p.id]?.takeIf { p.id in askable }
+        val why = when {
+            tail == null -> null
+            p.agent == "claude" -> claudeNeedsYouReason(tail)
+            isOpenCode(p.agent) -> openCodeNeedsYouReason(tail)
+            else -> null
+        }
+        when {
+            why == null -> p
+            isOpenCode(p.agent) -> {
+                com.billmongan.herdrdroid.diag.DiagLog.log("prompt", "${p.id}: $why while herdr says ${p.status.name.lowercase()}; showing it as needs you, sends unchanged")
+                p.copy(status = Status.NEEDS_YOU, screenNeedsYouFrom = p.status)
+            }
+            else -> {
+                com.billmongan.herdrdroid.diag.DiagLog.log("prompt", "${p.id}: $why while herdr says ${p.status.name.lowercase()}; treating it as needs you")
+                p.copy(status = Status.NEEDS_YOU)
+            }
+        }
+    }
+}
+
+/**
+ * Why an OpenCode pane herdr calls done or idle needs you, from the bottom of its screen, or null
+ * (2.1.2): its permission dialog is open, as the chat card would read it (the same checks as
+ * [detectPrompt]: no background drawer, no composer under it, no question dialog first).
+ */
+internal fun openCodeNeedsYouReason(tail: String): String? {
+    val plain = stripAnsi(tail)
+    if (openCodeBackgroundDrawer("opencode", plain) || openCodeComposerMode(plain.lines().takeLast(20)) >= 0) return null
+    // 2.1.2: OpenCode's own question dialog (the "question" tool) needs you as much as a permission.
+    if (detectOpenCodeQuestion(plain) != null) return "a question dialog is open"
+    return detectOpenCodePermission(tail, plain)?.let { "a permission dialog is open" }
+}
+
 internal fun claudeNeedsYouReason(tail: String): String? = when {
     showsQuestionDialog(tail) -> "a question dialog is open"
     claudeSessionsAwaiting(tail) > 0 -> "Claude's sessions list shows a session awaiting input"
@@ -2054,22 +2222,35 @@ private val OPENCODE_WEB_SEARCH_FOOTER =
 private val OPENCODE_PERMISSION_TITLE = Regex("""^(?:△\s+)?(?:Permission required|Reject permission)$""")
 private val OPENCODE_PERMISSION_BUTTONS = Regex("""(Allow once)\s{3,}(?:(Always allow)\s{3,})?(Reject)$""")
 private val OPENCODE_PERMISSION_HINT = Regex("""(?:⇆|←→)\s+select\s+enter\s+confirm$""")
+/** OpenCode 2.3.2 puts its fullscreen toggle ("ctrl+f fullscreen", "ctrl+f minimize") before "⇆ select" (2.1.2). */
+private val OPENCODE_PERMISSION_FULLSCREEN = Regex("""(?:^|\s+)(?:\S+\s+)?(?:fullscreen|minimize)$""")
 
 private fun detectOpenCodePermission(styled: String, text: String): Prompt? {
     fun clean(row: String) = row.trim().trim('┃', '│', '|').trim()
     val rows = text.lines()
-    val footer = rows.indexOfLast { clean(it).isNotEmpty() }
+    var footer = rows.indexOfLast { clean(it).isNotEmpty() }
     if (footer < 0) return null
+    // A status row under the dialog ("~/dir  12K (6%)  ctrl+p commands") is not part of it (2.1.2).
+    if (footer > 0 && rows[footer].none { it in "┃│" } && OPENCODE_COMMANDS.containsMatchIn(rows[footer]) &&
+        OPENCODE_PERMISSION_HINT.find(clean(rows[footer])) == null) {
+        footer = (footer - 1 downTo 0).firstOrNull { clean(rows[it]).isNotEmpty() } ?: return null
+    }
     val hint = OPENCODE_PERMISSION_HINT.find(clean(rows[footer]))
     val title = (footer downTo maxOf(0, footer - 60)).firstOrNull { OPENCODE_PERMISSION_TITLE.matches(clean(rows[it])) }
     if (title == null && (hint == null || !clean(rows[footer]).contains("Allow once"))) return null
-    if (title != null && agentWentOn(rows.subList(title + 1, footer + 1))) return null
+    // A shell command wrapped inside the dialog can start a row with ">" (">/dev/null 2>&1"): it is
+    // the command being asked about, not an input row under the dialog (2.1.2).
+    val command = title?.let { t -> (t + 1..footer).firstOrNull { clean(rows[it]).startsWith("$ ") } }
+    val commandEnd = command?.let { c -> (c + 1..footer).firstOrNull { clean(rows[it]).isEmpty() } ?: (footer + 1) }
+    if (title != null && agentWentOn((title + 1..footer).filter { command == null || it !in command until checkNotNull(commandEnd) }.map { rows[it] })) return null
     val region = rows.subList(title ?: footer, footer + 1)
     val heading = title?.let { clean(rows[it]).removePrefix("△ ") } ?: "Permission required"
     fun review() = Prompt(heading, emptyList(), region = region.map(::clean), terminalReview = true)
     if (title == null || heading != "Permission required" || hint == null) return review()
-    val onFooter = clean(rows[footer]).substring(0, hint.range.first).trimEnd()
-    val buttonRow = if (onFooter.isBlank() || !onFooter.contains("Allow once")) footer - 1 else footer
+    val onFooter = clean(rows[footer]).substring(0, hint.range.first).trimEnd().replace(OPENCODE_PERMISSION_FULLSCREEN, "").trimEnd()
+    // Narrow panes stack the hints under the buttons, with a blank row between them (2.3.2).
+    val buttonRow = if (onFooter.isNotBlank() && onFooter.contains("Allow once")) footer
+        else (footer - 1 downTo maxOf(0, footer - 2)).firstOrNull { clean(rows[it]).isNotEmpty() } ?: return review()
     if (buttonRow <= title) return review()
     val buttons = OPENCODE_PERMISSION_BUTTONS.find(if (buttonRow == footer) onFooter else clean(rows[buttonRow])) ?: return review()
     val body = rows.subList(title + 1, buttonRow).map(::clean).filter(String::isNotEmpty)
@@ -2088,31 +2269,59 @@ private fun detectOpenCodePermission(styled: String, text: String): Prompt? {
     val focused = if (fills.size == 3 && fills.none { it == null } && fills.distinct().size == 2)
         fills.indexOfFirst { fill -> fills.count { it == fill } == 1 }.takeIf { it >= 0 }?.let { (it + 1).toString() }
         else null
-    return Prompt(heading, labels.mapIndexedNotNull { i, label ->
-        if (label == "Always allow") null else Choice(label, (i + 1).toString(), false)
-    }, focused, escRejects = true, parts = questionParts((listOf(heading) + body).map { QLine(it) }),
+    // Every button the dialog shows, Always allow included (2.1.2, Bill: "The alert should offer
+    // whatever options the question does").
+    return Prompt(heading, labels.mapIndexed { i, label -> Choice(label, (i + 1).toString(), false) }, focused, escRejects = true, parts = questionParts((listOf(heading) + body).map { QLine(it) }),
         horizontal = true, approvalIdentity = rows.subList(title, buttonRow).joinToString("\n"), openCodePermission = true)
 }
 private val OPENCODE_WEB_SEARCH_OPTION = Regex("""^(?:[❯›>]\s*)?([1-3])[.]\s+(.+)$""")
 
 private val OPENCODE_QUESTION_FOOTER = Regex("""(⇆\s+tab\s+)?(↑↓\s+select\s+)?enter\s+(submit|confirm|toggle)\s+esc\s+dismiss""")
 private val OPENCODE_QUESTION_OPTION = Regex("""([1-9])\. (\S.*)""")
+/** A checkbox in front of a multi-select option ("1. [ ] Docs", "1. [✓] Docs"), 2.3.2. */
+private val OPENCODE_QUESTION_CHECKBOX = Regex("""^\[[ ✓]\]\s+""")
+/** OpenCode 2.3.2's question form, in edit mode on its own answer row: "enter submit  esc close". */
+private val OPENCODE_QUESTION_EDIT_FOOTER = Regex("""enter\s+submit\s+esc\s+close""")
+private const val OPENCODE_CUSTOM = "Type your own answer"
 
-/** Native QuestionPrompt (OpenCode v1.19.6, packages/tui/src/routes/session/question.tsx).
+/**
+ * The rows of an OpenCode question frame with the pane's inset taken off (2.1.2): OpenCode 2.3.2
+ * draws its dialogs two columns in from the pane edge ("  ┃  …"), v1.19.6 at the edge. [footer]
+ * is the last row with text inside the border. A status row under the dialog
+ * ("~/dir  12K (6%)  ctrl+p commands") is not part of it. Null when the bottom is no bordered frame.
+ */
+private class OpenCodeFrame(val rows: List<String>, val footer: Int)
+
+private fun openCodeFrame(text: String): OpenCodeFrame? {
+    var raw = text.lines().takeLast(80).map(String::trimEnd).dropLastWhile(String::isBlank)
+    if (raw.isNotEmpty() && '┃' !in raw.last() && OPENCODE_COMMANDS.containsMatchIn(raw.last()))
+        raw = raw.dropLast(1).dropLastWhile(String::isBlank)
+    val last = raw.indexOfLast { it.trim() != "┃" }
+    if (last < 0) return null
+    val inset = raw[last].indexOf('┃')
+    if (inset < 0 || raw[last].substring(0, inset).isNotBlank()) return null
+    val pad = " ".repeat(inset)
+    // Rows of another column (the transcript beside it) are not the frame's: mark them unusable.
+    val rows = raw.map { if (it.startsWith("$pad┃")) it.substring(inset) else "\u0000$it" }
+    return OpenCodeFrame(rows, last)
+}
+
+/** Native QuestionPrompt (OpenCode v1.19.6, packages/tui/src/routes/session/question.tsx) and
+ * OpenCode 2.3.2's question form (the "question" tool, title "Questions", 2.1.2).
  * A digit selects directly, without depending on color-only focus. Only a complete single-select
- * frame (no tabs, review, or custom editor) has that digit-to-submit contract.
+ * frame (no tabs, review, or custom editor) has that digit-to-submit contract; the others are
+ * shown as a card answered in Terminal.
  */
 private fun detectOpenCodeQuestion(text: String): Prompt? {
-    val rows = text.lines().takeLast(80).map(String::trimEnd).dropLastWhile(String::isBlank)
-    val footer = rows.indexOfLast { it != "┃" }
-    if (footer < 0) return null
+    val frame = openCodeFrame(text) ?: return null
+    val rows = frame.rows
+    val footer = frame.footer
     if (!rows[footer].startsWith("┃  ")) return null
     val (tabs, selection, enter) = OPENCODE_QUESTION_FOOTER.matchEntire(rows[footer].removePrefix("┃  "))
         ?.destructured ?: return null
     // Keep legacy, glyph-focused confirm fixtures on their existing arrow/Enter path.
     if (tabs.isEmpty() && selection.isNotEmpty() && enter == "confirm") return null
-    fun review(question: String = "OpenCode has a question") = Prompt(question, emptyList(), terminalReview = true)
-    if (tabs.isNotEmpty() || selection.isEmpty() || enter != "submit") return review()
+    fun review(question: String = "OpenCode has a question") = Prompt(question, emptyList(), terminalReview = true, openCodeForm = true)
 
     // The renderer has a spacer above the question, between it and the options, and before the
     // footer. Require all three: otherwise the viewport may start partway through the question.
@@ -2124,22 +2333,55 @@ private fun detectOpenCodeQuestion(text: String): Prompt? {
     val heading = panel.subList(top + 1, divider)
     if (heading.isEmpty() || heading.any { !it.startsWith("┃  ") || OPENCODE_QUESTION_OPTION.matches(it.removePrefix("┃  ")) }) return review()
     val question = heading.joinToString(" ") { it.removePrefix("┃  ").trimStart() }
+    // 2.3.2 titles its form "Questions" above the question; the question tool always adds the
+    // "Type your own answer" row there, last.
+    val titled = panel.subList(0, top).lastOrNull { it != "┃" }?.removePrefix("┃  ")?.trim() == "Questions"
+    val terminalOnly = tabs.isNotEmpty() || selection.isEmpty() || enter != "submit"
     val choices = mutableListOf<Choice>()
-    var custom = false
+    var custom: String? = null
     for (row in panel.subList(divider + 1, end)) {
         // Even an empty focused custom editor displays a placeholder below the custom row.
         // Do not send digits to a textarea or accept any unrecognized continuation there.
-        if (custom) return review(question)
+        if (custom != null) return review(question)
         if (row.startsWith("┃     ") && choices.isNotEmpty()) continue // option description
         val option = OPENCODE_QUESTION_OPTION.matchEntire(row.removePrefix("┃  ")) ?: return review(question)
-        val (digit, label) = option.destructured
+        val (digit, shown) = option.destructured
         if (digit.toInt() != choices.size + 1) return review(question)
-        if (label == "Type your own answer") custom = true
+        val label = if (terminalOnly) shown.replace(OPENCODE_QUESTION_CHECKBOX, "") else shown
+        if (label == OPENCODE_CUSTOM) custom = digit
+        // A ✓ after a label marks an answer already picked: the frame is not a fresh question.
+        else if (label.endsWith(" ✓") && !terminalOnly) return review(question)
         else choices += Choice(label, digit, false)
     }
     if (choices.isEmpty()) return review(question)
-    return Prompt(question, choices, numberKeys = true,
+    // Several questions or answers: the card shows the question, Terminal answers it (2.1.2).
+    if (terminalOnly) return review(question)
+    // The 2.3.2 form always ends in the custom row; one that ends elsewhere has typed text in it.
+    if (titled && custom == null) return review(question)
+    return Prompt(question, choices, numberKeys = true, openCodeCustom = custom,
         openCodeQuestionFrame = (panel.subList(top, panel.size) + rows[footer]).joinToString("\n"))
+}
+
+/**
+ * The question of a native OpenCode single-select question whose own answer row is open for
+ * typing (2.1.2): the frame right after its "Type your own answer" digit. Null for anything else.
+ */
+internal fun openCodeQuestionEditing(text: String): String? {
+    val frame = openCodeFrame(stripAnsi(text)) ?: return null
+    val rows = frame.rows
+    if (!rows[frame.footer].startsWith("┃  ") || !OPENCODE_QUESTION_EDIT_FOOTER.matches(rows[frame.footer].removePrefix("┃  "))) return null
+    val panel = rows.take(frame.footer).takeLastWhile { it.startsWith("┃") }
+    val end = panel.indexOfLast { it != "┃" } + 1
+    if (end == 0) return null
+    val divider = (end - 1 downTo 0).firstOrNull { panel[it] == "┃" } ?: return null
+    val top = (divider - 1 downTo 0).firstOrNull { panel[it] == "┃" } ?: return null
+    val heading = panel.subList(top + 1, divider)
+    if (heading.isEmpty() || heading.any { !it.startsWith("┃  ") }) return null
+    // The open row is the last one, with the placeholder or nothing typed yet after its digit.
+    val open = OPENCODE_QUESTION_OPTION.matchEntire(panel[end - 1].removePrefix("┃  "))
+    val emptyOpen = open?.groupValues?.get(2) == OPENCODE_CUSTOM || Regex("""[1-9]\.""").matches(panel[end - 1].removePrefix("┃  ").trim())
+    if (!emptyOpen) return null
+    return heading.joinToString(" ") { it.removePrefix("┃  ").trimStart() }
 }
 
 /** OpenCode highlights this picker with color alone. Its numbered keys select and submit directly. */

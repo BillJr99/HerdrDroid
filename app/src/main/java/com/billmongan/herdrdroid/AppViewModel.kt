@@ -608,6 +608,8 @@ class AppViewModel internal constructor(
                 if (showQuotas) startQuotaChecks()
                 startWatching()
                 pollHermes()
+                // Sends held on this server while another was open go on waiting here (2.1.2).
+                resumeHeldSends(saved.id)
                 val want = pendingOpen
                 pendingOpen = null
                 when {
@@ -2613,6 +2615,8 @@ class AppViewModel internal constructor(
         if (heldJobs[lane]?.isActive == true) return
         val job = viewModelScope.launch {
             while (isActive) {
+                // Another server is open (2.1.2): its sends stay held, and resume when it is open again.
+                if (current?.id != server) break
                 // Only this server's sends (2.1.1): the same pane id on another server is another pane.
                 val next = pendingSends.firstOrNull { it.isFor(server, paneId) && it.waiting } ?: break
                 retryHeld(next, server)
@@ -2620,6 +2624,36 @@ class AppViewModel internal constructor(
         }
         heldJobs[lane] = job
         job.invokeOnCompletion { if (heldJobs[lane] === job) heldJobs.remove(lane) }
+    }
+
+    /**
+     * Back on [serverId] (2.1.2, from the 2.1.1 acceptance): each of its panes with a send still held
+     * while another server was open starts its quiet retry again, under the same guards.
+     */
+    private fun resumeHeldSends(serverId: String) {
+        if (current?.id != serverId) return
+        pendingSends.filter { it.serverId == serverId && it.waiting }.map { it.paneId }.distinct().forEach(::startHeldRetry)
+    }
+
+    /**
+     * A problem with a send, shown only in the chat of the pane it was for, on its own server (2.1.2):
+     * pane ids repeat across servers, so a global banner showed FixtureB's on FixtureA's w1:p1.
+     */
+    data class SendNotice(val serverId: String, val paneId: String, val text: String)
+    var sendNotices by mutableStateOf<List<SendNotice>>(emptyList())
+        private set
+
+    /** The newest send notice for [paneId] on the open server, or null. */
+    fun sendNoticeFor(paneId: String): String? =
+        current?.id?.let { sid -> sendNotices.lastOrNull { it.serverId == sid && it.paneId == paneId }?.text }
+
+    fun dismissSendNotice(paneId: String) {
+        val sid = current?.id ?: return
+        sendNotices = sendNotices.filterNot { it.serverId == sid && it.paneId == paneId }
+    }
+
+    private fun noteSendProblem(serverId: String, paneId: String, text: String) {
+        sendNotices = sendNotices.filterNot { it.serverId == serverId && it.paneId == paneId } + SendNotice(serverId, paneId, text)
     }
 
     /** Retries one held send until it goes, times out, or is cancelled (see [HeldSendRetry]). */
@@ -2711,26 +2745,24 @@ class AppViewModel internal constructor(
             is com.billmongan.herdrdroid.herdr.HeldOutcome.TimedOut -> {
                 if (pendingSends.none { it.id == p.id && it.waiting }) return
                 pendingSends = pendingSends.map { if (it.id == p.id) it.copy(waiting = false, undelivered = true, held = outcome.why) else it }
-                error = "Not sent to $agentName: ${outcome.why}, for 2 minutes. Tap Resend to send it anyway."
+                noteSendProblem(server, p.paneId, "Not sent to $agentName: ${outcome.why}, for 2 minutes. Tap Resend to send it anyway.")
             }
             is com.billmongan.herdrdroid.herdr.HeldOutcome.Failed -> {
                 val why = "sending failed (${com.billmongan.herdrdroid.diag.DiagLog.describe(outcome.error)})"
                 pendingSends = pendingSends.map { if (it.id == p.id) it.copy(waiting = false, undelivered = true, held = why) else it }
-                error = "Not sent to $agentName: $why. Tap Resend to try again."
+                noteSendProblem(server, p.paneId, "Not sent to $agentName: $why. Tap Resend to try again.")
             }
             is com.billmongan.herdrdroid.herdr.HeldOutcome.Cancelled -> when {
                 // Cancelled by you, or already in the agent's log: nothing to report.
                 pendingSends.none { it.id == p.id } -> {}
-                // Another computer: its pane ids may name other panes, so the row goes, with a report.
-                outcome.why == "the computer changed" -> {
-                    heldThen.remove(p.id)
-                    pendingSends = pendingSends.filterNot { it.id == p.id }
-                    error = "Not sent to $agentName: ${outcome.why} before its input line was clear."
-                }
-                // The pane closed: reported, and kept as not sent (from Grok's review).
+                // Another server was opened (2.1.2, from the 2.1.1 acceptance): the send stays held on its
+                // own server, with nothing reported on the other, and [resumeHeldSends] takes it up again
+                // when that server is open. It was never typed, so it is never shown as sent.
+                outcome.why == "the computer changed" -> log("kept held for when its server is open again")
+                // The pane closed: reported in its own chat, and kept as not sent (from Grok's review).
                 else -> {
                     pendingSends = pendingSends.map { if (it.id == p.id) it.copy(waiting = false, undelivered = true, held = outcome.why) else it }
-                    error = "Not sent to $agentName: ${outcome.why} before its input line was clear."
+                    noteSendProblem(server, p.paneId, "Not sent to $agentName: ${outcome.why} before its input line was clear.")
                 }
             }
         }
@@ -2772,6 +2804,10 @@ class AppViewModel internal constructor(
      */
     private suspend fun strictNotifyRead(h: Herdr, paneId: String): String? =
         try { h.read(paneId, NOTIFY_READ_LINES, preserveGlyphs = true) } catch (_: HerdrError) { null }
+
+    /** [strictNotifyRead] with its styles kept (2.1.2), for an OpenCode alert's answer. Null when it fails. */
+    private suspend fun strictStyledNotifyRead(h: Herdr, paneId: String): String? =
+        try { h.readStrictStyled(paneId, NOTIFY_READ_LINES) } catch (_: HerdrError) { null }
 
     /** Read fresh output for the card before accepting an answer. */
     private suspend fun readForCard(h: Herdr, paneId: String, lines: Int = 80): String? =
@@ -3098,17 +3134,21 @@ class AppViewModel internal constructor(
     }
 
     internal fun answerCardKey(target: CardTarget?, prompt: Prompt, key: String, label: String) {
-        answerCardInput(target, prompt, label) { h, t, _ ->
+        // OpenCode's question dialog (2.1.2): Esc dismisses it; no other key goes in from the card.
+        if (prompt.openCodeQuestionFrame != null && key != "esc") { flash("Not sent. Refresh the question or open the terminal to answer."); return }
+        answerCardInput(target, prompt, label, guarded = prompt.openCodeQuestionFrame != null) { h, t, _ ->
             h.sendKeys(t.pane.id, key, expectedConnection = t.connection)
             true
         }
     }
 
     private fun answerCardInput(target: CardTarget?, shown: Prompt, label: String, delivered: () -> Unit = {},
+        /** OpenCode's question dialog (2.1.2): allowed through [freshAnswer]'s guarded checks. */
+        guarded: Boolean = false,
         send: suspend (Herdr, CardTarget, Prompt) -> Boolean,
     ) {
         val refused = "Not sent. Refresh the question or open the terminal to answer."
-        if (target == null || shown.terminalReview || shown.hermesClarify || shown.openCodeQuestionFrame != null) { flash(refused); return }
+        if (target == null || shown.terminalReview || shown.hermesClarify || (shown.openCodeQuestionFrame != null && !guarded)) { flash(refused); return }
         val id = target.pane.id
         answerOnce(id) { h ->
             val fresh = target.freshAnswer(h, shown)
@@ -3314,6 +3354,14 @@ class AppViewModel internal constructor(
      * leave the answer to the terminal instead of guessing where to type it.
      */
     internal fun answerTyped(target: CardTarget?, prompt: Prompt, choice: Choice?, text: String, delivered: () -> Unit) {
+        // OpenCode's question (2.1.2): only its own answer row takes text, opened by that row's digit.
+        if (prompt.openCodeQuestionFrame != null) {
+            if (prompt.openCodeCustom == null || choice?.keys != prompt.openCodeCustom) { flash("Not sent. Refresh the question or open the terminal to answer."); return }
+            answerCardInput(target, prompt, text, delivered, guarded = true) { h, t, fresh ->
+                typeOpenCodeCustom(h, t.pane.id, fresh, text, t.connection) { h.readStyledViewport(t.pane.id, t.connection) }
+            }
+            return
+        }
         answerCardInput(target, prompt, text, delivered) { h, t, fresh ->
             val id = t.pane.id
             if (choice != null) {
@@ -3329,6 +3377,29 @@ class AppViewModel internal constructor(
             h.typeAndEnter(id, text, t.connection)
             true
         }
+    }
+
+    /**
+     * Types [text] as the answer to OpenCode's question [fresh] (2.1.2): its "Type your own answer"
+     * digit opens the answer row, a fresh read [reread] must show that row open for the same
+     * question, and only then the text goes in with Enter. False when nothing could be typed (the
+     * digit may then have opened the row; the text never goes anywhere else).
+     */
+    private suspend fun typeOpenCodeCustom(h: Herdr, paneId: String, fresh: Prompt, text: String, connection: Any?,
+        reread: suspend () -> String?): Boolean {
+        val digit = fresh.openCodeCustom ?: return false
+        val answer = text.trim()
+        if (answer.isEmpty() || answer.any { it == '\n' || it == '\r' } || fresh.openCodeQuestionFrame == null) return false
+        h.sendKeys(paneId, digit, expectedConnection = connection)
+        delay(300)
+        val after = runCatching { reread() }.getOrNull()?.takeUnless { it.isBlank() } ?: return false
+        val open = com.billmongan.herdrdroid.herdr.openCodeQuestionEditing(after)
+        if (open == null || open.filterNot(Char::isWhitespace) != fresh.question.filterNot(Char::isWhitespace)) {
+            com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: OpenCode's answer row didn't open for the same question; nothing typed")
+            return false
+        }
+        h.typeAndEnter(paneId, answer, connection)
+        return true
     }
 
     fun answer(paneId: String, keys: String, pressEnter: Boolean, sent: () -> Unit = {}) {
@@ -3643,7 +3714,9 @@ class AppViewModel internal constructor(
             if (onScreen) continue
             when {
                 p.status == Status.NEEDS_YOU -> viewModelScope.launch {
-                    val text = runCatching { client()?.read(p.id, NOTIFY_READ_LINES) }.getOrNull().orEmpty()
+                    // Glyphs kept (2.1.2), as the tap's read keeps them, so the question identity the
+                    // alert carries is computed from the same text the tap compares it with.
+                    val text = runCatching { client()?.read(p.id, NOTIFY_READ_LINES, preserveGlyphs = true) }.getOrNull().orEmpty()
                     // A screen that couldn't be read: one plain notice, no question and no Reply (1.4.2, from review).
                     if (text.isBlank()) { Notify.unread(app, serverId, serverLabel, p.id, p.agentName); return@launch }
                     val prompt = detectPrompt(text, blocked = true, agent = p.agent)
@@ -3654,9 +3727,11 @@ class AppViewModel internal constructor(
                     // no alert. A screen that couldn't be read still alerts, saying so.
                     if (prompt == null && text.isNotBlank()) { com.billmongan.herdrdroid.diag.DiagLog.log("watch", "${p.id}: herdr says blocked, but nothing on screen asks; no alert"); return@launch }
                     withContext(Dispatchers.Main) { if (prompt != null && prompt.choices.isNotEmpty()) observeQuestion(serverId, p.id, prompt, p.status, p.agentName, text) }
+                    // 2.1.2: the alert offers the card's own options (Hermes's clarify and OpenCode's
+                    // question included), answered through the same checks when tapped.
                     Notify.needsYou(app, serverId, serverLabel, p.id, p.agentName, prompt?.question ?: "Waiting for you.", prompt?.choices.orEmpty(), p.agent,
-                        terminalReview = prompt?.let { it.terminalReview || it.hermesClarify || it.openCodeQuestionFrame != null } == true,
-                        reply = com.billmongan.herdrdroid.notify.notificationOffersReply(prompt))
+                        terminalReview = prompt?.terminalReview == true,
+                        reply = com.billmongan.herdrdroid.notify.notificationOffersReply(prompt), prompt = prompt)
                 }
                 // Only agents that need you notify (Bill, 2026-11-13); finishing doesn't.
                 before == Status.NEEDS_YOU -> {
@@ -3675,6 +3750,42 @@ class AppViewModel internal constructor(
     init {
         viewModelScope.launch { AppBus.actions.collect { a -> answerFromNotification(a) } }
         if (!locked) startBackgroundChecks()
+    }
+
+    /**
+     * Whether [p] can take a guarded answer from an alert (2.1.2): the herdr TUI backend, its live
+     * screen at the bottom (no scrollback), and a stable occupant, as a chat card requires.
+     */
+    private fun guardedAlertPane(h: Herdr, p: Pane): Boolean =
+        h.backend == Backend.TUI && p.scrollOffset == 0 && com.billmongan.herdrdroid.herdr.hasStableOccupant(p)
+
+    /**
+     * Why an alert's answer to a guarded question [now] (Hermes's clarify, OpenCode's question
+     * dialog, Muse's quota warning) is not sent, or null to send [nav] (2.1.2).
+     */
+    private suspend fun guardedAlertRefusal(h: Herdr, a: NotifyAction, now: Prompt, nav: List<String>?): String? {
+        val unsure = "The app couldn't confirm this question is still the one on screen, so nothing was sent."
+        if (a.isKey) {
+            // Esc only where the card offers it: not Hermes's clarify, whose card leaves cancelling to Terminal.
+            if (now.hermesClarify || a.keys != "esc") return unsure
+        } else {
+            if (nav.isNullOrEmpty()) return if (now.museQuota) "The app couldn't see which option Muse has highlighted, so nothing was sent." else unsure
+            val allowed = if (now.museQuota) setOf("up", "down", "left", "right", "enter") else null
+            if (allowed != null && nav.any { it !in allowed }) return unsure
+            // A digit only where the card itself types one (numberKeys).
+            if (allowed == null && (!now.numberKeys || nav.size != 1)) return unsure
+        }
+        if (now.hermesClarify || now.openCodeQuestionFrame != null) {
+            val pane = runCatching { h.panes().firstOrNull { it.id == a.paneId } }.getOrNull() ?: return unsure
+            if (!guardedAlertPane(h, pane)) return unsure
+            if (now.hermesClarify) {
+                // The strict read (no card-recovery fallback) must show the same question too.
+                val strict = strictNotifyRead(h, a.paneId)?.takeUnless { it.isBlank() } ?: return "The pane's screen couldn't be read, so the answer wasn't sent."
+                val again = detectPrompt(strict, blocked = true, agent = a.agent)
+                if (!cardAnswerStillFits(now, again)) return unsure
+            }
+        }
+        return null
     }
 
     /** A notification button: answer only if the same question is still on screen. */
@@ -3736,6 +3847,35 @@ class AppViewModel internal constructor(
                     return
                 }
                 val freshCard = detectPrompt(fresh, p.status == Status.NEEDS_YOU, p.agent)
+                // 2.1.2: OpenCode's question takes typed text only on its own answer row, opened by
+                // that row's digit after the same checks as its options.
+                if (freshCard?.openCodeQuestionFrame != null) {
+                    // The same question and the same whole frame as the alert's (Grok's RC review HIGH).
+                    val same = a.question.isNotBlank() && freshCard.question.filterNot(Char::isWhitespace) == a.question.filterNot(Char::isWhitespace) &&
+                        a.identity == com.billmongan.herdrdroid.notify.alertIdentity(freshCard) &&
+                        a.options == com.billmongan.herdrdroid.notify.alertOptionsSig(freshCard.choices)
+                    val typed = same && freshCard.openCodeCustom != null && guardedAlertPane(h, p) &&
+                        typeOpenCodeCustom(h, p.id, freshCard, a.keys, null) { strictStyledNotifyRead(h, p.id) }
+                    if (!typed) {
+                        com.billmongan.herdrdroid.diag.DiagLog.log("answer", "${p.id}: alert reply to OpenCode's question not sent")
+                        Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
+                            if (same) "The app couldn't open OpenCode's answer row for this question, so your reply wasn't typed."
+                            else "The question changed before your reply arrived, so nothing was sent.")
+                        return
+                    }
+                    answered()
+                    Notify.sending(app, a.serverId, a.paneId, "Answered", a.keys.take(40))
+                    withContext(Dispatchers.Main) { noteAnswer(a.paneId, freshCard, a.keys, a.serverId) }
+                    return
+                }
+                // A typed reply goes only where the screen asks for typing (2.1.2): a question with
+                // options now on screen takes one of them, not text.
+                if (freshCard != null && freshCard.choices.isNotEmpty()) {
+                    com.billmongan.herdrdroid.diag.DiagLog.log("answer", "${p.id}: alert reply refused, the screen shows a question with options")
+                    Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
+                        "The pane is showing a question with options now, so your reply wasn't typed. Open the app to choose.")
+                    return
+                }
                 if (freshCard?.let { !com.billmongan.herdrdroid.notify.notificationOffersReply(it) || it.terminalReview || it.museQuota || it.openCodePermission } == true) {
                     com.billmongan.herdrdroid.diag.DiagLog.log("answer", "${p.id}: alert reply refused, the screen takes no typed reply")
                     Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
@@ -3766,23 +3906,50 @@ class AppViewModel internal constructor(
             }
             return
         }
-        val text = runCatching { readForCard(h, a.paneId, NOTIFY_READ_LINES) }.getOrNull()
-        if (text.isNullOrBlank()) {
+        // 2.1.2: an OpenCode alert is answered only from the strict 80-line read (no card-recovery
+        // fallback), with its styles kept so a permission's highlighted button can be seen.
+        // 2.1.2: Muse's quota warning shows its highlight only in colour, so its alert reads with styles too.
+        val styled = isOpenCode(a.agent) || a.agent.equals("muse", true)
+        val text = if (styled) runCatching { strictStyledNotifyRead(h, a.paneId) }.getOrNull()
+            else runCatching { readForCard(h, a.paneId, NOTIFY_READ_LINES) }.getOrNull()
+        if (text.isNullOrBlank() || com.billmongan.herdrdroid.herdr.stripAnsi(text).isBlank()) {
             // Not "the question changed": the app couldn't see (1.4.2, from review).
             Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer", "The pane's screen couldn't be read, so the answer wasn't sent.")
             return
         }
         // The same depth and agent the alert was made with (1.4.2, from review).
         val now = detectPrompt(text, blocked = true, agent = a.agent)
-        // Muse's quota warning is answered only from the chat card, whose live read finds its highlight.
-        if (now == null || now.openCodePermission || now.museQuota || !notificationAnswerStillFits(now, a)) {
+        // An OpenCode permission (2.1.2): only Esc, Reject, or Allow once moved to from the highlight
+        // this read shows; never Always allow, never a typed digit.
+        val permissionKeys = now?.takeIf { it.openCodePermission }?.let { com.billmongan.herdrdroid.notify.openCodePermissionAlertKeys(it, a) }
+        if (now != null && now.openCodePermission && permissionKeys == null && notificationAnswerStillFits(now, a)) {
+            com.billmongan.herdrdroid.diag.DiagLog.log("answer", "${a.paneId}: OpenCode permission alert not answered, no highlighted button in the strict read")
+            Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
+                "The app couldn't see which button OpenCode has highlighted, so nothing was sent.")
+            return
+        }
+        if (now == null || (now.openCodePermission && permissionKeys == null) || !notificationAnswerStillFits(now, a)) {
             // The question's words still on screen but not read as that card: say the app couldn't
             // tell, rather than that it changed.
-            val stillThere = a.question.isNotBlank() && text.filterNot { it.isWhitespace() }.contains(a.question.filterNot { it.isWhitespace() }.take(60))
+            val plain = com.billmongan.herdrdroid.herdr.stripAnsi(text)
+            val stillThere = a.question.isNotBlank() && plain.filterNot { it.isWhitespace() }.contains(a.question.filterNot { it.isWhitespace() }.take(60))
             Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
                 if (stillThere) "The app couldn't match your answer to the question on screen, so nothing was sent."
                 else "The question changed before your answer arrived, so nothing was sent.")
             return
+        }
+        // 2.1.2: the questions a chat card answers only through guarded checks (Hermes's clarify,
+        // OpenCode's question dialog, Muse's quota warning) take from an alert only the keys their card
+        // would send: the option's digit or the arrows from the highlight this strict read shows.
+        val navKeys = if (!a.isKey) now.choices.firstOrNull { it.keys == a.keys }?.let { c -> com.billmongan.herdrdroid.herdr.menuKeys(now, c) } else null
+        val guardedAlert = now.hermesClarify || now.openCodeQuestionFrame != null || now.museQuota
+        if (guardedAlert) {
+            val why = guardedAlertRefusal(h, a, now, navKeys)
+            if (why != null) {
+                com.billmongan.herdrdroid.diag.DiagLog.log("answer", "${a.paneId}: alert answer not sent: $why")
+                Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer", why)
+                return
+            }
         }
         // A notification carries only question/option text, not the tab or exact command identity.
         // If its button still fits the previous card, the alert can't prove it's for the new one.
@@ -3803,8 +3970,9 @@ class AppViewModel internal constructor(
                 else Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer", problem!!)
                 return
             }
-            val nav = if (!a.isKey) now.choices.firstOrNull { it.keys == a.keys }?.let { c -> com.billmongan.herdrdroid.herdr.menuKeys(now, c) } else null
-            if (nav != null) h.sendKeys(a.paneId, *nav.toTypedArray())
+            val nav = navKeys
+            if (permissionKeys != null) h.sendKeys(a.paneId, *permissionKeys.toTypedArray())
+            else if (nav != null) h.sendKeys(a.paneId, *nav.toTypedArray())
             else if (a.isKey) h.sendKeys(a.paneId, a.keys)
             else if (a.pressEnter) h.typeAndEnter(a.paneId, a.keys)
             else h.sendText(a.paneId, a.keys)
