@@ -608,6 +608,8 @@ class AppViewModel internal constructor(
                 if (showQuotas) startQuotaChecks()
                 startWatching()
                 pollHermes()
+                // Sends held on this server while another was open go on waiting here (2.1.2).
+                resumeHeldSends(saved.id)
                 val want = pendingOpen
                 pendingOpen = null
                 when {
@@ -2613,6 +2615,8 @@ class AppViewModel internal constructor(
         if (heldJobs[lane]?.isActive == true) return
         val job = viewModelScope.launch {
             while (isActive) {
+                // Another server is open (2.1.2): its sends stay held, and resume when it is open again.
+                if (current?.id != server) break
                 // Only this server's sends (2.1.1): the same pane id on another server is another pane.
                 val next = pendingSends.firstOrNull { it.isFor(server, paneId) && it.waiting } ?: break
                 retryHeld(next, server)
@@ -2620,6 +2624,36 @@ class AppViewModel internal constructor(
         }
         heldJobs[lane] = job
         job.invokeOnCompletion { if (heldJobs[lane] === job) heldJobs.remove(lane) }
+    }
+
+    /**
+     * Back on [serverId] (2.1.2, from the 2.1.1 acceptance): each of its panes with a send still held
+     * while another server was open starts its quiet retry again, under the same guards.
+     */
+    private fun resumeHeldSends(serverId: String) {
+        if (current?.id != serverId) return
+        pendingSends.filter { it.serverId == serverId && it.waiting }.map { it.paneId }.distinct().forEach(::startHeldRetry)
+    }
+
+    /**
+     * A problem with a send, shown only in the chat of the pane it was for, on its own server (2.1.2):
+     * pane ids repeat across servers, so a global banner showed FixtureB's on FixtureA's w1:p1.
+     */
+    data class SendNotice(val serverId: String, val paneId: String, val text: String)
+    var sendNotices by mutableStateOf<List<SendNotice>>(emptyList())
+        private set
+
+    /** The newest send notice for [paneId] on the open server, or null. */
+    fun sendNoticeFor(paneId: String): String? =
+        current?.id?.let { sid -> sendNotices.lastOrNull { it.serverId == sid && it.paneId == paneId }?.text }
+
+    fun dismissSendNotice(paneId: String) {
+        val sid = current?.id ?: return
+        sendNotices = sendNotices.filterNot { it.serverId == sid && it.paneId == paneId }
+    }
+
+    private fun noteSendProblem(serverId: String, paneId: String, text: String) {
+        sendNotices = sendNotices.filterNot { it.serverId == serverId && it.paneId == paneId } + SendNotice(serverId, paneId, text)
     }
 
     /** Retries one held send until it goes, times out, or is cancelled (see [HeldSendRetry]). */
@@ -2711,26 +2745,24 @@ class AppViewModel internal constructor(
             is com.billmongan.herdrdroid.herdr.HeldOutcome.TimedOut -> {
                 if (pendingSends.none { it.id == p.id && it.waiting }) return
                 pendingSends = pendingSends.map { if (it.id == p.id) it.copy(waiting = false, undelivered = true, held = outcome.why) else it }
-                error = "Not sent to $agentName: ${outcome.why}, for 2 minutes. Tap Resend to send it anyway."
+                noteSendProblem(server, p.paneId, "Not sent to $agentName: ${outcome.why}, for 2 minutes. Tap Resend to send it anyway.")
             }
             is com.billmongan.herdrdroid.herdr.HeldOutcome.Failed -> {
                 val why = "sending failed (${com.billmongan.herdrdroid.diag.DiagLog.describe(outcome.error)})"
                 pendingSends = pendingSends.map { if (it.id == p.id) it.copy(waiting = false, undelivered = true, held = why) else it }
-                error = "Not sent to $agentName: $why. Tap Resend to try again."
+                noteSendProblem(server, p.paneId, "Not sent to $agentName: $why. Tap Resend to try again.")
             }
             is com.billmongan.herdrdroid.herdr.HeldOutcome.Cancelled -> when {
                 // Cancelled by you, or already in the agent's log: nothing to report.
                 pendingSends.none { it.id == p.id } -> {}
-                // Another computer: its pane ids may name other panes, so the row goes, with a report.
-                outcome.why == "the computer changed" -> {
-                    heldThen.remove(p.id)
-                    pendingSends = pendingSends.filterNot { it.id == p.id }
-                    error = "Not sent to $agentName: ${outcome.why} before its input line was clear."
-                }
-                // The pane closed: reported, and kept as not sent (from Grok's review).
+                // Another server was opened (2.1.2, from the 2.1.1 acceptance): the send stays held on its
+                // own server, with nothing reported on the other, and [resumeHeldSends] takes it up again
+                // when that server is open. It was never typed, so it is never shown as sent.
+                outcome.why == "the computer changed" -> log("kept held for when its server is open again")
+                // The pane closed: reported in its own chat, and kept as not sent (from Grok's review).
                 else -> {
                     pendingSends = pendingSends.map { if (it.id == p.id) it.copy(waiting = false, undelivered = true, held = outcome.why) else it }
-                    error = "Not sent to $agentName: ${outcome.why} before its input line was clear."
+                    noteSendProblem(server, p.paneId, "Not sent to $agentName: ${outcome.why} before its input line was clear.")
                 }
             }
         }
@@ -2772,6 +2804,10 @@ class AppViewModel internal constructor(
      */
     private suspend fun strictNotifyRead(h: Herdr, paneId: String): String? =
         try { h.read(paneId, NOTIFY_READ_LINES, preserveGlyphs = true) } catch (_: HerdrError) { null }
+
+    /** [strictNotifyRead] with its styles kept (2.1.2), for an OpenCode alert's answer. Null when it fails. */
+    private suspend fun strictStyledNotifyRead(h: Herdr, paneId: String): String? =
+        try { h.readStrictStyled(paneId, NOTIFY_READ_LINES) } catch (_: HerdrError) { null }
 
     /** Read fresh output for the card before accepting an answer. */
     private suspend fun readForCard(h: Herdr, paneId: String, lines: Int = 80): String? =
@@ -3766,19 +3802,33 @@ class AppViewModel internal constructor(
             }
             return
         }
-        val text = runCatching { readForCard(h, a.paneId, NOTIFY_READ_LINES) }.getOrNull()
-        if (text.isNullOrBlank()) {
+        // 2.1.2: an OpenCode alert is answered only from the strict 80-line read (no card-recovery
+        // fallback), with its styles kept so a permission's highlighted button can be seen.
+        val openCode = isOpenCode(a.agent)
+        val text = if (openCode) runCatching { strictStyledNotifyRead(h, a.paneId) }.getOrNull()
+            else runCatching { readForCard(h, a.paneId, NOTIFY_READ_LINES) }.getOrNull()
+        if (text.isNullOrBlank() || com.billmongan.herdrdroid.herdr.stripAnsi(text).isBlank()) {
             // Not "the question changed": the app couldn't see (1.4.2, from review).
             Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer", "The pane's screen couldn't be read, so the answer wasn't sent.")
             return
         }
         // The same depth and agent the alert was made with (1.4.2, from review).
         val now = detectPrompt(text, blocked = true, agent = a.agent)
+        // An OpenCode permission (2.1.2): only Esc, Reject, or Allow once moved to from the highlight
+        // this read shows; never Always allow, never a typed digit.
+        val permissionKeys = now?.takeIf { it.openCodePermission }?.let { com.billmongan.herdrdroid.notify.openCodePermissionAlertKeys(it, a) }
+        if (now != null && now.openCodePermission && permissionKeys == null && notificationAnswerStillFits(now, a)) {
+            com.billmongan.herdrdroid.diag.DiagLog.log("answer", "${a.paneId}: OpenCode permission alert not answered, no highlighted button in the strict read")
+            Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
+                "The app couldn't see which button OpenCode has highlighted, so nothing was sent.")
+            return
+        }
         // Muse's quota warning is answered only from the chat card, whose live read finds its highlight.
-        if (now == null || now.openCodePermission || now.museQuota || !notificationAnswerStillFits(now, a)) {
+        if (now == null || (now.openCodePermission && permissionKeys == null) || now.museQuota || !notificationAnswerStillFits(now, a)) {
             // The question's words still on screen but not read as that card: say the app couldn't
             // tell, rather than that it changed.
-            val stillThere = a.question.isNotBlank() && text.filterNot { it.isWhitespace() }.contains(a.question.filterNot { it.isWhitespace() }.take(60))
+            val plain = com.billmongan.herdrdroid.herdr.stripAnsi(text)
+            val stillThere = a.question.isNotBlank() && plain.filterNot { it.isWhitespace() }.contains(a.question.filterNot { it.isWhitespace() }.take(60))
             Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
                 if (stillThere) "The app couldn't match your answer to the question on screen, so nothing was sent."
                 else "The question changed before your answer arrived, so nothing was sent.")
@@ -3804,7 +3854,8 @@ class AppViewModel internal constructor(
                 return
             }
             val nav = if (!a.isKey) now.choices.firstOrNull { it.keys == a.keys }?.let { c -> com.billmongan.herdrdroid.herdr.menuKeys(now, c) } else null
-            if (nav != null) h.sendKeys(a.paneId, *nav.toTypedArray())
+            if (permissionKeys != null) h.sendKeys(a.paneId, *permissionKeys.toTypedArray())
+            else if (nav != null) h.sendKeys(a.paneId, *nav.toTypedArray())
             else if (a.isKey) h.sendKeys(a.paneId, a.keys)
             else if (a.pressEnter) h.typeAndEnter(a.paneId, a.keys)
             else h.sendText(a.paneId, a.keys)

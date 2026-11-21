@@ -168,9 +168,18 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
                 // Backspace from the end leaves the start of what was there, shorter by at most the
                 // keys sent (fewer if some were dropped). Anything else (the cursor mid-text, text
                 // that was never shown, more deleted than sent, nothing deleted) stops it.
-                val removed = left.length - still.text.length
-                if (!still.bounded || still.menu || removed !in 1..count || !left.startsWith(still.text)) return@guarded Outcome.PARTIAL
-                left = still.text
+                // 2.1.2 (2.1.1 acceptance, D4): a round that ends at a space leaves a trailing space
+                // the agent's screen doesn't show ("HD211 draft clear rc" less 8 is "HD211 draft ",
+                // read back as "HD211 draft"), so the shown text alone looks one longer cut than was
+                // sent. What is left is taken as [left] less k keys for the largest k in 1..count
+                // whose text matches the screen once trailing whitespace is set aside on both sides:
+                // the largest k assumes the fewest characters remain, so the next round never sends
+                // more Backspaces than the box can hold.
+                if (!still.bounded || still.menu) return@guarded Outcome.PARTIAL
+                val seen = still.text.trimEnd()
+                val removed = (count downTo 1).firstOrNull { it <= left.length && left.dropLast(it).trimEnd() == seen }
+                    ?: return@guarded Outcome.PARTIAL
+                left = left.dropLast(removed)
             }
             Outcome.PARTIAL
         }

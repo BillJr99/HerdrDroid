@@ -172,7 +172,107 @@ class ReflowTest {
         assertEquals("Bash(herdr pane read w2:p8)", paras[1].text)
         assertTrue(paras[2].detail)
         assertEquals("Read 40 lines", paras[2].text)
-        assertEquals(listOf("⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt"), (segs.last() as Seg.Footer).lines)
+        assertEquals(listOf("» auto mode on (shift+tab to cycle) · esc to interrupt"), (segs.last() as Seg.Footer).lines)
+    }
+
+    /** Claude Code 2.1.329 with a titled box, a typed draft and its helper list (2.1.1 acceptance, titled-typed). */
+    private val claudeTitledTyped = listOf(
+        "❯ start-helpers C",
+        "",
+        "● Done.",
+        "",
+        "✻ Waiting for 3 background agents to finish",
+        "",
+        "❯ check the release notes for 2.1.2 start-helpers D",
+        "",
+        "● Done.",
+        "",
+        "✻ Waiting for 4 background agents to finish",
+        "",
+        "─".repeat(119) + " Sample Title ─",
+        "❯ check the release notes for 2.1.2 ",
+        "─".repeat(134),
+        "  ⏵⏵ auto mode on (shift+tab to cycle)",
+        "",
+        "  ● main",
+        pad("  ◯ general-purpose  Sample helper task 1", 125) + "1m 16s",
+        pad("  ◯ general-purpose  Sample helper task 1", 128) + "55s",
+        pad("  ◯ general-purpose  Sample helper task 2", 128) + "43s",
+        pad("  ◯ general-purpose  Sample helper task 3", 129) + "7s",
+    ).joinToString("\n")
+
+    @Test
+    fun claudeScreenChatLeavesTheComposerDraftOutOfTheMessages() {
+        val segs = Reflow.parse(claudeTitledTyped, agent = "claude")
+        val you = segs.filterIsInstance<Seg.You>().map { it.text }
+        // The real history stays; the box's draft is not a sent message.
+        assertEquals(listOf("start-helpers C", "check the release notes for 2.1.2 start-helpers D"), you)
+        val footer = segs.last() as Seg.Footer
+        assertTrue(footer.lines.contains("check the release notes for 2.1.2"))
+        assertTrue(footer.lines.contains("» auto mode on (shift+tab to cycle)"))
+        // No mode glyph the phone can't draw, as a mark or in the text.
+        assertTrue(segs.none { it is Seg.Para && (it.mark?.contains('\u23F5') == true || '\u23F5' in it.text) })
+        assertTrue(footer.lines.none { '\u23F5' in it })
+    }
+
+    @Test
+    fun claudeEmptyBoxHintIsNeitherAMessageNorFooterText() {
+        val screen = listOf(
+            "● Done.",
+            "",
+            "─".repeat(100),
+            "❯ describe a task for a new session",
+            "─".repeat(100),
+            "  ⏵⏵ auto mode · enter to return · space to reply · ctrl+x to remove · ? for shortcuts",
+            "",
+            "  ● main",
+            "  ◯ general-purpose  Sample helper task 1",
+            "  ◯ general-purpose  Sample helper task 2",
+            "  ◯ general-purpose  Sample helper task 3",
+            "  ◯ general-purpose  Sample helper task 4",
+        ).joinToString("\n")
+        val segs = Reflow.parse(screen, agent = "claude")
+        assertTrue(segs.none { it is Seg.You })
+        assertTrue(segs.none { it is Seg.Para && it.text.contains("describe a task") })
+        val footer = segs.last() as Seg.Footer
+        assertTrue(footer.lines.none { it.contains("describe a task") })
+        assertEquals("» auto mode · enter to return · space to reply · ctrl+x to remove · ? for shortcuts", footer.lines.first())
+    }
+
+    @Test
+    fun hermesTitledBoxPlaceholderIsNotAMessage() {
+        // 2.1.1 acceptance ph-b4: Hermes with the session's title in the rule over its box.
+        val screen = listOf(
+            "─".repeat(133),
+            " ☤ Hermes",
+            "Acknowledged. The Asana-to-Kanban sync now treats queued pane notifications as accepted for delivery.",
+            "─".repeat(133),
+            "",
+            "─ 7.2s · 6:33 PM",
+            "─".repeat(84) + " Complete teaching brief request and push vault ─",
+            "❯ Plan a feature, then build it step by step",
+            "─".repeat(133),
+            pad(" ☤ gpt-6.2-sol · 163K/500K · [███░░░░░░░] 33% · ◷ 5.9s", 100) + "/ commands · @ files · ! shell",
+        ).joinToString("\n")
+        val segs = Reflow.parse(screen, agent = "hermes")
+        assertTrue(segs.none { it is Seg.You })
+        assertTrue(segs.none { it is Seg.Code && it.lines.any { l -> "Complete teaching brief" in l } })
+        assertTrue(segs.any { it is Seg.Para && it.text.startsWith("Acknowledged.") })
+        val footer = segs.last() as Seg.Footer
+        assertEquals("Plan a feature, then build it step by step", footer.lines.first())
+        // An empty Hermes box with its plain hint: no message and no hint text.
+        val empty = screen.replace("❯ Plan a feature, then build it step by step", "❯ Ask anything, or type / for commands…")
+        val e = Reflow.parse(empty, agent = "hermes")
+        assertTrue(e.none { it is Seg.You })
+        assertTrue((e.last() as Seg.Footer).lines.none { "Ask anything" in it })
+    }
+
+    @Test
+    fun composerBoxStartOnlyForClaudeAndHermes() {
+        assertEquals(12, composerBoxStart(claudeTitledTyped, "claude"))
+        assertEquals(null, composerBoxStart(claudeTitledTyped, "codex"))
+        assertEquals(null, composerBoxStart(claudeTitledTyped, null))
+        assertEquals(null, composerBoxStart("● Done.\n❯ hi", "claude"))
     }
 
     @Test
