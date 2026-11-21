@@ -1292,6 +1292,8 @@ internal fun PromptCard(
                 Text(when {
                     p.hermesClarify -> "Answer this Hermes question in Terminal."
                     p.codexQuestion -> "Answer this Codex question in Terminal."
+                    // 2.1.2: a question the app reads but can't answer for you (several questions or answers).
+                    p.openCodeForm -> "Answer this OpenCode question in Terminal: it asks more than one question or takes more than one answer, which the app can't send for you."
                     else -> "This preview is incomplete. Open the terminal to review the full command before answering."
                 },
                     color = Palette.Muted, fontSize = 12.5.sp)
@@ -1395,13 +1397,32 @@ internal fun PromptCard(
                     }
                 }
             }
+            // 2.1.2: OpenCode's question takes your own words too, on its last row: the card offers that row as well.
+            p.openCodeCustom?.let { digit ->
+                val custom = Choice("Type your own answer", digit, false)
+                OutlinedButton(
+                    enabled = !sending,
+                    onClick = { onTypedChoice(custom) },
+                    shape = RoundedCornerShape(14.dp),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                ) {
+                    Column(Modifier.fillMaxWidth()) {
+                        Text(custom.label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, lineHeight = 20.sp, color = Palette.Ink)
+                        Text("opens its answer row, then you type your answer", fontSize = 12.sp, color = Palette.Muted)
+                    }
+                }
+            }
             if (!p.hermesClarify && !p.openCodePermission && !sending && !(p.choices.isEmpty() && p.region == listOf(com.billmongan.herdrdroid.herdr.UNREAD_SCREEN))) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 KeyButton("Esc") { onKey("esc") }
-                KeyButton("Tab") { onKey("tab") }
-                KeyButton("Shift+Tab") { onKey("shift+tab") }
-                KeyButton("Ctrl+C", danger = true) { onKey("ctrl+c") }
+                // OpenCode's question dialog takes Esc ("esc dismiss") and its digits, nothing else from here (2.1.2).
+                if (p.openCodeQuestionFrame == null) {
+                    KeyButton("Tab") { onKey("tab") }
+                    KeyButton("Shift+Tab") { onKey("shift+tab") }
+                    KeyButton("Ctrl+C", danger = true) { onKey("ctrl+c") }
+                }
             }
-            if (!p.hermesClarify && !p.openCodePermission) TextButton(onClick = onTypeAnswer, enabled = !sending, modifier = Modifier.fillMaxWidth()) { Text("Type a different answer") }
+            if (!p.hermesClarify && !p.openCodePermission && p.openCodeQuestionFrame == null) TextButton(onClick = onTypeAnswer, enabled = !sending, modifier = Modifier.fillMaxWidth()) { Text("Type a different answer") }
             onShowTerminal?.let { show -> TextButton(onClick = show, modifier = Modifier.fillMaxWidth()) { Text("Show terminal") } }
             if (!p.hermesClarify) Text(
                 "Each button types its key into the tab, exactly as if you typed it there. For any other " +

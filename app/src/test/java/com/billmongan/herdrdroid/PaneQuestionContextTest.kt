@@ -111,10 +111,10 @@ class PaneQuestionContextTest {
         items = listOf(reply), checkedTarget = true,
     ) {
         rule.onNodeWithText("npm install --prefix", substring = true).performScrollTo().assertIsDisplayed()
-        for (label in listOf("Allow once", "Reject", "Show terminal")) {
+        // 2.1.2 (Bill): every button the dialog shows, Always allow included.
+        for (label in listOf("Allow once", "Always allow", "Reject", "Show terminal")) {
             rule.onNode(hasText(label) and hasClickAction()).performScrollTo().assertIsDisplayed()
         }
-        rule.onNodeWithText("Always allow").assertDoesNotExist()
         rule.onNodeWithText("Type a different answer").assertDoesNotExist()
     }
 
