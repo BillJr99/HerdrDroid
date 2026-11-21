@@ -1527,6 +1527,42 @@ internal fun composerDraftOf(screen: String, agent: String? = null): ComposerDra
     return build(c, emptyList(), bounded = single && clearAbove, menu = menuIn(below))
 }
 
+/**
+ * Where Claude Code's or Hermes's input box starts on [screen] (2.1.2, 2.1.1 acceptance finding 5):
+ * the index in `screen.lines()` of the rule that opens the box, found the way [composerDraftOf]
+ * finds a boxed draft (a prompt row right under an opening rule, closed by a rule of the same span
+ * with only a short footer under it, Claude's helper list set aside), whether the box is empty,
+ * shows a placeholder or holds a draft. Null for other agents or when no such box shows. The chat
+ * built from the screen ends its prose there, so the box's text is never taken for a sent message.
+ */
+internal fun composerBoxStart(screen: String, agent: String?): Int? {
+    if (agent?.lowercase() !in setOf("claude", "hermes")) return null
+    val all = withoutClaudeAgentList(screen.lines().map { it.replace("\r", "") })
+    val offset = maxOf(0, all.size - 48)
+    val rows = all.takeLast(48).map { it.replace(ANSI_SEQ, "") }
+    fun span(i: Int): IntRange? = rows.getOrNull(i)?.let(DRAFT_BOX_RULE::matchEntire)?.let {
+        val at = it.groupValues[1].length
+        at until at + it.groupValues[2].length
+    }
+    fun openSpan(i: Int): IntRange? = span(i) ?: rows.getOrNull(i)?.let(DRAFT_TITLED_RULE::matchEntire)?.let {
+        val at = it.groupValues[1].length
+        at until at + it.groupValues[2].length
+    }
+    fun sameSpan(a: IntRange, b: IntRange) = kotlin.math.abs(a.first - b.first) <= 2 && kotlin.math.abs(a.last - b.last) <= 3
+    fun footer(i: Int): Boolean {
+        val under = rows.drop(i + 1)
+        return under.count { it.isNotBlank() } <= 5 && under.none { INPUT_LEAD.containsMatchIn(it) && !DRAFT_MENU_ROW.matches(it) }
+    }
+    val candidates = rows.indices.filter { INPUT_LEAD.containsMatchIn(rows[it]) && !DRAFT_NOT_INPUT.containsMatchIn(rows[it]) }
+    for (c in candidates.asReversed()) {
+        val open = openSpan(c - 1) ?: continue
+        val closes = (c + 1 until minOf(rows.size, c + 1 + MAX_DRAFT_ROWS)).filter { i -> span(i)?.let { sameSpan(it, open) } == true }
+        if (closes.none { footer(it) }) continue
+        return offset + c - 1
+    }
+    return null
+}
+
 /** One character of a styled row and how it is drawn (1.4.6). */
 private data class Styled(val ch: Char, val faint: Boolean, val italic: Boolean, val grey: Boolean, val background: List<Int>, val colored: Boolean = false)
 
