@@ -7,7 +7,9 @@ reads what was added since the cursor, and prints one JSON object of display ite
   {"ok": true, "src": agent, "cur": {...}, "reset": bool, "more": bool, "title": str|null,
    "items": [...]}
 
-Items (all carry "k", a key that is stable across polls, so a re-sent item replaces the old one):
+Items (all carry "k", a key that is stable across polls, so a re-sent item replaces the old one;
+"ts" is the record's time in epoch ms where the log has one, and "at" a time read from the agent's
+other files (Grok's updates and rewind points, Kiro's turn ends), shown on the message only (2.1.4)):
   {"t": "user", "text"}            a message you sent
   {"t": "text", "text"}            the agent's reply (Markdown)
   {"t": "think", "text", "ms"}     reasoning, when the agent records it
@@ -344,6 +346,14 @@ def ts_of(r):
     return None
 
 
+def tz_minutes():
+    """The computer's UTC offset now, in minutes (2.1.4): Grok draws its times in the computer's zone."""
+    try:
+        return int(time.localtime().tm_gmtoff // 60)
+    except Exception:
+        return 0
+
+
 def to_ms(v):
     """Epoch milliseconds from ISO-8601 text or a number (seconds or milliseconds); None otherwise."""
     if isinstance(v, bool) or v is None:
@@ -592,6 +602,149 @@ def pi(cwd, cur, root=(".pi", "agent")):
     return {"cur": ncur, "reset": reset, "more": more, "items": items, "title": None}
 
 
+GROK_UPDATES_BULK = 256 * 1024 * 1024  # how much of Grok's updates.jsonl a read from the start looks through (2.1.4)
+GROK_UPDATES_LIVE = 8 * 1024 * 1024    # and a read that only adds the newest messages
+
+
+def tnorm(s):
+    """A message's text for matching it across Grok's files (2.1.4): no spaces or Markdown marks, 48 characters."""
+    return re.sub(r"[\s`*_#>~\[\]()|\\-]", "", s or "")[:48]
+
+
+def grok_prompt_times(sdir):
+    """Grok's rewind points (2.1.4): the time each prompt was sent, by its prompt_index, in epoch ms."""
+    out = {}
+    try:
+        with open(os.path.join(sdir, "rewind_points.jsonl"), "rb") as fh:
+            for line in fh:
+                try:
+                    r = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(r, dict) and isinstance(r.get("prompt_index"), int):
+                    t = to_ms(r.get("created_at"))
+                    if t:
+                        out[r["prompt_index"]] = t
+    except OSError:
+        pass
+    return out
+
+
+def grok_updates(sdir, limit):
+    """What Grok streamed to its screen, from the last [limit] bytes of updates.jsonl (2.1.4): each tool
+    call's time by its id, and each message (one run of user, reply or thought chunks) as
+    (epoch ms, normalized text) in order, by kind. Lines are filtered as bytes first: the file runs to
+    tens of megabytes and most of it is tool output."""
+    tools, msgs = {}, {"user": [], "text": [], "think": []}
+    kinds = {"user_message_chunk": "user", "agent_message_chunk": "text", "agent_thought_chunk": "think"}
+    path = os.path.join(sdir, "updates.jsonl")
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            start = max(0, size - limit)
+            fh.seek(start)
+            if start:
+                fh.readline()
+            run = None
+            for line in fh:
+                if b'_chunk"' not in line and b'"tool_call"' not in line:
+                    run = None
+                    continue
+                try:
+                    r = json.loads(line)
+                    params = r.get("params") or {}
+                    u = params.get("update") or {}
+                except Exception:
+                    run = None
+                    continue
+                meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else {}
+                t = to_ms(meta.get("agentTimestampMs")) or (int(r["timestamp_us"] // 1000) if isinstance(r.get("timestamp_us"), int) else None) or to_ms(r.get("timestamp"))
+                su = u.get("sessionUpdate")
+                if su == "tool_call":
+                    run = None
+                    if t and u.get("toolCallId"):
+                        tools.setdefault(u["toolCallId"], t)
+                    continue
+                kind = kinds.get(su)
+                if not kind or not t:
+                    run = None
+                    continue
+                c = u.get("content")
+                txt = c.get("text", "") if isinstance(c, dict) else (c if isinstance(c, str) else "")
+                if run is not None and run[0] == kind:
+                    run[1][1] += txt
+                else:
+                    run = (kind, [t, txt])
+                    msgs[kind].append(run[1])
+    except OSError:
+        pass
+    return tools, {k: [(m[0], tnorm(m[1])) for m in v] for k, v in msgs.items()}
+
+
+def grok_stamp(sdir, items, bulk):
+    """Gives Grok's items the time Grok showed them (2.1.4, Bill: "grok isn't showing timestamps"): its
+    chat history has none, but updates.jsonl has every tool call (by id) and every message as it was
+    streamed. Matched from the newest back, each message no later than the item below it, so a short
+    reply such as "done" takes its own turn's time and not an older one's."""
+    def missing():
+        return any("at" not in it and it.get("t") in ("user", "text", "think", "tool") for it in items)
+    if not missing():
+        return
+    # A read that adds the newest messages looks at the end of the file first, and further back only
+    # when that didn't cover them (the app was away while Grok worked).
+    for limit_bytes in ([GROK_UPDATES_BULK] if bulk else [GROK_UPDATES_LIVE, GROK_UPDATES_BULK]):
+        grok_match(sdir, items, limit_bytes)
+        if not missing():
+            break
+    grok_same_record(items)
+
+
+def grok_match(sdir, items, limit_bytes):
+    tools, msgs = grok_updates(sdir, limit_bytes)
+    if tools or any(msgs.values()):
+        ptr = {k: len(v) for k, v in msgs.items()}
+        limit = float("inf")
+        for it in reversed(items):
+            kind = it.get("t")
+            if kind == "tool" and "at" not in it:
+                t = tools.get(it.get("id"))
+                if t:
+                    it["at"] = t
+            if "at" in it:
+                limit = min(limit, it["at"])
+                continue
+            if kind not in msgs:
+                continue
+            n = tnorm(it.get("text"))
+            if len(n) < 2:
+                continue
+            lst = msgs[kind]
+            i = ptr[kind] - 1
+            while i >= 0:
+                t, m = lst[i]
+                if t <= limit + 1000 and m and (m.startswith(n[:24]) or n.startswith(m[:24])):
+                    break
+                i -= 1
+            if i >= 0:
+                it["at"] = lst[i][0]
+                ptr[kind] = i
+                limit = min(limit, lst[i][0])
+
+
+def grok_same_record(items):
+    """An item with no time of its own takes the time of another part of the same record (an image
+    sent with a prompt, a reply's tool call)."""
+    rec_at = {}
+    for it in items:
+        if "at" in it:
+            rec_at.setdefault(str(it.get("k", "")).split(".")[0], it["at"])
+    for it in items:
+        if "at" not in it:
+            t = rec_at.get(str(it.get("k", "")).split(".")[0])
+            if t:
+                it["at"] = t
+
+
 def grok(cwd, cur):
     d = os.path.join(HOME, ".grok", "sessions", urllib.parse.quote(cwd, safe=""))
     path = pinned(newest(glob.glob(os.path.join(d, "*", "chat_history.jsonl"))))
@@ -599,11 +752,17 @@ def grok(cwd, cur):
         return None
     recs, ncur, reset, more = read_jsonl(path, cur)
     items = []
+    sdir = os.path.dirname(path)
+    prompts = grok_prompt_times(sdir) if any(isinstance(r.get("prompt_index"), int) for _, r in recs) else {}
     for off, r in stamped(recs, items):
         t = r.get("type")
         k = "g%d" % off
         if t == "user" and not r.get("synthetic_reason"):
+            n = len(items)
             user_items(k, text_of(r.get("content")), items)
+            if prompts.get(r.get("prompt_index")):
+                for it in items[n:]:
+                    it["at"] = prompts[r["prompt_index"]]
             for i, b in enumerate(r.get("content") if isinstance(r.get("content"), list) else []):
                 im = image_item("%s.%d" % (k, i), path, off, [i], b)
                 if im:
@@ -621,6 +780,8 @@ def grok(cwd, cur):
             summ = text_of(r.get("summary"))
             if summ.strip():
                 items.append({"k": k, "t": "think", "text": summ})
+    if items:
+        grok_stamp(sdir, items, bulk=reset or ncur.get("earlier") is True)
     return {"cur": ncur, "reset": reset, "more": more, "items": items, "title": None}
 
 
@@ -944,9 +1105,16 @@ def kiro(cwd, cur):
         return None
     recs, ncur, reset, more = read_jsonl(best, cur)
     items = []
+    meta = {}
+    try:
+        meta = json.load(open(best[:-6] + ".json"))
+    except Exception:
+        pass
+    ends = kiro_turn_ends(meta) if recs else {}
     for off, r in stamped(recs, items):
         kind = r.get("kind")
         data = r.get("data") or {}
+        n = len(items)
         for i, c in enumerate(data.get("content") or []):
             k = "k%d.%d" % (off, i)
             ck, cd = c.get("kind"), c.get("data")
@@ -961,12 +1129,31 @@ def kiro(cwd, cur):
             elif ck == "toolResult" and isinstance(cd, dict):
                 items.append(result_item(k, cd.get("toolUseId"), kiro_text(cd.get("content")),
                                          str(cd.get("status") or "").lower() not in ("", "success", "ok")))
-    title = None
-    try:
-        title = json.load(open(best[:-6] + ".json")).get("title") or None
-    except Exception:
-        pass
+        t = ends.get(data.get("message_id"))
+        if t:
+            for it in items[n:]:
+                it.setdefault("at", t)
+    title = (meta.get("title") or None) if isinstance(meta, dict) else None
     return {"cur": ncur, "reset": reset, "more": more, "items": items, "title": title}
+
+
+def kiro_turn_ends(meta):
+    """Kiro's turn records in <id>.json (2.1.4): only a prompt carries a time in the log, but each turn
+    lists its message ids and when it ended, which is when its last message (the reply) was written.
+    Returns that reply's message id -> epoch ms."""
+    out = {}
+    try:
+        turns = meta["session_state"]["conversation_metadata"]["user_turn_metadatas"]
+    except Exception:
+        return out
+    for t in turns if isinstance(turns, list) else []:
+        if not isinstance(t, dict):
+            continue
+        ids = t.get("message_ids")
+        at = to_ms(t.get("end_timestamp"))
+        if isinstance(ids, list) and len(ids) >= 2 and isinstance(ids[-1], str) and at:
+            out[ids[-1]] = at
+    return out
 
 
 MUSE = (".local", "share", "muse")
@@ -1817,8 +2004,9 @@ def main():
                 sys.stdout.write(json.dumps(res) + "\n")
                 sys.stdout.flush()
                 return
-            # The computer's clock, so the app can place questions (phone time) among items (1.4.3).
-            res.update({"ok": True, "src": agent, "now": int(time.time() * 1000)})
+            # The computer's clock, so the app can place questions (phone time) among items (1.4.3),
+            # and its UTC offset in minutes, for times an agent draws on its screen (2.1.4).
+            res.update({"ok": True, "src": agent, "now": int(time.time() * 1000), "tz": tz_minutes()})
             if PIN and isinstance(res.get("cur"), dict):
                 res["cur"].update(PIN)
             if first or res.get("items") or res.get("reset") or res.get("title"):
@@ -1838,7 +2026,7 @@ def main():
         done({"ok": False, "why": "%s: %s" % (type(e).__name__, str(e)[:200])})
     if res is None:
         done({"ok": False, "why": "no session log found for this folder"})
-    res.update({"ok": True, "src": agent, "now": int(time.time() * 1000)})
+    res.update({"ok": True, "src": agent, "now": int(time.time() * 1000), "tz": tz_minutes()})
     if PIN and isinstance(res.get("cur"), dict):
         res["cur"].update(PIN)  # later reads stay on the pinned session
     done(res)

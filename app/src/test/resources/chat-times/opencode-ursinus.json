@@ -1,0 +1,170 @@
+{
+ "about": "Synthetic opencode-ursinus reader output (2.1.4 chat times): the shape its reader in transcript.py emits; no real text.",
+ "agent": "opencode-ursinus",
+ "bulk": {
+  "ok": true,
+  "src": "opencode-ursinus",
+  "cur": {
+   "db": "/home/user/.local/share/opencode/opencode.db",
+   "sid": "ses_2",
+   "seq": 9
+  },
+  "reset": true,
+  "more": false,
+  "title": null,
+  "items": [
+   {
+    "k": "o100",
+    "t": "user",
+    "text": "From claude: run the check 100"
+   },
+   {
+    "k": "o101",
+    "t": "think",
+    "text": "I will run it."
+   },
+   {
+    "k": "o102",
+    "t": "tool",
+    "id": "call100",
+    "name": "bash",
+    "title": "$ ls",
+    "kind": "exec",
+    "input": "ls",
+    "state": "run"
+   },
+   {
+    "k": "o103.r",
+    "t": "result",
+    "ref": "call100",
+    "out": "a\nb"
+   },
+   {
+    "k": "o104",
+    "t": "text",
+    "text": "Done with check 100."
+   },
+   {
+    "k": "o0",
+    "t": "user",
+    "text": "From claude: run the check 0",
+    "ts": 1795290000000
+   },
+   {
+    "k": "o1",
+    "t": "think",
+    "text": "I will run it.",
+    "ts": 1795290001000
+   },
+   {
+    "k": "o2",
+    "t": "tool",
+    "id": "call0",
+    "name": "bash",
+    "title": "$ ls",
+    "kind": "exec",
+    "input": "ls",
+    "state": "run",
+    "ts": 1795290002000
+   },
+   {
+    "k": "o3.r",
+    "t": "result",
+    "ref": "call0",
+    "out": "a\nb",
+    "ts": 1795290003000
+   },
+   {
+    "k": "o4",
+    "t": "text",
+    "text": "Done with check 0.",
+    "ts": 1795290004000
+   },
+   {
+    "k": "o10",
+    "t": "user",
+    "text": "From claude: run the check 10",
+    "ts": 1795290600000
+   },
+   {
+    "k": "o11",
+    "t": "think",
+    "text": "I will run it.",
+    "ts": 1795290601000
+   },
+   {
+    "k": "o12",
+    "t": "tool",
+    "id": "call10",
+    "name": "bash",
+    "title": "$ ls",
+    "kind": "exec",
+    "input": "ls",
+    "state": "run",
+    "ts": 1795290602000
+   },
+   {
+    "k": "o13.r",
+    "t": "result",
+    "ref": "call10",
+    "out": "a\nb",
+    "ts": 1795290603000
+   },
+   {
+    "k": "o14",
+    "t": "text",
+    "text": "Done with check 10.",
+    "ts": 1795290604000
+   }
+  ],
+  "now": 1795291800000,
+  "tz": -300
+ },
+ "live": {
+  "ok": true,
+  "src": "opencode-ursinus",
+  "cur": {
+   "db": "/home/user/.local/share/opencode/opencode.db",
+   "sid": "ses_2",
+   "seq": 9
+  },
+  "reset": false,
+  "more": false,
+  "title": null,
+  "items": [
+   {
+    "k": "o20",
+    "t": "user",
+    "text": "From claude: run the check 20"
+   },
+   {
+    "k": "o21",
+    "t": "think",
+    "text": "I will run it."
+   },
+   {
+    "k": "o22",
+    "t": "tool",
+    "id": "call20",
+    "name": "bash",
+    "title": "$ ls",
+    "kind": "exec",
+    "input": "ls",
+    "state": "run"
+   },
+   {
+    "k": "o23.r",
+    "t": "result",
+    "ref": "call20",
+    "out": "a\nb"
+   },
+   {
+    "k": "o24",
+    "t": "text",
+    "text": "Done with check 20."
+   }
+  ],
+  "now": 1795291860000,
+  "tz": -300
+ }
+}

@@ -136,7 +136,7 @@ private fun HitView(vm: AppViewModel, hit: SearchHit, onBack: () -> Unit) {
         vm.readHit(hit).onSuccess { r ->
             items = Transcript.merge(emptyList(), r.items, true)
             more = r.more
-            times = Transcript.timesOf(r.items)
+            times = Transcript.labelTimesOf(r.items)
         }.onFailure { problem = it.message }
     }
     val name = Pane("", "", "", hit.agent, Status.UNKNOWN, "", "").agentName

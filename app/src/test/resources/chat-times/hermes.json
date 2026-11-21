@@ -1,0 +1,168 @@
+{
+ "about": "Synthetic hermes reader output (2.1.4 chat times): the shape its reader in transcript.py emits; no real text.",
+ "agent": "hermes",
+ "bulk": {
+  "ok": true,
+  "src": "hermes",
+  "cur": {
+   "sid": "s1",
+   "id": 40
+  },
+  "reset": true,
+  "more": false,
+  "title": null,
+  "items": [
+   {
+    "k": "h100",
+    "t": "user",
+    "text": "From claude: run the check 100"
+   },
+   {
+    "k": "h101",
+    "t": "think",
+    "text": "I will run it."
+   },
+   {
+    "k": "h102",
+    "t": "tool",
+    "id": "call100",
+    "name": "bash",
+    "title": "$ ls",
+    "kind": "exec",
+    "input": "ls",
+    "state": "run"
+   },
+   {
+    "k": "h103.r",
+    "t": "result",
+    "ref": "call100",
+    "out": "a\nb"
+   },
+   {
+    "k": "h104",
+    "t": "text",
+    "text": "Done with check 100."
+   },
+   {
+    "k": "h0",
+    "t": "user",
+    "text": "From claude: run the check 0",
+    "ts": 1795290000000
+   },
+   {
+    "k": "h1",
+    "t": "think",
+    "text": "I will run it.",
+    "ts": 1795290001000
+   },
+   {
+    "k": "h2",
+    "t": "tool",
+    "id": "call0",
+    "name": "bash",
+    "title": "$ ls",
+    "kind": "exec",
+    "input": "ls",
+    "state": "run",
+    "ts": 1795290002000
+   },
+   {
+    "k": "h3.r",
+    "t": "result",
+    "ref": "call0",
+    "out": "a\nb",
+    "ts": 1795290003000
+   },
+   {
+    "k": "h4",
+    "t": "text",
+    "text": "Done with check 0.",
+    "ts": 1795290004000
+   },
+   {
+    "k": "h10",
+    "t": "user",
+    "text": "From claude: run the check 10",
+    "ts": 1795290600000
+   },
+   {
+    "k": "h11",
+    "t": "think",
+    "text": "I will run it.",
+    "ts": 1795290601000
+   },
+   {
+    "k": "h12",
+    "t": "tool",
+    "id": "call10",
+    "name": "bash",
+    "title": "$ ls",
+    "kind": "exec",
+    "input": "ls",
+    "state": "run",
+    "ts": 1795290602000
+   },
+   {
+    "k": "h13.r",
+    "t": "result",
+    "ref": "call10",
+    "out": "a\nb",
+    "ts": 1795290603000
+   },
+   {
+    "k": "h14",
+    "t": "text",
+    "text": "Done with check 10.",
+    "ts": 1795290604000
+   }
+  ],
+  "now": 1795291800000,
+  "tz": -300
+ },
+ "live": {
+  "ok": true,
+  "src": "hermes",
+  "cur": {
+   "sid": "s1",
+   "id": 40
+  },
+  "reset": false,
+  "more": false,
+  "title": null,
+  "items": [
+   {
+    "k": "h20",
+    "t": "user",
+    "text": "From claude: run the check 20"
+   },
+   {
+    "k": "h21",
+    "t": "think",
+    "text": "I will run it."
+   },
+   {
+    "k": "h22",
+    "t": "tool",
+    "id": "call20",
+    "name": "bash",
+    "title": "$ ls",
+    "kind": "exec",
+    "input": "ls",
+    "state": "run"
+   },
+   {
+    "k": "h23.r",
+    "t": "result",
+    "ref": "call20",
+    "out": "a\nb"
+   },
+   {
+    "k": "h24",
+    "t": "text",
+    "text": "Done with check 20."
+   }
+  ],
+  "now": 1795291860000,
+  "tz": -300
+ }
+}

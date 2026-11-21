@@ -94,6 +94,8 @@ data class TranscriptRead(
     val items: List<JSONObject>,
     /** The computer's clock when it answered, in epoch ms (1.4.3); 0 when the reader didn't say. */
     val hostNow: Long = 0L,
+    /** The computer's UTC offset in minutes (2.1.4), for times an agent draws on its screen; null when the reader didn't say. */
+    val hostTz: Int? = null,
 )
 
 object Transcript {
@@ -112,6 +114,7 @@ object Transcript {
             title = o.optString("title").takeIf { !o.isNull("title") && it.isNotBlank() },
             items = (0 until arr.length()).mapNotNull { arr.optJSONObject(it) },
             hostNow = o.optLong("now", 0L),
+            hostTz = if (o.has("tz") && !o.isNull("tz")) o.optInt("tz") else null,
         )
     }
 
@@ -207,6 +210,56 @@ object Transcript {
     /** Each raw item's time ("ts", epoch ms on the computer's clock) by key, where the log has one (1.4.3). */
     fun timesOf(raw: List<JSONObject>): Map<String, Long> =
         raw.mapNotNull { j -> j.optString("k").ifEmpty { null }?.let { k -> j.optLong("ts", 0L).takeIf { it > 0 }?.let { k to it } } }.toMap()
+
+    /**
+     * Each raw item's time to show on it, by key (2.1.4): its record's time ("ts") where the log has one,
+     * otherwise a time the reader found in the agent's other files ("at": Grok's updates and rewind
+     * points, Kiro's turn ends). Only for labels: questions are still placed by [timesOf] alone.
+     */
+    fun labelTimesOf(raw: List<JSONObject>): Map<String, Long> =
+        raw.mapNotNull { j ->
+            j.optString("k").ifEmpty { null }?.let { k ->
+                (j.optLong("ts", 0L).takeIf { it > 0 } ?: j.optLong("at", 0L).takeIf { it > 0 })?.let { k to it }
+            }
+        }.toMap()
+
+    /**
+     * [shown] with a time for every item that has no label of its own (2.1.4, Bill: "make sure all panes
+     * do in chat"): the time the app first saw it ([first], [stampSeen]'s times) where there is one;
+     * for history read in bulk, which the app never saw arrive, the time of the nearest item above it
+     * that has one (its turn's prompt, say), else no later than the item below it, else [now]. A time
+     * once given never changes, so the chat shows the same time after a reload; an agent's own time,
+     * when one turns up later, is shown instead ([labels] go first, see [shownTimes]).
+     */
+    fun stampShown(shown: Map<String, Long>, items: List<Item>, labels: Map<String, Long>, first: Map<String, Long>, now: Long): Map<String, Long> {
+        if (items.all { labels[it.key] != null || shown[it.key] != null }) return shown
+        val out = HashMap(shown)
+        fun known(k: String) = labels[k] ?: out[k]
+        val below = LongArray(items.size)
+        var next = 0L
+        for (i in items.indices.reversed()) {
+            below[i] = next
+            known(items[i].key)?.let { next = it }
+        }
+        var prev = 0L
+        for ((i, it) in items.withIndex()) {
+            val k = it.key
+            val have = known(k)
+            if (have != null) { prev = have; continue }
+            val t = first[k] ?: when {
+                prev > 0 -> prev
+                below[i] > 0 -> minOf(now, below[i] - 1)
+                else -> now
+            }
+            out[k] = t
+            prev = t
+        }
+        return capped(out, items)
+    }
+
+    /** The time each item shows (2.1.4): its own label where it has one, otherwise the one [stampShown] gave it. */
+    fun shownTimes(labels: Map<String, Long>, shown: Map<String, Long>): Map<String, Long> =
+        if (shown.isEmpty()) labels else shown + labels
 
     private fun JSONObject.str(k: String): String? = if (isNull(k)) null else optString(k).ifEmpty { null }
 
