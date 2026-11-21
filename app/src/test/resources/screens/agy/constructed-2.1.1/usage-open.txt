@@ -1,0 +1,34 @@
+○ Thought for 6.8s (The request is a short routing test. Replying with the one word asked for...)
+
+  ack-agy
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+>
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+└ Models & Quota
+
+  Account: someone@example.com
+
+GEMINI MODELS
+  Models within this group: Gemini Flash, Gemini Pro
+
+  Weekly Limit Remaining
+    [█████████████████████████████████████████████████░] 98.66%
+    Refreshes in 145h 55m
+
+  Five Hour Limit Remaining
+    [██████████████████████████████████████████████████] 99.05%
+    Refreshes in 2h 37m
+
+
+CLAUDE AND GPT MODELS
+  Models within this group: Claude Opus, Claude Sonnet, GPT-OSS
+
+  Weekly Limit Remaining
+    [██████████████████████████████████████████████████] 100.00%
+    Quota available
+
+
+
+  ↑/↓ to scroll · esc to close
+

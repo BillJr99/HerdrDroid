@@ -67,7 +67,29 @@ fun programPath(p: String): String =
     if (p == "~") "\"\$HOME\"" else if (p.startsWith("~/")) "\"\$HOME\"/" + shq(p.removePrefix("~/")) else shq(p)
 
 private val ANSI = Regex("\u001B\\[[0-9;?]*[ -/]*[@-~]|\u001B\\][^\u0007]*\u0007|\u001B[()][A-Z0-9]")
-fun stripAnsi(s: String): String = ANSI.replace(s, "")
+
+/**
+ * Pane text without its styles. 2.1.1: Claude Code (2.1.329) marks the current tab of its
+ * multi-question bar only by colour, so a styled bar row keeps that mark as [TAB_CURRENT_MARK]
+ * before the current tab's box ([markCurrentTab]); [parseTabBar] reads it. Every other row, and a
+ * plain read, comes out as before.
+ */
+fun stripAnsi(s: String): String {
+    if (s.indexOf('\u001B') < 0) return s
+    if (s.indexOf('←') < 0 || s.indexOf('→') < 0) return ANSI.replace(s, "")
+    val rows = s.split('\n')
+    if (rows.none(::tabBarCandidate)) return ANSI.replace(s, "")
+    return ANSI.replace(rows.joinToString("\n") { row -> if (tabBarCandidate(row)) markCurrentTab(row) ?: row else row }, "")
+}
+
+/**
+ * Zero-width word joiner: the current tab of Claude's question bar, kept from a styled read
+ * (2.1.1). It draws as nothing, so a screen shown with it looks the same.
+ */
+internal const val TAB_CURRENT_MARK = '\u2060'
+
+private fun tabBarCandidate(row: String): Boolean =
+    row.indexOf('\u001B') >= 0 && row.indexOf('←') >= 0 && row.indexOf('→') >= 0 && row.any { it in "☐☒✔✓☑" }
 
 /**
  * Terminal glyphs that the app's fonts lack, mapped to plain ones. Android draws a missing glyph
@@ -201,12 +223,16 @@ class Herdr internal constructor(
         }
         // herdr doesn't always mark a Claude question dialog (AskUserQuestion) as blocked, so the
         // bottom of each Claude pane that isn't already waiting is checked for the dialog's footer.
+        // 2.1.1: the read is long enough to reach past the blank rows a short conversation leaves
+        // under a fullscreen dialog (showsQuestionDialog looks at the last rows with text), and
+        // Claude's sessions list with a session awaiting input counts as needing you too.
         val askable = list.filter { it.agent == "claude" && it.status != Status.NEEDS_YOU }
         val marked = if (askable.isEmpty()) list else {
-            val tails = runCatching { previews(askable.map { it.id }) }.getOrDefault(emptyMap())
+            val tails = runCatching { previews(askable.map { it.id }, CLAUDE_STATUS_READ_LINES) }.getOrDefault(emptyMap())
             list.map { p ->
-                if (p in askable && tails[p.id]?.let { showsQuestionDialog(it.tail) } == true) {
-                    com.billmongan.herdrdroid.diag.DiagLog.log("prompt", "${p.id}: a question dialog is open while herdr says ${p.status.name.lowercase()}; treating it as needs you")
+                val why = if (p in askable) tails[p.id]?.tail?.let(::claudeNeedsYouReason) else null
+                if (why != null) {
+                    com.billmongan.herdrdroid.diag.DiagLog.log("prompt", "${p.id}: $why while herdr says ${p.status.name.lowercase()}; treating it as needs you")
                     p.copy(status = Status.NEEDS_YOU)
                 } else p
             }
@@ -377,10 +403,10 @@ class Herdr internal constructor(
     suspend fun agentVersions(): Map<String, String> = runCatching { AgentVersions.parse(ssh.execNow(AgentVersions.script(), timeoutSeconds = 10).out) }.getOrDefault(emptyMap())
 
     /** The last few lines of every pane, fetched in one round trip. */
-    suspend fun previews(ids: List<String>): Map<String, Peek> {
+    suspend fun previews(ids: List<String>, lines: Int = 12): Map<String, Peek> {
         if (ids.isEmpty()) return emptyMap()
         val script = ids.joinToString("; ") { id ->
-            "echo ${shq("@@herdrdroid@@$id")}; ${if (core) hcCmd("read", id, "--lines", "12") else recentSnapshot(id, 12)} 2>/dev/null"
+            "echo ${shq("@@herdrdroid@@$id")}; ${if (core) hcCmd("read", id, "--lines", lines.toString()) else recentSnapshot(id, lines)} 2>/dev/null"
         }
         val out = forPhone(ssh.exec(script).out)
         val result = mutableMapOf<String, Peek>()
@@ -1037,24 +1063,55 @@ private val TOOL_PERMISSION = Regex("""^Permission for the \S+ tool(\s*\(.*\))?$
 private const val MARKS = "›❯◆◈●○•▸➤▶↓→│┃╭╰╮╯─ "
 
 /**
- * Claude's multi-question tab bar, "←  ☐ Close 537  ☒ Stop hook  ✔ Submit  →", as steps; the
- * current one is the first unanswered question (Submit once all are answered). The second value is
- * any question text that followed the bar on the same line.
+ * Claude's multi-question tab bar, "←  ☐ Close 537  ☒ Stop hook  ✔ Submit  →", as steps. The
+ * current one is the tab a styled read marked ([TAB_CURRENT_MARK], 2.1.1: Left and Right move
+ * between tabs without answering, and only the colour shows where); on a plain read it is the first
+ * unanswered question (Submit once all are answered). The second value is any question text that
+ * followed the bar on the same line.
  */
 fun parseTabBar(line: String): Pair<List<QTab>, String>? {
-    val t = line.trim()
+    val unmarked = line.replace(TAB_CURRENT_MARK.toString(), "")
+    val t = unmarked.trim()
+    // Where the mark sat, as an index into [t]: the mark goes just before the current tab's box.
+    val markAt = line.indexOf(TAB_CURRENT_MARK).takeIf { it >= 0 && line.indexOf(TAB_CURRENT_MARK, it + 1) < 0 }
+        ?.let { it - (unmarked.length - unmarked.trimStart().length) }
     val items = TAB_ITEM.findAll(t).toList()
     if (items.size < 2) return null
     val titles = items.map { it.groupValues[2].trim() }
     if (!t.startsWith("←") && titles.none { it.equals("Submit", true) }) return null
     val rest = if (t.contains("→")) t.substringAfterLast("→").trim() else ""
-    var tabs = items.mapIndexed { i, m ->
+    val marked = items.indexOfFirst { it.range.first == markAt }
+    val all = items.mapIndexed { i, m ->
         val sub = titles[i].equals("Submit", true)
-        QTab(titles[i], done = !sub && m.groupValues[1] != "☐", current = false, submit = sub)
-    }.filter { it.title.isNotEmpty() }
-    val cur = tabs.indexOfFirst { !it.done && !it.submit }.takeIf { it >= 0 } ?: tabs.indexOfFirst { it.submit }
-    if (cur >= 0) tabs = tabs.mapIndexed { i, q -> if (i == cur) q.copy(current = true) else q }
+        QTab(titles[i], done = !sub && m.groupValues[1] != "☐", current = i == marked, submit = sub)
+    }
+    var tabs = all.filter { it.title.isNotEmpty() }
+    if (tabs.none { it.current }) {
+        val cur = tabs.indexOfFirst { !it.done && !it.submit }.takeIf { it >= 0 } ?: tabs.indexOfFirst { it.submit }
+        if (cur >= 0) tabs = tabs.mapIndexed { i, q -> if (i == cur) q.copy(current = true) else q }
+    }
     return tabs to rest
+}
+
+/**
+ * A styled row of Claude's question bar as plain text with [TAB_CURRENT_MARK] before the current
+ * tab's box, or null when the row is not such a bar or its styles don't single out one tab (2.1.1).
+ * Claude Code 2.1.329 draws the current tab on a background colour ("ESC[38;5;16mESC[48;5;153m ☐
+ * Restart ESC[39mESC[49m"); the other tabs and the arrows have none.
+ */
+internal fun markCurrentTab(row: String): String? {
+    val chars = styledChars(row)
+    val plain = chars.joinToString("") { it.ch.toString() }
+    if (plain != row.replace(ANSI_SEQ, "") || plain.indexOf(TAB_CURRENT_MARK) >= 0) return null
+    if (parseTabBar(plain) == null) return null
+    val items = TAB_ITEM.findAll(plain).toList()
+    val lit = items.filter { chars[it.range.first].background.isNotEmpty() }
+    if (lit.size != 1) return null
+    // A bar drawn wholly on a background (a theme, a selection) singles nothing out.
+    val left = plain.indexOf('←')
+    if (left >= 0 && chars[left].background.isNotEmpty()) return null
+    val at = lit.single().range.first
+    return plain.substring(0, at) + TAB_CURRENT_MARK + plain.substring(at)
 }
 
 /** The index just past the question's first "?" outside parentheses, or -1. */
@@ -1726,6 +1783,24 @@ private val VIBE_CARD_FOOTER = Regex("""↑↓/jk navigate.*(Esc reject|Enter se
 fun showsQuestionDialog(text: String): Boolean =
     text.lines().filter { it.isNotBlank() }.takeLast(6).any { QUESTION_FOOTER.containsMatchIn(it) }
 
+/**
+ * Rows read from each Claude pane for its status (2.1.1). A short conversation in Claude Code's
+ * fullscreen view leaves its question dialog high on the screen with blank rows under it; a
+ * 12-row read saw only those blank rows, and the pane stayed "working". 80 covers a tall pane.
+ */
+internal const val CLAUDE_STATUS_READ_LINES = 80
+
+/**
+ * Why a Claude pane that herdr calls working or idle needs you, from the bottom of its screen
+ * ([CLAUDE_STATUS_READ_LINES] rows), or null: its question dialog is open, or its sessions list
+ * shows a session awaiting input (2.1.1).
+ */
+internal fun claudeNeedsYouReason(tail: String): String? = when {
+    showsQuestionDialog(tail) -> "a question dialog is open"
+    claudeSessionsAwaiting(tail) > 0 -> "Claude's sessions list shows a session awaiting input"
+    else -> null
+}
+
 private val PI_SELECT_FOOTER = Regex("""↑↓\s+navigate\s+enter select\s+escape/ctrl\+c cancel""", RegexOption.IGNORE_CASE)
 
 /** Pi's native select footer must still be at the bottom; a footer in old output is not a card. */
@@ -2183,6 +2258,17 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
  */
 private val CLAUDE_BACKGROUND_HINT = Regex("""^Your session moved to the background\b.*\besc returns to it\b""", RegexOption.IGNORE_CASE)
 private val CLAUDE_AWAITING = Regex("""(?:^|\s)(\d{1,3}) awaiting input$""")
+
+/**
+ * How many sessions Claude's sessions list shows as awaiting input ("1 awaiting input"), 0 when
+ * the list shows none, or the screen is not that list or a question dialog has replaced it (2.1.1).
+ */
+internal fun claudeSessionsAwaiting(text: String): Int {
+    val rows = text.lines().takeLast(80).map { it.trim() }
+    val hint = rows.indexOfLast { CLAUDE_BACKGROUND_HINT.containsMatchIn(it) }
+    if (hint < 0 || rows.drop(hint + 1).any { QUESTION_FOOTER.containsMatchIn(it) }) return 0
+    return rows.take(hint).firstNotNullOfOrNull { CLAUDE_AWAITING.find(it) }?.groupValues?.get(1)?.toIntOrNull() ?: 0
+}
 
 internal fun claudeBackgroundList(text: String): Prompt? {
     val rows = text.lines().takeLast(80).map { it.trim() }

@@ -115,6 +115,34 @@ object AgyMeta {
         return inner.takeIf { it.isNotEmpty() && it.none { c -> c == '─' } && it.any(Char::isLetter) }
     }
 
+    private val USAGE_HEAD = Regex("""^\s*└\s*Models\s*&\s*Quota\s*$""")
+
+    /** The first row of agy's usage panel, "└ Models & Quota" (2.1.1). */
+    fun isUsageHead(line: String): Boolean = USAGE_HEAD.matches(line)
+
+    private val USAGE_ROW = Regex(
+        """^(?:\[[█░▒▓━─ ]{3,}]\s*\d+(?:\.\d+)?%|Quota (?:available|exhausted)|(?:Refreshes|Resets?) in\b.*|""" +
+            """.*\bLimit(?: Remaining)?|Models within this group:.*|Account:.*|[A-Z0-9][A-Z0-9 &]{2,}|.*\b(?i:esc to close)\b.*|""" +
+            """For paid .*)$""",
+    )
+
+    /** A row of agy's usage panel: a limit, its bar, a group heading, the account, the close hint. */
+    fun isUsageRow(line: String): Boolean = USAGE_ROW.matches(line.trim())
+
+    /**
+     * Agy's usage panel as one quiet line: what is left of each limit, never the account or other
+     * rows (2.1.1). [open]: the panel is still showing under the composer, closed with Esc there.
+     */
+    fun usageLine(panel: String, open: Boolean): String {
+        val left = parseQuota(panel, bareMeansLeft = true).joinToString(" · ") {
+            // Whole percents, rounded down: never more left than the panel showed.
+            val pct = kotlin.math.floor((100.0 - it.usedPercent).coerceIn(0.0, 100.0) + 1e-9).toInt()
+            shortLabel(it.label) + " " + pct + "% left"
+        }
+        val head = if (open) "Models & Quota is open on the computer (Esc there closes it)" else "Models & Quota"
+        return if (left.isEmpty()) head else "$head: $left"
+    }
+
     /** A line of agy's status bar ("? for shortcuts          Orchestrator (Neon)") as the phone shows it. */
     fun footerLine(s: String): String =
         scrub(s).replace(Regex("""^\?\s+for shortcuts\b"""), "").trim()
