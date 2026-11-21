@@ -40,7 +40,23 @@ data class NotifyAction(
  * Claude's sessions list has no options, but typed text there starts a new session, so its alert
  * gets Esc only.
  */
-internal fun notificationOffersReply(prompt: com.billmongan.herdrdroid.herdr.Prompt?): Boolean = prompt?.claudeBackground != true
+internal fun notificationOffersReply(prompt: com.billmongan.herdrdroid.herdr.Prompt?): Boolean =
+    prompt?.claudeBackground != true && prompt?.openCodePermission != true
+
+/**
+ * The keys an alert button sends to an OpenCode permission (2.1.2), from [now], the strict styled
+ * read taken at the tap; null when nothing may be sent. Esc and Reject are Esc, which rejects
+ * wherever the highlight is. Allow once moves from the highlight the read shows, so a read with no
+ * highlight (plain text, or an ambiguous frame) sends nothing. Always allow is never sent, and no
+ * digit is ever typed into the dialog.
+ */
+internal fun openCodePermissionAlertKeys(now: com.billmongan.herdrdroid.herdr.Prompt, a: NotifyAction): List<String>? {
+    if (!now.openCodePermission || a.isReply || !notificationAnswerStillFits(now, a)) return null
+    if (a.isKey) return if (a.keys == "esc") listOf("esc") else null
+    val choice = now.choices.firstOrNull { it.keys == a.keys } ?: return null
+    if (choice.label.equals("Always allow", true)) return null
+    return com.billmongan.herdrdroid.herdr.menuKeys(now, choice)?.takeIf { keys -> keys.isNotEmpty() && keys.all { it in setOf("left", "right", "enter", "esc") } }
+}
 
 /**
  * Whether a notification button still answers the question on screen [now] (1.4.2): the same
