@@ -32,7 +32,7 @@ class OpenCode232PermissionTest {
             val p = card(frame, agent)
             assertFalse(p.terminalReview)
             assertTrue(p.openCodePermission)
-            assertEquals(listOf("Allow once", "Reject"), p.choices.map { it.label })
+            assertEquals(listOf("Allow once", "Always allow", "Reject"), p.choices.map { it.label })
             assertEquals("Permission required", p.question)
             assertTrue(p.escRejects)
             assertTrue(p.horizontal)
@@ -51,24 +51,24 @@ class OpenCode232PermissionTest {
         val old = javaClass.getResource("/screens/opencode/derived-1.4.9/0701-permission-prompt-all-tools.txt")!!.readText()
         val p = card(old)
         assertFalse(p.terminalReview)
-        assertEquals(listOf("Allow once", "Reject"), p.choices.map { it.label })
+        assertEquals(listOf("Allow once", "Always allow", "Reject"), p.choices.map { it.label })
     }
 
     @Test fun theExpandedDialogsMinimizeHintParses() {
         val p = card(frame.replace("ctrl+f fullscreen", "ctrl+f   minimize"))
         assertFalse(p.terminalReview)
-        assertEquals(listOf("Allow once", "Reject"), p.choices.map { it.label })
+        assertEquals(listOf("Allow once", "Always allow", "Reject"), p.choices.map { it.label })
     }
 
     @Test fun aRebindOrNoFullscreenHintStillParses() {
-        assertEquals(listOf("Allow once", "Reject"), card(frame.replace("ctrl+f fullscreen", "alt+z fullscreen")).choices.map { it.label })
-        assertEquals(listOf("Allow once", "Reject"), card(frame.replace("ctrl+f fullscreen", "                 ")).choices.map { it.label })
+        assertEquals(listOf("Allow once", "Always allow", "Reject"), card(frame.replace("ctrl+f fullscreen", "alt+z fullscreen")).choices.map { it.label })
+        assertEquals(listOf("Allow once", "Always allow", "Reject"), card(frame.replace("ctrl+f fullscreen", "                 ")).choices.map { it.label })
     }
 
     @Test fun aStatusRowUnderTheDialogIsNotItsFooter() {
         val p = card(frame.trimEnd() + "\n  ~/fixture                         1.2K (1%)  ctrl+p commands    ~/fixture\n")
         assertFalse(p.terminalReview)
-        assertEquals(listOf("Allow once", "Reject"), p.choices.map { it.label })
+        assertEquals(listOf("Allow once", "Always allow", "Reject"), p.choices.map { it.label })
     }
 
     @Test fun narrowPanesStackTheHintsUnderTheButtons() {
@@ -78,7 +78,7 @@ class OpenCode232PermissionTest {
         }.joinToString("\n")
         val p = card(narrow)
         assertFalse(p.terminalReview)
-        assertEquals(listOf("Allow once", "Reject"), p.choices.map { it.label })
+        assertEquals(listOf("Allow once", "Always allow", "Reject"), p.choices.map { it.label })
     }
 
     @Test fun aWrappedCommandRowStartingWithARedirectIsNotAnInputRow() {
@@ -87,7 +87,7 @@ class OpenCode232PermissionTest {
                 "  ┃  >/dev/null 2>&1 & )")
         val p = card(wrapped)
         assertFalse(p.terminalReview)
-        assertEquals(listOf("Allow once", "Reject"), p.choices.map { it.label })
+        assertEquals(listOf("Allow once", "Always allow", "Reject"), p.choices.map { it.label })
         assertTrue(p.approvalIdentity.orEmpty().contains(">/dev/null 2>&1 & )"))
     }
 

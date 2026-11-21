@@ -151,7 +151,7 @@ class OpenCodeAlert212Test {
 
     // ---- the alert ----------------------------------------------------------------------------
 
-    @Test fun theAlertOffersAllowOnceRejectAndEscWithNoReply() {
+    @Test fun theAlertOffersEveryButtonWithNoReply() {
         val app = ApplicationProvider.getApplicationContext<Application>()
         shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
         Notify.channels(app)
@@ -161,10 +161,11 @@ class OpenCodeAlert212Test {
         assertFalse(notificationOffersReply(card))
         val nm = shadowOf(app.getSystemService(NotificationManager::class.java))
         Notify.needsYou(app, server.id, "FixtureE", "w1:p1", "OpenCode", card.question, card.choices, "opencode",
-            terminalReview = card.terminalReview, reply = notificationOffersReply(card))
+            terminalReview = card.terminalReview, reply = notificationOffersReply(card), prompt = card)
         val titles = nm.allNotifications.single().actions.map { it.title.toString() }
-        assertEquals(listOf("Allow once", "Reject", "Esc"), titles)
-        assertFalse(titles.contains("Always allow"))
+        // 2.1.2 (Bill: "The alert should offer whatever options the question does"): Always allow
+        // too; Reject is OpenCode's Esc, so it is the alert's Esc.
+        assertEquals(listOf("Allow once", "Always allow", "Reject (Esc)"), titles)
         assertFalse(titles.contains("Reply"))
     }
 
@@ -179,8 +180,9 @@ class OpenCodeAlert212Test {
         // Reject and Esc are Esc wherever the highlight is.
         assertEquals(listOf("esc"), openCodePermissionAlertKeys(card(frame), tap("3", "Reject")))
         assertEquals(listOf("esc"), openCodePermissionAlertKeys(card(frame), tap("esc", "", isKey = true)))
-        // Never Always allow, never a typed reply, never another question's button.
-        assertNull(openCodePermissionAlertKeys(card(focused(frame, "Allow once")), tap("2", "Always allow")))
+        // Always allow (2.1.2) from the highlight too; never a typed reply, never another question's button.
+        assertEquals(listOf("right", "enter"), openCodePermissionAlertKeys(card(focused(frame, "Allow once")), tap("2", "Always allow")))
+        assertNull(openCodePermissionAlertKeys(card(frame), tap("2", "Always allow")))
         assertNull(openCodePermissionAlertKeys(card(frame), NotifyAction(server.id, "w1:p1", "yes", true, "Permission required", agent = "opencode", isReply = true)))
         assertNull(openCodePermissionAlertKeys(card(focused(frame, "Allow once")),
             NotifyAction(server.id, "w1:p1", "1", false, "Another question", label = "Allow once", agent = "opencode")))
@@ -237,6 +239,93 @@ class OpenCodeAlert212Test {
         assertTrue(fake.writes().toString(), fake.writes().isEmpty())
     }
 
+    // ---- 2.1.2, Grok's RC review HIGH: the alert answers only its own question -----------------
+
+    /** A button of the alert made from [shown], as the posted alert carries it. */
+    private fun button(shown: com.billmongan.herdrdroid.herdr.Prompt, label: String? = null, isKey: Boolean = false): NotifyAction {
+        val c = label?.let { l -> shown.choices.single { it.label == l } }
+        return NotifyAction(server.id, "w1:p1", c?.keys ?: "esc", false, shown.question, label = c?.label.orEmpty(), agent = "opencode",
+            isKey = isKey, options = com.billmongan.herdrdroid.notify.alertOptionsSig(shown.choices),
+            identity = com.billmongan.herdrdroid.notify.alertIdentity(shown))
+    }
+
+    @Test fun aNewCommandWithTheSameHeadingGetsNoKeysFromTheOldAlert() {
+        val shown = checkNotNull(detectPrompt(frame, blocked = true, agent = "opencode"))
+        val other = frame.replace("echo hi > ~/scratch/x", "rm -rf ~/scratch/fixture-other")
+        for (label in listOf("Allow once", "Always allow", "Reject", null)) {
+            val fake = Fake(focused(other, "Allow once"), status = "done")
+            open(fake)
+            emit(button(shown, label, isKey = label == null))
+            assertTrue("$label: ${fake.writes()}", fake.writes().isEmpty())
+        }
+        // The same command still answers.
+        val fake = Fake(focused(frame, "Allow once"), status = "done")
+        open(fake)
+        emit(button(shown, "Always allow"))
+        assertEquals(listOf("'send-keys' 'w1:p1' 'right' 'enter'"), fake.writes().map { it.substringAfter("'pane' ") })
+    }
+
+    private val question = res("/screens/opencode/live-2026-11-21/question-2.3.2.txt")
+
+    @Test fun anOpenCodeQuestionAlertSendsTheOptionsDigitAfterTheStrictRead() {
+        val shown = checkNotNull(detectPrompt(question, blocked = true, agent = "opencode"))
+        val fake = Fake(question, status = "done")
+        open(fake)
+        emit(button(shown, "Postgres"))
+        assertTrue(fake.commands.any { "'--source' 'recent'" in it && "'--lines' '80'" in it && "'--format' 'ansi'" in it })
+        assertEquals(listOf("'send-keys' 'w1:p1' '2'"), fake.writes().map { it.substringAfter("'pane' ") })
+    }
+
+    @Test fun anOpenCodeQuestionAlertRefusesAnotherQuestionOrFrame() {
+        val shown = checkNotNull(detectPrompt(question, blocked = true, agent = "opencode"))
+        for (changed in listOf(
+            question.replace("A server database", "A hosted database"),
+            question.replace("Which database should the demo use?", "Which cache should the demo use?"),
+            question.replace("  ┃  ↑↓ select  enter submit  esc dismiss", "  ┃  ⇆ tab  ↑↓ select  enter confirm  esc dismiss"),
+            composer,
+        )) {
+            val fake = Fake(changed, status = "done")
+            open(fake)
+            emit(button(shown, "Postgres"))
+            emit(button(shown, isKey = true))
+            assertTrue(fake.writes().toString(), fake.writes().isEmpty())
+        }
+        // Esc on the same question dismisses it.
+        val fake = Fake(question, status = "done")
+        open(fake)
+        emit(button(shown, isKey = true))
+        assertEquals(listOf("'send-keys' 'w1:p1' 'esc'"), fake.writes().map { it.substringAfter("'pane' ") })
+    }
+
+    @Test fun anOpenCodeQuestionReplyOpensItsOwnAnswerRowThenTypes() {
+        val shown = checkNotNull(detectPrompt(question, blocked = true, agent = "opencode"))
+        val reply = button(shown).copy(keys = "MariaDB", isKey = false, isReply = true, pressEnter = true)
+        val editing = question.replace("  ┃  ↑↓ select  enter submit  esc dismiss", "  ┃  enter submit  esc close")
+        // The row didn't open: no text after the digit.
+        Fake(question, status = "done").let { fake ->
+            open(fake)
+            emit(reply)
+            settle()
+            assertEquals(listOf("'send-keys' 'w1:p1' '3'"), fake.writes().map { it.substringAfter("'pane' ") })
+        }
+        // Another question on screen: nothing at all.
+        Fake(question.replace("Which database", "Which cache"), status = "done").let { fake ->
+            open(fake)
+            emit(reply)
+            assertTrue(fake.writes().toString(), fake.writes().isEmpty())
+        }
+        // The row opens: the text goes in after the digit (last: an answered question isn't answered twice for 15 s).
+        Fake(question, status = "done").let { fake ->
+            fake.afterKeys = editing
+            open(fake)
+            emit(reply)
+            // The text waits for the redraw after the digit (300 ms on the paused main clock).
+            settle()
+            assertEquals(listOf("'send-keys' 'w1:p1' '3'", "'send-text' 'w1:p1' 'MariaDB'", "'send-keys' 'w1:p1' 'enter'"),
+                fake.writes().map { it.substringAfter("'pane' ") })
+        }
+    }
+
     // ---- helpers ------------------------------------------------------------------------------
 
     private fun res(path: String) = checkNotNull(javaClass.getResource(path)).readText()
@@ -262,6 +351,11 @@ class OpenCodeAlert212Test {
         idle()
     }
 
+    /** Past the answer's 300 ms pause, on Robolectric's paused main-looper clock. */
+    private fun settle() {
+        repeat(4) { shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(200)); idle() }
+    }
+
     private fun idle() {
         repeat(8) { shadowOf(Looper.getMainLooper()).idle(); Thread.sleep(5) }
     }
@@ -276,6 +370,8 @@ class OpenCodeAlert212Test {
         private val listJson = if (withClaude) "$paneJson,$claudeJson" else paneJson
         val commands = java.util.Collections.synchronizedList(mutableListOf<String>())
         @Volatile var timeoutLines: Int? = null
+        /** The screen after the first key goes in (2.1.2: OpenCode's own answer row opening). */
+        @Volatile var afterKeys: String? = null
         fun writes() = commands.filter { "'agent' 'prompt'" in it || "'send-text'" in it || "'send-keys'" in it || "'send'" in it }
 
         override suspend fun bulk(command: String): ExecResult = answer(command)
@@ -298,7 +394,10 @@ class OpenCodeAlert212Test {
                     ok(screen.lines().takeLast(lines(command)).joinToString("\n"))
                 }
                 "'--source' 'visible'" in command -> ok(screen)
-                "'agent' 'prompt'" in command || "'send-text'" in command || "'send-keys'" in command || "'send'" in command -> ok("")
+                "'agent' 'prompt'" in command || "'send-text'" in command || "'send-keys'" in command || "'send'" in command -> {
+                    if ("'send-keys'" in command) afterKeys?.let { screen = it; afterKeys = null }
+                    ok("")
+                }
                 else -> ExecResult(1, "", "not in the fake: $command")
             }
         }

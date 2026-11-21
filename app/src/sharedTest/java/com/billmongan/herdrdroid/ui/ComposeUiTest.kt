@@ -541,8 +541,45 @@ class ComposeUiTest {
         rule.setContent { PromptCard(p, agent = "OpenCode", onChoice = {}, onKey = {}, onTypeAnswer = {}) }
         rule.onNodeWithText("Allow once").assertExists()
         rule.onNodeWithText("Reject").assertExists()
-        rule.onNodeWithText("Always allow").assertDoesNotExist()
+        // 2.1.2 (Bill): every button the dialog shows, Always allow included, with its caution.
+        rule.onNodeWithText("Always allow").assertExists()
+        rule.onNodeWithText("Caution", substring = true).assertExists()
         rule.onNodeWithText("This preview is incomplete", substring = true).assertDoesNotExist()
+    }
+
+    // 2.1.2 (Bill, 2026-11-21: "Opencode was showing a question card that said it could not be
+    // read before"): OpenCode 2.3.2's own question dialog (the "question" tool) is a real card.
+    @Test fun openCode232QuestionCardShowsItsOptionsAndOwnAnswerRow() {
+        val frame = listOf(
+            "  ┃",
+            "  ┃  Questions",
+            "  ┃",
+            "  ┃  Which database should the demo use?",
+            "  ┃",
+            "  ┃  1. SQLite (Recommended)",
+            "  ┃     A local file, nothing to run",
+            "  ┃  2. Postgres",
+            "  ┃     A server database",
+            "  ┃  3. Type your own answer",
+            "  ┃",
+            "  ┃  ↑↓ select  enter submit  esc dismiss",
+            "  ┃",
+        ).joinToString("\n")
+        val p = checkNotNull(com.billmongan.herdrdroid.herdr.detectPrompt(frame, blocked = false, agent = "opencode")).forCard()
+        val picked = mutableListOf<String>()
+        val typed = mutableListOf<String>()
+        rule.setContent { PromptCard(p, agent = "OpenCode", onChoice = { picked += it.keys }, onKey = {}, onTypeAnswer = {}, onTypedChoice = { typed += it.keys }) }
+        rule.onNodeWithText("SQLite (Recommended)").assertExists()
+        rule.onNodeWithText("Postgres").performClick()
+        rule.onNodeWithText("Type your own answer").performClick()
+        rule.onNodeWithText("This preview is incomplete", substring = true).assertDoesNotExist()
+        rule.onNodeWithText("couldn't read", substring = true).assertDoesNotExist()
+        rule.onNodeWithText("Type a different answer").assertDoesNotExist()
+        rule.onNodeWithText("Ctrl+C").assertDoesNotExist()
+        rule.runOnIdle {
+            assertEquals(listOf("2"), picked)
+            assertEquals(listOf("3"), typed)
+        }
     }
 
     @Test fun cardAloneHasNoQuestionBody() {
