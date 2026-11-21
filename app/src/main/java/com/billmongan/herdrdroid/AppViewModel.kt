@@ -2999,10 +2999,20 @@ class AppViewModel internal constructor(
             sameOccupant(it, expected) && it.status in setOf(Status.IDLE, Status.DONE) && !it.backgroundBusy
         } == true
 
-    internal fun agentMessageDestinations(request: AgentMessage): List<Session> =
-        if (currentAgentMessage !== request || request.text == null || !agentMessageSourceCurrent(request)) emptyList()
+    /**
+     * Every identifiable agent on another connected Fleet server, whatever its status (2.1.4). The
+     * copied proposal instructions name these, so the source agent knows which agents the phone
+     * can reach: before, it was told nothing, and Claude on one server concluded it could not see
+     * Hermes on another. Naming them chooses nothing; the review still lists only the idle ones.
+     */
+    internal fun agentMessageReachable(request: AgentMessage): List<Session> =
+        if (currentAgentMessage !== request || !agentMessageSourceCurrent(request)) emptyList()
         else sessions().filter { it.server.id != request.source.server && relayPort(it.server.id)?.connectionIdentity != null &&
-            hasStableOccupant(it.pane) && agentMessageDestinationCurrent(it.server.id, it.pane) }
+            hasStableOccupant(it.pane) }
+
+    internal fun agentMessageDestinations(request: AgentMessage): List<Session> =
+        if (request.text == null) emptyList()
+        else agentMessageReachable(request).filter { agentMessageDestinationCurrent(it.server.id, it.pane) }
 
     internal suspend fun bindAgentMessage(request: AgentMessage, selected: Session): AgentMessageRoute? {
         if (selected !in agentMessageDestinations(request)) return null
