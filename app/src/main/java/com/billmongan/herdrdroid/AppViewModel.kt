@@ -139,6 +139,15 @@ class AppViewModel internal constructor(
 
     private val store = ServerStore(app)
     private val prefs = AppPrefs(app)
+
+    /** 2.1.4: the in-app update check, the prompt and the install (Settings, Updates). */
+    val updates = com.billmongan.herdrdroid.update.Updater(
+        com.billmongan.herdrdroid.update.AppUpdatePrefs(app),
+        com.billmongan.herdrdroid.update.OkUpdateHttp(),
+        com.billmongan.herdrdroid.update.AndroidUpdatePlatform(app),
+        viewModelScope,
+        app.cacheDir,
+    )
     var agentMessagingEnabled by mutableStateOf(prefs.agentMessagingEnabled)
         private set
 
