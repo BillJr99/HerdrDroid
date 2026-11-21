@@ -161,6 +161,21 @@ class AppPrefs(context: Context) {
         get() = prefs.getBoolean("agentMessagingEnabled", false)
         set(v) = prefs.edit().putBoolean("agentMessagingEnabled", v).apply()
 
+    /** 2.1.4: tell agents about cross-server messaging. On by default with the feature; the user can turn it off. */
+    var crossServerNotice: Boolean
+        get() = prefs.getBoolean("crossServerNotice", true)
+        set(v) = prefs.edit().putBoolean("crossServerNotice", v).apply()
+
+    /** 2.1.4: agents at or above this percent of their known quota are not told yet (100: never skip). */
+    var crossServerNoticeQuota: Int
+        get() = prefs.getInt("crossServerNoticeQuota", 95)
+        set(v) = prefs.edit().putInt("crossServerNoticeQuota", v).apply()
+
+    /** 2.1.4: which notice each pane and agent session was sent, as JSON (see NoticeLedger). */
+    var crossServerNoticeLedger: String
+        get() = prefs.getString("crossServerNoticeLedger", "{}") ?: "{}"
+        set(v) = prefs.edit().putString("crossServerNoticeLedger", v).apply()
+
     var theme: String
         get() = prefs.getString("theme", "SYSTEM") ?: "SYSTEM"
         set(v) = prefs.edit().putString("theme", v).apply()
