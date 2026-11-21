@@ -2027,6 +2027,9 @@ private val BYPASS_WORDS = Regex(
     RegexOption.IGNORE_CASE,
 )
 private val KEY_HINT = Regex("""\b(ctrl|shift|alt|meta|cmd)\+[\w.]+\s*:\s*[\w-]+(\s+mode)?""", RegexOption.IGNORE_CASE)
+/** The gutters down the rows of a command Grok wrapped in its approval box (2.1.3). */
+private const val GROK_GUTTER = "┆┊╎╏"
+
 private val CARD_ROW = Regex("""^[\s│┃|]*([❯›>▶➤⟩]\s*)?\d(?:[.)]|\s+\([○●◯◉]\))\s""")
 
 fun footerBypass(screen: String): Boolean =
@@ -2733,12 +2736,19 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
                 // A box inside the card's frame holds the command: Grok's "┃  │ grok usage", Copilot's
                 // "│ │ mkdir -p sub" (1.2.9: Copilot's too, so it shows as a command).
                 val tl = l.trimStart()
-                val isCmd = (tl.startsWith("┃") || tl.startsWith("│")) && tl.drop(1).trimStart().startsWith("│")
+                val inner = tl.drop(1).trimStart()
+                // Grok's wrapped command goes on over rows with a "┆" gutter and a "·" at the end of each
+                // wrapped row (2.1.3, Bill: "Notice the vertical pipe glyphs coming through"): command rows
+                // too, without the gutter or the marks, so the card shows one command under its title.
+                val gutter = tl.startsWith("┃") && inner.firstOrNull()?.let { it in GROK_GUTTER } == true
+                val isCmd = (tl.startsWith("┃") || tl.startsWith("│")) && inner.startsWith("│") || gutter
                 // Grok's "← → narrow scope" hint sits between the command and its options.
                 // A dashed line with no words (the edges of Claude's diff box) separates paragraphs (1.4.9).
                 if (!c.any(Char::isLetterOrDigit) && got.isNotEmpty()) got[0] = got[0].copy(gapBefore = true)
                 // Grok's question card starts its question with a "?" icon (1.4.9).
-                if (c.any(Char::isLetterOrDigit) && !c.contains("narrow scope")) got.add(0, QLine(c.trimStart('›', '❯', ' ').replace(Regex("""^\?\s+"""), ""), isCmd, bar = !isCmd && tl.startsWith("│")))
+                val row = if (gutter) c.trimStart { it in GROK_GUTTER || it == ' ' }.trimEnd().removeSuffix("·").trimEnd()
+                    else if (isCmd && tl.startsWith("┃")) c.trimEnd().removeSuffix("·").trimEnd() else c
+                if (row.any(Char::isLetterOrDigit) && !row.contains("narrow scope")) got.add(0, QLine(row.trimStart('›', '❯', ' ').replace(Regex("""^\?\s+"""), ""), isCmd, bar = !isCmd && tl.startsWith("│")))
                 i--
             }
             got.takeIf { it.isNotEmpty() }

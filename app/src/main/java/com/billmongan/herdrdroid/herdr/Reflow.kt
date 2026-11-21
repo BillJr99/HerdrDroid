@@ -105,6 +105,10 @@ object Reflow {
         sb.append(next)
     }
 
+    /** Grok's wrapped command row [next] after [prev]: it broke the line at a space (2.1.3). */
+    private fun joinWrapped(prev: String, next: String): String =
+        if (next.isEmpty()) prev else prev.trimEnd() + " " + next.trimStart()
+
     /**
      * Claude's mode glyphs ("⏵⏵ auto mode on", "⏸ plan mode on"), which the app's fonts lack and
      * Android drew as a missing-glyph box (2.1.2, 2.1.1 acceptance finding 5). Mapped as [forPhone]
@@ -217,7 +221,7 @@ object Reflow {
         val width = body.maxOfOrNull { it.length }?.coerceAtLeast(20) ?: 80
         // Grok's box rows and status row sit left of its text; they don't set the margin.
         val margin = body.withIndex().filter { (i, it) ->
-            it.isNotBlank() && !isWide(it) && !(grok && (i in grokStatus || GrokMeta.box(it) != null))
+            it.isNotBlank() && !isWide(it) && !(grok && (i in grokStatus || GrokMeta.box(it) != null || GrokMeta.gutterRow(it.trim()) != null))
         }.minOfOrNull { (_, it) -> it.length - it.trimStart().length } ?: 0
 
         val out = mutableListOf<Seg>()
@@ -343,12 +347,20 @@ object Reflow {
                     GrokMeta.Box.Hint -> continue
                     is GrokMeta.Box.Code -> {
                         flushBanner(); flushPara(); flushYou(); flushAct()
-                        code += bx.line
+                        // A wrapped row joins the one above: one command, as it was typed (2.1.3).
+                        if (bx.cont && code.isNotEmpty()) code[code.size - 1] = joinWrapped(code.last(), bx.line) else code += bx.line
                         continue
                     }
                     is GrokMeta.Box.Title -> { flushAll(); flushAct(); out += Seg.Para(0, null, bx.text); continue }
                     is GrokMeta.Box.Choice -> { flushAll(); flushAct(); out += Seg.Para(0, bx.n, bx.text, detail = true); continue }
                     is GrokMeta.Box.Text -> { flushAll(); flushAct(); out += Seg.Para(0, null, bx.text, detail = true); continue }
+                }
+                // The same wrapped row with no box edge to its left (2.1.3).
+                val wrapped = GrokMeta.gutterRow(t)
+                if (wrapped != null) {
+                    flushBanner(); flushPara(); flushYou(); flushAct()
+                    if (code.isNotEmpty()) code[code.size - 1] = joinWrapped(code.last(), wrapped) else code += wrapped
+                    continue
                 }
                 val warning = AgyMeta.warning(t)
                 if (warning != null) {
