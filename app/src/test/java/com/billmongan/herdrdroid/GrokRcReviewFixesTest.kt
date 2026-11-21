@@ -133,6 +133,39 @@ class GrokRcReviewFixesTest {
         assertTrue(fake.writes().toString(), fake.writes().any { "HD211_REPLY" in it })
     }
 
+    // ---- Grok re-review H1 (strict notification read) ----------------------------------------
+
+    @Test fun anAlertReplyIsRefusedWhenTheStrictReadTimesOutWhileScrolledBack() {
+        // The 80-line read times out (exit -2), the viewport is scrolled back, and card recovery's
+        // 40-line read would miss the sessions-list hint on line 6 of 47.
+        val fake = Fake(sessionsList, status = "blocked", scroll = 3)
+        fake.timeoutLines = 80
+        open(b, fake)
+        idle()
+        assertTrue(AppBus.emit(NotifyAction(b.id, fake.pane.id, "HD211_REPLY", true, "", agent = "claude", isReply = true)))
+        // Past card recovery's pause before its 40-line read.
+        repeat(4) { shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(1)); Thread.sleep(5) }
+        assertTrue(fake.commands.any { "'--lines' '80'" in it })
+        assertTrue(fake.writes().toString(), fake.writes().isEmpty())
+    }
+
+    @Test fun aFailedAlertReplyToClaudeIsNotOfferedAgain() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        Notify.channels(app)
+        val nm = shadowOf(app.getSystemService(NotificationManager::class.java))
+        val fake = Fake("● Which file should I edit?\n\n" + "─".repeat(60) + "\n❯ \n" + "─".repeat(60) + "\n  ? for shortcuts", status = "blocked")
+        fake.failSends = true
+        open(b, fake)
+        idle()
+        assertTrue(AppBus.emit(NotifyAction(b.id, fake.pane.id, "HD211_REPLY", true, "", agent = "claude", isReply = true)))
+        idle()
+        assertTrue(fake.writes().toString(), fake.writes().isNotEmpty())
+        val failed = nm.allNotifications.filter { n -> n.extras.getCharSequence("android.text")?.contains("couldn't be sent") == true }
+        assertTrue(nm.allNotifications.map { it.extras.getCharSequence("android.text") }.toString(), failed.isNotEmpty())
+        assertTrue(failed.all { n -> (n.actions ?: emptyArray()).none { it.title.toString() == "Reply" } })
+    }
+
     // ---- M1: a tap belongs to the server it was made on --------------------------------------
 
     @Test fun aSendTappedWithNoServerOpenIsDroppedNotRunOnTheNextOne() {
@@ -187,15 +220,19 @@ class GrokRcReviewFixesTest {
     }
 
     /** One Claude pane on a fake herdr: reads give the last N lines of [screen]; writes are recorded. */
-    private class Fake(@Volatile var screen: String, status: String = "idle") : Herdr.Commands {
+    private class Fake(@Volatile var screen: String, status: String = "idle", scroll: Int = 0) : Herdr.Commands {
         val ssh = HerdrSsh("fake.invalid", 22, "fake", Credentials(null, null), null, { null })
         val client = Herdr(ssh, "/fixture/herdr", Backend.TUI, null, this)
         override var connection: Any? = Any()
         val pane = Pane("w1:p1", "w1:t1", "w1", "claude",
-            if (status == "blocked") Status.NEEDS_YOU else Status.IDLE, "", "/fixture", scrollOffset = 0, terminalId = "t1")
-        private val paneJson = """{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1","agent":"claude","agent_status":"$status","cwd":"/fixture","terminal_id":"t1","scroll":{"offset_from_bottom":0}}"""
+            if (status == "blocked") Status.NEEDS_YOU else Status.IDLE, "", "/fixture", scrollOffset = scroll, terminalId = "t1")
+        private val paneJson = """{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1","agent":"claude","agent_status":"$status","cwd":"/fixture","terminal_id":"t1","scroll":{"offset_from_bottom":$scroll}}"""
         val commands = java.util.Collections.synchronizedList(mutableListOf<String>())
         @Volatile var reads = 0
+        /** A recent read of exactly this many lines times out (exit -2). */
+        @Volatile var timeoutLines: Int? = null
+        /** Every typed send fails. */
+        @Volatile var failSends = false
         fun writes() = commands.filter { "'agent' 'prompt'" in it || "'send-text'" in it || "'send-keys'" in it }
 
         override suspend fun bulk(command: String): ExecResult = answer(command)
@@ -211,10 +248,12 @@ class GrokRcReviewFixesTest {
                 "'--source' 'recent'" in command -> {
                     reads++
                     val n = Regex("""'--lines' '(\d+)'""").find(command)?.groupValues?.get(1)?.toInt() ?: 200
+                    if (n == timeoutLines) return ExecResult(-2, "", "timed out")
                     ok(screen.lines().takeLast(n).joinToString("\n"))
                 }
                 "'--source' 'visible'" in command -> { reads++; ok(screen) }
-                "'agent' 'prompt'" in command || "'send-text'" in command || "'send-keys'" in command -> ok("")
+                "'agent' 'prompt'" in command || "'send-text'" in command || "'send-keys'" in command ->
+                    if (failSends) ExecResult(1, "", "send failed") else ok("")
                 else -> ExecResult(1, "", "not in the fake: $command")
             }
         }
