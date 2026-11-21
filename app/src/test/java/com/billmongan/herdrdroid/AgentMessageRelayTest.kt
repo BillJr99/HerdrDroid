@@ -27,6 +27,9 @@ class AgentMessageRelayTest {
     private val exact = "Please review the build.\nKeep  both spaces."
 
     init {
+        // 2.1.4's notice to every agent would write to both fixtures as soon as messaging is on;
+        // this test is about the relay alone (CrossServerNoticeDeliveryTest covers the notice).
+        vm.changeCrossServerNotice(false)
         vm.onForeground()
         field(vm, "herdr").set(vm, source.client)
         state(vm, "servers", listOf(source.server, destination.server))
