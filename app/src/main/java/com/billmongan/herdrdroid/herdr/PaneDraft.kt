@@ -92,6 +92,21 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
             val permit = gate.open(server to shown.id, WritePermit(allowed)) ?: return@guarded Outcome.REFUSED
             try {
                 if (!allowed()) return@guarded Outcome.REFUSED
+                // 2.1.1 (2.1.0 acceptance, D5c trial 6): an edit at the computer landed 179 ms before
+                // Enter, after the guarded check, and the changed text went. So the box is read once
+                // more here, inside the pane's dispatch lane and with the permit open, as the very
+                // last step before Enter, and compared with the exact text that was shown.
+                // Residual window, which no remote check can close: from this read leaving herdr to
+                // Enter reaching the agent (one SSH round trip plus the key write, typically well
+                // under a second). Text typed at the computer inside that window is submitted with
+                // the draft; the result is then UNCERTAIN unless the box is seen empty afterwards.
+                val last = port.viewport(shown.id) ?: return@guarded Outcome.REFUSED
+                if (!allowed()) return@guarded Outcome.REFUSED
+                val still = draftOn(fresh, last)
+                    ?: return@guarded if (emptyBox(fresh, last)) Outcome.CHANGED else Outcome.REFUSED
+                if (!still.bounded) return@guarded Outcome.REFUSED
+                if (still.text != shownText) return@guarded Outcome.CHANGED
+                if (draftSendBlock(still, fresh.status, fresh.agentName) != null) return@guarded Outcome.NOT_SENDABLE
                 port.keys(shown.id, listOf("enter"), permit)
             } catch (e: WriteRevoked) {
                 return@guarded Outcome.REFUSED

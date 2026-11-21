@@ -351,11 +351,14 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
           CardOrTerminalBar(showingTerminal = fullTerminal, agent = pane?.agentName ?: "The agent", onBackToQuestion = { fullTerminal = false }) {
             // The transcript already shows prose and attachments. The parsed question has no
             // transcript tool-call ID, so a running tool's plan or diff may belong to another turn.
-            PromptQuestion(p, agent = pane?.agentName ?: "The agent")
+            // The screen the card was read from, for its layout only (2.1.1); never while a read failed.
+            val cardScreen = screenText.takeIf { vm.paneReadProblem == null }
+            PromptQuestion(p, agent = pane?.agentName ?: "The agent", screen = cardScreen)
             Spacer(Modifier.height(10.dp))
             PromptCard(
                 p,
                 agent = pane?.agentName ?: "The agent",
+                optionNotes = remember(cardScreen, p) { CardFormat.optionNotes(cardScreen, p.choices) },
                 sending = vm.answerInFlight(paneId),
                 readOnlyPreview = openingPreview != null ||
                     ((com.billmongan.herdrdroid.herdr.isOpenCode(pane?.agent) || p.hermesClarify) && shownTarget == null && !p.terminalReview),
@@ -393,6 +396,11 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         // question is open, from this pane's own latest read.
         vm.paneDraft?.takeIf { prompt == null && !fullTerminal && !backgroundDrawer && usageOverlay == null &&
             vm.paneReadProblem == null && vm.paneTextPane == paneId && it.target.pane.id == paneId }?.let { d ->
+            // Claude holds a question back while a draft is in its input box (2.1.1): say so here.
+            if (pane?.agent == "claude" && com.billmongan.herdrdroid.herdr.claudeQuestionBehindDraft(screenText))
+                Text("Claude has a question waiting behind this draft. Send or clear the draft to see it.",
+                    color = Palette.OrangeInk, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
             PaneDraftCard(
                 agent = pane?.agentName ?: "The agent",
                 draft = d,
@@ -592,7 +600,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         // The chat with its question history in place (1.3.0). A question still open is left out
         // while its card is showing, so it isn't on screen twice.
         val questionsNow = vm.questionsFor(paneId)
-        val cardUp = prompt != null
+        // Claude's sessions-list card (2.1.1) is not the question itself: the question stays in the chat.
+        val cardUp = prompt != null && !prompt.claudeBackground
         // Placed again when item times or the clock offset change, not only the items (1.4.3, from review).
         val chatItems = remember(vm.transcriptItems, questionsNow, cardUp, vm.transcriptTimes, vm.transcriptSeen, vm.hostOffsets) {
             com.billmongan.herdrdroid.transcript.QuestionLog.withQuestions(vm.transcriptItems, questionsNow, vm.transcriptTimes, vm.hostOffsetMs(), vm.transcriptSeen)
@@ -1157,31 +1166,15 @@ private fun ModifierKey(label: String, state: Hold, onChange: (Hold) -> Unit, mo
  * terminal. The orange [PromptCard] below it holds only the answers.
  */
 @Composable
-internal fun PromptQuestion(p: Prompt, agent: String) {
+internal fun PromptQuestion(p: Prompt, agent: String, screen: String? = null) {
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("$agent asks", color = Palette.OrangeInk, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
 
         val parts = p.shownParts()
         if (parts.tabs.isNotEmpty()) QuestionSteps(parts)
-        // The question as a heading, a command in a block of its own, the rest as plain text, in the
-        // order the agent drew them (1.2.9).
-        SelectionContainer {
-            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                parts.blocks.forEach { b ->
-                    when (b.kind) {
-                        com.billmongan.herdrdroid.herdr.QKind.HEADING -> Text(b.text, fontSize = 17.sp,
-                            fontWeight = FontWeight.SemiBold, lineHeight = 24.sp, color = Palette.Ink)
-                        com.billmongan.herdrdroid.herdr.QKind.TEXT -> Text(b.text, fontSize = 15.sp,
-                            lineHeight = 21.sp, color = Palette.Ink)
-                        com.billmongan.herdrdroid.herdr.QKind.COMMAND -> Surface(shape = RoundedCornerShape(10.dp),
-                            color = Palette.Code, border = BorderStroke(1.dp, Palette.Line), modifier = Modifier.fillMaxWidth()) {
-                            Text(b.text, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, fontSize = 13.5.sp,
-                                lineHeight = 19.sp, color = Palette.Ink, modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp))
-                        }
-                    }
-                }
-            }
-        }
+        // The question first, then paragraphs, lists, commands and diffs laid out for the phone
+        // (2.1.1); Show raw gives the parser's text as before (1.2.9).
+        CardBody(parts, screen)
     }
 }
 
@@ -1269,6 +1262,8 @@ internal fun PromptCard(
     onShowTerminal: (() -> Unit)? = null,
     sending: Boolean = false,
     readOnlyPreview: Boolean = false,
+    /** The line an agent draws under an option, by its keys (2.1.1): shown under the label, display only. */
+    optionNotes: Map<String, String> = emptyMap(),
 ) {
     @Suppress("NAME_SHADOWING") val p = p.forCard()
     Surface(
@@ -1298,6 +1293,23 @@ internal fun PromptCard(
                     else -> "This preview is incomplete. Open the terminal to review the full command before answering."
                 },
                     color = Palette.Muted, fontSize = 12.5.sp)
+                onShowTerminal?.let { show ->
+                    TextButton(onClick = show, modifier = Modifier.fillMaxWidth()) { Text("Show terminal") }
+                }
+                return@Column
+            }
+            // Claude's session behind its sessions list (2.1.1): its own hint says Esc returns to it,
+            // and then its question dialog shows and becomes the usual card. Nothing is sent until tapped.
+            if (p.claudeBackground) {
+                Text("Its terminal shows Claude's sessions list instead of the session, so its question isn't on screen. " +
+                    "Esc returns to the session.", color = Palette.Muted, fontSize = 12.5.sp)
+                Button(
+                    enabled = !sending,
+                    onClick = { onKey("esc") },
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Palette.Blue, contentColor = Palette.OnBlue),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                ) { Text("Return to the session (Esc)", fontSize = 15.sp, fontWeight = FontWeight.SemiBold) }
                 onShowTerminal?.let { show ->
                     TextButton(onClick = show, modifier = Modifier.fillMaxWidth()) { Text("Show terminal") }
                 }
@@ -1346,8 +1358,14 @@ internal fun PromptCard(
                     val first = c.keys == (p.selected ?: p.choices.firstOrNull()?.keys?.takeUnless { p.openCodePermission })
                     val body: @Composable () -> Unit = {
                         Column(Modifier.fillMaxWidth()) {
-                            Text(c.label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, lineHeight = 20.sp,
+                            // A key hint ("(esc)") or tail reads quieter; the label's text is unchanged (2.1.1).
+                            Text(optionLabel(c.label, if (first) Palette.OnBlue.copy(alpha = 0.8f) else Palette.Muted),
+                                fontSize = 15.sp, fontWeight = FontWeight.SemiBold, lineHeight = 20.sp,
                                 color = if (first) Palette.OnBlue else Palette.Ink)
+                            optionNotes[c.keys]?.let { note ->
+                                Text(note, fontSize = 13.sp, lineHeight = 18.sp,
+                                    color = if (first) Palette.OnBlue.copy(alpha = 0.9f) else Palette.Muted)
+                            }
                             Text(what, fontSize = 12.sp, color = if (first) Palette.OnBlue.copy(alpha = 0.8f) else Palette.Muted)
                             // Standing permission (1.4.0): say so before it is tapped.
                             if (caution) Text("Caution: this lets the agent do it again without asking you.", fontSize = 12.sp,
@@ -1432,6 +1450,7 @@ private fun ChatView(
                     Seg.Gap -> Spacer(Modifier.height(6.dp))
                     Seg.Rule -> HorizontalDivider(color = Palette.Line, modifier = Modifier.padding(vertical = 6.dp))
                     is Seg.You -> YouBubble(s.text, prose)
+                    is Seg.Activity -> ScreenActivity(s)
                     is Seg.Code -> Surface(
                         shape = RoundedCornerShape(12.dp),
                         color = Palette.Code,
@@ -1494,6 +1513,55 @@ private fun ChatView(
             if (showPending) {
                 YouBubble(pending!!, prose, sending = true)
                 ChatTimestamp(pendingAt, end = true)
+            }
+        }
+    }
+}
+
+/**
+ * Antigravity's thinking and tool-call lines, folded into one chip (2.1.1), like the activity row
+ * the agents with a transcript get. Tap it for the steps, one per line, with their arguments.
+ */
+@Composable
+private fun ScreenActivity(a: Seg.Activity) {
+    var open by rememberSaveable(a.steps.firstOrNull()?.title, a.steps.size) { mutableStateOf(false) }
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = Palette.Activity,
+        border = BorderStroke(1.dp, Palette.Line),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+    ) {
+        Column {
+            Row(
+                Modifier.fillMaxWidth().clickable { open = !open }.padding(horizontal = 12.dp, vertical = 9.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (a.running) {
+                    androidx.compose.material3.CircularProgressIndicator(strokeWidth = 2.dp, color = Palette.Blue, modifier = Modifier.size(14.dp))
+                } else {
+                    Text(if (a.failed > 0) "!" else "✓", color = if (a.failed > 0) Palette.OrangeInk else Palette.Green,
+                        fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                }
+                Column(Modifier.weight(1f).padding(start = 10.dp)) {
+                    Text(a.summary, color = Palette.Ink, fontSize = 14.sp, fontWeight = FontWeight.Medium,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    val last = a.steps.lastOrNull { it.kind != com.billmongan.herdrdroid.herdr.AgyMeta.Kind.THINK } ?: a.steps.last()
+                    Text(last.title + (last.detail?.let { " ($it)" } ?: ""), color = Palette.Muted, fontSize = 12.5.sp,
+                        fontFamily = Fonts.Mono, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Text(if (open) "▾" else "▸", color = Palette.Muted, fontSize = 13.sp)
+            }
+            if (open) Column(
+                Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                a.steps.forEach { st ->
+                    Column {
+                        Text(st.title + if (st.failed > 0 && st.kind != com.billmongan.herdrdroid.herdr.AgyMeta.Kind.MORE) " · failed" else "",
+                            color = if (st.failed > 0) Palette.OrangeInk else Palette.Ink, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                        st.detail?.let { Text(it, color = Palette.Muted, fontSize = 12.sp, fontFamily = Fonts.Mono) }
+                    }
+                }
             }
         }
     }

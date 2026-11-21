@@ -67,7 +67,29 @@ fun programPath(p: String): String =
     if (p == "~") "\"\$HOME\"" else if (p.startsWith("~/")) "\"\$HOME\"/" + shq(p.removePrefix("~/")) else shq(p)
 
 private val ANSI = Regex("\u001B\\[[0-9;?]*[ -/]*[@-~]|\u001B\\][^\u0007]*\u0007|\u001B[()][A-Z0-9]")
-fun stripAnsi(s: String): String = ANSI.replace(s, "")
+
+/**
+ * Pane text without its styles. 2.1.1: Claude Code (2.1.329) marks the current tab of its
+ * multi-question bar only by colour, so a styled bar row keeps that mark as [TAB_CURRENT_MARK]
+ * before the current tab's box ([markCurrentTab]); [parseTabBar] reads it. Every other row, and a
+ * plain read, comes out as before.
+ */
+fun stripAnsi(s: String): String {
+    if (s.indexOf('\u001B') < 0) return s
+    if (s.indexOf('←') < 0 || s.indexOf('→') < 0) return ANSI.replace(s, "")
+    val rows = s.split('\n')
+    if (rows.none(::tabBarCandidate)) return ANSI.replace(s, "")
+    return ANSI.replace(rows.joinToString("\n") { row -> if (tabBarCandidate(row)) markCurrentTab(row) ?: row else row }, "")
+}
+
+/**
+ * Zero-width word joiner: the current tab of Claude's question bar, kept from a styled read
+ * (2.1.1). It draws as nothing, so a screen shown with it looks the same.
+ */
+internal const val TAB_CURRENT_MARK = '\u2060'
+
+private fun tabBarCandidate(row: String): Boolean =
+    row.indexOf('\u001B') >= 0 && row.indexOf('←') >= 0 && row.indexOf('→') >= 0 && row.any { it in "☐☒✔✓☑" }
 
 /**
  * Terminal glyphs that the app's fonts lack, mapped to plain ones. Android draws a missing glyph
@@ -201,12 +223,16 @@ class Herdr internal constructor(
         }
         // herdr doesn't always mark a Claude question dialog (AskUserQuestion) as blocked, so the
         // bottom of each Claude pane that isn't already waiting is checked for the dialog's footer.
+        // 2.1.1: the read is long enough to reach past the blank rows a short conversation leaves
+        // under a fullscreen dialog (showsQuestionDialog looks at the last rows with text), and
+        // Claude's sessions list with a session awaiting input counts as needing you too.
         val askable = list.filter { it.agent == "claude" && it.status != Status.NEEDS_YOU }
         val marked = if (askable.isEmpty()) list else {
-            val tails = runCatching { previews(askable.map { it.id }) }.getOrDefault(emptyMap())
+            val tails = runCatching { previews(askable.map { it.id }, CLAUDE_STATUS_READ_LINES) }.getOrDefault(emptyMap())
             list.map { p ->
-                if (p in askable && tails[p.id]?.let { showsQuestionDialog(it.tail) } == true) {
-                    com.billmongan.herdrdroid.diag.DiagLog.log("prompt", "${p.id}: a question dialog is open while herdr says ${p.status.name.lowercase()}; treating it as needs you")
+                val why = if (p in askable) tails[p.id]?.tail?.let(::claudeNeedsYouReason) else null
+                if (why != null) {
+                    com.billmongan.herdrdroid.diag.DiagLog.log("prompt", "${p.id}: $why while herdr says ${p.status.name.lowercase()}; treating it as needs you")
                     p.copy(status = Status.NEEDS_YOU)
                 } else p
             }
@@ -377,10 +403,10 @@ class Herdr internal constructor(
     suspend fun agentVersions(): Map<String, String> = runCatching { AgentVersions.parse(ssh.execNow(AgentVersions.script(), timeoutSeconds = 10).out) }.getOrDefault(emptyMap())
 
     /** The last few lines of every pane, fetched in one round trip. */
-    suspend fun previews(ids: List<String>): Map<String, Peek> {
+    suspend fun previews(ids: List<String>, lines: Int = 12): Map<String, Peek> {
         if (ids.isEmpty()) return emptyMap()
         val script = ids.joinToString("; ") { id ->
-            "echo ${shq("@@herdrdroid@@$id")}; ${if (core) hcCmd("read", id, "--lines", "12") else recentSnapshot(id, 12)} 2>/dev/null"
+            "echo ${shq("@@herdrdroid@@$id")}; ${if (core) hcCmd("read", id, "--lines", lines.toString()) else recentSnapshot(id, lines)} 2>/dev/null"
         }
         val out = forPhone(ssh.exec(script).out)
         val result = mutableMapOf<String, Peek>()
@@ -970,6 +996,8 @@ data class Prompt(
     internal val codexQuestion: Boolean = false,
     /** Muse Code's quota warning: its highlight shows only in colour, so it is answered from a styled live read (2.1.0). */
     internal val museQuota: Boolean = false,
+    /** Claude's session moved to the background behind its sessions list (2.1.1): Esc returns to it. */
+    internal val claudeBackground: Boolean = false,
 ) {
     /**
      * Never an empty card (1.4.2): a prompt with no choices always has something to show, the
@@ -1035,24 +1063,55 @@ private val TOOL_PERMISSION = Regex("""^Permission for the \S+ tool(\s*\(.*\))?$
 private const val MARKS = "›❯◆◈●○•▸➤▶↓→│┃╭╰╮╯─ "
 
 /**
- * Claude's multi-question tab bar, "←  ☐ Close 537  ☒ Stop hook  ✔ Submit  →", as steps; the
- * current one is the first unanswered question (Submit once all are answered). The second value is
- * any question text that followed the bar on the same line.
+ * Claude's multi-question tab bar, "←  ☐ Close 537  ☒ Stop hook  ✔ Submit  →", as steps. The
+ * current one is the tab a styled read marked ([TAB_CURRENT_MARK], 2.1.1: Left and Right move
+ * between tabs without answering, and only the colour shows where); on a plain read it is the first
+ * unanswered question (Submit once all are answered). The second value is any question text that
+ * followed the bar on the same line.
  */
 fun parseTabBar(line: String): Pair<List<QTab>, String>? {
-    val t = line.trim()
+    val unmarked = line.replace(TAB_CURRENT_MARK.toString(), "")
+    val t = unmarked.trim()
+    // Where the mark sat, as an index into [t]: the mark goes just before the current tab's box.
+    val markAt = line.indexOf(TAB_CURRENT_MARK).takeIf { it >= 0 && line.indexOf(TAB_CURRENT_MARK, it + 1) < 0 }
+        ?.let { it - (unmarked.length - unmarked.trimStart().length) }
     val items = TAB_ITEM.findAll(t).toList()
     if (items.size < 2) return null
     val titles = items.map { it.groupValues[2].trim() }
     if (!t.startsWith("←") && titles.none { it.equals("Submit", true) }) return null
     val rest = if (t.contains("→")) t.substringAfterLast("→").trim() else ""
-    var tabs = items.mapIndexed { i, m ->
+    val marked = items.indexOfFirst { it.range.first == markAt }
+    val all = items.mapIndexed { i, m ->
         val sub = titles[i].equals("Submit", true)
-        QTab(titles[i], done = !sub && m.groupValues[1] != "☐", current = false, submit = sub)
-    }.filter { it.title.isNotEmpty() }
-    val cur = tabs.indexOfFirst { !it.done && !it.submit }.takeIf { it >= 0 } ?: tabs.indexOfFirst { it.submit }
-    if (cur >= 0) tabs = tabs.mapIndexed { i, q -> if (i == cur) q.copy(current = true) else q }
+        QTab(titles[i], done = !sub && m.groupValues[1] != "☐", current = i == marked, submit = sub)
+    }
+    var tabs = all.filter { it.title.isNotEmpty() }
+    if (tabs.none { it.current }) {
+        val cur = tabs.indexOfFirst { !it.done && !it.submit }.takeIf { it >= 0 } ?: tabs.indexOfFirst { it.submit }
+        if (cur >= 0) tabs = tabs.mapIndexed { i, q -> if (i == cur) q.copy(current = true) else q }
+    }
     return tabs to rest
+}
+
+/**
+ * A styled row of Claude's question bar as plain text with [TAB_CURRENT_MARK] before the current
+ * tab's box, or null when the row is not such a bar or its styles don't single out one tab (2.1.1).
+ * Claude Code 2.1.329 draws the current tab on a background colour ("ESC[38;5;16mESC[48;5;153m ☐
+ * Restart ESC[39mESC[49m"); the other tabs and the arrows have none.
+ */
+internal fun markCurrentTab(row: String): String? {
+    val chars = styledChars(row)
+    val plain = chars.joinToString("") { it.ch.toString() }
+    if (plain != row.replace(ANSI_SEQ, "") || plain.indexOf(TAB_CURRENT_MARK) >= 0) return null
+    if (parseTabBar(plain) == null) return null
+    val items = TAB_ITEM.findAll(plain).toList()
+    val lit = items.filter { chars[it.range.first].background.isNotEmpty() }
+    if (lit.size != 1) return null
+    // A bar drawn wholly on a background (a theme, a selection) singles nothing out.
+    val left = plain.indexOf('←')
+    if (left >= 0 && chars[left].background.isNotEmpty()) return null
+    val at = lit.single().range.first
+    return plain.substring(0, at) + TAB_CURRENT_MARK + plain.substring(at)
 }
 
 /** The index just past the question's first "?" outside parentheses, or -1. */
@@ -1171,6 +1230,9 @@ fun questionParts(lines: List<QLine>): QuestionParts {
  * library) and Kiro's (a live pane, with its "↵"). Keyed by herdr's agent name. Hints that read
  * like a real request (Hermes's example prompts, "Find and fix a failing test") are left out, so
  * the same words typed at the computer are never taken for an empty line (from Grok's review).
+ * 2.1.1 (Bill, 2026-11-20: "don't see the grey suggestion template text as active text"): Claude's
+ * background-session prompt, Codex's follow-up hint and Hermes's two hints that are not requests
+ * (its locales/en.yaml placeholder p01 and p11), from the program and a live pane.
  */
 private val COMPOSER_HINTS: Map<String, Set<String>> = mapOf(
     "claude" to setOf(
@@ -1178,10 +1240,35 @@ private val COMPOSER_HINTS: Map<String, Set<String>> = mapOf(
         "Press up to edit queued messages, Enter to send them immediately",
         "Press up to select a queued message to edit, or Enter to send them now",
         "Press up to select a queued message, then Enter to edit it",
+        "describe a task for a new session",
     ),
-    "codex" to setOf("Ask Codex to do anything"),
+    "codex" to setOf("Ask Codex to do anything", "Ask a follow-up question"),
     "kiro" to setOf("ask a question or describe a task ↵"),
+    "hermes" to setOf("Ask anything, or type / for commands…", "Type / to browse commands, or Ctrl+P for the palette"),
 )
+
+/**
+ * Hermes's example prompts (locales/en.yaml placeholder p02 to p10), which read like requests and
+ * so never count on a plain read. On a styled read they count as a placeholder only when the whole
+ * row is one of them and every character is drawn in a colour, faint or italic: Hermes draws typed
+ * text in the terminal's default colour ("input-area": "") and these in its dim skin colour, italic
+ * (2.1.1; a skin without the italic still reads as empty, the same words in normal type as typing).
+ */
+private val STYLED_HINTS: Map<String, Set<String>> = mapOf(
+    "hermes" to setOf(
+        "Summarize what's in this folder", "Draft a reply to the last email in my inbox",
+        "Plan a feature, then build it step by step", "Find and fix a failing test",
+        "Research this topic and write me a brief", "What changed in this repo recently?",
+        "Turn these notes into a to-do list", "Explain this error and how to fix it",
+        "Set a reminder or schedule a recurring task",
+    ),
+)
+
+private fun isStyledHint(agent: String?, text: String): Boolean {
+    val key = agent?.lowercase() ?: return false
+    val norm = text.trim().replace(Regex("""\s+"""), " ")
+    return norm in COMPOSER_HINTS[key].orEmpty() || norm in STYLED_HINTS[key].orEmpty()
+}
 
 /**
  * True when [text], read from [agent]'s input line, is exactly that agent's own hint for an empty
@@ -1221,7 +1308,7 @@ private fun inputRow(screen: String): Pair<String, String>? {
     // 1.4.1 (from a code review): colour codes taken out first, and only the composer's own row
     // counts: one between two rule lines (the box agents draw around it), else one inside a
     // "│ ... │" frame, else one with at most a three-line footer under it. A quoted or diff "> " row in the output above is not typing.
-    val rawRows = screen.lines().map { it.replace("\r", "") }.takeLast(14)
+    val rawRows = withoutClaudeAgentList(screen.lines().map { it.replace("\r", "") }).takeLast(14)
     val rows = rawRows.map { it.replace(ANSI_SEQ, "") }
     val rule = Regex("""^[\s\u00A0╭╰├└┌]*[─━═╌┄-]{4,}""")
     fun isRule(i: Int) = i in rows.indices && rule.containsMatchIn(rows[i])
@@ -1259,6 +1346,38 @@ internal data class ComposerDraft(val text: String, val bounded: Boolean, val me
 private const val MAX_DRAFT_ROWS = 30
 /** A box rule: only box-drawing lines (no ASCII "-"), at least 20 wide; a corner may start or end it. */
 private val DRAFT_BOX_RULE = Regex("""^([\s ]*)([╭╰├└┌]?[─━═]{20,}[╮╯┤┘┐]?)[\s ]*$""")
+/**
+ * The rule above Claude Code's input box with the session's title in it (2.1.1, Claude Code
+ * 2.1.329: "──── … ──── Laptop2 ─" after /rename or a named session). Only the rule that opens the
+ * box may carry a title; the rule that closes it is a plain [DRAFT_BOX_RULE].
+ */
+private val DRAFT_TITLED_RULE = Regex("""^([\s\u00A0]*)([╭├┌]?[─━═]{20,} [^─━═\s][^─━═]{0,60}? [─━═]{1,4}[╮┤┐]?)[\s\u00A0]*$""")
+/** A row of the list Claude Code 2.1.329 draws under its box while helpers run ("  ● main", "  ◯ general-purpose  …  7s"). */
+private val CLAUDE_AGENT_LIST_ROW = Regex("""^ {2}[●◯○◉✓✔✗✘] \S.*$""")
+private val CLAUDE_LIST_RULE = Regex("""^[\s\u00A0╭╰├└┌]*[─━═]{20,}""")
+
+/**
+ * [rows] without the list of the session and its background helpers that Claude Code 2.1.329
+ * draws under its input box and status row (2.1.1: with it, the box looked too far from the
+ * bottom to be the composer, and a typed draft showed no card). Only a trailing block is taken
+ * off: list rows and blank rows, the first of them "  ● ", no prompt glyph, right under a short
+ * footer (at most three rows) that sits under a box rule. Anything else is left as it is.
+ */
+private fun withoutClaudeAgentList(rows: List<String>): List<String> {
+    val plain = rows.map { it.replace(ANSI_SEQ, "") }
+    var start = plain.size
+    while (start > 0 && (plain[start - 1].isBlank() || CLAUDE_AGENT_LIST_ROW.matches(plain[start - 1]))) start--
+    val block = plain.subList(start, plain.size)
+    val listed = block.filter { it.isNotBlank() }
+    if (listed.isEmpty() || !listed.first().startsWith("  ● ")) return rows
+    if (listed.any { INPUT_LEAD.containsMatchIn(it) }) return rows
+    // The footer between the box's closing rule and the list: one to three rows.
+    val footerRows = (start - 1 downTo maxOf(0, start - 4)).takeWhile { !CLAUDE_LIST_RULE.containsMatchIn(plain[it]) }
+    val ruleAt = (footerRows.lastOrNull() ?: start) - 1
+    if (footerRows.isEmpty() || footerRows.size > 3 || ruleAt < 0 || !CLAUDE_LIST_RULE.containsMatchIn(plain[ruleAt])) return rows
+    return rows.subList(0, start)
+}
+
 private val DRAFT_FRAMED = Regex("""^[\s ]*([│┃|]).*\1[\s ]*$""")
 private val DRAFT_FRAME_EDGE = Regex("""^[\s ]*[│┃|]""")
 private val DRAFT_BOTTOM_EDGE = Regex("""^[\s ]*[╰└]""")
@@ -1286,10 +1405,15 @@ private fun withoutGhost(raw: String, text: String, from: Int, agent: String?): 
 }
 
 internal fun composerDraftOf(screen: String, agent: String? = null): ComposerDraft? {
-    val rawRows = screen.lines().map { it.replace("\r", "") }.takeLast(48)
+    val rawRows = withoutClaudeAgentList(screen.lines().map { it.replace("\r", "") }).takeLast(48)
     val rows = rawRows.map { it.replace(ANSI_SEQ, "") }
     /** Where a box rule starts and how wide it is, or null for any other row. */
     fun span(i: Int): IntRange? = rows.getOrNull(i)?.let(DRAFT_BOX_RULE::matchEntire)?.let {
+        val at = it.groupValues[1].length
+        at until at + it.groupValues[2].length
+    }
+    /** [span] for the rule that opens a box, which may carry the session's title (Claude Code 2.1.329). */
+    fun openSpan(i: Int): IntRange? = span(i) ?: rows.getOrNull(i)?.let(DRAFT_TITLED_RULE::matchEntire)?.let {
         val at = it.groupValues[1].length
         at until at + it.groupValues[2].length
     }
@@ -1345,7 +1469,7 @@ internal fun composerDraftOf(screen: String, agent: String? = null): ComposerDra
     // that has only a footer under it. A typed line of dashes as wide as the box looks just like
     // that edge, so with more than one such rule the end can't be told: shown, not acted on.
     for (c in candidates.asReversed()) {
-        val open = span(c - 1) ?: continue
+        val open = openSpan(c - 1) ?: continue
         val closes = (c + 1 until minOf(rows.size, c + 1 + MAX_DRAFT_ROWS)).filter { i -> span(i)?.let { sameSpan(it, open) } == true }
         val close = closes.lastOrNull { footer(it) != null } ?: continue
         val under = footer(close) ?: continue
@@ -1393,7 +1517,7 @@ internal fun composerDraftOf(screen: String, agent: String? = null): ComposerDra
 }
 
 /** One character of a styled row and how it is drawn (1.4.6). */
-private data class Styled(val ch: Char, val faint: Boolean, val italic: Boolean, val grey: Boolean, val background: List<Int>)
+private data class Styled(val ch: Char, val faint: Boolean, val italic: Boolean, val grey: Boolean, val background: List<Int>, val colored: Boolean = false)
 
 /** A colour that reads as grey: the three channels within 28 of each other, of middle brightness. */
 private fun greyRgb(r: Int, g: Int, b: Int): Boolean =
@@ -1411,6 +1535,8 @@ private fun grey256(n: Int): Boolean = when (n) {
 private fun styledChars(row: String): List<Styled> {
     val out = ArrayList<Styled>(row.length)
     var faint = false; var italic = false; var grey = false
+    // A foreground colour other than the terminal's default is set (2.1.1).
+    var colored = false
     var background = emptyList<Int>()
     var i = 0
     while (i < row.length) {
@@ -1422,18 +1548,18 @@ private fun styledChars(row: String): List<Styled> {
                 var k = 0
                 while (k < ps.size) {
                     when (val c = ps[k]) {
-                        0 -> { faint = false; italic = false; grey = false; background = emptyList() }
+                        0 -> { faint = false; italic = false; grey = false; colored = false; background = emptyList() }
                         2 -> faint = true
                         22 -> faint = false
                         3 -> italic = true
                         23 -> italic = false
-                        39 -> grey = false
-                        in 30..37 -> grey = false
-                        90 -> grey = true
-                        in 91..97 -> grey = false
+                        39 -> { grey = false; colored = false }
+                        in 30..37 -> { grey = false; colored = true }
+                        90 -> { grey = true; colored = true }
+                        in 91..97 -> { grey = false; colored = true }
                         38 -> {
-                            if (ps.getOrNull(k + 1) == 2 && k + 4 < ps.size) { grey = greyRgb(ps[k + 2], ps[k + 3], ps[k + 4]); k += 4 }
-                            else if (ps.getOrNull(k + 1) == 5 && k + 2 < ps.size) { grey = grey256(ps[k + 2]); k += 2 }
+                            if (ps.getOrNull(k + 1) == 2 && k + 4 < ps.size) { grey = greyRgb(ps[k + 2], ps[k + 3], ps[k + 4]); colored = true; k += 4 }
+                            else if (ps.getOrNull(k + 1) == 5 && k + 2 < ps.size) { grey = grey256(ps[k + 2]); colored = true; k += 2 }
                         }
                         in 40..47, in 100..107 -> background = listOf(c)
                         49 -> background = emptyList()
@@ -1449,7 +1575,7 @@ private fun styledChars(row: String): List<Styled> {
             i = m.range.last + 1
             continue
         }
-        out += Styled(row[i], faint, italic, grey, background)
+        out += Styled(row[i], faint, italic, grey, background, colored)
         i++
     }
     return out
@@ -1462,7 +1588,9 @@ private fun styledChars(row: String): List<Styled> {
  * (Claude Code and Codex draw theirs with SGR 2) or in a grey colour (Kiro's 158,158,158), or, for
  * Hermes, italic (its gold italic examples). Text with any character in normal type is typed,
  * so typing followed by a dim suggestion (Claude's ghost text) still holds. A row read without
- * styles is never a placeholder by this test.
+ * styles is never a placeholder by this test. 2.1.1: an agent's own known hint ([isStyledHint]) that
+ * is the whole row, every character in a colour, faint or italic, is one too (Hermes in a skin
+ * whose example prompts are not italic); the same words in the default colour are typing.
  */
 fun isPlaceholderText(raw: String, typed: String, agent: String?): Boolean {
     if (!raw.contains('\u001B') || typed.isEmpty()) return false
@@ -1475,7 +1603,9 @@ fun isPlaceholderText(raw: String, typed: String, agent: String?): Boolean {
     if (start < 0) return false
     val hermes = agent?.lowercase() == "hermes"
     val seen = chars.subList(start, start + typed.length).filter { !it.ch.isWhitespace() }
-    return seen.isNotEmpty() && seen.all { it.faint || it.grey || (hermes && it.italic) }
+    if (seen.isEmpty()) return false
+    if (seen.all { it.faint || it.grey || (hermes && it.italic) }) return true
+    return isStyledHint(agent, typed) && seen.all { it.colored || it.faint || it.italic }
 }
 
 /** A choice that grants standing permission ("always allow", "don't ask again"); the card adds a caution (1.4.0). */
@@ -1652,6 +1782,24 @@ private val VIBE_CARD_FOOTER = Regex("""↑↓/jk navigate.*(Esc reject|Enter se
 
 fun showsQuestionDialog(text: String): Boolean =
     text.lines().filter { it.isNotBlank() }.takeLast(6).any { QUESTION_FOOTER.containsMatchIn(it) }
+
+/**
+ * Rows read from each Claude pane for its status (2.1.1). A short conversation in Claude Code's
+ * fullscreen view leaves its question dialog high on the screen with blank rows under it; a
+ * 12-row read saw only those blank rows, and the pane stayed "working". 80 covers a tall pane.
+ */
+internal const val CLAUDE_STATUS_READ_LINES = 80
+
+/**
+ * Why a Claude pane that herdr calls working or idle needs you, from the bottom of its screen
+ * ([CLAUDE_STATUS_READ_LINES] rows), or null: its question dialog is open, or its sessions list
+ * shows a session awaiting input (2.1.1).
+ */
+internal fun claudeNeedsYouReason(tail: String): String? = when {
+    showsQuestionDialog(tail) -> "a question dialog is open"
+    claudeSessionsAwaiting(tail) > 0 -> "Claude's sessions list shows a session awaiting input"
+    else -> null
+}
 
 private val PI_SELECT_FOOTER = Regex("""↑↓\s+navigate\s+enter select\s+escape/ctrl\+c cancel""", RegexOption.IGNORE_CASE)
 
@@ -2101,8 +2249,53 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     return detectPlainPrompt(plain, blocked, agent, version)
 }
 
+/**
+ * Claude Code's sessions list (2.1.1, Bill: "Claude might have had a question in chat that was not a
+ * card but I couldn't see it in terminal view"). Left on an empty composer ("← for agents") moves the
+ * session to the background and fills the screen with the list, and a question the session asks
+ * then waits there ("Needs input", "1 awaiting input") without its dialog on screen. Captured from
+ * Claude Code 2.1.329 in a throwaway container.
+ */
+private val CLAUDE_BACKGROUND_HINT = Regex("""^Your session moved to the background\b.*\besc returns to it\b""", RegexOption.IGNORE_CASE)
+private val CLAUDE_AWAITING = Regex("""(?:^|\s)(\d{1,3}) awaiting input$""")
+
+/**
+ * How many sessions Claude's sessions list shows as awaiting input ("1 awaiting input"), 0 when
+ * the list shows none, or the screen is not that list or a question dialog has replaced it (2.1.1).
+ */
+internal fun claudeSessionsAwaiting(text: String): Int {
+    val rows = text.lines().takeLast(80).map { it.trim() }
+    val hint = rows.indexOfLast { CLAUDE_BACKGROUND_HINT.containsMatchIn(it) }
+    if (hint < 0 || rows.drop(hint + 1).any { QUESTION_FOOTER.containsMatchIn(it) }) return 0
+    return rows.take(hint).firstNotNullOfOrNull { CLAUDE_AWAITING.find(it) }?.groupValues?.get(1)?.toIntOrNull() ?: 0
+}
+
+internal fun claudeBackgroundList(text: String): Prompt? {
+    val rows = text.lines().takeLast(80).map { it.trim() }
+    val hint = rows.indexOfLast { CLAUDE_BACKGROUND_HINT.containsMatchIn(it) }
+    if (hint < 0) return null
+    // A question dialog below the hint is the session itself, back on screen: the usual parser reads it.
+    if (rows.drop(hint + 1).any { QUESTION_FOOTER.containsMatchIn(it) }) return null
+    val count = rows.take(hint).firstNotNullOfOrNull { CLAUDE_AWAITING.find(it) }
+    val waiting = count?.groupValues?.get(1)?.toIntOrNull() ?: 0
+    val question = if (waiting > 0) "Claude's session is in the background, and its sessions list shows " +
+        (if (waiting == 1) "a session" else "$waiting sessions") + " waiting for your input. Its question shows once you return to it."
+        else "Claude's session is in the background, so its sessions list fills the screen. Return to it before sending anything."
+    // Only lines that stay the same between reads, so the card's Esc passes the fresh-read check.
+    val region = listOfNotNull(rows[hint], count?.value?.trim())
+    return Prompt(question, emptyList(), region = region, claudeBackground = true)
+}
+
+/** Claude Code's cue for a question held back while text is typed in its input box (2.1.329 bundle). */
+private const val CLAUDE_DRAFT_CUE = "Claude has a question for you. It shows once you send or clear what you're typing."
+
+/** Whether Claude shows that a question waits behind the draft in its input box. */
+internal fun claudeQuestionBehindDraft(text: String): Boolean =
+    stripAnsi(text).lines().takeLast(80).any { it.trim().trim('│', '┃', '|').trim() == CLAUDE_DRAFT_CUE }
+
 private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, version: String?): Prompt? {
     if ((agent == null || agent.equals("claude", true)) && claudeUsageOpen(text)) return null
+    if (agent.equals("claude", true)) claudeBackgroundList(text)?.let { return it }
     if (agent.equals("codex", true)) {
         val rows = text.lines().takeLast(80)
         fun hints(row: String) = row.split('|').map(String::trim)

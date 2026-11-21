@@ -1,0 +1,4 @@
+card: options
+blocked: false
+options: Private byte copy (Recommended) | Copy without private files | Skip the backup | Type something. | Chat about this
+source: Claude Code 2.1.329, fullscreen, 134x47, rendered against a mock API in a throwaway container, 2026-11-20 (neutral question text)
