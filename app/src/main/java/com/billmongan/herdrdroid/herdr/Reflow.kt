@@ -221,13 +221,16 @@ object Reflow {
         val width = body.maxOfOrNull { it.length }?.coerceAtLeast(20) ?: 80
         // Grok's box rows and status row sit left of its text; they don't set the margin.
         val margin = body.withIndex().filter { (i, it) ->
-            it.isNotBlank() && !isWide(it) && !(grok && (i in grokStatus || GrokMeta.box(it) != null || GrokMeta.gutterRow(it.trim()) != null))
+            it.isNotBlank() && !isWide(it) && !(grok && (i in grokStatus || GrokMeta.box(it) != null || GrokMeta.commandRow(it, body.getOrNull(i + 1)) != null ||
+                GrokMeta.bareBox(it, body.getOrNull(i + 1), body.getOrNull(i + 2)) != null))
         }.minOfOrNull { (_, it) -> it.length - it.trimStart().length } ?: 0
 
         val out = mutableListOf<Seg>()
         var para: P? = null
         var you: Y? = null
         val code = mutableListOf<String>()
+        // Grok's last command row ended in "·": its next "┆" row is the rest of that line (2.1.4).
+        var codeWraps = false
         // Antigravity: the meta lines seen since its last text, and whether a blank line came after them.
         val act = mutableListOf<AgyMeta.Step>()
         var gapAfterAct = false
@@ -258,6 +261,7 @@ object Reflow {
             val cut = code.minOf { it.length - it.trimStart().length }
             out += Seg.Code(code.map { it.drop(cut) })
             code.clear()
+            codeWraps = false
         }
         fun flushBanner() {
             banner?.let { out += Seg.Para(0, null, it.toString(), detail = true) }
@@ -347,20 +351,31 @@ object Reflow {
                     GrokMeta.Box.Hint -> continue
                     is GrokMeta.Box.Code -> {
                         flushBanner(); flushPara(); flushYou(); flushAct()
-                        // A wrapped row joins the one above: one command, as it was typed (2.1.3).
-                        if (bx.cont && code.isNotEmpty()) code[code.size - 1] = joinWrapped(code.last(), bx.line) else code += bx.line
+                        // A wrapped row joins the one above: one command, as it was typed (2.1.3). Only
+                        // when the row above ends in "·"; otherwise each row is its own line (2.1.4).
+                        if (bx.cont && code.isNotEmpty() && codeWraps) code[code.size - 1] = joinWrapped(code.last(), bx.line) else code += bx.line
+                        codeWraps = bx.wraps
                         continue
                     }
                     is GrokMeta.Box.Title -> { flushAll(); flushAct(); out += Seg.Para(0, null, bx.text); continue }
                     is GrokMeta.Box.Choice -> { flushAll(); flushAct(); out += Seg.Para(0, bx.n, bx.text, detail = true); continue }
                     is GrokMeta.Box.Text -> { flushAll(); flushAct(); out += Seg.Para(0, null, bx.text, detail = true); continue }
                 }
-                // The same wrapped row with no box edge to its left (2.1.3).
-                val wrapped = GrokMeta.gutterRow(t)
+                // The same rows with no box edge to their left (2.1.3), the first one too when it
+                // ends in "·" over a "┆" row (2.1.4).
+                val wrapped = GrokMeta.commandRow(l, body.getOrNull(at + 1))
                 if (wrapped != null) {
                     flushBanner(); flushPara(); flushYou(); flushAct()
-                    if (code.isNotEmpty()) code[code.size - 1] = joinWrapped(code.last(), wrapped) else code += wrapped
+                    if (wrapped.cont && code.isNotEmpty() && codeWraps) code[code.size - 1] = joinWrapped(code.last(), wrapped.text) else code += wrapped.text
+                    codeWraps = wrapped.wraps
                     continue
+                }
+                // Its title, hint and choices with no frame either (2.1.4).
+                when (val bare = GrokMeta.bareBox(l, body.getOrNull(at + 1), body.getOrNull(at + 2))) {
+                    GrokMeta.Box.Hint -> continue
+                    is GrokMeta.Box.Title -> { flushAll(); flushAct(); out += Seg.Para(0, null, bare.text); continue }
+                    is GrokMeta.Box.Choice -> { flushAll(); flushAct(); out += Seg.Para(0, bare.n, bare.text, detail = true); continue }
+                    else -> {}
                 }
                 val warning = AgyMeta.warning(t)
                 if (warning != null) {

@@ -68,7 +68,18 @@ internal fun alertIdentity(p: com.billmongan.herdrdroid.herdr.Prompt): String {
  */
 internal fun alertText(p: com.billmongan.herdrdroid.herdr.Prompt): String {
     val command = p.parts?.command ?: p.parts?.details?.firstOrNull { it.trimStart().startsWith("$ ") }
-    return if (command.isNullOrBlank() || p.question.contains(command.trim())) p.question else "${p.question}\n${command.trim().take(400)}"
+    if (command.isNullOrBlank()) return p.question
+    val cmd = command.trim()
+    // 2.1.4 (Bill: "parse them nicely maybe as newlines?"): a question that is its heading and then
+    // its command ("Confirm the line: git -C … | awk …") shows the heading, then the command on
+    // lines of its own, one per command line, since the alert's big text keeps real newlines.
+    fun squash(s: String) = s.filterNot(Char::isWhitespace)
+    val heading = p.parts?.heading
+    if (heading != null && squash(p.question) == squash(heading) + ":" + squash(cmd) ||
+        heading == null && squash(p.question) == squash(cmd)) {
+        return listOfNotNull(heading, cmd.take(400)).joinToString("\n")
+    }
+    return if (p.question.contains(cmd)) p.question else "${p.question}\n${cmd.take(400)}"
 }
 
 /** How many action buttons Android shows on a notification. */
