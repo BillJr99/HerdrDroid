@@ -31,7 +31,17 @@ data class Pane(
     val sessionId: String? = null,
     val terminalId: String? = null,
     val backgroundBusy: Boolean = false,
+    /**
+     * What herdr itself said (done or idle) when the app marks an OpenCode pane as needing you
+     * because its screen shows a permission dialog (2.1.2). herdr skips screen detection for
+     * OpenCode, so [status] then says NEEDS_YOU for the drawer, the list and the alert only:
+     * sends keep the route herdr's own status picks ([sendStatus]), and herdr waits use it too.
+     */
+    val screenNeedsYouFrom: Status? = null,
 ) {
+    /** The status that picks how a message goes out: herdr's own, not the screen's (2.1.2). */
+    val sendStatus: Status get() = screenNeedsYouFrom ?: status
+
     val agentName: String
         get() = when (agent?.lowercase()) {
             null, "" -> title.ifBlank { "Shell" }
@@ -226,16 +236,12 @@ class Herdr internal constructor(
         // 2.1.1: the read is long enough to reach past the blank rows a short conversation leaves
         // under a fullscreen dialog (showsQuestionDialog looks at the last rows with text), and
         // Claude's sessions list with a session awaiting input counts as needing you too.
-        val askable = list.filter { it.agent == "claude" && it.status != Status.NEEDS_YOU }
+        // 2.1.2: herdr skips screen detection for OpenCode and calls a pane with a permission dialog
+        // done or idle, so those panes are read in the same round trip and marked for display only.
+        val askable = screenAskable(list)
         val marked = if (askable.isEmpty()) list else {
             val tails = runCatching { previews(askable.map { it.id }, CLAUDE_STATUS_READ_LINES) }.getOrDefault(emptyMap())
-            list.map { p ->
-                val why = if (p in askable) tails[p.id]?.tail?.let(::claudeNeedsYouReason) else null
-                if (why != null) {
-                    com.billmongan.herdrdroid.diag.DiagLog.log("prompt", "${p.id}: $why while herdr says ${p.status.name.lowercase()}; treating it as needs you")
-                    p.copy(status = Status.NEEDS_YOU)
-                } else p
-            }
+            markScreenNeedsYou(list, tails.mapValues { it.value.tail })
         }
         val order = listOf(Status.NEEDS_YOU, Status.WORKING, Status.DONE, Status.IDLE, Status.UNKNOWN)
         panes0Cache = marked
@@ -359,6 +365,21 @@ class Herdr internal constructor(
 
     private fun screenText(text: String, preserveGlyphs: Boolean) = if (preserveGlyphs) stripAnsi(text) else forPhone(text)
 
+    /**
+     * The notification's strict read (2.1.2) with its styles kept: the same [read] (the bottom
+     * [lines] rows, no card-recovery fallback), as ANSI, so an OpenCode permission's highlighted
+     * button can be seen before a key goes in. herdr-core gives plain text, where no button counts
+     * as highlighted.
+     */
+    internal suspend fun readStrictStyled(paneId: String, lines: Int): String =
+        if (core) read(paneId, lines, preserveGlyphs = true)
+        else try {
+            runNow(recentSnapshot(paneId, lines), timeoutSeconds = 5)
+        } catch (e: HerdrError) {
+            if (e.exit == -2) throw e
+            runNow(visibleSnapshot(paneId, ansi = true, lines = lines), timeoutSeconds = 5)
+        }
+
     suspend fun read(paneId: String, lines: Int = 200, preserveGlyphs: Boolean = false): String =
         if (core) screenText(runNow(hcCmd("read", paneId, "--lines", lines.toString()), timeoutSeconds = 5), preserveGlyphs)
         else try {
@@ -379,9 +400,8 @@ class Herdr internal constructor(
         if (core) return null
         val agents = panes.filter { it.agent != null }
         if (agents.isEmpty()) return null
-        val names = mapOf(Status.IDLE to "idle", Status.WORKING to "working", Status.NEEDS_YOU to "blocked", Status.DONE to "done")
         val body = agents.joinToString("") { p ->
-            val until = names.filterKeys { it != p.status }.values.joinToString(" ") { "--until $it" }
+            val until = waitUntilStates(p).joinToString(" ") { "--until $it" }
             "( $herdr agent wait ${shq(p.id)} $until --timeout $timeoutMs >/dev/null 2>&1 && echo ${shq("@@chg " + p.id)} ) & pids=\"\$pids \$!\"; "
         }
         // The first wait's own status is the script's (1.4.1, from a second review: a trailing
@@ -460,20 +480,23 @@ class Herdr internal constructor(
     private suspend fun sendMessage(
         pane: Pane, text: String, allowTerminalFallback: Boolean, expectedConnection: Any?, permit: WritePermit?,
     ) {
-        require(allowTerminalFallback || (pane.agent != null && pane.status in setOf(Status.IDLE, Status.DONE)))
+        // herdr's own status picks the route: an OpenCode pane marked needs-you from its screen
+        // keeps the send it had (2.1.2).
+        val status = pane.sendStatus
+        require(allowTerminalFallback || (pane.agent != null && status in setOf(Status.IDLE, Status.DONE)))
         require(permit == null || (!allowTerminalFallback && expectedConnection != null))
         lastSendRoute = when {
             core -> "hc send"
-            pane.agent != null && pane.status != Status.NEEDS_YOU -> "herdr agent prompt"
+            pane.agent != null && status != Status.NEEDS_YOU -> "herdr agent prompt"
             else -> "herdr pane send-text + enter"
         }
         if (core) {
             // hc send pastes and presses Enter; it refuses a terminal waiting on a question
             // unless forced, and a message sent then is meant as the answer.
-            if (pane.status == Status.NEEDS_YOU) runNow(hcCmd("send", "--force", pane.id, text)) else runNow(hcCmd("send", pane.id, text), expectedConnection = expectedConnection, permit = permit)
+            if (status == Status.NEEDS_YOU) runNow(hcCmd("send", "--force", pane.id, text)) else runNow(hcCmd("send", pane.id, text), expectedConnection = expectedConnection, permit = permit)
             return
         }
-        if (pane.agent != null && pane.status != Status.NEEDS_YOU) {
+        if (pane.agent != null && status != Status.NEEDS_YOU) {
             try {
                 runNow(cmd("agent", "prompt", pane.id, text), expectedConnection = expectedConnection, permit = permit)
                 return
@@ -1842,6 +1865,66 @@ internal const val CLAUDE_STATUS_READ_LINES = 80
  * ([CLAUDE_STATUS_READ_LINES] rows), or null: its question dialog is open, or its sessions list
  * shows a session awaiting input (2.1.1).
  */
+/**
+ * The herdr states [Herdr.waitForChange] waits for on [p]: every state but the one herdr reports.
+ * herdr's own status (2.1.2): waiting until "done" on a pane herdr already calls done, but the app
+ * shows as needing you, would end at once and poll without a pause.
+ */
+internal fun waitUntilStates(p: Pane): List<String> {
+    val names = mapOf(Status.IDLE to "idle", Status.WORKING to "working", Status.NEEDS_YOU to "blocked", Status.DONE to "done")
+    return names.filterKeys { it != (p.screenNeedsYouFrom ?: p.status) }.values.toList()
+}
+
+/**
+ * The panes whose screen [Herdr.panes] reads for a dialog herdr didn't report: Claude panes not
+ * already waiting, and OpenCode panes herdr calls done or idle (2.1.2).
+ */
+internal fun screenAskable(list: List<Pane>): List<Pane> = list.filter {
+    (it.agent == "claude" && it.status != Status.NEEDS_YOU) ||
+        (isOpenCode(it.agent) && it.status in setOf(Status.DONE, Status.IDLE))
+}
+
+/**
+ * [list] with each [screenAskable] pane whose screen tail in [tails] shows it needs you marked
+ * NEEDS_YOU. A Claude pane is promoted as before; an OpenCode pane only for display and alerts,
+ * keeping herdr's status in [Pane.screenNeedsYouFrom] for the send route (2.1.2).
+ */
+internal fun markScreenNeedsYou(list: List<Pane>, tails: Map<String, String>): List<Pane> {
+    val askable = screenAskable(list).map { it.id }.toSet()
+    return list.map { p ->
+        val tail = tails[p.id]?.takeIf { p.id in askable }
+        val why = when {
+            tail == null -> null
+            p.agent == "claude" -> claudeNeedsYouReason(tail)
+            isOpenCode(p.agent) -> openCodeNeedsYouReason(tail)
+            else -> null
+        }
+        when {
+            why == null -> p
+            isOpenCode(p.agent) -> {
+                com.billmongan.herdrdroid.diag.DiagLog.log("prompt", "${p.id}: $why while herdr says ${p.status.name.lowercase()}; showing it as needs you, sends unchanged")
+                p.copy(status = Status.NEEDS_YOU, screenNeedsYouFrom = p.status)
+            }
+            else -> {
+                com.billmongan.herdrdroid.diag.DiagLog.log("prompt", "${p.id}: $why while herdr says ${p.status.name.lowercase()}; treating it as needs you")
+                p.copy(status = Status.NEEDS_YOU)
+            }
+        }
+    }
+}
+
+/**
+ * Why an OpenCode pane herdr calls done or idle needs you, from the bottom of its screen, or null
+ * (2.1.2): its permission dialog is open, as the chat card would read it (the same checks as
+ * [detectPrompt]: no background drawer, no composer under it, no question dialog first).
+ */
+internal fun openCodeNeedsYouReason(tail: String): String? {
+    val plain = stripAnsi(tail)
+    if (openCodeBackgroundDrawer("opencode", plain) || openCodeComposerMode(plain.lines().takeLast(20)) >= 0) return null
+    if (detectOpenCodeQuestion(plain) != null) return null
+    return detectOpenCodePermission(tail, plain)?.let { "a permission dialog is open" }
+}
+
 internal fun claudeNeedsYouReason(tail: String): String? = when {
     showsQuestionDialog(tail) -> "a question dialog is open"
     claudeSessionsAwaiting(tail) > 0 -> "Claude's sessions list shows a session awaiting input"

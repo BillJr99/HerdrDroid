@@ -2805,6 +2805,10 @@ class AppViewModel internal constructor(
     private suspend fun strictNotifyRead(h: Herdr, paneId: String): String? =
         try { h.read(paneId, NOTIFY_READ_LINES, preserveGlyphs = true) } catch (_: HerdrError) { null }
 
+    /** [strictNotifyRead] with its styles kept (2.1.2), for an OpenCode alert's answer. Null when it fails. */
+    private suspend fun strictStyledNotifyRead(h: Herdr, paneId: String): String? =
+        try { h.readStrictStyled(paneId, NOTIFY_READ_LINES) } catch (_: HerdrError) { null }
+
     /** Read fresh output for the card before accepting an answer. */
     private suspend fun readForCard(h: Herdr, paneId: String, lines: Int = 80): String? =
         try { readPaneScreen(h, paneId, lines) } catch (_: HerdrError) { null }
@@ -3798,19 +3802,33 @@ class AppViewModel internal constructor(
             }
             return
         }
-        val text = runCatching { readForCard(h, a.paneId, NOTIFY_READ_LINES) }.getOrNull()
-        if (text.isNullOrBlank()) {
+        // 2.1.2: an OpenCode alert is answered only from the strict 80-line read (no card-recovery
+        // fallback), with its styles kept so a permission's highlighted button can be seen.
+        val openCode = isOpenCode(a.agent)
+        val text = if (openCode) runCatching { strictStyledNotifyRead(h, a.paneId) }.getOrNull()
+            else runCatching { readForCard(h, a.paneId, NOTIFY_READ_LINES) }.getOrNull()
+        if (text.isNullOrBlank() || com.billmongan.herdrdroid.herdr.stripAnsi(text).isBlank()) {
             // Not "the question changed": the app couldn't see (1.4.2, from review).
             Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer", "The pane's screen couldn't be read, so the answer wasn't sent.")
             return
         }
         // The same depth and agent the alert was made with (1.4.2, from review).
         val now = detectPrompt(text, blocked = true, agent = a.agent)
+        // An OpenCode permission (2.1.2): only Esc, Reject, or Allow once moved to from the highlight
+        // this read shows; never Always allow, never a typed digit.
+        val permissionKeys = now?.takeIf { it.openCodePermission }?.let { com.billmongan.herdrdroid.notify.openCodePermissionAlertKeys(it, a) }
+        if (now != null && now.openCodePermission && permissionKeys == null && notificationAnswerStillFits(now, a)) {
+            com.billmongan.herdrdroid.diag.DiagLog.log("answer", "${a.paneId}: OpenCode permission alert not answered, no highlighted button in the strict read")
+            Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
+                "The app couldn't see which button OpenCode has highlighted, so nothing was sent.")
+            return
+        }
         // Muse's quota warning is answered only from the chat card, whose live read finds its highlight.
-        if (now == null || now.openCodePermission || now.museQuota || !notificationAnswerStillFits(now, a)) {
+        if (now == null || (now.openCodePermission && permissionKeys == null) || now.museQuota || !notificationAnswerStillFits(now, a)) {
             // The question's words still on screen but not read as that card: say the app couldn't
             // tell, rather than that it changed.
-            val stillThere = a.question.isNotBlank() && text.filterNot { it.isWhitespace() }.contains(a.question.filterNot { it.isWhitespace() }.take(60))
+            val plain = com.billmongan.herdrdroid.herdr.stripAnsi(text)
+            val stillThere = a.question.isNotBlank() && plain.filterNot { it.isWhitespace() }.contains(a.question.filterNot { it.isWhitespace() }.take(60))
             Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
                 if (stillThere) "The app couldn't match your answer to the question on screen, so nothing was sent."
                 else "The question changed before your answer arrived, so nothing was sent.")
@@ -3836,7 +3854,8 @@ class AppViewModel internal constructor(
                 return
             }
             val nav = if (!a.isKey) now.choices.firstOrNull { it.keys == a.keys }?.let { c -> com.billmongan.herdrdroid.herdr.menuKeys(now, c) } else null
-            if (nav != null) h.sendKeys(a.paneId, *nav.toTypedArray())
+            if (permissionKeys != null) h.sendKeys(a.paneId, *permissionKeys.toTypedArray())
+            else if (nav != null) h.sendKeys(a.paneId, *nav.toTypedArray())
             else if (a.isKey) h.sendKeys(a.paneId, a.keys)
             else if (a.pressEnter) h.typeAndEnter(a.paneId, a.keys)
             else h.sendText(a.paneId, a.keys)
