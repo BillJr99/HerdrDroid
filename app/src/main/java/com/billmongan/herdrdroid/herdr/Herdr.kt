@@ -2101,22 +2101,35 @@ private val OPENCODE_WEB_SEARCH_FOOTER =
 private val OPENCODE_PERMISSION_TITLE = Regex("""^(?:△\s+)?(?:Permission required|Reject permission)$""")
 private val OPENCODE_PERMISSION_BUTTONS = Regex("""(Allow once)\s{3,}(?:(Always allow)\s{3,})?(Reject)$""")
 private val OPENCODE_PERMISSION_HINT = Regex("""(?:⇆|←→)\s+select\s+enter\s+confirm$""")
+/** OpenCode 2.3.2 puts its fullscreen toggle ("ctrl+f fullscreen", "ctrl+f minimize") before "⇆ select" (2.1.2). */
+private val OPENCODE_PERMISSION_FULLSCREEN = Regex("""(?:^|\s+)(?:\S+\s+)?(?:fullscreen|minimize)$""")
 
 private fun detectOpenCodePermission(styled: String, text: String): Prompt? {
     fun clean(row: String) = row.trim().trim('┃', '│', '|').trim()
     val rows = text.lines()
-    val footer = rows.indexOfLast { clean(it).isNotEmpty() }
+    var footer = rows.indexOfLast { clean(it).isNotEmpty() }
     if (footer < 0) return null
+    // A status row under the dialog ("~/dir  12K (6%)  ctrl+p commands") is not part of it (2.1.2).
+    if (footer > 0 && rows[footer].none { it in "┃│" } && OPENCODE_COMMANDS.containsMatchIn(rows[footer]) &&
+        OPENCODE_PERMISSION_HINT.find(clean(rows[footer])) == null) {
+        footer = (footer - 1 downTo 0).firstOrNull { clean(rows[it]).isNotEmpty() } ?: return null
+    }
     val hint = OPENCODE_PERMISSION_HINT.find(clean(rows[footer]))
     val title = (footer downTo maxOf(0, footer - 60)).firstOrNull { OPENCODE_PERMISSION_TITLE.matches(clean(rows[it])) }
     if (title == null && (hint == null || !clean(rows[footer]).contains("Allow once"))) return null
-    if (title != null && agentWentOn(rows.subList(title + 1, footer + 1))) return null
+    // A shell command wrapped inside the dialog can start a row with ">" (">/dev/null 2>&1"): it is
+    // the command being asked about, not an input row under the dialog (2.1.2).
+    val command = title?.let { t -> (t + 1..footer).firstOrNull { clean(rows[it]).startsWith("$ ") } }
+    val commandEnd = command?.let { c -> (c + 1..footer).firstOrNull { clean(rows[it]).isEmpty() } ?: (footer + 1) }
+    if (title != null && agentWentOn((title + 1..footer).filter { command == null || it !in command until checkNotNull(commandEnd) }.map { rows[it] })) return null
     val region = rows.subList(title ?: footer, footer + 1)
     val heading = title?.let { clean(rows[it]).removePrefix("△ ") } ?: "Permission required"
     fun review() = Prompt(heading, emptyList(), region = region.map(::clean), terminalReview = true)
     if (title == null || heading != "Permission required" || hint == null) return review()
-    val onFooter = clean(rows[footer]).substring(0, hint.range.first).trimEnd()
-    val buttonRow = if (onFooter.isBlank() || !onFooter.contains("Allow once")) footer - 1 else footer
+    val onFooter = clean(rows[footer]).substring(0, hint.range.first).trimEnd().replace(OPENCODE_PERMISSION_FULLSCREEN, "").trimEnd()
+    // Narrow panes stack the hints under the buttons, with a blank row between them (2.3.2).
+    val buttonRow = if (onFooter.isNotBlank() && onFooter.contains("Allow once")) footer
+        else (footer - 1 downTo maxOf(0, footer - 2)).firstOrNull { clean(rows[it]).isNotEmpty() } ?: return review()
     if (buttonRow <= title) return review()
     val buttons = OPENCODE_PERMISSION_BUTTONS.find(if (buttonRow == footer) onFooter else clean(rows[buttonRow])) ?: return review()
     val body = rows.subList(title + 1, buttonRow).map(::clean).filter(String::isNotEmpty)

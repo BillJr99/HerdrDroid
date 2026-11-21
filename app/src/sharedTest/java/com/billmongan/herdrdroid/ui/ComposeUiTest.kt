@@ -524,6 +524,27 @@ class ComposeUiTest {
         }
     }
 
+    // 2.1.2 (Bill, 2026-11-21): OpenCode 2.3.2's shell permission, with its "ctrl+f fullscreen" hint,
+    // renders its answer buttons, not the terminal-only review note.
+    @Test fun openCode232PermissionCardShowsItsButtons() {
+        val frame = listOf(
+            "  ┃",
+            "  ┃  △ Permission required",
+            "  ┃",
+            "  ┃  \$ echo hi > ~/scratch/x",
+            "  ┃",
+            "  ┃",
+            "  ┃   Allow once   Always allow   Reject     ctrl+f fullscreen  ⇆ select  enter confirm",
+            "  ┃",
+        ).joinToString("\n")
+        val p = checkNotNull(com.billmongan.herdrdroid.herdr.detectPrompt(frame, blocked = false, agent = "opencode-ursinus")).forCard()
+        rule.setContent { PromptCard(p, agent = "OpenCode", onChoice = {}, onKey = {}, onTypeAnswer = {}) }
+        rule.onNodeWithText("Allow once").assertExists()
+        rule.onNodeWithText("Reject").assertExists()
+        rule.onNodeWithText("Always allow").assertDoesNotExist()
+        rule.onNodeWithText("This preview is incomplete", substring = true).assertDoesNotExist()
+    }
+
     @Test fun cardAloneHasNoQuestionBody() {
         val p = Prompt("Do you want to proceed with this very particular question?", listOf(Choice("Yes", "1", false), Choice("No", "2", false)), selected = "1")
         rule.setContent { PromptCard(p, agent = "Codex", onChoice = {}, onKey = {}, onTypeAnswer = {}) }
