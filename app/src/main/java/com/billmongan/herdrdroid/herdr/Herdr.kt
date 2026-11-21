@@ -1173,6 +1173,9 @@ fun questionParts(lines: List<QLine>): QuestionParts {
  * library) and Kiro's (a live pane, with its "↵"). Keyed by herdr's agent name. Hints that read
  * like a real request (Hermes's example prompts, "Find and fix a failing test") are left out, so
  * the same words typed at the computer are never taken for an empty line (from Grok's review).
+ * 2.1.1 (Bill, 2026-11-20: "don't see the grey suggestion template text as active text"): Claude's
+ * background-session prompt, Codex's follow-up hint and Hermes's two hints that are not requests
+ * (its locales/en.yaml placeholder p01 and p11), from the program and a live pane.
  */
 private val COMPOSER_HINTS: Map<String, Set<String>> = mapOf(
     "claude" to setOf(
@@ -1180,10 +1183,35 @@ private val COMPOSER_HINTS: Map<String, Set<String>> = mapOf(
         "Press up to edit queued messages, Enter to send them immediately",
         "Press up to select a queued message to edit, or Enter to send them now",
         "Press up to select a queued message, then Enter to edit it",
+        "describe a task for a new session",
     ),
-    "codex" to setOf("Ask Codex to do anything"),
+    "codex" to setOf("Ask Codex to do anything", "Ask a follow-up question"),
     "kiro" to setOf("ask a question or describe a task ↵"),
+    "hermes" to setOf("Ask anything, or type / for commands…", "Type / to browse commands, or Ctrl+P for the palette"),
 )
+
+/**
+ * Hermes's example prompts (locales/en.yaml placeholder p02 to p10), which read like requests and
+ * so never count on a plain read. On a styled read they count as a placeholder only when the whole
+ * row is one of them and every character is drawn in a colour, faint or italic: Hermes draws typed
+ * text in the terminal's default colour ("input-area": "") and these in its dim skin colour, italic
+ * (2.1.1; a skin without the italic still reads as empty, the same words in normal type as typing).
+ */
+private val STYLED_HINTS: Map<String, Set<String>> = mapOf(
+    "hermes" to setOf(
+        "Summarize what's in this folder", "Draft a reply to the last email in my inbox",
+        "Plan a feature, then build it step by step", "Find and fix a failing test",
+        "Research this topic and write me a brief", "What changed in this repo recently?",
+        "Turn these notes into a to-do list", "Explain this error and how to fix it",
+        "Set a reminder or schedule a recurring task",
+    ),
+)
+
+private fun isStyledHint(agent: String?, text: String): Boolean {
+    val key = agent?.lowercase() ?: return false
+    val norm = text.trim().replace(Regex("""\s+"""), " ")
+    return norm in COMPOSER_HINTS[key].orEmpty() || norm in STYLED_HINTS[key].orEmpty()
+}
 
 /**
  * True when [text], read from [agent]'s input line, is exactly that agent's own hint for an empty
@@ -1395,7 +1423,7 @@ internal fun composerDraftOf(screen: String, agent: String? = null): ComposerDra
 }
 
 /** One character of a styled row and how it is drawn (1.4.6). */
-private data class Styled(val ch: Char, val faint: Boolean, val italic: Boolean, val grey: Boolean, val background: List<Int>)
+private data class Styled(val ch: Char, val faint: Boolean, val italic: Boolean, val grey: Boolean, val background: List<Int>, val colored: Boolean = false)
 
 /** A colour that reads as grey: the three channels within 28 of each other, of middle brightness. */
 private fun greyRgb(r: Int, g: Int, b: Int): Boolean =
@@ -1413,6 +1441,8 @@ private fun grey256(n: Int): Boolean = when (n) {
 private fun styledChars(row: String): List<Styled> {
     val out = ArrayList<Styled>(row.length)
     var faint = false; var italic = false; var grey = false
+    // A foreground colour other than the terminal's default is set (2.1.1).
+    var colored = false
     var background = emptyList<Int>()
     var i = 0
     while (i < row.length) {
@@ -1424,18 +1454,18 @@ private fun styledChars(row: String): List<Styled> {
                 var k = 0
                 while (k < ps.size) {
                     when (val c = ps[k]) {
-                        0 -> { faint = false; italic = false; grey = false; background = emptyList() }
+                        0 -> { faint = false; italic = false; grey = false; colored = false; background = emptyList() }
                         2 -> faint = true
                         22 -> faint = false
                         3 -> italic = true
                         23 -> italic = false
-                        39 -> grey = false
-                        in 30..37 -> grey = false
-                        90 -> grey = true
-                        in 91..97 -> grey = false
+                        39 -> { grey = false; colored = false }
+                        in 30..37 -> { grey = false; colored = true }
+                        90 -> { grey = true; colored = true }
+                        in 91..97 -> { grey = false; colored = true }
                         38 -> {
-                            if (ps.getOrNull(k + 1) == 2 && k + 4 < ps.size) { grey = greyRgb(ps[k + 2], ps[k + 3], ps[k + 4]); k += 4 }
-                            else if (ps.getOrNull(k + 1) == 5 && k + 2 < ps.size) { grey = grey256(ps[k + 2]); k += 2 }
+                            if (ps.getOrNull(k + 1) == 2 && k + 4 < ps.size) { grey = greyRgb(ps[k + 2], ps[k + 3], ps[k + 4]); colored = true; k += 4 }
+                            else if (ps.getOrNull(k + 1) == 5 && k + 2 < ps.size) { grey = grey256(ps[k + 2]); colored = true; k += 2 }
                         }
                         in 40..47, in 100..107 -> background = listOf(c)
                         49 -> background = emptyList()
@@ -1451,7 +1481,7 @@ private fun styledChars(row: String): List<Styled> {
             i = m.range.last + 1
             continue
         }
-        out += Styled(row[i], faint, italic, grey, background)
+        out += Styled(row[i], faint, italic, grey, background, colored)
         i++
     }
     return out
@@ -1464,7 +1494,9 @@ private fun styledChars(row: String): List<Styled> {
  * (Claude Code and Codex draw theirs with SGR 2) or in a grey colour (Kiro's 158,158,158), or, for
  * Hermes, italic (its gold italic examples). Text with any character in normal type is typed,
  * so typing followed by a dim suggestion (Claude's ghost text) still holds. A row read without
- * styles is never a placeholder by this test.
+ * styles is never a placeholder by this test. 2.1.1: an agent's own known hint ([isStyledHint]) that
+ * is the whole row, every character in a colour, faint or italic, is one too (Hermes in a skin
+ * whose example prompts are not italic); the same words in the default colour are typing.
  */
 fun isPlaceholderText(raw: String, typed: String, agent: String?): Boolean {
     if (!raw.contains('\u001B') || typed.isEmpty()) return false
@@ -1477,7 +1509,9 @@ fun isPlaceholderText(raw: String, typed: String, agent: String?): Boolean {
     if (start < 0) return false
     val hermes = agent?.lowercase() == "hermes"
     val seen = chars.subList(start, start + typed.length).filter { !it.ch.isWhitespace() }
-    return seen.isNotEmpty() && seen.all { it.faint || it.grey || (hermes && it.italic) }
+    if (seen.isEmpty()) return false
+    if (seen.all { it.faint || it.grey || (hermes && it.italic) }) return true
+    return isStyledHint(agent, typed) && seen.all { it.colored || it.faint || it.italic }
 }
 
 /** A choice that grants standing permission ("always allow", "don't ask again"); the card adds a caution (1.4.0). */
