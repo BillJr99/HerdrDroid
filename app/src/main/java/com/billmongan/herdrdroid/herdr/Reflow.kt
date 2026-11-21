@@ -103,7 +103,32 @@ object Reflow {
     }
 
     fun parse(text: String, antigravity: Boolean = false, grok: Boolean = false): List<Seg> {
-        val raw = text.lines().map(::clean)
+        var raw = text.lines().map(::clean)
+        // Antigravity's usage panel ("└ Models & Quota", from /usage) is a quiet line, never prose
+        // (2.1.1). Open, it hangs under the composer to the bottom of the screen; one left above
+        // the composer ends at the next rule or input row.
+        val usageAt = mutableMapOf<Int, String>()
+        var usageOpen = false
+        if (antigravity) {
+            val kept = mutableListOf<String>()
+            var i = 0
+            while (i < raw.size) {
+                if (!AgyMeta.isUsageHead(raw[i])) { kept += raw[i]; i++; continue }
+                // Open when no input row follows it; its own rows may hold rules.
+                val open = raw.drop(i + 1).none { val t = it.trim(); t == ">" || PROMPT_ONLY.matches(it) }
+                var end = i + 1
+                if (open) end = raw.size
+                else {
+                    while (end < raw.size && !isRule(raw[end]) && !PROMPT_ONLY.matches(raw[end])) end++
+                    // Up to its last row that reads as the panel's own; text after that is the agent's.
+                    end = (end - 1 downTo i + 1).firstOrNull { AgyMeta.isUsageRow(raw[it]) }?.plus(1) ?: (i + 1)
+                }
+                usageAt[kept.size] = AgyMeta.usageLine(raw.subList(i, end).joinToString("\n"), open)
+                if (open) usageOpen = true else kept += ""
+                i = end
+            }
+            raw = kept
+        }
 
         // The agent's input box and status line: from the first rule or box edge among the last
         // five lines with text on them, or else from the last input prompt there.
@@ -115,7 +140,8 @@ object Reflow {
             (prompt == ">" || prompt.startsWith("> ")) &&
                 raw.getOrNull(i - 1)?.let(::isRule) == true &&
                 raw.getOrNull(i + 1)?.let(::isRule) == true &&
-                raw.drop(i + 2).any(AgyMeta::isStatusBar)
+                // With the usage panel open, the panel stands where the status bar was.
+                (raw.drop(i + 2).any(AgyMeta::isStatusBar) || usageOpen && raw.drop(i + 2).all { it.isBlank() })
         } else null
         // A Grok reply can end in a box too. Require the native prompt, model border and mode hint.
         val grokComposer = if (grok) window.lastOrNull { i ->
@@ -192,7 +218,13 @@ object Reflow {
         }
         fun flushAll() { flushPara(); flushYou(); flushCode() }
 
-        for (l in body) {
+        for ((at, l) in body.withIndex()) {
+            val usage = usageAt[at]
+            if (usage != null) {
+                flushAll(); flushAct()
+                out += Seg.Para(0, null, usage, detail = true)
+                if (l.isBlank()) continue
+            }
             if (l.isBlank()) {
                 flushAll()
                 if (act.isNotEmpty()) gapAfterAct = true
@@ -280,6 +312,8 @@ object Reflow {
         flushAll()
         gapAfterAct = false
         flushAct()
+        // An open panel cut at the composer: after the reply, before the footer.
+        usageAt.filterKeys { it >= body.size }.values.forEach { out += Seg.Para(0, null, it, detail = true) }
         while (out.firstOrNull() == Seg.Gap) out.removeAt(0)
         while (out.lastOrNull() == Seg.Gap || out.lastOrNull() == Seg.Rule) out.removeAt(out.size - 1)
         if (footer.isNotEmpty()) out += Seg.Footer(footer)

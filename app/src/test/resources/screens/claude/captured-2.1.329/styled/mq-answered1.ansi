@@ -1,0 +1,48 @@
+
+[38;5;174m ▐[48;5;16m▛███▛█[39m[49m   [1mClaude Code[0m[39m[49m [38;5;246mv2.1.329
+[38;5;174m▝▜[48;5;16m█████[49m█▀[39m  [38;5;246mOpus 5.5 · API Usage Billing
+[38;5;174m ▝▝   ▝▝ [39m  [38;5;246m/proj
+
+
+●[39m [38;5;246mAuto mode lets Claude handle permission prompts automatically — Claude checks each tool call for risky actions and prompt
+[39m  [38;5;246minjection before executing. Actions Claude identifies as safe are executed, while actions Claude identifies as risky are
+[39m  [38;5;246mblocked and Claude may try a different approach. Ideal for long-running tasks. Sessions are slightly more expensive. Claude
+[39m  [38;5;246mcan make mistakes that allow harmful commands to run, it's recommended to only use in isolated environments. Shift+Tab to
+[39m  [38;5;246mchange mode.
+
+[48;5;237m❯ [38;5;231mPlease ask me the questions.[39m
+
+[38;5;231m[49m●[39m Done.
+
+[38;5;246m✻[39m [38;5;246mCooked for 0s · done 12:43 AM
+
+[48;5;237m❯ [38;5;231mPlease ask me the questions again.[39m
+[38;5;246m[49m──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m←  ☒ Backup [38;5;16m[48;5;153m ☐ Restart [39m[49m ☐ Follow-up  ✔ Submit  →
+
+[1m[38;5;231mWhen may I restart the helper?[0m[39m[49m
+
+[38;5;153m❯[39m [38;5;246m1.[39m [38;5;153mInterrupt now[39m
+     [38;5;246mStop the current job and restart.[39m
+  [38;5;246m2.[39m Wait until it is idle
+     [38;5;246mRestart once the current job has finished.
+[39m  [38;5;246m3. Type something.
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m  4. Chat about this
+
+[38;5;246mEnter to select · Tab/Arrow keys to navigate · Esc to cancel
+
+
+
+
+
+
+
+
+
+
+[39m
+
+
+
+
