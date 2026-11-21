@@ -158,9 +158,12 @@ class SuccessiveCardAnswerTest {
         val target = checkNotNull(vm.paneTextTarget)
         vm.answerCardKey(target, card, "enter", "generic Enter")
         vm.answerTyped(target, card, null, "draft") { error("Typed reply sent") }
+        assertTrue(sent.isEmpty())
+        // 2.1.2 (Bill: "The alert should offer whatever options the question does"): the alert's
+        // option goes in as its card's digit, after the strict re-read shows the same question.
         recentResult = ExecResult(0, hermesClarify, "")
         alert(card)
-        assertTrue(sent.isEmpty())
+        assertEquals(listOf("1"), sent)
     }
 
     @Test fun recentOnlyHermesClarifyDoesNotCreateAQuestionFromScrollback() = bothMessagingSettings("hermes", hermesComposer) {
@@ -519,7 +522,7 @@ class SuccessiveCardAnswerTest {
         assertTrue(vm.pendingSends.single().waiting)
 
         readSelectedPane()
-        assertEquals(listOf("Allow once", "Reject"), shown().choices.map { it.label })
+        assertEquals(listOf("Allow once", "Always allow", "Reject"), shown().choices.map { it.label })
         assertEquals(openCodePermission, vm.paneText)
         assertTrue(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
     }
@@ -530,7 +533,7 @@ class SuccessiveCardAnswerTest {
             recentResult = ExecResult(0, "Preparing the next step", "")
             readSelectedPane()
             val card = displayed()
-            assertEquals(listOf("Allow once", "Reject"), card.choices.map { it.label })
+            assertEquals(listOf("Allow once", "Always allow", "Reject"), card.choices.map { it.label })
             assertTrue(card.shownParts().command.orEmpty().contains(approvalCommand))
             assertTrue(sent.isEmpty())
             frame = focusedPermission("Always allow")
@@ -539,11 +542,41 @@ class SuccessiveCardAnswerTest {
         }
     }
 
+    // 2.1.2 (Bill, 2026-11-21): OpenCode 2.3.2's permission dialog while herdr says done.
+    @Test fun openCode232PermissionShowsItsCardWhileHerdrSaysDoneAndAnswersThroughTheSamePath() {
+        val v232 = checkNotNull(javaClass.getResource("/screens/opencode/live-2026-11-21/permission-shell-2.3.2.txt")).readText()
+        fun focused(focus: String) = listOf("Allow once", "Always allow", "Reject").fold(v232) { t, label ->
+            t.replace("   $label", "   \u001B[${if (label == focus) 44 else 49}m$label\u001B[0m")
+        }
+        for (status in listOf(Status.DONE, Status.IDLE)) fixture("opencode-ursinus", v232) {
+            status(status)
+            readSelectedPane()
+            val card = displayed()
+            assertFalse(card.terminalReview)
+            assertEquals(listOf("Allow once", "Always allow", "Reject"), card.choices.map { it.label })
+            assertTrue(card.shownParts().command.orEmpty().contains("echo hi > ~/scratch/x"))
+            assertTrue(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+            assertTrue(sent.isEmpty())
+            frame = focused("Allow once")
+            answer(card, checkNotNull(vm.paneTextTarget))
+            assertEquals(listOf("enter"), sent)
+        }
+        fixture("opencode", v232) {
+            status(Status.DONE)
+            readSelectedPane()
+            val card = displayed()
+            frame = focused("Allow once")
+            answer(card, checkNotNull(vm.paneTextTarget), index = 2)
+            assertEquals(listOf("esc"), sent)
+        }
+    }
+
     @Test fun nativeOpenCodeRejectDoesNotConfirmTheHighlightedApproval() = fixture("opencode", openCodePermission) {
         readSelectedPane()
         val card = displayed()
         frame = focusedPermission("Allow once")
-        answer(card, checkNotNull(vm.paneTextTarget), index = 1)
+        // Reject is the third button since 2.1.2 shows Always allow too.
+        answer(card, checkNotNull(vm.paneTextTarget), index = 2)
         assertEquals(listOf("esc"), sent)
     }
 

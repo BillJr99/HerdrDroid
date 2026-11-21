@@ -1,0 +1,5 @@
+card: options
+blocked: false
+heading: Permission required
+options: Allow once | Always allow | Reject
+source: OpenCode v2.3.2 shell permission (2.1.2). Pane chrome (2-column inset, ┃ border, sidebar at column 94, 88-column composer box) measured from a real read of a 2.3.2 pane; the dialog rows were rebuilt from the 2.3.2 binary's own dialog code (△ Permission required, no title row for shell, $ command body, Allow once / Always allow / Reject, ctrl+f fullscreen, ⇆ select, enter confirm, its paddings and gaps). Neutral demo content only; herdr reports OpenCode panes as done or idle (screen detection skipped), hence blocked false.
