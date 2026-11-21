@@ -1251,7 +1251,7 @@ private fun inputRow(screen: String): Pair<String, String>? {
     // 1.4.1 (from a code review): colour codes taken out first, and only the composer's own row
     // counts: one between two rule lines (the box agents draw around it), else one inside a
     // "│ ... │" frame, else one with at most a three-line footer under it. A quoted or diff "> " row in the output above is not typing.
-    val rawRows = screen.lines().map { it.replace("\r", "") }.takeLast(14)
+    val rawRows = withoutClaudeAgentList(screen.lines().map { it.replace("\r", "") }).takeLast(14)
     val rows = rawRows.map { it.replace(ANSI_SEQ, "") }
     val rule = Regex("""^[\s\u00A0╭╰├└┌]*[─━═╌┄-]{4,}""")
     fun isRule(i: Int) = i in rows.indices && rule.containsMatchIn(rows[i])
@@ -1289,6 +1289,38 @@ internal data class ComposerDraft(val text: String, val bounded: Boolean, val me
 private const val MAX_DRAFT_ROWS = 30
 /** A box rule: only box-drawing lines (no ASCII "-"), at least 20 wide; a corner may start or end it. */
 private val DRAFT_BOX_RULE = Regex("""^([\s ]*)([╭╰├└┌]?[─━═]{20,}[╮╯┤┘┐]?)[\s ]*$""")
+/**
+ * The rule above Claude Code's input box with the session's title in it (2.1.1, Claude Code
+ * 2.1.329: "──── … ──── MiniPC2 ─" after /rename or a named session). Only the rule that opens the
+ * box may carry a title; the rule that closes it is a plain [DRAFT_BOX_RULE].
+ */
+private val DRAFT_TITLED_RULE = Regex("""^([\s\u00A0]*)([╭├┌]?[─━═]{20,} [^─━═\s][^─━═]{0,60}? [─━═]{1,4}[╮┤┐]?)[\s\u00A0]*$""")
+/** A row of the list Claude Code 2.1.329 draws under its box while helpers run ("  ● main", "  ◯ general-purpose  …  7s"). */
+private val CLAUDE_AGENT_LIST_ROW = Regex("""^ {2}[●◯○◉✓✔✗✘] \S.*$""")
+private val CLAUDE_LIST_RULE = Regex("""^[\s\u00A0╭╰├└┌]*[─━═]{20,}""")
+
+/**
+ * [rows] without the list of the session and its background helpers that Claude Code 2.1.329
+ * draws under its input box and status row (2.1.1: with it, the box looked too far from the
+ * bottom to be the composer, and a typed draft showed no card). Only a trailing block is taken
+ * off: list rows and blank rows, the first of them "  ● ", no prompt glyph, right under a short
+ * footer (at most three rows) that sits under a box rule. Anything else is left as it is.
+ */
+private fun withoutClaudeAgentList(rows: List<String>): List<String> {
+    val plain = rows.map { it.replace(ANSI_SEQ, "") }
+    var start = plain.size
+    while (start > 0 && (plain[start - 1].isBlank() || CLAUDE_AGENT_LIST_ROW.matches(plain[start - 1]))) start--
+    val block = plain.subList(start, plain.size)
+    val listed = block.filter { it.isNotBlank() }
+    if (listed.isEmpty() || !listed.first().startsWith("  ● ")) return rows
+    if (listed.any { INPUT_LEAD.containsMatchIn(it) }) return rows
+    // The footer between the box's closing rule and the list: one to three rows.
+    val footerRows = (start - 1 downTo maxOf(0, start - 4)).takeWhile { !CLAUDE_LIST_RULE.containsMatchIn(plain[it]) }
+    val ruleAt = (footerRows.lastOrNull() ?: start) - 1
+    if (footerRows.isEmpty() || footerRows.size > 3 || ruleAt < 0 || !CLAUDE_LIST_RULE.containsMatchIn(plain[ruleAt])) return rows
+    return rows.subList(0, start)
+}
+
 private val DRAFT_FRAMED = Regex("""^[\s ]*([│┃|]).*\1[\s ]*$""")
 private val DRAFT_FRAME_EDGE = Regex("""^[\s ]*[│┃|]""")
 private val DRAFT_BOTTOM_EDGE = Regex("""^[\s ]*[╰└]""")
@@ -1316,10 +1348,15 @@ private fun withoutGhost(raw: String, text: String, from: Int, agent: String?): 
 }
 
 internal fun composerDraftOf(screen: String, agent: String? = null): ComposerDraft? {
-    val rawRows = screen.lines().map { it.replace("\r", "") }.takeLast(48)
+    val rawRows = withoutClaudeAgentList(screen.lines().map { it.replace("\r", "") }).takeLast(48)
     val rows = rawRows.map { it.replace(ANSI_SEQ, "") }
     /** Where a box rule starts and how wide it is, or null for any other row. */
     fun span(i: Int): IntRange? = rows.getOrNull(i)?.let(DRAFT_BOX_RULE::matchEntire)?.let {
+        val at = it.groupValues[1].length
+        at until at + it.groupValues[2].length
+    }
+    /** [span] for the rule that opens a box, which may carry the session's title (Claude Code 2.1.329). */
+    fun openSpan(i: Int): IntRange? = span(i) ?: rows.getOrNull(i)?.let(DRAFT_TITLED_RULE::matchEntire)?.let {
         val at = it.groupValues[1].length
         at until at + it.groupValues[2].length
     }
@@ -1375,7 +1412,7 @@ internal fun composerDraftOf(screen: String, agent: String? = null): ComposerDra
     // that has only a footer under it. A typed line of dashes as wide as the box looks just like
     // that edge, so with more than one such rule the end can't be told: shown, not acted on.
     for (c in candidates.asReversed()) {
-        val open = span(c - 1) ?: continue
+        val open = openSpan(c - 1) ?: continue
         val closes = (c + 1 until minOf(rows.size, c + 1 + MAX_DRAFT_ROWS)).filter { i -> span(i)?.let { sameSpan(it, open) } == true }
         val close = closes.lastOrNull { footer(it) != null } ?: continue
         val under = footer(close) ?: continue
