@@ -149,6 +149,13 @@ class AppViewModel internal constructor(
     }
 
     private val chatVisit = com.billmongan.herdrdroid.voice.SelectedChatVisit()
+
+    /**
+     * The screen the server list was opened from while a server is open (2.1.3). Back and the
+     * list's back arrow return there. It is kept while the user edits a server or opens Settings
+     * from the list, and dropped as soon as they go anywhere else.
+     */
+    private var serversOrigin by mutableStateOf<Screen?>(null)
     private var currentScreen by mutableStateOf<Screen>(Screen.Servers)
     var screen: Screen
         get() = currentScreen
@@ -157,6 +164,7 @@ class AppViewModel internal constructor(
                 clearAgentMessage()
                 openingPanePreview = null
             }
+            if (!inServersFlow(value)) serversOrigin = null
             chatVisit.navigate((currentScreen as? Screen.Agent)?.paneId, (value as? Screen.Agent)?.paneId)
             currentScreen = value
         }
@@ -378,6 +386,49 @@ class AppViewModel internal constructor(
 
     fun reloadServers() {
         servers = store.all().sortedBy { it.label.lowercase() }
+    }
+
+    /** The server list and the screens opened from it: a server's form, and Settings. */
+    private fun inServersFlow(s: Screen) =
+        s == Screen.Servers || s is Screen.EditServer || (s is Screen.Settings && s.back == Screen.Servers)
+
+    /** Opens the server list (the drawer's "Servers…"), remembering where Back returns to. */
+    fun openServers() {
+        val from = screen
+        screen = Screen.Servers
+        if (!inServersFlow(from)) serversOrigin = from
+    }
+
+    /**
+     * Where Back leaves the server list for: the screen it was opened from, or this server's
+     * main screen. Null when no server is open: the list is then the app's main screen and Back
+     * leaves the app, as it always has.
+     */
+    val serversBack: Screen?
+        get() {
+            if (current == null) return null
+            val from = serversOrigin
+            return when {
+                from == null -> homeScreen()
+                from is Screen.Agent && panes.none { it.id == from.paneId } -> homeScreen()
+                else -> from
+            }
+        }
+
+    /** Back on the server list. False when there is nowhere to go in the app (Back leaves it). */
+    fun leaveServers(): Boolean {
+        val to = serversBack ?: return false
+        screen = to
+        return true
+    }
+
+    /**
+     * Closes a server's form without saving (Cancel, or Back), back to the server list. A new
+     * server's key made in the form goes with it ([newServerId] is that draft's id).
+     */
+    fun closeServerForm(newServerId: String?) {
+        if (newServerId != null) forgetGeneratedKey(newServerId)
+        screen = Screen.Servers
     }
 
     fun saveServer(server: Server) {
@@ -4051,8 +4102,12 @@ class AppViewModel internal constructor(
 
     /** Back to the agent last open on this server, or its tab list when there is none. */
     fun goHome() {
+        screen = homeScreen()
+    }
+
+    private fun homeScreen(): Screen {
         val last = prefs.lastAgent.split("|", limit = 2)
-        screen = if (last.getOrNull(0) == current?.id && panes.any { it.id == last.getOrNull(1) }) Screen.Agent(last[1])
+        return if (last.getOrNull(0) == current?.id && panes.any { it.id == last.getOrNull(1) }) Screen.Agent(last[1])
             else if (current != null) Screen.Tabs else Screen.Servers
     }
 
