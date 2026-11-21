@@ -408,7 +408,11 @@ class Herdr internal constructor(
         val script = ids.joinToString("; ") { id ->
             "echo ${shq("@@herdrdroid@@$id")}; ${if (core) hcCmd("read", id, "--lines", lines.toString()) else recentSnapshot(id, lines)} 2>/dev/null"
         }
-        val out = forPhone(ssh.exec(script).out)
+        return parsePreviews(forPhone((commands?.bulk(script) ?: ssh.exec(script)).out))
+    }
+
+    /** Splits [previews]' output at each pane's marker. */
+    internal fun parsePreviews(out: String): Map<String, Peek> {
         val result = mutableMapOf<String, Peek>()
         var current: String? = null
         val buf = StringBuilder()
@@ -419,10 +423,17 @@ class Herdr internal constructor(
             }
             buf.clear()
         }
+        // A read with --format ansi ends without a newline (2.1.2, from the 2.1.1 acceptance), so the
+        // next pane's marker can follow the last row of the one before on the same line. Taken only at
+        // the line's start, it was missed: every later pane's rows went to the first, whose drawer
+        // entry then showed another pane's model line ("GPT-6.2-Sol · default" from FixtureB's b3).
+        val mark = "@@herdrdroid@@"
         for (line in out.lines()) {
-            if (line.startsWith("@@herdrdroid@@")) {
+            val at = line.indexOf(mark)
+            if (at >= 0) {
+                if (at > 0) buf.appendLine(line.substring(0, at))
                 flush()
-                current = line.removePrefix("@@herdrdroid@@")
+                current = line.substring(at + mark.length)
             } else {
                 buf.appendLine(line)
             }
