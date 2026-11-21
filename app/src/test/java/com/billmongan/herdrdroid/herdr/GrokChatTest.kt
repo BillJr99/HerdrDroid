@@ -146,4 +146,13 @@ class GrokChatTest {
         }
         assertTrue(Reflow.parse(live).any { it is Seg.Para && it.mark == "◈" })
     }
+
+    @Test fun theAgentNameLeavesGrokChatAsItIs() {
+        // The app passes the pane's agent with the Grok flag (2.1.2): the Claude and Hermes input box
+        // rule must not apply to Grok, so the chat is the same with or without it.
+        for (screen in listOf(live, scan)) {
+            assertNull(composerBoxStart(screen, "grok"))
+            assertEquals(dump(Reflow.parse(screen, grok = true)), dump(Reflow.parse(screen, grok = true, agent = "grok")))
+        }
+    }
 }
