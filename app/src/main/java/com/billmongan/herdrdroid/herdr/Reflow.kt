@@ -18,6 +18,16 @@ sealed interface Seg {
     /** The agent's own input box and status line, at the bottom of its screen. */
     data class Footer(val lines: List<String>) : Seg
 
+    /**
+     * Antigravity's meta lines (thinking, tool calls, the "more actions" tally, a spinner) in a
+     * row, folded into one activity chip (2.1.1).
+     */
+    data class Activity(val steps: List<AgyMeta.Step>) : Seg {
+        val summary: String get() = AgyMeta.summary(steps)
+        val running: Boolean get() = steps.lastOrNull()?.running == true
+        val failed: Int get() = steps.sumOf { it.failed }
+    }
+
     data object Rule : Seg
     data object Gap : Seg
 }
@@ -93,7 +103,32 @@ object Reflow {
     }
 
     fun parse(text: String, antigravity: Boolean = false, grok: Boolean = false): List<Seg> {
-        val raw = text.lines().map(::clean)
+        var raw = text.lines().map(::clean)
+        // Antigravity's usage panel ("└ Models & Quota", from /usage) is a quiet line, never prose
+        // (2.1.1). Open, it hangs under the composer to the bottom of the screen; one left above
+        // the composer ends at the next rule or input row.
+        val usageAt = mutableMapOf<Int, String>()
+        var usageOpen = false
+        if (antigravity) {
+            val kept = mutableListOf<String>()
+            var i = 0
+            while (i < raw.size) {
+                if (!AgyMeta.isUsageHead(raw[i])) { kept += raw[i]; i++; continue }
+                // Open when no input row follows it; its own rows may hold rules.
+                val open = raw.drop(i + 1).none { val t = it.trim(); t == ">" || PROMPT_ONLY.matches(it) }
+                var end = i + 1
+                if (open) end = raw.size
+                else {
+                    while (end < raw.size && !isRule(raw[end]) && !PROMPT_ONLY.matches(raw[end])) end++
+                    // Up to its last row that reads as the panel's own; text after that is the agent's.
+                    end = (end - 1 downTo i + 1).firstOrNull { AgyMeta.isUsageRow(raw[it]) }?.plus(1) ?: (i + 1)
+                }
+                usageAt[kept.size] = AgyMeta.usageLine(raw.subList(i, end).joinToString("\n"), open)
+                if (open) usageOpen = true else kept += ""
+                i = end
+            }
+            raw = kept
+        }
 
         // The agent's input box and status line: from the first rule or box edge among the last
         // five lines with text on them, or else from the last input prompt there.
@@ -105,7 +140,8 @@ object Reflow {
             (prompt == ">" || prompt.startsWith("> ")) &&
                 raw.getOrNull(i - 1)?.let(::isRule) == true &&
                 raw.getOrNull(i + 1)?.let(::isRule) == true &&
-                raw.drop(i + 2).any { it.contains("Shift+Tab to change mode", ignoreCase = true) }
+                // With the usage panel open, the panel stands where the status bar was.
+                (raw.drop(i + 2).any(AgyMeta::isStatusBar) || usageOpen && raw.drop(i + 2).all { it.isBlank() })
         } else null
         // A Grok reply can end in a box too. Require the native prompt, model border and mode hint.
         val grokComposer = if (grok) window.lastOrNull { i ->
@@ -140,6 +176,7 @@ object Reflow {
             .filterNot { isRule(raw[it]) }
             .map { i ->
                 if (i == agyComposer) raw[i].trimStart().removePrefix(">").trim()
+                else if (antigravity) AgyMeta.footerLine(raw[i].filterNot { it in BOX }.trim().removePrefix("❯").removePrefix("›").trim())
                 else raw[i].filterNot { it in BOX }.trim().removePrefix("❯").removePrefix("›").trim()
             }
             .filter { it.isNotEmpty() }
@@ -152,13 +189,25 @@ object Reflow {
         var para: P? = null
         var you: Y? = null
         val code = mutableListOf<String>()
+        // Antigravity: the meta lines seen since its last text, and whether a blank line came after them.
+        val act = mutableListOf<AgyMeta.Step>()
+        var gapAfterAct = false
+        // Only prose loses private-use glyphs; tables and code keep every character.
+        val prose: (String) -> String = if (antigravity) AgyMeta::scrub else { s -> s }
 
+        fun flushAct() {
+            if (act.isEmpty()) return
+            out += Seg.Activity(act.toList())
+            act.clear()
+            if (gapAfterAct) out += Seg.Gap
+            gapAfterAct = false
+        }
         fun flushPara() {
-            para?.let { out += Seg.Para((it.indent - margin).coerceAtLeast(0), it.mark, it.sb.toString(), it.detail) }
+            para?.let { p -> prose(p.sb.toString()).takeIf { it.isNotEmpty() }?.let { out += Seg.Para((p.indent - margin).coerceAtLeast(0), p.mark, it, p.detail) } }
             para = null
         }
         fun flushYou() {
-            you?.let { out += Seg.You(it.sb.toString()) }
+            you?.let { y -> prose(y.sb.toString()).takeIf { it.isNotEmpty() }?.let { out += Seg.You(it) } }
             you = null
         }
         fun flushCode() {
@@ -169,14 +218,52 @@ object Reflow {
         }
         fun flushAll() { flushPara(); flushYou(); flushCode() }
 
-        for (l in body) {
+        for ((at, l) in body.withIndex()) {
+            val usage = usageAt[at]
+            if (usage != null) {
+                flushAll(); flushAct()
+                out += Seg.Para(0, null, usage, detail = true)
+                if (l.isBlank()) continue
+            }
             if (l.isBlank()) {
                 flushAll()
-                if (out.isNotEmpty() && out.last() != Seg.Gap) out += Seg.Gap
+                if (act.isNotEmpty()) gapAfterAct = true
+                else if (out.isNotEmpty() && out.last() != Seg.Gap) out += Seg.Gap
                 continue
             }
             val t = l.trim()
             val lead = l.length - l.trimStart().length
+            if (antigravity && lead - margin <= 2) {
+                val step = AgyMeta.step(t)
+                if (step != null) {
+                    flushAll()
+                    gapAfterAct = false
+                    act += step
+                    continue
+                }
+                // "──── Conversation compacted ────": a rule, and what it says, quietly.
+                val title = AgyMeta.ruleTitle(t)
+                if (title != null) {
+                    flushAll(); flushAct()
+                    out += Seg.Rule
+                    out += Seg.Para(0, null, title, detail = true)
+                    continue
+                }
+                // A notice box ("┃ Auto is now the default agent mode"): its text, without the edge or key hint.
+                val notice = AgyMeta.notice(t)
+                if (notice != null) {
+                    flushAll(); flushAct()
+                    if (notice.isNotEmpty() && !AgyMeta.isKeyHint(notice)) out += Seg.Para(0, null, AgyMeta.scrub(notice), detail = true)
+                    continue
+                }
+                val warning = AgyMeta.warning(t)
+                if (warning != null) {
+                    flushAll(); flushAct()
+                    para = P(lead, null, lead, false, warning, l.length)
+                    continue
+                }
+            }
+            flushAct()
             if (isRule(t) && !((antigravity || grok) && TABLE_RULE.matches(t))) {
                 flushAll()
                 out += Seg.Rule
@@ -223,6 +310,10 @@ object Reflow {
             }
         }
         flushAll()
+        gapAfterAct = false
+        flushAct()
+        // An open panel cut at the composer: after the reply, before the footer.
+        usageAt.filterKeys { it >= body.size }.values.forEach { out += Seg.Para(0, null, it, detail = true) }
         while (out.firstOrNull() == Seg.Gap) out.removeAt(0)
         while (out.lastOrNull() == Seg.Gap || out.lastOrNull() == Seg.Rule) out.removeAt(out.size - 1)
         if (footer.isNotEmpty()) out += Seg.Footer(footer)

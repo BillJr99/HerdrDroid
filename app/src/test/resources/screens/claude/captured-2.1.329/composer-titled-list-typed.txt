@@ -1,0 +1,48 @@
+
+✻ Crunched for 0s · done 12:08 AM
+
+❯ start-helpers again
+
+● 4 background agents launched (↓ to manage)
+   ├ Sample helper task 1
+   ├ Sample helper task 1
+   ├ Sample helper task 2
+   └ Sample helper task 3
+
+● Auto mode can't check actions in this session. Its safety check runs on the server, and your requests go through
+  127.0.0.1:8787, which doesn't pass it through. Actions that need the check now ask for your approval. To work without these
+  prompts, switch permission mode with Shift+Tab. To use auto mode, ask whoever runs 127.0.0.1:8787 to pass Claude Code's
+  server-side safety check through: https://code.claude.com/docs/en/permission-modes#server-side-classifier-review
+
+● Done.
+
+✻ Waiting for 1 background agent to finish
+
+❯ start-helpers B
+
+● Done.
+
+✻ Waiting for 2 background agents to finish
+
+❯ start-helpers C
+
+● Done.
+
+✻ Waiting for 3 background agents to finish
+
+❯ check the release notes for 2.1.2 start-helpers D
+
+● Done.
+
+✻ Waiting for 4 background agents to finish
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── Sample Title ─
+❯ check the release notes for 2.1.2
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)
+
+  ● main
+  ◯ general-purpose  Sample helper task 1                                                                                     1m 16s
+  ◯ general-purpose  Sample helper task 1                                                                                        55s
+  ◯ general-purpose  Sample helper task 2                                                                                        43s
+  ◯ general-purpose  Sample helper task 3                                                                                         7s

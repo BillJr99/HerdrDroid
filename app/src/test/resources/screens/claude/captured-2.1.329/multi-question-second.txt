@@ -1,0 +1,47 @@
+  Line 65 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 66 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 67 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 68 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 69 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 70 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 71 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 72 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 73 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 74 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 75 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 76 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 77 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 78 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 79 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 80 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 81 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 82 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 83 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 84 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 85 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 86 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 87 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 88 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 89 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+
+✻ Cooked for 0s · done 10:19 PM
+
+❯ Please ask me the questions.
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Backup  ☐ Restart  ☐ Follow-up  ☐ Checks  ✔ Submit  →
+
+│ Upgrading means restarting the report service and the helper itself. The helper is in the middle of a long job right now. When may I
+│ restart the helper?
+
+❯ 1. Interrupt now
+     Stop the current job, upgrade, and start it again afterwards.
+  2. Wait until it is idle (Recommended)
+     Check every few minutes and restart only once the current job has finished.
+  3. Type something.
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel
+
+
+
