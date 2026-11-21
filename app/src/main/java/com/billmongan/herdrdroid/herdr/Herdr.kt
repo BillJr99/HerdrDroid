@@ -1022,6 +1022,16 @@ data class Prompt(
     internal val openCodePermission: Boolean = false,
     /** Exact text of the native single-select question frame, excluding ANSI and row-end padding. */
     internal val openCodeQuestionFrame: String? = null,
+    /**
+     * The digit of a native OpenCode question's "Type your own answer" row (2.1.2): the question
+     * takes free text, typed after that digit opens its editor. Not one of [choices].
+     */
+    internal val openCodeCustom: String? = null,
+    /**
+     * An OpenCode question the app reads but only Terminal can answer (2.1.2): several questions
+     * (tabs), several answers (checkboxes), or a frame the parser could not prove complete.
+     */
+    internal val openCodeForm: Boolean = false,
     /** Claude renders this unnumbered button between the checkboxes and "Chat about this". */
     internal val claudeCheckboxAction: Choice? = null,
     /** Native Hermes clarify choices are available only from a guarded Chat card. */
@@ -1921,7 +1931,8 @@ internal fun markScreenNeedsYou(list: List<Pane>, tails: Map<String, String>): L
 internal fun openCodeNeedsYouReason(tail: String): String? {
     val plain = stripAnsi(tail)
     if (openCodeBackgroundDrawer("opencode", plain) || openCodeComposerMode(plain.lines().takeLast(20)) >= 0) return null
-    if (detectOpenCodeQuestion(plain) != null) return null
+    // 2.1.2: OpenCode's own question dialog (the "question" tool) needs you as much as a permission.
+    if (detectOpenCodeQuestion(plain) != null) return "a question dialog is open"
     return detectOpenCodePermission(tail, plain)?.let { "a permission dialog is open" }
 }
 
@@ -2231,31 +2242,59 @@ private fun detectOpenCodePermission(styled: String, text: String): Prompt? {
     val focused = if (fills.size == 3 && fills.none { it == null } && fills.distinct().size == 2)
         fills.indexOfFirst { fill -> fills.count { it == fill } == 1 }.takeIf { it >= 0 }?.let { (it + 1).toString() }
         else null
-    return Prompt(heading, labels.mapIndexedNotNull { i, label ->
-        if (label == "Always allow") null else Choice(label, (i + 1).toString(), false)
-    }, focused, escRejects = true, parts = questionParts((listOf(heading) + body).map { QLine(it) }),
+    // Every button the dialog shows, Always allow included (2.1.2, Bill: "The alert should offer
+    // whatever options the question does").
+    return Prompt(heading, labels.mapIndexed { i, label -> Choice(label, (i + 1).toString(), false) }, focused, escRejects = true, parts = questionParts((listOf(heading) + body).map { QLine(it) }),
         horizontal = true, approvalIdentity = rows.subList(title, buttonRow).joinToString("\n"), openCodePermission = true)
 }
 private val OPENCODE_WEB_SEARCH_OPTION = Regex("""^(?:[❯›>]\s*)?([1-3])[.]\s+(.+)$""")
 
 private val OPENCODE_QUESTION_FOOTER = Regex("""(⇆\s+tab\s+)?(↑↓\s+select\s+)?enter\s+(submit|confirm|toggle)\s+esc\s+dismiss""")
 private val OPENCODE_QUESTION_OPTION = Regex("""([1-9])\. (\S.*)""")
+/** A checkbox in front of a multi-select option ("1. [ ] Docs", "1. [✓] Docs"), 2.3.2. */
+private val OPENCODE_QUESTION_CHECKBOX = Regex("""^\[[ ✓]\]\s+""")
+/** OpenCode 2.3.2's question form, in edit mode on its own answer row: "enter submit  esc close". */
+private val OPENCODE_QUESTION_EDIT_FOOTER = Regex("""enter\s+submit\s+esc\s+close""")
+private const val OPENCODE_CUSTOM = "Type your own answer"
 
-/** Native QuestionPrompt (OpenCode v1.19.6, packages/tui/src/routes/session/question.tsx).
+/**
+ * The rows of an OpenCode question frame with the pane's inset taken off (2.1.2): OpenCode 2.3.2
+ * draws its dialogs two columns in from the pane edge ("  ┃  …"), v1.19.6 at the edge. [footer]
+ * is the last row with text inside the border. A status row under the dialog
+ * ("~/dir  12K (6%)  ctrl+p commands") is not part of it. Null when the bottom is no bordered frame.
+ */
+private class OpenCodeFrame(val rows: List<String>, val footer: Int)
+
+private fun openCodeFrame(text: String): OpenCodeFrame? {
+    var raw = text.lines().takeLast(80).map(String::trimEnd).dropLastWhile(String::isBlank)
+    if (raw.isNotEmpty() && '┃' !in raw.last() && OPENCODE_COMMANDS.containsMatchIn(raw.last()))
+        raw = raw.dropLast(1).dropLastWhile(String::isBlank)
+    val last = raw.indexOfLast { it.trim() != "┃" }
+    if (last < 0) return null
+    val inset = raw[last].indexOf('┃')
+    if (inset < 0 || raw[last].substring(0, inset).isNotBlank()) return null
+    val pad = " ".repeat(inset)
+    // Rows of another column (the transcript beside it) are not the frame's: mark them unusable.
+    val rows = raw.map { if (it.startsWith("$pad┃")) it.substring(inset) else "\u0000$it" }
+    return OpenCodeFrame(rows, last)
+}
+
+/** Native QuestionPrompt (OpenCode v1.19.6, packages/tui/src/routes/session/question.tsx) and
+ * OpenCode 2.3.2's question form (the "question" tool, title "Questions", 2.1.2).
  * A digit selects directly, without depending on color-only focus. Only a complete single-select
- * frame (no tabs, review, or custom editor) has that digit-to-submit contract.
+ * frame (no tabs, review, or custom editor) has that digit-to-submit contract; the others are
+ * shown as a card answered in Terminal.
  */
 private fun detectOpenCodeQuestion(text: String): Prompt? {
-    val rows = text.lines().takeLast(80).map(String::trimEnd).dropLastWhile(String::isBlank)
-    val footer = rows.indexOfLast { it != "┃" }
-    if (footer < 0) return null
+    val frame = openCodeFrame(text) ?: return null
+    val rows = frame.rows
+    val footer = frame.footer
     if (!rows[footer].startsWith("┃  ")) return null
     val (tabs, selection, enter) = OPENCODE_QUESTION_FOOTER.matchEntire(rows[footer].removePrefix("┃  "))
         ?.destructured ?: return null
     // Keep legacy, glyph-focused confirm fixtures on their existing arrow/Enter path.
     if (tabs.isEmpty() && selection.isNotEmpty() && enter == "confirm") return null
-    fun review(question: String = "OpenCode has a question") = Prompt(question, emptyList(), terminalReview = true)
-    if (tabs.isNotEmpty() || selection.isEmpty() || enter != "submit") return review()
+    fun review(question: String = "OpenCode has a question") = Prompt(question, emptyList(), terminalReview = true, openCodeForm = true)
 
     // The renderer has a spacer above the question, between it and the options, and before the
     // footer. Require all three: otherwise the viewport may start partway through the question.
@@ -2267,22 +2306,55 @@ private fun detectOpenCodeQuestion(text: String): Prompt? {
     val heading = panel.subList(top + 1, divider)
     if (heading.isEmpty() || heading.any { !it.startsWith("┃  ") || OPENCODE_QUESTION_OPTION.matches(it.removePrefix("┃  ")) }) return review()
     val question = heading.joinToString(" ") { it.removePrefix("┃  ").trimStart() }
+    // 2.3.2 titles its form "Questions" above the question; the question tool always adds the
+    // "Type your own answer" row there, last.
+    val titled = panel.subList(0, top).lastOrNull { it != "┃" }?.removePrefix("┃  ")?.trim() == "Questions"
+    val terminalOnly = tabs.isNotEmpty() || selection.isEmpty() || enter != "submit"
     val choices = mutableListOf<Choice>()
-    var custom = false
+    var custom: String? = null
     for (row in panel.subList(divider + 1, end)) {
         // Even an empty focused custom editor displays a placeholder below the custom row.
         // Do not send digits to a textarea or accept any unrecognized continuation there.
-        if (custom) return review(question)
+        if (custom != null) return review(question)
         if (row.startsWith("┃     ") && choices.isNotEmpty()) continue // option description
         val option = OPENCODE_QUESTION_OPTION.matchEntire(row.removePrefix("┃  ")) ?: return review(question)
-        val (digit, label) = option.destructured
+        val (digit, shown) = option.destructured
         if (digit.toInt() != choices.size + 1) return review(question)
-        if (label == "Type your own answer") custom = true
+        val label = if (terminalOnly) shown.replace(OPENCODE_QUESTION_CHECKBOX, "") else shown
+        if (label == OPENCODE_CUSTOM) custom = digit
+        // A ✓ after a label marks an answer already picked: the frame is not a fresh question.
+        else if (label.endsWith(" ✓") && !terminalOnly) return review(question)
         else choices += Choice(label, digit, false)
     }
     if (choices.isEmpty()) return review(question)
-    return Prompt(question, choices, numberKeys = true,
+    // Several questions or answers: the card shows the question, Terminal answers it (2.1.2).
+    if (terminalOnly) return review(question)
+    // The 2.3.2 form always ends in the custom row; one that ends elsewhere has typed text in it.
+    if (titled && custom == null) return review(question)
+    return Prompt(question, choices, numberKeys = true, openCodeCustom = custom,
         openCodeQuestionFrame = (panel.subList(top, panel.size) + rows[footer]).joinToString("\n"))
+}
+
+/**
+ * The question of a native OpenCode single-select question whose own answer row is open for
+ * typing (2.1.2): the frame right after its "Type your own answer" digit. Null for anything else.
+ */
+internal fun openCodeQuestionEditing(text: String): String? {
+    val frame = openCodeFrame(stripAnsi(text)) ?: return null
+    val rows = frame.rows
+    if (!rows[frame.footer].startsWith("┃  ") || !OPENCODE_QUESTION_EDIT_FOOTER.matches(rows[frame.footer].removePrefix("┃  "))) return null
+    val panel = rows.take(frame.footer).takeLastWhile { it.startsWith("┃") }
+    val end = panel.indexOfLast { it != "┃" } + 1
+    if (end == 0) return null
+    val divider = (end - 1 downTo 0).firstOrNull { panel[it] == "┃" } ?: return null
+    val top = (divider - 1 downTo 0).firstOrNull { panel[it] == "┃" } ?: return null
+    val heading = panel.subList(top + 1, divider)
+    if (heading.isEmpty() || heading.any { !it.startsWith("┃  ") }) return null
+    // The open row is the last one, with the placeholder or nothing typed yet after its digit.
+    val open = OPENCODE_QUESTION_OPTION.matchEntire(panel[end - 1].removePrefix("┃  "))
+    val emptyOpen = open?.groupValues?.get(2) == OPENCODE_CUSTOM || Regex("""[1-9]\.""").matches(panel[end - 1].removePrefix("┃  ").trim())
+    if (!emptyOpen) return null
+    return heading.joinToString(" ") { it.removePrefix("┃  ").trimStart() }
 }
 
 /** OpenCode highlights this picker with color alone. Its numbered keys select and submit directly. */

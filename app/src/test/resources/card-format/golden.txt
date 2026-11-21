@@ -520,6 +520,7 @@ CAPTION Patterns
 LIST
   - /home/user/work/shared/*
 OPTION Allow once
+OPTION Always allow
 OPTION Reject
 ##### opencode/derived-1.4.9/0701-permission-prompt-all-tools.txt
 HEADLINE Permission required
@@ -527,6 +528,7 @@ SUBHEAD Shell command
 CODE wrap
   | npm install --prefix /home/user/work/demo
 OPTION Allow once
+OPTION Always allow
 OPTION Reject
 ##### opencode/derived-1.4.9/0702-always-allow-confirmation-page.txt
 HEADLINE Permission required
@@ -537,6 +539,19 @@ HEADLINE Which database should demo-box use?
 OPTION SQLite
 OPTION Postgres
 OPTION Type your own answer
+##### opencode/live-2026-11-21/permission-shell-2.3.2.txt
+HEADLINE Permission required
+CODE wrap
+  | echo hi > ~/scratch/x
+OPTION Allow once
+OPTION Always allow
+OPTION Reject
+##### opencode/live-2026-11-21/question-2.3.2.txt
+HEADLINE Which database should the demo use?
+OPTION SQLite (Recommended)
+  NOTE A local file, nothing to run
+OPTION Postgres
+  NOTE A server database
 ##### pi/derived-1.4.9/0501-rm-rsync-delete-gate-local-extension-pi-.txt
 HEADLINE rm -r /home/user/work/demo/build
 OPTION Yes
