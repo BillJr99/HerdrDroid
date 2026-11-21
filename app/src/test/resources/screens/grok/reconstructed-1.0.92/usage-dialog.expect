@@ -1,0 +1,3 @@
+card: none
+blocked: false
+source: reconstructed 2026-11-21 for 2.1.4, not captured. Real (Bill's report of the Grok 1.0.92 pane, herdr tab grok, pane w2:p8): the dialog's footer text "Tab switch  |  ↑/↓ scroll  |  c copy session ID  |  Esc close", its light box (│ and └───┘), and the empty composer box still drawn under it. Reconstructed: the box's width and top border, every row inside it (the tab names, the session ID placeholder, the model and the usage row), the chat above it, and the composer and hint rows, which are copied from live-2026-11-21/idle-compacted.txt.

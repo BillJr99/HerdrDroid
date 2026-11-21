@@ -154,6 +154,12 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     /** The slash command whose screen is showing, until you go back to the chat. */
     var commandScreen by rememberSaveable(paneId) { mutableStateOf<String?>(null) }
     LaunchedEffect(fullTerminal) { if (!fullTerminal) commandScreen = null }
+    // 2.1.4: while the terminal shows a usage dialog the app opened, it stays open; going back to the
+    // chat, to another pane or out of the app closes it, and the app checks that it closed.
+    LaunchedEffect(paneId, commandScreen) {
+        vm.usageViewShown(paneId, commandScreen?.let { com.billmongan.herdrdroid.herdr.opensUsageDialog(vm.pane(paneId)?.agent, it) } == true)
+    }
+    androidx.compose.runtime.DisposableEffect(paneId) { onDispose { vm.usageViewShown(paneId, false) } }
     var menu by remember { mutableStateOf(false) }
     var choosingModel by remember { mutableStateOf(false) }
     var showSnippets by remember { mutableStateOf(false) }
@@ -285,7 +291,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             normalMessage = ""
             // A slash command answers on the screen (a menu, a sign-in code), not in the agent's log,
             // so show the screen and the keys to move through it.
-            if (text.startsWith("/") && !live) { fullTerminal = true; commandScreen = text.substringBefore(' ') }
+            // 2.1.4: not for /btw, whose answer the app reads into the chat and then closes.
+            if (text.startsWith("/") && !live && com.billmongan.herdrdroid.herdr.btwQuestion(pane.agent, text) == null) { fullTerminal = true; commandScreen = text.substringBefore(' ') }
         }
     }
     // An agent's error on screen (1.4.2): shown as a banner when there is no question.
@@ -589,7 +596,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
         }
         if (usageBlocksInput) {
-            UsageOverlayBanner(dismissingUsage) {
+            UsageOverlayBanner(dismissingUsage, btw = usageOverlay?.overlay?.visible?.let { com.billmongan.herdrdroid.herdr.claudeBtwOverlay(it) } != null) {
                 usageOverlay?.let(vm::dismissUsage)
             }
         }
@@ -1002,11 +1009,12 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
 private val KEY_HEIGHT = 42.dp
 
 @Composable
-internal fun UsageOverlayBanner(dismissing: Boolean, onDismiss: () -> Unit) {
+internal fun UsageOverlayBanner(dismissing: Boolean, btw: Boolean = false, onDismiss: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text("Usage panel is open", Modifier.weight(1f), color = Palette.Ink)
+        // 2.1.4: Claude's /btw panel too; its exchange is in the chat, and Close shuts the panel.
+        Text(if (btw) "Side question (/btw) is open; its answer is in the chat" else "Usage panel is open", Modifier.weight(1f), color = Palette.Ink)
         TextButton(onClick = onDismiss, enabled = !dismissing) {
-            Text(if (dismissing) "Dismissing…" else "Dismiss usage")
+            Text(if (dismissing) (if (btw) "Closing…" else "Dismissing…") else if (btw) "Close" else "Dismiss usage")
         }
     }
 }
@@ -1348,7 +1356,11 @@ internal fun PromptCard(
                     color = Palette.Muted, fontSize = 12.5.sp)
                 if (p.multi) Text("Several can be picked. Tapping a checkbox only turns that choice on or off.",
                     color = Palette.Muted, fontSize = 12.5.sp)
-                p.answerRows().forEach { c ->
+                // 2.1.4: "Type something." and "Chat about this" show as one "Type your answer".
+                val allRows = p.answerRows()
+                if (com.billmongan.herdrdroid.herdr.typedChatPair(allRows) != null)
+                    Text("\u201cChat about this\u201d isn't offered here; use Terminal for it.", color = Palette.Muted, fontSize = 12.5.sp)
+                com.billmongan.herdrdroid.herdr.shownChoices(allRows).forEach { c ->
                     // Say what tapping really sends: arrows and Enter for a menu with a highlighted row,
                     // Esc for a "(esc)" option, otherwise the key itself (1.2.7; it always said "sends N").
                     val typed = !p.hermesClarify && com.billmongan.herdrdroid.herdr.isTypedAnswerChoice(c.label)
@@ -1363,7 +1375,7 @@ internal fun PromptCard(
                     val body: @Composable () -> Unit = {
                         Column(Modifier.fillMaxWidth()) {
                             // A key hint ("(esc)") or tail reads quieter; the label's text is unchanged (2.1.1).
-                            Text(optionLabel(c.label, if (first) Palette.OnBlue.copy(alpha = 0.8f) else Palette.Muted),
+                            Text(optionLabel(com.billmongan.herdrdroid.herdr.shownChoiceLabel(allRows, c), if (first) Palette.OnBlue.copy(alpha = 0.8f) else Palette.Muted),
                                 fontSize = 15.sp, fontWeight = FontWeight.SemiBold, lineHeight = 20.sp,
                                 color = if (first) Palette.OnBlue else Palette.Ink)
                             optionNotes[c.keys]?.let { note ->

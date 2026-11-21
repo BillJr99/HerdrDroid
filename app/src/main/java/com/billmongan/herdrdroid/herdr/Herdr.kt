@@ -537,14 +537,23 @@ class Herdr internal constructor(
     private fun usageSnapshotCommand(paneId: String, agent: String) =
         "$PY -c ${shq(USAGE_OVERLAY_SNAPSHOT)} $herdr ${shq(paneId)} ${shq(agent)}"
 
-    internal suspend fun readUsageOverlay(paneId: String, agent: String): UsageOverlay? {
-        if (core || (agent != "claude" && agent != "kiro")) return null
+    internal suspend fun readUsageOverlay(paneId: String, agent: String): UsageOverlay? =
+        (readUsageState(paneId, agent) as? UsageState.Open)?.overlay
+
+    /**
+     * The guarded live read of [paneId] (2.1.4): its usage dialog in a known layout, no dialog, or
+     * can't tell (the read was refused: the pane is working, scrolled back, or changed occupant;
+     * or the dialog's hint is drawn in a layout the app doesn't know).
+     */
+    internal suspend fun readUsageState(paneId: String, agent: String): UsageState {
+        if (core || agent !in USAGE_DIALOG_AGENTS) return UsageState.Unknown
         val json = runNow(usageSnapshotCommand(paneId, agent), timeoutSeconds = 5).trim()
-        if (json.isEmpty()) return null
-        val objectJson = JSONObject(json)
-        val visible = objectJson.getString("visible")
-        if (visible.length > 20_000 || dismissibleUsageFrame(agent, visible) == null) return null
-        return UsageOverlay(objectJson.getString("occupant"), visible)
+        if (json.isEmpty()) return UsageState.Unknown
+        val objectJson = runCatching { JSONObject(json) }.getOrNull() ?: return UsageState.Unknown
+        val visible = objectJson.optString("visible")
+        if (visible.length > 20_000) return UsageState.Unknown
+        if (dismissibleUsageFrame(agent, visible) != null) return UsageState.Open(UsageOverlay(objectJson.getString("occupant"), visible))
+        return if (usageDialogHint(agent, visible) || visible.isBlank()) UsageState.Unknown else UsageState.Closed
     }
 
     internal suspend fun closeUsageOverlay(paneId: String, agent: String, overlay: UsageOverlay): Boolean {
@@ -555,6 +564,17 @@ class Herdr internal constructor(
         // Repeat the exact compare on the server, rather than sending an unguarded Escape over SSH.
         // Herdr does not expose an atomic compare-and-send; the final local CLI call is still separate.
         return runNow("${usageSnapshotCommand(paneId, agent)} $expected", timeoutSeconds = 5).trim() == "sent"
+    }
+
+    /**
+     * Scrolls Claude's /btw panel one step (2.1.4): Down, under the same server-side exact-snapshot
+     * check as [closeUsageOverlay], so it goes only to the panel just read. Only for a panel the app opened.
+     */
+    internal suspend fun scrollBtwOverlay(paneId: String, overlay: UsageOverlay): Boolean {
+        if (core || claudeBtwOverlay(overlay.visible) == null) return false
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(overlay.visible.toByteArray()).joinToString("") { "%02x".format(it) }
+        return runNow("${usageSnapshotCommand(paneId, "claude")} ${shq(overlay.occupant)} ${shq(digest)} down", timeoutSeconds = 5).trim() == "sent"
     }
 
     /**
@@ -1745,6 +1765,38 @@ private val OTHER_LABEL = Regex("""^(type something\.?|other\b.*|something else.
 // A checkbox before it ("[ ] Type something.", 1.4.9 from Grok's review) is not part of the words.
 fun isTypedAnswerChoice(label: String): Boolean = OTHER_LABEL.matches(label.trim().replace(Regex("""^(\[[ xX✓✔]\]|[☐☑☒◻◼□■])\s+"""), ""))
 
+/**
+ * 2.1.4, Bill: "some question cards show type something and also chat about this as separate
+ * options they seem redundant ... I'd like to merge them anytime that they would appear". Claude's
+ * AskUserQuestion ends with "Type something." (a free-text answer) and "Chat about this" (leave
+ * the question and talk instead); Oh My Pi's ask dialog ends with "Other (type your own)" and
+ * "Chat about this". When both are offered, the card and the alert show one option,
+ * [TYPED_ANSWER_LABEL], that answers through the typed row (move the highlight to that row, from
+ * the live screen, then type and Enter). The "Chat about this" row is never sent from it; it stays
+ * reachable through Terminal and the card's keys. [Prompt.choices] keep both rows, so keys, alert
+ * identity and option checks are unchanged. With only one of the two, nothing changes.
+ */
+const val TYPED_ANSWER_LABEL = "Type your answer"
+private val CHAT_INSTEAD_LABEL = Regex("""^chat about this\.?$""", RegexOption.IGNORE_CASE)
+private val CHOICE_BOX = Regex("""^(\[[ xX✓✔]\]|[☐☑☒◻◼□■])\s+""")
+
+/** The typed-answer row and the "Chat about this" row, when [choices] offer exactly one of each (2.1.4). */
+fun typedChatPair(choices: List<Choice>): Pair<Choice, Choice>? {
+    val chat = choices.filter { CHAT_INSTEAD_LABEL.matches(it.label.trim().replace(CHOICE_BOX, "")) }.singleOrNull() ?: return null
+    val typed = choices.filter { it != chat && isTypedAnswerChoice(it.label) }.singleOrNull() ?: return null
+    return typed to chat
+}
+
+/** The rows a card or alert shows (2.1.4): [rows] without "Chat about this" when it pairs with a typed row. */
+fun shownChoices(rows: List<Choice>): List<Choice> = typedChatPair(rows)?.let { (_, chat) -> rows.filter { it != chat } } ?: rows
+
+/** What [c] is called on a card or alert (2.1.4): the merged typed row is [TYPED_ANSWER_LABEL], a checkbox kept. */
+fun shownChoiceLabel(rows: List<Choice>, c: Choice): String {
+    if (typedChatPair(rows)?.first != c) return c.label
+    val box = CHOICE_BOX.find(c.label.trim())?.value.orEmpty()
+    return box + TYPED_ANSWER_LABEL
+}
+
 /** A checkbox row ("[ ] Tests", "[x] Docs", "☐ Lint", "◼ Build"), 1.4.0. */
 private val CHECKBOX = Regex("""^(\[[ xX✓✔]\]|[☐☑☒◻◼□■])\s+""")
 fun isCheckbox(label: String): Boolean = CHECKBOX.containsMatchIn(label.trim())
@@ -2556,6 +2608,8 @@ internal fun claudeQuestionBehindDraft(text: String): Boolean =
 
 private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, version: String?): Prompt? {
     if ((agent == null || agent.equals("claude", true)) && claudeUsageOpen(text)) return null
+    // 2.1.4: Claude's /btw panel is a side answer, not a question.
+    if ((agent == null || agent.equals("claude", true)) && claudeBtwOverlay(text) != null) return null
     if (agent.equals("claude", true)) claudeBackgroundList(text)?.let { return it }
     if (agent.equals("codex", true)) {
         val rows = text.lines().takeLast(80)

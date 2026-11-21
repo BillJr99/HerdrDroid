@@ -44,6 +44,11 @@ data class NotifyAction(
      * strict read has the identical identity, so a new permission with the same heading gets nothing.
      */
     val identity: String = "",
+    /**
+     * 2.1.4: a typed answer from the merged "Type your answer" button ([typedChatPair]): the keys of
+     * the typed row it answers through ([label] is that row's label). Empty for any other reply.
+     */
+    val typedRow: String = "",
 )
 
 /**
@@ -86,7 +91,9 @@ internal fun alertText(p: com.billmongan.herdrdroid.herdr.Prompt): String {
 internal const val MAX_ALERT_BUTTONS = 3
 
 /** One button of a "needs you" alert (2.1.2): an option, Esc, or Reply. */
-internal data class AlertButton(val title: String, val choice: Choice? = null, val esc: Boolean = false, val reply: Boolean = false)
+internal data class AlertButton(val title: String, val choice: Choice? = null, val esc: Boolean = false, val reply: Boolean = false,
+    /** 2.1.4: the merged "Type your answer" button, a reply typed through [choice]'s row. */
+    val typed: Boolean = false)
 
 /**
  * What a "needs you" alert offers (2.1.2, Bill: "The alert should offer whatever options the
@@ -113,8 +120,12 @@ internal fun alertOptionsSig(choices: List<Choice>): String =
 internal fun alertPlan(prompt: com.billmongan.herdrdroid.herdr.Prompt, terminalReview: Boolean = prompt.terminalReview, reply: Boolean = true): AlertPlan {
     if (terminalReview || prompt.terminalReview) return AlertPlan(emptyList(), emptyList())
     val escChoice = prompt.choices.firstOrNull { com.billmongan.herdrdroid.herdr.menuKeys(prompt, it) == listOf("esc") }
-    val answers = prompt.choices.map { c ->
-        val title = if (c == escChoice && !c.label.contains("esc", ignoreCase = true)) "${c.label.take(18)} (Esc)" else c.label.take(24)
+    // 2.1.4: "Type something." and "Chat about this" are one "Type your answer" reply button.
+    val merged = com.billmongan.herdrdroid.herdr.typedChatPair(prompt.choices)?.first
+    val answers = com.billmongan.herdrdroid.herdr.shownChoices(prompt.choices).map { c ->
+        if (c == merged && reply) return@map AlertButton(com.billmongan.herdrdroid.herdr.TYPED_ANSWER_LABEL, choice = c, typed = true)
+        val title = if (c == escChoice && !c.label.contains("esc", ignoreCase = true)) "${c.label.take(18)} (Esc)" else
+            (if (c == merged) c.label else com.billmongan.herdrdroid.herdr.shownChoiceLabel(prompt.choices, c)).take(24)
         AlertButton(title, choice = c)
     } + listOfNotNull(
         AlertButton(if (prompt.openCodeCustom != null) "Type answer" else "Reply", reply = true).takeIf {
@@ -128,7 +139,7 @@ internal fun alertPlan(prompt: com.billmongan.herdrdroid.herdr.Prompt, terminalR
     val escSlot = esc ?: answers.firstOrNull { escChoice != null && it.choice == escChoice }
     val rest = answers.filter { it !== escSlot }
     val shown = rest.take(MAX_ALERT_BUTTONS - (if (escSlot != null) 1 else 0))
-    return AlertPlan(shown + listOfNotNull(escSlot), rest.drop(shown.size).map { if (it.reply) "Type your own answer" else it.choice!!.label })
+    return AlertPlan(shown + listOfNotNull(escSlot), rest.drop(shown.size).map { if (it.reply || it.typed) "Type your own answer" else com.billmongan.herdrdroid.herdr.shownChoiceLabel(prompt.choices, it.choice!!) })
 }
 
 /**
@@ -221,6 +232,24 @@ object Notify {
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0)
         val pi = PendingIntent.getBroadcast(ctx, code(serverId, paneId, if (choices.isEmpty() && question.isEmpty()) 5 else 4), i, flags)
         return NotificationCompat.Action.Builder(0, title, pi).addRemoteInput(input).setAllowGeneratedReplies(false).build()
+    }
+
+    /**
+     * The merged "Type your answer" button (2.1.4): a reply whose text the app types through the
+     * typed row [row] ("Type something."), after the same question, options and identity checks
+     * as the other buttons. Its own slot (6), so it never shares extras with Reply or an option.
+     */
+    private fun typedReplyAction(ctx: Context, serverId: String, paneId: String, agent: String, agentKind: String?, question: String,
+        row: Choice, options: String, identity: String): NotificationCompat.Action {
+        val input = androidx.core.app.RemoteInput.Builder(KEY_REPLY).setLabel("Answer $agent").build()
+        val i = Intent(ctx, ActionReceiver::class.java)
+            .forButton(serverId, paneId, 6)
+            .putExtra(EXTRA_SERVER, serverId).putExtra(EXTRA_PANE, paneId).putExtra("reply", true)
+            .putExtra("question", question).putExtra("typedRow", row.keys).putExtra("label", row.label).putExtra("agent", agentKind)
+            .putExtra("options", options).putExtra("identity", identity)
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0)
+        val pi = PendingIntent.getBroadcast(ctx, code(serverId, paneId, 6), i, flags)
+        return NotificationCompat.Action.Builder(0, com.billmongan.herdrdroid.herdr.TYPED_ANSWER_LABEL, pi).addRemoteInput(input).setAllowGeneratedReplies(false).build()
     }
 
     fun channels(ctx: Context) {
@@ -319,6 +348,7 @@ object Notify {
         for (button in plan.buttons) {
             val c = button.choice
             when {
+                button.typed && c != null -> b.addAction(typedReplyAction(ctx, serverId, paneId, agent, agentKind, question, c, options, identity))
                 c != null -> {
                     val n = slot++
                     val i = Intent(ctx, ActionReceiver::class.java)
@@ -455,7 +485,13 @@ class ActionReceiver : BroadcastReceiver() {
             val text = androidx.core.app.RemoteInput.getResultsFromIntent(intent)?.getCharSequence(Notify.KEY_REPLY)?.toString()?.trim()
             val labels = intent.getStringArrayExtra("cLabels").orEmpty()
             val at = labels.indexOf(text)
-            if (at >= 0) {
+            val typedRow = intent.getStringExtra("typedRow").orEmpty()
+            if (typedRow.isNotEmpty()) {
+                // The merged "Type your answer" (2.1.4): typed through its row after the app's checks.
+                if (!text.isNullOrEmpty()) AppBus.emit(NotifyAction(server, pane, text, true, intent.getStringExtra("question").orEmpty(),
+                    label = intent.getStringExtra("label").orEmpty(), agent = intent.getStringExtra("agent"), isReply = true,
+                    options = intent.getStringExtra("options").orEmpty(), identity = intent.getStringExtra("identity").orEmpty(), typedRow = typedRow))
+            } else if (at >= 0) {
                 // A quick reply that is one of the agent's choices: answer with that choice's keys,
                 // checked against the same question, like the choice buttons.
                 AppBus.emit(NotifyAction(server, pane, intent.getStringArrayExtra("cKeys")?.getOrNull(at).orEmpty(),
