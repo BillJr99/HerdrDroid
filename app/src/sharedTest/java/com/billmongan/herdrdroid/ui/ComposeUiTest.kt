@@ -233,6 +233,12 @@ class ComposeUiTest {
         val app = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.app.Application>()
         val vm = com.billmongan.herdrdroid.AppViewModel(app)
         val target = pane(Status.WORKING)
+        // A server is open with no client yet (the link is down): taps queue for it. With no server
+        // open at all a tap is dropped instead (2.1.1, Grok's RC review M1).
+        @Suppress("UNCHECKED_CAST")
+        (AppViewModel::class.java.getDeclaredField("current\$delegate").apply { isAccessible = true }.get(vm)
+            as androidx.compose.runtime.MutableState<Any?>).value =
+            com.billmongan.herdrdroid.store.Server(id = "offline", name = "Offline", host = "offline.invalid", port = 22, user = "u", herdrPath = "herdr")
         rule.setContent {
             androidx.compose.foundation.layout.Column {
                 vm.removableSendsFor(target.id).forEach { pending ->
@@ -258,6 +264,8 @@ class ComposeUiTest {
             assertEquals(1, vm.queuedCount)
             assertEquals(listOf("Second message"), vm.removableSendsFor(target.id).map { it.text })
         }
+        // With a server open its checks keep running; stop them so later tests can go idle.
+        rule.runOnUiThread { vm.viewModelScope.cancel() }
     }
 
     @Test fun unsentMessageLongPressOffersForceSendAndRemove() {
