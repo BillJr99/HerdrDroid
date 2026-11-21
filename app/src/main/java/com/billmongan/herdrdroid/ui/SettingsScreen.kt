@@ -227,6 +227,18 @@ fun SettingsScreen(vm: AppViewModel, back: Screen) {
                     color = Palette.Muted, fontSize = 13.sp,
                 )
             }
+            Section("Updates") {
+                val u = vm.updates
+                com.billmongan.herdrdroid.update.UpdateSettings(
+                    installedVersion = u.installedVersion,
+                    dailyCheck = u.dailyCheck,
+                    lastCheckAt = u.lastCheckAt,
+                    checking = u.checking,
+                    note = u.note,
+                    onDailyCheck = u::changeDailyCheck,
+                    onCheckNow = u::checkNow,
+                )
+            }
             Text("HerdrDroid ${BuildConfig.VERSION_NAME}", color = Palette.Muted, fontSize = 13.sp)
         }
     }
