@@ -704,7 +704,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                             is com.billmongan.herdrdroid.transcript.ScreenSnapshot -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 Text("Earlier screen", color = Palette.Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                                 ChatTimestamp(entry.at)
-                                ChatView(entry.text, null, liveSize, vm.readingFont, antigravity = antigravity, grok = grok)
+                                ChatView(entry.text, null, liveSize, vm.readingFont, antigravity = antigravity, grok = grok, agent = chatAgent)
                             }
                             is com.billmongan.herdrdroid.transcript.QuestionItem -> QuestionView(entry, liveSize)
                         }
@@ -716,7 +716,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     // The same questions the history shows (from review): an open one's screen stays live.
                     ChatView(com.billmongan.herdrdroid.transcript.QuestionLog.liveTail(text,
                         vm.questionsFor(paneId).filter { prompt == null || it.state != com.billmongan.herdrdroid.transcript.QState.OPEN }), pending, liveSize, vm.readingFont,
-                        pendingAt = vm.lastSentAt, antigravity = antigravity, grok = grok)
+                        pendingAt = vm.lastSentAt, antigravity = antigravity, grok = grok, agent = chatAgent)
                 }
                 promptCard()
             }
@@ -1436,9 +1436,9 @@ private fun norm(s: String) = s.filterNot { it.isWhitespace() }.take(40)
 @Composable
 private fun ChatView(
     text: String, pending: String?, size: Float, font: ReadingFont,
-    pendingAt: Long? = null, antigravity: Boolean = false, grok: Boolean = false,
+    pendingAt: Long? = null, antigravity: Boolean = false, grok: Boolean = false, agent: String? = null,
 ) {
-    val segs = remember(text, antigravity, grok) { Reflow.parse(text, antigravity, grok) }
+    val segs = remember(text, antigravity, grok, agent) { Reflow.parse(text, antigravity, grok, agent) }
     val family: FontFamily = font.family
     val prose = if (font == ReadingFont.MONO) size else size * 1.2f
     val showPending = pending != null && segs.none { it is Seg.You && norm(it.text).startsWith(norm(pending).take(20)) }

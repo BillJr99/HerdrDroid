@@ -102,8 +102,29 @@ object Reflow {
         sb.append(next)
     }
 
-    fun parse(text: String, antigravity: Boolean = false, grok: Boolean = false): List<Seg> {
-        var raw = text.lines().map(::clean)
+    /**
+     * Claude's mode glyphs ("⏵⏵ auto mode on", "⏸ plan mode on"), which the app's fonts lack and
+     * Android drew as a missing-glyph box (2.1.2, 2.1.1 acceptance finding 5). Mapped as [forPhone]
+     * maps them, except that a single "⏵" becomes "»" too: "›" would read as a sent message.
+     */
+    private val STATUS_GLYPHS = listOf(
+        "\u23F5\u23F5" to "\u00BB", // ⏵⏵ -> »
+        "\u23F5" to "\u00BB", // ⏵ -> »
+        "\u23F8" to "\u2016", // ⏸ -> ‖
+        "\u23EF" to "\u00BB", // ⏯ -> »
+        "\u23F9" to "\u25A0", // ⏹ -> ■
+    )
+
+    private fun plainGlyphs(line: String): String = STATUS_GLYPHS.fold(line) { acc, (from, to) -> acc.replace(from, to) }
+
+    /**
+     * [agent] is the pane's canonical agent name. For Claude and Hermes (2.1.2) the input box found
+     * by [composerBoxStart] and everything under it is the footer, never prose: a draft or Hermes's
+     * placeholder in the box showed as a sent message when no session log gave the chat.
+     */
+    fun parse(text: String, antigravity: Boolean = false, grok: Boolean = false, agent: String? = null): List<Seg> {
+        val boxAt = composerBoxStart(text, agent)
+        var raw = text.lines().map { plainGlyphs(clean(it)) }
         // Antigravity's usage panel ("└ Models & Quota", from /usage) is a quiet line, never prose
         // (2.1.1). Open, it hangs under the composer to the bottom of the screen; one left above
         // the composer ends at the next rule or input row.
@@ -167,19 +188,22 @@ object Reflow {
             }
             start
         } else null
-        val footerAt = if (antigravity || grok) (agyComposer ?: grokComposer)?.minus(1) ?: agyChoices ?: raw.size else
+        val footerAt = if (boxAt != null && !antigravity && !grok) boxAt else if (antigravity || grok) (agyComposer ?: grokComposer)?.minus(1) ?: agyChoices ?: raw.size else
             window.firstOrNull { i ->
                 isRule(raw[i]) || raw[i].trimStart().firstOrNull()?.let { it in CHROME_START } == true
             } ?: window.lastOrNull { PROMPT_ONLY.matches(raw[it]) } ?: raw.size
         val body = raw.subList(0, footerAt)
         val footer = (footerAt until raw.size)
-            .filterNot { isRule(raw[it]) }
+            // The rule over Claude's or Hermes's box may carry the session's title: an edge, not text.
+            .filterNot { isRule(raw[it]) || it == boxAt }
             .map { i ->
                 if (i == agyComposer) raw[i].trimStart().removePrefix(">").trim()
                 else if (antigravity) AgyMeta.footerLine(raw[i].filterNot { it in BOX }.trim().removePrefix("❯").removePrefix("›").trim())
                 else raw[i].filterNot { it in BOX }.trim().removePrefix("❯").removePrefix("›").trim()
             }
             .filter { it.isNotEmpty() }
+            // An empty box's own hint ("describe a task for a new session") is not text either.
+            .filterNot { boxAt != null && isComposerHint(agent, it) }
 
         val width = body.maxOfOrNull { it.length }?.coerceAtLeast(20) ?: 80
         val margin = body.filter { it.isNotBlank() && !isWide(it) }
