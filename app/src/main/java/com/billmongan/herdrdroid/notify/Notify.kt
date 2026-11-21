@@ -36,6 +36,13 @@ data class NotifyAction(
 )
 
 /**
+ * Whether a "needs you" alert for [prompt] may carry a Reply box (2.1.1, Grok's RC review H1).
+ * Claude's sessions list has no options, but typed text there starts a new session, so its alert
+ * gets Esc only.
+ */
+internal fun notificationOffersReply(prompt: com.billmongan.herdrdroid.herdr.Prompt?): Boolean = prompt?.claudeBackground != true
+
+/**
  * Whether a notification button still answers the question on screen [now] (1.4.2): the same
  * question (spaces aside), and for a choice, an option with the same keys and the same label. Esc
  * needs only the same question. A typed reply is not checked here.
@@ -143,7 +150,7 @@ object Notify {
     }
 
     /** An agent is waiting on a question; [choices] become up to two buttons, plus Esc to decline. */
-    fun needsYou(ctx: Context, serverId: String, serverLabel: String, paneId: String, agent: String, question: String, choices: List<Choice>, agentKind: String? = null, terminalReview: Boolean = false) {
+    fun needsYou(ctx: Context, serverId: String, serverLabel: String, paneId: String, agent: String, question: String, choices: List<Choice>, agentKind: String? = null, terminalReview: Boolean = false, reply: Boolean = true) {
         if (!allowed(ctx)) return
         // Past the fingerprint window (1.3.1): the alert still comes, without the question or the
         // answer buttons; opening it asks for the fingerprint first.
@@ -189,7 +196,7 @@ object Notify {
             .putExtra(EXTRA_SERVER, serverId).putExtra(EXTRA_PANE, paneId)
             .putExtra("keys", "esc").putExtra("isKey", true).putExtra("question", question).putExtra("agent", agentKind)
         b.addAction(0, "Esc", PendingIntent.getBroadcast(ctx, code(serverId, paneId, 3), esc, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
-        if (choices.isEmpty()) b.addAction(replyAction(ctx, serverId, paneId, agent, question = question))
+        if (choices.isEmpty() && reply) b.addAction(replyAction(ctx, serverId, paneId, agent, question = question))
         runCatching { NotificationManagerCompat.from(ctx).notify(id(serverId, paneId), b.build()) }
     }
 
