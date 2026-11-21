@@ -1597,7 +1597,7 @@ internal fun composerBoxStart(screen: String, agent: String?): Int? {
 }
 
 /** One character of a styled row and how it is drawn (1.4.6). */
-private data class Styled(val ch: Char, val faint: Boolean, val italic: Boolean, val grey: Boolean, val background: List<Int>, val colored: Boolean = false)
+private data class Styled(val ch: Char, val faint: Boolean, val italic: Boolean, val grey: Boolean, val background: List<Int>, val colored: Boolean = false, val reverse: Boolean = false)
 
 /** A colour that reads as grey: the three channels within 28 of each other, of middle brightness. */
 private fun greyRgb(r: Int, g: Int, b: Int): Boolean =
@@ -1617,6 +1617,8 @@ private fun styledChars(row: String): List<Styled> {
     var faint = false; var italic = false; var grey = false
     // A foreground colour other than the terminal's default is set (2.1.1).
     var colored = false
+    // Reverse video (SGR 7): how Kiro draws its cursor block (2.1.2).
+    var reverse = false
     var background = emptyList<Int>()
     var i = 0
     while (i < row.length) {
@@ -1628,11 +1630,13 @@ private fun styledChars(row: String): List<Styled> {
                 var k = 0
                 while (k < ps.size) {
                     when (val c = ps[k]) {
-                        0 -> { faint = false; italic = false; grey = false; colored = false; background = emptyList() }
+                        0 -> { faint = false; italic = false; grey = false; colored = false; reverse = false; background = emptyList() }
                         2 -> faint = true
                         22 -> faint = false
                         3 -> italic = true
                         23 -> italic = false
+                        7 -> reverse = true
+                        27 -> reverse = false
                         39 -> { grey = false; colored = false }
                         in 30..37 -> { grey = false; colored = true }
                         90 -> { grey = true; colored = true }
@@ -1655,7 +1659,7 @@ private fun styledChars(row: String): List<Styled> {
             i = m.range.last + 1
             continue
         }
-        out += Styled(row[i], faint, italic, grey, background, colored)
+        out += Styled(row[i], faint, italic, grey, background, colored, reverse)
         i++
     }
     return out
@@ -1685,7 +1689,30 @@ fun isPlaceholderText(raw: String, typed: String, agent: String?): Boolean {
     val seen = chars.subList(start, start + typed.length).filter { !it.ch.isWhitespace() }
     if (seen.isEmpty()) return false
     if (seen.all { it.faint || it.grey || (hermes && it.italic) }) return true
+    if (cursorBeforeHint(chars, leadEnd, start, typed, agent)) return true
     return isStyledHint(agent, typed) && seen.all { it.colored || it.faint || it.italic }
+}
+
+/**
+ * 2.1.2 (Bill, 2026-11-21: "Kiro just has the 'ask a question or describe a task' question in its
+ * box"): Kiro can draw its hint in the default colour, after the cursor block (one reverse-video
+ * space right after the marker). Typed text puts the cursor after the text, so the row is empty
+ * only when the first cell after the marker is that cursor cell and the rest is exactly the
+ * agent's known hint ([isComposerHint]). The same words with the cursor after them, or any other
+ * text behind the cursor, are typing.
+ */
+private fun cursorBeforeHint(chars: List<Styled>, leadEnd: Int, start: Int, typed: String, agent: String?): Boolean {
+    if (!isComposerHint(agent, typed)) return false
+    // The marker's own run of spaces, which INPUT_LEAD took in: the cursor cell must be the first
+    // reverse cell in it and the cell right before the hint; no other cell before it is reverse.
+    val lead = chars.subList(0, leadEnd)
+    val marker = lead.indexOfLast { it.ch in ">❯›»" }
+    if (marker < 0 || start != leadEnd || start - 1 <= marker) return false
+    val cursor = chars[start - 1]
+    if (!cursor.reverse || cursor.ch != ' ') return false
+    if (chars.subList(marker + 1, start - 1).any { it.reverse || !it.ch.isWhitespace() }) return false
+    // Nothing after the hint is drawn as the cursor (that would be the cursor after typed words).
+    return chars.subList(start, chars.size).none { it.reverse }
 }
 
 /** A choice that grants standing permission ("always allow", "don't ask again"); the card adds a caution (1.4.0). */
