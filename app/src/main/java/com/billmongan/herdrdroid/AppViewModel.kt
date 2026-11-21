@@ -125,6 +125,8 @@ private class Queued(
     val pendingId: Long?,
     val dispatchKey: Pair<String, String>?,
     val run: suspend (Herdr) -> Unit,
+    /** The server open when it was tapped (2.1.1, Grok's RC review M1): it never runs on another one. */
+    val serverId: String? = null,
 )
 
 class AppViewModel internal constructor(
@@ -1202,18 +1204,38 @@ class AppViewModel internal constructor(
      * the link is back; only a real refusal from herdr is shown.
      */
     private fun act(paneId: String?, label: String, pendingId: Long? = null, input: Boolean = false, run: suspend (Herdr) -> Unit) {
-        val key = if (paneId != null && (pendingId != null || input)) current?.id?.let { it to paneId } else null
+        val server = current?.id
+        // 2.1.1 (Grok's RC review, M1): with no server open (switching to another computer's agent)
+        // a pane id names no pane, and the next client to connect may have another pane with that
+        // id, so the tap is dropped here, never kept for whichever server comes next.
+        if (paneId != null && server == null) {
+            com.billmongan.herdrdroid.diag.DiagLog.log("send", "dropped, no computer open: $label")
+            pendingId?.let { id -> pendingSends = pendingSends.filterNot { it.id == id } }
+            error = "$label: no computer is open, so nothing was sent."
+            return
+        }
+        val key = if (paneId != null && (pendingId != null || input)) server!! to paneId else null
         viewModelScope.launch {
             if (link != Link.CONNECTED || herdr == null) {
-                enqueue(Queued(paneId, label, pendingId, key, run))
+                enqueue(Queued(paneId, label, pendingId, key, run, server))
                 return@launch
             }
-            perform(Queued(paneId, label, pendingId, key, run))
+            perform(Queued(paneId, label, pendingId, key, run, server))
         }
     }
 
     private suspend fun perform(q: Queued) {
         val h = herdr ?: return
+        // A pane tap belongs to the server it was made on (2.1.1, Grok's RC review M1), queued or not.
+        if (q.paneId != null && q.serverId != current?.id) {
+            com.billmongan.herdrdroid.diag.DiagLog.log("send", "dropped, the computer changed: ${q.label}")
+            q.pendingId?.let { id ->
+                pendingSends = pendingSends.map {
+                    if (it.id == id) it.copy(awaitingLink = false, waiting = false, undelivered = true, held = "the computer changed before it went") else it
+                }
+            }
+            return
+        }
         try {
             val key = q.dispatchKey
             if (key == null) q.run(h)
@@ -2529,7 +2551,7 @@ class AppViewModel internal constructor(
                 val screenNow = if (earlier) null else if (verifyOpenCode || verifyHermes) {
                     openCodeRead = try { readOpenCodeForSend(h, pane) } catch (_: HerdrError) { null }
                     openCodeRead?.text
-                } else runCatching { h.readStyled(pane.id, 40) }.getOrNull()
+                } else runCatching { h.readStyled(pane.id, sendReadLines(pane.agent)) }.getOrNull()
                 // A pane that can't be read first is not typed into blind (1.4.1, from a code review).
                 val now = pane(pane.id) ?: pane
                 val why = when {
@@ -2573,6 +2595,14 @@ class AppViewModel internal constructor(
             readPane(pane.id)
         }
     }
+
+    /**
+     * How far back a pane is read before text is typed into it. 2.1.1 (Grok's RC review, H2):
+     * Claude's sessions list has its only marker near the top of the screen ("Your session moved to
+     * the background", line 6 of the 47-line capture), past a 40-line read, so a Claude pane is read
+     * as deep as the chat card's own read and [blocksNormalSend] sees the card there too.
+     */
+    private fun sendReadLines(agent: String?): Int = if (agent.equals("claude", true)) NOTIFY_READ_LINES else 40
 
     /** The quiet retry of held sends, one per (server, pane), so its messages go in the order sent (1.4.4). */
     private val heldJobs = mutableMapOf<Pair<String, String>, Job>()
@@ -2633,7 +2663,7 @@ class AppViewModel internal constructor(
                         val checked = if (verifyOpenCode || verifyHermes) readOpenCodeForSend(h, pn) else null
                         openCodeRead = checked
                         val screen = if (verifyOpenCode || verifyHermes) checked?.text ?: return@run "its screen couldn't be read first"
-                            else h.readStyled(p.paneId, 40)
+                            else h.readStyled(p.paneId, sendReadLines(pn.agent))
                         noteInputLine(p.paneId, screen)
                         // Checked again after the read, which can take a while (from Grok's review): a
                         // question or a usage check that began meanwhile is never typed into. Nothing
@@ -2924,7 +2954,7 @@ class AppViewModel internal constructor(
             override suspend fun pane(id: String) =
                 quietly(allowBackground = true) { if (it === h) it.panes().singleOrNull { p -> p.id == id } else null }
             override suspend fun viewport(id: String) =
-                quietly(allowBackground = true) { if (it === h) it.readStyled(id, 40) else null }
+                quietly(allowBackground = true) { if (it === h) it.readStyled(id, sendReadLines(target.agent)) else null }
             override fun blocked(fresh: Pane, viewport: String): Boolean {
                 if (blocksNormalSend(fresh, viewport)) return true
                 val line = com.billmongan.herdrdroid.herdr.inputLineOf(viewport, fresh.agent)
@@ -3618,7 +3648,8 @@ class AppViewModel internal constructor(
                     if (prompt == null && text.isNotBlank()) { com.billmongan.herdrdroid.diag.DiagLog.log("watch", "${p.id}: herdr says blocked, but nothing on screen asks; no alert"); return@launch }
                     withContext(Dispatchers.Main) { if (prompt != null && prompt.choices.isNotEmpty()) observeQuestion(serverId, p.id, prompt, p.status, p.agentName, text) }
                     Notify.needsYou(app, serverId, serverLabel, p.id, p.agentName, prompt?.question ?: "Waiting for you.", prompt?.choices.orEmpty(), p.agent,
-                        terminalReview = prompt?.let { it.terminalReview || it.hermesClarify || it.openCodeQuestionFrame != null } == true)
+                        terminalReview = prompt?.let { it.terminalReview || it.hermesClarify || it.openCodeQuestionFrame != null } == true,
+                        reply = com.billmongan.herdrdroid.notify.notificationOffersReply(prompt))
                 }
                 // Only agents that need you notify (Bill, 2026-11-13); finishing doesn't.
                 before == Status.NEEDS_YOU -> {
@@ -3682,6 +3713,18 @@ class AppViewModel internal constructor(
         if (a.isReply) {
             runCatching {
                 val p = h.panes().firstOrNull { it.id == a.paneId } ?: return
+                // 2.1.1 (Grok's RC review, H1): read the screen again for every agent. Typed text on
+                // Claude's sessions list starts a new session ("describe a task for a new session"),
+                // and a card that takes no typed answer is never typed into from an alert.
+                val fresh = readForCard(h, p.id, NOTIFY_READ_LINES)
+                val freshCard = fresh?.let { detectPrompt(it, p.status == Status.NEEDS_YOU, p.agent) }
+                if ((fresh.isNullOrBlank() && p.agent.equals("claude", true)) || freshCard?.let { !com.billmongan.herdrdroid.notify.notificationOffersReply(it) || it.terminalReview || it.museQuota || it.openCodePermission } == true) {
+                    com.billmongan.herdrdroid.diag.DiagLog.log("answer", "${p.id}: alert reply refused, the screen takes no typed reply")
+                    Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
+                        if (freshCard?.claudeBackground == true) "Claude's sessions list is on screen, so the reply wasn't sent. Return to the session first."
+                        else "The pane doesn't take a typed reply just now, so it wasn't sent.")
+                    return
+                }
                 if (p.agent?.lowercase() in setOf("codex", "hermes")) {
                     val current = readForCard(h, p.id, NOTIFY_READ_LINES)
                         ?.let { detectPrompt(it, p.status == Status.NEEDS_YOU, p.agent) }
