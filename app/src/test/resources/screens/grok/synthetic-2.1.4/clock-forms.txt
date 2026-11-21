@@ -1,0 +1,25 @@
+
+  ~/agents/grok                                                                                        12k / 256k │ [Dashboard]
+
+
+     ❯ From claude (Herdr on laptop2; tab: claude). Check the build before midnight.                               23:58
+
+
+     ◆ Thought for 1.2s
+
+     I am checking the build now.                                                                                  23:59
+
+     ◈ Ran 2 commands
+
+     The build passed.                                                                                             00:01
+
+     A note from an older turn, drawn with its date.                                                     Nov 20,  4:05pm
+
+     Worked for 3m2s
+
+
+  ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ ❯                                                                                                                 │
+  ╰─────────────────────────────────────────────────────────────────────────────────────── Grok 4.7 (high) · auto-review ─╯
+
+  Shift+Tab:mode  │  Ctrl+.:shortcuts

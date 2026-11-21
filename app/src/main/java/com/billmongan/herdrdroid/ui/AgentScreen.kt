@@ -652,6 +652,14 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             }
         }
 
+        // Every message shows a time (2.1.4, Bill: "make sure all panes do in chat"): its own, Grok's on
+        // its screen, or when the app first saw it.
+        val chatTimes = remember(vm.transcriptLogTimes, vm.transcriptShown) { vm.chatTimes }
+        val chatAgentName = canonicalAgent(pane?.agent.orEmpty())
+        LaunchedEffect(screenText, vm.transcriptItems, structured) {
+            if (structured && chatAgentName == "grok" && screenText.isNotBlank()) vm.noteScreenClocks(paneId, screenText)
+        }
+
         // ---- The conversation ---------------------------------------------------------------
         if (live) {
             HermesLiveChat(vm, Modifier.weight(1f).fillMaxWidth())
@@ -664,7 +672,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 workingLabel = "",
                 agentName = pane?.agentName ?: "The agent",
                 pending = vm.pendingFor(paneId),
-                itemTimes = vm.transcriptLogTimes,
+                itemTimes = chatTimes,
                 more = vm.transcriptMore,
                 size = liveSize,
                 family = family,
@@ -713,7 +721,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                             is com.billmongan.herdrdroid.transcript.ScreenSnapshot -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 Text("Earlier screen", color = Palette.Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                                 ChatTimestamp(entry.at)
-                                ChatView(entry.text, null, liveSize, vm.readingFont, antigravity = antigravity, grok = grok, agent = chatAgent)
+                                ChatView(entry.text, null, liveSize, vm.readingFont, antigravity = antigravity, grok = grok, agent = chatAgent,
+                                    times = vm.screenTimesFor(paneId), hostOffsetMs = vm.hostOffsetMs(), hostTz = vm.hostTzMinutes())
                             }
                             is com.billmongan.herdrdroid.transcript.QuestionItem -> QuestionView(entry, liveSize)
                         }
@@ -725,7 +734,9 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     // The same questions the history shows (from review): an open one's screen stays live.
                     ChatView(com.billmongan.herdrdroid.transcript.QuestionLog.liveTail(text,
                         vm.questionsFor(paneId).filter { prompt == null || it.state != com.billmongan.herdrdroid.transcript.QState.OPEN }), pending, liveSize, vm.readingFont,
-                        pendingAt = vm.lastSentAt, antigravity = antigravity, grok = grok, agent = chatAgent)
+                        pendingAt = vm.lastSentAt, antigravity = antigravity, grok = grok, agent = chatAgent,
+                        times = vm.screenTimesFor(paneId), onSeen = { vm.noteScreenSeen(paneId, it) },
+                        hostOffsetMs = vm.hostOffsetMs(), hostTz = vm.hostTzMinutes())
                 }
                 promptCard()
             }
@@ -1469,18 +1480,37 @@ private fun norm(s: String) = s.filterNot { it.isWhitespace() }.take(40)
  * sideways, and the agent's own input box and status line as a quiet footer.
  */
 @Composable
-private fun ChatView(
+internal fun ChatView(
     text: String, pending: String?, size: Float, font: ReadingFont,
     pendingAt: Long? = null, antigravity: Boolean = false, grok: Boolean = false, agent: String? = null,
+    /** First-seen times of the screen's messages (2.1.4, [com.billmongan.herdrdroid.herdr.ScreenTimes]). */
+    times: Map<String, Long> = emptyMap(),
+    /** Called with the messages on screen, so the ones not seen before are given a time; null for an earlier screen. */
+    onSeen: ((List<com.billmongan.herdrdroid.herdr.ScreenTimes.Msg>) -> Unit)? = null,
+    hostOffsetMs: Long = 0L,
+    hostTz: Int? = null,
 ) {
     val segs = remember(text, antigravity, grok, agent) { Reflow.parse(text, antigravity, grok, agent) }
+    // Each message's time (2.1.4): Grok's own from its screen, else when the app first saw it.
+    val msgs = remember(segs, text, grok) {
+        com.billmongan.herdrdroid.herdr.ScreenTimes.messages(segs, if (grok) com.billmongan.herdrdroid.herdr.GrokClock.stamps(text) else emptyList())
+    }
+    val seenCb by androidx.compose.runtime.rememberUpdatedState(onSeen)
+    LaunchedEffect(msgs) { seenCb?.invoke(msgs) }
+    val timeAfter = remember(msgs, times, hostOffsetMs, hostTz) {
+        val now = System.currentTimeMillis() - hostOffsetMs
+        msgs.mapNotNull { m ->
+            val at = m.clock?.let { com.billmongan.herdrdroid.herdr.GrokClock.toEpoch(it, now, hostTz) } ?: times[m.key]
+            at?.let { m.last to (it to (segs.getOrNull(m.first) is Seg.You)) }
+        }.toMap()
+    }
     val family: FontFamily = font.family
     val prose = if (font == ReadingFont.MONO) size else size * 1.2f
     val showPending = pending != null && segs.none { it is Seg.You && norm(it.text).startsWith(norm(pending).take(20)) }
 
     SelectionContainer {
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            segs.forEach { s ->
+            segs.forEachIndexed { i, s ->
                 when (s) {
                     Seg.Gap -> Spacer(Modifier.height(6.dp))
                     Seg.Rule -> HorizontalDivider(color = Palette.Line, modifier = Modifier.padding(vertical = 6.dp))
@@ -1544,6 +1574,7 @@ private fun ChatView(
                         }
                     }
                 }
+                timeAfter[i]?.let { (at, mine) -> ChatTimestamp(at, end = mine) }
             }
             if (showPending) {
                 YouBubble(pending!!, prose, sending = true)
