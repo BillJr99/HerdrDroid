@@ -319,6 +319,15 @@ class AppViewModel internal constructor(
     /** When the app first saw each item of the open chat, on the computer's clock (1.4.3). */
     var transcriptSeen by mutableStateOf<Map<String, Long>>(emptyMap())
         private set
+    /** The time shown on each item of the open chat with no time of its own (2.1.4, [Transcript.stampShown]). */
+    var transcriptShown by mutableStateOf<Map<String, Long>>(emptyMap())
+        private set
+    /** The time each item of the open chat shows (2.1.4): its own where it has one, else the one the app gave it. */
+    val chatTimes: Map<String, Long> get() = Transcript.shownTimes(transcriptLogTimes, transcriptShown)
+    /** Each server's UTC offset in minutes, from its last read (2.1.4), for the times Grok draws on its screen. */
+    private val hostTzs = java.util.concurrent.ConcurrentHashMap<String, Int>()
+    /** The open server's UTC offset in minutes, or null before its first read. */
+    fun hostTzMinutes(): Int? = current?.id?.let { hostTzs[it] }
     /**
      * Each server's phone clock minus its computer's clock, in ms (1.4.3): the smallest of the last
      * readings of (phone time a read arrived) minus (the computer's "now" in it), since the time a read
@@ -332,6 +341,7 @@ class AppViewModel internal constructor(
     fun hostOffsetMs(): Long = current?.id?.let { hostOffsets[it] } ?: 0L
     private fun noteHostClock(r: com.billmongan.herdrdroid.transcript.TranscriptRead) {
         val sid = current?.id ?: return
+        r.hostTz?.let { hostTzs[sid] = it }
         if (r.hostNow <= 0) return
         val q = offsetSamples.getOrPut(sid) { ArrayDeque() }
         val best = synchronized(q) {
@@ -2120,6 +2130,7 @@ class AppViewModel internal constructor(
             // gets its log time before questions are placed among them (1.4.3, from review).
             if (c.items.isNotEmpty() && c.times.isEmpty()) transcriptCursor = ""
             transcriptSeen = c.seen
+            transcriptShown = c.shown
             transcriptMore = c.more
             transcriptTitle = c.title
             transcriptStart = c.start
@@ -2132,11 +2143,51 @@ class AppViewModel internal constructor(
         transcriptTimes = emptyMap()
         transcriptLogTimes = emptyMap()
         transcriptSeen = emptyMap()
+        transcriptShown = emptyMap()
         transcriptMore = false
         transcriptTitle = null
         transcriptStart = -1L
         transcriptFile = null
         transcriptState = if (hasTranscriptReader(paneId)) TranscriptMode.UNKNOWN else TranscriptMode.OFF
+    }
+
+    /**
+     * Grok's times on its screen (2.1.4): the open chat's messages that Grok shows a time for, and that
+     * have no time of their own yet, take it as their label.
+     */
+    fun noteScreenClocks(paneId: String, screen: String) {
+        if (transcriptPane != paneId || transcriptItems.isEmpty() || com.billmongan.herdrdroid.herdr.canonicalAgent(pane(paneId)?.agent.orEmpty()) != "grok") return
+        val found = com.billmongan.herdrdroid.herdr.GrokClock.match(transcriptItems, screen, seenNow(), hostTzMinutes())
+            .filterKeys { it !in transcriptLogTimes }
+        if (found.isEmpty()) return
+        transcriptLogTimes = transcriptLogTimes + found
+        current?.id?.let { sid ->
+            val c = openChatNow(paneId)
+            transcriptCache[ck(paneId)] = c
+            if (transcriptCursor.isNotEmpty()) persistChat(sid, paneId, c)
+        }
+    }
+
+    /** When the app first saw each message on a pane's screen, "server|pane" to key to time (2.1.4). */
+    private val screenSeen = androidx.compose.runtime.mutableStateMapOf<String, Map<String, Long>>()
+    private fun screenPane(paneId: String) = "$paneId#screen"
+
+    /** The first-seen times of the messages on [paneId]'s screen view (2.1.4); read only, for drawing. */
+    fun screenTimesFor(paneId: String): Map<String, Long> = current?.id?.let { screenSeen["$it|$paneId"] }.orEmpty()
+
+    /**
+     * Gives the messages on [paneId]'s screen that have no first-seen time one (2.1.4), and keeps them
+     * on the phone. The kept times are loaded from the phone the first time.
+     */
+    fun noteScreenSeen(paneId: String, msgs: List<com.billmongan.herdrdroid.herdr.ScreenTimes.Msg>) {
+        val sid = current?.id ?: return
+        if (msgs.isEmpty()) return
+        val held = screenSeen["$sid|$paneId"]
+        val before = held ?: runCatching { chatStore?.load(sid, screenPane(paneId))?.shown }.getOrNull().orEmpty()
+        val next = com.billmongan.herdrdroid.herdr.ScreenTimes.stamp(before, msgs, System.currentTimeMillis())
+        if (held == null || next !== before) screenSeen["$sid|$paneId"] = next
+        if (next === before) return
+        persistChat(sid, screenPane(paneId), CachedChat(emptyList(), "", false, null, agent = pane(paneId)?.agent?.lowercase(), shown = next))
     }
 
     /** Every chat read so far, per server and pane; kept until the app exits, and on the phone (1.2.9). */
@@ -2268,7 +2319,7 @@ class AppViewModel internal constructor(
 
     /** The open chat as it is now. */
     private fun openChatNow(paneId: String) = CachedChat(transcriptItems, transcriptCursor, transcriptMore, transcriptTitle,
-        transcriptStart, transcriptFile, pane(paneId)?.agent?.lowercase(), transcriptTimes, transcriptSeen, transcriptLogTimes)
+        transcriptStart, transcriptFile, pane(paneId)?.agent?.lowercase(), transcriptTimes, transcriptSeen, transcriptLogTimes, transcriptShown)
 
     /** Keeps the open chat, in memory and on the phone, before it is left (another agent, a reconnect, a server switch). */
     private fun stashOpenChat() {
@@ -2299,7 +2350,8 @@ class AppViewModel internal constructor(
         }
         if (keptIds[sid] != ids) {
             keptIds[sid] = ids
-            viewModelScope.launch(Dispatchers.IO) { chatStore?.keepOnly(sid, ids) }
+            // A pane's screen times (2.1.4) are kept beside its chat, and go with it.
+            viewModelScope.launch(Dispatchers.IO) { chatStore?.keepOnly(sid, ids + ids.map(::screenPane)) }
         }
         for (p in fresh) {
             val was = before[p.id] ?: continue
@@ -2423,13 +2475,14 @@ class AppViewModel internal constructor(
         // Another session or file starts its times afresh: its keys start over (1.4.3, from review).
         if (r.reset && Transcript.sessionOf(transcriptCursor) != Transcript.sessionOf(r.cursor)) {
             transcriptTimes = emptyMap(); transcriptSeen = emptyMap()
-            transcriptLogTimes = emptyMap()
+            transcriptLogTimes = emptyMap(); transcriptShown = emptyMap()
         } else if (r.reset) {
             // The same session read again: a key whose item changed (a rewritten log) loses its old times.
             val fresh = Transcript.merge(emptyList(), r.items, true)
             transcriptTimes = Transcript.keptAcrossReset(transcriptTimes, transcriptItems, fresh)
             transcriptSeen = Transcript.keptAcrossReset(transcriptSeen, transcriptItems, fresh)
             transcriptLogTimes = Transcript.keptAcrossReset(transcriptLogTimes, transcriptItems, fresh)
+            transcriptShown = Transcript.keptAcrossReset(transcriptShown, transcriptItems, fresh)
         }
         transcriptCursor = r.cursor
         noteHostClock(r)
@@ -2438,10 +2491,12 @@ class AppViewModel internal constructor(
             // Log times where the log has them; otherwise, for a live read's new items, when the app
             // first saw them, kept across reloads. A bulk read makes none up (1.4.3).
             val recorded = Transcript.timesOf(r.items)
-            transcriptLogTimes = (transcriptLogTimes + recorded).filterKeys(Transcript.keysOfItems(transcriptItems)::contains)
+            // Labels also take the times the reader found in the agent's other files (2.1.4); questions don't.
+            transcriptLogTimes = (transcriptLogTimes + Transcript.labelTimesOf(r.items)).filterKeys(Transcript.keysOfItems(transcriptItems)::contains)
             val logged = transcriptTimes + recorded
             transcriptTimes = if (r.reset) logged else Transcript.stampSeen(logged, transcriptItems, seenNow(), Transcript.keysOf(r.items))
             transcriptSeen = Transcript.markSeen(transcriptSeen, transcriptItems, Transcript.keysOf(r.items), transcriptTimes, seenNow(), bulk = r.reset)
+            transcriptShown = Transcript.stampShown(transcriptShown, transcriptItems, transcriptLogTimes, transcriptTimes, seenNow())
         }
         if (r.reset) {
             transcriptMore = r.more
@@ -2523,9 +2578,10 @@ class AppViewModel internal constructor(
                 val have = transcriptItems.map { it.key }.toSet()
                 transcriptItems = older.filter { it.key !in have } + transcriptItems
                 val recorded = Transcript.timesOf(r.items)
-                transcriptLogTimes = (recorded + transcriptLogTimes).filterKeys(Transcript.keysOfItems(transcriptItems)::contains)
+                transcriptLogTimes = (Transcript.labelTimesOf(r.items) + transcriptLogTimes).filterKeys(Transcript.keysOfItems(transcriptItems)::contains)
                 transcriptTimes = recorded + transcriptTimes
                 transcriptSeen = Transcript.markSeen(transcriptSeen, transcriptItems, Transcript.keysOf(r.items), transcriptTimes, seenNow(), bulk = true)
+                transcriptShown = Transcript.stampShown(transcriptShown, transcriptItems, transcriptLogTimes, transcriptTimes, seenNow())
                 transcriptStart = runCatching { org.json.JSONObject(r.cursor).optLong("start", 0L) }.getOrDefault(0L)
                 transcriptMore = r.more
             } finally {
