@@ -22,8 +22,9 @@ sealed interface Seg {
      * Antigravity's meta lines (thinking, tool calls, the "more actions" tally, a spinner) in a
      * row, folded into one activity chip (2.1.1).
      */
-    data class Activity(val steps: List<AgyMeta.Step>) : Seg {
-        val summary: String get() = AgyMeta.summary(steps)
+    data class Activity(val steps: List<AgyMeta.Step>, val grok: Boolean = false) : Seg {
+        // Grok's rows are summaries already (2.1.2); Antigravity's are one action each.
+        val summary: String get() = if (grok) GrokMeta.summary(steps) else AgyMeta.summary(steps)
         val running: Boolean get() = steps.lastOrNull()?.running == true
         val failed: Int get() = steps.sumOf { it.failed }
     }
@@ -94,10 +95,12 @@ object Reflow {
     }
 
     /** Adds a wrapped line to a paragraph, putting back the space the wrap took (or not, mid-word). */
-    private fun join(sb: StringBuilder, next: String, prevLen: Int, width: Int) {
+    private fun join(sb: StringBuilder, next: String, prevLen: Int, width: Int, digitHyphen: Boolean = false) {
         val last = sb.split(' ').lastOrNull().orEmpty()
+        // Grok also wraps "40-line" as "40-" / "line" (2.1.2).
         val midWord = (prevLen >= width - 1 && last.length >= 15) ||
-            (last.length >= 2 && last.endsWith('-') && last[last.length - 2].isLetter() && next.firstOrNull()?.isLetter() == true)
+            (last.length >= 2 && last.endsWith('-') && (last[last.length - 2].isLetter() || digitHyphen && last[last.length - 2].isDigit()) &&
+                next.firstOrNull()?.isLetter() == true)
         if (!midWord) sb.append(' ')
         sb.append(next)
     }
@@ -124,7 +127,10 @@ object Reflow {
      */
     fun parse(text: String, antigravity: Boolean = false, grok: Boolean = false, agent: String? = null): List<Seg> {
         val boxAt = composerBoxStart(text, agent)
-        var raw = text.lines().map { plainGlyphs(clean(it)) }
+        val src = text.lines()
+        var raw = src.map { plainGlyphs(clean(it)) }
+        // Grok's status row, read before clean() cuts its timer and [stop] off (2.1.2).
+        val grokStatus = if (grok) src.indices.mapNotNull { i -> GrokMeta.statusRow(src[i])?.let { i to it } }.toMap() else emptyMap()
         // Antigravity's usage panel ("└ Models & Quota", from /usage) is a quiet line, never prose
         // (2.1.1). Open, it hangs under the composer to the bottom of the screen; one left above
         // the composer ends at the next rule or input row.
@@ -188,14 +194,17 @@ object Reflow {
             }
             start
         } else null
-        val footerAt = if (boxAt != null && !antigravity && !grok) boxAt else if (antigravity || grok) (agyComposer ?: grokComposer)?.minus(1) ?: agyChoices ?: raw.size else
+        // Under Grok's approval or question box, its key row ("1/4:select │ ... │ Esc:scrollback") (2.1.2).
+        val grokKeys = if (grok && grokComposer == null) window.lastOrNull()?.takeIf { GrokMeta.isKeyRow(raw[it]) } else null
+        val footerAt = if (boxAt != null && !antigravity && !grok) boxAt else if (antigravity || grok) (agyComposer ?: grokComposer)?.minus(1) ?: agyChoices ?: grokKeys ?: raw.size else
             window.firstOrNull { i ->
                 isRule(raw[i]) || raw[i].trimStart().firstOrNull()?.let { it in CHROME_START } == true
             } ?: window.lastOrNull { PROMPT_ONLY.matches(raw[it]) } ?: raw.size
         val body = raw.subList(0, footerAt)
         val footer = (footerAt until raw.size)
             // The rule over Claude's or Hermes's box may carry the session's title: an edge, not text.
-            .filterNot { isRule(raw[it]) || it == boxAt }
+            // Grok's composer border carries the model ("─ Grok 4.7 (high) · auto-review ─╯"): keep it (2.1.2).
+            .filterNot { (isRule(raw[it]) && !(grokComposer != null && it == grokComposer + 1)) || it == boxAt }
             .map { i ->
                 if (i == agyComposer) raw[i].trimStart().removePrefix(">").trim()
                 else if (antigravity) AgyMeta.footerLine(raw[i].filterNot { it in BOX }.trim().removePrefix("❯").removePrefix("›").trim())
@@ -206,8 +215,10 @@ object Reflow {
             .filterNot { boxAt != null && isComposerHint(agent, it) }
 
         val width = body.maxOfOrNull { it.length }?.coerceAtLeast(20) ?: 80
-        val margin = body.filter { it.isNotBlank() && !isWide(it) }
-            .minOfOrNull { it.length - it.trimStart().length } ?: 0
+        // Grok's box rows and status row sit left of its text; they don't set the margin.
+        val margin = body.withIndex().filter { (i, it) ->
+            it.isNotBlank() && !isWide(it) && !(grok && (i in grokStatus || GrokMeta.box(it) != null))
+        }.minOfOrNull { (_, it) -> it.length - it.trimStart().length } ?: 0
 
         val out = mutableListOf<Seg>()
         var para: P? = null
@@ -217,11 +228,15 @@ object Reflow {
         val act = mutableListOf<AgyMeta.Step>()
         var gapAfterAct = false
         // Only prose loses private-use glyphs; tables and code keep every character.
-        val prose: (String) -> String = if (antigravity) AgyMeta::scrub else { s -> s }
+        val prose: (String) -> String = if (antigravity || grok) AgyMeta::scrub else { s -> s }
+        // Grok's data-sharing banner rows, joined into one quiet line.
+        var banner: StringBuilder? = null
 
         fun flushAct() {
             if (act.isEmpty()) return
-            out += Seg.Activity(act.toList())
+            // Grok's "Thought for 2.3s" on its own stays the quiet line it was; with tool rows it joins their chip.
+            if (grok && act.all { it.kind == AgyMeta.Kind.THINK }) act.forEach { out += Seg.Para(0, null, it.title, detail = true) }
+            else out += Seg.Activity(act.toList(), grok = grok)
             act.clear()
             if (gapAfterAct) out += Seg.Gap
             gapAfterAct = false
@@ -240,7 +255,11 @@ object Reflow {
             out += Seg.Code(code.map { it.drop(cut) })
             code.clear()
         }
-        fun flushAll() { flushPara(); flushYou(); flushCode() }
+        fun flushBanner() {
+            banner?.let { out += Seg.Para(0, null, it.toString(), detail = true) }
+            banner = null
+        }
+        fun flushAll() { flushBanner(); flushPara(); flushYou(); flushCode() }
 
         for ((at, l) in body.withIndex()) {
             val usage = usageAt[at]
@@ -287,6 +306,57 @@ object Reflow {
                     continue
                 }
             }
+            if (grok) {
+                // Tool rows, the running tool and the status row: steps in one chip (2.1.2).
+                val step = grokStatus[at] ?: GrokMeta.step(t)?.takeIf { lead - margin <= 2 }
+                if (step != null) {
+                    flushAll()
+                    gapAfterAct = false
+                    act += step
+                    continue
+                }
+                // "Worked for 7m19s", "Context 81% full. Compacting…", the header bar: quiet rows.
+                val quiet = GrokMeta.quiet(t)
+                if (quiet != null) {
+                    flushAll(); flushAct()
+                    out += Seg.Para(0, null, quiet, detail = true)
+                    continue
+                }
+                // The data-sharing banner: one quiet line, without its buttons.
+                val row = GrokMeta.banner(t)
+                if (row != null) {
+                    flushPara(); flushYou(); flushCode(); flushAct()
+                    val b = banner
+                    if (row.isEmpty()) continue
+                    if (b == null) banner = StringBuilder(row)
+                    else b.append(if (b.last() in ".!?:") " " else ": ").append(row)
+                    continue
+                }
+                // The approval or question box: no edge, no key hints; its command stays code.
+                when (val bx = GrokMeta.box(t)) {
+                    null -> {}
+                    GrokMeta.Box.Blank -> {
+                        flushAll(); flushAct()
+                        if (out.isNotEmpty() && out.last() != Seg.Gap) out += Seg.Gap
+                        continue
+                    }
+                    GrokMeta.Box.Hint -> continue
+                    is GrokMeta.Box.Code -> {
+                        flushBanner(); flushPara(); flushYou(); flushAct()
+                        code += bx.line
+                        continue
+                    }
+                    is GrokMeta.Box.Title -> { flushAll(); flushAct(); out += Seg.Para(0, null, bx.text); continue }
+                    is GrokMeta.Box.Choice -> { flushAll(); flushAct(); out += Seg.Para(0, bx.n, bx.text, detail = true); continue }
+                    is GrokMeta.Box.Text -> { flushAll(); flushAct(); out += Seg.Para(0, null, bx.text, detail = true); continue }
+                }
+                val warning = AgyMeta.warning(t)
+                if (warning != null) {
+                    flushAll(); flushAct()
+                    para = P(lead, null, lead, false, warning, l.length)
+                    continue
+                }
+            }
             flushAct()
             if (isRule(t) && !((antigravity || grok) && TABLE_RULE.matches(t))) {
                 flushAll()
@@ -314,7 +384,7 @@ object Reflow {
             }
             val p = para
             if (p != null && m == null && (lead == p.hang || lead == p.indent) && p.lastLen >= width * 0.6) {
-                join(p.sb, t, p.lastLen, width)
+                join(p.sb, t, p.lastLen, width, digitHyphen = grok)
                 p.lastLen = l.length
                 continue
             }
