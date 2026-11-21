@@ -1089,7 +1089,13 @@ data class QuestionParts(val tabs: List<QTab>, val blocks: List<QBlock>) {
 /** A line of a question as read off the screen: [cmd] when it sat in a box of its own (Grok, Copilot). */
 data class QLine(val text: String, val cmd: Boolean = false, val gapBefore: Boolean = false,
                  /** The line began with a single "│" (1.4.8): under a "$ " line, the rest of that command. */
-                 val bar: Boolean = false)
+                 val bar: Boolean = false,
+                 /**
+                  * One line of a command Grok drew row by row (2.1.4): it stays its own line in the
+                  * command block, so a multi-line command keeps its lines. [wraps]: Grok wrapped it
+                  * ("·" at the end of the row); [cont]: it carries on the row above ("┆" gutter).
+                  */
+                 val row: Boolean = false, val cont: Boolean = false, val wraps: Boolean = false)
 
 private val TAB_ITEM = Regex("""([☐☒✔✓☑])\s*([^☐☒✔✓☑←→]+)""")
 /** "Reason: …", "Environment: local", "Read: /path": a labelled line of context, never the heading. */
@@ -1190,13 +1196,23 @@ fun questionParts(lines: List<QLine>): QuestionParts {
         } else body += l
     }
     /** [inPlace]: a path or address block that stays with its label among the context (1.4.2). */
-    class Para(var text: String, val cmd: Boolean, val inPlace: Boolean = false)
+    class Para(var text: String, val cmd: Boolean, val inPlace: Boolean = false, val rows: Boolean = false)
     val paras = mutableListOf<Para>()
     var cmdNext = false
     // The current command block began with "$ ": its "│ ..." lines are the rest of it (1.4.8, from Grok's
     // review: Muse draws a script's lines under "$ python3 - <<'PY'" that way).
     var dollarBlock = false
     for (l in body) {
+        // A Grok command row (2.1.4, Bill: "parse them nicely maybe as newlines"): a line of its own
+        // in the command block, its indentation and every character kept, a ")" or "}" row too.
+        if (l.row) {
+            val t = l.text.trimEnd()
+            if (t.isBlank()) continue
+            val last = paras.lastOrNull()
+            if (last != null && last.rows && !l.gapBefore) last.text += "\n" + t else paras += Para(t, true, rows = true)
+            cmdNext = false; dollarBlock = false
+            continue
+        }
         val answerRow = l.text.trim().startsWith("→")
         var t = l.text.trim().trimStart { it in MARKS }.trimEnd { it in "│┃╮╯─ " }.trim()
         if (t.isEmpty() || !t.any(Char::isLetterOrDigit)) continue
@@ -2028,7 +2044,7 @@ private val BYPASS_WORDS = Regex(
 )
 private val KEY_HINT = Regex("""\b(ctrl|shift|alt|meta|cmd)\+[\w.]+\s*:\s*[\w-]+(\s+mode)?""", RegexOption.IGNORE_CASE)
 /** The gutters down the rows of a command Grok wrapped in its approval box (2.1.3). */
-private const val GROK_GUTTER = "┆┊╎╏"
+private const val GROK_GUTTER = GrokMeta.GUTTER
 
 private val CARD_ROW = Regex("""^[\s│┃|]*([❯›>▶➤⟩]\s*)?\d(?:[.)]|\s+\([○●◯◉]\))\s""")
 
@@ -2688,6 +2704,9 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
     // The whole question: every line above the first choice up to a blank line, the top of the
     // question's box or a rule (at most 20 lines), so a long question isn't cut.
     val firstOption = run.firstOrNull()?.let { raw.lastIndexOf(lines[it.first]) } ?: -1
+    // Grok's command rows ("│ git …·", "┆ …"), read whatever frame its box has (2.1.4): Grok's
+    // screen, or any screen with a row in Grok's "┆" gutter.
+    val grokRows = agent.equals("grok", true) || raw.any { r -> GrokMeta.commandRow(r, null)?.cont == true }
     val above = run.firstOrNull()?.let {
         val at = firstOption
         if (at <= 0) null else {
@@ -2721,6 +2740,13 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
                 if (got.isNotEmpty() && GROK_BANNER.containsMatchIn(c)) break
                 // A rule on its own line ("──────") ends the question; clean() would empty it.
                 if (got.isNotEmpty() && l.trim().matches(Regex("""^[─━═]{3,}$"""))) break
+                // The top of Grok's light box ("╭───╮") ends its question; clean() would empty it and
+                // the walk would cross it like a blank line into the reply above (2.1.4).
+                if (grokRows && got.isNotEmpty() && l.trimStart().startsWith("╭")) {
+                    val edgeTitle = l.trim().trim('╭', '╮', '─', ' ')
+                    if (got.any { it.row } && edgeTitle.any(Char::isLetter)) got.add(0, QLine(edgeTitle))
+                    break
+                }
                 if (l.isBlank() || c.isEmpty()) {
                     if (got.isNotEmpty() && !gap) { gap = true; gaps++; if (gaps > 2) break; got[0] = got[0].copy(gapBefore = true) }
                     i--; continue
@@ -2730,9 +2756,19 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
                 // line (1.2.7: before, Codex's card took in the conversation above it).
                 // A status line (Grok's "… 7.5s 26s ⇣87.0k [↓][stop]", "esc to interrupt") ends it too,
                 // wherever its marker is (1.2.7, Bill: "make sure you parse it correctly").
+                // Grok's "›" title inside its box's frame is not an echoed prompt, blank row or not (2.1.4).
+                val framedTitle = grokRows && l.trimStart().firstOrNull()?.let { it == '┃' || it == '│' } == true
                 if (got.isNotEmpty() && (ACTIVITY.containsMatchIn(c) || STATUS_LINE.containsMatchIn(c) ||
-                        (gap && PROMPT_ECHO.containsMatchIn(c)))) break
+                        (gap && PROMPT_ECHO.containsMatchIn(c) && !framedTitle))) break
                 gap = false
+                // Grok's command rows (2.1.4, Bill: "Herdrdroid still shows vertical bars for grok questions
+                // like this, parse then nicely maybe as newlines?"): read in any frame, each without its
+                // gutter and wrap mark; a "┆" row joins the row above it only when that row wrapped.
+                val cmdRow = if (grokRows) GrokMeta.commandRow(l, raw.getOrNull(i + 1)) else null
+                if (cmdRow != null) {
+                    if (cmdRow.text.isNotBlank()) got.add(0, QLine(cmdRow.text, cmd = true, row = true, cont = cmdRow.cont, wraps = cmdRow.wraps))
+                    i--; continue
+                }
                 // A box inside the card's frame holds the command: Grok's "┃  │ grok usage", Copilot's
                 // "│ │ mkdir -p sub" (1.2.9: Copilot's too, so it shows as a command).
                 val tl = l.trimStart()
@@ -2751,7 +2787,16 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
                 if (row.any(Char::isLetterOrDigit) && !row.contains("narrow scope")) got.add(0, QLine(row.trimStart('›', '❯', ' ').replace(Regex("""^\?\s+"""), ""), isCmd, bar = !isCmd && tl.startsWith("│")))
                 i--
             }
-            got.takeIf { it.isNotEmpty() }
+            // A "┆" row goes on the line above only when that row ends in Grok's "·" wrap mark; else
+            // it is a line of its own (2.1.4). The command reads in its true order, one line per row.
+            val joined = mutableListOf<QLine>()
+            for (q in got) {
+                val prev = joined.lastOrNull()
+                if (q.row && q.cont && prev != null && prev.row && prev.wraps && !q.gapBefore)
+                    joined[joined.size - 1] = prev.copy(text = prev.text.trimEnd() + " " + q.text.trimStart(), wraps = q.wraps)
+                else joined += q
+            }
+            joined.takeIf { it.isNotEmpty() }
         }
     }
     // The question's text (notifications, matching) leaves out Claude's tab bar; the app shows it as steps.
