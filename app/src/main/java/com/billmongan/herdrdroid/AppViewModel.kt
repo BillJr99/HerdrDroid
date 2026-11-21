@@ -2766,6 +2766,13 @@ class AppViewModel internal constructor(
             shortRecent = { h.read(paneId, 40, preserveGlyphs = true) },
         )
 
+    /**
+     * The notification Reply's check (Grok re-review H1, 2.1.1): the 80-line read alone, with no
+     * card-recovery fallback. Null when it fails.
+     */
+    private suspend fun strictNotifyRead(h: Herdr, paneId: String): String? =
+        try { h.read(paneId, NOTIFY_READ_LINES, preserveGlyphs = true) } catch (_: HerdrError) { null }
+
     /** Read fresh output for the card before accepting an answer. */
     private suspend fun readForCard(h: Herdr, paneId: String, lines: Int = 80): String? =
         try { readPaneScreen(h, paneId, lines) } catch (_: HerdrError) { null }
@@ -3711,14 +3718,25 @@ class AppViewModel internal constructor(
     private suspend fun answerFromNotificationNow(h: Herdr, a: NotifyAction, app: Application, serverLabel: String, answered: () -> Unit) {
         // A typed reply: sent as a message (as the answer when the agent is waiting on a question).
         if (a.isReply) {
+            var claudePane = a.agent.equals("claude", true)
             runCatching {
                 val p = h.panes().firstOrNull { it.id == a.paneId } ?: return
+                claudePane = claudePane || p.agent.equals("claude", true)
                 // 2.1.1 (Grok's RC review, H1): read the screen again for every agent. Typed text on
                 // Claude's sessions list starts a new session ("describe a task for a new session"),
                 // and a card that takes no typed answer is never typed into from an alert.
-                val fresh = readForCard(h, p.id, NOTIFY_READ_LINES)
-                val freshCard = fresh?.let { detectPrompt(it, p.status == Status.NEEDS_YOU, p.agent) }
-                if ((fresh.isNullOrBlank() && p.agent.equals("claude", true)) || freshCard?.let { !com.billmongan.herdrdroid.notify.notificationOffersReply(it) || it.terminalReview || it.museQuota || it.openCodePermission } == true) {
+                // Grok re-review H1 (strict notification read): only the 80-line read counts. Card
+                // recovery's 40-line fallback can cut the sessions-list hint (line 6 of 47) off and
+                // look like an ordinary box, so a failed or blank read refuses the reply.
+                val fresh = strictNotifyRead(h, p.id)
+                if (fresh.isNullOrBlank()) {
+                    com.billmongan.herdrdroid.diag.DiagLog.log("answer", "${p.id}: alert reply refused, the screen couldn't be read")
+                    Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
+                        "The pane's screen couldn't be read, so the reply wasn't sent.")
+                    return
+                }
+                val freshCard = detectPrompt(fresh, p.status == Status.NEEDS_YOU, p.agent)
+                if (freshCard?.let { !com.billmongan.herdrdroid.notify.notificationOffersReply(it) || it.terminalReview || it.museQuota || it.openCodePermission } == true) {
                     com.billmongan.herdrdroid.diag.DiagLog.log("answer", "${p.id}: alert reply refused, the screen takes no typed reply")
                     Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
                         if (freshCard?.claudeBackground == true) "Claude's sessions list is on screen, so the reply wasn't sent. Return to the session first."
@@ -3726,8 +3744,7 @@ class AppViewModel internal constructor(
                     return
                 }
                 if (p.agent?.lowercase() in setOf("codex", "hermes")) {
-                    val current = readForCard(h, p.id, NOTIFY_READ_LINES)
-                        ?.let { detectPrompt(it, p.status == Status.NEEDS_YOU, p.agent) }
+                    val current = freshCard
                     if (current == null || current.terminalReview || current.hermesClarify || current.question.filterNot(Char::isWhitespace) !=
                         a.question.filterNot(Char::isWhitespace)) {
                         Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer", "The active question could not be verified.")
@@ -3743,7 +3760,9 @@ class AppViewModel internal constructor(
                 }
             }.onFailure {
                 Notify.needsYou(app, a.serverId, servers.firstOrNull { it.id == a.serverId }?.label ?: "", a.paneId, "The agent",
-                    "Your reply couldn't be sent (${it.message}). Open the app to send it.", emptyList())
+                    "Your reply couldn't be sent (${it.message}). Open the app to send it.", emptyList(),
+                    // Grok re-review H1: no second Reply into a Claude pane whose screen wasn't proven safe.
+                    reply = !claudePane)
             }
             return
         }
