@@ -539,6 +539,35 @@ class SuccessiveCardAnswerTest {
         }
     }
 
+    // 2.1.2 (Bill, 2026-11-21): OpenCode 2.3.2's permission dialog while herdr says done.
+    @Test fun openCode232PermissionShowsItsCardWhileHerdrSaysDoneAndAnswersThroughTheSamePath() {
+        val v232 = checkNotNull(javaClass.getResource("/screens/opencode/live-2026-11-21/permission-shell-2.3.2.txt")).readText()
+        fun focused(focus: String) = listOf("Allow once", "Always allow", "Reject").fold(v232) { t, label ->
+            t.replace("   $label", "   \u001B[${if (label == focus) 44 else 49}m$label\u001B[0m")
+        }
+        for (status in listOf(Status.DONE, Status.IDLE)) fixture("opencode-college", v232) {
+            status(status)
+            readSelectedPane()
+            val card = displayed()
+            assertFalse(card.terminalReview)
+            assertEquals(listOf("Allow once", "Reject"), card.choices.map { it.label })
+            assertTrue(card.shownParts().command.orEmpty().contains("echo hi > ~/scratch/x"))
+            assertTrue(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+            assertTrue(sent.isEmpty())
+            frame = focused("Allow once")
+            answer(card, checkNotNull(vm.paneTextTarget))
+            assertEquals(listOf("enter"), sent)
+        }
+        fixture("opencode", v232) {
+            status(Status.DONE)
+            readSelectedPane()
+            val card = displayed()
+            frame = focused("Allow once")
+            answer(card, checkNotNull(vm.paneTextTarget), index = 1)
+            assertEquals(listOf("esc"), sent)
+        }
+    }
+
     @Test fun nativeOpenCodeRejectDoesNotConfirmTheHighlightedApproval() = fixture("opencode", openCodePermission) {
         readSelectedPane()
         val card = displayed()
