@@ -34,6 +34,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Settings
@@ -101,12 +102,22 @@ fun ServersScreen(vm: AppViewModel) {
         go()
     }
 
+    // 2.1.3: with a server open, Back (and the arrow) returns to where the list was opened from.
+    // With none open the list is the main screen, so there is no arrow and Back leaves the app.
+    val back = vm.serversBack
+    androidx.activity.compose.BackHandler(enabled = back != null) { vm.leaveServers() }
+
     Box(Modifier.fillMaxSize().background(Palette.Ground).systemBarsPadding()) {
         Column(Modifier.fillMaxSize()) {
             Row(
-                Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 20.dp, bottom = 12.dp),
+                Modifier.fillMaxWidth().padding(start = if (back != null) 4.dp else 20.dp, end = 8.dp, top = 20.dp, bottom = 12.dp),
                 verticalAlignment = Alignment.Top,
             ) {
+                if (back != null) {
+                    IconButton(onClick = { vm.leaveServers() }, modifier = Modifier.padding(top = 4.dp)) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Palette.Ink)
+                    }
+                }
                 Column(Modifier.weight(1f).padding(top = 8.dp)) {
                     Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("HerdrDroid", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Palette.Ink)
@@ -402,6 +413,9 @@ fun EditServerScreen(vm: AppViewModel, existing: Server?, prefillHost: String? =
         }
     }
 
+    // Back closes the form to the server list, as Cancel does (2.1.3: it never leaves the app).
+    androidx.activity.compose.BackHandler { vm.closeServerForm(if (existing == null) draftId else null) }
+
     val portNum = port.toIntOrNull()
     val keyReady = keyKind == "keystore" || (keyKind == "imported" && keyCipher != null)
     val wsOk = wsUrl.trim().let { (it.startsWith("wss://", true) || it.startsWith("ws://", true)) && it.substringAfter("://").isNotBlank() }
@@ -581,10 +595,7 @@ fun EditServerScreen(vm: AppViewModel, existing: Server?, prefillHost: String? =
             modifier = Modifier.fillMaxWidth().height(52.dp),
         ) { Text("Save") }
         OutlinedButton(
-            onClick = {
-                if (existing == null) vm.forgetGeneratedKey(draftId)
-                vm.screen = Screen.Servers
-            },
+            onClick = { vm.closeServerForm(if (existing == null) draftId else null) },
             modifier = Modifier.fillMaxWidth().height(48.dp),
         ) { Text("Cancel") }
         if (existing != null) {

@@ -137,7 +137,7 @@ fun SessionDrawer(vm: AppViewModel, opening: Boolean = true) {
                 val back = vm.screen
                 DrawerLink("Usage") { vm.drawerOpen = false; vm.screen = Screen.Usage }
                 DrawerLink("Search chats") { vm.drawerOpen = false; vm.screen = Screen.Search }
-                DrawerLink("Servers…") { vm.drawerOpen = false; vm.screen = Screen.Servers }
+                DrawerLink("Servers…") { vm.drawerOpen = false; vm.openServers() }
                 DrawerLink("Settings") { vm.drawerOpen = false; vm.screen = Screen.Settings(back) }
                 Spacer(Modifier.height(24.dp))
             }

@@ -8,6 +8,9 @@ package com.billmongan.herdrdroid.herdr
  * context use, the data-sharing banner and an approval box with a "┃" edge between its replies.
  * Chat showed them as prose or code, glyphs and all. This sorts them the way [AgyMeta] does for
  * Antigravity, and reuses its steps, so Chat folds them into the same activity chip.
+ *
+ * 2.1.3: a long command in the approval box runs on over rows with a "┆" gutter and a "·" at the
+ * end of each wrapped row. [box] marks those rows, and Reflow joins them into one command line.
  */
 object GrokMeta {
     // "◆ Thought for 2.3s", "◆ Thought for 1m 4s".
@@ -28,6 +31,9 @@ object GrokMeta {
 
     // "Context 81% full. Compacting…"
     private val COMPACTING = Regex("""^Context \d{1,3}% full\. Compacting(?:…|\.\.\.)?$""")
+
+    // "Context compacted: 206.1k → 29.8k tokens (114.0s)", the notice after it (2.1.3).
+    private val COMPACTED = Regex("""^Context compacted: [\d.]+[kKM]? (?:→|->) [\d.]+[kKM]? tokens(?: \([\d.]+s\))?$""")
 
     // The header bar: "~/agents/grok          174k / 256k │ [Dashboard]".
     private val HEADER = Regex("""^([~/]\S*)\s{3,}(\d+(?:\.\d+)?[kKmM]?\s*/\s*\d+(?:\.\d+)?[kKmM]?)(?:\s*│\s*\[Dashboard])?$""")
@@ -70,7 +76,7 @@ object GrokMeta {
 
     /** A meta line shown as a quiet row: the turn marker, compaction notice or header bar; else null. */
     fun quiet(t: String): String? {
-        if (WORKED.matches(t) || COMPACTING.matches(t)) return t
+        if (WORKED.matches(t) || COMPACTING.matches(t) || COMPACTED.matches(t)) return t
         HEADER.matchEntire(t)?.let { return it.groupValues[1] + " · " + it.groupValues[2].replace(Regex("""\s+"""), " ") }
         return null
     }
@@ -86,10 +92,27 @@ object GrokMeta {
         data object Blank : Box
         data object Hint : Box
         data class Title(val text: String) : Box
-        data class Code(val line: String) : Box
+        /** A command row; [cont] when it carries on the row above, which Grok wrapped ("┆", 2.1.3). */
+        data class Code(val line: String, val cont: Boolean = false) : Box
         data class Choice(val n: String, val text: String) : Box
         data class Text(val text: String) : Box
     }
+
+    /**
+     * The gutters Grok draws down a wrapped command's rows (2.1.3, Bill: "Notice the vertical pipe
+     * glyphs coming through"). Chat showed each row as prose, "┆" and "·" included.
+     */
+    private const val GUTTER = "┆┊╎╏"
+
+    /** A command row without Grok's "·" wrap mark at its end. */
+    private fun unwrap(row: String): String = row.trimEnd().removeSuffix("·").trimEnd()
+
+    /**
+     * A wrapped command's row outside the approval box ("┆ /tmp/b.zip;·"), as its text, or null
+     * when [t] (trimmed) isn't one (2.1.3).
+     */
+    fun gutterRow(t: String): String? =
+        if (t.length > 1 && t[0] in GUTTER && t[1] == ' ') unwrap(t.drop(2)) else null
 
     /** [l] (one cleaned screen line) as a box row, or null when it isn't one. */
     fun box(l: String): Box? {
@@ -100,7 +123,9 @@ object GrokMeta {
         return when {
             c.isEmpty() -> Box.Blank
             // The command or diff, every character kept: only the box edge and "│ " go.
-            c.startsWith("│") -> Box.Code(inner.trimStart().removePrefix("│").removePrefix(" "))
+            c.startsWith("│") -> Box.Code(unwrap(inner.trimStart().removePrefix("│").removePrefix(" ")))
+            // A wrapped command's next row ("┆ /tmp/b.zip;·", 2.1.3): its gutter and wrap mark go too.
+            c[0] in GUTTER -> Box.Code(unwrap(c.drop(1).removePrefix(" ")), cont = true)
             BOX_HINT.matches(c) -> Box.Hint
             c.length > 2 && (c[0] == '›' || c[0] == '?') && c[1].isWhitespace() -> Box.Title(AgyMeta.scrub(c.drop(1).trim()))
             else -> BOX_CHOICE.matchEntire(c)?.let { Box.Choice(it.groupValues[1] + ".", AgyMeta.scrub(it.groupValues[3])) }

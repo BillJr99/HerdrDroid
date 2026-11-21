@@ -230,11 +230,10 @@ class MainActivity : FragmentActivity() {
                         }
                     }
                 } else when (val s = vm.screen) {
+                    // Back on these two is handled inside them (2.1.3): the form closes to the
+                    // list, and the list returns to where it was opened from while a server is open.
                     Screen.Servers -> ServersScreen(vm)
-                    is Screen.EditServer -> {
-                        BackHandler { vm.screen = Screen.Servers }
-                        EditServerScreen(vm, s.server, s.prefillHost, s.prefillName)
-                    }
+                    is Screen.EditServer -> EditServerScreen(vm, s.server, s.prefillHost, s.prefillName)
                     Screen.Tabs -> {
                         BackHandler { vm.disconnect() }
                         TabsScreen(vm)
