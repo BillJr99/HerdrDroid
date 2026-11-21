@@ -1,0 +1,48 @@
+
+[38;5;246m✻[39m [38;5;246mCrunched for 0s · done 12:08 AM
+
+[48;5;237m❯ [38;5;231mstart-helpers again[39m
+
+[38;5;114m[49m●[39m [1m4[0m[39m[49m background agents launched [38;5;246m(↓ to manage)[39m
+   [38;5;246m├[39m [1mSample helper task 1[0m[39m[49m
+   [38;5;246m├[39m [1mSample helper task 1
+[0m[39m[49m   [38;5;246m├[39m [1mSample helper task 2[0m[39m[49m
+   [38;5;246m└[39m [1mSample helper task 3[0m[39m[49m
+
+[38;5;220m●[39m [38;5;220mAuto mode can't check actions in this session. Its safety check runs on the server, and your requests go through
+[39m  [38;5;220m127.0.0.1:8787, which doesn't pass it through. Actions that need the check now ask for your approval. To work without these
+[39m  [38;5;220mprompts, switch permission mode with Shift+Tab. To use auto mode, ask whoever runs 127.0.0.1:8787 to pass Claude Code's [39m
+  [38;5;220mserver-side safety check through: https://code.claude.com/docs/en/permission-modes#server-side-classifier-review[39m
+
+[38;5;231m●[39m Done.
+
+[38;5;246m✻[39m [38;5;246mWaiting for [1m1[0m[38;5;246m[49m background agent to finish
+
+[48;5;237m❯ [38;5;231mstart-helpers B[39m
+
+[38;5;231m[49m●[39m Done.
+
+[38;5;246m✻[39m [38;5;246mWaiting for [1m2[0m[38;5;246m[49m background agents to finish
+
+[48;5;237m❯ [38;5;231mstart-helpers C[39m
+
+[38;5;231m[49m●[39m Done.
+
+[38;5;246m✻[39m [38;5;246mWaiting for [1m3[0m[38;5;246m[49m background agents to finish
+
+[48;5;237m❯ [38;5;231mcheck the release notes for 2.1.2 start-helpers D[39m
+
+[38;5;231m[49m●[39m Done.
+
+[38;5;246m✻[39m [38;5;246mWaiting for [1m4[0m[38;5;246m[49m background agents to finish[39m
+
+[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── Sample Title ─
+[39m❯ [0m[2mwhat changed in the last release?[0m[39m[49m
+[38;5;244m──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m  [38;5;220m⏵⏵ auto mode on[38;5;246m (shift+tab to cycle) · ↓ to manage[39m
+
+  [1m● main[0m[39m[49m
+  [38;5;246m◯ general-purpose[39m  [38;5;246mSample helper task 1[39m                                                                                     [38;5;246m1m 14s[39m
+  [38;5;246m◯ general-purpose[39m  [38;5;246mSample helper task 1[39m                                                                                        [38;5;246m53s
+[39m  [38;5;246m◯ general-purpose[39m  [38;5;246mSample helper task 2[39m                                                                                        [38;5;246m41s
+[39m  [38;5;246m◯ general-purpose[39m  [38;5;246mSample helper task 3[39m                                                                                         [38;5;246m5s[39m
