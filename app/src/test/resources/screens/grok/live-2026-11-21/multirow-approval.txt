@@ -1,0 +1,23 @@
+     I'll review the app clone read-only, skipping keystores, Gradle properties, APKs, and anything that could     12:00 PM
+     hold credentials. The report goes to reviews/herdrdroid-review.md.
+
+     ◆ Running list HerdrDroid source files and confirm commit
+
+   ◆ List HerdrDroid source files and confirm… 0.2s                                                              14s ⇣183k [↓][stop]
+
+  ┃
+  ┃  ›  List HerdrDroid source files and confirm commit
+  ┃  │ find /home/user/src/app -type d \( -name keystore -o -name release -o -name build -o -name .git \)·
+  ┃  ┆ -prune -o -type f -print |·
+  ┃  ┆ sed 's|/home/user/src/app/||' | head -400; echo '---';·
+  ┃  ┆ git -C /home/user/src/app rev-parse HEAD;·
+  ┃  ┆ git -C /home/user/src/app describe --tags --always 2>/dev/null | head -5
+  ┃  ← → narrow scope
+  ┃
+  ┃  1 (○) Yes, and don't ask again for anything (always-approve mode)
+  ┃  2 (●) Yes, proceed
+  ┃  3 (○) No, reject (type to add feedback)
+  ┃  4 (○) Never allow: find /home/user/src/app -type
+  ┃
+
+  1/4:select  │  Tab:next option  │  ←/→:scope  │  Ctrl+o:always-approve  │  Ctrl+c:cancel  │  Esc:scrollback

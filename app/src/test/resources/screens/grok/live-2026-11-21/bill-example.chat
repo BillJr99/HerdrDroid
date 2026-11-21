@@ -1,0 +1,16 @@
+para[0]: The tip matches. Next I am cleaning up the CI downloads from the last run.
+
+activity: Retry removal of temporary CI files… 0.1s
+  - SHELL Ran 6 commands
+  - OTHER Running retry removal of temporary CI files [running]
+  - STATUS Retry removal of temporary CI files… 0.1s (1m12s) [running]
+
+para[0]: Retry removal of temporary CI files
+code:
+  | rm -f /tmp/hd-ui-attempt1.log /tmp/hd-ui-attempt1.err /tmp/hd-ci-a.zip /tmp/hd-ci-b.zip; rmdir /tmp/hd-ci-a /tmp/hd-ci-b 2>/dev/null; ls /tmp/hd-ui-attempt1.log /tmp/hd-ci-a.zip 2>&1 | head
+
+para[0,1.,detail]: Yes, and don't ask again for anything (always-approve mode)
+para[0,2.,detail]: Yes, proceed
+para[0,3.,detail]: No, reject (type to add feedback)
+para[0,4.,detail]: Never allow: rm -f /tmp/hd-ui-attempt1.log /tmp/hd-ui-attempt1.err
+footer: 1/4:select    Tab:next option    ←/→:scope    Ctrl+o:always-approve    Ctrl+c:cancel    Esc:scrollback

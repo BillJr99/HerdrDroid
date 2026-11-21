@@ -1,0 +1,5 @@
+card: options
+blocked: true
+heading: Retry removal of temporary CI files
+options: Yes, and don't ask again for anything (always-approve mode) | Yes, proceed | No, reject (type to add feedback) | Never allow: rm -f /tmp/hd-ui-attempt1.log /tmp/hd-ui-attempt1.err
+source: derived 2026-11-21: Bill's phone example (title and the four gutter rows, verbatim) placed in the approval box layout of multirow-approval.txt; the title and command match the tool call in Grok's own log for that turn
