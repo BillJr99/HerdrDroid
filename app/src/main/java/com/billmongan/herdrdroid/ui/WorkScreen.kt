@@ -304,7 +304,7 @@ private fun SubagentView(vm: AppViewModel, s: Screen.Work) {
                 cursor = r.cursor
                 if (r.reset || r.items.isNotEmpty()) {
                     items = Transcript.merge(items, r.items, r.reset)
-                    val recorded = Transcript.timesOf(r.items)
+                    val recorded = Transcript.labelTimesOf(r.items)
                     times = if (r.reset) recorded else times + recorded
                 }
                 if (r.reset) more = r.more

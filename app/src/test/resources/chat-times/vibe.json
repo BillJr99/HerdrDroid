@@ -1,0 +1,172 @@
+{
+ "about": "Synthetic vibe reader output (2.1.4 chat times): the shape its reader in transcript.py emits; no real text.",
+ "agent": "vibe",
+ "bulk": {
+  "ok": true,
+  "src": "vibe",
+  "cur": {
+   "file": "/home/user/.vibe/logs/session/s/messages.jsonl",
+   "gen": 1,
+   "n": 10,
+   "last": "x"
+  },
+  "reset": true,
+  "more": false,
+  "title": null,
+  "items": [
+   {
+    "k": "v100",
+    "t": "user",
+    "text": "From claude: run the check 100"
+   },
+   {
+    "k": "v101",
+    "t": "think",
+    "text": "I will run it."
+   },
+   {
+    "k": "v102",
+    "t": "tool",
+    "id": "call100",
+    "name": "bash",
+    "title": "$ ls",
+    "kind": "exec",
+    "input": "ls",
+    "state": "run"
+   },
+   {
+    "k": "v103.r",
+    "t": "result",
+    "ref": "call100",
+    "out": "a\nb"
+   },
+   {
+    "k": "v104",
+    "t": "text",
+    "text": "Done with check 100."
+   },
+   {
+    "k": "v0",
+    "t": "user",
+    "text": "From claude: run the check 0",
+    "ts": 1795290000000
+   },
+   {
+    "k": "v1",
+    "t": "think",
+    "text": "I will run it.",
+    "ts": 1795290001000
+   },
+   {
+    "k": "v2",
+    "t": "tool",
+    "id": "call0",
+    "name": "bash",
+    "title": "$ ls",
+    "kind": "exec",
+    "input": "ls",
+    "state": "run",
+    "ts": 1795290002000
+   },
+   {
+    "k": "v3.r",
+    "t": "result",
+    "ref": "call0",
+    "out": "a\nb",
+    "ts": 1795290003000
+   },
+   {
+    "k": "v4",
+    "t": "text",
+    "text": "Done with check 0.",
+    "ts": 1795290004000
+   },
+   {
+    "k": "v10",
+    "t": "user",
+    "text": "From claude: run the check 10",
+    "ts": 1795290600000
+   },
+   {
+    "k": "v11",
+    "t": "think",
+    "text": "I will run it.",
+    "ts": 1795290601000
+   },
+   {
+    "k": "v12",
+    "t": "tool",
+    "id": "call10",
+    "name": "bash",
+    "title": "$ ls",
+    "kind": "exec",
+    "input": "ls",
+    "state": "run",
+    "ts": 1795290602000
+   },
+   {
+    "k": "v13.r",
+    "t": "result",
+    "ref": "call10",
+    "out": "a\nb",
+    "ts": 1795290603000
+   },
+   {
+    "k": "v14",
+    "t": "text",
+    "text": "Done with check 10.",
+    "ts": 1795290604000
+   }
+  ],
+  "now": 1795291800000,
+  "tz": -300
+ },
+ "live": {
+  "ok": true,
+  "src": "vibe",
+  "cur": {
+   "file": "/home/user/.vibe/logs/session/s/messages.jsonl",
+   "gen": 1,
+   "n": 10,
+   "last": "x"
+  },
+  "reset": false,
+  "more": false,
+  "title": null,
+  "items": [
+   {
+    "k": "v20",
+    "t": "user",
+    "text": "From claude: run the check 20"
+   },
+   {
+    "k": "v21",
+    "t": "think",
+    "text": "I will run it."
+   },
+   {
+    "k": "v22",
+    "t": "tool",
+    "id": "call20",
+    "name": "bash",
+    "title": "$ ls",
+    "kind": "exec",
+    "input": "ls",
+    "state": "run"
+   },
+   {
+    "k": "v23.r",
+    "t": "result",
+    "ref": "call20",
+    "out": "a\nb"
+   },
+   {
+    "k": "v24",
+    "t": "text",
+    "text": "Done with check 20."
+   }
+  ],
+  "now": 1795291860000,
+  "tz": -300
+ }
+}
