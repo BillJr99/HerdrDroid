@@ -7,7 +7,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 2.1.5 (Bill: "herdrdroid couldn't send College OpenCode the cross server info 5 times"). OpenCode
+ * 2.1.5 (Bill: the app could not send an OpenCode pane the cross-server notice 5 times). OpenCode
  * draws no prompt glyph, and inside a session its empty box shows no "Ask anything…" placeholder:
  * only three bare "┃" rows above its "Build · <model>" row. [inputLineOf] read that as "no input
  * line" (null), so the cross-server notice, the voice send and the relay refused every time. The
@@ -16,7 +16,7 @@ import org.junit.Test
 class OpenCodeSessionComposer215Test {
     private fun screen(name: String) =
         checkNotNull(javaClass.getResource("/screens/opencode/live-2026-11-22-session/$name")).readText()
-    private val college = screen("college-empty.ansi")
+    private val hosted = screen("hosted-empty.ansi")
     private val sidebar = screen("sidebar-empty.ansi")
 
     /** [s] with the middle row of the composer (the text row, two above the model row) replaced. */
@@ -33,7 +33,7 @@ class OpenCodeSessionComposer215Test {
     }
 
     @Test fun `the empty session box reads as an empty input line`() {
-        for (s in listOf(college, sidebar)) {
+        for (s in listOf(hosted, sidebar)) {
             assertEquals("", inputLineOf(s, "opencode"))
             assertNull(composerDraftOf(s, "opencode"))
             assertNull(detectPrompt(forPhone(s), false, "opencode"))
@@ -50,7 +50,7 @@ class OpenCodeSessionComposer215Test {
     }
 
     @Test fun `typed text in the box is never an empty line`() {
-        for (s in listOf(college, sidebar, stripAnsi(college), stripAnsi(sidebar))) {
+        for (s in listOf(hosted, sidebar, stripAnsi(hosted), stripAnsi(sidebar))) {
             val typed = withComposerRow(s, "fix the build")
             assertTrue(stripAnsi(typed).contains("┃  fix the build"))
             assertNotEquals("", inputLineOf(typed, "opencode"))
@@ -60,7 +60,7 @@ class OpenCodeSessionComposer215Test {
 
     @Test fun `a box grown by blank lines typed in it is never an empty line`() {
         // A draft of only line feeds makes the box taller: four or more bare rows.
-        val rows = college.split('\n').toMutableList()
+        val rows = hosted.split('\n').toMutableList()
         val mode = rows.indexOfLast { stripAnsi(it).contains("┃  Build · ") }
         rows.add(mode - 1, rows[mode - 1])
         rows.removeAt(0)
@@ -69,7 +69,7 @@ class OpenCodeSessionComposer215Test {
     }
 
     @Test fun `only an OpenCode pane is read this way`() {
-        assertNull(inputLineOf(college, "claude"))
-        assertNull(inputLineOf(college, null))
+        assertNull(inputLineOf(hosted, "claude"))
+        assertNull(inputLineOf(hosted, null))
     }
 }
