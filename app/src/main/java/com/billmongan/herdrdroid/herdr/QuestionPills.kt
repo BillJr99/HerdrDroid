@@ -10,8 +10,9 @@ package com.billmongan.herdrdroid.herdr
  * Its footer says "Tab/Arrow keys to navigate", and the styled captures in
  * screens/claude/captured-2.1.329/styled (Right once and twice without answering, Left back, Left
  * back to an answered question with its answer still ticked) show Left and Right move one tab at a
- * time without answering. Codex's question overlay, Hermes's clarify batch and OpenCode's question
- * forms are Terminal-only cards with no pills, so there is nothing to tap there.
+ * time without answering. Codex's question overlay names only the question it shows ("Question
+ * 1/2"), and Hermes's clarify batch and OpenCode's question forms are Terminal-only cards, so none
+ * of them has pills to tap.
  *
  * Navigation never sends Enter, Esc, Space or a digit: only Left or Right, the fewest presses from
  * the tab the live screen marks as current to the tapped one. The Submit pill only moves to the
