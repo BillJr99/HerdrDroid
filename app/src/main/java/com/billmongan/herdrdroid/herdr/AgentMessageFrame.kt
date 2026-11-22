@@ -133,6 +133,16 @@ internal class CrossServerCodeLedger(private val load: () -> String, private val
 
     fun spent(key: String): Boolean = entries[key]?.spent == true
 
+    /**
+     * 2.2.1: a code spent for a send that typed nothing (a refusal decided before the write) is
+     * open again, with its first sighting, so its ten minutes do not start over.
+     */
+    fun release(key: String, now: Long) {
+        val e = entries[key] ?: return
+        entries[key] = e.copy(spent = false)
+        persist(now)
+    }
+
     private fun persist(now: Long) {
         entries.entries.removeAll { now - it.value.firstSeen > 30L * 24 * 3_600_000 }
         save(JSONObject().apply {

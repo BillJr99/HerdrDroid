@@ -268,27 +268,140 @@ class AgentMessageRelayTest {
         assertTrue(vm.crossServerChoices(card).isEmpty())
     }
 
-    @Test fun aBusyDestinationIsRefusedOnTheCardAndTheCodeIsSpent() = runBlocking {
+    /**
+     * 2.2.1: a busy destination is a transient refusal. Nothing was typed, so the card says why and
+     * stays pending with its code unspent and its deadline unchanged; its dialog does not pop up
+     * again, and Approve on the card sends once when the destination is idle.
+     */
+    @Test fun aBusyDestinationSaysWhyAndCanBeApprovedAgainOnce() = runBlocking {
         vm.changeAgentMessaging(true)
-        val approval = checkNotNull(vm.crossServerApprovalOf(frame()))
+        val card = frame()
+        val approval = checkNotNull(vm.crossServerApprovalOf(card))
         destinationStatus(Status.WORKING)
         assertTrue(vm.approveCrossServer(approval))
         val done = settle()
-        assertEquals(CrossServerState.REFUSED, done.state)
-        assertEquals(RelayResult.REFUSED.feedback, done.note)
+        assertEquals(CrossServerState.PENDING, done.state)
+        assertEquals(card.deadline, done.deadline)
+        val note = checkNotNull(done.note)
+        assertTrue(note, note.startsWith("Not sent to Claude on Destination (pane p1): " + RelayRefusal.NOT_IDLE.why))
+        assertTrue(note, "Approve to try again" in note)
+        assertNull("no dialog loop after a refusal", vm.crossServerDialogFor("p1"))
+        assertFalse(spent(card))
+        assertTrue(destination.writes.isEmpty())
         destinationStatus(Status.IDLE)
+        assertTrue(vm.approveCrossServer(checkNotNull(vm.crossServerApprovalOf(done))))
+        assertEquals(CrossServerState.SENT, settle().state)
         assertFalse(vm.approveCrossServer(approval))
         settle()
-        assertTrue(source.writes.isEmpty() && destination.writes.isEmpty())
+        assertEquals(listOf(prompt), destination.writes)
+        assertTrue(spent(card))
+        assertTrue(source.writes.isEmpty())
+    }
+
+    /**
+     * Bill's report (2.2.1): CLAUDE2 on the other server keeps background shells running after its
+     * turn ("3 shells" in Claude Code 2.1.330's footer). The app's sweep marks it busy the way it
+     * marks every idle pane with work ([withBusy]), and the relay refused it with "Not sent. Check
+     * that the destination is still connected and idle ...", though Claude takes input meanwhile.
+     * Now an idle Claude with an empty box and only background work gets the message, once.
+     */
+    @Test fun anIdleClaudeWithBackgroundShellsGetsTheMessage() = runBlocking {
+        vm.changeAgentMessaging(true)
+        destination.busy = 3
+        destination.visible = resource("/screens/claude/derived-2.1.330-shells/idle-3-shells.ansi")
+        val approval = checkNotNull(vm.crossServerApprovalOf(frame()))
+        sweptDestination(3)
+        assertTrue(vm.approveCrossServer(approval))
+        val done = settle()
+        assertEquals(done.note, CrossServerState.SENT, done.state)
+        assertEquals(listOf(prompt), destination.writes)
+        assertTrue(source.writes.isEmpty())
+    }
+
+    /** The captured idle CLAUDE2 (2.1.330): 3 shells and Claude's faint prompt suggestion in the empty box. Sent once. */
+    @Test fun anIdleClaudeWithShellsAndADimSuggestionGetsTheMessageOnce() = runBlocking {
+        vm.changeAgentMessaging(true)
+        destination.busy = 3
+        destination.visible = resource("/screens/claude/derived-2.1.330-shells/idle-3-shells-suggestion.ansi")
+        val approval = checkNotNull(vm.crossServerApprovalOf(frame()))
+        sweptDestination(3)
+        assertTrue(vm.approveCrossServer(approval))
+        val done = settle()
+        assertEquals(done.note, CrossServerState.SENT, done.state)
+        assertFalse(vm.approveCrossServer(approval))
+        settle()
+        assertEquals(listOf(prompt), destination.writes)
+        assertTrue(source.writes.isEmpty())
+    }
+
+    /** The same Claude in the middle of a turn ("esc to interrupt" among its footer chips) is not typed into, whatever herdr says. */
+    @Test fun aClaudeWhoseFooterSaysWorkingIsRefusedWithItsReason() = runBlocking {
+        vm.changeAgentMessaging(true)
+        destination.busy = 3
+        destination.visible = resource("/screens/claude/derived-2.1.330-shells/working-3-shells.ansi")
+        val approval = checkNotNull(vm.crossServerApprovalOf(frame()))
+        sweptDestination(3)
+        assertTrue(vm.approveCrossServer(approval))
+        val done = settle()
+        assertEquals(CrossServerState.PENDING, done.state)
+        assertTrue(checkNotNull(done.note).contains(RelayRefusal.NOT_IDLE.why))
+        assertTrue(destination.writes.isEmpty())
+    }
+
+    /** Agents where typing could interrupt background work still wait for it, and the card says so. */
+    @Test fun aHermesWithBackgroundWorkWaitsAndSaysSo() = runBlocking {
+        vm.changeAgentMessaging(true)
+        destination.agent = "hermes"
+        destination.busy = 1
+        destinationStatus(Status.IDLE)
+        val card = frame(to = "hermes")
+        val approval = checkNotNull(vm.crossServerApprovalOf(card))
+        sweptDestination(1)
+        assertTrue(vm.approveCrossServer(approval))
+        val done = settle()
+        assertEquals(CrossServerState.PENDING, done.state)
+        assertTrue(checkNotNull(done.note).contains(RelayRefusal.BACKGROUND.why))
+        assertTrue(destination.writes.isEmpty())
+        destination.busy = 0
+        destinationStatus(Status.IDLE)
+        assertTrue(vm.approveCrossServer(checkNotNull(vm.crossServerApprovalOf(done))))
+        assertEquals(CrossServerState.SENT, settle().state)
+        assertEquals(1, destination.writes.size)
+    }
+
+    /** Each screen-level refusal on an idle destination is named on the card, and nothing is typed. */
+    @Test fun screenRefusalsNameTheirCheck() = runBlocking {
+        vm.changeAgentMessaging(true)
+        val card = frame()
+        for ((screen, why) in listOf(
+            "Output only, the input box is not drawn" to RelayRefusal.NO_INPUT,
+            "❯ unsent words" to RelayRefusal.DRAFT,
+            resource("/screens/claude/captured-2.1.329/single-question.txt") to RelayRefusal.QUESTION,
+        )) {
+            destination.visible = screen
+            val live = vm.crossServerCardsFor("p1").single()
+            assertTrue(why.name, vm.approveCrossServer(checkNotNull(vm.crossServerApprovalOf(live))))
+            val done = settle()
+            assertEquals(why.name, CrossServerState.PENDING, done.state)
+            assertTrue(done.note, checkNotNull(done.note).contains(why.why))
+            assertFalse(spent(card))
+        }
+        assertTrue(destination.writes.isEmpty() && source.writes.isEmpty())
     }
 
     @Test fun aReplacedDestinationIsRefused() = runBlocking {
         vm.changeAgentMessaging(true)
-        val approval = checkNotNull(vm.crossServerApprovalOf(frame()))
+        val card = frame()
+        val approval = checkNotNull(vm.crossServerApprovalOf(card))
         destination.terminal = "replacement"
         destinationStatus(Status.IDLE)
         assertTrue(vm.approveCrossServer(approval))
-        assertEquals(CrossServerState.REFUSED, settle().state)
+        val done = settle()
+        assertEquals(CrossServerState.REFUSED, done.state)
+        // 2.2.1: not re-approvable: the approval was for the session that was there.
+        assertTrue(checkNotNull(done.note).contains(RelayRefusal.REPLACED.why))
+        assertTrue(spent(card))
+        assertFalse(vm.approveCrossServer(approval))
         assertTrue(source.writes.isEmpty() && destination.writes.isEmpty())
     }
 
@@ -365,26 +478,38 @@ class AgentMessageRelayTest {
         var terminal = name
         var frame = "Normal source output"
         var loseAck = false
+        var agent = "claude"
+        var busy = 0
+        var visible = "❯ "
         val writes = mutableListOf<String>()
-        val pane get() = Pane("p1", "tab", "w1", "claude", Status.IDLE, "", "/fixture", scrollOffset = 0, terminalId = terminal)
+        val pane get() = Pane("p1", "tab", "w1", agent, Status.IDLE, "", "/fixture", scrollOffset = 0, terminalId = terminal)
         override suspend fun bulk(command: String): ExecResult = error("Unexpected bulk command")
         override suspend fun input(command: String, input: ByteArray, expectedConnection: Any): ExecResult {
             assertSame(connection, expectedConnection)
             assertTrue(command.contains("__workcounts__"))
-            return ok("""{"ok":true,"busy":{"p1":0}}""")
+            return ok("""{"ok":true,"busy":{"p1":$busy}}""")
         }
         override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult {
             expectedConnection?.let { assertSame(connection, it) }
             return when {
-                command.endsWith("'pane' 'get' 'p1'") -> ok("""{"result":{"pane":{"pane_id":"p1","workspace_id":"w1","tab_id":"tab","agent":"claude","agent_status":"idle","cwd":"/fixture","terminal_id":"$terminal","scroll":{"offset_from_bottom":0}}}}""")
+                command.endsWith("'pane' 'get' 'p1'") -> ok("""{"result":{"pane":{"pane_id":"p1","workspace_id":"w1","tab_id":"tab","agent":"$agent","agent_status":"idle","cwd":"/fixture","terminal_id":"$terminal","scroll":{"offset_from_bottom":0}}}}""")
                 "'--source' 'recent'" in command -> ok(frame)
-                "'--source' 'visible'" in command -> ok("❯ ")
+                "'--source' 'visible'" in command -> ok(visible)
                 "'agent' 'prompt' 'p1'" in command -> { writes += command; if (loseAck) ExecResult(1, "", "lost acknowledgement") else ok("") }
                 else -> error("Unexpected fixture command: $command")
             }
         }
         private fun ok(out: String) = ExecResult(0, out, "")
     }
+
+    private fun resource(path: String) = checkNotNull(javaClass.getResource(path)).readText()
+
+    private fun spent(card: AppViewModel.CrossServerCard) =
+        (field(vm, "crossServerCodes").get(vm) as CrossServerCodeLedger).spent(card.id)
+
+    /** The destination as the app's work sweep leaves it: idle in herdr, with [busy] background jobs. */
+    private fun sweptDestination(busy: Int) = state(fleet, "states", mapOf(destination.server.id to
+        FleetState(destination.server, withBusy(listOf(destination.pane), mapOf("p1" to busy)), null, 0, mapOf("p1" to busy))))
 
     private fun field(owner: Any, name: String) = owner.javaClass.getDeclaredField(name).apply { isAccessible = true }
     @Suppress("UNCHECKED_CAST")

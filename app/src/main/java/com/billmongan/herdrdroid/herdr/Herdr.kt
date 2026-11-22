@@ -585,16 +585,37 @@ class Herdr internal constructor(
     private fun usageSnapshotCommand(paneId: String, agent: String) =
         "$PY -c ${shq(USAGE_OVERLAY_SNAPSHOT)} $herdr ${shq(paneId)} ${shq(agent)}"
 
-    internal suspend fun readUsageOverlay(paneId: String, agent: String): UsageOverlay? =
-        (readUsageState(paneId, agent) as? UsageState.Open)?.overlay
+    internal suspend fun readUsageOverlay(paneId: String, agent: String, anyAgent: Boolean = false): UsageOverlay? =
+        (readUsageState(paneId, agent, anyAgent) as? UsageState.Open)?.overlay
+
+    /** The guarded live snapshot (occupant digest and visible screen), or null when refused or unreadable. */
+    private suspend fun panelSnapshot(paneId: String, agent: String): Pair<String, String>? {
+        if (core) return null
+        val json = runNow(usageSnapshotCommand(paneId, agent), timeoutSeconds = 5).trim()
+        if (json.isEmpty()) return null
+        val o = runCatching { JSONObject(json) }.getOrNull() ?: return null
+        val visible = o.optString("visible")
+        if (visible.length > 20_000) return null
+        return (o.optString("occupant").ifEmpty { return null }) to visible
+    }
+
+    /**
+     * The guarded live read for closing an informational panel (2.2.1, [closePanelAndVerify]): a
+     * positively identified panel, the composer back, something that must not get an Esc, or can't tell.
+     */
+    internal suspend fun readPanelState(paneId: String, agent: String): PanelState {
+        val (occupant, visible) = panelSnapshot(paneId, agent) ?: return PanelState.Unknown
+        return panelStateOf(agent, occupant, visible)
+    }
 
     /**
      * The guarded live read of [paneId] (2.1.4): its usage dialog in a known layout, no dialog, or
      * can't tell (the read was refused: the pane is working, scrolled back, or changed occupant;
      * or the dialog's hint is drawn in a layout the app doesn't know).
      */
-    internal suspend fun readUsageState(paneId: String, agent: String): UsageState {
-        if (core || agent !in USAGE_DIALOG_AGENTS) return UsageState.Unknown
+    internal suspend fun readUsageState(paneId: String, agent: String, anyAgent: Boolean = false): UsageState {
+        // 2.2.1: [anyAgent] when a panel shows on a recent read of an agent outside the usage set.
+        if (core || (agent !in USAGE_DIALOG_AGENTS && !anyAgent)) return UsageState.Unknown
         val json = runNow(usageSnapshotCommand(paneId, agent), timeoutSeconds = 5).trim()
         if (json.isEmpty()) return UsageState.Unknown
         val objectJson = runCatching { JSONObject(json) }.getOrNull() ?: return UsageState.Unknown
@@ -1517,6 +1538,35 @@ private fun inputRow(screen: String): Pair<String, String>? {
     val content = if (framed.matches(row)) row.trimEnd().dropLast(1) else row
     return rawRows[i] to content.replace(lead, "").trim()
 }
+
+/**
+ * 2.2.1 (Bill: "try to be robust to harness version changes"): the chips of the status row under
+ * an agent's boxed input line, found by structure, not by wording or version: the lowest prompt
+ * row with a rule right above it, the next rule under it (the box's bottom edge), then up to three
+ * non-blank rows under that, each split at "·". Claude Code 2.1.329 and 2.1.330 draw "⏵⏵ auto mode
+ * on · 3 shells · ↓ to manage" there, with "esc to interrupt" among the chips while a turn runs.
+ * Empty when the screen shows no such box.
+ */
+internal fun composerFooterChips(screen: String): List<String> {
+    val rows = withoutClaudeAgentList(screen.lines().map { it.replace("\r", "") }).takeLast(14).map { it.replace(ANSI_SEQ, "") }
+    val rule = Regex("""^[\s\u00A0╭╰├└┌]*[─━═]{4,}""")
+    val prompt = rows.indices.lastOrNull { i ->
+        i > 0 && INPUT_LEAD.containsMatchIn(rows[i]) && rule.containsMatchIn(rows[i - 1])
+    } ?: return emptyList()
+    val close = (prompt + 1 until rows.size).firstOrNull { rule.containsMatchIn(rows[it]) } ?: return emptyList()
+    return rows.drop(close + 1).filter { it.isNotBlank() }.take(3)
+        .flatMap { row -> row.split('·', '•').map { it.trim() }.filter { it.isNotEmpty() } }
+}
+
+private val INTERRUPT_CHIP = Regex("""\besc\b.{0,12}\binterrupt""", RegexOption.IGNORE_CASE)
+
+/**
+ * 2.2.1: the status row under the input box offers to interrupt a running turn ("esc to
+ * interrupt", in any chip and any order), so the agent is working whatever its status says.
+ * Background work chips ("3 shells", "1 subagent", "2 background tasks", "↓ to manage") are not
+ * a running turn.
+ */
+internal fun composerFooterSaysWorking(screen: String): Boolean = composerFooterChips(screen).any { INTERRUPT_CHIP.containsMatchIn(it) }
 
 /**
  * What is typed in an agent's input box, all of its lines (2.1.0, Bill: "when a draft is in the pane

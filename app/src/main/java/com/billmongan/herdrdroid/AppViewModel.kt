@@ -59,6 +59,9 @@ import com.billmongan.herdrdroid.herdr.hermesUsageWaiting
 import com.billmongan.herdrdroid.herdr.footerModel
 import com.billmongan.herdrdroid.herdr.Status
 import com.billmongan.herdrdroid.herdr.RelayResult
+import com.billmongan.herdrdroid.herdr.RelayRefusal
+import com.billmongan.herdrdroid.herdr.idleForRelay
+import com.billmongan.herdrdroid.herdr.takesInputDuringBackgroundWork
 import com.billmongan.herdrdroid.herdr.WritePermit
 import com.billmongan.herdrdroid.herdr.hasStableOccupant
 import com.billmongan.herdrdroid.herdr.sameOccupant
@@ -1587,9 +1590,10 @@ class AppViewModel internal constructor(
     private val NOTIFY_READ_LINES = 80
 
     /** 2.1.4: closing a usage dialog the app opened. */
-    private val USAGE_SETTLE_MS = 700L
     private val USAGE_OPEN_MAX_MS = 3 * 60_000L
     private val USAGE_CLOSE_AUTO_TRIES = 3
+    /** 2.2.1: between panel Esc presses; longer than Grok's and Claude's double-Esc window (800 ms). */
+    private val PANEL_SETTLE_MS = 1_200L
     private val USAGE_NOTICE = "HerdrDroid couldn't confirm that"
     private val BTW_SETTLE_MS = 700L
 
@@ -1620,7 +1624,8 @@ class AppViewModel internal constructor(
         it.pane == paneId && paneReadProblem == null && currentUsage(it)
     }
 
-    internal fun usageDismissInFlight(paneId: String): Boolean = closingUsage?.let { it.pane == paneId && currentUsage(it) } == true
+    internal fun usageDismissInFlight(paneId: String): Boolean = closingUsage?.let { it.pane == paneId && currentUsage(it) } == true ||
+        current?.id?.let { "$it/$paneId" in closingPanels } == true
 
     internal fun dismissUsage(usage: OpenUsage) {
         if (usageOverlayFor(usage.pane) != usage || closingUsage != null) return
@@ -1634,6 +1639,8 @@ class AppViewModel internal constructor(
             closeAppUsage(usage.pane, "Close", automatic = false)
             return
         }
+        // 2.2.1: any other panel is closed and checked closed ([closePanelAndVerify]), at most 2 Esc.
+        if (current?.id == usage.server) { closeInfoPanel(usage.server, usage.pane, "Close panel", automatic = false); return }
         val dismissKey = "${usage.server}/${usage.pane}"
         if (!dismissingUsage.add(dismissKey)) return
         closingUsage = usage
@@ -1710,7 +1717,9 @@ class AppViewModel internal constructor(
 
     /**
      * Closes the usage dialog the app opened in [paneId] and confirms it closed ([closeUsageAndVerify]):
-     * at most three Esc presses, each only for its known layout, and nothing else typed. It runs in the
+     * at most two Esc presses (2.2.1; three before), each only for its known layout and at least
+     * [PANEL_SETTLE_MS] apart, so they never land inside Grok's or Claude's double-Esc window, and
+     * nothing else typed. It runs in the
      * pane's dispatch lane, so no other app action on that pane runs meanwhile, and NonCancellable, so
      * leaving the screen or the app doesn't stop it halfway. When it can't confirm the close, the record
      * stays (the next check or send tries again first) and the chat shows a pane notice.
@@ -1730,7 +1739,8 @@ class AppViewModel internal constructor(
                             stillCurrent = { current?.id == sid && herdr === h && pane(paneId)?.agent == rec.agent },
                             readState = { h.readUsageState(paneId, rec.agent) },
                             sendEscape = { shown -> h.closeUsageOverlay(paneId, rec.agent, shown) },
-                            settle = { delay(USAGE_SETTLE_MS) },
+                            settle = { delay(PANEL_SETTLE_MS) },
+                            maxEscapes = 2,
                         )
                     }
                 }
@@ -1751,6 +1761,88 @@ class AppViewModel internal constructor(
                 closingAppUsage.remove(key)
             }
             if (current?.id == sid && (screen as? Screen.Agent)?.paneId == paneId) runCatching { readPane(paneId) }
+        }
+    }
+
+    // ---- 2.2.1: informational panels over the composer, for every agent ----------------------
+
+    /** (server/pane) keys whose panel close is running. */
+    private val closingPanels = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    /** Failed automatic closes per (server/pane); after one, only a Close panel tap tries again. */
+    private val panelCloseFailures = java.util.concurrent.ConcurrentHashMap<String, Int>()
+    /** (server/pane/visit) keys already closed once on opening the pane. */
+    private val panelOpenCloses = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    /** (server/pane/visit) keys whose first shown read was taken: only that read closes a panel on opening. */
+    private val panelVisitsRead = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    /** Why the last close of a panel in (server/pane) didn't finish, for its card. */
+    internal var panelCloseProblems by mutableStateOf<Map<String, String>>(emptyMap())
+        private set
+
+    internal fun panelCloseProblem(paneId: String): String? = current?.id?.let { panelCloseProblems["$it/$paneId"] }
+
+    /**
+     * Why a send to [p] waits on the panel [screen] shows (2.2.1), and, when the panel is positively
+     * identified and the agent idle on the open server, starts closing it ([closeInfoPanel]).
+     */
+    private fun panelHold(server: String?, p: Pane, screen: String): String {
+        val panel = com.billmongan.herdrdroid.herdr.infoPanelOn(p.agent, screen) ?: return USAGE_OPEN_HOLD
+        if (panel.known && p.status != Status.WORKING && server != null && server == current?.id &&
+            (closeInfoPanel(server, p.id, "a message was waiting") != null || "$server/${p.id}" in closingPanels)) {
+            return "its ${panel.kind.label} is open; HerdrDroid is closing it first"
+        }
+        val why = panel.why ?: panelCloseProblems["$server/${p.id}"] ?: "it couldn't be closed from here"
+        return "its ${panel.kind.label} may be open ($why); close it at the computer"
+    }
+
+    /** Bill opened the pane (2.2.1): a panel left open in it is closed once per visit. */
+    private fun closePanelOnOpen(u: OpenUsage) {
+        if (openedUsageOf(u.server, u.pane) != null) return // the app's own: its own flow closes it
+        if (com.billmongan.herdrdroid.herdr.claudeBtwOverlay(u.overlay.visible) != null) return
+        if (!panelOpenCloses.add("${u.server}/${u.pane}/${u.visit}")) return
+        closeInfoPanel(u.server, u.pane, "you opened the pane")
+    }
+
+    /**
+     * Closes an informational panel in [paneId] on [server] and confirms the composer is back
+     * ([closePanelAndVerify], 2.2.1): at most two Esc presses, each only for a positively identified
+     * panel and only after the server read the same frame twice, in the pane's dispatch lane, and
+     * NonCancellable. When it can't confirm, the pane's card says so and offers Close panel and
+     * Show terminal. Null when nothing was started (not the open server, already closing, or an
+     * automatic close that already failed once).
+     */
+    internal fun closeInfoPanel(server: String, paneId: String, why: String, automatic: Boolean = true): Job? {
+        if (current?.id != server) return null
+        val h = herdr ?: return null
+        val agent = pane(paneId)?.agent ?: return null
+        if (openedUsageOf(server, paneId) != null) return closeAppUsage(paneId, why, automatic)
+        val key = "$server/$paneId"
+        if (automatic && (panelCloseFailures[key] ?: 0) >= 1) return null
+        if (!closingPanels.add(key)) return null
+        return viewModelScope.launch {
+            try {
+                val outcome = withContext(kotlinx.coroutines.NonCancellable) {
+                    paneDispatch.run(server to paneId) {
+                        com.billmongan.herdrdroid.herdr.closePanelAndVerify(
+                            stillCurrent = { current?.id == server && herdr === h && pane(paneId)?.agent == agent && pane(paneId)?.status != Status.WORKING },
+                            readState = { h.readPanelState(paneId, agent) },
+                            sendEscape = { shown -> h.closeUsageOverlay(paneId, agent, shown) },
+                            settle = { delay(PANEL_SETTLE_MS) },
+                        )
+                    }
+                }
+                com.billmongan.herdrdroid.diag.DiagLog.log("panel", "$paneId: close ($why): " +
+                    if (outcome.closed) "closed, ${outcome.escapes} Esc" else "not confirmed, ${outcome.why}")
+                if (outcome.closed) {
+                    panelCloseFailures.remove(key)
+                    panelCloseProblems = panelCloseProblems - key
+                } else {
+                    panelCloseFailures.merge(key, 1, Int::plus)
+                    panelCloseProblems = panelCloseProblems + (key to (outcome.why ?: "it couldn't be closed"))
+                }
+            } finally {
+                closingPanels.remove(key)
+            }
+            if (current?.id == server && (screen as? Screen.Agent)?.paneId == paneId) runCatching { readPane(paneId) }
         }
     }
 
@@ -1914,7 +2006,9 @@ class AppViewModel internal constructor(
             // guarded live viewport may offer dismissal, and this check itself never sends a key.
             val liveUsage = if (foreground && !locked && client != null && serverId != null &&
                 agent != null && paneNow.status != Status.WORKING && (paneNow.scrollOffset ?: 0) == 0) {
-                quietly { h -> if (h === client) h.readUsageOverlay(paneId, agent) else null }
+                // 2.2.1: any agent whose recent read shows an informational panel gets the guarded read too.
+                val anyAgent = com.billmongan.herdrdroid.herdr.usageScreenShown(agent, recent)
+                quietly { h -> if (h === client) h.readUsageOverlay(paneId, agent, anyAgent) else null }
                     ?.let { OpenUsage(serverId, paneId, visit, client, agent, it) }
             } else null
             if (!isOpen()) return
@@ -2003,6 +2097,9 @@ class AppViewModel internal constructor(
             paneReadProblem = null
             openUsage = liveUsage
             noteSeenBtw(serverId, paneId, liveUsage)
+            // 2.2.1: a panel already open when you open the pane is closed; one you open from here stays.
+            if (panelVisitsRead.size > 256) { panelVisitsRead.clear(); panelOpenCloses.clear() }
+            if (panelVisitsRead.add("$serverId/$paneId/$visit")) liveUsage?.let { closePanelOnOpen(it) }
             noteInputLine(paneId, text)
             paneText = text
             paneTextPane = paneId
@@ -3027,7 +3124,7 @@ class AppViewModel internal constructor(
                     earlier -> "an earlier message to it is still waiting"
                     screenNow.isNullOrBlank() -> "its screen couldn't be read first"
                     leftOpen -> USAGE_HOLD
-                    usageDialogShown(now.agent, screenNow) -> USAGE_OPEN_HOLD
+                    usageDialogShown(now.agent, screenNow) -> panelHold(serverId, now, screenNow)
                     now.agent == "hermes" && hermesUsageWaiting(screenNow) -> "Hermes hasn't returned to its composer after Usage"
                     openCodeBackgroundDrawer(now.agent, screenNow) -> "its background drawer is open; close it in Terminal"
                     checkedSendBlocked(now, screenNow, openCodeRead) -> "a question is open in it; answer it first"
@@ -3207,7 +3304,7 @@ class AppViewModel internal constructor(
                             // 2.1.4: a usage dialog the app left open is closed first; one open
                             // otherwise is never typed into.
                             usageLeftOpen(p.paneId) -> { closeAppUsage(p.paneId, "a held send was waiting"); USAGE_HOLD }
-                            usageDialogShown(after.agent, screen) -> USAGE_OPEN_HOLD
+                            usageDialogShown(after.agent, screen) -> panelHold(server, after, screen)
                             after.agent == "hermes" && hermesUsageWaiting(screen) -> "Hermes hasn't returned to its composer after Usage"
                             openCodeBackgroundDrawer(after.agent, screen) -> "its background drawer is open; close it in Terminal"
                             checkedSendBlocked(after, screen, checked) -> "a question is open in it; answer it first"
@@ -3363,7 +3460,7 @@ class AppViewModel internal constructor(
     private val promptRelay by lazy {
         com.billmongan.herdrdroid.herdr.PromptRelay(paneDispatch, ::relayPort, writeGate) { serverId, paneId ->
             promptLaneClear(serverId, paneId) && fleetStates[serverId]?.panes?.singleOrNull { it.id == paneId }
-                ?.let { !it.backgroundBusy && it.status in setOf(Status.IDLE, Status.DONE) } == true
+                ?.let(::idleForRelay) == true
         }
     }
 
@@ -3627,40 +3724,70 @@ class AppViewModel internal constructor(
         updateCrossServerCard(card.id) { it.copy(state = CrossServerState.SENDING, note = "Checking and sending…") }
         crossServerCodes.spend(card.id, crossServerClock())
         viewModelScope.launch {
-            val result = try { deliverCrossServer(card) } catch (c: kotlinx.coroutines.CancellationException) { throw c }
+            var why: RelayRefusal? = null
+            val result = try { deliverCrossServer(card) { why = it } } catch (c: kotlinx.coroutines.CancellationException) { throw c }
                 catch (_: Exception) { RelayResult.REFUSED }
-            val state = when (result) {
-                RelayResult.SENT -> CrossServerState.SENT
-                RelayResult.REFUSED -> CrossServerState.REFUSED
-                RelayResult.UNCERTAIN -> CrossServerState.FAILED
-                RelayResult.DRAFT -> CrossServerState.DRAFT
-            }
-            updateCrossServerCard(card.id) { it.copy(state = state, note = result.feedback) }
-            scheduleCrossServerExpiry()
+            finishCrossServer(card, result, why ?: RelayRefusal.FAILED.takeIf { result == RelayResult.REFUSED || result == RelayResult.DRAFT })
         }
         return true
     }
 
+    /**
+     * 2.2.1: the card says which check stopped the message, on which server and pane. A refusal
+     * typed nothing (every refusal is decided before the write's permit is claimed), so a transient
+     * one (busy, a draft, a question, the link) leaves the proposal pending with its code unspent
+     * and its ten minutes unchanged: Approve on the card tries once more. Its dialog does not pop
+     * up again by itself. Sent or uncertain keeps the code spent, so nothing can go twice; so does
+     * a refusal that can't pass for this proposal (a different session in either pane).
+     */
+    private fun finishCrossServer(card: CrossServerCard, result: RelayResult, why: RelayRefusal?) {
+        val to = card.choice?.let { "${agentFacingName(it)} (pane ${it.pane.id})" } ?: "the destination"
+        if (why != null) com.billmongan.herdrdroid.diag.DiagLog.log("xserver",
+            "${card.source.pane.id}: proposal not sent to ${card.choice?.server?.id}/${card.choice?.pane?.id}: ${why.name}")
+        else com.billmongan.herdrdroid.diag.DiagLog.log("xserver", "${card.source.pane.id}: proposal ${result.name.lowercase()}")
+        val retry = why != null && why.transient && crossServerCardsFor(card.source.pane.id).any { it.id == card.id }
+        if (retry) crossServerCodes.release(card.id, crossServerClock())
+        updateCrossServerCard(card.id) {
+            when {
+                why == null -> it.copy(state = when (result) {
+                    RelayResult.SENT -> CrossServerState.SENT
+                    RelayResult.UNCERTAIN -> CrossServerState.FAILED
+                    RelayResult.REFUSED -> CrossServerState.REFUSED
+                    RelayResult.DRAFT -> CrossServerState.DRAFT
+                }, note = result.feedback)
+                retry -> it.copy(state = CrossServerState.PENDING,
+                    note = "Not sent to $to: ${why.why}. Nothing was typed. Approve to try again before the proposal expires.")
+                else -> it.copy(state = if (result == RelayResult.DRAFT) CrossServerState.DRAFT else CrossServerState.REFUSED,
+                    note = "Not sent to $to: ${why.why}. Nothing was typed. This proposal can't be sent; ask the agent for a new one.")
+            }
+        }
+        if (retry) crossServerDeferred = crossServerDeferred + card.id
+        scheduleCrossServerExpiry()
+    }
+
     /** The relay with all its checks: the source unchanged, the destination the same occupant and idle, then PromptRelay's own (no draft, size and content). */
-    private suspend fun deliverCrossServer(card: CrossServerCard): RelayResult {
-        val chosen = card.choice ?: return RelayResult.REFUSED
-        if (!crossServerSourceCurrent(card.source)) return RelayResult.REFUSED
-        val destination = crossServerReachable(card).singleOrNull {
-            it.server.id == chosen.server.id && it.pane.id == chosen.pane.id && sameOccupant(it.pane, chosen.pane)
-        } ?: return RelayResult.REFUSED
-        if (!agentMessageDestinationCurrent(destination.server.id, destination.pane)) return RelayResult.REFUSED
-        val target = bindRemotePrompt(destination) ?: return RelayResult.REFUSED
+    private suspend fun deliverCrossServer(card: CrossServerCard, refused: (RelayRefusal) -> Unit): RelayResult {
+        fun refuse(why: RelayRefusal): RelayResult { refused(why); return RelayResult.REFUSED }
+        val chosen = card.choice ?: return refuse(RelayRefusal.UNREACHABLE)
+        if (!crossServerSourceCurrent(card.source)) return refuse(RelayRefusal.SOURCE_CHANGED)
+        val there = crossServerReachable(card).filter { it.server.id == chosen.server.id && it.pane.id == chosen.pane.id }
+        val destination = there.singleOrNull { sameOccupant(it.pane, chosen.pane) }
+            ?: return refuse(if (there.isNotEmpty()) RelayRefusal.REPLACED else RelayRefusal.UNREACHABLE)
+        destinationRefusal(destination.server.id, destination.pane)?.let { return refuse(it) }
+        val target = bindRemotePrompt(destination) ?: return refuse(RelayRefusal.LINK)
         val job = kotlinx.coroutines.currentCoroutineContext()[Job]
         fun admitted() = job?.isActive != false && crossServerSourceCurrent(card.source) &&
             agentMessageDestinationCurrent(target.route.server, target.route.pane)
         val permit = WritePermit(::admitted)
         crossServerPermit = permit
         try {
-            if (!admitted() || !remotePromptCurrent(target)) return RelayResult.REFUSED
+            if (!crossServerSourceCurrent(card.source)) return refuse(RelayRefusal.SOURCE_CHANGED)
+            destinationRefusal(target.route.server, target.route.pane)?.let { return refuse(it) }
+            if (!admitted() || !remotePromptCurrent(target)) return refuse(RelayRefusal.STOPPED)
             val source = card.source
-            val fresh = source.client.cardPane(source.pane.id, source.connection) ?: return RelayResult.REFUSED
-            if (!sameOccupant(fresh, source.pane)) return RelayResult.REFUSED
-            return promptRelay.send(target.route, card.text, authorizedWrite = permit) {
+            val fresh = source.client.cardPane(source.pane.id, source.connection) ?: return refuse(RelayRefusal.SOURCE_CHANGED)
+            if (!sameOccupant(fresh, source.pane)) return refuse(RelayRefusal.SOURCE_REPLACED)
+            return promptRelay.send(target.route, card.text, authorizedWrite = permit, refused = refused) {
                 admitted() && remotePromptCurrent(target)
             }
         } finally {
@@ -3670,9 +3797,18 @@ class AppViewModel internal constructor(
     }
 
     private fun agentMessageDestinationCurrent(serverId: String, expected: Pane): Boolean =
-        fleetStates[serverId]?.panes?.singleOrNull { it.id == expected.id }?.let {
-            sameOccupant(it, expected) && it.status in setOf(Status.IDLE, Status.DONE) && !it.backgroundBusy
-        } == true
+        destinationRefusal(serverId, expected) == null
+
+    /** Why the watched destination may not be written to now, or null when it may (2.2.1: Claude's background work alone does not hold it). */
+    private fun destinationRefusal(serverId: String, expected: Pane): RelayRefusal? {
+        val now = fleetStates[serverId]?.panes?.singleOrNull { it.id == expected.id } ?: return RelayRefusal.UNREACHABLE
+        return when {
+            !sameOccupant(now, expected) -> RelayRefusal.REPLACED
+            now.backgroundBusy && !takesInputDuringBackgroundWork(now.agent) -> RelayRefusal.BACKGROUND
+            !idleForRelay(now) -> RelayRefusal.NOT_IDLE
+            else -> null
+        }
+    }
 
     // ---- 2.1.4: telling agents about cross-server messaging ------------------------------------
 
@@ -3751,7 +3887,7 @@ class AppViewModel internal constructor(
                 .map(::agentFacingName)
             val text = com.billmongan.herdrdroid.herdr.CrossServerNotice.text(others) ?: return@mapNotNull null
             val raw = if (s.current) pane(s.pane.id) ?: s.pane else s.pane
-            val hold = raw.status != Status.IDLE && raw.status != Status.DONE || raw.backgroundBusy ||
+            val hold = !idleForRelay(raw) ||
                 !promptLaneClear(s.server.id, s.pane.id) ||
                 com.billmongan.herdrdroid.herdr.CrossServerNotice.quotaSkips(noticeQuota(s), crossServerNoticeQuota)
             s to com.billmongan.herdrdroid.herdr.CrossServerNotifier.Candidate(s.server.id, s.pane, text, hold)
@@ -3805,7 +3941,11 @@ class AppViewModel internal constructor(
             override suspend fun viewport(id: String) =
                 quietly(allowBackground = true) { if (it === h) it.readStyled(id, sendReadLines(s.pane.agent)) else null }
             override fun blocked(fresh: Pane, viewport: String): Boolean {
-                if (fresh.backgroundBusy || blocksNormalSend(fresh, viewport)) return true
+                if ((fresh.backgroundBusy && !takesInputDuringBackgroundWork(fresh.agent)) ||
+                    blocksNormalSend(fresh, viewport)) return true
+                // 2.2.1 (Grok's review): background work no longer holds a Claude here, so a turn the
+                // screen shows running ("esc to interrupt" under the box) is held, as the relay holds it.
+                if (com.billmongan.herdrdroid.herdr.composerFooterSaysWorking(viewport)) return true
                 val line = com.billmongan.herdrdroid.herdr.inputLineOf(viewport, fresh.agent)
                 if (line != "" || com.billmongan.herdrdroid.herdr.composerDraftOf(viewport, fresh.agent) != null) return true
                 return holdReason(fresh.id, viewport) != null
@@ -4841,7 +4981,10 @@ class AppViewModel internal constructor(
                 // the app left open is closed first; the reply is never typed into either.
                 if (usageDialogShown(p.agent, fresh) || (a.serverId == current?.id && usageLeftOpen(p.id))) {
                     com.billmongan.herdrdroid.diag.DiagLog.log("answer", "${p.id}: alert reply refused, a usage screen is open")
-                    if (a.serverId == current?.id) withContext(Dispatchers.Main) { closeAppUsage(p.id, "an alert reply was waiting") }
+                    if (a.serverId == current?.id) withContext(Dispatchers.Main) {
+                        closeAppUsage(p.id, "an alert reply was waiting") ?: if (p.status != Status.WORKING)
+                            closeInfoPanel(a.serverId, p.id, "an alert reply was waiting") else null
+                    }
                     Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
                         "${p.agentName}'s usage screen is open, so your reply wasn't typed. Close it with Esc first.")
                     return
@@ -5733,6 +5876,8 @@ class AppViewModel internal constructor(
     /** Why a menu write must wait, from the fresh read: the checks of a normal send, said plainly. */
     private fun menuWriteBlock(fresh: Pane, viewport: String): String? {
         if (fresh.backgroundBusy) return "it is running work in the background"
+        // 2.2.1: an informational panel over the composer is closed first when it is positively known.
+        if (com.billmongan.herdrdroid.herdr.infoPanelOn(fresh.agent, viewport) != null) return panelHold(current?.id, fresh, viewport)
         com.billmongan.herdrdroid.herdr.PaneControls.writeBlock(fresh.agent, viewport)?.let { return it }
         if (blocksNormalSend(fresh, viewport)) return "a question, dialog or usage panel is open in it"
         return holdReason(fresh.id, viewport)

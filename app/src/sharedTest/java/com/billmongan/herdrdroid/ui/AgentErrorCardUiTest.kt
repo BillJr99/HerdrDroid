@@ -1,5 +1,7 @@
 package com.billmongan.herdrdroid.ui
 
+import com.billmongan.herdrdroid.OUTERMOST_RULE
+import com.billmongan.herdrdroid.idleMainLooperRule
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.rememberScrollState
@@ -22,6 +24,7 @@ import org.junit.runner.RunWith
 /** 2.2.0: an agent's error is its own card: Acknowledge first, Retry and the rest only when given, no answer keys. */
 @RunWith(AndroidJUnit4::class)
 class AgentErrorCardUiTest {
+    @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = idleMainLooperRule()
     @get:Rule val rule = createComposeRule()
 
     @Test fun theErrorCardShowsTheErrorAndItsActionsButNoAnswers() {
