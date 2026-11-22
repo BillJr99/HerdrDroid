@@ -378,6 +378,11 @@ class AppViewModel internal constructor(
     private var ssh: HerdrSsh? = null
     private var herdr: Herdr? = null
     private var foreground by mutableStateOf(true)
+    /**
+     * Whether the drawer is pulled out, behind [drawerOpen] (2.1.4). Declared here, before `init`,
+     * because `init` reaches [ensureFleet], which reads it.
+     */
+    private var drawerShown by mutableStateOf(false)
     /** The app is in front (the screens' own loops read nothing while it isn't, 1.4.0). */
     val inFront: Boolean get() = foreground
 
@@ -4557,8 +4562,7 @@ class AppViewModel internal constructor(
             else if (current != null) Screen.Tabs else Screen.Servers
     }
 
-    /** Whether the drawer is pulled out. */
-    private var drawerShown by mutableStateOf(false)
+    /** Whether the drawer is pulled out ([drawerOpen]). */
     /**
      * 2.1.4 (Bill: the drawer's yellow badge lit late): opening the drawer reads the open server's
      * list and pokes the other servers' watcher at once, and both are read more often while it is out.
