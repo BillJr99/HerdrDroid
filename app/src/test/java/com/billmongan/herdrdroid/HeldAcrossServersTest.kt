@@ -20,6 +20,7 @@ import kotlinx.coroutines.runBlocking
 import java.time.Duration
 import org.junit.After
 import org.junit.Assert.*
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Shadows.shadowOf
@@ -32,6 +33,7 @@ import org.robolectric.Shadows.shadowOf
  */
 @RunWith(AndroidJUnit4::class)
 class HeldAcrossServersTest {
+    @get:Rule val idleMainLooper = IdleMainLooperRule()
     private val vm = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
     private val a = Server(id = "fixture-a", name = "FixtureA", host = "a.invalid", port = 22, user = "fixa", herdrPath = "/fixture/herdr")
     private val b = Server(id = "fixture-b", name = "FixtureB", host = "b.invalid", port = 22, user = "fixb", herdrPath = "/fixture/herdr")

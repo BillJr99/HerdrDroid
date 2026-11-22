@@ -17,12 +17,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.junit.After
 import org.junit.Assert.*
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Shadows.shadowOf
 
 @RunWith(AndroidJUnit4::class)
 class AgentMessagingLifecycleTest {
+    @get:Rule val idleMainLooper = IdleMainLooperRule()
     private val app = ApplicationProvider.getApplicationContext<Application>()
     private val prefs = app.getSharedPreferences("app", Context.MODE_PRIVATE)
     private val models = mutableListOf<AppViewModel>()

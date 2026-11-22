@@ -19,6 +19,7 @@ import java.security.MessageDigest
 import java.time.Duration
 import org.junit.After
 import org.junit.Assert.*
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Shadows.shadowOf
@@ -26,6 +27,7 @@ import org.robolectric.Shadows.shadowOf
 /** 2.1.4: Claude's /btw panel: read into the chat, closed and checked when the app opened it, left alone when you did. */
 @RunWith(AndroidJUnit4::class)
 class ClaudeBtwVm214Test {
+    @get:Rule val idleMainLooper = IdleMainLooperRule()
     private val vm = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
     private val server = Server(id = "fixture-c", name = "FixtureC", host = "c.invalid", port = 22, user = "fixc", herdrPath = "/fixture/herdr")
     private fun screen(name: String) = checkNotNull(javaClass.getResource("/screens/claude/captured-2.1.329-btw/$name")).readText()
