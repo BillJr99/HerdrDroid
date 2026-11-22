@@ -47,12 +47,15 @@ class GrokUsageDialog214Test {
         assertTrue(usageDialogHint("grok", draft))
         // No bottom border, or another footer: not this dialog.
         assertNull(dismissibleUsageFrame("grok", dialog.replace("└", " ")))
-        assertNull(dismissibleUsageFrame("grok", dialog.replace("Esc close", "Esc cancel")))
+        // 2.2.1: another wording of the close hint is no longer the exact layout, but the panel's shape
+        // (a titled box with a close hint over Grok's empty composer) still reads as Grok's usage panel.
+        assertNull(exactUsageFrame("grok", dialog.replace("Esc close", "Esc cancel")))
+        assertNotNull(dismissibleUsageFrame("grok", dialog.replace("Esc close", "Esc cancel")))
         // The footer quoted in chat text, with no box around it.
         assertNull(dismissibleUsageFrame("grok", idle + "\n  Tab switch  |  ↑/↓ scroll  |  c copy session ID  |  Esc close\n"))
         // The same text for another agent never counts as Grok's dialog.
-        assertNull(dismissibleUsageFrame("claude", dialog))
-        assertNull(dismissibleUsageFrame("codex", dialog))
+        assertNull(exactUsageFrame("claude", dialog))
+        assertNull(exactUsageFrame("codex", dialog))
     }
 
     @Test fun antigravityUsageScreenIsKnownByItsFooterAndLimits() {

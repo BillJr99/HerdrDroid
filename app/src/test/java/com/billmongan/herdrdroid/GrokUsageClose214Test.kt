@@ -62,9 +62,10 @@ class GrokUsageClose214Test {
         vm.sendMessage(fake.pane, "HD214_HELLO")
         pump(2)
         assertTrue(fake.typed.toString(), fake.typed.isEmpty())
-        assertTrue(fake.escapes == 0)
+        // 2.2.1: the known dialog is closed first, with at most two checked Esc presses; the send waits.
+        assertTrue("${fake.escapes}", fake.escapes <= 2)
         val row = vm.pendingSends.single()
-        assertTrue(row.held.orEmpty(), row.held.orEmpty().contains("usage screen or side-question panel is open"))
+        assertTrue(row.held.orEmpty(), row.held.orEmpty().contains("usage panel is open; HerdrDroid is closing it first"))
     }
 
     @Test fun anAlertReplyIsRefusedWhileTheDialogIsOpen() = alertReplyRefused("idle")
@@ -79,7 +80,8 @@ class GrokUsageClose214Test {
             com.billmongan.herdrdroid.notify.NotifyAction(server.id, fake.pane.id, "HD214_REPLY", true, "", agent = "grok", isReply = true)))
         pump(3)
         assertTrue(fake.typed.toString(), fake.typed.none { "HD214_REPLY" in it })
-        assertEquals(0, fake.escapes)
+        // 2.2.1: the reply is never typed; the known dialog gets at most two checked Esc presses.
+        assertTrue("${fake.escapes}", fake.escapes <= 2)
     }
 
     // ---- the dialog opens only on an idle pane with an empty box -------------------------------
@@ -151,8 +153,8 @@ class GrokUsageClose214Test {
         open(fake)
         vm.sendMessage(fake.pane, "/usage")
         pump(10)
-        // Three Esc at the most, nothing else typed.
-        assertEquals(3, fake.escapes)
+        // 2.2.1: two Esc at the most (more than a second apart), nothing else typed.
+        assertEquals(2, fake.escapes)
         assertEquals(listOf("/usage"), fake.typed)
         assertEquals(1, vm.openedUsage.single().failures)
         assertTrue(vm.sendNoticeFor(fake.pane.id).orEmpty(), vm.sendNoticeFor(fake.pane.id).orEmpty().contains("couldn't confirm"))

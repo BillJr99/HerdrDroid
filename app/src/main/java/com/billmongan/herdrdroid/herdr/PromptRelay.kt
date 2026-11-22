@@ -161,7 +161,9 @@ internal class PromptRelay(
             val viewport = port.viewport(fresh.id, target.connection)
             invalid()?.let { return refuse(it) }
             if (dismissibleUsageFrame(fresh.agent, viewport) != null ||
-                (fresh.agent in setOf("grok", "agy") && usageDialogHint(fresh.agent, viewport)))
+                (fresh.agent in setOf("grok", "agy") && usageDialogHint(fresh.agent, viewport)) ||
+                // 2.2.1: any informational panel, even one only partly identified, is never typed into.
+                infoPanelOn(fresh.agent, viewport) != null)
                 return refuse(RelayRefusal.USAGE)
             if (detectPrompt(forPhone(viewport), false, fresh.agent) != null) return refuse(RelayRefusal.QUESTION)
             // 2.2.1: the screen says a turn is running ("esc to interrupt" under the box), whatever herdr says.
