@@ -119,7 +119,7 @@ fun SettingsScreen(vm: AppViewModel, back: Screen) {
                     Switch(checked = vm.agentMessagingEnabled, onCheckedChange = null)
                 }
                 Text(
-                    "Listen for a proposal from the selected Herdr pane while the app is open and unlocked. Nothing is sent until you choose a destination and tap Send message.",
+                    "Ask an agent in its chat to send a message to an agent on another server. It shows the message on a card with a code. Nothing is sent until you type that code in the same chat on this phone while the app is open and unlocked.",
                     color = Palette.Muted, fontSize = 13.sp,
                 )
                 CrossServerNoticeSettings(vm)
@@ -558,7 +558,7 @@ internal fun CrossServerNoticeSettings(vm: AppViewModel) {
     }
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(
-            "Each agent gets one short notice with the proposal instructions and the agents on other servers, by name only.",
+            "Each agent gets one short notice with the message format and the agents on other servers, by name only.",
             color = Palette.Muted, fontSize = 13.sp, modifier = Modifier.weight(1f),
         )
         TextButton(enabled = feature && vm.crossServerNotice, onClick = vm::tellAgentsNow) { Text("Tell agents now") }

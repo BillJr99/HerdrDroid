@@ -26,18 +26,27 @@ class CrossServerNoticeTest {
         assertEquals("bill@192.0.2.26", blank.label)
     }
 
-    @Test fun noticeHasTheInstructionsTheAgentsAndTheApprovalLine() {
+    @Test fun noticeHasTheNewFrameFormatTheAgentsAndTheConfirmationLine() {
         val text = checkNotNull(CrossServerNotice.text(others))
         assertTrue(text.startsWith("HerdrDroid notice, for information only."))
         assertTrue(text.contains("No reply is needed; if you must answer, reply only \"ok\"."))
-        assertTrue(text.contains("HDMSG1 <code>") && text.contains("HDEND <code>") && text.contains("HD> "))
+        // 2.1.5: proposals only when the user asks in chat, with a code the agent picks and a named destination.
+        assertTrue(text.contains("When the user asks you in chat to send a message to an agent on another server"))
+        assertTrue(text.contains("HDMSG2 <code>") && text.contains("HDTO <destination>") && text.contains("HDEND <code>") && text.contains("HD> "))
+        assertFalse(text.contains("HDMSG1"))
+        assertTrue(text.contains("6 characters from ${CrossServerCode.ALPHABET}"))
+        assertTrue(text.contains("a new code you pick for each frame"))
+        assertTrue(text.contains("then wait"))
+        assertTrue(text.contains("one name from the list below"))
+        assertFalse(text.contains("one-time code"))
         assertTrue(text.contains("at most 1024 UTF-8 bytes"))
-        assertTrue(text.contains("Do not send it yourself"))
+        assertTrue(text.contains("do not send it yourself"))
         assertTrue(text.contains("Agents on other servers: Claude on laptop2, Hermes on laptop2, OpenCode · opencode-college on laptop2."))
-        assertTrue(text.endsWith("The phone user approves every delivery."))
-        // Never asks for a reply or an action beyond "ok": the proposal text's "name it in your reply" is not here.
+        assertTrue(text.endsWith("delivered only if the user types the code back on the phone; you will not see that reply."))
         assertFalse(text.contains("name it in your reply"))
-        assertFalse(text.contains("—"))
+        assertFalse(text.contains("\u2014"))
+        // The notice's own template, echoed in a pane, is never a frame.
+        assertTrue(crossServerFrames(text).isEmpty())
     }
 
     @Test fun noticeIsShortAndHoldsNoHostsPortsKeysOrPaths() {
