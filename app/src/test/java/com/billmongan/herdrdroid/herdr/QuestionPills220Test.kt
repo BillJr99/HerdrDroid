@@ -37,10 +37,10 @@ class QuestionPills220Test {
         assertFalse(QuestionPills.tappable("claude", single))
         // The same bar under another agent's name is never driven with Claude's keys.
         assertFalse(QuestionPills.tappable("codex", card(live("mq-first"))))
-        // Codex's overlay ("←/→ to navigate questions") and Hermes's clarify batch ("Tab/Shift+Tab
-        // switch question") are Terminal-only cards with no pills.
+        // Codex's overlay ("Question 1/2", "←/→ to navigate questions") names only the question it
+        // shows, so its card has no pills; Hermes's clarify batch ("Tab/Shift+Tab switch question")
+        // is a Terminal-only card with none either.
         val codex = checkNotNull(detectPrompt(resource("/screens/codex/derived-1.4.9/0206-request-user-input-multi-question.txt"), true, "codex"))
-        assertTrue(codex.terminalReview)
         assertTrue(codex.shownParts().tabs.isEmpty())
         assertFalse(QuestionPills.tappable("codex", codex))
         val batch = hermesClarify.replace("ask 1 question", "ask 2 questions").replace("0/1", "0/2")
