@@ -107,6 +107,66 @@ class ComposeUiTest {
         rule.onAllNodesWithText(choices[0]).assertCountEquals(0)
     }
 
+    /** 2.2.2: a fresh card keeps Approve and Cancel, with no Retry or Force Send. */
+    @Test fun aFreshCrossServerCardKeepsApproveAndCancel() {
+        rule.setContent {
+            Box(Modifier.width(320.dp)) {
+                CrossServerCardView("Claude on Source server", "Codex", "Codex on Other server", "Hello.", "K7P3QX",
+                    AppViewModel.CrossServerState.PENDING, null, emptyList(), onChoose = {}, onApprove = {},
+                    onCancel = {}, onClose = {}, onForce = {})
+            }
+        }
+        rule.onNodeWithText("Approve").assertIsDisplayed()
+        rule.onNodeWithText("Cancel").assertIsDisplayed()
+        rule.onAllNodesWithText("Retry").assertCountEquals(0)
+        rule.onAllNodesWithText("Force Send").assertCountEquals(0)
+    }
+
+    /** 2.2.2: pending again after a busy refusal: Retry, Force Send and Cancel, on a narrow phone. */
+    @Test fun aRefusedBusyCrossServerCardShowsRetryForceSendAndCancel() {
+        val taps = mutableListOf<String>()
+        rule.setContent {
+            Box(Modifier.width(320.dp)) {
+                CrossServerCardView("Claude on Source server", "Codex", "Codex on Other server", "Hello.", "K7P3QX",
+                    AppViewModel.CrossServerState.PENDING, "Not sent: it is not idle.", emptyList(), onChoose = {},
+                    onApprove = { taps += "retry" }, onCancel = { taps += "cancel" }, onClose = {},
+                    retry = true, onForce = { taps += "force" })
+            }
+        }
+        rule.onAllNodesWithText("Approve").assertCountEquals(0)
+        rule.onNodeWithText("Retry").assertIsDisplayed().performClick()
+        rule.onNodeWithText("Force Send").assertIsDisplayed().performClick()
+        rule.onNodeWithText("Cancel").assertIsDisplayed().performClick()
+        rule.runOnIdle { assertEquals(listOf("retry", "force", "cancel"), taps) }
+    }
+
+    /** 2.2.2: any other refusal shows Retry and Cancel only. */
+    @Test fun aCrossServerCardRefusedForAnotherReasonHasNoForceSend() {
+        rule.setContent {
+            Box(Modifier.width(320.dp)) {
+                CrossServerCardView("Claude on Source server", "Codex", "Codex on Other server", "Hello.", "K7P3QX",
+                    AppViewModel.CrossServerState.PENDING, "Not sent: a question is open in it.", emptyList(), onChoose = {},
+                    onApprove = {}, onCancel = {}, onClose = {}, retry = true, onForce = null)
+            }
+        }
+        rule.onNodeWithText("Retry").assertIsDisplayed()
+        rule.onNodeWithText("Cancel").assertIsDisplayed()
+        rule.onAllNodesWithText("Force Send").assertCountEquals(0)
+        rule.onAllNodesWithText("Approve").assertCountEquals(0)
+    }
+
+    /** 2.2.2: Force Send asks first, naming the busy agent and its server; only Send anyway forces. */
+    @Test fun crossServerForceDialogAsksBeforeSending() {
+        val answers = mutableListOf<String>()
+        rule.setContent {
+            CrossServerForceDialog("CLAUDE2", "minipc", onSend = { answers += "send" }, onCancel = { answers += "cancel" })
+        }
+        rule.onNodeWithText("CLAUDE2 on minipc is busy. Send anyway? It will be typed in while it works.").assertIsDisplayed()
+        rule.onNodeWithText("Cancel").performClick()
+        rule.onNodeWithText("Send anyway").performClick()
+        rule.runOnIdle { assertEquals(listOf("cancel", "send"), answers) }
+    }
+
     /** 2.2.0: the Yes/No dialog shows the source, the destination and server, and the whole message, scrolling a long one. */
     @Test fun crossServerApprovalDialogShowsEverythingAndAnswersYesNoOrLater() {
         val long = (1..40).joinToString("\n") { "Line $it of the proposed message." }
