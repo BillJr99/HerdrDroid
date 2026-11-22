@@ -988,8 +988,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             herdrOutOfDate = vm.herdrOutOfDate(paneId),
             idle = status == Status.IDLE || status == Status.DONE,
             onNew = { vm.newSession(paneId) },
-            onPick = { s -> if (vm.resumeSession(paneId, s)) { pickerWhat = "session"; readingPicker = true } },
-            onPicker = spec.picker?.takeIf { byId }?.let { cmd -> { vm.runCommand(paneId, cmd); pickerWhat = "session"; readingPicker = true } },
+            onPick = { s -> vm.resumeSession(paneId, s) { pickerWhat = "session"; readingPicker = true } },
+            onPicker = spec.picker?.takeIf { byId }?.let { { vm.openSessionPicker(paneId) { pickerWhat = "session"; readingPicker = true } } },
             onDismiss = { choosingSession = false },
         )
     }

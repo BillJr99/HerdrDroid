@@ -5474,72 +5474,165 @@ class AppViewModel internal constructor(
         try { return block() } finally { paneControlBusy = paneControlBusy - key }
     }
 
+    /** What a menu action writes into the pane, through [menuWrite]: keys, or one command and Enter. */
+    private sealed interface MenuInput {
+        data class Keys(val keys: List<String>) : MenuInput
+        data class Command(val text: String) : MenuInput
+    }
+
+    /**
+     * One menu write (2.2.0, from Grok's review): through the same guarded path as a normal send. The
+     * pane's dispatch lane and write gate, a fresh read of the pane and its screen, the same occupant
+     * and connection, idle and at the bottom of its scrollback, an empty input line with no draft, no
+     * question, dialog or usage panel, and nothing of the app's own waiting to go in. A command goes as
+     * herdr's agent prompt (on herdr-core an unforced `hc send`), never typed over a question.
+     * Null when it went; otherwise why it didn't.
+     */
+    private suspend fun menuWrite(paneId: String, expected: com.billmongan.herdrdroid.herdr.Occupant, h: Herdr, connection: Any,
+                                  server: String, input: MenuInput): String? {
+        fun allowed() = current?.id == server && herdr === h && h.connectionIdentity === connection &&
+            link == Link.CONNECTED && promptLaneClear(server, paneId)
+        var why: String? = null
+        val port = object : com.billmongan.herdrdroid.herdr.LocalPromptSend.Port {
+            override suspend fun pane(id: String) =
+                quietly(allowBackground = true) { if (it === h) it.panes().singleOrNull { p -> p.id == id } else null }
+            override suspend fun viewport(id: String) =
+                quietly(allowBackground = true) { if (it === h) it.readStyled(id, sendReadLines(expected.agent)) else null }
+            override fun blocked(fresh: Pane, viewport: String): Boolean {
+                why = menuWriteBlock(fresh, viewport)
+                return why != null
+            }
+            override suspend fun send(fresh: Pane, text: String, permit: WritePermit) = when (input) {
+                is MenuInput.Keys -> { h.sendPermittedKeys(fresh.id, input.keys, connection, permit); Unit }
+                is MenuInput.Command -> h.sendPermitted(fresh, input.text, connection, permit)
+            }
+        }
+        val r = localPromptSend.send(server, expected, (input as? MenuInput.Command)?.text ?: "", ::allowed, port)
+        (r.failure as? LinkDown)?.let { if (herdr === h) linkLost(it) }
+        return when (r.outcome) {
+            com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.SENT -> null
+            com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.UNCERTAIN -> "the app couldn't confirm it went in; check the pane"
+            com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.NO_IDENTITY -> "herdr doesn't say which session is in the pane, so it can't be checked"
+            com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.CONNECTION_CHANGED -> "the SSH connection changed"
+            com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.REFUSED ->
+                why ?: "the pane isn't idle at the bottom of its screen, or the app has something waiting to go in"
+        }
+    }
+
+    /** Why a menu write must wait, from the fresh read: the checks of a normal send, said plainly. */
+    private fun menuWriteBlock(fresh: Pane, viewport: String): String? {
+        if (fresh.backgroundBusy) return "it is running work in the background"
+        com.billmongan.herdrdroid.herdr.PaneControls.writeBlock(fresh.agent, viewport)?.let { return it }
+        if (blocksNormalSend(fresh, viewport)) return "a question, dialog or usage panel is open in it"
+        return holdReason(fresh.id, viewport)
+    }
+
+    /** A menu write that didn't go: said in the pane's chat, nothing sent. */
+    private fun menuRefused(paneId: String, what: String, why: String) {
+        error = "$what: not sent, because $why."
+        com.billmongan.herdrdroid.diag.DiagLog.log("menu", "$paneId: $what refused: $why")
+    }
+
+    /** The guarded identity a menu action keeps: this server, this client and connection, this occupant. */
+    private data class MenuTarget(val server: String, val h: Herdr, val connection: Any, val occupant: com.billmongan.herdrdroid.herdr.Occupant)
+
+    private fun menuTarget(p: Pane): MenuTarget? {
+        val h = herdr ?: return null
+        val connection = h.connectionIdentity ?: return null
+        val server = current?.id ?: return null
+        return MenuTarget(server, h, connection, com.billmongan.herdrdroid.herdr.Occupant.of(p))
+    }
+
     /**
      * Switches the pane's permission mode to [target] (2.2.0): presses the agent's own key one step at a
-     * time and reads the footer after each press, until the footer shows [target]. A target the
-     * session's cycle doesn't hold goes on round to the starting mode, so nothing is left half done.
+     * time, each press through [menuWrite], and reads the footer after each, until the footer shows
+     * [target]. A target the session's cycle doesn't hold goes on round to the starting mode. It never
+     * stops on a mode that approves everything that wasn't the confirmed target: it presses on to the
+     * start, and if it can't get back it says so loudly, in the chat and as an alert.
      */
     fun switchMode(paneId: String, target: String) {
         val p = paneIdle(paneId, "Change the mode") ?: return
         val spec = com.billmongan.herdrdroid.herdr.PaneControls.modes(p.agent) ?: return
-        val h = herdr ?: return
-        val server = current?.id
+        val t = menuTarget(p) ?: return
         viewModelScope.launch {
+            var last: String? = null
             controlling(paneId, "Changing the mode…") {
-                fun stillHere() = herdr === h && current?.id == server
                 val outcome = runCatching {
-                    var mode = spec.read(readPaneScreen(h, paneId, 60))
+                    var mode = spec.read(readPaneScreen(t.h, paneId, 60))
+                    last = mode
                     val start = mode ?: return@runCatching "the footer doesn't show the mode, so nothing was sent"
                     val sw = com.billmongan.herdrdroid.herdr.PaneControls.ModeSwitcher(spec, start, target)
-                    while (stillHere()) {
-                        when (val step = sw.next(mode)) {
+                    var step = sw.next(mode)
+                    while (true) {
+                        when (step) {
                             is com.billmongan.herdrdroid.herdr.PaneControls.Step.Done -> return@runCatching null
                             is com.billmongan.herdrdroid.herdr.PaneControls.Step.Stop -> return@runCatching step.why
                             com.billmongan.herdrdroid.herdr.PaneControls.Step.Press -> {
                                 val before = mode
-                                h.sendKeys(paneId, spec.key)
+                                menuWrite(paneId, t.occupant, t.h, t.connection, t.server, MenuInput.Keys(listOf(spec.key)))
+                                    ?.let { return@runCatching "${spec.key} wasn't sent, because $it" }
                                 // The footer redraws after the key; wait for it to change, up to 2.5 s.
                                 var seen: String? = before
                                 for (i in 0 until 10) {
                                     kotlinx.coroutines.delay(250)
-                                    seen = spec.read(readPaneScreen(h, paneId, 60))
+                                    seen = spec.read(readPaneScreen(t.h, paneId, 60))
                                     if (seen != before) break
                                 }
-                                if (seen == before) return@runCatching "the mode didn't change after ${spec.key}; check the pane"
                                 mode = seen
+                                last = seen
+                                step = if (seen != null && seen == before) sw.unchanged(seen) else sw.next(seen)
                             }
                         }
                     }
-                    "the computer changed before it finished"
+                    @Suppress("UNREACHABLE_CODE") null
                 }.getOrElse { "the pane couldn't be read (${it.message})" }
                 val label = spec.options.firstOrNull { it.name == target }?.label ?: target
-                if (outcome == null) notice = "Mode: $label (the footer shows it now)"
-                else error = "Mode not changed to $label: $outcome."
-                com.billmongan.herdrdroid.diag.DiagLog.log("mode", "$paneId: to $target: ${outcome ?: "done"}")
+                val stuck = com.billmongan.herdrdroid.herdr.PaneControls.unconfirmedApproveAll(spec, last, target)
+                when {
+                    stuck -> modeAlarm(paneId, p, spec.options.firstOrNull { it.name == last }?.label ?: last.orEmpty(), outcome ?: "")
+                    outcome == null -> notice = "Mode: $label (the footer shows it now)"
+                    else -> error = "Mode not changed to $label: $outcome."
+                }
+                com.billmongan.herdrdroid.diag.DiagLog.log("mode", "$paneId: to $target: ${outcome ?: "done"}, now $last")
             }
             readPane(paneId)
         }
     }
+
+    /** The mode switch ended on a mode that approves every tool the user didn't pick: said in the chat, as an error and as an alert. */
+    private fun modeAlarm(paneId: String, p: Pane, mode: String, why: String) {
+        val text = "${p.agentName} is in $mode, which approves every tool, and the app couldn't switch it back" +
+            (if (why.isNotBlank()) " ($why)" else "") + ". Change its mode at the computer now."
+        error = text
+        current?.id?.let { noteSendProblem(it, paneId, text) }
+        runCatching {
+            val app = getApplication<Application>()
+            com.billmongan.herdrdroid.notify.Notify.agentError(app, current?.id.orEmpty(), current?.name.orEmpty(), paneId, p.agentName, text)
+        }
+    }
+
+    /** One command typed into the pane through [menuWrite]; null when it went. */
+    private suspend fun menuCommand(paneId: String, t: MenuTarget, text: String): String? =
+        menuWrite(paneId, t.occupant, t.h, t.connection, t.server, MenuInput.Command(text))
 
     /** Sets the pane's thinking level with the agent's own command and confirms it from the screen (2.2.0). */
     fun setThinking(paneId: String, level: String) {
         val p = paneIdle(paneId, "Change the thinking level") ?: return
         val spec = com.billmongan.herdrdroid.herdr.PaneControls.thinking(p.agent) ?: return
         if (level !in spec.levels) return
-        val h = herdr ?: return
+        val t = menuTarget(p) ?: return
         viewModelScope.launch {
             controlling(paneId, "Setting thinking to $level…") {
-                val ok = runCatching {
-                    val before = readPaneScreen(h, paneId, 80)
-                    h.typeAndEnter(paneId, spec.command(level))
-                    var seen = false
-                    for (i in 0 until 16) {
-                        kotlinx.coroutines.delay(300)
-                        if (com.billmongan.herdrdroid.herdr.PaneControls.thinkingConfirmed(spec, level, before, readPaneScreen(h, paneId, 80))) { seen = true; break }
-                    }
-                    seen
-                }.getOrDefault(false)
-                if (ok) { notice = "Thinking: $level (confirmed on screen)"; efforts = efforts + (paneId to level) }
+                val before = runCatching { readPaneScreen(t.h, paneId, 80) }.getOrNull()
+                val refused = if (before == null) "the pane couldn't be read" else menuCommand(paneId, t, spec.command(level))
+                if (refused != null) { menuRefused(paneId, "Thinking", refused); return@controlling }
+                var seen = false
+                for (i in 0 until 16) {
+                    kotlinx.coroutines.delay(300)
+                    val after = runCatching { readPaneScreen(t.h, paneId, 80) }.getOrNull() ?: continue
+                    if (com.billmongan.herdrdroid.herdr.PaneControls.thinkingConfirmed(spec, level, before!!, after)) { seen = true; break }
+                }
+                if (seen) { notice = "Thinking: $level (confirmed on screen)"; efforts = efforts + (paneId to level) }
                 else error = "Sent ${spec.command(level)}, but the screen didn't confirm it. Check the pane: the model may not offer $level."
             }
             readPane(paneId)
@@ -5550,20 +5643,40 @@ class AppViewModel internal constructor(
     fun newSession(paneId: String) {
         val p = paneIdle(paneId, "Start a new session") ?: return
         val spec = com.billmongan.herdrdroid.herdr.SessionControls.forAgent(p.agent) ?: return
-        sessionAsked = sessionAsked + (ck(paneId) to (p.sessionId to System.currentTimeMillis()))
-        answer(paneId, spec.newCommand, pressEnter = true)
-        rebindSoon(paneId)
+        sessionCommand(paneId, p, "New session", spec.newCommand) {}
     }
 
-    /** Switches the pane to past session [s] with the agent's resume command, or opens its picker (returns true). */
-    fun resumeSession(paneId: String, s: PastSession): Boolean {
-        val p = paneIdle(paneId, "Switch sessions") ?: return false
-        val spec = com.billmongan.herdrdroid.herdr.SessionControls.forAgent(p.agent) ?: return false
+    /**
+     * Switches the pane to past session [s] with the agent's resume command; where that takes no id it
+     * opens the agent's own picker and calls [onPicker], so the app reads the picker as a menu.
+     */
+    fun resumeSession(paneId: String, s: PastSession, onPicker: () -> Unit) {
+        val p = paneIdle(paneId, "Switch sessions") ?: return
+        val spec = com.billmongan.herdrdroid.herdr.SessionControls.forAgent(p.agent) ?: return
         val cmd = spec.resume(s)
-        sessionAsked = sessionAsked + (ck(paneId) to (p.sessionId to System.currentTimeMillis()))
-        if (cmd != null) { answer(paneId, cmd, pressEnter = true); rebindSoon(paneId); return false }
-        spec.picker?.let { answer(paneId, it, pressEnter = true); rebindSoon(paneId); return true }
-        return false
+        if (cmd != null) sessionCommand(paneId, p, "Switch sessions", cmd) {}
+        else spec.picker?.let { sessionCommand(paneId, p, "Session picker", it, onPicker) }
+    }
+
+    /** Opens the agent's own session picker (2.2.0); [onSent] starts reading it as a menu. */
+    fun openSessionPicker(paneId: String, onSent: () -> Unit) {
+        val p = paneIdle(paneId, "Open the session picker") ?: return
+        val cmd = com.billmongan.herdrdroid.herdr.SessionControls.forAgent(p.agent)?.picker ?: return
+        sessionCommand(paneId, p, "Session picker", cmd, onSent)
+    }
+
+    private fun sessionCommand(paneId: String, p: Pane, what: String, cmd: String, onSent: () -> Unit) {
+        val t = menuTarget(p) ?: return
+        viewModelScope.launch {
+            controlling(paneId, "$what…") {
+                val refused = menuCommand(paneId, t, cmd)
+                if (refused != null) { menuRefused(paneId, what, refused); return@controlling }
+                sessionAsked = sessionAsked + (ck(paneId) to (p.sessionId to System.currentTimeMillis()))
+                onSent()
+            }
+            readPane(paneId)
+            rebindSoon(paneId)
+        }
     }
 
     /**
