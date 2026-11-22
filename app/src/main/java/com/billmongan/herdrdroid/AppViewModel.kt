@@ -2122,7 +2122,16 @@ class AppViewModel internal constructor(
                 (status == Status.NEEDS_YOU) == blocked && pane(paneId)?.agent == agent && versionOf(paneId) == version -> preview
                 else -> detectPrompt(text, status == Status.NEEDS_YOU, pane(paneId)?.agent, versionOf(paneId))
             }
-            current?.id?.let { sid -> observeQuestion(sid, paneId, p, status, pane(paneId)?.agentName, text) }
+            // 2.2.2: a question card shows once two reads in a row give it from a complete dialog; until
+            // then the card is a neutral one and nothing is recorded in the pane's question history.
+            val cardKey = "$serverId|$paneId"
+            val cardShows = questionConfirm.offer(cardKey, p?.let {
+                com.billmongan.herdrdroid.herdr.questionRead(text, it, pane(paneId)?.agent, versionOf(paneId), status == Status.NEEDS_YOU)
+            })
+            if (p != null && cardShows && com.billmongan.herdrdroid.herdr.needsConfirmation(p)) { if (confirmedCards[cardKey] != p) confirmedCards[cardKey] = p }
+            else confirmedCards.remove(cardKey)
+            if (p == null || cardShows) current?.id?.let { sid -> observeQuestion(sid, paneId, p, status, pane(paneId)?.agentName, text) }
+            else com.billmongan.herdrdroid.diag.DiagLog.log("prompt", "$paneId: question card not confirmed yet")
             val dialog = com.billmongan.herdrdroid.herdr.showsQuestionDialog(text)
             val sig = if (p == null && !dialog) "none" else
                 "dialog ${if (dialog) "open" else "not seen"}, herdr ${status?.name?.lowercase()}, " +
@@ -2264,6 +2273,20 @@ class AppViewModel internal constructor(
         takePanePreview(paneId)
     }
 
+    // ---- Confirmed question cards (2.2.2) --------------------------------------------------------
+
+    private val questionConfirm = com.billmongan.herdrdroid.herdr.QuestionConfirm()
+
+    /** Each pane's confirmed question card, "server|pane" to card; memory only. */
+    private val confirmedCards = androidx.compose.runtime.mutableStateMapOf<String, Prompt>()
+
+    /**
+     * The card to show for [parsed], read from the open pane's screen (2.2.2): [parsed] once two reads
+     * in a row confirmed it from a complete dialog, else a neutral card with no options or keys.
+     */
+    fun questionCardFor(paneId: String, parsed: Prompt?, agent: String): Prompt? =
+        com.billmongan.herdrdroid.herdr.shownCard(parsed, confirmedCards["${current?.id}|$paneId"], agent)
+
     // ---- Settled view on a pane switch (2.2.0) ------------------------------------------------
 
     private val settleGate = com.billmongan.herdrdroid.herdr.SettleGate()
@@ -2276,7 +2299,7 @@ class AppViewModel internal constructor(
     /** The visit whose chat log has answered (loaded, or said there is none); -1 for none yet. */
     private var transcriptAnsweredVisit by mutableStateOf(-1L)
 
-    /** The chat log never answered within [com.billmongan.herdrdroid.herdr.TRANSCRIPT_WAIT_READS] settled reads. */
+    /** The chat log reader failed to run [com.billmongan.herdrdroid.herdr.TRANSCRIPT_READER_FAILURES] times this visit (2.2.2). */
     private var transcriptGaveUp by mutableStateOf(false)
     private var transcriptWaitReads = 0
 
@@ -2288,11 +2311,6 @@ class AppViewModel internal constructor(
         settledScreens.remove(key)
         settledScreens[key] = text
         if (settledScreens.size > 12) settledScreens.remove(settledScreens.keys.first())
-        if (hasTranscriptReader(paneId) && transcriptState == TranscriptMode.UNKNOWN && transcriptAnsweredVisit != visit && !transcriptGaveUp &&
-            ++transcriptWaitReads >= com.billmongan.herdrdroid.herdr.TRANSCRIPT_WAIT_READS) {
-            transcriptGaveUp = true
-            com.billmongan.herdrdroid.diag.DiagLog.log("chat", "$paneId: no answer from the chat log after $transcriptWaitReads screen reads; showing the screen view")
-        }
     }
 
     /**
@@ -2313,7 +2331,7 @@ class AppViewModel internal constructor(
      * for a moment before the chat replaced it.
      */
     fun screenViewReady(paneId: String): Boolean = com.billmongan.herdrdroid.herdr.screenViewAllowed(
-        hasTranscriptReader(paneId), transcriptAnsweredVisit == paneVisit || transcriptState == TranscriptMode.OFF, transcriptGaveUp)
+        hasTranscriptReader(paneId), transcriptAnsweredVisit == paneVisit, transcriptGaveUp)
 
     // ---- Structured conversations ------------------------------------------------------------
 
@@ -2632,6 +2650,13 @@ class AppViewModel internal constructor(
         val r = quietly(allowBackground) { it.transcript(p, cursor, transcriptScript) }
         if (r == null) {
             com.billmongan.herdrdroid.diag.DiagLog.log("chat", "$paneId: the log reader didn't run (${p.agent}, link $link)")
+            // 2.2.2: a reader that keeps failing to run this visit shows the screen view instead (counted
+            // in the reader's own answers, not in screen reads, which came in faster than a slow log).
+            if (paneVisit == visit && (screen as? Screen.Agent)?.paneId == paneId && transcriptAnsweredVisit != visit && !transcriptGaveUp &&
+                ++transcriptWaitReads >= com.billmongan.herdrdroid.herdr.TRANSCRIPT_READER_FAILURES) {
+                transcriptGaveUp = true
+                com.billmongan.herdrdroid.diag.DiagLog.log("chat", "$paneId: the log reader failed $transcriptWaitReads times; showing the screen view")
+            }
             return false
         }
         if (paneVisit != visit || herdr !== client || transcriptCursor != cursor || (screen as? Screen.Agent)?.paneId != paneId) return false
@@ -4795,7 +4820,7 @@ class AppViewModel internal constructor(
                 p.status == Status.NEEDS_YOU -> viewModelScope.launch {
                     // Glyphs kept (2.1.2), as the tap's read keeps them, so the question identity the
                     // alert carries is computed from the same text the tap compares it with.
-                    val text = runCatching { client()?.read(p.id, NOTIFY_READ_LINES, preserveGlyphs = true) }.getOrNull().orEmpty()
+                    var text = runCatching { client()?.read(p.id, NOTIFY_READ_LINES, preserveGlyphs = true) }.getOrNull().orEmpty()
                     // A screen that couldn't be read: one plain notice, no question and no Reply (1.4.2, from review).
                     if (text.isBlank()) { Notify.unread(app, serverId, serverLabel, p.id, p.agentName); return@launch }
                     val prompt = detectPrompt(text, blocked = true, agent = p.agent)
@@ -4809,12 +4834,34 @@ class AppViewModel internal constructor(
                     // "Blocked" with nothing on screen that asks is a stale status, not a question (1.4.2):
                     // no alert. A screen that couldn't be read still alerts, saying so.
                     if (prompt == null && text.isNotBlank()) { com.billmongan.herdrdroid.diag.DiagLog.log("watch", "${p.id}: herdr says blocked, but nothing on screen asks; no alert"); return@launch }
-                    withContext(Dispatchers.Main) { if (prompt != null && prompt.choices.isNotEmpty()) observeQuestion(serverId, p.id, prompt, p.status, p.agentName, text) }
+                    // 2.2.2: a question read before its dialog finished drawing could carry chat text. The
+                    // alert comes at once, saying only that a question is asked, and is updated in place
+                    // (no second sound) once two reads in a row give the same complete dialog.
+                    var card = prompt
+                    val neutralFirst = prompt != null && com.billmongan.herdrdroid.herdr.needsConfirmation(prompt)
+                    if (prompt != null && neutralFirst && com.billmongan.herdrdroid.herdr.needsConfirmation(prompt)) {
+                        val neutral = checkNotNull(com.billmongan.herdrdroid.herdr.alertCard(prompt, confirmed = false, agent = p.agentName))
+                        Notify.needsYou(app, serverId, serverLabel, p.id, p.agentName, neutral.question, emptyList(), p.agent,
+                            terminalReview = true, reply = false, prompt = neutral)
+                        val got = com.billmongan.herdrdroid.herdr.confirmByReads(text, prompt, p.agent, null) {
+                            delay(com.billmongan.herdrdroid.herdr.ALERT_CONFIRM_PAUSE_MS)
+                            if (!watching || lastStatus[key] != Status.NEEDS_YOU) null
+                            else runCatching { client()?.read(p.id, NOTIFY_READ_LINES, preserveGlyphs = true) }.getOrNull()?.takeIf { it.isNotBlank() }
+                        }
+                        if (got == null || lastStatus[key] != Status.NEEDS_YOU) {
+                            com.billmongan.herdrdroid.diag.DiagLog.log("watch", "${p.id}: question not confirmed; the alert stays neutral")
+                            return@launch
+                        }
+                        card = got.first
+                        text = got.second
+                    }
+                    withContext(Dispatchers.Main) { if (card != null && card.choices.isNotEmpty()) observeQuestion(serverId, p.id, card, p.status, p.agentName, text) }
                     // 2.1.2: the alert offers the card's own options (Hermes's clarify and OpenCode's
                     // question included), answered through the same checks when tapped.
-                    Notify.needsYou(app, serverId, serverLabel, p.id, p.agentName, prompt?.question ?: "Waiting for you.", prompt?.choices.orEmpty(), p.agent,
-                        terminalReview = prompt?.terminalReview == true,
-                        reply = com.billmongan.herdrdroid.notify.notificationOffersReply(prompt), prompt = prompt)
+                    Notify.needsYou(app, serverId, serverLabel, p.id, p.agentName, card?.question ?: "Waiting for you.", card?.choices.orEmpty(), p.agent,
+                        terminalReview = card?.terminalReview == true,
+                        reply = com.billmongan.herdrdroid.notify.notificationOffersReply(card), prompt = card,
+                        quietUpdate = neutralFirst)
                 }
                 // Only agents that need you notify (Bill, 2026-11-13); finishing doesn't.
                 before == Status.NEEDS_YOU -> {
