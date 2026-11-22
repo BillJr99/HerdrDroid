@@ -1,4 +1,6 @@
-package com.billmongan.herdrdroid
+package com.billmongan.herdrdroid.ui
+
+import com.billmongan.herdrdroid.*
 
 import android.app.Application
 import android.os.Looper
@@ -52,9 +54,12 @@ class CrossServerNoticeDeliveryTest {
     private lateinit var fleet: Fleet
     private var now = 10_000_000_000L
 
-    // Made inside the compose rule, on the UI thread, as ComposeUiTest makes its view models: made
-    // in the test's constructor, before the rule's environment existed, the suite's later Compose
-    // tests timed out with AppNotIdleException. The loop's wait never sleeps for real here.
+    // This class renders Compose, so it lives in ui with the suite's other Compose classes. In the
+    // root package it ran before GrokRcReviewFixesTest, OpenCodeAlert212Test and the other view
+    // model tests there; Compose started that early left every later Compose test unable to go
+    // idle (AppNotIdleException from PanePrefetchTest on). The view model is made inside the rule,
+    // on the UI thread, as ComposeUiTest makes its own.
+    // The loop's wait never sleeps for real here.
     @Before fun open() {
         rule.runOnUiThread {
             vm = AppViewModel(app)
@@ -108,7 +113,8 @@ class CrossServerNoticeDeliveryTest {
         vm.changeAgentMessaging(true)
         tick()
         assertEquals(1, laptop.writes.size)
-        val told = laptop.writes[0]
+        // Only the notice itself: the command around it holds the fixture's herdr path.
+        val told = laptop.writes[0].substringAfter("'agent' 'prompt' 'p1' ")
         assertTrue(told, told.contains("Agents on other servers: Claude · hermes on server 2, Claude · reviewer on server 2."))
         assertFalse(told, told.contains("fixture") || told.contains(".invalid") || told.contains(":22") || told.contains("@"))
         // The named server is still named.

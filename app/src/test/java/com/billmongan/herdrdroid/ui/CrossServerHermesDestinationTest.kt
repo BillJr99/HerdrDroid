@@ -1,4 +1,6 @@
-package com.billmongan.herdrdroid
+package com.billmongan.herdrdroid.ui
+
+import com.billmongan.herdrdroid.*
 
 import android.app.Application
 import android.content.ClipboardManager
@@ -47,11 +49,11 @@ class CrossServerHermesDestinationTest {
     private val laptop2 = Laptop2()
     private val exact = "Hermes, please check tonight's cron run."
 
-    // The view model is made inside the compose rule, on the UI thread, as ComposeUiTest and
-    // ServersBackUiTest make theirs. Made in the test's constructor, it started its coroutines and
-    // wrote its Compose state before the rule's test environment existed; this was one of only two
-    // Compose test classes that did so, and with it the full suite's later Compose tests timed out
-    // with AppNotIdleException (CardBodyTest, ComposeUiTest, PaneDraftCardTest and others).
+    // This class renders Compose, so it lives in ui with the suite's other Compose classes. In the
+    // root package it ran before GrokRcReviewFixesTest, OpenCodeAlert212Test and the other view
+    // model tests there; Compose started that early left every later Compose test unable to go
+    // idle (AppNotIdleException from PanePrefetchTest on). The view model is made inside the rule,
+    // on the UI thread, as ComposeUiTest makes its own.
     @Before fun open() {
         rule.runOnUiThread {
             vm = AppViewModel(app)
