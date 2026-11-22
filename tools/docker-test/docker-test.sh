@@ -14,7 +14,7 @@
 #                        (default $HOME/.cache/herdrdroid-docker-test). The first run installs the
 #                        SDK there; later runs reuse it.
 #   HD_TEST_OUT          the folder that holds one new run-* folder per run (default
-#                        $HOME/.cache/herdrdroid-docker-test-runs); "latest" links to the newest
+#                        $HOME/.cache/herdrdroid-docker-test-runs, where "latest" links to the newest)
 #   HD_TEST_MIRROR=1     fetch Robolectric's android-all jars from Google's Maven Central mirror
 #                        (https://maven-central.storage-download.googleapis.com/maven2/), for when
 #                        Maven Central answers HTTP 429. ROBOLECTRIC_REPO_URL names any other one.
@@ -24,13 +24,14 @@
 #   HD_TEST_KEEP_SRC=1   keep the unpacked source in the run folder
 #   HD_SDK_TOOLS_URL     another download address for the SDK command-line tools zip
 #
-# What reaches the container: a copy of the checkout streamed in with tar, without .git, keystore/,
-# release/, local.properties or build output, plus the cache folder and this run's new output folder.
-# The checkout itself is never mounted or written, and no signing file is ever in the container.
+# What reaches the container: the files git tracks (plus untracked, not-ignored files with
+# HD_TEST_INCLUDE_UNTRACKED=1), streamed in with tar, without keystore/, release/ or local.properties;
+# the cache folder; and this run's new output folder. Files git ignores (the signing key and
+# signing.properties among them) are never sent. The checkout itself is never mounted or written.
 # The cache and output folders must be outside the checkout (and so outside keystore/), must not
 # overlap each other, and must not be / or $HOME; the script checks this before it creates anything.
 #
-# Locks: one run at a time per user on this computer ($HOME/.cache/herdrdroid-docker-test.lock) and
+# Locks: one run at a time per user on this computer ($HOME/.cache/herdrdroid-docker-test-locks/user.lock) and
 # per cache (<cache>/lock), because two Robolectric runs at once starve each other and fail with
 # false AppNotIdleException errors. Without flock (e.g. macOS) the script warns and runs unlocked.
 set -euo pipefail
@@ -73,15 +74,55 @@ check_dir() { # check_dir NAME PATH
   fi
   return 0
 }
+DEFAULT_OUT=$HOME/.cache/herdrdroid-docker-test-runs
 CACHE=$(phys "${HD_TEST_CACHE:-$HOME/.cache/herdrdroid-docker-test}") || exit 2
-OUT=$(phys "${HD_TEST_OUT:-$HOME/.cache/herdrdroid-docker-test-runs}") || exit 2
+OUT=$(phys "${HD_TEST_OUT:-$DEFAULT_OUT}") || exit 2
 check_dir HD_TEST_CACHE "$CACHE"; check_dir HD_TEST_OUT "$OUT"
 overlaps "$CACHE" "$OUT" && { echo "HD_TEST_CACHE and HD_TEST_OUT must not overlap: $CACHE, $OUT" >&2; exit 2; }
 
-mkdir -p "$CACHE/sdk" "$CACHE/gradle" "$CACHE/m2" "$OUT"
+# A folder this script uses: made here if missing, else it must be a real folder (not a symlink)
+# owned by this user, whose physical path passes the same checks as the cache and output roots.
+own_dir() { # own_dir NAME PATH
+  local name=$1 p=$2
+  [ -L "$p" ] && { echo "$name is a symlink; it must be a real folder: $p" >&2; exit 2; }
+  if [ ! -e "$p" ]; then mkdir -p "$p" || exit 2; fi
+  [ -d "$p" ] && [ ! -L "$p" ] && [ -O "$p" ] || { echo "$name must be a folder owned by $(id -un): $p" >&2; exit 2; }
+  [ "$(cd -P "$p" && pwd -P)" = "$p" ] || { echo "$name resolves somewhere else: $p" >&2; exit 2; }
+  check_dir "$name" "$p"
+}
+own_dir HD_TEST_CACHE "$CACHE"; own_dir HD_TEST_OUT "$OUT"
+for d in sdk gradle m2; do own_dir "cache folder $d" "$CACHE/$d"; done
+[ -f "$HERE/run.sh" ] && [ ! -L "$HERE/run.sh" ] || { echo "run.sh must be a regular file: $HERE/run.sh" >&2; exit 2; }
+
+# The build inputs: files git tracks (and, with HD_TEST_INCLUDE_UNTRACKED=1, untracked files git
+# does not ignore), without keystore/, release/ and local.properties. Ignored files, such as the
+# signing key and signing.properties, are never listed.
+command -v git >/dev/null && git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 \
+  || { echo "the checkout must be a git working tree: $REPO" >&2; exit 2; }
+LIST=(ls-files -z --cached); [ "${HD_TEST_INCLUDE_UNTRACKED:-0}" = 1 ] && LIST+=(--others --exclude-standard)
+inputs() {
+  git -C "$REPO" "${LIST[@]}" | while IFS= read -r -d '' f; do
+    case "$f" in keystore|keystore/*|release|release/*|local.properties) continue ;; esac
+    [ -e "$REPO/$f" ] || [ -L "$REPO/$f" ] && printf '%s\0' "$f"
+  done
+}
+
+# A lock file, opened on file descriptor $1 without truncating or writing it. The path must be a
+# regular file (made here if missing), not a symlink; after opening, the descriptor must be that
+# same file, which catches a swap between the check and the open.
+open_lock() { # open_lock FD PATH
+  local fd=$1 f=$2
+  [ -L "$f" ] && { echo "lock file is a symlink: $f" >&2; exit 2; }
+  [ ! -e "$f" ] || [ -f "$f" ] || { echo "lock file is not a regular file: $f" >&2; exit 2; }
+  eval "exec $fd<>\"\$f\"" || exit 2
+  [ -f "/dev/fd/$fd" ] && [ ! -L "$f" ] && [ -O "$f" ] \
+    && [ "$(stat -L -c '%d:%i' "/dev/fd/$fd")" = "$(stat -c '%d:%i' "$f")" ] \
+    || { echo "lock file changed while it was opened: $f" >&2; exit 2; }
+}
 if command -v flock >/dev/null; then
-  mkdir -p "$HOME/.cache"
-  exec 8>"$HOME/.cache/herdrdroid-docker-test.lock" 9>"$CACHE/lock"
+  own_dir "lock folder" "$HOME/.cache/herdrdroid-docker-test-locks"
+  open_lock 8 "$HOME/.cache/herdrdroid-docker-test-locks/user.lock"
+  open_lock 9 "$CACHE/lock"
   flock -n 8 && flock -n 9 || { echo "waiting for another HerdrDroid test run to finish..."; flock 8; flock 9; }
 else
   echo "warning: flock not found; make sure no other HerdrDroid test run is going on this computer" >&2
@@ -89,12 +130,19 @@ fi
 
 # A new folder for this run only: nothing in it comes from an earlier run.
 RUN=$(mktemp -d "$OUT/run-$(date +%Y%m%d-%H%M%S)-XXXXXX")
-ln -sfn "${RUN##*/}" "$OUT/latest"
+link_owner() { stat -c %u "$1" 2>/dev/null || stat -f %u "$1"; }  # GNU, then BSD stat
+# "latest" is kept only in the default output folder, and only replaces this user's own symlink.
+if [ "$OUT" = "$(phys "$DEFAULT_OUT")" ]; then
+  # stat without -L: the owner of the link itself, not of what it points at.
+  if [ ! -e "$OUT/latest" ] && [ ! -L "$OUT/latest" ] || { [ -L "$OUT/latest" ] && [ "$(link_owner "$OUT/latest")" = "$(id -u)" ]; }; then
+    ln -sfn "${RUN##*/}" "$OUT/latest"
+  else
+    echo "note: $OUT/latest is not this script's link, so it was left alone" >&2
+  fi
+fi
 echo "$MODE${*:+ ($*)} in $IMAGE; cache $CACHE; output $RUN${MIRROR:+; Robolectric from $MIRROR}"
 set +e
-tar -C "$REPO" --exclude=./.git --exclude=./keystore --exclude=./release --exclude=./build \
-    --exclude=./app/build --exclude=./.gradle --exclude=./.kotlin --exclude=./.idea \
-    --exclude=./local.properties -cf - . |
+inputs | tar -C "$REPO" --null --no-recursion -T - -cf - |
   "${DOCKER[@]}" run --rm -i --name "herdrdroid-test-$$" ${DOCKER_ARGS[@]+"${DOCKER_ARGS[@]}"} \
     --user "$(id -u):$(id -g)" --tmpfs /w/home:exec,uid="$(id -u)",gid="$(id -g)" \
     -e MODE="$MODE" -e ROBOLECTRIC_REPO_URL="$MIRROR" -e HOME=/w/home \
@@ -103,7 +151,15 @@ tar -C "$REPO" --exclude=./.git --exclude=./keystore --exclude=./release --exclu
     "$IMAGE" bash /w/run.sh "$@"
 RC=("${PIPESTATUS[@]}")
 set -e
-STATUS=${RC[1]}; [ "${RC[0]}" != 0 ] && [ "$STATUS" = 0 ] && STATUS=${RC[0]}
+# The status: docker's (run.sh's), else the source stream's, else the summary's own.
+STATUS=${RC[2]}
+[ "$STATUS" = 0 ] && for r in "${RC[0]}" "${RC[1]}"; do [ "$r" = 0 ] || STATUS=$r; done
 echo "---- summary ($RUN/summary.txt; full log in $RUN/build.log)"
-cat "$RUN/summary.txt" 2>/dev/null || echo "no summary: the container stopped early (docker exit $STATUS)"
+if [ -f "$RUN/summary.txt" ] && SUMMARY_EXIT=$(sed -n '1s/^exit=\([0-9][0-9]*\)$/\1/p' "$RUN/summary.txt") && [ -n "$SUMMARY_EXIT" ]; then
+  cat "$RUN/summary.txt"
+  [ "$STATUS" = 0 ] && [ "$SUMMARY_EXIT" != 0 ] && STATUS=$SUMMARY_EXIT
+else
+  echo "no summary from this run (exit $STATUS); see $RUN/build.log"
+  [ "$STATUS" = 0 ] && STATUS=1
+fi
 exit "$STATUS"
