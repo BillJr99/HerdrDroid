@@ -1974,12 +1974,30 @@ class AppViewModel internal constructor(
             val useLive = liveCard != null && (livePrompt != null || verifyPi && preview != null || liveReport || recentReport || verifiedUsage != null || recentClarify || codexQuestionCleared || verifyOpenCode &&
                 (blocked || preview != null || openCodeBackgroundDrawer(agent, recent) || openCodeBackgroundDrawer(agent, liveCard)))
             val text = if (useLive) checkNotNull(liveCard) else recent
+            // 2.2.0: the first reads after a switch are held until they settle (two identical reads, or
+            // a read that must show at once); the last good view stays up meanwhile. See [SettleGate].
+            val urgent = com.billmongan.herdrdroid.herdr.urgentRead(
+                needsYou = blocked,
+                working = paneStatus == Status.WORKING || paneNow?.backgroundBusy == true,
+                question = preview != null || livePrompt != null,
+                error = paneNow != null && com.billmongan.herdrdroid.herdr.agentErrorNotice(text, agent, paneNow.agentName) != null,
+                dialog = useLive || liveUsage != null || verifiedUsage != null || com.billmongan.herdrdroid.herdr.showsQuestionDialog(text),
+            )
+            val verdict = settleGate.offer(settleKey(serverId, paneId, visit), text, urgent)
+            if (verdict.why == com.billmongan.herdrdroid.herdr.SettleGate.Why.CAPPED)
+                com.billmongan.herdrdroid.diag.DiagLog.log("read", "$paneId: the screen kept changing over ${verdict.reads} reads; showing the newest")
+            else if (verdict.why != null && verdict.reads > 1)
+                com.billmongan.herdrdroid.diag.DiagLog.log("read", "$paneId: view settled after ${verdict.reads} reads (${verdict.why.name.lowercase()})")
+            paneViewSettled = verdict.show
+            // 2.1.5: a cross-server frame the agent rendered in this chat becomes a card; nothing is sent.
+            // A card, so never held by the settle gate (2.2.0).
+            noteCrossServerFrames(cardOwner, recent)
+            if (!verdict.show) return
+            noteSettledScreen(serverId, paneId, text, visit)
             lastAppliedPaneRead = attempt
             paneReadsApplied++
             openingPanePreview = null
             paneReadProblem = null
-            // 2.1.5: a cross-server frame the agent rendered in this chat becomes a card; nothing is sent.
-            noteCrossServerFrames(cardOwner, recent)
             openUsage = liveUsage
             noteSeenBtw(serverId, paneId, liveUsage)
             noteInputLine(paneId, text)
@@ -2138,8 +2156,64 @@ class AppViewModel internal constructor(
         current?.id?.let { questions(it, paneId) }
         resetTranscript(paneId)
         screen = Screen.Agent(paneId)
+        // 2.2.0: the new visit's view waits for settled reads; the pane's last good view shows meanwhile.
+        settleGate.reset(settleKey(current?.id, paneId, paneVisit))
+        paneViewSettled = false
+        transcriptGaveUp = false
+        transcriptWaitReads = 0
         takePanePreview(paneId)
     }
+
+    // ---- Settled view on a pane switch (2.2.0) ------------------------------------------------
+
+    private val settleGate = com.billmongan.herdrdroid.herdr.SettleGate()
+    private fun settleKey(serverId: String?, paneId: String, visit: Long) = "$serverId|$paneId|$visit"
+
+    /** False while the open pane's first reads after a switch are held until they settle. */
+    var paneViewSettled by mutableStateOf(true)
+        private set
+
+    /** The visit whose chat log has answered (loaded, or said there is none); -1 for none yet. */
+    private var transcriptAnsweredVisit by mutableStateOf(-1L)
+
+    /** The chat log never answered within [com.billmongan.herdrdroid.herdr.TRANSCRIPT_WAIT_READS] settled reads. */
+    private var transcriptGaveUp by mutableStateOf(false)
+    private var transcriptWaitReads = 0
+
+    /** Each pane's last settled screen, "server|pane" to text; memory only, a few panes. */
+    private val settledScreens = LinkedHashMap<String, String>()
+
+    private fun noteSettledScreen(serverId: String?, paneId: String, text: String, visit: Long) {
+        val key = "$serverId|$paneId"
+        settledScreens.remove(key)
+        settledScreens[key] = text
+        if (settledScreens.size > 12) settledScreens.remove(settledScreens.keys.first())
+        if (hasTranscriptReader(paneId) && transcriptState == TranscriptMode.UNKNOWN && transcriptAnsweredVisit != visit && !transcriptGaveUp &&
+            ++transcriptWaitReads >= com.billmongan.herdrdroid.herdr.TRANSCRIPT_WAIT_READS) {
+            transcriptGaveUp = true
+            com.billmongan.herdrdroid.diag.DiagLog.log("chat", "$paneId: no answer from the chat log after $transcriptWaitReads screen reads; showing the screen view")
+        }
+    }
+
+    /**
+     * The pane's last settled screen, display only, while this visit's first reads are held and
+     * nothing has been read yet (2.2.0). Never a source of a card, a target or question history.
+     */
+    internal fun heldScreenText(paneId: String): String? = settledScreens["${current?.id}|$paneId"]?.takeIf {
+        !paneViewSettled && (screen as? Screen.Agent)?.paneId == paneId && paneTextPane == paneId && paneText.isEmpty() && paneReadProblem == null
+    }
+
+    /** True while the open pane shows its last good view and its fresh one is still settling (2.2.0). */
+    fun paneUpdating(paneId: String): Boolean = (screen as? Screen.Agent)?.paneId == paneId && paneReadProblem == null &&
+        (!paneViewSettled || (hasTranscriptReader(paneId) && transcriptState == TranscriptMode.ON && transcriptAnsweredVisit != paneVisit))
+
+    /**
+     * Whether the screen view may show for [paneId] (2.2.0): not while an agent with a chat log is
+     * still waiting for that log's first answer this visit, which showed the terminal-parsed view
+     * for a moment before the chat replaced it.
+     */
+    fun screenViewReady(paneId: String): Boolean = com.billmongan.herdrdroid.herdr.screenViewAllowed(
+        hasTranscriptReader(paneId), transcriptAnsweredVisit == paneVisit || transcriptState == TranscriptMode.OFF, transcriptGaveUp)
 
     // ---- Structured conversations ------------------------------------------------------------
 
@@ -2493,6 +2567,8 @@ class AppViewModel internal constructor(
 
     private fun applyTranscript(paneId: String, r: com.billmongan.herdrdroid.transcript.TranscriptRead) {
         if (transcriptPane != paneId) return
+        // 2.2.0: the log answered for this visit (with its chat or with none), so the view may settle.
+        if ((screen as? Screen.Agent)?.paneId == paneId) transcriptAnsweredVisit = paneVisit
         if (!r.ok) {
             // Why the chat view stays off is worth a line in the diagnostics (1.4.1).
             if (transcriptItems.isEmpty()) com.billmongan.herdrdroid.diag.DiagLog.log("chat", "$paneId: no chat view (${pane(paneId)?.agent}): ${r.why}")
