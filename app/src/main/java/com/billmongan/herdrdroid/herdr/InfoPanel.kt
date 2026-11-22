@@ -176,7 +176,7 @@ private fun titleOf(row: String): PanelKind? {
     // A tab header ("Session   Usage"): the most specific tab name names it.
     val order = listOf(PanelKind.USAGE, PanelKind.STATUS, PanelKind.CONTEXT, PanelKind.COST, PanelKind.STATS,
         PanelKind.SESSION, PanelKind.HELP, PanelKind.SHORTCUTS, PanelKind.SETTINGS, PanelKind.MODEL)
-    return kinds.minBy { order.indexOf(it) }
+    return kinds.minByOrNull { order.indexOf(it) } ?: kinds.first()
 }
 
 private fun isRule(row: String): Boolean {
