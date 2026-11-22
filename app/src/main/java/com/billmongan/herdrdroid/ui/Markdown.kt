@@ -283,6 +283,8 @@ fun CodeBlock(code: String, lang: String, size: Float) {
                         .padding(horizontal = 10.dp, vertical = 7.dp),
                 )
             }
+            // 2.2.0: long-press the box to copy just it.
+            val copy = rememberCopier()
             Text(
                 remember(code, lang, Palette.dark) { Highlight.code(code, lang) },
                 fontFamily = Fonts.Mono,
@@ -290,7 +292,8 @@ fun CodeBlock(code: String, lang: String, size: Float) {
                 lineHeight = (size * 0.84f * 1.45f).sp,
                 softWrap = false,
                 color = Palette.Ink,
-                modifier = Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 10.dp),
+                modifier = Modifier.fillMaxWidth().onLongPress("Copy this box") { copy(code, "Copied box") }
+                    .horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 10.dp),
             )
         }
     }
