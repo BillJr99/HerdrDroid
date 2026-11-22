@@ -22,12 +22,17 @@
 #   HD_DOCKER            the docker command, split on spaces (default docker; e.g. "sudo -n docker")
 #   HD_DOCKER_ARGS       extra docker run options, split on spaces (no quoting inside)
 #   HD_TEST_KEEP_SRC=1   keep the unpacked source in the run folder
+#   HD_TEST_WORKTREE=1   test the working tree's changes to tracked files (edits and deletions), not
+#                        just the last commit; HD_TEST_INCLUDE_UNTRACKED=1 also adds untracked files
+#                        git does not ignore (and implies HD_TEST_WORKTREE=1)
 #   HD_SDK_TOOLS_URL     another download address for the SDK command-line tools zip
 #
-# What reaches the container: the files git tracks (plus untracked, not-ignored files with
-# HD_TEST_INCLUDE_UNTRACKED=1), streamed in with tar, without keystore/, release/ or local.properties;
-# the cache folder; and this run's new output folder. Files git ignores (the signing key and
-# signing.properties among them) are never sent. The checkout itself is never mounted or written.
+# What reaches the container: the committed tree (HEAD), written by git archive from git's objects
+# without keystore/, release/ or local.properties; the cache folder; and this run's new output folder.
+# With HD_TEST_WORKTREE=1 the tree is first built in a separate index from the working tree by git
+# itself, which records a symlink as a link and never reads through one (this adds objects to the
+# repository, as git add does). The working tree is never mounted or written, and the user's own index
+# and stash are not touched.
 # The cache and output folders must be outside the checkout (and so outside keystore/), must not
 # overlap each other, and must not be / or $HOME; the script checks this before it creates anything.
 #
@@ -94,18 +99,11 @@ own_dir HD_TEST_CACHE "$CACHE"; own_dir HD_TEST_OUT "$OUT"
 for d in sdk gradle m2; do own_dir "cache folder $d" "$CACHE/$d"; done
 [ -f "$HERE/run.sh" ] && [ ! -L "$HERE/run.sh" ] || { echo "run.sh must be a regular file: $HERE/run.sh" >&2; exit 2; }
 
-# The build inputs: files git tracks (and, with HD_TEST_INCLUDE_UNTRACKED=1, untracked files git
-# does not ignore), without keystore/, release/ and local.properties. Ignored files, such as the
-# signing key and signing.properties, are never listed.
-command -v git >/dev/null && git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 \
-  || { echo "the checkout must be a git working tree: $REPO" >&2; exit 2; }
-LIST=(ls-files -z --cached); [ "${HD_TEST_INCLUDE_UNTRACKED:-0}" = 1 ] && LIST+=(--others --exclude-standard)
-inputs() {
-  git -C "$REPO" "${LIST[@]}" | while IFS= read -r -d '' f; do
-    case "$f" in keystore|keystore/*|release|release/*|local.properties) continue ;; esac
-    [ -e "$REPO/$f" ] || [ -L "$REPO/$f" ] && printf '%s\0' "$f"
-  done
-}
+# The build inputs come from git's objects, never by reading paths in the working tree.
+command -v git >/dev/null && git -C "$REPO" rev-parse --verify -q HEAD >/dev/null 2>&1 \
+  || { echo "the checkout must be a git working tree with at least one commit: $REPO" >&2; exit 2; }
+WORKTREE=${HD_TEST_WORKTREE:-0}; [ "${HD_TEST_INCLUDE_UNTRACKED:-0}" = 1 ] && WORKTREE=1
+EXCLUDE=(':(exclude,top)keystore' ':(exclude,top)release' ':(exclude,top)local.properties')
 
 # A lock file, opened on file descriptor $1 without truncating or writing it. The path must be a
 # regular file (made here if missing), not a symlink; after opening, the descriptor must be that
@@ -140,9 +138,18 @@ if [ "$OUT" = "$(phys "$DEFAULT_OUT")" ]; then
     echo "note: $OUT/latest is not this script's link, so it was left alone" >&2
   fi
 fi
+# The tree to test: HEAD, or HEAD updated from the working tree in a separate index in the run folder.
+TREE=HEAD
+if [ "$WORKTREE" = 1 ]; then
+  ADD=(-u); [ "${HD_TEST_INCLUDE_UNTRACKED:-0}" = 1 ] && ADD=(-A)
+  TREE=$(export GIT_INDEX_FILE="$RUN/stage-index"
+         git -C "$REPO" read-tree HEAD && git -C "$REPO" add "${ADD[@]}" -- . && git -C "$REPO" write-tree) \
+    || { echo "could not stage the working tree" >&2; exit 2; }
+fi
 echo "$MODE${*:+ ($*)} in $IMAGE; cache $CACHE; output $RUN${MIRROR:+; Robolectric from $MIRROR}"
+echo "source: $([ "$WORKTREE" = 1 ] && echo "working tree (tree $TREE)" || echo "HEAD $(git -C "$REPO" rev-parse --short HEAD)")"
 set +e
-inputs | tar -C "$REPO" --null --no-recursion -T - -cf - |
+git -C "$REPO" archive --format=tar "$TREE" -- . "${EXCLUDE[@]}" |
   "${DOCKER[@]}" run --rm -i --name "herdrdroid-test-$$" ${DOCKER_ARGS[@]+"${DOCKER_ARGS[@]}"} \
     --user "$(id -u):$(id -g)" --tmpfs /w/home:exec,uid="$(id -u)",gid="$(id -g)" \
     -e MODE="$MODE" -e ROBOLECTRIC_REPO_URL="$MIRROR" -e HOME=/w/home \
@@ -152,8 +159,8 @@ inputs | tar -C "$REPO" --null --no-recursion -T - -cf - |
 RC=("${PIPESTATUS[@]}")
 set -e
 # The status: docker's (run.sh's), else the source stream's, else the summary's own.
-STATUS=${RC[2]}
-[ "$STATUS" = 0 ] && for r in "${RC[0]}" "${RC[1]}"; do [ "$r" = 0 ] || STATUS=$r; done
+STATUS=${RC[1]}
+[ "$STATUS" = 0 ] && [ "${RC[0]}" != 0 ] && STATUS=${RC[0]}
 echo "---- summary ($RUN/summary.txt; full log in $RUN/build.log)"
 if [ -f "$RUN/summary.txt" ] && SUMMARY_EXIT=$(sed -n '1s/^exit=\([0-9][0-9]*\)$/\1/p' "$RUN/summary.txt") && [ -n "$SUMMARY_EXIT" ]; then
   cat "$RUN/summary.txt"

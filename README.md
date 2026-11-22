@@ -388,9 +388,9 @@ If you build for yourself without the project's key, use your own key (a standar
 
 ### Running the tests in Docker
 
-Two scripts in `tools/docker-test/` run the unit tests in a throwaway `eclipse-temurin:17-jdk` container, so a computer with Docker, git, bash and tar needs no JDK, Android SDK or Gradle of its own. The checkout must be a git working tree.
+Two scripts in `tools/docker-test/` run the unit tests in a throwaway `eclipse-temurin:17-jdk` container, so a computer with Docker, git, bash and tar needs no JDK, Android SDK or Gradle of its own. The checkout must be a git working tree with at least one commit.
 
-- `docker-test.sh` runs on your computer. It checks the cache and output paths, takes the run locks, makes a new output folder for the run, streams the build inputs into a `--rm` container with tar, and prints the summary at the end. It exits with the run's status.
+- `docker-test.sh` runs on your computer. It checks the cache and output paths, takes the run locks, makes a new output folder for the run, streams the committed tree (or, on request, your working tree's changes) into a `--rm` container with `git archive`, and prints the summary at the end. It exits with the run's status.
 - `run.sh` runs inside the container, as your user rather than root. It unpacks the source, installs the Android SDK on first use, runs Gradle in the chosen mode, and writes the results to the run's output folder. Do not run it on your computer directly.
 
 Run these commands from the repository root:
@@ -400,12 +400,13 @@ bash tools/docker-test/docker-test.sh compile                                   
 bash tools/docker-test/docker-test.sh tests com.billmongan.herdrdroid.ui.CardBodyTest  # one test class
 bash tools/docker-test/docker-test.sh tests '*PanePrefetch*' '*CardBody*'              # several patterns
 bash tools/docker-test/docker-test.sh full                                             # full suite and debug APK
+HD_TEST_WORKTREE=1 bash tools/docker-test/docker-test.sh compile                       # include uncommitted edits
 HD_TEST_MIRROR=1 bash tools/docker-test/docker-test.sh full                            # Robolectric jars from Google's mirror
 ```
 
 **Modes.** `compile` compiles the app, unit-test and androidTest sources, which takes about two minutes once the cache is warm. `tests` runs the unit tests that match the Gradle `--tests` patterns, or all of them when no pattern is given. Each pattern is passed on as one argument, so quote a pattern with `*` in it. `full` is the default: it runs every unit test and then builds the debug APK.
 
-**What the container sees.** The checkout is never mounted and never written. The script sends the container the files git tracks, as they are in your working tree (edits included), and leaves out `keystore/`, `release/` and `local.properties`. Untracked files are left out too, unless `HD_TEST_INCLUDE_UNTRACKED=1` adds the untracked files that git does not ignore. Files git ignores are never sent. The signing key and `signing.properties` are ignored, so they never reach the container, and the build points at an empty signing-key folder. A signing file is safe only while git ignores it or it lives in `keystore/`, so do not track one, or keep one in an unignored place, if you use `HD_TEST_INCLUDE_UNTRACKED=1`. `run.sh` writes its own `local.properties` in its copy. Tests and the debug APK need no signing key.
+**What the container sees.** The container gets the committed tree: the script runs `git archive HEAD`, which writes the files from git's own objects without reading the working tree, and leaves out `keystore/`, `release/` and `local.properties`. Uncommitted changes are not tested unless you ask. With `HD_TEST_WORKTREE=1` the script first builds a tree from your working tree's changes to tracked files (edits and deletions) in a separate index inside the run folder, and `HD_TEST_INCLUDE_UNTRACKED=1` also adds untracked files that git does not ignore. Git does that staging itself: it records a symlink as a link and never reads files through one, so a symlinked folder cannot bring in files from outside the checkout. Your own index and stash are left alone, though git adds the new file contents to the repository's object store, as `git add` does. Ignore rules only filter untracked files: a file already tracked is sent even if `.gitignore` names it, unless it is in `keystore/`, `release/` or is `local.properties`. The signing key and `signing.properties` are ignored and not tracked, so they never reach the container, and the build points at an empty signing-key folder. The checkout is never mounted, and its files are never written. `run.sh` writes its own `local.properties` in its copy. Tests and the debug APK need no signing key.
 
 **Where results land.** Each run gets a new folder, `run-<date>-<time>-<random>`, in `$HOME/.cache/herdrdroid-docker-test-runs` (or the folder named by `HD_TEST_OUT`). In the default folder only, a `latest` link points at the newest run; the script replaces `latest` only when it is your own symlink, and leaves anything else of that name alone. Nothing in a run's folder comes from an earlier run:
 
@@ -414,7 +415,7 @@ HD_TEST_MIRROR=1 bash tools/docker-test/docker-test.sh full                     
 - `test-results/`, the JUnit XML for each test class that ran;
 - the debug APK, in `full` mode only.
 
-A run that Gradle passed must also leave what its mode promises: the test XML for `tests` and `full`, and the debug APK for `full`. If an export or the summary cannot be written, the run fails with an `EXPORT:` line, and a Gradle failure keeps its own status. The script also fails when the run left no summary of its own. The unpacked source is removed from the run's folder at the end; set `HD_TEST_KEEP_SRC=1` to keep it. Old run folders stay until you delete them.
+A run that Gradle passed must also leave what its mode promises: the test XML for `tests` and `full`, and the debug APK for `full`. If an export fails, the run fails with an `EXPORT:` line. If the summary cannot be written in full, the run fails and leaves no `summary.txt`. In both cases a Gradle failure keeps its own status. The script also fails when the run left no summary of its own. The unpacked source is removed from the run's folder at the end; set `HD_TEST_KEEP_SRC=1` to keep it. Old run folders stay until you delete them.
 
 **The cache.** The Android SDK, Gradle's files and Robolectric's `~/.m2` folder stay in `$HOME/.cache/herdrdroid-docker-test` between runs. Set `HD_TEST_CACHE` to use another folder.
 
