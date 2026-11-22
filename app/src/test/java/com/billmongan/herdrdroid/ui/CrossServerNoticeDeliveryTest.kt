@@ -192,6 +192,48 @@ class CrossServerNoticeDeliveryTest {
         assertEquals(2, minipc2.writes.size)
     }
 
+    private fun shellsScreen(name: String) =
+        checkNotNull(javaClass.getResource("/screens/claude/derived-2.1.330-shells/$name")).readText()
+
+    /**
+     * 2.2.1 (Grok's review of the Claude exemption): on the open server, a Claude herdr calls idle
+     * with background shells is no longer held for that work alone, so a turn its screen shows
+     * running ("esc to interrupt" among the footer chips) must still hold the notice. With only
+     * shells and an empty box, the notice goes once.
+     */
+    @Test fun theOpenServersClaudeWithShellsIsHeldWhileItsFooterSaysWorkingThenToldOnce() {
+        state(vm, "panes", withBusy(minipc.panes(), mapOf("p1" to 3)))
+        minipc.screen["p1"] = shellsScreen("working-3-shells.ansi")
+        vm.changeAgentMessaging(true)
+        tick()
+        assertTrue(minipc.writes.toString(), minipc.writes.isEmpty())
+        minipc.screen["p1"] = shellsScreen("idle-3-shells-suggestion.ansi")
+        // A refused notice is tried again after the notifier's two-minute gap.
+        now += 120_001
+        tick()
+        assertEquals(1, minipc.writes.size)
+        tick()
+        assertEquals(1, minipc.writes.size)
+    }
+
+    /** The same on a watched server, through the relay: held while the footer says working, then told once. */
+    @Test fun aWatchedClaudeWithShellsIsHeldWhileItsFooterSaysWorkingThenToldOnce() {
+        state(fleet, "states", mapOf(minipc2.server.id to FleetState(minipc2.server,
+            withBusy(minipc2.panes(), mapOf("w2:p9" to 3, "w2:p5" to 0)), null, 0, mapOf("w2:p9" to 3))))
+        minipc2.screen["w2:p9"] = shellsScreen("working-3-shells.ansi")
+        vm.changeAgentMessaging(true)
+        tick()
+        assertEquals("only the reviewer is told", 1, minipc2.writes.size)
+        assertFalse(minipc2.writes.single().contains("'w2:p9'"))
+        minipc2.screen["w2:p9"] = shellsScreen("idle-3-shells.ansi")
+        now += 120_001
+        tick()
+        assertEquals(2, minipc2.writes.size)
+        assertTrue(minipc2.writes.last().contains("'w2:p9'"))
+        tick()
+        assertEquals(2, minipc2.writes.size)
+    }
+
     @Test fun heldForTheOpenChatsDraft() {
         vm.screen = Screen.Agent("p1")
         vm.noteVoiceComposerDraft(minipc.server.id, "p1", true)
