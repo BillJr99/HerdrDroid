@@ -1,0 +1,3 @@
+card: none
+blocked: false
+source: live 2026-11-22, Grok 1.0.92 right after its status panel was closed (header with the [Dashboard] chip, empty composer). The chat text and the working folder are replaced with neutral text.
