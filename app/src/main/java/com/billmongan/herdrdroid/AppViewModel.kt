@@ -4456,7 +4456,7 @@ class AppViewModel internal constructor(
                     if (text.isBlank()) { Notify.unread(app, serverId, serverLabel, p.id, p.agentName); return@launch }
                     val prompt = detectPrompt(text, blocked = true, agent = p.agent)
                     // An agent's error, not a question (1.4.2): its own alert, once per change of state.
-                    // 2.1.6: OpenCode's failed turn too, read whole; one already acknowledged raises nothing.
+                    // 2.2.0: OpenCode's failed turn too, read whole; one already acknowledged raises nothing.
                     val notice = if (prompt == null) com.billmongan.herdrdroid.herdr.agentErrorNotice(text, p.agent, p.agentName) else null
                     if (notice != null) {
                         if (!errorAcknowledged(serverId, p, notice)) Notify.agentError(app, serverId, serverLabel, p.id, p.agentName, notice.summary)
@@ -5072,7 +5072,7 @@ class AppViewModel internal constructor(
     private var queueJob: Job? = null
 
     internal fun blocksNormalSend(pane: Pane, screen: String, liveOpenCode: Boolean = false): Boolean =
-        // 2.1.6: herdr keeps an OpenCode pane blocked after a failed turn (and after /new); its empty
+        // 2.2.0: herdr keeps an OpenCode pane blocked after a failed turn (and after /new); its empty
         // input box with no dialog on this screen is not a question, so the message may go in.
         (pane.status == Status.NEEDS_YOU && !(isOpenCode(pane.agent) &&
             ((liveOpenCode && openCodeEmptyComposer(screen)) || com.billmongan.herdrdroid.herdr.openCodeComposerEmpty(screen)))) ||
@@ -5263,7 +5263,7 @@ class AppViewModel internal constructor(
     }
 
     fun shownStatus(p: Pane, serverId: String? = current?.id): Status {
-        // 2.1.6: herdr's stale "blocked" on an OpenCode pane whose screen shows no dialog is shown as idle.
+        // 2.2.0: herdr's stale "blocked" on an OpenCode pane whose screen shows no dialog is shown as idle.
         if (p.openCodeStaleBlock && p.status == Status.NEEDS_YOU) return Status.IDLE
         val here = serverId == current?.id
         if (here && requiresLivePiQuestion(p) && currentPiQuestion(p) != null) return Status.NEEDS_YOU
@@ -5434,11 +5434,11 @@ class AppViewModel internal constructor(
         com.billmongan.herdrdroid.ui.shareBytes(context, md.toByteArray(), name, "text/markdown", open = false)
     }
 
-    // -- Agent errors (2.1.6) ------------------------------------------------------------------------
+    // -- Agent errors (2.2.0) ------------------------------------------------------------------------
 
     /**
      * Errors acknowledged on the phone, by server, pane, session and the error's own identity
-     * (2.1.6, Bill: "should clear the error on the pane when I acknowledge the notice in the app").
+     * (2.2.0, Bill: "should clear the error on the pane when I acknowledge the notice in the app").
      * OpenCode draws its error in the transcript, where no key removes it, so clearing it means the
      * app stops showing it: the same error stays cleared, and a new one shows again.
      */

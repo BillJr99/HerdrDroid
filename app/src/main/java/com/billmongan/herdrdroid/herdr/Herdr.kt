@@ -40,7 +40,7 @@ data class Pane(
     val screenNeedsYouFrom: Status? = null,
     /**
      * herdr calls this OpenCode pane blocked, but its screen shows OpenCode's normal input box and
-     * no question or permission dialog (2.1.6): after a failed turn (llmproxy with no free model,
+     * no question or permission dialog (2.2.0): after a failed turn (llmproxy with no free model,
      * for one) herdr keeps the pane blocked until the next turn. [status] stays herdr's, so every
      * send keeps its guards; only the display shows the pane as idle ([com.billmongan.herdrdroid.AppViewModel.shownStatus]).
      */
@@ -253,7 +253,7 @@ class Herdr internal constructor(
         // 2.1.2: herdr skips screen detection for OpenCode and calls a pane with a permission dialog
         // done or idle, so those panes are read in the same round trip and marked for display only.
         herdrStates = list.associate { it.id to it.status }
-        // 2.1.6: an OpenCode pane herdr calls blocked is read too, to tell a real dialog from a stale block.
+        // 2.2.0: an OpenCode pane herdr calls blocked is read too, to tell a real dialog from a stale block.
         val askable = screenAskable(list) + list.filter { isOpenCode(it.agent) && it.status == Status.NEEDS_YOU }
         val marked = if (askable.isEmpty()) list else {
             val tails = runCatching { previews(askable.map { it.id }, CLAUDE_STATUS_READ_LINES) }.getOrDefault(emptyMap())
@@ -2177,7 +2177,7 @@ internal fun screenAskable(list: List<Pane>): List<Pane> = list.filter {
 internal fun markScreenNeedsYou(list: List<Pane>, tails: Map<String, String>): List<Pane> {
     val askable = screenAskable(list).map { it.id }.toSet()
     return list.map { p ->
-        // 2.1.6: herdr's "blocked" on OpenCode with its normal input box on screen and no dialog
+        // 2.2.0: herdr's "blocked" on OpenCode with its normal input box on screen and no dialog
         // (after an error, or after /new) is not a question: shown idle, sends unchanged.
         if (isOpenCode(p.agent) && p.status == Status.NEEDS_YOU) {
             val t = tails[p.id]
@@ -2222,7 +2222,7 @@ internal fun openCodeNeedsYouReason(tail: String): String? {
 }
 
 /**
- * Whether an OpenCode screen herdr calls blocked shows nothing that waits for you (2.1.6): OpenCode's
+ * Whether an OpenCode screen herdr calls blocked shows nothing that waits for you (2.2.0): OpenCode's
  * normal input box with its model row and commands footer at the bottom, no background drawer, and
  * no question, permission or web-search dialog as the chat card would read it.
  */
@@ -2406,7 +2406,7 @@ private fun agentErrorLines(text: String): Pair<String, List<String>>? {
         val marked = !mine && (ERROR_MARK.containsMatchIn(l) || AGENT_OWN_ERROR.containsMatchIn(l) || ERROR_LEAD.containsMatchIn(l))
         var added = false
         if (marked || (carry && !mine)) for ((pattern, summary) in AGENT_ERRORS) if (pattern.containsMatchIn(l)) {
-            // 2.1.6: llmproxy's own wording names it, so the notice can too.
+            // 2.2.0: llmproxy's own wording names it, so the notice can too.
             found += if (summary == NO_MODEL && l.contains("llmproxy", ignoreCase = true)) LLMPROXY_NO_MODEL else summary
             lines += l; added = true
         }
@@ -2425,13 +2425,13 @@ private fun agentErrorLines(text: String): Pair<String, List<String>>? {
     return found.takeIf { it.isNotEmpty() }?.let { it.joinToString("; ") to lines }
 }
 
-/** 2.1.6: llmproxy's "No 'flagship' models are currently available" and "No model currently qualifies". */
+/** 2.2.0: llmproxy's "No 'flagship' models are currently available" and "No model currently qualifies". */
 private val MODEL_UNAVAILABLE = Regex("""\bNo '[^']{1,80}' models? (?:is|are) currently available\b|\bNo model currently qualifies\b""", RegexOption.IGNORE_CASE)
 internal const val NO_MODEL = "no model is available for this tier right now"
 internal const val LLMPROXY_NO_MODEL = "llmproxy has no available model for this tier right now"
 
 /**
- * An agent's error as its own card in the chat (2.1.6, Bill: "a different kind of card not a
+ * An agent's error as its own card in the chat (2.2.0, Bill: "a different kind of card not a
  * question card in the pane chat view that I can acknowledge and clear"). Never a question: no
  * choices and no keys. [identity] is what acknowledging it keys on, with the server, pane and
  * session, so the same error stays cleared and a new one shows again. [retryText] is the user's
@@ -2457,7 +2457,7 @@ private val OPENCODE_TURN_FOOTER = Regex("""^[A-Z][\w-]*\s+·\s+.+\s+·\s+(?:\d+
 internal class OpenCodeTurnError(val message: String, val userText: String?, val footer: String)
 
 /**
- * OpenCode's error after a failed turn (2.1.6): in a session, right above the input box, the turn
+ * OpenCode's error after a failed turn (2.2.0): in a session, right above the input box, the turn
  * footer ("Build · <model> · 1m 25s") under a paragraph that starts "Error: ", drawn in the
  * transcript, not as a dialog or a toast, so no key removes it. Rows are cut at the width of the
  * box's "╹▀▀▀" edge, so OpenCode's sidebar is not read into the error. Null for anything else.
@@ -2503,7 +2503,7 @@ internal fun openCodeTurnError(screen: String): OpenCodeTurnError? {
 }
 
 /**
- * The error card for [screen], or null (2.1.6). OpenCode's failed turn is read whole, with its
+ * The error card for [screen], or null (2.2.0). OpenCode's failed turn is read whole, with its
  * text; any other error [detectAgentError] finds gets its summary. A crash, a sign-in or a full
  * context offers no retry: only the terminal.
  */

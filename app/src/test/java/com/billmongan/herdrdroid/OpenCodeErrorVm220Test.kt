@@ -27,13 +27,13 @@ import org.robolectric.Shadows.shadowOf
 import java.time.Duration
 
 /**
- * 2.1.6: an OpenCode pane herdr keeps "blocked" after a failed turn (llmproxy had no free model).
+ * 2.2.0: an OpenCode pane herdr keeps "blocked" after a failed turn (llmproxy had no free model).
  * The app shows it idle with an error card, never a question; Acknowledge clears the card while
  * herdr still says blocked; a message still goes in through the guarded send; Retry sends the
  * phone's own message once, and never the app's notice.
  */
 @RunWith(AndroidJUnit4::class)
-class OpenCodeErrorVm216Test {
+class OpenCodeErrorVm220Test {
     private val vm = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
     private val server = Server(id = "fixture-oe", name = "FixtureOE", host = "oe.invalid", port = 22, user = "fixoe", herdrPath = "/fixture/herdr")
     private val error = checkNotNull(javaClass.getResource("/screens/opencode/live-2026-11-22-error/error.ansi")).readText()
@@ -67,10 +67,10 @@ class OpenCodeErrorVm216Test {
         val fake = Fake(error)
         val p = fake.client.panes().single()
         open(fake, p)
-        vm.sendMessage(p, "HD216_HELLO")
+        vm.sendMessage(p, "HD220_HELLO")
         pump(3)
         val typed = fake.writes()
-        assertEquals(typed.toString(), 1, typed.count { "HD216_HELLO" in it })
+        assertEquals(typed.toString(), 1, typed.count { "HD220_HELLO" in it })
         // herdr's own status still picks the route: a blocked pane is typed into, not prompted.
         assertTrue(typed.none { "'agent' 'prompt'" in it })
     }

@@ -9,7 +9,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 2.1.6 (Bill, 2026-11-22: "open code has some kind of problem in its terminal view that is
+ * 2.2.0 (Bill, 2026-11-22: "open code has some kind of problem in its terminal view that is
  * showing up as a question that cannot be rendered or answered in chat"). OpenCode's turn failed
  * because llmproxy had no free model for its tier. OpenCode drew the error in its transcript,
  * above an empty input box, and herdr kept the pane "blocked". The app took "blocked" for a
@@ -17,7 +17,7 @@ import org.junit.Test
  * captures (live-2026-11-22-error, private text replaced by neutral text of the same length) are
  * that pane, styled and plain.
  */
-class OpenCodeError216Test {
+class OpenCodeError220Test {
     private fun res(path: String) = checkNotNull(javaClass.getResource(path)).readText()
     private val styled = res("/screens/opencode/live-2026-11-22-error/error.ansi")
     private val plain = res("/screens/opencode/live-2026-11-22-error/error.txt")
@@ -29,7 +29,7 @@ class OpenCodeError216Test {
             // Nothing on the screen asks: no OpenCode question, permission or other card.
             assertNull(detectPrompt(s, blocked = true, agent = "opencode"))
             assertNull(openCodeNeedsYouReason(s))
-            // Before 2.1.6 the error went unrecognized, so herdr's "blocked" made the unread-question card.
+            // Before 2.2.0 the error went unrecognized, so herdr's "blocked" made the unread-question card.
             val old = withNeedsYouCard(Status.NEEDS_YOU, null, suppressed = false, agent = "OpenCode")
             assertTrue(checkNotNull(old).unreadQuestion)
             // Now the error is read, and it holds the card's place: no question card at all.

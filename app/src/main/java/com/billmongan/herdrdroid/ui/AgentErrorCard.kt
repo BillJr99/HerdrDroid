@@ -28,7 +28,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /**
- * An agent's error as its own card in the chat (2.1.6, Bill: "a different kind of card not a
+ * An agent's error as its own card in the chat (2.2.0, Bill: "a different kind of card not a
  * question card in the pane chat view that I can acknowledge and clear"). Red, with a warning
  * icon, unlike the orange question card, and never answered: it has no choices and sends no keys.
  * Acknowledge clears it in the app. Retry resends the phone's own last message once, only when
