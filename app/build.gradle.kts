@@ -30,8 +30,10 @@ android {
             isIncludeAndroidResources = true
             all {
                 it.systemProperty("robolectric.logging", "stdout")
-                // Use Maven Central's canonical host for Robolectric's runtime SDK fetches.
-                it.systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")
+                // Use Maven Central's canonical host for Robolectric's runtime SDK fetches, or the
+                // repository named by -Probolectric.repo.url (tools/docker-test passes a mirror).
+                val robolectricRepo = (findProperty("robolectric.repo.url") as String?)?.takeIf { it.isNotBlank() }
+                it.systemProperty("robolectric.dependency.repo.url", robolectricRepo ?: "https://repo.maven.apache.org/maven2")
             }
         }
     }

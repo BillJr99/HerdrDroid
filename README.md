@@ -24,6 +24,8 @@ HerdrDroid is for people who already run agents under herdr on a computer they c
 - [How each action maps to herdr](#how-each-action-maps-to-herdr)
 - [Building from source](#building-from-source)
 - [Tests](#tests)
+  - [Running the tests in Docker](#running-the-tests-in-docker)
+  - [Test-order hazard](#test-order-hazard)
 - [Troubleshooting](#troubleshooting)
 - [Version history](#version-history)
 - [Project layout](#project-layout)
@@ -384,6 +386,62 @@ If you build for yourself without the project's key, use your own key (a standar
 - **End-to-end.** `tools/ws-test-server/` is a throwaway sshd behind a WebSocket bridge for the WebSocket test, and `tools/hc-e2e/` checks the herdr-core backend.
 - **Emulator checks.** Each release is also checked by hand-scripted runs in an Android emulator against a herdr host whose panes run small stand-in agents that draw each agent's cards, errors and logs: upgrading over the previous release with saved data, answering cards and alerts, the terminal view, and the error banners.
 
+### Running the tests in Docker
+
+Two scripts in `tools/docker-test/` run the unit tests in a throwaway `eclipse-temurin:17-jdk` container, so a computer with Docker and bash needs no JDK, Android SDK or Gradle of its own.
+
+- `docker-test.sh` runs on your computer. It starts the container with `--rm`, mounts the repository read-write, mounts the cache and the output folder, holds the run lock, and prints the summary at the end.
+- `run.sh` runs inside the container. It installs the Android SDK on first use, runs Gradle in the chosen mode, and writes the results to the output folder. Do not run it on your computer directly.
+
+Run `docker-test.sh` from anywhere in the repository:
+
+```
+bash tools/docker-test/docker-test.sh compile                                          # compile check
+bash tools/docker-test/docker-test.sh tests com.billmongan.herdrdroid.ui.CardBodyTest  # one test class
+bash tools/docker-test/docker-test.sh tests '*PanePrefetch*' '*CardBody*'              # several patterns
+bash tools/docker-test/docker-test.sh full                                             # full suite and debug APK
+HD_TEST_MIRROR=1 bash tools/docker-test/docker-test.sh full                            # Robolectric jars from Google's mirror
+```
+
+**Modes.** `compile` compiles the app, unit-test and androidTest sources, which takes a minute or two once the cache is warm. `tests` runs the unit tests that match each Gradle `--tests` pattern, or all of them when no pattern is given. `full` is the default: it runs every unit test and then builds the debug APK.
+
+**Where results land.** Each run writes these files to `build/docker-test/` in the repository, or to the folder named by `HD_TEST_OUT`:
+
+- `build.log`, Gradle's full output, ending with a line such as `exit=0 seconds=150`;
+- `summary.txt`, the exit status, any compile errors, the failing tests and the totals, which the script also prints at the end;
+- `test-results/`, the JUnit XML for each test class;
+- the debug APK, in `full` mode only.
+
+The script exits with a non-zero status when the build or a test fails.
+
+**The cache.** The Android SDK, Gradle's files and Robolectric's `~/.m2` folder stay in `$HOME/.cache/herdrdroid-docker-test` between runs. Set `HD_TEST_CACHE` to use another folder.
+
+**The first run.** When the cache has no SDK, `run.sh` downloads Google's SDK command-line tools, accepts the licences, and installs the platform and build-tools that `app/build.gradle.kts` asks for (platform 34 and build-tools 34.0.0 today). Gradle and Robolectric download their files on the first run too. The first run takes several minutes longer than later runs, which reuse everything in the cache.
+
+**The Maven mirror for Robolectric.** Robolectric downloads an Android runtime jar (android-all) from Maven Central the first time each SDK level is used. Maven Central rate-limits busy addresses and answers with HTTP 429; on 2026-11-21 it did this to a build machine, and the test run failed with a download error. `HD_TEST_MIRROR=1` makes Robolectric use Google's copy of Maven Central (`https://maven-central.storage-download.googleapis.com/maven2/`) instead. `ROBOLECTRIC_REPO_URL` names any other repository. Both reach Gradle as `-Probolectric.repo.url`, which `app/build.gradle.kts` passes to Robolectric. Without them, Robolectric uses Maven Central.
+
+**The run lock.** The script holds a lock on `<cache>/lock` with `flock`, so a second run on the same computer waits until the first one ends. Runs must not overlap: two Robolectric suites at once starve each other of CPU, and Compose tests then fail with false `AppNotIdleException` errors that look like real hangs. Where `flock` is missing (for example on macOS), the script warns and runs without the lock.
+
+**No signing.** Tests and the debug APK need no signing key. The script hides `keystore/` behind an empty folder inside the container, and `run.sh` points the build at an empty key folder, so no signing file is read.
+
+**Other settings.** `HD_DOCKER` changes the docker command (for example `sudo -n docker`), `HD_DOCKER_ARGS` adds `docker run` options, and `HD_TEST_IMAGE` changes the image.
+
+### Test-order hazard
+
+Gradle runs every unit-test class in one JVM, in name order. In 2.1.4, the full suite took about 45 minutes instead of 2 to 4, because every Compose test after a certain point failed after 60 seconds with `AppNotIdleException` ("Compose did not get idle"). It happened only when a Compose test class ran before `HandsFreeAppLockTest`.
+
+The cause was in the test, not the app. Once any Compose test has run, Compose watches every state change in the JVM. On the first change it posts one callback to the main looper and waits for that callback to run before it posts another. `HandsFreeAppLockTest` changed the view model's lock state and ended without running the main looper. Robolectric empties the main looper between tests, so the callback was dropped, Compose kept waiting for it, and nothing Compose scheduled on the main thread ran again in that JVM. A real device never empties its main looper, so the app itself is not affected.
+
+`AaaComposeOrderProbeTest` renders a trivial Compose screen and sorts first, so every other class runs after a Compose test. If a test leaves Compose stuck again, the next Compose test fails at once instead of only when names happen to sort badly.
+
+A second, smaller effect showed up once the hang was fixed. The same Compose dispatcher keeps the first Compose test's frame timer, which remembers the time of its last frame, while Robolectric starts every test's clock again at 100 ms. In a later test that timer asks for a frame every millisecond until the clock catches up, and Robolectric moves its clock forward for each one. One idle of the main looper could then move a test's clock forward by as long as an earlier test ran (29 seconds after `HeldAcrossServersTest`), so a 5-second notice timer fired in `ManualAnswerDispatchTest` before the test checked the notice. `IdleMainLooperRule` sets that frame time back to zero before and after each test.
+
+To keep a new test class safe:
+
+- A test that changes `AppViewModel` state without rendering anything must end with the main looper drained. Cancel the view model in `@After`, then add `@get:Rule val idleMainLooper = IdleMainLooperRule()`. Every view-model test class in the root test package uses it.
+- Do not rename `AaaComposeOrderProbeTest` or move it out of the root test package.
+- Run the full suite before a release. A run much longer than 4 minutes, or a run of `AppNotIdleException` failures, means a test has left Compose stuck: run the probe, the classes before the first failure, and that failing class with `docker-test.sh tests` to find it.
+
 ## Troubleshooting
 
 - **"The host key changed".** The server's SSH host key is no longer the one you confirmed. If you reinstalled the server or changed its keys on purpose, edit the server in the app and confirm the new fingerprint; otherwise, don't connect.
@@ -452,7 +510,7 @@ Each release's APK is in `release/`, and the git history has the details.
 | `app/src/test/` | Unit tests and the screen library |
 | `app/src/main/res/font/`, `app/src/main/assets/licenses/` | The bundled fonts (Inter, Source Serif 4, JetBrains Mono) and their SIL Open Font License texts |
 | `build-in-docker.sh` | The containerised build |
-| `tools/` | Reader tests, the WebSocket test server, and the herdr-core check |
+| `tools/` | Reader tests, the Docker test runner, the WebSocket test server, and the herdr-core check |
 
 ## Contributing
 
