@@ -1,5 +1,6 @@
 package com.billmongan.herdrdroid
 
+import org.junit.Rule
 import android.app.Application
 import android.os.Looper
 import androidx.compose.runtime.MutableState
@@ -34,6 +35,7 @@ import java.time.Duration
  */
 @RunWith(AndroidJUnit4::class)
 class OpenCodeErrorVm220Test {
+    @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = IdleMainLooperRule()
     private val vm = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
     private val server = Server(id = "fixture-oe", name = "FixtureOE", host = "oe.invalid", port = 22, user = "fixoe", herdrPath = "/fixture/herdr")
     private val error = checkNotNull(javaClass.getResource("/screens/opencode/live-2026-11-22-error/error.ansi")).readText()

@@ -1,5 +1,7 @@
 package com.billmongan.herdrdroid.ui
 
+import com.billmongan.herdrdroid.OUTERMOST_RULE
+import com.billmongan.herdrdroid.idleMainLooperRule
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
@@ -62,6 +64,7 @@ import org.junit.runner.RunWith
  */
 @RunWith(AndroidJUnit4::class)
 class ComposeUiTest {
+    @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = idleMainLooperRule()
     @get:Rule val rule = createComposeRule()
 
     /** 2.1.5/2.2.0: the cross-server card shows source, destination and message, offers a choice when asked, and Approve and Cancel; it never asks for a typed code. */

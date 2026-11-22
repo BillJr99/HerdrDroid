@@ -1,5 +1,8 @@
 package com.billmongan.herdrdroid.update
 
+import org.junit.Rule
+import com.billmongan.herdrdroid.OUTERMOST_RULE
+import com.billmongan.herdrdroid.IdleMainLooperRule
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Assert.assertEquals
@@ -12,6 +15,7 @@ import org.junit.runner.RunWith
 /** 2.1.4: the daily check is on by default, and the switch and Not now are kept. */
 @RunWith(AndroidJUnit4::class)
 class AppUpdatePrefsTest {
+    @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = IdleMainLooperRule()
     private val context = ApplicationProvider.getApplicationContext<android.app.Application>()
 
     @Test fun theDailyCheckIsOnByDefaultAndTheChoicesAreKept() {

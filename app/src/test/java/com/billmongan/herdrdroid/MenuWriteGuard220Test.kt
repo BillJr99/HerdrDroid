@@ -1,5 +1,6 @@
 package com.billmongan.herdrdroid
 
+import org.junit.Rule
 import android.app.Application
 import android.os.Looper
 import androidx.compose.runtime.MutableState
@@ -31,6 +32,7 @@ import org.robolectric.Shadows.shadowOf
  */
 @RunWith(AndroidJUnit4::class)
 class MenuWriteGuard220Test {
+    @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = IdleMainLooperRule()
     private val vm = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
     private val server = Server(id = "fixture-m", name = "FixtureM", host = "m.invalid", port = 22, user = "fixm", herdrPath = "/fixture/herdr")
 

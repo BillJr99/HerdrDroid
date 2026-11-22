@@ -1,5 +1,7 @@
 package com.billmongan.herdrdroid.ui
 
+import com.billmongan.herdrdroid.OUTERMOST_RULE
+import com.billmongan.herdrdroid.IdleMainLooperRule
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
@@ -34,6 +36,7 @@ import org.robolectric.annotation.GraphicsMode
 @Config(sdk = [34])
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class PaneTitleBarUiTest {
+    @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = IdleMainLooperRule()
     @get:Rule val rule = createComposeRule()
 
     private fun SemanticsNodeInteraction.layout(): TextLayoutResult {

@@ -1,5 +1,7 @@
 package com.billmongan.herdrdroid.update
 
+import com.billmongan.herdrdroid.OUTERMOST_RULE
+import com.billmongan.herdrdroid.idleMainLooperRule
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.Column
 import androidx.compose.runtime.getValue
@@ -22,6 +24,7 @@ import org.junit.runner.RunWith
 /** 2.1.4: the Updates part of Settings and the update dialog. */
 @RunWith(AndroidJUnit4::class)
 class UpdateUiTest {
+    @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = idleMainLooperRule()
     @get:Rule val rule = createAndroidComposeRule<ComponentActivity>()
 
     private val release = ReleaseInfo(
