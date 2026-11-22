@@ -1587,7 +1587,6 @@ class AppViewModel internal constructor(
     private val NOTIFY_READ_LINES = 80
 
     /** 2.1.4: closing a usage dialog the app opened. */
-    private val USAGE_SETTLE_MS = 700L
     private val USAGE_OPEN_MAX_MS = 3 * 60_000L
     private val USAGE_CLOSE_AUTO_TRIES = 3
     /** 2.2.1: between panel Esc presses; longer than Grok's and Claude's double-Esc window (800 ms). */
@@ -1715,7 +1714,9 @@ class AppViewModel internal constructor(
 
     /**
      * Closes the usage dialog the app opened in [paneId] and confirms it closed ([closeUsageAndVerify]):
-     * at most three Esc presses, each only for its known layout, and nothing else typed. It runs in the
+     * at most two Esc presses (2.2.1; three before), each only for its known layout and at least
+     * [PANEL_SETTLE_MS] apart, so they never land inside Grok's or Claude's double-Esc window, and
+     * nothing else typed. It runs in the
      * pane's dispatch lane, so no other app action on that pane runs meanwhile, and NonCancellable, so
      * leaving the screen or the app doesn't stop it halfway. When it can't confirm the close, the record
      * stays (the next check or send tries again first) and the chat shows a pane notice.
@@ -1735,7 +1736,8 @@ class AppViewModel internal constructor(
                             stillCurrent = { current?.id == sid && herdr === h && pane(paneId)?.agent == rec.agent },
                             readState = { h.readUsageState(paneId, rec.agent) },
                             sendEscape = { shown -> h.closeUsageOverlay(paneId, rec.agent, shown) },
-                            settle = { delay(USAGE_SETTLE_MS) },
+                            settle = { delay(PANEL_SETTLE_MS) },
+                            maxEscapes = 2,
                         )
                     }
                 }

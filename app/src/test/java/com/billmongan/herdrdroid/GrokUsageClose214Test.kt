@@ -153,8 +153,8 @@ class GrokUsageClose214Test {
         open(fake)
         vm.sendMessage(fake.pane, "/usage")
         pump(10)
-        // Three Esc at the most, nothing else typed.
-        assertEquals(3, fake.escapes)
+        // 2.2.1: two Esc at the most (more than a second apart), nothing else typed.
+        assertEquals(2, fake.escapes)
         assertEquals(listOf("/usage"), fake.typed)
         assertEquals(1, vm.openedUsage.single().failures)
         assertTrue(vm.sendNoticeFor(fake.pane.id).orEmpty(), vm.sendNoticeFor(fake.pane.id).orEmpty().contains("couldn't confirm"))
