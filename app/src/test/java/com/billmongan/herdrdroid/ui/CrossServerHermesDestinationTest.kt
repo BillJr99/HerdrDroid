@@ -3,8 +3,6 @@ package com.billmongan.herdrdroid.ui
 import com.billmongan.herdrdroid.*
 
 import android.app.Application
-import android.content.ClipboardManager
-import android.content.Context
 import android.os.Looper
 import androidx.compose.runtime.MutableState
 import androidx.compose.ui.test.assertIsDisplayed
@@ -20,9 +18,14 @@ import com.billmongan.herdrdroid.fleet.FleetState
 import com.billmongan.herdrdroid.herdr.*
 import com.billmongan.herdrdroid.ssh.*
 import com.billmongan.herdrdroid.store.Server
-import com.billmongan.herdrdroid.ui.AgentMessagePanel
-import com.billmongan.herdrdroid.ui.destinationLabels
-import com.billmongan.herdrdroid.ui.proposalInstructions
+import androidx.compose.foundation.layout.Column
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.performTextInput
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -37,7 +40,7 @@ import org.robolectric.Shadows.shadowOf
  * 2.1.4 (Bill: "Claude on another host doesn't think it can see hermes here via cross server
  * herdrdroid"). Claude is the source on one server; laptop2 runs Hermes with the row herdr really
  * gives it: a `local-` agent session, an idle status, and a cwd that differs from foreground_cwd.
- * Hermes is named in the instructions Claude is given and offered in the review.
+ * 2.1.5: a frame naming Hermes resolves to it, and typing the card's code in the composer sends it.
  */
 @RunWith(AndroidJUnit4::class)
 class CrossServerHermesDestinationTest {
@@ -48,6 +51,7 @@ class CrossServerHermesDestinationTest {
     private val source = Source()
     private val laptop2 = Laptop2()
     private val exact = "Hermes, please check tonight's cron run."
+    private val code = "H3RM2S"
 
     // This class renders Compose, so it lives in ui with the suite's other Compose classes. In the
     // root package it ran before GrokRcReviewFixesTest, OpenCodeAlert212Test and the other view
@@ -89,71 +93,96 @@ class CrossServerHermesDestinationTest {
         assertTrue(hasStableOccupant(hermes))
     }
 
-    @Test fun instructionsGivenToTheRemoteAgentNameHermes() = runBlocking {
+    @Test fun aFrameNamingHermesResolvesToHermesOnTheOtherServer() = runBlocking {
         vm.changeAgentMessaging(true)
-        assertTrue(vm.armAgentMessage("p1"))
-        val armed = checkNotNull(vm.agentMessage("p1"))
-        val reachable = vm.agentMessageReachable(armed)
-        assertTrue(reachable.none { it.server.id == source.server.id })
-        val names = reachable.map { "${com.billmongan.herdrdroid.ui.sessionName(it.pane)} on ${it.server.label}" }
-        assertTrue(names.toString(), "Hermes on laptop2" in names)
-        // A working agent is still reachable by name; only the review waits for it to be idle.
-        assertTrue(names.toString(), "Claude on laptop2" in names)
-        val text = proposalInstructions(armed.code, names)
-        assertTrue(text, text.contains("\n- Hermes on laptop2"))
-        assertTrue(text.contains("HDMSG1 ${armed.code}") && text.contains("HDEND ${armed.code}"))
-        assertTrue(text.contains("The phone user will choose the destination"))
-        assertFalse(text.contains("laptop2.invalid"))
-        assertTrue(proposalInstructions(armed.code, emptyList()).contains("sees no agent on another server"))
-    }
-
-    @Test fun copiedInstructionsFromThePanelNameHermes() {
-        vm.changeAgentMessaging(true)
-        assertTrue(vm.armAgentMessage("p1"))
-        rule.setContent { AgentMessagePanel(vm, "p1") }
-        rule.onNodeWithText("Copy proposal instructions").performClick()
-        rule.waitForIdle()
-        val clip = (app.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).primaryClip
-        val copied = checkNotNull(clip).getItemAt(0).text.toString()
-        assertTrue(copied, copied.contains("\n- Hermes on laptop2"))
-    }
-
-    @Test fun reviewListsHermesOnTheOtherServerAndBindsIt() = runBlocking {
-        vm.changeAgentMessaging(true)
-        val request = propose()
-        val labels = destinationLabels(vm.agentMessageDestinations(request))
-        val hermes = "Hermes on laptop2 · laptop2.invalid:22 · w2:p9"
-        assertEquals(labels.keys.toString(), setOf(hermes), labels.keys)
-        // Binding reads `pane get`, whose row must still be the same occupant as the list's.
-        assertNotNull(vm.bindAgentMessage(request, checkNotNull(labels[hermes])))
+        val card = frame("Hermes on laptop2")
+        val chosen = checkNotNull(card.choice)
+        assertEquals(laptop2.server.id, chosen.server.id)
+        assertEquals("w2:p9", chosen.pane.id)
+        assertTrue(vm.crossServerChoices(card).isEmpty())
+        // A working agent is still reachable by name; only sending waits for it to be idle.
+        val names = vm.crossServerReachable(card).map { vm.agentFacingName(it) }
+        assertTrue(names.toString(), "Hermes on laptop2" in names && "Claude on laptop2" in names)
+        assertTrue(names.none { it.contains("laptop.invalid") || it.contains(":22") })
         assertTrue(source.writes.isEmpty() && laptop2.writes.isEmpty())
     }
 
-    /**
-     * Grok's RC review 4: with laptop2 unnamed, the instructions the agent is given call it
-     * "server 2", with no account, host or port.
-     */
-    @Test fun anUnnamedServerIsNamedOnlyByItsPlaceInTheCopiedInstructions() {
+    /** Grok's RC review 4: agents call an unnamed server "server 2", with no account, host or port. */
+    @Test fun anUnnamedServerIsNamedOnlyByItsPlaceForAgents() = runBlocking {
         unnameLaptop2()
         vm.changeAgentMessaging(true)
-        assertTrue(vm.armAgentMessage("p1"))
-        rule.setContent { AgentMessagePanel(vm, "p1") }
-        rule.onNodeWithText("Copy proposal instructions").performClick()
-        rule.waitForIdle()
-        val clip = (app.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).primaryClip
-        val copied = checkNotNull(clip).getItemAt(0).text.toString()
-        assertTrue(copied, copied.contains("\n- Hermes on server 2"))
-        assertFalse(copied, copied.contains("fixture") || copied.contains(".invalid") || copied.contains(":22") || copied.contains("@"))
+        val card = frame("Hermes on server 2")
+        assertEquals("w2:p9", checkNotNull(card.choice).pane.id)
+        for (name in vm.crossServerReachable(card).map { vm.agentFacingName(it) }) {
+            assertFalse(name, name.contains("fixture") || name.contains(".invalid") || name.contains(":22") || name.contains("@"))
+        }
     }
 
-    /** The consent dialog is seen only by the phone user: it keeps the full label for an unnamed server. */
-    @Test fun theConsentDialogKeepsTheFullLabelOfAnUnnamedServer() {
+    /** The card is seen only by the phone user: it keeps the full label of an unnamed server. */
+    @Test fun theCardKeepsTheFullLabelOfAnUnnamedServer() {
         unnameLaptop2()
         vm.changeAgentMessaging(true)
-        runBlocking { propose() }
-        rule.setContent { AgentMessagePanel(vm, "p1") }
-        rule.onNodeWithText("Review agent proposal").performClick()
+        runBlocking { frame("Somebody") }
+        rule.setContent { CrossServerPanel(vm, "p1") }
         rule.onNodeWithText("Hermes on fixture@laptop2.invalid · laptop2.invalid:22 · w2:p9").performScrollTo().assertIsDisplayed()
+        assertTrue(laptop2.writes.isEmpty())
+    }
+
+    /** The card, then the confirmation typed in the pane's own composer: delivered to Hermes, nothing typed into the source. */
+    @Test fun theCardShowsTheMessageAndTypingItsCodeInTheComposerSendsIt() {
+        vm.changeAgentMessaging(true)
+        runBlocking { frame("Hermes on laptop2") }
+        val passedOn = mutableListOf<String>()
+        rule.setContent {
+            Column {
+                CrossServerPanel(vm, "p1")
+                var text by remember { mutableStateOf("") }
+                ChatComposer(value = text, onValueChange = { text = it }, placeholder = "Message Claude",
+                    canSend = text.isNotBlank(), onSend = { composerSend(vm, "p1", text.trim()) { passedOn += it }; text = "" })
+            }
+        }
+        rule.onNodeWithContentDescription("Cross-server message card").assertIsDisplayed()
+        rule.onNodeWithText("Cross-server message").assertIsDisplayed()
+        rule.onNodeWithText("From: Claude on laptop").assertIsDisplayed()
+        rule.onNodeWithText("To: Hermes on laptop2").assertIsDisplayed()
+        rule.onNodeWithText(exact).assertIsDisplayed()
+        rule.onNodeWithText("Code: $code").assertIsDisplayed()
+        rule.onNodeWithText("Cancel").assertIsDisplayed()
+        // Other text goes to the pane as usual and the card stays.
+        rule.onNode(hasSetTextAction()).performTextInput("thanks")
+        rule.onNodeWithContentDescription("Send").performClick()
+        rule.runOnIdle { assertEquals(listOf("thanks"), passedOn) }
+        rule.onNodeWithText("Code: $code").assertIsDisplayed()
+        assertTrue(laptop2.writes.isEmpty())
+        rule.onNode(hasSetTextAction()).performTextInput(code.lowercase())
+        rule.onNodeWithContentDescription("Send").performClick()
+        rule.waitUntil(5_000) { vm.crossServerCardsFor("p1").single().state == AppViewModel.CrossServerState.SENT }
+        rule.onNodeWithText(RelayResult.SENT.feedback).assertIsDisplayed()
+        rule.onNodeWithText("Close").assertIsDisplayed()
+        rule.runOnIdle { assertEquals(listOf("thanks"), passedOn) }
+        assertEquals(1, laptop2.writes.size)
+        assertTrue(laptop2.writes.single().contains("'agent' 'prompt' 'w2:p9'"))
+        assertTrue(source.writes.isEmpty())
+    }
+
+    @Test fun cancelOnTheCardSendsNothing() {
+        vm.changeAgentMessaging(true)
+        runBlocking { frame("Hermes on laptop2") }
+        rule.setContent { CrossServerPanel(vm, "p1") }
+        rule.onNodeWithText("Cancel").performClick()
+        rule.onNodeWithText("Cancelled. Nothing was sent.").assertIsDisplayed()
+        rule.runOnIdle { assertTrue(vm.crossServerCodeReply("p1", code)) }
+        assertTrue(laptop2.writes.isEmpty() && source.writes.isEmpty())
+    }
+
+    @Test fun anUnmatchedDestinationOffersTheReachableAgentsToChooseFrom() {
+        vm.changeAgentMessaging(true)
+        runBlocking { frame("Somebody") }
+        rule.setContent { CrossServerPanel(vm, "p1") }
+        rule.onNodeWithText("Choose a destination:").assertIsDisplayed()
+        rule.onNodeWithText("Claude on laptop2 · laptop2.invalid:22 · w2:p5").performScrollTo().assertIsDisplayed()
+        rule.onNodeWithText("Hermes on laptop2 · laptop2.invalid:22 · w2:p9").performScrollTo().performClick()
+        rule.onNodeWithText("To: Hermes on laptop2").assertIsDisplayed()
         assertTrue(laptop2.writes.isEmpty())
     }
 
@@ -166,23 +195,11 @@ class CrossServerHermesDestinationTest {
         }
     }
 
-    @Test fun consentDialogShowsHermes() {
-        vm.changeAgentMessaging(true)
-        runBlocking { propose() }
-        rule.setContent { AgentMessagePanel(vm, "p1") }
-        rule.onNodeWithText("Review agent proposal").performClick()
-        rule.onNodeWithText("Choose a destination on another server:").assertIsDisplayed()
-        rule.onNodeWithText("Hermes on laptop2 · laptop2.invalid:22 · w2:p9").performScrollTo().assertIsDisplayed()
-        assertTrue(laptop2.writes.isEmpty())
-    }
-
-    private suspend fun propose(): AppViewModel.AgentMessage {
-        assertTrue(vm.armAgentMessage("p1"))
-        val armed = checkNotNull(vm.agentMessage("p1"))
+    private suspend fun frame(to: String): AppViewModel.CrossServerCard {
         vm.readPane("p1")
-        source.frame = fixtureMessageFrame(armed.code, exact)
+        source.frame = fixtureMessageFrame(code, exact, to)
         vm.readPane("p1")
-        return checkNotNull(vm.agentMessage("p1")).also { assertEquals(exact, it.text) }
+        return vm.crossServerCardsFor("p1").single().also { assertEquals(exact, it.text) }
     }
 
     /** Claude on the server the phone has open: the source of the proposal. */
@@ -222,6 +239,7 @@ class CrossServerHermesDestinationTest {
             ExecResult(0, """{"ok":true,"busy":{"w2:p9":0,"w2:p5":0}}""", "")
         override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult = when {
             command.endsWith("'pane' 'get' 'w2:p9'") -> ExecResult(0, """{"id":"cli:pane:get","result":{"pane":$HERMES,"type":"pane_info"}}""", "")
+            "'--source' 'visible'" in command -> ExecResult(0, "❯ ", "")
             "'agent' 'prompt'" in command -> { writes += command; ExecResult(0, "", "") }
             else -> error("Unexpected laptop2 command: $command")
         }
