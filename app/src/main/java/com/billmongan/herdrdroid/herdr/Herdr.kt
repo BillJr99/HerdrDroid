@@ -1062,6 +1062,11 @@ data class Prompt(
     internal val museQuota: Boolean = false,
     /** Claude's session moved to the background behind its sessions list (2.1.1): Esc returns to it. */
     internal val claudeBackground: Boolean = false,
+    /**
+     * 2.1.4: the pane shows as needing you, but no parser read a question from its screen. The card
+     * says so and offers Show terminal; it sends nothing (see [withNeedsYouCard]).
+     */
+    internal val unreadQuestion: Boolean = false,
 ) {
     /**
      * Never an empty card (1.4.2): a prompt with no choices always has something to show, the
@@ -1081,6 +1086,23 @@ data class Prompt(
 
 /** What a card with no options shows when the app couldn't read the screen (1.4.2). */
 const val UNREAD_SCREEN = "(The app couldn't read this pane's screen yet. Tap Show terminal, or answer with the keys below.)"
+
+/**
+ * The card for a pane the app shows as needing you (2.1.4, Bill: "it showed the orange you know
+ * waiting on you icon but didn't actually render the question in chat"): [prompt] when a parser
+ * read one; otherwise, while [status] is NEEDS_YOU, a card that says the app couldn't read the
+ * question and offers Show terminal, so the orange state never comes without a card. [suppressed]:
+ * something else holds the card's place (an answer being typed, a usage dialog, OpenCode's
+ * background drawer, an agent error banner).
+ */
+internal fun withNeedsYouCard(status: Status, prompt: Prompt?, suppressed: Boolean, agent: String): Prompt? =
+    prompt ?: if (status == Status.NEEDS_YOU && !suppressed) unreadQuestionCard(agent) else null
+
+/** [withNeedsYouCard]'s card: no options and no keys, only the way to the terminal. */
+internal fun unreadQuestionCard(agent: String): Prompt = Prompt(
+    "$agent is waiting for you, but the app couldn't read the question from its screen.",
+    emptyList(), terminalReview = true, unreadQuestion = true,
+)
 
 /** Dispatch identity, unlike history deduplication, must not discard punctuation or command text. */
 internal fun cardAnswerStillFits(shown: Prompt, fresh: Prompt?): Boolean =
@@ -1128,6 +1150,32 @@ private val PATH_PIECE = Regex("""^[^\s]*[/._\-~][^\s]*$""")
 private val PATH_LABEL = Regex("""^(Destination|Path|File|Files|Directory|Target|URL|Host|Server|Tool):\s+(\S.*)$""")
 /** A line that only introduces the command under it. */
 private val COMMAND_INTRO = Regex("""^(Requesting permission for:?|Bash command|Command|Run command|Shell command)$""", RegexOption.IGNORE_CASE)
+/**
+ * Who asks, after a Claude Code 2.1.329 permission dialog's title (2.1.4, from the program's own
+ * strings): "· from the general-purpose agent", "· from a subagent", "· from the "x" workflow",
+ * "· from a workflow", "· from a remote cloud agent", "· from the x plugin", "· from a plugin".
+ */
+internal val CLAUDE_REQUEST_SOURCE = Regex("""\s+·\s+(from (?:the \S.{0,60} agent|a subagent|the ".{1,60}" workflow|a workflow|a remote cloud agent|the \S.{0,60} plugin|a plugin))\s*$""")
+/** A note in a Claude command title's parentheses: "Bash command (unsandboxed)", "(runs on devbox)". */
+private val PERMISSION_TITLE_NOTE = Regex("""\s*\([^)]{1,60}\)\s*$""")
+/** Claude Code 2.1.329's command dialog titles, with or without a note or who asks (2.1.4). */
+private val CLAUDE_COMMAND_TITLE = Regex("""^(Bash command|Run command|PowerShell command|Run PowerShell command)(\s*\([^)]{1,60}\))?(\s+·\s+.{1,80})?$""")
+/** Shell signs that make a line read as a command rather than a description. */
+private val SHELL_SIGN = Regex("""[/|&><$='"`\\;*~]|\s-{1,2}[A-Za-z]""")
+
+/**
+ * Whether [t], the line after a command title, is Claude Code 2.1.329's description of the command
+ * that [next] holds (2.1.4): a capitalised sentence with no shell signs, over a line (after Claude's
+ * dashed rule, captured) that has them or starts in lower case. The older layout (the command first)
+ * reads as before.
+ */
+private fun claudeDescriptionAbove(t: String, next: QLine?): Boolean {
+    if (next == null || t.isEmpty() || !t.first().isUpperCase() || !t.contains(' ')) return false
+    if (SHELL_SIGN.containsMatchIn(t)) return false
+    val n = next.text.trim()
+    return n.isNotEmpty() && (SHELL_SIGN.containsMatchIn(n) || n.first().isLowerCase())
+}
+
 /** Vibe's "Permission for the file_system.bash tool (…)": the command is the next line. */
 private val TOOL_PERMISSION = Regex("""^Permission for the \S+ tool(\s*\(.*\))?$""")
 private const val MARKS = "›❯◆◈●○•▸➤▶↓→│┃╭╰╮╯─ "
@@ -1222,7 +1270,7 @@ fun questionParts(lines: List<QLine>): QuestionParts {
     // The current command block began with "$ ": its "│ ..." lines are the rest of it (1.4.8, from Grok's
     // review: Muse draws a script's lines under "$ python3 - <<'PY'" that way).
     var dollarBlock = false
-    for (l in body) {
+    for ((idx, l) in body.withIndex()) {
         // A Grok command row (2.1.4, Bill: "parse them nicely maybe as newlines"): a line of its own
         // in the command block, its indentation and every character kept, a ")" or "}" row too.
         if (l.row) {
@@ -1238,7 +1286,23 @@ fun questionParts(lines: List<QLine>): QuestionParts {
         if (t.isEmpty() || !t.any(Char::isLetterOrDigit)) continue
         // Claude's review step: "● Close 537" over "→ Close it" reads "Close 537: Close it".
         if (answerRow && paras.lastOrNull()?.cmd == false) { paras.last().text += ": " + t; continue }
-        if (COMMAND_INTRO.matches(t)) { cmdNext = true; continue }
+        if (COMMAND_INTRO.matches(t) || CLAUDE_COMMAND_TITLE.matches(t) && CLAUDE_REQUEST_SOURCE.find(t) == null) { cmdNext = true; continue }
+        // 2.1.4: Claude Code 2.1.329 names who asks after the title ("Bash command · from the
+        // general-purpose agent"): the title still introduces the command, and the asker is context.
+        val source = CLAUDE_REQUEST_SOURCE.find(t)
+        if (source != null) {
+            val title = t.substring(0, source.range.first).trim()
+            if (COMMAND_INTRO.matches(title.replace(PERMISSION_TITLE_NOTE, ""))) cmdNext = true
+            paras += Para(if (title.isEmpty()) source.groupValues[1].replaceFirstChar { it.uppercase() }
+                else "$title, ${source.groupValues[1]}", false)
+            continue
+        }
+        // Claude Code 2.1.329 draws the command's description above the command (2.1.4, from the
+        // program): a sentence right over a line that reads as a command is text; the command follows.
+        if (cmdNext && claudeDescriptionAbove(t, body.getOrNull(idx + 1))) { paras += Para(t, false); continue }
+        // The dialog's own question is never the command, and starts a paragraph of its own (2.1.4).
+        val dialogQuestion = t.startsWith("Do you want to ")
+        if (dialogQuestion) cmdNext = false
         // "Destination: /path/to/file" (Codex's edit card), "Path:", "File:", "URL:": the label as
         // text and the value in a monospace block of its own (1.4.2).
         val pathLabel = PATH_LABEL.find(t)
@@ -1273,7 +1337,7 @@ fun questionParts(lines: List<QLine>): QuestionParts {
         // over "Allow access to this file?"); a wrapped label line goes on in lower case.
         val afterLabel = last != null && LABEL_LINE.containsMatchIn(last.text) && t.first().isUpperCase()
         val bullet = l.text.trim().first() in "●•◆"
-        if (last == null || last.cmd || l.gapBefore || afterLabel || bullet || LABEL_LINE.containsMatchIn(t) || last.text.endsWith("?") || last.text.endsWith(":"))
+        if (last == null || last.cmd || l.gapBefore || afterLabel || bullet || dialogQuestion || LABEL_LINE.containsMatchIn(t) || last.text.endsWith("?") || last.text.endsWith(":"))
             paras += Para(t, false)
         else last.text += " " + t
         if (TOOL_PERMISSION.matches(paras.last().text)) cmdNext = true
@@ -1434,6 +1498,45 @@ private val DRAFT_BOX_RULE = Regex("""^([\s ]*)([╭╰├└┌]?[─━═]{2
 private val DRAFT_TITLED_RULE = Regex("""^([\s\u00A0]*)([╭├┌]?[─━═]{20,} [^─━═\s][^─━═]{0,60}? [─━═]{1,4}[╮┤┐]?)[\s\u00A0]*$""")
 /** A row of the list Claude Code 2.1.329 draws under its box while helpers run ("  ● main", "  ◯ general-purpose  …  7s"). */
 private val CLAUDE_AGENT_LIST_ROW = Regex("""^ {2}[●◯○◉✓✔✗✘] \S.*$""")
+/** Claude Code 2.1.329's mode row under its input area: "  ⏵⏵ auto mode on · 4 shells · ↓ to manage", "  ⏸ plan mode on". */
+private val CLAUDE_MODE_ROW = Regex("""^ {1,4}(⏵⏵|⏸|⏵)\s+\S.*$""")
+/** The last rows of a Claude dialog: its key hints, or one of its option rows. */
+private val CLAUDE_DIALOG_END = Regex("""\bEsc to (cancel|reject)\b|^Esc cancel\b|Enter to select|↑/↓ to navigate|^([❯›]\s*)?\d{1,2}[.)]\s+\S""", RegexOption.IGNORE_CASE)
+
+/**
+ * [text] without the rows Claude Code 2.1.329 can keep under a dialog (2.1.4, Bill: "a claude pane
+ * ... showed the orange you know waiting on you icon but didn't actually render the question in
+ * chat"): its mode row ("⏵⏵ auto mode on · 4 shells") and the list of the session and its helpers
+ * ("● main", "◯ general-purpose  …"). Those rows have words and Claude's own bullets, so the parser
+ * took them for the agent going on after the dialog and dropped the dialog as an old one. Only a
+ * trailing block of such rows and blank rows goes, and only right under a dialog's hints or options.
+ */
+/**
+ * The hint row under Claude Code 2.1.329's permission dialogs: "Esc to cancel", "Esc to cancel · Tab
+ * to amend" (2.1.4, captured against a mock API; "ctrl+e to explain" from the program). Claude draws
+ * nothing under an open dialog, so this row last on screen means the dialog is open now.
+ */
+private val CLAUDE_PERMISSION_FOOTER = Regex("""^Esc to cancel(\s+·\s+(Tab to amend|ctrl\+e to explain))*$""", RegexOption.IGNORE_CASE)
+
+/** Whether [text] ends in Claude's permission-dialog hint row ([CLAUDE_PERMISSION_FOOTER]), 2.1.4. */
+internal fun claudePermissionFooterAtBottom(text: String): Boolean =
+    withoutClaudeChromeUnderDialog(stripAnsi(text)).lines().lastOrNull { it.isNotBlank() }
+        ?.trim()?.trim('│', '┃', '|')?.trim()?.let(CLAUDE_PERMISSION_FOOTER::matches) == true
+
+internal fun withoutClaudeChromeUnderDialog(text: String): String {
+    val rows = text.lines()
+    var k = rows.size
+    var chrome = false
+    while (k > 0) {
+        val r = rows[k - 1].trimEnd()
+        if (r.isBlank()) { k--; continue }
+        if (CLAUDE_AGENT_LIST_ROW.matches(r) || CLAUDE_MODE_ROW.matches(r)) { chrome = true; k--; continue }
+        break
+    }
+    if (!chrome || k == 0) return text
+    val end = rows.take(k).filter { !isChrome(it) }.takeLast(3).map { it.trim().trim('│', '┃', '|').trim() }
+    return if (end.any { CLAUDE_DIALOG_END.containsMatchIn(it) }) rows.take(k).joinToString("\n") else text
+}
 private val CLAUDE_LIST_RULE = Regex("""^[\s\u00A0╭╰├└┌]*[─━═]{20,}""")
 
 /**
@@ -2032,7 +2135,8 @@ internal fun openCodeNeedsYouReason(tail: String): String? {
 }
 
 internal fun claudeNeedsYouReason(tail: String): String? = when {
-    showsQuestionDialog(tail) -> "a question dialog is open"
+    showsQuestionDialog(withoutClaudeChromeUnderDialog(stripAnsi(tail))) -> "a question dialog is open"
+    claudePermissionFooterAtBottom(tail) -> "a permission dialog is open"
     claudeSessionsAwaiting(tail) > 0 -> "Claude's sessions list shows a session awaiting input"
     else -> null
 }
@@ -2607,6 +2711,8 @@ internal fun claudeQuestionBehindDraft(text: String): Boolean =
     stripAnsi(text).lines().takeLast(80).any { it.trim().trim('│', '┃', '|').trim() == CLAUDE_DRAFT_CUE }
 
 private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, version: String?): Prompt? {
+    // 2.1.4: Claude's mode row and helper list under a dialog are not the agent going on after it.
+    @Suppress("NAME_SHADOWING") val text = if (agent.equals("claude", true)) withoutClaudeChromeUnderDialog(text) else text
     if ((agent == null || agent.equals("claude", true)) && claudeUsageOpen(text)) return null
     // 2.1.4: Claude's /btw panel is a side answer, not a question.
     if ((agent == null || agent.equals("claude", true)) && claudeBtwOverlay(text) != null) return null
@@ -2671,7 +2777,9 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
     }
     val rules = ParserRules.forAgent(agent, version)
     // A question dialog on screen means the agent waits, whatever herdr reported.
+    // 2.1.4: Claude's permission dialog, its hint row at the bottom, waits whatever herdr reported.
     @Suppress("NAME_SHADOWING") val blocked = blocked || showsQuestionDialog(text) ||
+        (agent.equals("claude", true) && claudePermissionFooterAtBottom(text)) ||
         (rules.extraFooter?.let { f -> text.lines().takeLast(6).any { f.containsMatchIn(it) } } == true)
     var raw = text.lines().takeLast(80)
     var pastDialog = false
@@ -2873,7 +2981,10 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
     val question = aboveText ?: lines.lastOrNull { clean(it).endsWith("?") }?.let(clean)
     var parts = above?.let(::questionParts).takeIf { aboveText != null }
     val beforeOptions = lines.take(run.firstOrNull()?.first ?: lines.size)
-    val approvalHeader = beforeOptions.any { clean(it).startsWith("Do you want to ") || COMMAND_INTRO.matches(clean(it)) }
+    // 2.1.4: Claude Code 2.1.329's titles ("Bash command · from the general-purpose agent", and "Run
+    // command" in its fitted dialog, which draws no "Do you want to proceed?").
+    val approvalHeader = beforeOptions.any { clean(it).startsWith("Do you want to ") || COMMAND_INTRO.matches(clean(it)) ||
+        (agent?.lowercase() != "codex" && (CLAUDE_COMMAND_TITLE.matches(clean(it)) || CLAUDE_REQUEST_SOURCE.containsMatchIn(clean(it)))) }
     val questionHeader = beforeOptions.any {
         !PROMPT_ECHO.containsMatchIn(it.trimStart()) && clean(it).endsWith("?") && !CODE_LINE.containsMatchIn(clean(it))
     }

@@ -1,0 +1,5 @@
+card: options
+blocked: false
+heading: Do you want to proceed?
+options: Yes | No
+source: derived for 2.1.4 from the real capture captured-2.1.329-hook/hook-main.txt with its title given the "· from the general-purpose agent" suffix the 2.1.329 program draws for a helper's request (the exact string from the program; a helper's dialog did not surface in the capture window)
