@@ -909,13 +909,16 @@ class ComposeUiTest {
         val vm = rule.runOnUiThread { com.billmongan.herdrdroid.AppViewModel(app) }
         val proc = com.billmongan.herdrdroid.herdr.ProcInfo(4242, 1, 1, "npm", "npm test", 30, 1.0, 2048)
         val sub = com.billmongan.herdrdroid.herdr.SubagentInfo("a1", "a1.jsonl", "Review", 0, true, 3)
-        rule.runOnIdle {
-            vm.work = mapOf("fixture:pane" to com.billmongan.herdrdroid.herdr.WorkInfo(listOf(proc), listOf(sub), emptyList(), agentOwnedOnly = true))
+        val work = com.billmongan.herdrdroid.herdr.WorkInfo(listOf(proc), listOf(sub), emptyList(), agentOwnedOnly = true)
+        val shown = androidx.compose.runtime.mutableStateOf(false)
+        rule.setContent {
+            if (!shown.value) AgentScreen(vm, "fixture:pane")
+            else runningPill(work, null, 0)?.let { RunningPillChip(vm, "fixture:pane", it) }
         }
-        rule.setContent { if (vm.screen !is Screen.Work) AgentScreen(vm, "fixture:pane") }
         rule.onNodeWithContentDescription("More").performClick()
         rule.onNodeWithText("Running underneath").assertDoesNotExist()
         rule.onNodeWithText("Usage history, all agents").performClick()
+        rule.runOnIdle { shown.value = true }
         val pill = rule.onNodeWithContentDescription("1 shell and 1 subagent running")
         pill.assertIsDisplayed()
         rule.onNodeWithText("1 sh - 1 sub").assertIsDisplayed()
