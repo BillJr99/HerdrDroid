@@ -90,6 +90,8 @@ internal class PromptRelay(
             val viewport = port.viewport(fresh.id, target.connection)
             if (!valid() || dismissibleUsageFrame(fresh.agent, viewport) != null ||
                 (fresh.agent in setOf("grok", "agy") && usageDialogHint(fresh.agent, viewport)) ||
+                // 2.2.1: any informational panel, even one only partly identified, is never typed into.
+                infoPanelOn(fresh.agent, viewport) != null ||
                 detectPrompt(forPhone(viewport), false, fresh.agent) != null)
                 return RelayResult.REFUSED
             val line = inputLineOf(viewport, fresh.agent)
