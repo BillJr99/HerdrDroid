@@ -6,7 +6,9 @@ import org.json.JSONObject
  * 2.1.4 (Bill: "Herdrdroid should tell the panes about the instructions and other panes and
  * servers when the cross server feature is enabled"). One short, informational notice per agent:
  * how to propose a message, which agents on other servers the phone can reach (by name and
- * server label only), and that the phone user approves every delivery.
+ * server label only), and that the phone user approves every delivery. 2.1.5: the agent proposes
+ * only when the user asks it in chat, with a code it picks, and the user confirms by typing that
+ * code back in the pane's chat on the phone.
  */
 internal object CrossServerNotice {
     const val MAX_CHARS = 1_200
@@ -16,13 +18,13 @@ internal object CrossServerNotice {
         val names = others.map { it.trim() }.filter { it.isNotEmpty() }.distinct().sorted()
         if (names.isEmpty()) return null
         return """HerdrDroid notice, for information only. No reply is needed; if you must answer, reply only "ok".
-The phone user can relay a message from you to an agent on another server. Propose one only when the user gives you a one-time code, by rendering only this frame in a plain fenced code block:
-HDMSG1 <code>
+When the user asks you in chat to send a message to an agent on another server, do not send it yourself. Render only this frame in a plain fenced code block, then wait:
+HDMSG2 <code>
+HDTO <destination>
 HD> <standard padded Base64 of your UTF-8 message, chunks of at most 40 characters, each with its own HD> prefix>
 HDEND <code>
-The message must be nonblank, at most 1024 UTF-8 bytes, with no controls except line feeds and no secrets. Do not send it yourself, choose a destination, or run a remote command.
-Agents on other servers: ${names.joinToString(", ")}.
-The phone user approves every delivery."""
+<code> is a new code you pick for each frame: 6 characters from ${CrossServerCode.ALPHABET}. <destination> is one name from the list below, exactly as written. The message must be nonblank, at most 1024 UTF-8 bytes, with no controls except line feeds and no secrets. Do not run a remote command.
+Agents on other servers: ${names.joinToString(", ")}. The phone shows your frame to the user on a card, and it is delivered only if the user types the code back on the phone; you will not see that reply."""
     }
 
     /** Whether the known usage of an agent is at or above [threshold] percent. 100 never skips; unknown never skips. */
