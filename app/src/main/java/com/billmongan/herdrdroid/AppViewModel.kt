@@ -3891,6 +3891,68 @@ class AppViewModel internal constructor(
         }
     }
 
+    /**
+     * 2.2.0: each question's text as the app saw it, per dialog (server, pane, occupant and the
+     * dialog's tab titles), so a pill tap back to a question is checked against what it showed.
+     */
+    private val pillHeadings = LinkedHashMap<List<Any?>, MutableMap<Int, String>>()
+
+    /**
+     * 2.2.0 (Bill: "let me click on the pill buttons for multi question menus to go back to prior
+     * questions or forth to other questions to revise before submitting"): moves the dialog the
+     * card [shown] was read from to its question [index] with the dialog's own keys
+     * ([com.billmongan.herdrdroid.herdr.QuestionPills]), bound to the card's pane, server,
+     * connection and occupant like an answer. Never Enter, Esc or a digit; nothing is answered or
+     * submitted. Refused while the pane shows a draft, a usage screen or another dialog.
+     */
+    internal fun moveToQuestion(target: CardTarget?, shown: Prompt, index: Int, title: String) {
+        val pills = com.billmongan.herdrdroid.herdr.QuestionPills
+        fun refuse(why: String) {
+            com.billmongan.herdrdroid.diag.DiagLog.log("answer", "${target?.pane?.id}: question pill ${index + 1} not moved: $why")
+            flash("Not moved: $why. Refresh the question or open the terminal.")
+        }
+        if (target == null || !pills.tappable(target.pane.agent, shown)) { refuse("the question can't be moved from here"); return }
+        val id = target.pane.id
+        if (paneDraft?.target?.pane?.id == id) { refuse("the pane has a draft"); return }
+        if (usageOverlayFor(id) != null) { refuse("a usage screen is open"); return }
+        val tabs = shown.shownParts().tabs
+        val dialog = listOf(target.server, id, com.billmongan.herdrdroid.herdr.Occupant.of(target.pane), tabs.map { it.title })
+        val headings = pillHeadings.getOrPut(dialog) { mutableMapOf() }
+        while (pillHeadings.size > 16) pillHeadings.remove(pillHeadings.keys.first())
+        val agentName = pane(id)?.agentName ?: "the agent"
+        com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$id: tapped question pill ${index + 1} \"${title.take(40)}\"")
+        answerOnce(id) { h ->
+            var blocked = false
+            fun current() = target.isCurrent(h) && paneDraft?.target?.pane?.id != id && usageOverlayFor(id) == null
+            val outcome = pills.move(
+                target.pane.agent, shown, index, title, headings,
+                read = read@{
+                    if (!current()) return@read null
+                    val live = h.cardPane(id, target.connection) ?: return@read null
+                    if (!current() || !target.pane.sameCardOccupant(live) || live.scrollOffset != 0) return@read null
+                    blocked = live.status == Status.NEEDS_YOU
+                    h.readCardViewport(id, target.connection).takeUnless { it.isBlank() || !current() }
+                },
+                detect = { detectPrompt(it, blocked, target.pane.agent, versionOf(id)) },
+                stillCurrent = ::current,
+                send = { keys -> h.sendKeys(id, *keys.toTypedArray(), expectedConnection = target.connection) },
+                pause = { delay(200) },
+            )
+            when (outcome) {
+                is com.billmongan.herdrdroid.herdr.QuestionPills.Outcome.Moved -> com.billmongan.herdrdroid.diag.DiagLog.log("answer",
+                    "$id: moved to question pill ${index + 1} with ${outcome.keys.joinToString(" ") { keyName(it) }}")
+                com.billmongan.herdrdroid.herdr.QuestionPills.Outcome.Already -> Unit
+                is com.billmongan.herdrdroid.herdr.QuestionPills.Outcome.Refused -> refuse(outcome.why)
+                is com.billmongan.herdrdroid.herdr.QuestionPills.Outcome.Missed -> {
+                    com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$id: sent ${outcome.keys.joinToString(" ") { keyName(it) }} " +
+                        "for question pill ${index + 1}, but the screen did not show it; no more keys sent")
+                    flash("$agentName did not show \"${title.take(30)}\". The card shows what is on screen now.")
+                }
+            }
+            readPane(id)
+        }
+    }
+
     private fun answerCardInput(target: CardTarget?, shown: Prompt, label: String, delivered: () -> Unit = {},
         /** OpenCode's question dialog (2.1.2): allowed through [freshAnswer]'s guarded checks. */
         guarded: Boolean = false,
