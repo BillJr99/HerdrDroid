@@ -3304,14 +3304,17 @@ class AppViewModel internal constructor(
     internal suspend fun sendRemotePrompt(target: RemotePromptTarget, text: String, allowed: () -> Boolean) =
         promptRelay.send(target.route, text) { allowed() && remotePromptCurrent(target) }
 
-    // ---- 2.1.5: cross-server messages confirmed by a code typed back on the phone -------------
+    // ---- 2.1.5/2.2.0: cross-server messages approved on the phone ------------------------------
     //
     // The 2.1.4 "Listen for agent proposal" menu, its one-time code and its copied instructions are
     // gone. An agent asked in chat for a cross-server send renders a frame with a code it picks
-    // (CrossServerFrame); the open pane's read finds it and shows a card. Nothing is sent until the
-    // phone user types that code in this pane's composer on the phone (crossServerCodeReply), which
-    // is never typed into the pane. The code on the agent's screen proves nothing by itself: the
-    // consent is the user typing it back here.
+    // (CrossServerFrame); the open pane's read finds it and shows a card. 2.2.0 (Bill: "have it send
+    // a code and then have HerdrDroid pop up a yes/no menu to approve and then if approved it sends
+    // that code synthetically to proceed"): the card also opens a Yes/No dialog, and Yes (or Approve
+    // on the card) hands the frame's own code to the confirm path (approveCrossServer), bound to the
+    // proposal's id, code and destination. The user no longer types the code, and the code is never
+    // typed into any pane. The code on the agent's screen proves nothing by itself: the consent is
+    // the tap on the phone.
 
     internal enum class CrossServerState { PENDING, SENDING, SENT, REFUSED, FAILED, DRAFT, CANCELLED, EXPIRED }
 
@@ -3336,12 +3339,15 @@ class AppViewModel internal constructor(
         { prefs.crossServerCodes }, { prefs.crossServerCodes = it })
     private var crossServerExpiry: Job? = null
     private var crossServerPermit: WritePermit? = null
+    /** Proposals whose dialog the user put aside (Back): they stay on their cards, with Approve and Cancel. */
+    private var crossServerDeferred by mutableStateOf<Set<String>>(emptySet())
 
     /** Background, lock, a lost link or messaging turned off: every card goes. Unspent codes may show again on the next read. */
     private fun clearCrossServerCards() {
         crossServerPermit?.revoke()
         crossServerPermit = null
         crossServerCards = emptyList()
+        crossServerDeferred = emptySet()
         crossServerExpiry?.cancel()
         crossServerExpiry = null
     }
@@ -3361,6 +3367,7 @@ class AppViewModel internal constructor(
     /** Called with each good read of the open pane. Spent, expired or malformed codes raise no card. */
     private fun noteCrossServerFrames(owner: CardTarget?, recent: String) {
         if (owner == null || !crossServerSourceCurrent(owner)) return
+        resolveCrossServerDestinations()
         val frames = com.billmongan.herdrdroid.herdr.crossServerFrames(recent)
         if (frames.isEmpty()) return
         val now = crossServerClock()
@@ -3374,6 +3381,20 @@ class AppViewModel internal constructor(
             added = true
         }
         if (added) scheduleCrossServerExpiry()
+    }
+
+    /**
+     * 2.2.0 step 1: a card read before the other server's watcher had its panes kept no destination,
+     * and once the name matched exactly one agent the card offered no choice either (one match means
+     * no choices), so the typed code only ever said "Choose a destination". A pending card with no
+     * destination now takes the single match as soon as there is one.
+     */
+    private fun resolveCrossServerDestinations() {
+        if (crossServerCards.none { it.state == CrossServerState.PENDING && it.choice == null }) return
+        crossServerCards = crossServerCards.map { card ->
+            if (card.state != CrossServerState.PENDING || card.choice != null) card
+            else crossServerMatches(card).singleOrNull()?.let { card.copy(choice = it) } ?: card
+        }
     }
 
     private fun scheduleCrossServerExpiry() {
@@ -3444,6 +3465,8 @@ class AppViewModel internal constructor(
         val now = crossServerCards.firstOrNull { it.id == card.id } ?: return
         if (now.state != CrossServerState.PENDING || choice !in crossServerChoices(now)) return
         updateCrossServerCard(card.id) { it.copy(choice = choice, note = null) }
+        // A destination picked on the card is then asked about in the dialog, with the whole message.
+        crossServerDeferred = crossServerDeferred - card.id
     }
 
     internal fun cancelCrossServerCard(card: CrossServerCard) {
@@ -3461,27 +3484,64 @@ class AppViewModel internal constructor(
     }
 
     /**
-     * Only for text sent from this pane's composer on the phone, never for pane output. True when
-     * [typed] is the code of a card in this pane's chat: the text is then never typed into the pane.
-     * A pending card is confirmed and its message delivered through the relay; any other card says
-     * its code is no longer usable. False for anything else, which the composer sends as usual.
+     * What a Yes/No dialog (or a card's Approve) was shown and may approve: one proposal by its id
+     * and code, to the destination shown. A dialog keeps the approval it was opened with, so it can
+     * never approve a newer proposal, another code or a destination it did not show.
      */
-    internal fun crossServerCodeReply(paneId: String, typed: String): Boolean {
-        val code = com.billmongan.herdrdroid.herdr.CrossServerCode.reply(typed) ?: return false
+    internal data class CrossServerApproval(val id: String, val code: String, val server: String, val pane: String)
+
+    /** The approval for a pending card with a destination; null otherwise. */
+    internal fun crossServerApprovalOf(card: CrossServerCard): CrossServerApproval? {
+        val live = crossServerCards.firstOrNull { it.id == card.id } ?: return null
+        if (live.state != CrossServerState.PENDING || live.code != card.code) return null
+        val to = live.choice ?: return null
+        return CrossServerApproval(live.id, live.code, to.server.id, to.pane.id)
+    }
+
+    /**
+     * The proposal to ask about in a dialog in this pane's chat: the newest pending one with a
+     * destination that the user has not put aside, only while its pane is open, the app is in front
+     * and unlocked, and within its ten minutes. Older ones wait on their cards and come up in turn.
+     */
+    internal fun crossServerDialogFor(paneId: String): CrossServerCard? {
+        val now = crossServerClock()
+        return crossServerCardsFor(paneId).lastOrNull {
+            it.state == CrossServerState.PENDING && it.choice != null && it.id !in crossServerDeferred &&
+                now < it.deadline && crossServerSourceCurrent(it.source)
+        }
+    }
+
+    /** Back on the dialog: the proposal stays on its card, pending, and its dialog does not come back by itself. */
+    internal fun deferCrossServerDialog(card: CrossServerCard) {
+        crossServerDeferred = crossServerDeferred + card.id
+    }
+
+    /**
+     * Yes on the dialog or Approve on the card. The app supplies the frame's code itself to the
+     * confirm path, nothing is typed anywhere, and the code never reaches a pane. Refused (false,
+     * nothing sent) when the proposal is gone, finished, expired, has another code or destination
+     * than [approval], or its pane is no longer the one open. True when delivery started.
+     */
+    internal fun approveCrossServer(approval: CrossServerApproval): Boolean {
+        expireCrossServerCards()
+        val card = crossServerCards.firstOrNull { it.id == approval.id } ?: return false
+        if (card.code != approval.code || card.state != CrossServerState.PENDING) return false
+        val to = card.choice ?: return false
+        if (to.server.id != approval.server || to.pane.id != approval.pane) return false
+        if (!crossServerSourceCurrent(card.source)) return false
+        return confirmCrossServerCode(card.source.pane.id, approval.code)
+    }
+
+    /**
+     * The confirm path (2.1.5's, no longer reachable from the composer): [code] is a pending card's
+     * code in this pane's chat. The code is spent before anything is sent, so a card delivers at
+     * most once, and its message goes through the guarded relay.
+     */
+    private fun confirmCrossServerCode(paneId: String, code: String): Boolean {
+        if (!com.billmongan.herdrdroid.herdr.CrossServerCode.valid(code)) return false
         expireCrossServerCards()
         val card = crossServerCardsFor(paneId).firstOrNull { it.code == code } ?: return false
-        when (card.state) {
-            CrossServerState.PENDING -> {}
-            CrossServerState.SENDING -> return true
-            else -> {
-                updateCrossServerCard(card.id) { it.copy(note = "That code was already used or has expired. Nothing more was sent.") }
-                return true
-            }
-        }
-        if (card.choice == null) {
-            updateCrossServerCard(card.id) { it.copy(note = "Choose a destination, then type the code again.") }
-            return true
-        }
+        if (card.state != CrossServerState.PENDING || card.choice == null) return false
         updateCrossServerCard(card.id) { it.copy(state = CrossServerState.SENDING, note = "Checking and sending…") }
         crossServerCodes.spend(card.id, crossServerClock())
         viewModelScope.launch {
