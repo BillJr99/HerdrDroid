@@ -569,8 +569,10 @@ class Herdr internal constructor(
         if (core) runNow(hcCmd("keys", paneId, *keys), expectedConnection = expectedConnection)
         else runNow(cmd("pane", "send-keys", paneId, *keys), expectedConnection = expectedConnection)
 
+    /** Keys that go only while [permit] is open; on herdr-core as `hc keys` (2.2.0: the mode menu works there too). */
     internal suspend fun sendPermittedKeys(paneId: String, keys: List<String>, connection: Any, permit: WritePermit) =
-        runNow(cmd("pane", "send-keys", paneId, *keys.toTypedArray()), expectedConnection = connection, permit = permit)
+        runNow(if (core) hcCmd("keys", paneId, *keys.toTypedArray()) else cmd("pane", "send-keys", paneId, *keys.toTypedArray()),
+            expectedConnection = connection, permit = permit)
 
     private fun usageSnapshotCommand(paneId: String, agent: String) =
         "$PY -c ${shq(USAGE_OVERLAY_SNAPSHOT)} $herdr ${shq(paneId)} ${shq(agent)}"

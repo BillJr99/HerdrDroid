@@ -16,6 +16,11 @@ object PaneControls {
         val label: String,
         /** Every tool runs without asking. Offered only where Claude's menu already reached it, behind a confirmation. */
         val approvesAll: Boolean = false,
+        /**
+         * Offered as a target. Vibe's Smart approve is not (2.2.0, from Grok's review): with it turned off
+         * the press meant for it lands on Auto approve, and its presence can't be seen any other way.
+         */
+        val offered: Boolean = true,
     )
 
     /**
@@ -68,7 +73,7 @@ object PaneControls {
             listOf(
                 ModeOption("default", "Ask"),
                 ModeOption("accept edits", "Accept edits"),
-                ModeOption("auto", "Smart approve"),
+                ModeOption("auto", "Smart approve", offered = false),
                 ModeOption("bypass", "Auto approve (approves every tool)", approvesAll = true),
             ),
             maxPresses = 4,
@@ -120,6 +125,7 @@ object PaneControls {
         return spec.options.filter { o ->
             when {
                 o.name == current -> true
+                !o.offered -> false
                 o.approvesAll && !spec.crossesApproveAll -> false
                 spec.cycle == null || current == null -> true
                 else -> pressesOnCycle(spec.cycle, current, o.name, avoid) != null
@@ -137,48 +143,88 @@ object PaneControls {
         data class Stop(val mode: String?, val why: String) : Step
     }
 
+    /** Whether [mode] approves every tool and the user did not pick it (and confirm it) as [target]. */
+    fun unconfirmedApproveAll(spec: ModeSpec, mode: String?, target: String): Boolean =
+        mode != null && mode != target && spec.options.any { it.approvesAll && it.name == mode }
+
     /**
      * The switch as a state machine, so it can be tested without a pane: [start] is the mode read
      * before the first press and [target] the one asked for. [next] gets the mode read after the last
-     * press (or [start] before any) and says what to do. A target that isn't in the session's cycle, or
-     * an unexpected stop on a mode that approves everything, goes on round the cycle back to [start],
-     * so the pane is never left half switched.
+     * press (or [start] before any) and says what to do.
+     *
+     * The pane is never left half switched: a target that isn't in the session's cycle goes on round to
+     * [start]. It never stops on a mode that approves everything that wasn't the confirmed target
+     * (2.2.0, from Grok's review): from there it keeps pressing, also when a press didn't change the
+     * footer, until the footer shows [start], up to a bound; a [Stop] still on such a mode is reported
+     * loudly by the caller.
      */
     class ModeSwitcher(private val spec: ModeSpec, private val start: String, private val target: String) {
         var presses = 0
             private set
         private var returning = false
         private var why = ""
-        private val avoid = spec.options.filter { it.approvesAll && it.name != target }.map { it.name }.toSet()
+
+        /** The most presses, the way back included. */
+        val limit get() = spec.maxPresses * 3
+
+        private fun unsafe(read: String?) = unconfirmedApproveAll(spec, read, target)
+
+        private fun back(reason: String): Step {
+            why = reason
+            returning = true
+            return press()
+        }
+
+        private fun press(): Step {
+            presses++
+            return Step.Press
+        }
 
         fun next(read: String?): Step {
             if (read == null) return Step.Stop(null, "the footer couldn't be read; check the pane")
             if (returning) {
                 if (read == start) return Step.Stop(read, why)
-                if (presses >= spec.maxPresses * 2) return Step.Stop(read, "$why, and it didn't come back to ${labelOf(start)}; check the pane")
-                presses++
-                return Step.Press
+                if (presses >= limit) return Step.Stop(read, "$why, and it didn't come back to ${labelOf(start)}; check the pane now")
+                return press()
             }
             if (read == target) return Step.Done(read)
             if (presses > 0 && read == start) return Step.Stop(read, "${labelOf(target)} isn't in this session's cycle")
-            if (read in avoid && !spec.crossesApproveAll) {
-                why = "it stopped on ${labelOf(read)}, which approves every tool, so it went back"
-                returning = true
-                presses++
-                return Step.Press
-            }
-            if (presses >= spec.maxPresses) {
-                why = "${labelOf(target)} wasn't reached"
-                returning = true
-                presses++
-                return Step.Press
-            }
+            if (unsafe(read) && !spec.crossesApproveAll) return back("it stopped on ${labelOf(read)}, which approves every tool, so it went back")
+            if (presses >= spec.maxPresses) return back("${labelOf(target)} wasn't reached")
+            return press()
+        }
+
+        /**
+         * The footer didn't change after a press. On a safe mode the switch stops there; on a mode
+         * that approves everything it presses again, toward [start], within [limit].
+         */
+        fun unchanged(read: String): Step {
+            if (!unsafe(read)) return Step.Stop(read, "the mode didn't change after ${spec.key}")
+            if (!returning) { why = "it stopped on ${labelOf(read)}, which approves every tool, so it went back"; returning = true }
+            if (presses >= limit) return Step.Stop(read, "$why, and it didn't come back to ${labelOf(start)}; check the pane now")
             presses++
             return Step.Press
         }
 
         private fun labelOf(name: String) = spec.options.firstOrNull { it.name == name }?.label ?: name
     }
+
+    // ---- Writing into the pane ----------------------------------------------------------------------
+
+    /**
+     * Why a menu action (a mode key, a thinking or session command) must not go into the pane now, from
+     * a fresh read of its screen, or null (2.2.0, from Grok's review): the same checks a normal send
+     * makes. A question or dialog is open; the input line can't be seen; or text is typed in it.
+     */
+    fun writeBlock(agent: String?, viewport: String): String? {
+        if (detectPrompt(forPhone(viewport), false, agent) != null) return "a question or dialog is open in it"
+        val draft = composerDraftOf(viewport, agent)
+        val line = inputLineOf(viewport, agent) ?: return if (draft != null) TYPED else "its input line isn't on screen"
+        if (line.isNotEmpty() || draft != null) return TYPED
+        return null
+    }
+
+    const val TYPED = "text is typed in its input box at the computer"
 
     // ---- Thinking level ---------------------------------------------------------------------------
 

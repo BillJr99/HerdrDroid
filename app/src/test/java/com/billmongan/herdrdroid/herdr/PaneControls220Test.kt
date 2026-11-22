@@ -59,21 +59,60 @@ class PaneControls220Test {
         assertEquals(Step.Done("auto"), steps.last())
     }
 
-    @Test fun vibeNeverStopsOnAutoApprove() {
-        // Smart approve turned off: accept edits goes straight to auto approve, which is passed back to ask.
+    /** Feeds the switcher a read after each press; true in a pair means "the footer didn't change after the press". */
+    private fun drive(spec: PaneControls.ModeSpec, start: String, target: String, reads: List<Pair<String, Boolean>>): List<Step> {
+        val sw = ModeSwitcher(spec, start, target)
+        val out = mutableListOf(sw.next(start))
+        for ((read, same) in reads) {
+            if (out.last() !is Step.Press) break
+            out += if (same) sw.unchanged(read) else sw.next(read)
+        }
+        return out
+    }
+
+    @Test fun aVibeLandingOnAutoApproveKeepsPressingBackToTheStart() {
+        // From Grok's review: with Smart approve off, a press can land on Auto approve, and a press there
+        // may not change the footer at first. The switch never stops there: it presses on to the start.
         val spec = PaneControls.modes("vibe")!!
-        val steps = run(spec, "accept edits", "auto", listOf("bypass", "default", "accept edits"))
+        val steps = drive(spec, "accept edits", "auto", listOf("bypass" to false, "bypass" to true, "bypass" to true, "default" to false, "accept edits" to false))
         val last = steps.last() as Step.Stop
         assertEquals("accept edits", last.mode)
         assertTrue(last.why, last.why.contains("approves every tool"))
+        assertEquals(5, steps.count { it == Step.Press })
     }
 
-    @Test fun vibeOffersOnlyModesReachedWithoutPassingAutoApprove() {
+    @Test fun aSwitchThatCantLeaveAutoApproveStopsLoudly() {
         val spec = PaneControls.modes("vibe")!!
-        // From smart approve, ask and accept edits lie past auto approve.
+        val sw = ModeSwitcher(spec, "default", "accept edits")
+        assertEquals(Step.Press, sw.next("default"))
+        var step = sw.next("bypass")
+        var guard = 0
+        while (step == Step.Press && guard++ < 100) step = sw.unchanged("bypass")
+        val stop = step as Step.Stop
+        assertEquals("bypass", stop.mode)
+        assertTrue(stop.why, stop.why.contains("didn't come back"))
+        assertTrue(sw.presses <= sw.limit)
+        assertTrue(PaneControls.unconfirmedApproveAll(spec, stop.mode, "accept edits"))
+    }
+
+    @Test fun claudeNeverStopsOnBypassItDidntPick() {
+        val spec = PaneControls.modes("claude")!!
+        // On the way from plan to auto the footer sticks on bypass: it presses on to plan.
+        val steps = drive(spec, "plan", "auto", listOf("bypass" to false, "bypass" to true, "default" to false, "accept edits" to false, "plan" to false))
+        assertEquals("plan", (steps.last() as Step.Stop).mode)
+        // Bypass picked and confirmed is a target like any other.
+        assertFalse(PaneControls.unconfirmedApproveAll(spec, "bypass", "bypass"))
+        assertEquals(Step.Done("bypass"), drive(spec, "plan", "bypass", listOf("bypass" to false)).last())
+        // An ordinary mode that doesn't change stops where it is.
+        assertTrue((drive(spec, "default", "plan", listOf("default" to true)).last() as Step.Stop).why.contains("didn't change"))
+    }
+
+    @Test fun vibeOffersOnlyAskAndAcceptEdits() {
+        val spec = PaneControls.modes("vibe")!!
+        assertEquals(listOf("default", "accept edits"), PaneControls.reachable(spec, "default").map { it.name })
+        // Smart approve shows only as the mode already on; nothing else is reachable from it without Auto approve.
         assertEquals(listOf("auto"), PaneControls.reachable(spec, "auto").map { it.name })
-        assertEquals(listOf("default", "accept edits", "auto"), PaneControls.reachable(spec, "default").map { it.name })
-        assertFalse(PaneControls.reachable(spec, "default").any { it.approvesAll })
+        assertFalse(PaneControls.reachable(spec, "accept edits").any { it.name == "auto" || it.approvesAll })
         assertFalse(PaneControls.canSwitch(spec, "bypass"))
     }
 
@@ -88,6 +127,18 @@ class PaneControls220Test {
         val spec = PaneControls.modes("claude")!!
         assertTrue(PaneControls.reachable(spec, "default").single { it.approvesAll }.name == "bypass")
         assertTrue(PaneControls.canSwitch(spec, "bypass"))
+    }
+
+    @Test fun aMenuWriteWaitsForADraftOrAQuestion() {
+        val draft = res("claude/captured-2.1.329/composer-titled-list-typed.ansi")
+        assertEquals(PaneControls.TYPED, PaneControls.writeBlock("claude", draft))
+        val question = res("claude/captured-2.1.329/single-question.txt")
+        assertEquals("a question or dialog is open in it", PaneControls.writeBlock("claude", question))
+        assertNull(PaneControls.writeBlock("claude", res("claude/captured-2.1.329/composer-titled-list-empty.ansi")))
+        // The empty input boxes captured live, for every agent, let a menu write go.
+        val refused = listOf("claude", "vibe", "kiro", "opencode", "grok", "muse", "agy", "codex", "pi", "omp", "hermes", "copilot")
+            .filter { a -> PaneControls.writeBlock(a, res("$a/live-2026-11-20-composer/empty.ansi")) != null }
+        assertEquals(emptyList<String>(), refused)
     }
 
     @Test fun anUnchangedOrUnreadFooterStopsTheSwitch() {
