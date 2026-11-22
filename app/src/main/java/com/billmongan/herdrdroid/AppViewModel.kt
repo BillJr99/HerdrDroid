@@ -5566,13 +5566,15 @@ class AppViewModel internal constructor(
         return false
     }
 
-    /** Reads the log again a few times after a session change, so the chat rebinds to the terminal's session at once. */
+    /**
+     * Reads the log again a few times after a session change, so the chat rebinds to the terminal's
+     * session at once: the reader finds the new session and starts the chat afresh from it.
+     */
     private fun rebindSoon(paneId: String) {
         viewModelScope.launch {
             for (wait in listOf(1_500L, 3_000L, 6_000L)) {
                 kotlinx.coroutines.delay(wait)
                 if ((screen as? Screen.Agent)?.paneId != paneId) return@launch
-                transcriptCursor = ""
                 readTranscript(paneId)
             }
         }
