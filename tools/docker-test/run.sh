@@ -28,15 +28,16 @@ START=$(date +%s)
 
 # The summary: exit status, compile errors, failing tests and totals, from this run's files only.
 finish() {
-  local rc=$1
-  echo "exit=$rc seconds=$(( $(date +%s) - START ))" >> "$LOG"
-  {
+  local rc=$1 body
+  echo "exit=$rc seconds=$(( $(date +%s) - START ))" >> "$LOG" || { [ "$rc" = 0 ] && rc=1; }
+  # The summary is put together in memory first, then written once and checked.
+  body=$(
     echo "exit=$rc"
     grep -E '^BUILD (SUCCESSFUL|FAILED)' "$LOG" | tail -1
     grep -E '^e: ' "$LOG" | head -10
     grep -E '^(SETUP|EXPORT): ' "$LOG" | head -5
     if [ -d "$OUT/test-results/testDebugUnitTest" ]; then
-      local t=0 f=0 e=0 s=0 x h c m bad=()
+      t=0 f=0 e=0 s=0 bad=()
       n() { echo "$1" | sed -nE "s/.* $2=\"([0-9]+)\".*/\\1/p"; }
       for x in "$OUT"/test-results/testDebugUnitTest/*.xml; do
         [ -f "$x" ] || continue
@@ -49,9 +50,15 @@ finish() {
       echo "tests=$t failures=$f errors=$e skipped=$s"
     fi
     for x in "$OUT"/*.apk; do [ -f "$x" ] && echo "apk: $x"; done
-    : # the group's status is the redirection's, not the last test's
-  } > "$OUT/summary.tmp" && mv -f "$OUT/summary.tmp" "$OUT/summary.txt" || {
-    echo "could not write $OUT/summary.txt" >&2; [ "$rc" = 0 ] && rc=1; }
+    true
+  )
+  # One write, read back and compared, and only then renamed into place. A failure here fails a run
+  # that had passed, and leaves no summary.txt; a Gradle failure keeps its own status.
+  if ! { printf '%s\n' "$body" > "$OUT/summary.tmp" && [ "$(cat "$OUT/summary.tmp")" = "$body" ] \
+         && mv -f "$OUT/summary.tmp" "$OUT/summary.txt"; }; then
+    echo "SUMMARY: could not write $OUT/summary.txt" >&2
+    [ "$rc" = 0 ] && rc=1
+  fi
   # The unpacked source and its build folders are this run's own; the results are copied out.
   [ "${HD_TEST_KEEP_SRC:-0}" = 1 ] || rm -rf "$SRC"
   exit "$rc"
