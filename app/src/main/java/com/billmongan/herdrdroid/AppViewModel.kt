@@ -59,6 +59,9 @@ import com.billmongan.herdrdroid.herdr.hermesUsageWaiting
 import com.billmongan.herdrdroid.herdr.footerModel
 import com.billmongan.herdrdroid.herdr.Status
 import com.billmongan.herdrdroid.herdr.RelayResult
+import com.billmongan.herdrdroid.herdr.RelayRefusal
+import com.billmongan.herdrdroid.herdr.idleForRelay
+import com.billmongan.herdrdroid.herdr.takesInputDuringBackgroundWork
 import com.billmongan.herdrdroid.herdr.WritePermit
 import com.billmongan.herdrdroid.herdr.hasStableOccupant
 import com.billmongan.herdrdroid.herdr.sameOccupant
@@ -3363,7 +3366,7 @@ class AppViewModel internal constructor(
     private val promptRelay by lazy {
         com.billmongan.herdrdroid.herdr.PromptRelay(paneDispatch, ::relayPort, writeGate) { serverId, paneId ->
             promptLaneClear(serverId, paneId) && fleetStates[serverId]?.panes?.singleOrNull { it.id == paneId }
-                ?.let { !it.backgroundBusy && it.status in setOf(Status.IDLE, Status.DONE) } == true
+                ?.let(::idleForRelay) == true
         }
     }
 
@@ -3627,40 +3630,70 @@ class AppViewModel internal constructor(
         updateCrossServerCard(card.id) { it.copy(state = CrossServerState.SENDING, note = "Checking and sending…") }
         crossServerCodes.spend(card.id, crossServerClock())
         viewModelScope.launch {
-            val result = try { deliverCrossServer(card) } catch (c: kotlinx.coroutines.CancellationException) { throw c }
+            var why: RelayRefusal? = null
+            val result = try { deliverCrossServer(card) { why = it } } catch (c: kotlinx.coroutines.CancellationException) { throw c }
                 catch (_: Exception) { RelayResult.REFUSED }
-            val state = when (result) {
-                RelayResult.SENT -> CrossServerState.SENT
-                RelayResult.REFUSED -> CrossServerState.REFUSED
-                RelayResult.UNCERTAIN -> CrossServerState.FAILED
-                RelayResult.DRAFT -> CrossServerState.DRAFT
-            }
-            updateCrossServerCard(card.id) { it.copy(state = state, note = result.feedback) }
-            scheduleCrossServerExpiry()
+            finishCrossServer(card, result, why ?: RelayRefusal.FAILED.takeIf { result == RelayResult.REFUSED || result == RelayResult.DRAFT })
         }
         return true
     }
 
+    /**
+     * 2.2.1: the card says which check stopped the message, on which server and pane. A refusal
+     * typed nothing (every refusal is decided before the write's permit is claimed), so a transient
+     * one (busy, a draft, a question, the link) leaves the proposal pending with its code unspent
+     * and its ten minutes unchanged: Approve on the card tries once more. Its dialog does not pop
+     * up again by itself. Sent or uncertain keeps the code spent, so nothing can go twice; so does
+     * a refusal that can't pass for this proposal (a different session in either pane).
+     */
+    private fun finishCrossServer(card: CrossServerCard, result: RelayResult, why: RelayRefusal?) {
+        val to = card.choice?.let { "${agentFacingName(it)} (pane ${it.pane.id})" } ?: "the destination"
+        if (why != null) com.billmongan.herdrdroid.diag.DiagLog.log("xserver",
+            "${card.source.pane.id}: proposal not sent to ${card.choice?.server?.id}/${card.choice?.pane?.id}: ${why.name}")
+        else com.billmongan.herdrdroid.diag.DiagLog.log("xserver", "${card.source.pane.id}: proposal ${result.name.lowercase()}")
+        val retry = why != null && why.transient && crossServerCardsFor(card.source.pane.id).any { it.id == card.id }
+        if (retry) crossServerCodes.release(card.id, crossServerClock())
+        updateCrossServerCard(card.id) {
+            when {
+                why == null -> it.copy(state = when (result) {
+                    RelayResult.SENT -> CrossServerState.SENT
+                    RelayResult.UNCERTAIN -> CrossServerState.FAILED
+                    RelayResult.REFUSED -> CrossServerState.REFUSED
+                    RelayResult.DRAFT -> CrossServerState.DRAFT
+                }, note = result.feedback)
+                retry -> it.copy(state = CrossServerState.PENDING,
+                    note = "Not sent to $to: ${why.why}. Nothing was typed. Approve to try again before the proposal expires.")
+                else -> it.copy(state = if (result == RelayResult.DRAFT) CrossServerState.DRAFT else CrossServerState.REFUSED,
+                    note = "Not sent to $to: ${why.why}. Nothing was typed. This proposal can't be sent; ask the agent for a new one.")
+            }
+        }
+        if (retry) crossServerDeferred = crossServerDeferred + card.id
+        scheduleCrossServerExpiry()
+    }
+
     /** The relay with all its checks: the source unchanged, the destination the same occupant and idle, then PromptRelay's own (no draft, size and content). */
-    private suspend fun deliverCrossServer(card: CrossServerCard): RelayResult {
-        val chosen = card.choice ?: return RelayResult.REFUSED
-        if (!crossServerSourceCurrent(card.source)) return RelayResult.REFUSED
-        val destination = crossServerReachable(card).singleOrNull {
-            it.server.id == chosen.server.id && it.pane.id == chosen.pane.id && sameOccupant(it.pane, chosen.pane)
-        } ?: return RelayResult.REFUSED
-        if (!agentMessageDestinationCurrent(destination.server.id, destination.pane)) return RelayResult.REFUSED
-        val target = bindRemotePrompt(destination) ?: return RelayResult.REFUSED
+    private suspend fun deliverCrossServer(card: CrossServerCard, refused: (RelayRefusal) -> Unit): RelayResult {
+        fun refuse(why: RelayRefusal): RelayResult { refused(why); return RelayResult.REFUSED }
+        val chosen = card.choice ?: return refuse(RelayRefusal.UNREACHABLE)
+        if (!crossServerSourceCurrent(card.source)) return refuse(RelayRefusal.SOURCE_CHANGED)
+        val there = crossServerReachable(card).filter { it.server.id == chosen.server.id && it.pane.id == chosen.pane.id }
+        val destination = there.singleOrNull { sameOccupant(it.pane, chosen.pane) }
+            ?: return refuse(if (there.isNotEmpty()) RelayRefusal.REPLACED else RelayRefusal.UNREACHABLE)
+        destinationRefusal(destination.server.id, destination.pane)?.let { return refuse(it) }
+        val target = bindRemotePrompt(destination) ?: return refuse(RelayRefusal.LINK)
         val job = kotlinx.coroutines.currentCoroutineContext()[Job]
         fun admitted() = job?.isActive != false && crossServerSourceCurrent(card.source) &&
             agentMessageDestinationCurrent(target.route.server, target.route.pane)
         val permit = WritePermit(::admitted)
         crossServerPermit = permit
         try {
-            if (!admitted() || !remotePromptCurrent(target)) return RelayResult.REFUSED
+            if (!crossServerSourceCurrent(card.source)) return refuse(RelayRefusal.SOURCE_CHANGED)
+            destinationRefusal(target.route.server, target.route.pane)?.let { return refuse(it) }
+            if (!admitted() || !remotePromptCurrent(target)) return refuse(RelayRefusal.STOPPED)
             val source = card.source
-            val fresh = source.client.cardPane(source.pane.id, source.connection) ?: return RelayResult.REFUSED
-            if (!sameOccupant(fresh, source.pane)) return RelayResult.REFUSED
-            return promptRelay.send(target.route, card.text, authorizedWrite = permit) {
+            val fresh = source.client.cardPane(source.pane.id, source.connection) ?: return refuse(RelayRefusal.SOURCE_CHANGED)
+            if (!sameOccupant(fresh, source.pane)) return refuse(RelayRefusal.SOURCE_REPLACED)
+            return promptRelay.send(target.route, card.text, authorizedWrite = permit, refused = refused) {
                 admitted() && remotePromptCurrent(target)
             }
         } finally {
@@ -3670,9 +3703,18 @@ class AppViewModel internal constructor(
     }
 
     private fun agentMessageDestinationCurrent(serverId: String, expected: Pane): Boolean =
-        fleetStates[serverId]?.panes?.singleOrNull { it.id == expected.id }?.let {
-            sameOccupant(it, expected) && it.status in setOf(Status.IDLE, Status.DONE) && !it.backgroundBusy
-        } == true
+        destinationRefusal(serverId, expected) == null
+
+    /** Why the watched destination may not be written to now, or null when it may (2.2.1: Claude's background work alone does not hold it). */
+    private fun destinationRefusal(serverId: String, expected: Pane): RelayRefusal? {
+        val now = fleetStates[serverId]?.panes?.singleOrNull { it.id == expected.id } ?: return RelayRefusal.UNREACHABLE
+        return when {
+            !sameOccupant(now, expected) -> RelayRefusal.REPLACED
+            now.backgroundBusy && !takesInputDuringBackgroundWork(now.agent) -> RelayRefusal.BACKGROUND
+            !idleForRelay(now) -> RelayRefusal.NOT_IDLE
+            else -> null
+        }
+    }
 
     // ---- 2.1.4: telling agents about cross-server messaging ------------------------------------
 
@@ -3751,7 +3793,7 @@ class AppViewModel internal constructor(
                 .map(::agentFacingName)
             val text = com.billmongan.herdrdroid.herdr.CrossServerNotice.text(others) ?: return@mapNotNull null
             val raw = if (s.current) pane(s.pane.id) ?: s.pane else s.pane
-            val hold = raw.status != Status.IDLE && raw.status != Status.DONE || raw.backgroundBusy ||
+            val hold = !idleForRelay(raw) ||
                 !promptLaneClear(s.server.id, s.pane.id) ||
                 com.billmongan.herdrdroid.herdr.CrossServerNotice.quotaSkips(noticeQuota(s), crossServerNoticeQuota)
             s to com.billmongan.herdrdroid.herdr.CrossServerNotifier.Candidate(s.server.id, s.pane, text, hold)
@@ -3805,7 +3847,8 @@ class AppViewModel internal constructor(
             override suspend fun viewport(id: String) =
                 quietly(allowBackground = true) { if (it === h) it.readStyled(id, sendReadLines(s.pane.agent)) else null }
             override fun blocked(fresh: Pane, viewport: String): Boolean {
-                if (fresh.backgroundBusy || blocksNormalSend(fresh, viewport)) return true
+                if ((fresh.backgroundBusy && !takesInputDuringBackgroundWork(fresh.agent)) ||
+                    blocksNormalSend(fresh, viewport)) return true
                 val line = com.billmongan.herdrdroid.herdr.inputLineOf(viewport, fresh.agent)
                 if (line != "" || com.billmongan.herdrdroid.herdr.composerDraftOf(viewport, fresh.agent) != null) return true
                 return holdReason(fresh.id, viewport) != null
