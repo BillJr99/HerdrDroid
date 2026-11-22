@@ -11,7 +11,8 @@
 # MODE=tests    the unit tests matching the arguments (all unit tests when there are none)
 # MODE=full     every unit test, then assembleDebug
 # ROBOLECTRIC_REPO_URL  optional Maven repository for Robolectric's android-all jars
-# The exit status is Gradle's, or 1 when the source or the SDK could not be set up.
+# The exit status is Gradle's, or 1 when the source or the SDK could not be set up, or when a run
+# Gradle passed could not export its results or summary.
 set -u
 MODE=${MODE:-full}
 OUT=/w/out LOG=/w/out/build.log SRC=/w/out/src
@@ -33,7 +34,7 @@ finish() {
     echo "exit=$rc"
     grep -E '^BUILD (SUCCESSFUL|FAILED)' "$LOG" | tail -1
     grep -E '^e: ' "$LOG" | head -10
-    grep -E '^SETUP: ' "$LOG" | head -5
+    grep -E '^(SETUP|EXPORT): ' "$LOG" | head -5
     if [ -d "$OUT/test-results/testDebugUnitTest" ]; then
       local t=0 f=0 e=0 s=0 x h c m bad=()
       n() { echo "$1" | sed -nE "s/.* $2=\"([0-9]+)\".*/\\1/p"; }
@@ -48,7 +49,9 @@ finish() {
       echo "tests=$t failures=$f errors=$e skipped=$s"
     fi
     for x in "$OUT"/*.apk; do [ -f "$x" ] && echo "apk: $x"; done
-  } > "$OUT/summary.txt"
+    : # the group's status is the redirection's, not the last test's
+  } > "$OUT/summary.tmp" && mv -f "$OUT/summary.tmp" "$OUT/summary.txt" || {
+    echo "could not write $OUT/summary.txt" >&2; [ "$rc" = 0 ] && rc=1; }
   # The unpacked source and its build folders are this run's own; the results are copied out.
   [ "${HD_TEST_KEEP_SRC:-0}" = 1 ] || rm -rf "$SRC"
   exit "$rc"
@@ -101,11 +104,21 @@ esac
 "${G[@]}" >> "$LOG" 2>&1
 RC=$?
 
-# Only what this run produced: the unpacked copy started with no build folders.
-if [ "$MODE" != compile ] && [ -d app/build/test-results/testDebugUnitTest ]; then
-  mkdir -p "$OUT/test-results" && cp -r app/build/test-results/testDebugUnitTest "$OUT/test-results/"
+# Only what this run produced: the unpacked copy started with no build folders. A run that Gradle
+# passed must also export what its mode promises (test XML for tests and full, an APK for full);
+# a missing or failed export turns it into a failure, and a Gradle failure keeps its own status.
+export_failed() { echo "EXPORT: $*" | tee -a "$LOG" >&2; [ "$RC" = 0 ] && RC=1; }
+if [ "$MODE" != compile ]; then
+  if [ -d app/build/test-results/testDebugUnitTest ]; then
+    mkdir -p "$OUT/test-results" && cp -r app/build/test-results/testDebugUnitTest "$OUT/test-results/" \
+      || export_failed "could not copy the test results"
+  fi
+  [ "$RC" = 0 ] && ! ls "$OUT"/test-results/testDebugUnitTest/*.xml >/dev/null 2>&1 && export_failed "no test results were exported"
 fi
 if [ "$MODE" = full ]; then
-  for a in app/build/outputs/apk/debug/*.apk; do [ -f "$a" ] && cp "$a" "$OUT/"; done
+  for a in app/build/outputs/apk/debug/*.apk; do
+    [ -f "$a" ] && { cp "$a" "$OUT/" || export_failed "could not copy $a"; }
+  done
+  [ "$RC" = 0 ] && ! ls "$OUT"/*.apk >/dev/null 2>&1 && export_failed "no debug APK was exported"
 fi
 finish "$RC"
