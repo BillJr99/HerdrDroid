@@ -11,9 +11,9 @@ import com.billmongan.herdrdroid.store.Server
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import net.schmizz.sshj.userauth.keyprovider.KeyProvider
 
 /**
@@ -53,6 +53,11 @@ class Fleet(
     private val detected = mutableSetOf<String>()
     private val retryAt = mutableMapOf<String, Long>()
     private val retryStep = mutableMapOf<String, Long>()
+
+    private val pokes = kotlinx.coroutines.channels.Channel<Unit>(kotlinx.coroutines.channels.Channel.CONFLATED)
+
+    /** Reads every watched server now instead of after the rest of the gap (2.1.4: the drawer opened). */
+    fun poke() { pokes.trySend(Unit) }
 
     /** Starts (or retargets) watching [servers]; the rest are dropped. */
     fun watch(servers: List<Server>) {
@@ -121,7 +126,8 @@ class Fleet(
                         states = states + (id to st)
                         if (st.error == null) onSeen(st)
                     }
-                    delay(if (screenOn()) everyMs else everyMs * 3)
+                    // 2.1.4: a poke (the drawer just opened) starts the next round at once.
+                    withTimeoutOrNull(if (screenOn()) everyMs else everyMs * 3) { pokes.receive() }
                 }
             }
         }

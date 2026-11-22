@@ -221,9 +221,11 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             })
         }
     }
-    LaunchedEffect(paneId) {
+    // The list every 4 s, every 2 s while the drawer and its badges are out (2.1.4); herdr's own
+    // wait reads it at once on a change in between.
+    LaunchedEffect(paneId, vm.drawerOpen) {
         while (true) {
-            kotlinx.coroutines.delay(4_000)
+            kotlinx.coroutines.delay(com.billmongan.herdrdroid.herdr.NeedsYouCadence.listGapMs(vm.drawerOpen))
             if (vm.inFront) vm.refreshPanes()
         }
     }
