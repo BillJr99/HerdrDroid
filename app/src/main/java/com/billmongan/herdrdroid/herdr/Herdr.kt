@@ -212,6 +212,13 @@ class Herdr internal constructor(
         return r.out
     }
 
+    /**
+     * Each pane's status as herdr itself reported it in the last [panes] read, before the app's own
+     * screen promotion (2.1.4): herdr's waits match herdr's state, not the shown one.
+     */
+    @Volatile var herdrStates: Map<String, Status> = emptyMap()
+        private set
+
     /** The last pane list read, for a follow-up read on the same connection. */
     @Volatile var panes0Cache: List<Pane> = emptyList()
         private set
@@ -238,6 +245,7 @@ class Herdr internal constructor(
         // Claude's sessions list with a session awaiting input counts as needing you too.
         // 2.1.2: herdr skips screen detection for OpenCode and calls a pane with a permission dialog
         // done or idle, so those panes are read in the same round trip and marked for display only.
+        herdrStates = list.associate { it.id to it.status }
         val askable = screenAskable(list)
         val marked = if (askable.isEmpty()) list else {
             val tails = runCatching { previews(askable.map { it.id }, CLAUDE_STATUS_READ_LINES) }.getOrDefault(emptyMap())
@@ -396,22 +404,51 @@ class Herdr internal constructor(
      * lane, so it never holds up reads or answers. Returns the pane that changed, or null on a timeout,
      * or null when it can't wait here (herdr-core, no agent panes, or an error), so the caller polls.
      */
-    suspend fun waitForChange(panes: List<Pane>, timeoutMs: Long): String? {
+    suspend fun waitForChange(panes: List<Pane>, timeoutMs: Long): String? = waitForWake(panes, timeoutMs)?.paneId
+
+    /** What ended a [waitForWake]: a pane whose herdr state changed, or ([screen]) whose screen shows a dialog (2.1.4). */
+    data class Wake(val paneId: String, val screen: Boolean)
+
+    /**
+     * [waitForChange], and also (2.1.4, Bill: the drawer's yellow badge lit late) a wait on the
+     * screen of each pane in [screens] for the footer of a Claude or OpenCode dialog herdr doesn't
+     * report (`herdr pane wait-output`, which herdr checks on the computer, so nothing crosses the
+     * link until it matches). One command on the send lane, as before.
+     */
+    suspend fun waitForWake(panes: List<Pane>, timeoutMs: Long, screens: List<Pane> = emptyList()): Wake? {
         if (core) return null
-        val agents = panes.filter { it.agent != null }
-        if (agents.isEmpty()) return null
-        val body = agents.joinToString("") { p ->
-            val until = waitUntilStates(p).joinToString(" ") { "--until $it" }
-            "( $herdr agent wait ${shq(p.id)} $until --timeout $timeoutMs >/dev/null 2>&1 && echo ${shq("@@chg " + p.id)} ) & pids=\"\$pids \$!\"; "
-        }
-        // The first wait's own status is the script's (1.4.1, from a second review: a trailing
-        // "true" made a failed wait look like a timeout).
-        val script = "pids=; ${body}wait -n 2>/dev/null; rc=\$?; kill \$pids 2>/dev/null; exit \$rc"
-        val r = runCatching { ssh.execNow("bash -c " + shq(script), timeoutSeconds = timeoutMs / 1000 + 20) }.getOrNull() ?: return null
+        val script = waitScript(panes, timeoutMs, screens) ?: return null
+        val command = "bash -c " + shq(script)
+        val seconds = timeoutMs / 1000 + 20
+        val r = runCatching { commands?.immediate(command, seconds, null) ?: ssh.execNow(command, timeoutSeconds = seconds) }.getOrNull() ?: return null
         // A change is the pane that changed. Anything else (a timeout, a wait that failed, herdr
         // without agent wait) is null, and the caller polls with its usual gap instead of starting
         // another wait straight away (1.4.1, from two code reviews).
-        return r.out.lines().firstOrNull { it.startsWith("@@chg ") }?.removePrefix("@@chg ")?.trim()
+        return parseWake(r.out)
+    }
+
+    /** The shell script [waitForWake] runs, or null when there is nothing to wait on. */
+    internal fun waitScript(panes: List<Pane>, timeoutMs: Long, screens: List<Pane> = emptyList()): String? {
+        val agents = panes.filter { it.agent != null }
+        if (agents.isEmpty()) return null
+        val states = herdrStates
+        val body = StringBuilder()
+        for (p in agents) {
+            val until = waitUntilStates(p, states[p.id]).joinToString(" ") { "--until $it" }
+            body.append("( $herdr agent wait ${shq(p.id)} $until --timeout $timeoutMs >/dev/null 2>&1 && echo ${shq("@@chg " + p.id)} ) & pids=\"\$pids \$!\"; ")
+        }
+        val ids = agents.map { it.id }.toSet()
+        for (p in screens.filter { it.id in ids }.distinctBy { it.id }) {
+            val regex = screenWakeRegex(p.agent) ?: continue
+            // A herdr without wait-output, or one that fails, sleeps out the round instead of ending it,
+            // so the state waits still stand.
+            val wait = cmd("pane", "wait-output", "--regex", regex, "--source", "visible", "--timeout", timeoutMs.toString(), p.id)
+            body.append("( $wait >/dev/null 2>&1 && echo ${shq("@@scr " + p.id)} || sleep ${timeoutMs / 1000 + 5} ) & pids=\"\$pids \$!\"; ")
+        }
+        // The first wait's own status is the script's (1.4.1, from a second review: a trailing
+        // "true" made a failed wait look like a timeout). 2.1.4: the waits still running are stopped
+        // with their herdr processes, not only their subshells, so none is left behind on the computer.
+        return "pids=; ${body}wait -n 2>/dev/null; rc=\$?; for p in \$pids; do pkill -P \"\$p\" 2>/dev/null; done; kill \$pids 2>/dev/null; exit \$rc"
     }
 
     /** Each agent's program version here (1.4.0): agent kind to version, for the parsers and the debug bundle. */
@@ -1975,10 +2012,39 @@ internal const val CLAUDE_STATUS_READ_LINES = 80
  * herdr's own status (2.1.2): waiting until "done" on a pane herdr already calls done, but the app
  * shows as needing you, would end at once and poll without a pause.
  */
-internal fun waitUntilStates(p: Pane): List<String> {
+internal fun waitUntilStates(p: Pane, herdrStatus: Status? = null): List<String> {
     val names = mapOf(Status.IDLE to "idle", Status.WORKING to "working", Status.NEEDS_YOU to "blocked", Status.DONE to "done")
-    return names.filterKeys { it != (p.screenNeedsYouFrom ?: p.status) }.values.toList()
+    // 2.1.4: herdr's own last status when it is known ([Herdr.herdrStates]). A Claude pane promoted to
+    // needs you, or a pane shown working for its background shells, would otherwise wait for the very
+    // state herdr already reports, and the wait would end at once, round after round.
+    return names.filterKeys { it != (herdrStatus ?: p.screenNeedsYouFrom ?: p.status) }.values.toList()
 }
+
+/** Splits a [Herdr.waitForWake] output into the pane that woke it, or null (2.1.4). */
+internal fun parseWake(out: String): Herdr.Wake? {
+    val line = out.lines().firstOrNull { it.startsWith("@@chg ") || it.startsWith("@@scr ") } ?: return null
+    return Herdr.Wake(line.substring(6).trim(), line.startsWith("@@scr "))
+}
+
+/**
+ * The footer a Claude or OpenCode dialog shows, for herdr's `pane wait-output` (Rust regex syntax),
+ * or null for other agents (2.1.4). Loose on purpose: a match only reads the list again, where
+ * [claudeNeedsYouReason] and [openCodeNeedsYouReason] decide, and a match that shows nothing is
+ * left alone for a while ([StatusPush]).
+ */
+internal fun screenWakeRegex(agent: String?): String? = when {
+    agent == "claude" -> """(?im)Enter to select.*(?:navigate|Esc to cancel)|↑/↓ to navigate|Tab/Arrow keys to navigate|\d{1,3} awaiting input\s*$"""
+    isOpenCode(agent) -> """(?m)(?:⇆|←→)\s+select\s+enter\s+confirm|enter\s+(?:submit|confirm|toggle)\s+esc\s+dismiss|Permission required"""
+    else -> null
+}
+
+/**
+ * The panes whose screens a [Herdr.waitForWake] watches (2.1.4): the ones [screenAskable] reads,
+ * by herdr's own status in [herdrStates], that the app doesn't already show as needing you.
+ */
+internal fun screenWatchPanes(list: List<Pane>, herdrStates: Map<String, Status>): List<Pane> =
+    screenAskable(list.map { p -> herdrStates[p.id]?.let { p.copy(status = it) } ?: p })
+        .filter { s -> list.firstOrNull { it.id == s.id }?.status != Status.NEEDS_YOU }
 
 /**
  * The panes whose screen [Herdr.panes] reads for a dialog herdr didn't report: Claude panes not
