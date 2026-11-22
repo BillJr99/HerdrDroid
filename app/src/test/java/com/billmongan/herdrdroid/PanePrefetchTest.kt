@@ -29,6 +29,7 @@ import java.time.Duration
 @RunWith(AndroidJUnit4::class)
 @Config(qualifiers = "w420dp-h1000dp")
 class PanePrefetchTest {
+    @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = IdleMainLooperRule()
     @get:Rule val compose = createComposeRule()
 
     @Test fun warmApprovalRendersBeforeLiveReadButHasNoAnswerControls() = withFixture { f ->

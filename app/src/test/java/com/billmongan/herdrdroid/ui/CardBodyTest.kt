@@ -1,5 +1,7 @@
 package com.billmongan.herdrdroid.ui
 
+import com.billmongan.herdrdroid.OUTERMOST_RULE
+import com.billmongan.herdrdroid.IdleMainLooperRule
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -21,6 +23,7 @@ import org.junit.runner.RunWith
 /** 2.1.1: the card body on screen: folded code, Show raw, option descriptions. */
 @RunWith(AndroidJUnit4::class)
 class CardBodyTest {
+    @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = IdleMainLooperRule()
     @get:Rule val rule = createComposeRule()
 
     @Test fun longCodeFoldsAndShowRawGivesTheParserText() {

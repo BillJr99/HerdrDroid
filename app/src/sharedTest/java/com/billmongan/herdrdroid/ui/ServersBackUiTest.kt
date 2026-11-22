@@ -1,5 +1,7 @@
 package com.billmongan.herdrdroid.ui
 
+import com.billmongan.herdrdroid.OUTERMOST_RULE
+import com.billmongan.herdrdroid.idleMainLooperRule
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.MutableState
 import androidx.compose.ui.test.assertCountEquals
@@ -31,6 +33,7 @@ import org.junit.runner.RunWith
  */
 @RunWith(AndroidJUnit4::class)
 class ServersBackUiTest {
+    @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = idleMainLooperRule()
     @get:Rule val rule = createAndroidComposeRule<ComponentActivity>()
 
     private val vm: AppViewModel by lazy { rule.runOnUiThread { AppViewModel(rule.activity.application) } }

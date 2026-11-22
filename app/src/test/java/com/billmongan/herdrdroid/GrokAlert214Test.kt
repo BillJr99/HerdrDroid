@@ -1,5 +1,6 @@
 package com.billmongan.herdrdroid
 
+import org.junit.Rule
 import android.Manifest
 import android.app.Application
 import android.app.NotificationManager
@@ -30,6 +31,7 @@ import org.robolectric.Shadows.shadowOf
  */
 @RunWith(AndroidJUnit4::class)
 class GrokAlert214Test {
+    @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = IdleMainLooperRule()
     private fun res(path: String) = checkNotNull(javaClass.getResource(path)).readText()
     private val light = res("/screens/grok/live-2026-11-21b/light-box.txt")
     private fun card(text: String) = checkNotNull(detectPrompt(text, true, "grok"))

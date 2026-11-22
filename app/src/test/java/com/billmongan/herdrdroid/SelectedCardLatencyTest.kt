@@ -29,6 +29,7 @@ import org.robolectric.annotation.Config
 @RunWith(AndroidJUnit4::class)
 @Config(qualifiers = "w420dp-h1000dp")
 class SelectedCardLatencyTest {
+    @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = IdleMainLooperRule()
     @get:Rule val rule = createComposeRule()
 
     @Test fun claudeQuestionAppearsBeforeTheNextSlowChatPoll() =
