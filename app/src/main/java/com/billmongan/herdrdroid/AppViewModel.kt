@@ -60,7 +60,6 @@ import com.billmongan.herdrdroid.herdr.footerModel
 import com.billmongan.herdrdroid.herdr.Status
 import com.billmongan.herdrdroid.herdr.RelayResult
 import com.billmongan.herdrdroid.herdr.WritePermit
-import com.billmongan.herdrdroid.herdr.agentMessageFrame
 import com.billmongan.herdrdroid.herdr.hasStableOccupant
 import com.billmongan.herdrdroid.herdr.sameOccupant
 import com.billmongan.herdrdroid.ssh.AuthRejected
@@ -195,7 +194,8 @@ class AppViewModel internal constructor(
         get() = currentScreen
         set(value) {
             if (currentScreen != value) {
-                clearAgentMessage()
+                // 2.1.5: a card stays with its pane's chat; a send in flight stops at the next check.
+                crossServerPermit?.revoke()
                 openingPanePreview = null
             }
             if (!inServersFlow(value)) serversOrigin = null
@@ -1133,7 +1133,7 @@ class AppViewModel internal constructor(
     private fun updateAgentMessagingSession() {
         updateNoticeLoop()
         if (!agentMessagingEnabled || !agentMessagingForeground || locked) {
-            clearAgentMessage()
+            clearCrossServerCards()
             agentMessagingActivation?.cancel()
             agentMessagingActivation = null
             return
@@ -1207,7 +1207,7 @@ class AppViewModel internal constructor(
     private fun linkLost(e: Exception?) {
         if (herdr == null) return
         if (link == Link.CONNECTED) {
-            clearAgentMessage()
+            clearCrossServerCards()
             clearPanePrefetch()
             link = Link.RECONNECTING
             downSince = System.currentTimeMillis()
@@ -1604,7 +1604,7 @@ class AppViewModel internal constructor(
      * Counts pane reads that finished for the open pane (2.1.1). Parts of [cardTarget] are not
      * Compose state (the herdr client, its connection, which a reset leaves empty until the next
      * command), so a menu built from them would not change when they do. Reading this count makes
-     * such a menu (Listen for agent proposal) recompose after each read, the first included.
+     * such a menu recompose after each read, the first included.
      */
     private var paneReadsApplied by mutableStateOf(0L)
 
@@ -1881,7 +1881,6 @@ class AppViewModel internal constructor(
         val visit = paneVisit
         val started = android.os.SystemClock.elapsedRealtime()
         val cardOwner = cardTarget(paneId)
-        val messageArm = agentMessage(paneId)?.takeIf { it.text == null }
         fun isOpen() = attempt > lastAppliedPaneRead && current?.id == serverId && herdr === client &&
             paneVisit == visit && (screen as? Screen.Agent)?.paneId == paneId
         fun problem(why: String) {
@@ -1979,9 +1978,8 @@ class AppViewModel internal constructor(
             paneReadsApplied++
             openingPanePreview = null
             paneReadProblem = null
-            if (messageArm != null && currentAgentMessage === messageArm && agentMessageSourceCurrent(messageArm)) {
-                agentMessageFrame(recent, messageArm.code)?.let { currentAgentMessage = messageArm.copy(text = it) }
-            }
+            // 2.1.5: a cross-server frame the agent rendered in this chat becomes a card; nothing is sent.
+            noteCrossServerFrames(cardOwner, recent)
             openUsage = liveUsage
             noteSeenBtw(serverId, paneId, liveUsage)
             noteInputLine(paneId, text)
@@ -2034,6 +2032,8 @@ class AppViewModel internal constructor(
         val agent = now?.agent
         val eligible = owner != null && foreground && !locked && owner.client.backend == Backend.TUI &&
             owner.isCurrent(owner.client) && question == null && agent != null && now.status != Status.NEEDS_YOU &&
+            // 2.1.5: a usage panel drawn where the box is (Kiro's /usage) is not text typed at the computer.
+            !usageDialogShown(agent, text) &&
             (now.scrollOffset ?: 0) == 0 && (!com.billmongan.herdrdroid.herdr.inputLineOf(text, agent).isNullOrEmpty() ||
                 com.billmongan.herdrdroid.herdr.composerDraftOf(text, agent) != null)
         if (!eligible) { if (stillShown()) { paneDraft = null; draftReadFor = null }; return }
@@ -3011,8 +3011,7 @@ class AppViewModel internal constructor(
 
     /** An agent's usage dialog is drawn on [screen], in its known layout or by its close hint (2.1.4). */
     private fun usageDialogShown(agent: String?, screen: String): Boolean =
-        dismissibleUsageFrame(agent, screen) != null ||
-            (agent in setOf("grok", "agy") && com.billmongan.herdrdroid.herdr.usageDialogHint(agent, screen))
+        com.billmongan.herdrdroid.herdr.usageScreenShown(agent, screen)
 
     /**
      * How far back a pane is read before text is typed into it. 2.1.1 (Grok's RC review, H2):
@@ -3305,118 +3304,233 @@ class AppViewModel internal constructor(
     internal suspend fun sendRemotePrompt(target: RemotePromptTarget, text: String, allowed: () -> Boolean) =
         promptRelay.send(target.route, text) { allowed() && remotePromptCurrent(target) }
 
-    internal data class AgentMessage(val source: CardTarget, val code: String, val deadline: Long, val text: String? = null)
-    internal data class AgentMessageRoute(val request: AgentMessage, val destination: RemotePromptTarget)
-    @Volatile private var activeAgentMessageCode: String? = null
-    private var currentAgentMessage by mutableStateOf<AgentMessage?>(null)
-    private var agentMessageExpiry: Job? = null
-    private var agentMessagePermit: WritePermit? = null
+    // ---- 2.1.5: cross-server messages confirmed by a code typed back on the phone -------------
+    //
+    // The 2.1.4 "Listen for agent proposal" menu, its one-time code and its copied instructions are
+    // gone. An agent asked in chat for a cross-server send renders a frame with a code it picks
+    // (CrossServerFrame); the open pane's read finds it and shows a card. Nothing is sent until the
+    // phone user types that code in this pane's composer on the phone (crossServerCodeReply), which
+    // is never typed into the pane. The code on the agent's screen proves nothing by itself: the
+    // consent is the user typing it back here.
 
-    private fun clearAgentMessage() {
-        agentMessagePermit?.revoke()
-        agentMessagePermit = null
-        activeAgentMessageCode = null
-        currentAgentMessage = null
-        agentMessageExpiry?.cancel()
-        agentMessageExpiry = null
+    internal enum class CrossServerState { PENDING, SENDING, SENT, REFUSED, FAILED, DRAFT, CANCELLED, EXPIRED }
+
+    internal data class CrossServerCard(
+        /** Server, pane and code: one card per code per pane. */
+        val id: String,
+        val source: CardTarget,
+        val code: String,
+        /** The destination as the frame names it. */
+        val requested: String,
+        val text: String,
+        /** Wall-clock deadline: ten minutes after the frame was first seen. */
+        val deadline: Long,
+        val choice: Session? = null,
+        val state: CrossServerState = CrossServerState.PENDING,
+        val note: String? = null,
+    )
+
+    private var crossServerCards by mutableStateOf<List<CrossServerCard>>(emptyList())
+    internal var crossServerClock: () -> Long = System::currentTimeMillis
+    private val crossServerCodes = com.billmongan.herdrdroid.herdr.CrossServerCodeLedger(
+        { prefs.crossServerCodes }, { prefs.crossServerCodes = it })
+    private var crossServerExpiry: Job? = null
+    private var crossServerPermit: WritePermit? = null
+
+    /** Background, lock, a lost link or messaging turned off: every card goes. Unspent codes may show again on the next read. */
+    private fun clearCrossServerCards() {
+        crossServerPermit?.revoke()
+        crossServerPermit = null
+        crossServerCards = emptyList()
+        crossServerExpiry?.cancel()
+        crossServerExpiry = null
     }
 
-    private fun agentMessageSource(paneId: String): CardTarget? =
+    private fun crossServerSourceNow(paneId: String): CardTarget? =
         if (!agentMessagingEnabled || !agentMessagingForeground || locked) null
         else cardTarget(paneId)?.takeIf { it.client.backend == Backend.TUI &&
             it.pane.scrollOffset == 0 && hasStableOccupant(it.pane) }
 
-    private fun agentMessageSourceCurrent(request: AgentMessage): Boolean =
-        activeAgentMessageCode == request.code && android.os.SystemClock.elapsedRealtime() < request.deadline &&
-            agentMessageSource(request.source.pane.id)?.let { now ->
-                now.server == request.source.server && now.visit == request.source.visit &&
-                    now.client === request.source.client && now.connection === request.source.connection &&
-                    sameOccupant(now.pane, request.source.pane)
-            } == true
+    /** The card's pane is open now, on the same server, client, connection and occupant. */
+    private fun crossServerSourceCurrent(source: CardTarget): Boolean =
+        crossServerSourceNow(source.pane.id)?.let { now ->
+            now.server == source.server && now.client === source.client && now.connection === source.connection &&
+                sameOccupant(now.pane, source.pane)
+        } == true
 
-    /**
-     * Whether "Listen for agent proposal" is offered. It reads [paneReadsApplied] first (2.1.1, from
-     * the 2.1.0 acceptance: the menu lacked it on the first open after messaging was turned on),
-     * so a menu shown before the client and its connection were ready is rebuilt once a read completes.
-     */
-    internal fun canArmAgentMessage(paneId: String): Boolean {
-        if (paneReadsApplied < 0) return false // Read for its subscription only; never negative.
-        return agentMessageSource(paneId) != null
+    /** Called with each good read of the open pane. Spent, expired or malformed codes raise no card. */
+    private fun noteCrossServerFrames(owner: CardTarget?, recent: String) {
+        if (owner == null || !crossServerSourceCurrent(owner)) return
+        val frames = com.billmongan.herdrdroid.herdr.crossServerFrames(recent)
+        if (frames.isEmpty()) return
+        val now = crossServerClock()
+        var added = false
+        for (f in frames) {
+            val id = "${owner.server}|${owner.pane.id}|${f.code}"
+            if (crossServerCards.any { it.id == id }) continue
+            val deadline = crossServerCodes.admit(id, now) ?: continue
+            val card = CrossServerCard(id, owner, f.code, f.destination, f.text, deadline)
+            crossServerCards = crossServerCards + card.copy(choice = crossServerMatches(card).singleOrNull())
+            added = true
+        }
+        if (added) scheduleCrossServerExpiry()
     }
 
-    internal fun armAgentMessage(paneId: String): Boolean {
-        val source = agentMessageSource(paneId) ?: return false
-        clearAgentMessage()
-        val code = java.util.UUID.randomUUID().toString().replace("-", "")
-        val window = 300_000L
-        activeAgentMessageCode = code
-        currentAgentMessage = AgentMessage(source, code, android.os.SystemClock.elapsedRealtime() + window)
-        agentMessageExpiry = viewModelScope.launch { delay(window); clearAgentMessage() }
+    private fun scheduleCrossServerExpiry() {
+        crossServerExpiry?.cancel()
+        val next = crossServerCards.filter { it.state == CrossServerState.PENDING }.minOfOrNull { it.deadline } ?: return
+        crossServerExpiry = viewModelScope.launch {
+            delay((next - crossServerClock()).coerceAtLeast(0))
+            expireCrossServerCards()
+        }
+    }
+
+    /** Pending cards past their ten minutes become Expired; their codes are spent. */
+    internal fun expireCrossServerCards() {
+        val now = crossServerClock()
+        var changed = false
+        crossServerCards = crossServerCards.map {
+            if (it.state == CrossServerState.PENDING && now >= it.deadline) {
+                crossServerCodes.spend(it.id, now)
+                changed = true
+                it.copy(state = CrossServerState.EXPIRED, note = "Expired after 10 minutes. Nothing was sent.")
+            } else it
+        }
+        if (changed) scheduleCrossServerExpiry()
+    }
+
+    /** The cards for this pane's chat, on the server open now. */
+    internal fun crossServerCardsFor(paneId: String): List<CrossServerCard> {
+        val server = current?.id ?: return emptyList()
+        return crossServerCards.filter { it.source.server == server && it.source.pane.id == paneId }
+    }
+
+    /**
+     * Agents on other connected Fleet servers that the phone can relay to, whatever their status. The
+     * card's choices and the frame's destination are resolved against these; sending still needs the
+     * chosen one to be idle.
+     */
+    internal fun crossServerReachable(card: CrossServerCard): List<Session> =
+        if (!crossServerSourceCurrent(card.source)) emptyList()
+        else sessions().filter { it.server.id != card.source.server && relayPort(it.server.id)?.connectionIdentity != null &&
+            hasStableOccupant(it.pane) }
+
+    private fun destinationKey(s: String) = s.trim().replace(Regex("\\s+"), " ").lowercase()
+
+    /** The reachable agents the frame's destination names: by "<agent> on <server>" as agents are told, else by the agent's name alone. */
+    internal fun crossServerMatches(card: CrossServerCard): List<Session> {
+        val reachable = crossServerReachable(card)
+        val wanted = destinationKey(card.requested)
+        val exact = reachable.filter { destinationKey(agentFacingName(it)) == wanted }
+        if (exact.isNotEmpty()) return exact
+        return reachable.filter { destinationKey(com.billmongan.herdrdroid.ui.sessionName(it.pane)) == wanted }
+    }
+
+    /** What the user may pick from: the matches when more than one, every reachable agent when none, nothing when exactly one. */
+    internal fun crossServerChoices(card: CrossServerCard): List<Session> {
+        val matches = crossServerMatches(card)
+        return when (matches.size) {
+            1 -> emptyList()
+            0 -> crossServerReachable(card)
+            else -> matches
+        }
+    }
+
+    private fun updateCrossServerCard(id: String, change: (CrossServerCard) -> CrossServerCard) {
+        crossServerCards = crossServerCards.map { if (it.id == id) change(it) else it }
+    }
+
+    internal fun chooseCrossServerDestination(card: CrossServerCard, choice: Session) {
+        val now = crossServerCards.firstOrNull { it.id == card.id } ?: return
+        if (now.state != CrossServerState.PENDING || choice !in crossServerChoices(now)) return
+        updateCrossServerCard(card.id) { it.copy(choice = choice, note = null) }
+    }
+
+    internal fun cancelCrossServerCard(card: CrossServerCard) {
+        val now = crossServerCards.firstOrNull { it.id == card.id } ?: return
+        if (now.state != CrossServerState.PENDING) return
+        crossServerCodes.spend(card.id, crossServerClock())
+        updateCrossServerCard(card.id) { it.copy(state = CrossServerState.CANCELLED, note = "Cancelled. Nothing was sent.") }
+        scheduleCrossServerExpiry()
+    }
+
+    /** Takes a finished card off the chat. Its code stays spent. */
+    internal fun closeCrossServerCard(card: CrossServerCard) {
+        if (crossServerCards.firstOrNull { it.id == card.id }?.state in setOf(CrossServerState.PENDING, CrossServerState.SENDING)) return
+        crossServerCards = crossServerCards.filter { it.id != card.id }
+    }
+
+    /**
+     * Only for text sent from this pane's composer on the phone, never for pane output. True when
+     * [typed] is the code of a card in this pane's chat: the text is then never typed into the pane.
+     * A pending card is confirmed and its message delivered through the relay; any other card says
+     * its code is no longer usable. False for anything else, which the composer sends as usual.
+     */
+    internal fun crossServerCodeReply(paneId: String, typed: String): Boolean {
+        val code = com.billmongan.herdrdroid.herdr.CrossServerCode.reply(typed) ?: return false
+        expireCrossServerCards()
+        val card = crossServerCardsFor(paneId).firstOrNull { it.code == code } ?: return false
+        when (card.state) {
+            CrossServerState.PENDING -> {}
+            CrossServerState.SENDING -> return true
+            else -> {
+                updateCrossServerCard(card.id) { it.copy(note = "That code was already used or has expired. Nothing more was sent.") }
+                return true
+            }
+        }
+        if (card.choice == null) {
+            updateCrossServerCard(card.id) { it.copy(note = "Choose a destination, then type the code again.") }
+            return true
+        }
+        updateCrossServerCard(card.id) { it.copy(state = CrossServerState.SENDING, note = "Checking and sending…") }
+        crossServerCodes.spend(card.id, crossServerClock())
+        viewModelScope.launch {
+            val result = try { deliverCrossServer(card) } catch (c: kotlinx.coroutines.CancellationException) { throw c }
+                catch (_: Exception) { RelayResult.REFUSED }
+            val state = when (result) {
+                RelayResult.SENT -> CrossServerState.SENT
+                RelayResult.REFUSED -> CrossServerState.REFUSED
+                RelayResult.UNCERTAIN -> CrossServerState.FAILED
+                RelayResult.DRAFT -> CrossServerState.DRAFT
+            }
+            updateCrossServerCard(card.id) { it.copy(state = state, note = result.feedback) }
+            scheduleCrossServerExpiry()
+        }
         return true
     }
 
-    internal fun agentMessage(paneId: String): AgentMessage? = currentAgentMessage?.takeIf {
-        it.source.pane.id == paneId && agentMessageSourceCurrent(it)
-    }
-
-    internal fun dismissAgentMessage(request: AgentMessage) {
-        if (request.code == activeAgentMessageCode) clearAgentMessage()
+    /** The relay with all its checks: the source unchanged, the destination the same occupant and idle, then PromptRelay's own (no draft, size and content). */
+    private suspend fun deliverCrossServer(card: CrossServerCard): RelayResult {
+        val chosen = card.choice ?: return RelayResult.REFUSED
+        if (!crossServerSourceCurrent(card.source)) return RelayResult.REFUSED
+        val destination = crossServerReachable(card).singleOrNull {
+            it.server.id == chosen.server.id && it.pane.id == chosen.pane.id && sameOccupant(it.pane, chosen.pane)
+        } ?: return RelayResult.REFUSED
+        if (!agentMessageDestinationCurrent(destination.server.id, destination.pane)) return RelayResult.REFUSED
+        val target = bindRemotePrompt(destination) ?: return RelayResult.REFUSED
+        val job = kotlinx.coroutines.currentCoroutineContext()[Job]
+        fun admitted() = job?.isActive != false && crossServerSourceCurrent(card.source) &&
+            agentMessageDestinationCurrent(target.route.server, target.route.pane)
+        val permit = WritePermit(::admitted)
+        crossServerPermit = permit
+        try {
+            if (!admitted() || !remotePromptCurrent(target)) return RelayResult.REFUSED
+            val source = card.source
+            val fresh = source.client.cardPane(source.pane.id, source.connection) ?: return RelayResult.REFUSED
+            if (!sameOccupant(fresh, source.pane)) return RelayResult.REFUSED
+            return promptRelay.send(target.route, card.text, authorizedWrite = permit) {
+                admitted() && remotePromptCurrent(target)
+            }
+        } finally {
+            permit.revoke()
+            if (crossServerPermit === permit) crossServerPermit = null
+        }
     }
 
     private fun agentMessageDestinationCurrent(serverId: String, expected: Pane): Boolean =
         fleetStates[serverId]?.panes?.singleOrNull { it.id == expected.id }?.let {
             sameOccupant(it, expected) && it.status in setOf(Status.IDLE, Status.DONE) && !it.backgroundBusy
         } == true
-
-    /**
-     * Every identifiable agent on another connected Fleet server, whatever its status (2.1.4). The
-     * copied proposal instructions name these, so the source agent knows which agents the phone
-     * can reach: before, it was told nothing, and Claude on one server concluded it could not see
-     * Hermes on another. Naming them chooses nothing; the review still lists only the idle ones.
-     */
-    internal fun agentMessageReachable(request: AgentMessage): List<Session> =
-        if (currentAgentMessage !== request || !agentMessageSourceCurrent(request)) emptyList()
-        else sessions().filter { it.server.id != request.source.server && relayPort(it.server.id)?.connectionIdentity != null &&
-            hasStableOccupant(it.pane) }
-
-    internal fun agentMessageDestinations(request: AgentMessage): List<Session> =
-        if (request.text == null) emptyList()
-        else agentMessageReachable(request).filter { agentMessageDestinationCurrent(it.server.id, it.pane) }
-
-    internal suspend fun bindAgentMessage(request: AgentMessage, selected: Session): AgentMessageRoute? {
-        if (selected !in agentMessageDestinations(request)) return null
-        val target = bindRemotePrompt(selected) ?: return null
-        if (currentAgentMessage !== request || !agentMessageSourceCurrent(request) ||
-            !agentMessageDestinationCurrent(target.route.server, target.route.pane)) return null
-        return AgentMessageRoute(request, target)
-    }
-
-    internal suspend fun confirmAgentMessage(request: AgentMessage, bound: AgentMessageRoute): RelayResult {
-        val text = request.text ?: return RelayResult.REFUSED
-        if (currentAgentMessage !== request || bound.request !== request || !agentMessageSourceCurrent(request)) return RelayResult.REFUSED
-        currentAgentMessage = null // Spend the proposal before any suspension; no retry on any outcome.
-        val destination = bound.destination
-        val source = request.source
-        val job = kotlinx.coroutines.currentCoroutineContext()[Job]
-        fun admitted() = job?.isActive != false && agentMessageSourceCurrent(request) &&
-            agentMessageDestinationCurrent(destination.route.server, destination.route.pane)
-        val permit = WritePermit(::admitted)
-        agentMessagePermit = permit
-        try {
-            if (!admitted() || !remotePromptCurrent(destination)) return RelayResult.REFUSED
-            val fresh = source.client.cardPane(source.pane.id, source.connection) ?: return RelayResult.REFUSED
-            if (!sameOccupant(fresh, source.pane)) return RelayResult.REFUSED
-            return promptRelay.send(destination.route, text, authorizedWrite = permit) {
-                admitted() && remotePromptCurrent(destination)
-            }
-        } catch (c: kotlinx.coroutines.CancellationException) {
-            throw c
-        } catch (_: Exception) {
-            return RelayResult.REFUSED
-        } finally {
-            dismissAgentMessage(request)
-        }
-    }
 
     // ---- 2.1.4: telling agents about cross-server messaging ------------------------------------
 
@@ -4981,8 +5095,18 @@ class AppViewModel internal constructor(
             com.billmongan.herdrdroid.herdr.inputLineOf(screen, "hermes") == ""
     }
 
+    /**
+     * A wait from Hermes's gateway that could be this pane's own (2.1.5, Bill: "hermes thinks there
+     * is a question right now but there is not and so it is stuck"): any conversation waiting, unless
+     * every wait is proven to belong to another stored conversation ([hermesWaitsAreElsewhere]). A
+     * Telegram or cron turn left on an open approval must not hold an idle pane whose screen asks
+     * nothing; the screen's own question, and herdr's blocked status, still hold it.
+     */
+    private fun hermesGatewayHolds(pane: Pane): Boolean =
+        pane.agent == "hermes" && hermesState == Status.NEEDS_YOU && !hermesWaitsAreElsewhere(pane)
+
     fun hasPendingQuestion(pane: Pane): Boolean {
-        if (pane.agent == "hermes" && hermesState == Status.NEEDS_YOU) return true
+        if (hermesGatewayHolds(pane)) return true
         val effective = if (pane.status == Status.NEEDS_YOU && currentHermesUsage(pane)?.composerReady == true)
             pane.copy(status = Status.IDLE) else pane
         return blocksNormalSend(effective, if (paneTextPane == pane.id && paneReadProblem == null) paneText else "",
@@ -4995,7 +5119,7 @@ class AppViewModel internal constructor(
     private data class OpenCodeSendRead(val pane: Pane, val connection: Any, val text: String)
 
     private fun checkedSendBlocked(pane: Pane, screen: String, checked: OpenCodeSendRead?): Boolean {
-        if (pane.agent == "hermes" && hermesState == Status.NEEDS_YOU) return true
+        if (hermesGatewayHolds(pane)) return true
         val recovered = pane.agent == "hermes" && checked != null &&
             pane.status in hermesUsageSendStates && checked.pane.status in hermesUsageSendStates && emptyHermesUsageComposer(screen) &&
             (hermesUsageEnd(screen) != null || currentHermesUsage(pane)?.target?.connection === checked.connection)
@@ -5137,11 +5261,12 @@ class AppViewModel internal constructor(
         if (here && p.status == Status.NEEDS_YOU && hermesState != Status.NEEDS_YOU) {
             currentHermesUsage(p)?.let { return if (it.composerReady) hermesState ?: Status.IDLE else Status.WORKING }
         }
-        // A DONE badge only ignores waits proven to belong to other stored conversations.
-        // This display exception does not relax the gateway wait in either terminal send guard.
+        // A done, idle or working pane ignores gateway waits proven to belong to other stored
+        // conversations (2.1.5; before, only a done one did, and an idle pane looked stuck on a
+        // question its screen never showed). The send guards use the same proof ([hermesGatewayHolds]).
         if (here && p.agent?.lowercase() == "hermes" && p.status != Status.NEEDS_YOU) hermesState?.let {
             if (it == Status.NEEDS_YOU) {
-                if (p.status != Status.DONE || !hermesWaitsAreElsewhere(p)) return it
+                if (!hermesWaitsAreElsewhere(p)) return it
             } else if (p.status != Status.WORKING) return it
         }
         // herdr's "done" is idle but not yet seen at the computer. Opening the agent here counts as

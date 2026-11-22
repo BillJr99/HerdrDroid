@@ -272,9 +272,54 @@ class SuccessiveCardAnswerTest {
         ]}""")
         val pane = checkNotNull(vm.pane("p1"))
         assertEquals(Status.DONE, vm.shownStatus(pane))
-        assertTrue("a badge correction is not send authorization", vm.hasPendingQuestion(pane))
+        // 2.1.5: a wait proven to be another conversation's no longer holds this pane's sends.
+        assertFalse(vm.hasPendingQuestion(pane))
         status(Status.NEEDS_YOU, sessionId = "pane-stored-session")
         assertEquals(Status.NEEDS_YOU, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+    }
+
+    // 2.1.5 (Bill: "hermes thinks there is a question right now but there is not and so it is
+    // stuck"): the live laptop2 screen, idle after a cross-server notice, while another stored
+    // conversation (a Telegram turn on an open approval) waits on the gateway.
+    @Test fun idleHermesPaneIsNotHeldByAnotherConversationsGatewayWait() = fixture("hermes", idleNoticeScreen) {
+        status(Status.IDLE, sessionId = "pane-stored-session")
+        gatewaySnapshot("""{"sessions":[
+            {"id":"other-runtime","session_key":"other-stored-session","status":"waiting","source":"telegram"},
+            {"id":"pane-runtime","session_key":"pane-stored-session","status":"idle","source":"cli"}
+        ]}""")
+        assertNull(detectPrompt(frame, false, "hermes"))
+        val pane = checkNotNull(vm.pane("p1"))
+        assertEquals(Status.IDLE, vm.shownStatus(pane))
+        assertFalse(vm.hasPendingQuestion(pane))
+        vm.sendMessage(pane, "hello hermes")
+        drainUntil { sent.isNotEmpty() || vm.pendingSends.any { it.held != null } }
+        assertTrue("held: ${vm.pendingSends.map { it.held }}", sent.isNotEmpty())
+    }
+
+    @Test fun idleHermesPaneStillHeldByItsOwnOrAnUnattributedGatewayWait() = fixture("hermes", idleNoticeScreen) {
+        status(Status.IDLE, sessionId = "pane-stored-session")
+        gatewaySnapshot("""{"sessions":[
+            {"id":"other-runtime","session_key":"other-stored-session","status":"idle"},
+            {"id":"pane-runtime","session_key":"pane-stored-session","status":"waiting"}
+        ]}""")
+        assertEquals(Status.NEEDS_YOU, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+        assertTrue(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+        gatewaySnapshot("""{"sessions":[
+            {"id":"other-runtime","session_key":null,"status":"waiting"},
+            {"id":"pane-runtime","session_key":"pane-stored-session","status":"idle"}
+        ]}""")
+        assertEquals(Status.NEEDS_YOU, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+        assertTrue(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+        // No session identity from herdr: nothing proves the wait is elsewhere.
+        status(Status.IDLE)
+        gatewaySnapshot("""{"sessions":[
+            {"id":"other-runtime","session_key":"other-stored-session","status":"waiting"}
+        ]}""")
+        assertEquals(Status.NEEDS_YOU, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+        assertTrue(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+        vm.sendMessage(checkNotNull(vm.pane("p1")), "must wait")
+        drainUntil { vm.pendingSends.any { it.waiting } || sent.isNotEmpty() }
+        assertTrue(sent.isEmpty())
     }
 
     @Test fun doneHermesPaneKeepsConservativeWaitWhenIdentityIsMissing() = fixture("hermes", hermesComposer) {
@@ -1208,8 +1253,10 @@ class SuccessiveCardAnswerTest {
         }
 
         private var statusNow = Status.NEEDS_YOU
+        private var sessionNow: String? = null
         fun status(status: Status, scrollOffset: Int = 0, sessionId: String? = null) {
             statusNow = status
+            sessionNow = sessionId
             state("panes", listOf(
             Pane("p1", "tab", "w1", agent, status, "", "/fixture", sessionId = sessionId, scrollOffset = scrollOffset, terminalId = terminal)
             ))
@@ -1298,7 +1345,7 @@ class SuccessiveCardAnswerTest {
 
         private val pane get() = """{"pane_id":"p1","workspace_id":"w1","tab_id":"tab","agent":"$agent","agent_status":"${when (statusNow) {
             Status.IDLE -> "idle"; Status.DONE -> "done"; Status.WORKING -> "working"; else -> "blocked"
-        }}","cwd":"/fixture","terminal_id":"$terminal","scroll":{"offset_from_bottom":$liveScrollOffset}}"""
+        }}","cwd":"/fixture","terminal_id":"$terminal"${sessionNow?.let { ""","agent_session":{"agent":"$agent","kind":"id","value":"$it"}""" } ?: ""},"scroll":{"offset_from_bottom":$liveScrollOffset}}"""
         private fun ok(out: String) = ExecResult(0, out, "")
         private fun field(name: String) = AppViewModel::class.java.getDeclaredField(name).apply { isAccessible = true }
         @Suppress("UNCHECKED_CAST")
@@ -1325,6 +1372,9 @@ class SuccessiveCardAnswerTest {
             API calls: 2
             Current context: 1,024 / 100,000 (1%)
         """.trimIndent()
+        /** The live laptop2 Hermes screen, idle after a cross-server notice (2.1.5), with its styles. */
+        val idleNoticeScreen = checkNotNull(SuccessiveCardAnswerTest::class.java.getResource(
+            "/screens/hermes/live-2026-11-22-idle-notice/visible.ansi")).readText().replace("\r", "").trimEnd()
         const val hermesComposer = "──────────\n❯\n──────────\n☤ fixture · 1K/100K"
         val openCodeComposer = """
             Should I continue with the report?

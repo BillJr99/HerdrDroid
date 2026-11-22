@@ -1470,6 +1470,9 @@ fun isComposerHint(agent: String?, text: String): Boolean {
  * screen, the known hints ([isComposerHint], 1.4.4).
  */
 fun inputLineOf(screen: String, agent: String? = null): String? {
+    // OpenCode draws no prompt glyph (2.1.5): its box, positively found empty, is an empty line;
+    // otherwise nothing is judged, as before.
+    if (isOpenCode(agent) && openCodeComposerEmpty(screen)) return ""
     val (raw, typed) = inputRow(screen) ?: return null
     if (typed.isEmpty()) return ""
     // A row read with its styles is judged only by how it is drawn: the same words as a known hint
@@ -2456,6 +2459,49 @@ internal fun openCodeEmptyComposer(screen: String): Boolean {
         }
     }
 }
+
+/**
+ * OpenCode's box with nothing typed in it inside a session (2.1.5, Bill: "herdrdroid couldn't send
+ * College OpenCode the cross server info 5 times"). There OpenCode shows no placeholder: the box is
+ * its top padding row, its one text row and a gap row, all a bare "┃", over the "Build · <model>"
+ * row. The rows are cut at the width of the box's "╹▀▀▀" bottom edge, so OpenCode's sidebar beside
+ * it is not read as typing. Typed text fills the text row, and a draft of line feeds makes the box
+ * taller, so either one is not empty. Spaces typed alone can't be seen on the screen. On the home
+ * screen the text row shows OpenCode's "Ask anything… \"<example>\"" placeholder, which counts as
+ * empty only when it is drawn wholly in grey or faint, on a read with styles.
+ */
+internal fun openCodeSessionComposerEmpty(screen: String): Boolean {
+    val rawRows = screen.lines().map { it.replace("\r", "") }.takeLast(20)
+    val rows = rawRows.map { it.replace(ANSI_SEQ, "") }
+    val mode = openCodeComposerMode(rows)
+    if (mode < 3) return false
+    val bar = rows[mode].indexOfFirst { it == '┃' || it == '│' }
+    val edge = rows.subList(mode + 1, rows.size).firstOrNull { it.trimStart().startsWith("╹") } ?: return false
+    val width = edge.lastIndexOf('▀') + 1
+    if (bar < 0 || width <= bar + 1 || edge.indexOf('╹') != bar) return false
+    fun inBox(r: String) = r.length > bar && r[bar] == rows[mode][bar] && r.substring(0, bar).isBlank()
+    var top = mode
+    while (top > 0 && inBox(rows[top - 1])) top--
+    if (mode - top != 3) return false
+    // The text row may show OpenCode's own placeholder, drawn wholly in grey (home screen).
+    fun empty(i: Int): Boolean {
+        val text = rows[i].take(width).drop(bar + 1)
+        if (text.isBlank()) return true
+        if (i != mode - 2 || !OPENCODE_PLACEHOLDER.matches(text.trim())) return false
+        val chars = styledChars(rawRows[i])
+        if (chars.joinToString("") { it.ch.toString() } != rows[i]) return false
+        return chars.subList(bar + 1, minOf(width, chars.size)).all { it.ch.isWhitespace() || it.grey || it.faint }
+    }
+    return (top until mode).all(::empty)
+}
+private val OPENCODE_PLACEHOLDER = Regex("""^Ask anything(?:\.\.\.|…)(?: "[^"]*")?$""")
+
+/**
+ * An OpenCode box with nothing typed in it, on the home screen (its grey placeholder) or in a session
+ * (2.1.5). Only [openCodeSessionComposerEmpty] decides: the older [openCodeEmptyComposer] ignores
+ * colour, so the words "Ask anything…" typed in a session box would read as empty (Grok's review).
+ */
+internal fun openCodeComposerEmpty(screen: String): Boolean = openCodeSessionComposerEmpty(screen)
 
 private val OPENCODE_WEB_SEARCH_FOOTER =
     Regex("""^↑/?↓\s+select\s+enter\s+submit\s+esc\s+dismiss$""", RegexOption.IGNORE_CASE)
