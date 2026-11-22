@@ -276,6 +276,65 @@ class InfoPanel221Test {
         assertNull(infoPanelOn("claude", "  ✻ Sampling… (esc to interrupt)\n\n❯ \n"))
     }
 
+    // ---- 2.2.1 review: a transcript rule, a short line and a hint just above the composer -------
+
+    /** Grok's review screen, exactly: a separator in the chat, a short line, a hint, the composer. */
+    private val reviewShape = """
+────────────────────────────────────────
+Status: ready
+esc to close
+❯
+? for shortcuts
+"""
+
+    @Test fun aTranscriptRuleAndAHintAboveTheComposerIsNoPanel() {
+        val variants = listOf(
+            reviewShape,
+            reviewShape.replace("Status: ready", "Help is ready"),
+            reviewShape.replace("Status: ready", "Status"),
+            reviewShape.replace("Status: ready", "Some sample notes"),
+            reviewShape.replace("Status: ready", "Usage\n\nneutral sample text"),
+            reviewShape.replace("esc to close\n", "esc to close\n\n"),
+            "  neutral sample text above.\n" + reviewShape,
+            reviewShape.replace("❯\n", "────────────────────────────────────────\n❯\n────────────────────────────────────────\n")
+                .replace("Status: ready", "Help is ready"),
+        )
+        for (agent in listOf("claude", "codex", "grok", "kiro", "pi", "omp", "vibe", "hermes")) {
+            for (v in variants) {
+                assertNull("$agent:\n$v", infoPanelOn(agent, v))
+                assertFalse("$agent:\n$v", usageScreenShown(agent, v))
+                assertNull(dismissibleUsageFrame(agent, v))
+            }
+        }
+    }
+
+    @Test fun titlesMustLookLikeTitles() {
+        for (t in listOf("Status: ready", "Help is ready", "Usage was 3 percent", "status of the build", "Context: 12k"))
+            assertNull(t, infoPanelOn("grok", boxed(t, "Esc close"))?.kind?.takeIf { it != PanelKind.UNKNOWN })
+        for ((t, k) in listOf("Status" to PanelKind.STATUS, "Session info" to PanelKind.STATUS, "Context window" to PanelKind.CONTEXT,
+                "Agent Dashboard" to PanelKind.DASHBOARD, "Settings:  Status   Config   Usage" to PanelKind.SETTINGS))
+            assertEquals(t, k, infoPanelOn("grok", boxed(t, "Esc close"))?.kind)
+    }
+
+    @Test fun aClosedFrameOfRulesIsStillAPanel() {
+        val framed = """
+  neutral sample text above.
+
+────────────────────────────────────────
+ /usage
+────────────────────────────────────────
+ Estimated sample usage
+ 3% of the plan
+────────────────────────────────────────
+ esc to close
+"""
+        assertEquals(PanelKind.USAGE, known("kiro", framed).kind)
+        // The rule on the hint missing: the frame isn't closed, and the hint has nothing under it, so
+        // it reads as an unframed block whose first row is not a title.
+        val open = framed.replace("────────────────────────────────────────\n esc to close", " esc to close")
+        assertTrue(infoPanelOn("kiro", open)?.known != true)
+    }
+
     // ---- the close flow -----------------------------------------------------------------------
 
     private fun flow(states: List<PanelState>, sendOk: Boolean = true): Pair<PanelCloseOutcome, Int> = runBlocking {
