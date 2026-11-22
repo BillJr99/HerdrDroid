@@ -313,9 +313,21 @@ def mtime(path):
 
 
 def pinned(default):
-    """The pinned session's log when one was asked for (history view), otherwise [default]."""
+    """The pinned session's log when one was asked for (history view), otherwise the session the
+    pane's terminal is in (2.2.0, [LIVE]), otherwise [default]."""
     p = PIN.get("pin")
+    if p and os.path.isfile(p):
+        return p
+    p = LIVE.get("ref") if not LIVE.get("db") else None
     return p if p and os.path.isfile(p) else default
+
+
+LIVE = {}  # set by main() (2.2.0): the session the pane's terminal is really in, from live_session()
+
+
+def live_sid():
+    """The live session's id in a SQLite store (OpenCode, Hermes), when it was found (2.2.0)."""
+    return LIVE.get("sid") if LIVE.get("db") else None
 
 
 SKIP_USER = ("<system-reminder>", "<environment_context>", "<user_instructions>", "<permissions", "# AGENTS.md",
@@ -855,6 +867,8 @@ def opencode(cwd, cur):
             best = (db, row[0], row[1], row[2])
     if PIN.get("pin_sid") and PIN.get("db"):
         best = (PIN["db"], PIN["pin_sid"], None, 0)
+    elif live_sid() and os.path.isfile(LIVE["db"]):
+        best = (LIVE["db"], live_sid(), None, 0)
     if not best:
         return None
     db, sid, title, _ = best
@@ -933,6 +947,8 @@ def hermes(cwd, cur):
         "order by (cwd = ?) desc, coalesce(last_activity_at, started_at) desc limit 1", (cwd, cwd)).fetchone()
     if PIN.get("pin_sid"):
         row = (PIN["pin_sid"], None)
+    elif live_sid():
+        row = (live_sid(), None)
     if not row:
         c.close()
         return None
@@ -1277,6 +1293,149 @@ def muse(cwd, cur):
     return {"cur": ncur, "reset": reset, "more": more, "items": items, "title": title}
 
 
+SAFE_ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
+
+
+def live_session(agent, cwd, pane, hsid):
+    """The session the agent in [pane] is really in (2.2.0, Bill: "the pane should match the actual
+    terminal session in use"), as {"ref"|"sid"+"db", "how"}, or None to keep the newest-in-folder rule.
+
+    The agent's own record of its live process comes first, so a session switched at the computer or
+    from the app is followed at once, whatever herdr last heard: Claude's ~/.claude/sessions/<pid>.json,
+    Grok's active_sessions.json, Copilot's inuse.<pid>.lock, Vibe's active/<id>.lock.json, Muse's
+    runtime session file and Codex's open rollout file. Otherwise herdr's agent_session id ([hsid]),
+    which the agent's own herdr integration reported, names it. Only files are read; nothing is written.
+    """
+    pids = set()
+    if pane:
+        try:
+            procs, pids = pane_procs(pane)
+        except Exception:
+            pids = set()
+    slug = re.sub(r"[^A-Za-z0-9]", "-", cwd)
+    own = None
+    try:
+        if agent == "claude":
+            for pid in sorted(pids):
+                f = os.path.join(HOME, ".claude", "sessions", "%d.json" % pid)
+                if os.path.isfile(f):
+                    with open(f) as fh:
+                        sid = json.load(fh).get("sessionId")
+                    if isinstance(sid, str) and SAFE_ID.fullmatch(sid):
+                        own = {"ref": os.path.join(HOME, ".claude", "projects", slug, sid + ".jsonl"), "sid": sid, "how": "claude-pid"}
+                        break
+        elif agent == "grok":
+            with open(os.path.join(HOME, ".grok", "active_sessions.json")) as fh:
+                rows = json.load(fh)
+            for r in rows if isinstance(rows, list) else []:
+                sid = r.get("session_id")
+                if r.get("pid") in pids and isinstance(sid, str) and SAFE_ID.fullmatch(sid):
+                    own = {"ref": os.path.join(HOME, ".grok", "sessions", urllib.parse.quote(cwd, safe=""), sid, "chat_history.jsonl"),
+                           "sid": sid, "how": "grok-active"}
+                    break
+        elif agent == "copilot":
+            for pid in sorted(pids):
+                for lock in glob.glob(os.path.join(HOME, ".copilot", "session-state", "*", "inuse.%d.lock" % pid)):
+                    d = os.path.dirname(lock)
+                    own = {"ref": os.path.join(d, "events.jsonl"), "sid": os.path.basename(d), "how": "copilot-lock"}
+                    break
+                if own:
+                    break
+        elif agent == "vibe":
+            for lock in glob.glob(os.path.join(HOME, ".vibe", "logs", "session", "active", "*.lock.json")):
+                with open(lock) as fh:
+                    r = json.load(fh)
+                sid = r.get("session_id")
+                if r.get("process_id") in pids and isinstance(sid, str) and SAFE_ID.fullmatch(sid):
+                    own = {"ref": os.path.join(HOME, ".vibe", "logs", "session", "unified", sid, "meta.json"), "sid": sid, "how": "vibe-lock"}
+                    break
+        elif agent == "muse":
+            for f in glob.glob(os.path.join(HOME, *MUSE, "runtime", "muse", "sessions", "*.json")):
+                with open(f) as fh:
+                    r = json.load(fh)
+                hint = str(r.get("process_generation_hint") or "")
+                m = re.match(r"pid=(\d+)", hint)
+                sid = r.get("session_id")
+                if m and int(m.group(1)) in pids and isinstance(sid, str):
+                    c = ro(os.path.join(HOME, *MUSE, "session-index.db"))
+                    row = c.execute("select session_log_path from sessions where session_id = ?", (sid,)).fetchone()
+                    c.close()
+                    if row and row[0]:
+                        own = {"ref": row[0], "sid": sid, "how": "muse-runtime"}
+                    break
+        elif agent == "codex":
+            root = os.path.realpath(os.path.join(HOME, ".codex", "sessions")) + os.sep
+            logs = [f for f in open_files_of(pids) if f.startswith(root) and os.path.basename(f).startswith("rollout-") and f.endswith(".jsonl")]
+            if hsid:
+                mine = [f for f in logs if f.endswith("-%s.jsonl" % hsid)]
+                logs = mine or logs
+            if len(logs) == 1:
+                own = {"ref": logs[0], "sid": "-".join(os.path.basename(logs[0])[:-6].split("-")[-5:]), "how": "codex-open"}
+    except Exception:
+        own = None
+    if own and own.get("ref") and (own.get("db") or os.path.isfile(own["ref"])):
+        return own
+    if not hsid or not SAFE_ID.fullmatch(hsid):
+        return None
+    ref = None
+    if agent == "claude":
+        ref = os.path.join(HOME, ".claude", "projects", slug, hsid + ".jsonl")
+    elif agent == "codex":
+        ref = newest(glob.glob(os.path.join(HOME, ".codex", "sessions", "*", "*", "*", "rollout-*-%s.jsonl" % hsid)))
+    elif agent in ("pi", "omp"):
+        root = (".pi", "agent") if agent == "pi" else (".omp", "agent")
+        ref = newest(glob.glob(os.path.join(HOME, *root, "sessions", "*", "*_%s.jsonl" % hsid)))
+    elif agent == "grok":
+        ref = os.path.join(HOME, ".grok", "sessions", urllib.parse.quote(cwd, safe=""), hsid, "chat_history.jsonl")
+    elif agent == "copilot":
+        ref = os.path.join(HOME, ".copilot", "session-state", hsid, "events.jsonl")
+    elif agent == "opencode":
+        dbs = [os.path.join(HOME, ".local", "share", "opencode", "opencode.db")] + glob.glob(os.path.join(HOME, ".local", "*", "data", "opencode", "opencode.db"))
+        for db in dbs:
+            if not os.path.isfile(db):
+                continue
+            try:
+                c = ro(db)
+                row = c.execute("select id from session_v2 where id = ? and parent_id is null", (hsid,)).fetchone()
+                c.close()
+            except Exception:
+                row = None
+            if row:
+                return {"sid": hsid, "db": db, "how": "herdr"}
+        return None
+    elif agent == "hermes":
+        db = os.path.join(HOME, ".hermes", "state.db")
+        try:
+            c = ro(db)
+            row = c.execute("select id from sessions where id = ?", (hsid,)).fetchone()
+            c.close()
+        except Exception:
+            row = None
+        return {"sid": hsid, "db": db, "how": "herdr"} if row else None
+    if ref and os.path.isfile(ref):
+        return {"ref": ref, "sid": hsid, "how": "herdr"}
+    return None
+
+
+# How [live_session] found the session: from the agent's own record of its process (these are exact),
+# or from herdr's agent_session.
+OWN_RECORD = ("claude-pid", "grok-active", "copilot-lock", "vibe-lock", "muse-runtime", "codex-open")
+
+
+def live_report(found, hsid):
+    """What the app is told about the live session: its id, how it was found, and whether herdr's
+    agent_session names another one (shown as "herdr out of date"; the chat follows the terminal)."""
+    if not found:
+        return None
+    out = {"sid": found.get("sid"), "how": found.get("how")}
+    if found.get("ref"):
+        out["ref"] = found["ref"]
+    if found.get("db"):
+        out["db"] = found["db"]
+    out["herdr_stale"] = bool(hsid) and found.get("how") in OWN_RECORD and found.get("sid") != hsid
+    return out
+
+
 READERS = {"claude": claude, "codex": codex, "pi": pi, "omp": omp, "grok": grok, "copilot": copilot,
            "opencode": opencode, "hermes": hermes, "vibe": vibe, "kiro": kiro, "muse": muse}
 
@@ -1408,6 +1567,19 @@ def list_sessions(agent, cwd):
                     "order by coalesce(last_activity_at, started_at) desc limit 60", (cwd,)):
                 out.append({"ref": sid, "db": db, "when": int(when or 0), "title": title, "kb": 0, "messages": n})
             c.close()
+    elif agent == "kiro":
+        # 2.2.0: Kiro's sessions for the Sessions card, from each <id>.json beside its <id>.jsonl log.
+        for meta in glob.glob(os.path.join(HOME, ".kiro", "sessions", "cli", "*.json")):
+            try:
+                with open(meta) as fh:
+                    m = json.load(fh)
+            except Exception:
+                continue
+            log = meta[:-5] + ".jsonl"
+            if m.get("cwd") != cwd or not os.path.isfile(log):
+                continue
+            out.append({"ref": log, "when": int(mtime(log)), "kb": os.path.getsize(log) // 1024,
+                        "title": first_line(m.get("title") or "", 90) or None})
     elif agent == "muse":
         for path, upd, title in muse_sessions(cwd)[:60]:
             try:
@@ -1987,6 +2159,28 @@ def main():
     for k in ("pin", "pin_sid", "db"):
         if cur.get(k):
             PIN[k] = cur[k]
+    # 2.2.0: the pane and herdr's session id ride in the cursor too, so the live chat follows the
+    # session the terminal is really in. Never with a pin (a history view stays on its session).
+    pane = cur.pop("pane", None) if isinstance(cur.get("pane"), str) else None
+    hsid = cur.pop("hsid", None) if isinstance(cur.get("hsid"), str) else None
+    live = {"at": 0.0, "report": None}
+
+    def refresh_live(force=False):
+        if PIN or not pane:
+            return
+        now = time.time()
+        if not force and now - live["at"] < 2.0:
+            return
+        live["at"] = now
+        try:
+            found = live_session(agent, cwd.rstrip("/") or "/", pane, hsid or "")
+        except Exception:
+            found = None
+        LIVE.clear()
+        if found:
+            LIVE.update(found)
+        live["report"] = live_report(found, hsid)
+
     reader = READERS.get(agent)
     if reader is None or not cwd:
         done({"ok": False, "why": "no log reader for this agent"})
@@ -1994,6 +2188,7 @@ def main():
         end = time.time() + min(follow, 600)
         first = True
         while time.time() < end:
+            refresh_live(first)
             try:
                 res = reader(cwd.rstrip("/") or "/", cur)
             except Exception as e:
@@ -2009,7 +2204,10 @@ def main():
             res.update({"ok": True, "src": agent, "now": int(time.time() * 1000), "tz": tz_minutes()})
             if PIN and isinstance(res.get("cur"), dict):
                 res["cur"].update(PIN)
-            if first or res.get("items") or res.get("reset") or res.get("title"):
+            if live["report"]:
+                res["live"] = live["report"]
+            if first or res.get("items") or res.get("reset") or res.get("title") or live["report"] != live.get("sent"):
+                live["sent"] = live["report"]
                 try:
                     sys.stdout.write(json.dumps(res, ensure_ascii=False) + "\n")
                     sys.stdout.flush()
@@ -2020,6 +2218,7 @@ def main():
             first = False
             time.sleep(0.3)
         return
+    refresh_live(True)
     try:
         res = reader(cwd.rstrip("/") or "/", cur)
     except Exception as e:
@@ -2027,6 +2226,8 @@ def main():
     if res is None:
         done({"ok": False, "why": "no session log found for this folder"})
     res.update({"ok": True, "src": agent, "now": int(time.time() * 1000), "tz": tz_minutes()})
+    if live["report"]:
+        res["live"] = live["report"]
     if PIN and isinstance(res.get("cur"), dict):
         res["cur"].update(PIN)  # later reads stay on the pinned session
     done(res)

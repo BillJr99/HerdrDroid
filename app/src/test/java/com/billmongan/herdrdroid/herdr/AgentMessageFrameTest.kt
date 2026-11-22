@@ -64,10 +64,11 @@ class AgentMessageFrameTest {
         assertEquals(1, crossServerFrames("x".repeat(70_000) + "\n" + fixtureMessageFrame(code, "ok")).size)
     }
 
-    @Test fun repliesAreTrimmedAnyCaseAndOnlyCodes() {
-        assertEquals(code, CrossServerCode.reply("  k7p3qx \n"))
-        assertNull(CrossServerCode.reply("send it"))
-        assertNull(CrossServerCode.reply("K7P3QX please"))
+    /** 2.2.0: nobody types a code back any more, so there is no parser for a typed reply; codes are exact. */
+    @Test fun codesAreExactAndThereIsNoTypedReplyParser() {
+        assertTrue(CrossServerCode.valid(code))
+        for (bad in listOf("k7p3qx", " K7P3QX", "K7P3Q", "K7P3QO", "K7P3QX1")) assertFalse(bad, CrossServerCode.valid(bad))
+        assertFalse(CrossServerCode::class.java.declaredMethods.any { it.name == "reply" })
     }
 
     @Test fun ledgerAdmitsOnceUntilSpentOrExpiredAndPersists() {

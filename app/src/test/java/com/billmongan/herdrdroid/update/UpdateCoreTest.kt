@@ -87,7 +87,7 @@ class UpdateCoreTest {
         val installed = v("2.1.4")
         assertTrue(UpdateSchedule.shouldOffer(v("2.1.5"), installed, null, manual = false))
         assertFalse(UpdateSchedule.shouldOffer(v("2.1.5"), installed, "2.1.5", manual = false))
-        assertTrue(UpdateSchedule.shouldOffer(v("2.1.6"), installed, "2.1.5", manual = false))
+        assertTrue(UpdateSchedule.shouldOffer(v("2.2.0"), installed, "2.1.5", manual = false))
         // Check for updates now offers it anyway.
         assertTrue(UpdateSchedule.shouldOffer(v("2.1.5"), installed, "2.1.5", manual = true))
         assertFalse(UpdateSchedule.shouldOffer(v("2.1.4"), installed, null, manual = true))

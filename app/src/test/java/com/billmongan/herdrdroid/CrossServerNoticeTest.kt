@@ -42,7 +42,10 @@ class CrossServerNoticeTest {
         assertTrue(text.contains("at most 1024 UTF-8 bytes"))
         assertTrue(text.contains("do not send it yourself"))
         assertTrue(text.contains("Agents on other servers: Claude on laptop2, Hermes on laptop2, OpenCode · opencode-college on laptop2."))
-        assertTrue(text.endsWith("delivered only if the user types the code back on the phone; you will not see that reply."))
+        // 2.2.0: the user approves with Yes or No on the phone; nobody types the code back.
+        assertTrue(text.endsWith("delivered only if the user taps Yes on the phone; you will not see that answer."))
+        assertTrue(text.contains("with a Yes/No question"))
+        assertFalse(text.contains("types the code") || text.contains("type the code"))
         assertFalse(text.contains("name it in your reply"))
         assertFalse(text.contains("\u2014"))
         // The notice's own template, echoed in a pane, is never a frame.
