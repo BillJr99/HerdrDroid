@@ -376,7 +376,36 @@ private fun ItemView(item: Item, rows: List<ChatRow>, size: Float, family: FontF
         )
         is ToolItem -> ToolView(item, size, live = false)
         is ImageItem -> AttachmentView(item)
-        is QuestionItem -> QuestionView(item, size, item.key.takeIf { it.startsWith("ask:") }?.removePrefix("ask:")?.let(itemTimes::get))
+        is QuestionItem -> if (item.btw) BtwView(item, size, family)
+            else QuestionView(item, size, item.key.takeIf { it.startsWith("ask:") }?.removePrefix("ask:")?.let(itemTimes::get))
+    }
+}
+
+/**
+ * A /btw side question in the chat (2.1.4): a small "btw" label, the question as you asked it, and
+ * the answer as ordinary Markdown, without the panel's rule, indent or key hints. Kept on the phone
+ * with the pane's question history; never sent anywhere.
+ */
+@Composable
+internal fun BtwView(q: QuestionItem, size: Float, family: FontFamily = FontFamily.Default, onClose: (() -> Unit)? = null) {
+    val part = q.parts.firstOrNull() ?: return
+    Column(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("btw", color = Palette.OnBlue, fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                modifier = Modifier.background(Palette.Blue, RoundedCornerShape(6.dp)).padding(horizontal = 6.dp, vertical = 1.dp))
+            Text("Side question to ${q.agent ?: "the agent"}", color = Palette.Muted, fontSize = 12.5.sp)
+        }
+        SelectionContainer {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(part.question.removePrefix("/btw ").trim(), color = Palette.Ink, fontSize = (size * 1.05f).sp,
+                    fontWeight = FontWeight.SemiBold, lineHeight = (size * 1.05f * 1.4f).sp)
+                part.answer?.takeIf { it.isNotBlank() }?.let { MarkdownText(it, size * 1.05f, family) }
+                    ?: Text("No answer was shown.", color = Palette.Muted, fontSize = 12.5.sp)
+            }
+        }
+        q.action?.let { Text(it, color = Palette.Muted, fontSize = 12.sp) }
+        onClose?.let { close -> Pill("Close") { close() } }
+        ChatTimestamp(q.at)
     }
 }
 

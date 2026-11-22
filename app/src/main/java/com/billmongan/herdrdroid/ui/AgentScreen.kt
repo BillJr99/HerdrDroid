@@ -154,6 +154,12 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     /** The slash command whose screen is showing, until you go back to the chat. */
     var commandScreen by rememberSaveable(paneId) { mutableStateOf<String?>(null) }
     LaunchedEffect(fullTerminal) { if (!fullTerminal) commandScreen = null }
+    // 2.1.4: while the terminal shows a usage dialog the app opened, it stays open; going back to the
+    // chat, to another pane or out of the app closes it, and the app checks that it closed.
+    LaunchedEffect(paneId, commandScreen) {
+        vm.usageViewShown(paneId, commandScreen?.let { com.billmongan.herdrdroid.herdr.opensUsageDialog(vm.pane(paneId)?.agent, it) } == true)
+    }
+    androidx.compose.runtime.DisposableEffect(paneId) { onDispose { vm.usageViewShown(paneId, false) } }
     var menu by remember { mutableStateOf(false) }
     var choosingModel by remember { mutableStateOf(false) }
     var showSnippets by remember { mutableStateOf(false) }
@@ -215,9 +221,11 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             })
         }
     }
-    LaunchedEffect(paneId) {
+    // The list every 4 s, every 2 s while the drawer and its badges are out (2.1.4); herdr's own
+    // wait reads it at once on a change in between.
+    LaunchedEffect(paneId, vm.drawerOpen) {
         while (true) {
-            kotlinx.coroutines.delay(4_000)
+            kotlinx.coroutines.delay(com.billmongan.herdrdroid.herdr.NeedsYouCadence.listGapMs(vm.drawerOpen))
             if (vm.inFront) vm.refreshPanes()
         }
     }
@@ -257,11 +265,21 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     val dismissingUsage = vm.usageDismissInFlight(paneId)
     val usageBlocksInput = usageOverlay != null || dismissingUsage
     val waitingForHermes = vm.waitingForHermesComposer(paneId)
-    val prompt: Prompt? = if (typingAnswer || usageOverlay != null) null
+    val parsedPrompt: Prompt? = if (typingAnswer || usageOverlay != null) null
         else if (vm.paneReadProblem != null) (if (status == Status.NEEDS_YOU) Prompt("This agent is waiting for you.", emptyList()).forCard() else null)
         else if (pane != null && vm.requiresLivePiQuestion(pane)) vm.currentPiQuestion(pane)?.forCard()
         else detectPrompt(screenText, status == Status.NEEDS_YOU, pane?.agent, vm.versionOf(paneId))
             ?.takeIf { !it.codexQuestion || shownTarget != null }?.forCard()
+    // An agent's error on screen (1.4.2): shown as a banner when there is no question.
+    // Not from the last screen while the latest read failed (1.4.2, from review).
+    val agentError: String? = remember(screenText) { com.billmongan.herdrdroid.herdr.detectAgentError(screenText) }.takeIf { parsedPrompt == null && vm.paneReadProblem == null }
+    // 2.1.4 (Bill: "it showed the orange ... waiting on you icon but didn't actually render the
+    // question in chat"): while the pane shows as needing you, a card is always there, the parsed
+    // one or one that says the question couldn't be read, with Show terminal.
+    val prompt: Prompt? = com.billmongan.herdrdroid.herdr.withNeedsYouCard(status, parsedPrompt,
+        suppressed = typingAnswer || usageBlocksInput || backgroundDrawer || agentError != null, agent = pane?.agentName ?: "The agent")
+    // The question a parser read; the unread-question card leaves the chat's open questions in place.
+    val questionCard: Prompt? = prompt?.takeUnless { it.unreadQuestion }
     fun send() {
         if (usageBlocksInput || backgroundDrawer || (openingPreview != null && prompt != null)) return
         val draft = answerDraft
@@ -285,12 +303,10 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             normalMessage = ""
             // A slash command answers on the screen (a menu, a sign-in code), not in the agent's log,
             // so show the screen and the keys to move through it.
-            if (text.startsWith("/") && !live) { fullTerminal = true; commandScreen = text.substringBefore(' ') }
+            // 2.1.4: not for /btw, whose answer the app reads into the chat and then closes.
+            if (text.startsWith("/") && !live && com.billmongan.herdrdroid.herdr.btwQuestion(pane.agent, text) == null) { fullTerminal = true; commandScreen = text.substringBefore(' ') }
         }
     }
-    // An agent's error on screen (1.4.2): shown as a banner when there is no question.
-    // Not from the last screen while the latest read failed (1.4.2, from review).
-    val agentError: String? = remember(screenText) { com.billmongan.herdrdroid.herdr.detectAgentError(screenText) }.takeIf { prompt == null && vm.paneReadProblem == null }
     // The terminal (and screen) view follows new output only while you are at the bottom; once you
     // scroll up it stays where you put it, through updates and view switches (1.2.7; before, every
     // update jumped to the bottom). "Latest" below brings it back.
@@ -430,19 +446,28 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 Icon(Icons.Filled.Menu, contentDescription = "All agents", tint = Palette.Ink)
             }
             AgentTile(pane?.initial ?: "?", status, size = 34)
-            Column(Modifier.weight(1f).padding(start = 10.dp)) {
-                // On Hermes the name opens the Hermes menu: this pane or live chat, your Telegram
-                // conversation, all conversations, a new chat, model and usage.
-                Box {
-                    Text(
-                        (if (isHermes) (if (live) "Hermes · live chat" else "Hermes · this pane") + "  ▾"
-                        else pane?.let { sessionName(it) } ?: paneId),
-                        fontWeight = FontWeight.SemiBold, fontSize = 17.sp, color = Palette.Ink,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.clickable {
-                            if (isHermes) { hermesMenu = true; vm.hermesChat()?.refreshSessions() } else vm.drawerOpen = true
-                        },
-                    )
+            // 2.1.4: three lines (Bill, 2026-11-21): the pane's name, the server in a smaller style,
+            // and the model in use smaller still (left off when it is unknown). Tap the name to switch
+            // agents (or, on Hermes, for the Hermes menu); tap the model to choose another one.
+            val headerModelText = com.billmongan.herdrdroid.herdr.headerModel(
+                pane?.agent, vm.modelLine(paneId),
+                screen = if (vm.paneTextPane == paneId) vm.paneText else "",
+                terminalTitle = pane?.title.orEmpty(),
+            )
+            PaneTitleLines(
+                name = if (isHermes) (if (live) "Hermes · live chat" else "Hermes · this pane") + "  ▾"
+                else pane?.let { sessionName(it) } ?: paneId,
+                server = vm.current?.name,
+                model = headerModelText,
+                modifier = Modifier.weight(1f).padding(start = 10.dp),
+                status = if (vm.link == Link.CONNECTED) look(status, pane?.backgroundBusy == true).label else null,
+                statusInk = look(status).ink,
+                compact = keyboardUp,
+                onName = { if (isHermes) { hermesMenu = true; vm.hermesChat()?.refreshSessions() } else vm.drawerOpen = true },
+                onModel = if (pane?.agent != null) ({ choosingModel = true }) else null,
+                nameAnchor = {
+                    // On Hermes the name opens the Hermes menu: this pane or live chat, your Telegram
+                    // conversation, all conversations, a new chat, model and usage.
                     if (isHermes) DropdownMenu(expanded = hermesMenu, onDismissRequest = { hermesMenu = false }) {
                         DropdownMenuItem(text = { Text((if (!live) "✓ " else "    ") + "This pane (the Hermes CLI)") }, onClick = { hermesMenu = false; hermesLive = false })
                         DropdownMenuItem(text = { Text((if (live) "✓ " else "    ") + "Live chat (streaming, approvals as buttons)") }, onClick = { hermesMenu = false; hermesLive = true })
@@ -472,26 +497,9 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                         HorizontalDivider(color = Palette.Line)
                         DropdownMenuItem(text = { Text("All agents…") }, onClick = { hermesMenu = false; vm.drawerOpen = true })
                     }
-                }
-                if (keyboardUp) {
-                    // Keyboard up: the name line only, so the chat keeps the room.
-                } else if (vm.link == Link.CONNECTED) {
-                    // Tap the model line to choose another model (or effort).
-                    Row(
-                        Modifier.clickable(enabled = pane?.agent != null) { choosingModel = true },
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Box(Modifier.size(7.dp).background(look(status).ink, CircleShape))
-                        Text(
-                            "  " + look(status, pane?.backgroundBusy == true).label + " · " + (vm.modelLine(paneId) ?: pane?.folder ?: paneId),
-                            color = Palette.Muted, fontSize = 12.5.sp,
-                            maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                } else {
-                    LinkLabel(vm, "")
-                }
-            }
+                },
+                statusLine = if (vm.link == Link.CONNECTED) null else ({ LinkLabel(vm, "") }),
+            )
             // Shells and subagents still running under the agent, as one small pill in the header
             // (a row of its own appeared and vanished as they started and finished, moving the chat).
             vm.work[paneId]?.let { w ->
@@ -589,7 +597,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
         }
         if (usageBlocksInput) {
-            UsageOverlayBanner(dismissingUsage) {
+            UsageOverlayBanner(dismissingUsage, btw = usageOverlay?.overlay?.visible?.let { com.billmongan.herdrdroid.herdr.claudeBtwOverlay(it) } != null) {
                 usageOverlay?.let(vm::dismissUsage)
             }
         }
@@ -603,7 +611,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         // while its card is showing, so it isn't on screen twice.
         val questionsNow = vm.questionsFor(paneId)
         // Claude's sessions-list card (2.1.1) is not the question itself: the question stays in the chat.
-        val cardUp = prompt != null && !prompt.claudeBackground
+        val cardUp = questionCard != null && !questionCard.claudeBackground
         // Placed again when item times or the clock offset change, not only the items (1.4.3, from review).
         val chatItems = remember(vm.transcriptItems, questionsNow, cardUp, vm.transcriptTimes, vm.transcriptSeen, vm.hostOffsets) {
             com.billmongan.herdrdroid.transcript.QuestionLog.withQuestions(vm.transcriptItems, questionsNow, vm.transcriptTimes, vm.hostOffsetMs(), vm.transcriptSeen)
@@ -645,6 +653,14 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             }
         }
 
+        // Every message shows a time (2.1.4, Bill: "make sure all panes do in chat"): its own, Grok's on
+        // its screen, or when the app first saw it.
+        val chatTimes = remember(vm.transcriptLogTimes, vm.transcriptShown) { vm.chatTimes }
+        val chatAgentName = canonicalAgent(pane?.agent.orEmpty())
+        LaunchedEffect(screenText, vm.transcriptItems, structured) {
+            if (structured && chatAgentName == "grok" && screenText.isNotBlank()) vm.noteScreenClocks(paneId, screenText)
+        }
+
         // ---- The conversation ---------------------------------------------------------------
         if (live) {
             HermesLiveChat(vm, Modifier.weight(1f).fillMaxWidth())
@@ -657,7 +673,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 workingLabel = "",
                 agentName = pane?.agentName ?: "The agent",
                 pending = vm.pendingFor(paneId),
-                itemTimes = vm.transcriptLogTimes,
+                itemTimes = chatTimes,
                 more = vm.transcriptMore,
                 size = liveSize,
                 family = family,
@@ -700,13 +716,14 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     // The pane's history (1.4.3, Bill): each earlier screen, then the question asked under
                     // it, oldest first, so anything newer is below a question; the live screen comes last.
                     com.billmongan.herdrdroid.transcript.QuestionLog.screenHistory(
-                        vm.questionsFor(paneId).filter { prompt == null || it.state != com.billmongan.herdrdroid.transcript.QState.OPEN },
+                        vm.questionsFor(paneId).filter { questionCard == null || it.state != com.billmongan.herdrdroid.transcript.QState.OPEN },
                     ).forEach { entry ->
                         when (entry) {
                             is com.billmongan.herdrdroid.transcript.ScreenSnapshot -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 Text("Earlier screen", color = Palette.Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                                 ChatTimestamp(entry.at)
-                                ChatView(entry.text, null, liveSize, vm.readingFont, antigravity = antigravity, grok = grok, agent = chatAgent)
+                                ChatView(entry.text, null, liveSize, vm.readingFont, antigravity = antigravity, grok = grok, agent = chatAgent,
+                                    times = vm.screenTimesFor(paneId), hostOffsetMs = vm.hostOffsetMs(), hostTz = vm.hostTzMinutes())
                             }
                             is com.billmongan.herdrdroid.transcript.QuestionItem -> QuestionView(entry, liveSize)
                         }
@@ -717,8 +734,10 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     // Under a saved history, only the part of the screen not already shown above (1.4.3, from review).
                     // The same questions the history shows (from review): an open one's screen stays live.
                     ChatView(com.billmongan.herdrdroid.transcript.QuestionLog.liveTail(text,
-                        vm.questionsFor(paneId).filter { prompt == null || it.state != com.billmongan.herdrdroid.transcript.QState.OPEN }), pending, liveSize, vm.readingFont,
-                        pendingAt = vm.lastSentAt, antigravity = antigravity, grok = grok, agent = chatAgent)
+                        vm.questionsFor(paneId).filter { questionCard == null || it.state != com.billmongan.herdrdroid.transcript.QState.OPEN }), pending, liveSize, vm.readingFont,
+                        pendingAt = vm.lastSentAt, antigravity = antigravity, grok = grok, agent = chatAgent,
+                        times = vm.screenTimesFor(paneId), onSeen = { vm.noteScreenSeen(paneId, it) },
+                        hostOffsetMs = vm.hostOffsetMs(), hostTz = vm.hostTzMinutes())
                 }
                 promptCard()
             }
@@ -1002,11 +1021,12 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
 private val KEY_HEIGHT = 42.dp
 
 @Composable
-internal fun UsageOverlayBanner(dismissing: Boolean, onDismiss: () -> Unit) {
+internal fun UsageOverlayBanner(dismissing: Boolean, btw: Boolean = false, onDismiss: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text("Usage panel is open", Modifier.weight(1f), color = Palette.Ink)
+        // 2.1.4: Claude's /btw panel too; its exchange is in the chat, and Close shuts the panel.
+        Text(if (btw) "Side question (/btw) is open; its answer is in the chat" else "Usage panel is open", Modifier.weight(1f), color = Palette.Ink)
         TextButton(onClick = onDismiss, enabled = !dismissing) {
-            Text(if (dismissing) "Dismissing…" else "Dismiss usage")
+            Text(if (dismissing) (if (btw) "Closing…" else "Dismissing…") else if (btw) "Close" else "Dismiss usage")
         }
     }
 }
@@ -1294,6 +1314,8 @@ internal fun PromptCard(
                     p.codexQuestion -> "Answer this Codex question in Terminal."
                     // 2.1.2: a question the app reads but can't answer for you (several questions or answers).
                     p.openCodeForm -> "Answer this OpenCode question in Terminal: it asks more than one question or takes more than one answer, which the app can't send for you."
+                    // 2.1.4: the pane needs you, but its question couldn't be read from the screen.
+                    p.unreadQuestion -> "The app couldn't read this question from the screen. Open the terminal to see it and answer it there."
                     else -> "This preview is incomplete. Open the terminal to review the full command before answering."
                 },
                     color = Palette.Muted, fontSize = 12.5.sp)
@@ -1348,7 +1370,11 @@ internal fun PromptCard(
                     color = Palette.Muted, fontSize = 12.5.sp)
                 if (p.multi) Text("Several can be picked. Tapping a checkbox only turns that choice on or off.",
                     color = Palette.Muted, fontSize = 12.5.sp)
-                p.answerRows().forEach { c ->
+                // 2.1.4: "Type something." and "Chat about this" show as one "Type your answer".
+                val allRows = p.answerRows()
+                if (com.billmongan.herdrdroid.herdr.typedChatPair(allRows) != null)
+                    Text("\u201cChat about this\u201d isn't offered here; use Terminal for it.", color = Palette.Muted, fontSize = 12.5.sp)
+                com.billmongan.herdrdroid.herdr.shownChoices(allRows).forEach { c ->
                     // Say what tapping really sends: arrows and Enter for a menu with a highlighted row,
                     // Esc for a "(esc)" option, otherwise the key itself (1.2.7; it always said "sends N").
                     val typed = !p.hermesClarify && com.billmongan.herdrdroid.herdr.isTypedAnswerChoice(c.label)
@@ -1363,7 +1389,7 @@ internal fun PromptCard(
                     val body: @Composable () -> Unit = {
                         Column(Modifier.fillMaxWidth()) {
                             // A key hint ("(esc)") or tail reads quieter; the label's text is unchanged (2.1.1).
-                            Text(optionLabel(c.label, if (first) Palette.OnBlue.copy(alpha = 0.8f) else Palette.Muted),
+                            Text(optionLabel(com.billmongan.herdrdroid.herdr.shownChoiceLabel(allRows, c), if (first) Palette.OnBlue.copy(alpha = 0.8f) else Palette.Muted),
                                 fontSize = 15.sp, fontWeight = FontWeight.SemiBold, lineHeight = 20.sp,
                                 color = if (first) Palette.OnBlue else Palette.Ink)
                             optionNotes[c.keys]?.let { note ->
@@ -1457,18 +1483,37 @@ private fun norm(s: String) = s.filterNot { it.isWhitespace() }.take(40)
  * sideways, and the agent's own input box and status line as a quiet footer.
  */
 @Composable
-private fun ChatView(
+internal fun ChatView(
     text: String, pending: String?, size: Float, font: ReadingFont,
     pendingAt: Long? = null, antigravity: Boolean = false, grok: Boolean = false, agent: String? = null,
+    /** First-seen times of the screen's messages (2.1.4, [com.billmongan.herdrdroid.herdr.ScreenTimes]). */
+    times: Map<String, Long> = emptyMap(),
+    /** Called with the messages on screen, so the ones not seen before are given a time; null for an earlier screen. */
+    onSeen: ((List<com.billmongan.herdrdroid.herdr.ScreenTimes.Msg>) -> Unit)? = null,
+    hostOffsetMs: Long = 0L,
+    hostTz: Int? = null,
 ) {
     val segs = remember(text, antigravity, grok, agent) { Reflow.parse(text, antigravity, grok, agent) }
+    // Each message's time (2.1.4): Grok's own from its screen, else when the app first saw it.
+    val msgs = remember(segs, text, grok) {
+        com.billmongan.herdrdroid.herdr.ScreenTimes.messages(segs, if (grok) com.billmongan.herdrdroid.herdr.GrokClock.stamps(text) else emptyList())
+    }
+    val seenCb by androidx.compose.runtime.rememberUpdatedState(onSeen)
+    LaunchedEffect(msgs) { seenCb?.invoke(msgs) }
+    val timeAfter = remember(msgs, times, hostOffsetMs, hostTz) {
+        val now = System.currentTimeMillis() - hostOffsetMs
+        msgs.mapNotNull { m ->
+            val at = m.clock?.let { com.billmongan.herdrdroid.herdr.GrokClock.toEpoch(it, now, hostTz) } ?: times[m.key]
+            at?.let { m.last to (it to (segs.getOrNull(m.first) is Seg.You)) }
+        }.toMap()
+    }
     val family: FontFamily = font.family
     val prose = if (font == ReadingFont.MONO) size else size * 1.2f
     val showPending = pending != null && segs.none { it is Seg.You && norm(it.text).startsWith(norm(pending).take(20)) }
 
     SelectionContainer {
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            segs.forEach { s ->
+            segs.forEachIndexed { i, s ->
                 when (s) {
                     Seg.Gap -> Spacer(Modifier.height(6.dp))
                     Seg.Rule -> HorizontalDivider(color = Palette.Line, modifier = Modifier.padding(vertical = 6.dp))
@@ -1532,6 +1577,7 @@ private fun ChatView(
                         }
                     }
                 }
+                timeAfter[i]?.let { (at, mine) -> ChatTimestamp(at, end = mine) }
             }
             if (showPending) {
                 YouBubble(pending!!, prose, sending = true)

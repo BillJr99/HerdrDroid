@@ -53,6 +53,7 @@ data class Server(
     val backend: String? = null,
 ) {
     val overWebSocket: Boolean get() = !wsUrl.isNullOrBlank()
+    /** For the phone user only: falls back to the account and host. Text agents receive uses [agentServerLabel]. */
     val label: String get() = name.ifBlank { "$user@$host" }
     val keystoreAlias: String get() = "herdrdroid_ssh_$id"
     val hasKey: Boolean get() = keyKind == "keystore" || (keyKind == "imported" && keyCipher != null)
@@ -161,6 +162,21 @@ class AppPrefs(context: Context) {
         get() = prefs.getBoolean("agentMessagingEnabled", false)
         set(v) = prefs.edit().putBoolean("agentMessagingEnabled", v).apply()
 
+    /** 2.1.4: tell agents about cross-server messaging. On by default with the feature; the user can turn it off. */
+    var crossServerNotice: Boolean
+        get() = prefs.getBoolean("crossServerNotice", true)
+        set(v) = prefs.edit().putBoolean("crossServerNotice", v).apply()
+
+    /** 2.1.4: agents at or above this percent of their known quota are not told yet (100: never skip). */
+    var crossServerNoticeQuota: Int
+        get() = prefs.getInt("crossServerNoticeQuota", 95)
+        set(v) = prefs.edit().putInt("crossServerNoticeQuota", v).apply()
+
+    /** 2.1.4: which notice each pane and agent session was sent, as JSON (see NoticeLedger). */
+    var crossServerNoticeLedger: String
+        get() = prefs.getString("crossServerNoticeLedger", "{}") ?: "{}"
+        set(v) = prefs.edit().putString("crossServerNoticeLedger", v).apply()
+
     var theme: String
         get() = prefs.getString("theme", "SYSTEM") ?: "SYSTEM"
         set(v) = prefs.edit().putString("theme", v).apply()
@@ -239,6 +255,15 @@ class AppPrefs(context: Context) {
     var quotaHistory: String
         get() = prefs.getString("quotaHistory", "{}") ?: "{}"
         set(v) = prefs.edit().putString("quotaHistory", v).apply()
+
+    /**
+     * Usage dialogs the app opened and hasn't yet confirmed closed (2.1.4), as a JSON array of
+     * {server, pane, agent, at, failures}: kept so that after the app is closed or killed the next
+     * check or send closes it first.
+     */
+    var usageLeftOpen: String
+        get() = prefs.getString("usageLeftOpen", "[]") ?: "[]"
+        set(v) = prefs.edit().putString("usageLeftOpen", v).apply()
 
     /** What the home-screen widget shows, written whenever the app reads its agents. */
     var widgetState: String
@@ -590,4 +615,16 @@ object SshKeyVault {
     fun delete(alias: String) {
         runCatching { ks().deleteEntry(alias) }
     }
+}
+
+/**
+ * 2.1.4 (Grok's RC review 4): how a server is named in text that agents receive, such as the
+ * cross-server notice and the copied proposal instructions. It is the server's name when that is
+ * set, otherwise "server N" by its place in [servers] (or "another server" if it is not there).
+ * It never contains the account, host or port, which [Server.label] falls back to.
+ */
+internal fun agentServerLabel(server: Server, servers: List<Server>): String {
+    server.name.trim().takeIf { it.isNotEmpty() }?.let { return it }
+    val n = servers.indexOfFirst { it.id == server.id }
+    return if (n >= 0) "server ${n + 1}" else "another server"
 }

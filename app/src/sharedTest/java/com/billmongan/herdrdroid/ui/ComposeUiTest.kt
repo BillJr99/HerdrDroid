@@ -186,6 +186,43 @@ class ComposeUiTest {
         rule.onNodeWithText(localDateTime(queuedAt)).assertIsDisplayed()
     }
 
+    /** 2.1.4 (Bill: "make sure all panes do in chat"): the screen view shows Grok's own times, and first-seen ones. */
+    @Test fun screenChatShowsGroksTimeAndAFirstSeenTime() {
+        val pad = { t: String, c: String -> "     $t" + " ".repeat(maxOf(3, 115 - t.length - c.length)) + c }
+        val grokScreen = listOf("", pad("❯ From claude: check the build", "9:08 AM"), "", pad("The build passed.", "9:10 AM"), "").joinToString("\n")
+        val now = System.currentTimeMillis()
+        rule.setContent {
+            androidx.compose.foundation.layout.Column {
+                ChatView(grokScreen, null, 12.5f, ReadingFont.SANS, grok = true, agent = "grok", hostTz = -300)
+            }
+        }
+        val asked = checkNotNull(com.billmongan.herdrdroid.herdr.GrokClock.toEpoch("9:08 AM", now, -300))
+        val replied = checkNotNull(com.billmongan.herdrdroid.herdr.GrokClock.toEpoch("9:10 AM", now, -300))
+        rule.onNodeWithText("The build passed.").assertIsDisplayed()
+        rule.onNodeWithText(localDateTime(asked)).assertIsDisplayed()
+        rule.onNodeWithText(localDateTime(replied)).assertIsDisplayed()
+        rule.onAllNodesWithText("9:10 AM", substring = true).assertCountEquals(0)
+    }
+
+    @Test fun screenChatShowsTheTimeTheAppFirstSawAMessage() {
+        val at = 1_730_504_100_000L
+        val rule60 = "─".repeat(60)
+        val screen = listOf(rule60, "> From claude: ping", "", "  ack-agy", "", rule60, ">", rule60,
+            "? for shortcuts" + " ".repeat(40) + "Orchestrator (Neon)").joinToString("\n")
+        val segs = com.billmongan.herdrdroid.herdr.Reflow.parse(screen, antigravity = true, agent = "agy")
+        val msgs = com.billmongan.herdrdroid.herdr.ScreenTimes.messages(segs)
+        val times = msgs.associate { it.key to at }
+        var seen: List<com.billmongan.herdrdroid.herdr.ScreenTimes.Msg>? = null
+        rule.setContent {
+            androidx.compose.foundation.layout.Column {
+                ChatView(screen, null, 12.5f, ReadingFont.SANS, antigravity = true, agent = "agy", times = times, onSeen = { seen = it })
+            }
+        }
+        rule.onNodeWithText("ack-agy").assertIsDisplayed()
+        rule.onAllNodesWithText(localDateTime(at)).assertCountEquals(msgs.size)
+        rule.runOnIdle { assertEquals(msgs, seen) }
+    }
+
     private fun pane(status: Status, agent: String = "claude") =
         Pane("w1:p1", "w1:t1", "w1", agent, status, "", "/home/user/agents/claude")
 
@@ -197,6 +234,31 @@ class ComposeUiTest {
         rule.runOnIdle { assertEquals(0, clicks) }
         rule.onNodeWithText("Dismiss usage").performClick()
         rule.onNodeWithText("Dismissing…").assertIsNotEnabled()
+        rule.runOnIdle { assertEquals(1, clicks) }
+    }
+
+    /** 2.1.4: a /btw exchange in the chat: the label, the question, the answer as Markdown, no panel chrome. */
+    @Test fun btwChatItemShowsTheQuestionAndTheAnswerWithoutThePanel() {
+        val q = com.billmongan.herdrdroid.transcript.QuestionItem(
+            key = "btw:1:a", state = com.billmongan.herdrdroid.transcript.QState.ANSWERED, agent = "Claude", at = 0L, btw = true,
+            parts = listOf(com.billmongan.herdrdroid.transcript.QPart(question = "/btw what is a side question?",
+                answer = "A side question is answered without tools.\n\n- It runs while Claude keeps working.")))
+        rule.setContent { BtwView(q, 15f) }
+        rule.onNodeWithText("btw").assertIsDisplayed()
+        rule.onNodeWithText("Side question to Claude").assertIsDisplayed()
+        rule.onNodeWithText("what is a side question?").assertIsDisplayed()
+        rule.onNodeWithText("A side question is answered without tools.", substring = true).assertIsDisplayed()
+        rule.onNodeWithText("It runs while Claude keeps working.", substring = true).assertIsDisplayed()
+        rule.onAllNodesWithText("Esc to close", substring = true).assertCountEquals(0)
+        rule.onAllNodesWithText("/btw", substring = true).assertCountEquals(0)
+    }
+
+    @Test fun btwBannerClosesOnlyOnATap() {
+        var clicks = 0
+        rule.setContent { UsageOverlayBanner(false, btw = true) { clicks++ } }
+        rule.onNodeWithText("Side question (/btw) is open; its answer is in the chat").assertIsDisplayed()
+        rule.runOnIdle { assertEquals(0, clicks) }
+        rule.onNodeWithText("Close").performClick()
         rule.runOnIdle { assertEquals(1, clicks) }
     }
 

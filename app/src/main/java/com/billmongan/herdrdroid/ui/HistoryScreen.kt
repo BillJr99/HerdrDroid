@@ -82,7 +82,7 @@ fun HistoryScreen(vm: AppViewModel, paneId: String, session: PastSession?) {
             vm.readPastSession(paneId, session).onSuccess { r ->
                 items = Transcript.merge(emptyList(), r.items, true)
                 more = r.more
-                times = Transcript.timesOf(r.items)
+                times = Transcript.labelTimesOf(r.items)
             }.onFailure { problem = it.message }
         }
         val list = items

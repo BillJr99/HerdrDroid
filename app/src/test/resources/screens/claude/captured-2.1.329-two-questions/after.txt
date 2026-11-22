@@ -1,0 +1,47 @@
+
+ ▐▛███▛█   Claude Code v2.1.329
+▝▜██████▀  Opus 5.5 · API Usage Billing
+ ▝▝   ▝▝   /k/work
+
+▎ Auto mode is now Claude Code's default permission mode.
+▎ Auto mode lets Claude handle permission prompts automatically. Claude checks each tool call for risky actions and prompt injection
+▎ before executing, runs the ones it assesses as lower-risk, and blocks the rest.
+▎ https://code.claude.com/docs/en/permission-modes
+
+❯ PLEASE_ASK two questions
+
+● Answered Claude's questions:
+  ⎿  · The requested rule allows `requests_read_files.sh` in ANY project worktree (`worktrees/*`). That includes worktrees the review
+     agent creates itself before review, so a new script with that name would read files with no prompt. On 2026-11-12 you switched
+     two similar wildcard folder rules from allow to ask for exactly that reason. Which rule should I add? → Exact path (Recommended)
+     · This machine has never connected to hostb (host-b.example.invalid), so SSH will ask to trust a new host key. How should I
+     handle the first connection? → You connect first (Recommended)
+
+● Okay.
+
+✻ Crunched for 0s · done 6:59 PM
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)

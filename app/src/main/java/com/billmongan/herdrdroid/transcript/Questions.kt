@@ -66,6 +66,12 @@ data class QuestionItem(
      * snapshot before it, at most [SNAPSHOT_LINES] lines.
      */
     val screen: String? = null,
+    /**
+     * 2.1.4: a /btw side question and its answer, read off Claude's /btw panel before it closed
+     * (the exchange is not in Claude's log). [parts] holds one part: the question ("/btw …") and the
+     * answer as Markdown. [action] notes an answer the panel didn't show in full.
+     */
+    val btw: Boolean = false,
 ) : Item
 
 object QuestionLog {
@@ -430,7 +436,7 @@ object QuestionLog {
 
     fun toJson(q: QuestionItem): JSONObject = JSONObject().put("k", q.key).put("state", q.state.name).putOpt("agent", q.agent)
         .putOpt("after", q.after).put("at", q.at).put("doneAt", q.doneAt).putOpt("action", q.action).put("sig", q.sig)
-        .putOpt("recorded", q.recorded).putOpt("screen", q.screen)
+        .putOpt("recorded", q.recorded).putOpt("screen", q.screen).put("btw", q.btw)
         .put("parts", JSONArray(q.parts.map { p ->
             JSONObject().putOpt("title", p.title).put("q", p.question).put("details", JSONArray(p.details)).putOpt("cmd", p.command)
                 .put("options", JSONArray(p.options)).putOpt("answer", p.answer)
@@ -449,7 +455,27 @@ object QuestionLog {
         state = runCatching { QState.valueOf(o.optString("state")) }.getOrDefault(QState.DISMISSED),
         agent = o.s("agent"), after = o.s("after"), at = o.optLong("at"), doneAt = o.optLong("doneAt"),
         action = o.s("action"), sig = o.optString("sig"), recorded = o.s("recorded"), screen = o.s("screen"),
+        btw = o.optBoolean("btw"),
     )
+
+    /**
+     * The log with a /btw exchange added (2.1.4). The same question seen again within ten minutes
+     * replaces its record when the answer read now is at least as long (a later read saw more).
+     */
+    fun btw(log: List<QuestionItem>, question: String, answer: String, partial: Boolean, anchor: String?, now: Long): List<QuestionItem> {
+        val sig = "btw:" + question.filterNot(Char::isWhitespace).hashCode().toUInt().toString(16)
+        val i = log.indexOfLast { it.btw && it.sig == sig && now - it.at < 10 * 60_000L }
+        val note = if (partial) "The panel showed only part of the answer; the rest is in Terminal." else null
+        if (i >= 0) {
+            val old = log[i]
+            if ((old.parts.firstOrNull()?.answer?.length ?: 0) > answer.length) return log
+            val upd = old.copy(parts = listOf(QPart(question = "/btw $question", answer = answer)), action = note, doneAt = now)
+            return if (upd == old) log else log.toMutableList().also { it[i] = upd }
+        }
+        val item = QuestionItem(key = "btw:$now:${sig.substringAfter(':')}", parts = listOf(QPart(question = "/btw $question", answer = answer)),
+            state = QState.ANSWERED, agent = "Claude", after = anchor, at = now, doneAt = now, action = note, sig = sig, btw = true)
+        return (log + item).takeLast(MAX_QUESTIONS)
+    }
 
     /** The kept questions as JSON: the newest [MAX_QUESTIONS] within [ChatCodec.MAX_CHARS]. */
     fun encode(qs: List<QuestionItem>): String {
@@ -483,7 +509,7 @@ object QuestionLog {
             p.details.forEach { append(it).append('\n') }
             p.command?.let { append("    ").append(it).append('\n') }
             if (p.options.isNotEmpty()) p.options.forEach { append("- ").append(it).append('\n') }
-            p.answer?.let { append("Your answer: ").append(it).append('\n') }
+            p.answer?.let { append(if (q.btw) "\n" else "Your answer: ").append(it).append('\n') }
         }
         q.action?.let { append("\nThen: ").append(it).append('\n') }
         q.recorded?.let { append("\nRecorded answer: ").append(it).append('\n') }
@@ -491,6 +517,7 @@ object QuestionLog {
 
     /** "Question from Claude, answered", "..., answered elsewhere", "..., dismissed", "..., waiting for you". */
     fun label(q: QuestionItem): String {
+        if (q.btw) return "Side question (btw) to ${q.agent ?: "the agent"}"
         val who = q.agent?.let { "Question from $it" } ?: "Question"
         val n = q.parts.size
         val what = if (n >= 2) "$who ($n questions)" else who

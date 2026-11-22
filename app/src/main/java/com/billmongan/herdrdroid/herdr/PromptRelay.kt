@@ -88,7 +88,9 @@ internal class PromptRelay(
             val fresh = idlePane() ?: return RelayResult.REFUSED
             if (!valid() || port.hasWork(fresh, target.connection) || !valid()) return RelayResult.REFUSED
             val viewport = port.viewport(fresh.id, target.connection)
-            if (!valid() || dismissibleUsageFrame(fresh.agent, viewport) != null || detectPrompt(forPhone(viewport), false, fresh.agent) != null)
+            if (!valid() || dismissibleUsageFrame(fresh.agent, viewport) != null ||
+                (fresh.agent in setOf("grok", "agy") && usageDialogHint(fresh.agent, viewport)) ||
+                detectPrompt(forPhone(viewport), false, fresh.agent) != null)
                 return RelayResult.REFUSED
             val line = inputLineOf(viewport, fresh.agent)
             // A draft of several rows whose first row is empty is a draft too.
