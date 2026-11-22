@@ -43,6 +43,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.billmongan.herdrdroid.herdr.Herdr
 import com.billmongan.herdrdroid.herdr.Backend
+import com.billmongan.herdrdroid.herdr.NeedsYouCadence
 import com.billmongan.herdrdroid.herdr.detectBackend
 import com.billmongan.herdrdroid.herdr.HerdrError
 import com.billmongan.herdrdroid.herdr.Pane
@@ -1124,6 +1125,7 @@ class AppViewModel internal constructor(
      *  so it is replaced before any poll can stall on it. */
     fun onForeground(handsFreeActive: Boolean = false) {
         foreground = true
+        tuneFleet()
         // Only an already-running, explicitly started session can defer the app prompt.
         // Keystore authentication and any lock already in effect are unchanged.
         if (!handsFreeActive) refreshAppLock()
@@ -1155,6 +1157,7 @@ class AppViewModel internal constructor(
         agentMessagingForeground = false
         updateAgentMessagingSession()
         foreground = false
+        tuneFleet()
         clearPanePrefetch()
         backgroundAt = System.currentTimeMillis()
         // The open chat is written to the phone, so reopening the app shows it at once (1.2.9).
@@ -4058,13 +4061,49 @@ class AppViewModel internal constructor(
             // running shell there shows as working in the drawer, cards and notifications.
             busyOf = { h -> h.workCounts(h.panes0Cache, transcriptScript).second },
         ).also { fleet = it }
-        f.everyMs = if (watching) 5_000L else 10_000L
+        f.everyMs = NeedsYouCadence.fleetGapMs(watching, drawerShown, foreground)
         f.screenOn = ::screenOn
         f.watch(watchable())
     }
 
+    /** The other servers' read gap for the drawer and the app's place (2.1.4). */
+    private fun tuneFleet() {
+        fleet?.everyMs = NeedsYouCadence.fleetGapMs(watching, drawerShown, foreground)
+    }
+
+    private var pushJob: Job? = null
+    private val statusPush = com.billmongan.herdrdroid.herdr.StatusPush { android.os.SystemClock.elapsedRealtime() }
+    private val backgroundPush = com.billmongan.herdrdroid.herdr.StatusPush { android.os.SystemClock.elapsedRealtime() }
+
+    /**
+     * 2.1.4 (Bill: "maybe you can pull in the background a little more often or something like that
+     * or even do a push thing"): while the app is in front, one herdr wait on the open server ends
+     * when any agent's state changes or a Claude or OpenCode screen shows a dialog, and the list is
+     * read at once. The screens' own list polls stay as the safety net. One loop per app, idle
+     * (no command) while the app is behind, locked, offline or on herdr-core.
+     */
+    private fun ensureStatusPush() {
+        if (pushJob?.isActive == true) return
+        pushJob = viewModelScope.launch {
+            while (isActive) {
+                val h = herdr
+                val list = panes
+                if (h == null || !foreground || locked || link != Link.CONNECTED || h.backend == Backend.CORE || list.none { it.agent != null }) {
+                    delay(1_000); continue
+                }
+                val r = try {
+                    statusPush.round(h, list, NeedsYouCadence.PUSH_WAIT_MS) {
+                        if (foreground && herdr === h) { refreshPanes(); panes } else null
+                    }
+                } catch (c: CancellationException) { throw c } catch (_: Exception) { null }
+                delay(if (r == null) NeedsYouCadence.WAIT_RETRY_MS else NeedsYouCadence.pauseAfter(r.wake != null, r.elapsedMs, NeedsYouCadence.PUSH_WAIT_MS))
+            }
+        }
+    }
+
     private fun startWatching() {
         if (herdr == null) return
+        ensureStatusPush()
         ensureFleet()
         if (!watching) return
         Notify.channels(getApplication())
@@ -4077,9 +4116,17 @@ class AppViewModel internal constructor(
                 if (foreground || h == null || current?.overWebSocket == true) { delay(3_000); continue }
                 // Behind (1.4.1): wait on herdr for any agent to change state, up to 60 s, instead of
                 // asking every few seconds; where herdr can't wait, poll every 3 s (12 s, screen off).
-                val changed = runCatching { h.waitForChange(panes, 60_000) }.getOrNull()
-                if (changed == null) delay(if (screenOn()) 3_000 else 12_000)
-                if (!foreground && herdr === h) runCatching { refreshPanes() }
+                // 2.1.4: the wait also watches the Claude and OpenCode screens herdr doesn't report on,
+                // and a wake reads the list at once, no more than once every 2 s.
+                val r = runCatching {
+                    backgroundPush.round(h, panes, NeedsYouCadence.BACKGROUND_WAIT_MS) {
+                        if (!foreground && herdr === h) { runCatching { refreshPanes() }; panes } else null
+                    }
+                }.getOrNull()
+                if (r?.wake == null) {
+                    delay(if (screenOn()) 3_000 else 12_000)
+                    if (!foreground && herdr === h) runCatching { refreshPanes() }
+                } else delay(NeedsYouCadence.pauseAfter(true, r.elapsedMs, NeedsYouCadence.BACKGROUND_WAIT_MS))
             }
         }
     }
@@ -4511,7 +4558,22 @@ class AppViewModel internal constructor(
     }
 
     /** Whether the drawer is pulled out. */
-    var drawerOpen by mutableStateOf(false)
+    private var drawerShown by mutableStateOf(false)
+    /**
+     * 2.1.4 (Bill: the drawer's yellow badge lit late): opening the drawer reads the open server's
+     * list and pokes the other servers' watcher at once, and both are read more often while it is out.
+     */
+    var drawerOpen: Boolean
+        get() = drawerShown
+        set(v) {
+            val opened = v && !drawerShown
+            drawerShown = v
+            tuneFleet()
+            if (opened && foreground) {
+                fleet?.poke()
+                if (herdr != null) viewModelScope.launch { runCatching { refreshPanes() } }
+            }
+        }
 
     private val statusOrder = listOf(Status.NEEDS_YOU, Status.WORKING, Status.DONE, Status.IDLE, Status.UNKNOWN)
 
