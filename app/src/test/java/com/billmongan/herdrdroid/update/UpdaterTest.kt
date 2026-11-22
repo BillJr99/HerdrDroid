@@ -169,9 +169,9 @@ class UpdaterTest {
         updater.check(manual = true)
         assertTrue(updater.dialog is UpdateDialogState.Available)
         updater.dismiss()
-        http.body = releaseJson("2.1.6")
+        http.body = releaseJson("2.2.0")
         updater.check(manual = false)
-        assertEquals("2.1.6", (updater.dialog as UpdateDialogState.Available).release.version.toString())
+        assertEquals("2.2.0", (updater.dialog as UpdateDialogState.Available).release.version.toString())
     }
 
     @Test fun aDraftOrAMissingApkOffersNothing() = runBlocking {
