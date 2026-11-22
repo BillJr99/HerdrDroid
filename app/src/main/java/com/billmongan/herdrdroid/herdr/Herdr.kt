@@ -585,16 +585,37 @@ class Herdr internal constructor(
     private fun usageSnapshotCommand(paneId: String, agent: String) =
         "$PY -c ${shq(USAGE_OVERLAY_SNAPSHOT)} $herdr ${shq(paneId)} ${shq(agent)}"
 
-    internal suspend fun readUsageOverlay(paneId: String, agent: String): UsageOverlay? =
-        (readUsageState(paneId, agent) as? UsageState.Open)?.overlay
+    internal suspend fun readUsageOverlay(paneId: String, agent: String, anyAgent: Boolean = false): UsageOverlay? =
+        (readUsageState(paneId, agent, anyAgent) as? UsageState.Open)?.overlay
+
+    /** The guarded live snapshot (occupant digest and visible screen), or null when refused or unreadable. */
+    private suspend fun panelSnapshot(paneId: String, agent: String): Pair<String, String>? {
+        if (core) return null
+        val json = runNow(usageSnapshotCommand(paneId, agent), timeoutSeconds = 5).trim()
+        if (json.isEmpty()) return null
+        val o = runCatching { JSONObject(json) }.getOrNull() ?: return null
+        val visible = o.optString("visible")
+        if (visible.length > 20_000) return null
+        return (o.optString("occupant").ifEmpty { return null }) to visible
+    }
+
+    /**
+     * The guarded live read for closing an informational panel (2.2.1, [closePanelAndVerify]): a
+     * positively identified panel, the composer back, something that must not get an Esc, or can't tell.
+     */
+    internal suspend fun readPanelState(paneId: String, agent: String): PanelState {
+        val (occupant, visible) = panelSnapshot(paneId, agent) ?: return PanelState.Unknown
+        return panelStateOf(agent, occupant, visible)
+    }
 
     /**
      * The guarded live read of [paneId] (2.1.4): its usage dialog in a known layout, no dialog, or
      * can't tell (the read was refused: the pane is working, scrolled back, or changed occupant;
      * or the dialog's hint is drawn in a layout the app doesn't know).
      */
-    internal suspend fun readUsageState(paneId: String, agent: String): UsageState {
-        if (core || agent !in USAGE_DIALOG_AGENTS) return UsageState.Unknown
+    internal suspend fun readUsageState(paneId: String, agent: String, anyAgent: Boolean = false): UsageState {
+        // 2.2.1: [anyAgent] when a panel shows on a recent read of an agent outside the usage set.
+        if (core || (agent !in USAGE_DIALOG_AGENTS && !anyAgent)) return UsageState.Unknown
         val json = runNow(usageSnapshotCommand(paneId, agent), timeoutSeconds = 5).trim()
         if (json.isEmpty()) return UsageState.Unknown
         val objectJson = runCatching { JSONObject(json) }.getOrNull() ?: return UsageState.Unknown

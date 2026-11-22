@@ -1,0 +1,46 @@
+
+  ~/work/sample                                                                                            137k / 256k │ [Dashboard]
+
+
+     ❯ neutral sample text of an earlier prompt kept for its shape only, nothing more here now.                   1:58 PM
+       neutral sample text of an earlier prompt kept for its shape only neutral sample text of it.
+       neutral sample text kept for its shape …
+
+
+     ◆ Thought for 0.6s
+
+     ok                                                                                                                    1:58 PM
+
+     Worked for 11s
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ ❯                                                                                                                              │
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────── Grok 4.7 (high) · auto-review ─╯
+
+  Shift+Tab:mode  │  Ctrl+.:shortcuts
