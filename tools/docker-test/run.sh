@@ -67,7 +67,8 @@ RC=$?
 echo "exit=$RC seconds=$(( $(date +%s) - START ))" >> "$LOG"
 
 rm -rf /w/out/test-results && mkdir -p /w/out/test-results
-cp -r app/build/test-results/testDebugUnitTest /w/out/test-results/ 2>/dev/null
+# Test results only from a run that ran tests (a compile run would pick up an older run's files).
+[ "$MODE" != compile ] && cp -r app/build/test-results/testDebugUnitTest /w/out/test-results/ 2>/dev/null
 [ "$MODE" = full ] && cp app/build/outputs/apk/debug/*.apk /w/out/ 2>/dev/null
 
 # The summary: exit status, compile errors, failing tests and totals.
