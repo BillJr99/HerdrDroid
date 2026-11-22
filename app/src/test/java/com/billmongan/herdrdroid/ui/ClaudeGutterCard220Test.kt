@@ -1,5 +1,7 @@
 package com.billmongan.herdrdroid.ui
 
+import com.billmongan.herdrdroid.OUTERMOST_RULE
+import com.billmongan.herdrdroid.IdleMainLooperRule
 import androidx.compose.foundation.layout.Column
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -26,6 +28,7 @@ import java.io.File
 @RunWith(AndroidJUnit4::class)
 @Config(qualifiers = "w420dp-h1200dp")
 class ClaudeGutterCard220Test {
+    @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = IdleMainLooperRule()
     @get:Rule val rule = createComposeRule()
 
     private fun screen(path: String) = requireNotNull(javaClass.getResource("/screens/claude/$path")).readText()

@@ -1,5 +1,7 @@
 package com.billmongan.herdrdroid.ui
 
+import com.billmongan.herdrdroid.OUTERMOST_RULE
+import com.billmongan.herdrdroid.IdleMainLooperRule
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -16,6 +18,7 @@ import org.junit.runner.RunWith
 /** 2.2.0: Claude's question pills as buttons that move the dialog, and as display only without a handler. */
 @RunWith(AndroidJUnit4::class)
 class QuestionPillsUi220Test {
+    @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = IdleMainLooperRule()
     @get:Rule val rule = createComposeRule()
 
     private val screen = stripAnsi(checkNotNull(javaClass.getResource("/screens/claude/captured-2.1.329/styled/mq-moved-right1.ansi")).readText())

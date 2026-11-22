@@ -1,5 +1,6 @@
 package com.billmongan.herdrdroid
 
+import org.junit.Rule
 import android.Manifest
 import android.app.Application
 import android.app.NotificationManager
@@ -42,6 +43,7 @@ import org.robolectric.Shadows.shadowOf
  */
 @RunWith(AndroidJUnit4::class)
 class QuestionOptions212Test {
+    @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = IdleMainLooperRule()
     private fun res(path: String) = checkNotNull(javaClass.getResource(path)).readText()
     private val question = res("/screens/opencode/live-2026-11-21/question-2.3.2.txt")
     private val permission = res("/screens/opencode/live-2026-11-21/permission-shell-2.3.2.txt")

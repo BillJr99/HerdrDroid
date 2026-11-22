@@ -44,6 +44,7 @@ import org.robolectric.annotation.GraphicsMode
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34], qualifiers = "w420dp-h1200dp")
 class PaneQuestionContextTest {
+    @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = IdleMainLooperRule()
     @get:Rule val rule = createComposeRule()
 
     @Test fun activeQuestionDoesNotRepeatTranscriptProse() = withPane(items = listOf(reply)) {
