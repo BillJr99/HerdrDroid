@@ -55,16 +55,13 @@ object SessionControls {
         // OpenCode 2.3.2: /new goes to its home page, and the new session exists (and herdr's TUI plugin
         // reports it) only when the first message is sent; /sessions opens its picker.
         "opencode", "opencode-ursinus" -> Spec("opencode", "/new", picker = "/sessions", herdrAtOnce = false)
-        // pi 1.6.0: /new, /resume (picker). Its extension reports session_start (new, resume).
-        "pi" -> Spec("pi", "/new", picker = "/resume")
-        // Oh My Pi 19.0.1: /new, /resume [session id]. Its extension reports session_start and session_switch.
-        "omp" -> Spec("omp", "/new", resumeById = "/resume", idOf = { idOfLog(it.ref) }, picker = "/resume")
+        // pi 1.6.0 (/new, /resume) and Oh My Pi 19.0.1 (/new, /resume [session id]) are left out, with
+        // Copilot below: the app can't find their input line on screen, so it can't check that nothing
+        // is typed there before a command goes in, which every write from these menus needs.
         // Hermes 0.23.3: /new (its plugin reports on_session_reset). Its /resume takes a name, not an id.
         "hermes" -> Spec("hermes", "/new")
         // Grok 1.0.92: /new, /resume [id|title]; SessionStart reports both (sources new and load).
         "grok" -> Spec("grok", "/new", resumeById = "/resume", idOf = { idOfFolder(it.ref) }, picker = "/resume")
-        // Copilot CLI 1.0.114: /new, /resume <id|name>; SessionStart reports a new one.
-        "copilot" -> Spec("copilot", "/new", resumeById = "/resume", idOf = { idOfFolder(it.ref) })
         // Kiro CLI 3.5.0: /chat new, /chat resume (picker). herdr drops Kiro's (third-party) session reports.
         "kiro" -> Spec("kiro", "/chat new", picker = "/chat resume", herdrTracks = false)
         // Mistral Vibe 3.1.2: /new (= /clear), /resume (picker). herdr drops its session reports too.

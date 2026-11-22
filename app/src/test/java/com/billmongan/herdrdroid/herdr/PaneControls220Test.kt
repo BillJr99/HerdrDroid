@@ -135,10 +135,13 @@ class PaneControls220Test {
         val question = res("claude/captured-2.1.329/single-question.txt")
         assertEquals("a question or dialog is open in it", PaneControls.writeBlock("claude", question))
         assertNull(PaneControls.writeBlock("claude", res("claude/captured-2.1.329/composer-titled-list-empty.ansi")))
-        // The empty input boxes captured live, for every agent, let a menu write go.
-        val refused = listOf("claude", "vibe", "kiro", "opencode", "grok", "muse", "agy", "codex", "pi", "omp", "hermes", "copilot")
-            .filter { a -> PaneControls.writeBlock(a, res("$a/live-2026-11-20-composer/empty.ansi")) != null }
-        assertEquals(emptyList<String>(), refused)
+        // The empty input boxes captured live let a menu write go for every agent with a menu. pi, Oh My
+        // Pi and Copilot draw no input line the app can find, so nothing would be typed: they have none.
+        val all = listOf("claude", "vibe", "kiro", "opencode", "grok", "muse", "agy", "codex", "pi", "omp", "hermes", "copilot")
+        val refused = all.filter { a -> PaneControls.writeBlock(a, res("$a/live-2026-11-20-composer/empty.ansi")) != null }
+        assertEquals(listOf("pi", "omp", "copilot"), refused)
+        for (a in all) if (PaneControls.modes(a) != null || PaneControls.thinking(a) != null || SessionControls.forAgent(a) != null)
+            assertTrue(a, a !in refused)
     }
 
     @Test fun anUnchangedOrUnreadFooterStopsTheSwitch() {
