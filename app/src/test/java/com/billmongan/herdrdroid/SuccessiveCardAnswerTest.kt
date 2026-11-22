@@ -28,12 +28,14 @@ import com.billmongan.herdrdroid.voice.ConfirmationGrammar
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Shadows.shadowOf
 
 @RunWith(AndroidJUnit4::class)
 class SuccessiveCardAnswerTest {
+    @get:Rule val idleMainLooper = IdleMainLooperRule()
     @Test fun livePiQuestionOverridesWorkingUntilDismissed() = fixture("pi", piQuestion) {
         status(Status.WORKING)
         readSelectedPane()

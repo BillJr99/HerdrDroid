@@ -18,6 +18,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Shadows.shadowOf
@@ -26,6 +27,7 @@ import java.time.Duration
 /** Opt-in, loopback-only SSH to a synthetic CLI, with no real terminal behind it. */
 @RunWith(AndroidJUnit4::class)
 class UsageRecoveryTest {
+    @get:Rule val idleMainLooper = IdleMainLooperRule()
     @Test fun preExistingVisibleUsageRequiresOneExplicitTapAndRestoresTheDraft() = runBlocking {
         val port = System.getenv("HD_USAGE_FIXTURE_PORT")?.toIntOrNull()
         assumeTrue("no synthetic usage recovery fixture", port != null)
