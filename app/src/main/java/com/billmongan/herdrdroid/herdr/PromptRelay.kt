@@ -19,6 +19,13 @@ internal interface PromptRelayPort {
         permit.admit()
         send(pane, text, connection)
     }
+
+    /**
+     * 2.2.2: the forced relay's write, which may go to a working agent. The same permitted send as
+     * above, by the same route (herdr's agent prompt, never --force); only the transport's own
+     * idle requirement is relaxed to allow herdr's working status.
+     */
+    suspend fun sendForced(pane: Pane, text: String, connection: Any, permit: WritePermit) = send(pane, text, connection, permit)
 }
 
 /** Who is in a pane: same pane, tab, workspace, agent, folder, terminal and agent session. */
@@ -95,6 +102,12 @@ internal class PromptRelay(
     private val dispatch: PaneDispatch,
     private val portFor: (String) -> PromptRelayPort?,
     private val gate: WriteGate = WriteGate(),
+    /**
+     * 2.2.2: the lane alone (HerdrDroid's own queued message, answer or draft for that pane),
+     * without the watched pane's idle state. A forced send checks this one instead of
+     * [clearToSend]; when it is not given, a forced send checks [clearToSend].
+     */
+    private val laneClear: ((String, String) -> Boolean)? = null,
     private val clearToSend: (String, String) -> Boolean,
 ) {
     data class Target(val server: String, val pane: Pane, val port: PromptRelayPort, val connection: Any)
@@ -116,16 +129,25 @@ internal class PromptRelay(
         }
     }
 
+    /**
+     * [force] (2.2.2, Force Send on a cross-server card) skips only the checks that the destination
+     * is idle and has no background work: herdr's working status, background busy, the work count
+     * and the footer's "esc to interrupt". Every other check still runs on the fresh read right
+     * before typing: the same occupant, the link, the lane and write gate, the message text, no
+     * panel, no question or dialog, the input line on screen and empty. herdr's own --force is
+     * never used; the text is typed through the same guarded send as any other.
+     */
     suspend fun send(
         target: Target, text: String, authorizedWrite: WritePermit = WritePermit(),
-        refused: (RelayRefusal) -> Unit = {}, allowed: () -> Boolean,
+        refused: (RelayRefusal) -> Unit = {}, force: Boolean = false, allowed: () -> Boolean,
     ): RelayResult {
         val key = target.server to target.pane.id
+        val lane = if (force) laneClear ?: clearToSend else clearToSend
         fun invalid(): RelayRefusal? = when {
             !allowed() -> RelayRefusal.STOPPED
             !isCurrent(target) -> RelayRefusal.LINK
             gate.isClosing(key) -> RelayRefusal.CLOSING
-            !clearToSend(target.server, target.pane.id) -> RelayRefusal.LANE
+            !lane(target.server, target.pane.id) -> RelayRefusal.LANE
             else -> null
         }
         fun refuse(why: RelayRefusal): RelayResult {
@@ -140,14 +162,18 @@ internal class PromptRelay(
         try {
             val port = target.port
             // 2.2.1: background work alone does not hold an agent that takes input meanwhile.
-            val waitsForBackground = !takesInputDuringBackgroundWork(target.pane.agent)
+            val waitsForBackground = !force && !takesInputDuringBackgroundWork(target.pane.agent)
             var notIdle: RelayRefusal = RelayRefusal.NOT_IDLE
             suspend fun idlePane(): Pane? {
                 val p = port.pane(target.pane.id, target.connection)
                 notIdle = when {
                     p == null -> RelayRefusal.NOT_IDLE
                     !sameOccupant(target.pane, p) -> RelayRefusal.REPLACED
-                    p.status !in setOf(Status.IDLE, Status.DONE) || p.scrollOffset != 0 -> RelayRefusal.NOT_IDLE
+                    // Scrolled back hides the input line, so even a forced send waits for the bottom.
+                    p.scrollOffset != 0 -> if (force) RelayRefusal.NO_INPUT else RelayRefusal.NOT_IDLE
+                    // A forced send still never goes to an agent waiting on you.
+                    force && p.status == Status.NEEDS_YOU -> RelayRefusal.QUESTION
+                    !force && p.status !in setOf(Status.IDLE, Status.DONE) -> RelayRefusal.NOT_IDLE
                     p.backgroundBusy && waitsForBackground -> RelayRefusal.BACKGROUND
                     else -> return p
                 }
@@ -167,7 +193,7 @@ internal class PromptRelay(
                 return refuse(RelayRefusal.USAGE)
             if (detectPrompt(forPhone(viewport), false, fresh.agent) != null) return refuse(RelayRefusal.QUESTION)
             // 2.2.1: the screen says a turn is running ("esc to interrupt" under the box), whatever herdr says.
-            if (composerFooterSaysWorking(viewport)) return refuse(RelayRefusal.NOT_IDLE)
+            if (!force && composerFooterSaysWorking(viewport)) return refuse(RelayRefusal.NOT_IDLE)
             val line = inputLineOf(viewport, fresh.agent)
             // A draft of several rows whose first row is empty is a draft too.
             val draft = composerDraftOf(viewport, fresh.agent) != null
@@ -176,7 +202,7 @@ internal class PromptRelay(
             // This recheck narrows, but does not eliminate, the server-side read/write race.
             val ready = idlePane() ?: return refuse(notIdle)
             invalid()?.let { return refuse(it) }
-            port.send(ready, text, target.connection, permit)
+            if (force) port.sendForced(ready, text, target.connection, permit) else port.send(ready, text, target.connection, permit)
             return RelayResult.SENT
         } catch (c: CancellationException) {
             // Cancelled after the write started: it may have arrived, so it is reported and never

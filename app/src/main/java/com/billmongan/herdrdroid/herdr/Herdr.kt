@@ -313,6 +313,9 @@ class Herdr internal constructor(
         // The permit is checked by the SSH transport after it has the connection (2.0.1 finding 4).
         override suspend fun send(pane: Pane, text: String, connection: Any, permit: WritePermit) =
             sendPermitted(pane, text, connection, permit)
+        // 2.2.2: Force Send's prompt to a working agent, still herdr's agent prompt (it reaches a working agent), never --force.
+        override suspend fun sendForced(pane: Pane, text: String, connection: Any, permit: WritePermit) =
+            sendMessage(pane, text, allowTerminalFallback = false, expectedConnection = connection, permit = permit, busyOk = true)
     }
 
     /** No tab list, status enrichment, bulk lock, or reconnect during a card tap. */
@@ -525,11 +528,14 @@ class Herdr internal constructor(
 
     private suspend fun sendMessage(
         pane: Pane, text: String, allowTerminalFallback: Boolean, expectedConnection: Any?, permit: WritePermit?,
+        busyOk: Boolean = false,
     ) {
         // herdr's own status picks the route: an OpenCode pane marked needs-you from its screen
         // keeps the send it had (2.1.2).
         val status = pane.sendStatus
-        require(allowTerminalFallback || (pane.agent != null && status in setOf(Status.IDLE, Status.DONE)))
+        // 2.2.2: a forced relay may prompt a working agent; never one waiting on you.
+        val sendable = if (busyOk) setOf(Status.IDLE, Status.DONE, Status.WORKING) else setOf(Status.IDLE, Status.DONE)
+        require(allowTerminalFallback || (pane.agent != null && status in sendable))
         require(permit == null || (!allowTerminalFallback && expectedConnection != null))
         lastSendRoute = when {
             core -> "hc send"
