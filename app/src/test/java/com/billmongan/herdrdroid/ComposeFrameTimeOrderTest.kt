@@ -15,14 +15,22 @@ class ComposeFrameTimeOrderTest {
     private val compose = Request.method(AaaComposeOrderProbeTest::class.java, "aTrivialComposableRenders")
     private val follower = Request.method(ComposeFrameTimeFollowerTest::class.java, "aComposeTestFindsNoStaleFrameTimeAndItsClockStaysPut")
 
+    private val lost = Request.method(LostComposeCallbackTest::class.java, "aStateWriteAfterTheLastDrainLeavesComposesCallbackToBeDropped")
+
     /**
      * The CI failure of 2.2.0: the dispatcher's callback is lost at the end of a test. Without the
      * repair in IdleMainLooperRule.before, the follower fails after 60 seconds with AppNotIdleException.
      */
-    @Test fun aLostComposeCallbackDoesNotHangTheNextComposeTest() = runInOrder(
+    @Test fun aLostComposeCallbackDoesNotHangTheNextComposeTest() = runInOrder(compose, lost, follower)
+
+    /**
+     * The same lost callback also leaves the dispatcher's own Choreographer waiting for a frame that
+     * was dropped. Without the repair, the next activity's composition never recomposes.
+     */
+    @Test fun aLostComposeCallbackDoesNotStopTheNextActivityRecomposing() = runInOrder(
         compose,
-        Request.method(LostComposeCallbackTest::class.java, "aStateWriteAfterTheLastDrainLeavesComposesCallbackToBeDropped"),
-        follower,
+        lost,
+        Request.method(ComposeActivityFollowerTest::class.java, "anActivitysCompositionStillRecomposes"),
     )
 
     /**
