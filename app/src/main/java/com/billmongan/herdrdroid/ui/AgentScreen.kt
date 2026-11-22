@@ -1640,7 +1640,7 @@ internal class ScreenCopy(private val segs: List<Seg>, msgs: List<com.billmongan
     private fun range(i: Int): IntRange? = owner.getOrNull(i) ?: i.takeIf { segs.getOrNull(it)?.let(::textOf) != null }?.let { it..it }
 
     /** The whole message piece [i] is in, or null when it is not text (a rule, a gap, the footer). */
-    fun whole(i: Int): String? = range(i)?.mapNotNull { segs.getOrNull(it)?.let(::textOf) }?.filter { it.isNotBlank() }
+    fun whole(i: Int): String? = if (segs.getOrNull(i)?.let(::textOf) == null) null else range(i)?.mapNotNull { segs.getOrNull(it)?.let(::textOf) }?.filter { it.isNotBlank() }
         ?.joinToString("\n\n")?.takeIf { it.isNotBlank() }
 
     /** The boxes in the message piece [i] is in, each as it shows. */
