@@ -18,14 +18,11 @@ import com.billmongan.herdrdroid.fleet.FleetState
 import com.billmongan.herdrdroid.herdr.*
 import com.billmongan.herdrdroid.ssh.*
 import com.billmongan.herdrdroid.store.Server
-import androidx.compose.foundation.layout.Column
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.onNodeWithContentDescription
-import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onRoot
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -40,7 +37,8 @@ import org.robolectric.Shadows.shadowOf
  * 2.1.4 (Bill: "Claude on another host doesn't think it can see hermes here via cross server
  * herdrdroid"). Claude is the source on one server; minipc2 runs Hermes with the row herdr really
  * gives it: a `local-` agent session, an idle status, and a cwd that differs from foreground_cwd.
- * 2.1.5: a frame naming Hermes resolves to it, and typing the card's code in the composer sends it.
+ * 2.1.5: a frame naming Hermes resolves to it. 2.2.0: Yes on the phone's dialog (or Approve on the
+ * card) sends it; nobody types the code.
  */
 @RunWith(AndroidJUnit4::class)
 class CrossServerHermesDestinationTest {
@@ -128,40 +126,52 @@ class CrossServerHermesDestinationTest {
         assertTrue(minipc2.writes.isEmpty())
     }
 
-    /** The card, then the confirmation typed in the pane's own composer: delivered to Hermes, nothing typed into the source. */
-    @Test fun theCardShowsTheMessageAndTypingItsCodeInTheComposerSendsIt() {
+    /** 2.2.0: the frame opens a Yes/No dialog with the whole message; Yes delivers it to Hermes once, nothing typed anywhere. */
+    @Test fun theDialogShowsTheWholeMessageAndYesSendsItOnce() {
         vm.changeAgentMessaging(true)
         runBlocking { frame("Hermes on minipc2") }
-        val passedOn = mutableListOf<String>()
-        rule.setContent {
-            Column {
-                CrossServerPanel(vm, "p1")
-                var text by remember { mutableStateOf("") }
-                ChatComposer(value = text, onValueChange = { text = it }, placeholder = "Message Claude",
-                    canSend = text.isNotBlank(), onSend = { composerSend(vm, "p1", text.trim()) { passedOn += it }; text = "" })
-            }
-        }
-        rule.onNodeWithContentDescription("Cross-server message card").assertIsDisplayed()
-        rule.onNodeWithText("Cross-server message").assertIsDisplayed()
-        rule.onNodeWithText("From: Claude on minipc").assertIsDisplayed()
-        rule.onNodeWithText("To: Hermes on minipc2").assertIsDisplayed()
-        rule.onNodeWithText(exact).assertIsDisplayed()
-        rule.onNodeWithText("Code: $code").assertIsDisplayed()
-        rule.onNodeWithText("Cancel").assertIsDisplayed()
-        // Other text goes to the pane as usual and the card stays.
-        rule.onNode(hasSetTextAction()).performTextInput("thanks")
-        rule.onNodeWithContentDescription("Send").performClick()
-        rule.runOnIdle { assertEquals(listOf("thanks"), passedOn) }
-        rule.onNodeWithText("Code: $code").assertIsDisplayed()
+        rule.setContent { CrossServerPanel(vm, "p1") }
+        rule.onNodeWithContentDescription("Approve cross-server message").assertIsDisplayed()
+        rule.onNodeWithText("Send this message to another server?").assertIsDisplayed()
+        rule.onAllNodesWithText("From: Claude on minipc").assertCountEquals(2)
+        rule.onAllNodesWithText("To: Hermes on minipc2").assertCountEquals(2)
+        rule.onAllNodesWithText(exact).assertCountEquals(2)
+        rule.onNodeWithText("Yes, send").assertIsDisplayed()
+        rule.onNodeWithText("No").assertIsDisplayed()
         assertTrue(minipc2.writes.isEmpty())
-        rule.onNode(hasSetTextAction()).performTextInput(code.lowercase())
-        rule.onNodeWithContentDescription("Send").performClick()
+        rule.onNodeWithText("Yes, send").performClick()
         rule.waitUntil(5_000) { vm.crossServerCardsFor("p1").single().state == AppViewModel.CrossServerState.SENT }
-        rule.onNodeWithText(RelayResult.SENT.feedback).assertIsDisplayed()
-        rule.onNodeWithText("Close").assertIsDisplayed()
-        rule.runOnIdle { assertEquals(listOf("thanks"), passedOn) }
+        rule.onNodeWithContentDescription("Approve cross-server message").assertDoesNotExist()
+        rule.onNodeWithText(RelayResult.SENT.feedback).performScrollTo().assertIsDisplayed()
+        rule.onNodeWithText("Close").performScrollTo().assertIsDisplayed()
         assertEquals(1, minipc2.writes.size)
         assertTrue(minipc2.writes.single().contains("'agent' 'prompt' 'w2:p9'"))
+        assertFalse(minipc2.writes.single().contains(code))
+        assertTrue(source.writes.isEmpty())
+    }
+
+    @Test fun noOnTheDialogCancelsAndSendsNothing() {
+        vm.changeAgentMessaging(true)
+        runBlocking { frame("Hermes on minipc2") }
+        rule.setContent { CrossServerPanel(vm, "p1") }
+        rule.onNodeWithText("No").performClick()
+        rule.onNodeWithContentDescription("Approve cross-server message").assertDoesNotExist()
+        rule.onNodeWithText("Cancelled. Nothing was sent.").performScrollTo().assertIsDisplayed()
+        rule.runOnIdle { assertEquals(AppViewModel.CrossServerState.CANCELLED, vm.crossServerCardsFor("p1").single().state) }
+        assertTrue(minipc2.writes.isEmpty() && source.writes.isEmpty())
+    }
+
+    /** Back leaves the proposal on its card; Approve there sends it once. */
+    @Test fun approveOnTheCardSendsOnceAfterTheDialogIsPutAside() {
+        vm.changeAgentMessaging(true)
+        runBlocking { frame("Hermes on minipc2") }
+        rule.setContent { CrossServerPanel(vm, "p1") }
+        rule.runOnIdle { vm.deferCrossServerDialog(vm.crossServerCardsFor("p1").single()) }
+        rule.onNodeWithContentDescription("Approve cross-server message").assertDoesNotExist()
+        rule.onNodeWithText("Cancel").performScrollTo().assertIsDisplayed()
+        rule.onNodeWithText("Approve").performScrollTo().performClick()
+        rule.waitUntil(5_000) { vm.crossServerCardsFor("p1").single().state == AppViewModel.CrossServerState.SENT }
+        assertEquals(1, minipc2.writes.size)
         assertTrue(source.writes.isEmpty())
     }
 
@@ -169,22 +179,45 @@ class CrossServerHermesDestinationTest {
         vm.changeAgentMessaging(true)
         runBlocking { frame("Hermes on minipc2") }
         rule.setContent { CrossServerPanel(vm, "p1") }
-        rule.onNodeWithText("Cancel").performClick()
-        rule.onNodeWithText("Cancelled. Nothing was sent.").assertIsDisplayed()
-        rule.runOnIdle { assertTrue(vm.crossServerCodeReply("p1", code)) }
+        rule.runOnIdle { vm.deferCrossServerDialog(vm.crossServerCardsFor("p1").single()) }
+        rule.onNodeWithText("Cancel").performScrollTo().performClick()
+        rule.onNodeWithText("Cancelled. Nothing was sent.").performScrollTo().assertIsDisplayed()
+        rule.runOnIdle { assertNull(vm.crossServerApprovalOf(vm.crossServerCardsFor("p1").single())) }
         assertTrue(minipc2.writes.isEmpty() && source.writes.isEmpty())
+    }
+
+    /**
+     * 2.2.0 step 1: in a window about 470 dp tall (a phone with the keyboard up; this is
+     * Robolectric's default) a tall card left the message box no height at all: its Send button
+     * measured 0 by 0 in 2.1.5. The cards now take a share of the window and the box always fits.
+     */
+    @Test fun theMessageBoxStillFitsUnderATallCardInAShortWindow() {
+        vm.changeAgentMessaging(true)
+        val long = (1..14).joinToString("\n") { "Line $it of a longer cross-server message for Hermes." }
+        runBlocking { frame("Hermes on minipc2", long) }
+        rule.runOnUiThread { vm.deferCrossServerDialog(vm.crossServerCardsFor("p1").single()) }
+        rule.setContent { AgentScreen(vm, "p1", readScreen = { }) }
+        rule.onNodeWithContentDescription("Cross-server message card").assertExists()
+        val window = rule.onRoot().fetchSemanticsNode().boundsInRoot
+        val send = rule.onNodeWithContentDescription("Send").fetchSemanticsNode().boundsInRoot
+        assertTrue("Send button $send in $window", send.height >= 30f && send.bottom <= window.bottom + 1f)
+        rule.onNode(hasSetTextAction()).assertIsDisplayed()
     }
 
     @Test fun anUnmatchedDestinationOffersTheReachableAgentsToChooseFrom() {
         vm.changeAgentMessaging(true)
         runBlocking { frame("Somebody") }
         rule.setContent { CrossServerPanel(vm, "p1") }
-        rule.onNodeWithText("Choose a destination:").assertIsDisplayed()
+        rule.onNodeWithText("Choose a destination:").performScrollTo().assertIsDisplayed()
         rule.onNodeWithText("Claude on minipc2 · minipc2.invalid:22 · w2:p5").performScrollTo().assertIsDisplayed()
+        rule.onNodeWithContentDescription("Approve cross-server message").assertDoesNotExist()
         rule.onNodeWithText("Hermes on minipc2 · minipc2.invalid:22 · w2:p9").performScrollTo().performClick()
-        rule.onNodeWithText("To: Hermes on minipc2").assertIsDisplayed()
+        // The pick shows on the card and opens the Yes/No dialog for it; nothing is sent yet.
+        rule.onAllNodesWithText("To: Hermes on minipc2").assertCountEquals(2)
+        rule.onNodeWithContentDescription("Approve cross-server message").assertIsDisplayed()
         assertTrue(minipc2.writes.isEmpty())
     }
+
 
     private fun unnameMinipc2() {
         val unnamed = minipc2.server.copy(name = "")
@@ -195,11 +228,11 @@ class CrossServerHermesDestinationTest {
         }
     }
 
-    private suspend fun frame(to: String): AppViewModel.CrossServerCard {
+    private suspend fun frame(to: String, text: String = exact): AppViewModel.CrossServerCard {
         vm.readPane("p1")
-        source.frame = fixtureMessageFrame(code, exact, to)
+        source.frame = fixtureMessageFrame(code, text, to)
         vm.readPane("p1")
-        return vm.crossServerCardsFor("p1").single().also { assertEquals(exact, it.text) }
+        return vm.crossServerCardsFor("p1").single().also { assertEquals(text, it.text) }
     }
 
     /** Claude on the server the phone has open: the source of the proposal. */

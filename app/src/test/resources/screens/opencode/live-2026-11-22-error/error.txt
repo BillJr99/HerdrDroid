@@ -1,0 +1,37 @@
+     ◈ Instructions updated: core/date
+
+  ┃
+  ┃  HerdrDroid notice, for information only. No reply is needed; if you must answer,
+  ┃  reply only "ok".
+  ┃  When the user asks you in chat to send a message to an agent on another server, do
+  ┃  not send it yourself. Render only this frame in a plain fenced code block, then
+  ┃  wait:
+  ┃  HDMSG2 <code>
+  ┃  HDTO <destination>
+  ┃  HD> <standard padded Base64 of your UTF-8 message, chunks of at most 40 characters,
+  ┃  each with its own HD> prefix>
+  ┃  HDEND <code>
+  ┃  <code> is a new code you pick for each frame: 6 characters from
+  ┃  ABCDEFGHJKMNPQRSTUVWXYZ23456789. <destination> is one name from the list below,
+  ┃  exactly as written. The message must be nonblank, at most 1024 UTF-8 bytes, with no
+  ┃  controls except line feeds and no secrets. Do not run a remote command.
+  ┃  Agents on other servers: Claude on AWS ServerAB, Claude · CLAUDE2 on AWS ServerAB,
+  ┃  Claude · usage-read on AWS ServerAB. The phone shows your frame to the user on a
+  ┃  card, and it is delivered only if the user types the code back on the phone; you
+  ┃  will not see that reply.
+  ┃
+
+     Error: No 'llmproxy__flagship/free' models are currently available. No 'flagship'
+     model is currently free on any configured provider. Membership is computed into            ⬖ Getting started                ✕
+     config['flagship_models'], refreshed on config['flagship_tier'].
+     refresh_frequency_days; free status is per-provider, so the same model may be paid           OpenCode includes free models so
+     here and free elsewhere.                                                                     you can start immediately.
+
+     Build · llmproxy flagship free (default) · 1m 25s                                            Connect from 75+ providers to
+                                                                                                  use other models, including
+  ┃                                                                                               Claude, GPT, Gemini etc
+  ┃
+  ┃                                                                                               Connect provider        /connect
+  ┃  Build · llmproxy flagship free (default) llmproxy (local)
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  ~/work/opencode-x                                           38.9K (19%)  ctrl+p commands    ~/work/opencode-x

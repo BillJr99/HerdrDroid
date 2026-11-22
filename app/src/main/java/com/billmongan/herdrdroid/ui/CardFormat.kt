@@ -288,6 +288,49 @@ object CardFormat {
         return out
     }
 
+    // ---- The screen card ------------------------------------------------------------------------
+
+    /** The screen card's rows as shown: [rows] without box gutters or focus markers, [focused] the row the marker was on. */
+    data class RegionView(val rows: List<String>, val focused: Int?, val focusedKey: String?)
+
+    private val GUTTER = Regex("""^(\s*)(?:[│┃]|\|(?=\s|$))\s?""")
+    private val GUTTER_END = Regex("""\s*[│┃]\s*$""")
+    private val FOCUS = Regex("""^(\s*)[❯›▶➤⟩]\s+(?=\S)""")
+    /** ">" is a focus marker only in front of a numbered option ("> 2. No"), never a quote or a prompt. */
+    private val ASCII_FOCUS = Regex("""^(\s*)>\s+(?=(?:\[[ xX✓✔]]\s+)?\d{1,2}[.)]\s)""")
+    private val NUMBERED = Regex("""^\s*(?:\[[ xX✓✔]]\s+)?(\d{1,2})[.)]\s""")
+
+    /**
+     * 2.2.0 (Bill: on a Claude question "I could see the vertical pipe and the sort of greater than
+     * sign that picks the currently chosen answer from the terminal"): the screen card's rows without
+     * the dialog's "│" gutter and without the "❯" focus marker, so they read like any other card; the
+     * focused row is returned so the card marks it itself. Display only: the card's identity, its
+     * fresh-read checks and the keys it sends use the rows as read. A marker counts as focus on a
+     * numbered row, or on a row below one (Claude's "❯ Next" button), never on the echoed prompt above.
+     */
+    fun regionView(region: List<String>): RegionView {
+        var focused: Int? = null
+        var seenOption = false
+        val rows = region.mapIndexed { i, raw ->
+            var l = raw.trimEnd()
+            var g = GUTTER.find(l)
+            while (g != null) { l = g.groupValues[1] + l.substring(g.range.last + 1); g = GUTTER.find(l) }
+            l = l.replace(GUTTER_END, "")
+            val f = FOCUS.find(l) ?: ASCII_FOCUS.find(l)
+            if (f != null) {
+                val rest = l.substring(f.range.last + 1)
+                if (NUMBERED.containsMatchIn(rest) || seenOption) {
+                    l = f.groupValues[1] + rest
+                    focused = i
+                }
+            }
+            if (NUMBERED.containsMatchIn(l)) seenOption = true
+            l
+        }
+        val key = focused?.let { NUMBERED.find(rows[it])?.groupValues?.get(1) }
+        return RegionView(rows, focused, key)
+    }
+
     /** A key hint at the end of a label ("(y)", "(esc)", "(Esc to stop)"), shown quieter. */
     private val KEY_HINT = Regex("""\s\((?:[a-z]|esc|tab|Esc to stop|Tab to edit)\)$""")
 

@@ -96,7 +96,32 @@ data class TranscriptRead(
     val hostNow: Long = 0L,
     /** The computer's UTC offset in minutes (2.1.4), for times an agent draws on its screen; null when the reader didn't say. */
     val hostTz: Int? = null,
+    /** 2.2.0: the session the pane's terminal is really in, when the reader found it. */
+    val live: LiveSession? = null,
 )
+
+/**
+ * 2.2.0 (Bill: "the pane should match the actual terminal session in use"): the session the reader
+ * found the pane's agent in. [ref] is its log file, or [sid] in [db] for OpenCode and Hermes; [how]
+ * says where it was read ("claude-pid", "codex-open", ..., or "herdr" for herdr's agent_session).
+ * [herdrStale]: the agent's own record names another session than herdr's agent_session.
+ */
+data class LiveSession(val sid: String?, val ref: String?, val db: String?, val how: String, val herdrStale: Boolean) {
+    companion object {
+        fun parse(o: JSONObject?): LiveSession? = o?.let {
+            LiveSession(
+                sid = it.optString("sid").takeIf { s -> !it.isNull("sid") && s.isNotBlank() },
+                ref = it.optString("ref").takeIf { s -> !it.isNull("ref") && s.isNotBlank() },
+                db = it.optString("db").takeIf { s -> !it.isNull("db") && s.isNotBlank() },
+                how = it.optString("how").ifBlank { "unknown" },
+                herdrStale = it.optBoolean("herdr_stale"),
+            )
+        }
+    }
+
+    /** Whether past session [ref] (a log file, or an id in a database) is this one. */
+    fun isSession(ref: String, db: String?): Boolean = if (db != null) sid == ref else this.ref == ref
+}
 
 object Transcript {
     fun parseRead(json: String): TranscriptRead {
@@ -115,8 +140,21 @@ object Transcript {
             items = (0 until arr.length()).mapNotNull { arr.optJSONObject(it) },
             hostNow = o.optLong("now", 0L),
             hostTz = if (o.has("tz") && !o.isNull("tz")) o.optInt("tz") else null,
+            live = LiveSession.parse(o.optJSONObject("live")),
         )
     }
+
+    /**
+     * 2.2.0: [cursor] with the pane and herdr's session id added, so the reader follows the session the
+     * terminal is in. A pinned cursor (the history view) is left alone; it stays on its session.
+     */
+    fun withLive(cursor: String, paneId: String, herdrSession: String?): String = runCatching {
+        val o = if (cursor.isBlank()) JSONObject() else JSONObject(cursor)
+        if (o.has("pin") || o.has("pin_sid")) return cursor
+        o.put("pane", paneId)
+        if (!herdrSession.isNullOrBlank()) o.put("hsid", herdrSession)
+        o.toString()
+    }.getOrDefault(cursor)
 
     /** How many item times a chat keeps (1.4.3); the oldest go first past it. */
     const val MAX_TIMES = 3000
