@@ -53,6 +53,7 @@ data class Server(
     val backend: String? = null,
 ) {
     val overWebSocket: Boolean get() = !wsUrl.isNullOrBlank()
+    /** For the phone user only: falls back to the account and host. Text agents receive uses [agentServerLabel]. */
     val label: String get() = name.ifBlank { "$user@$host" }
     val keystoreAlias: String get() = "herdrdroid_ssh_$id"
     val hasKey: Boolean get() = keyKind == "keystore" || (keyKind == "imported" && keyCipher != null)
@@ -605,4 +606,16 @@ object SshKeyVault {
     fun delete(alias: String) {
         runCatching { ks().deleteEntry(alias) }
     }
+}
+
+/**
+ * 2.1.4 (Grok's RC review 4): how a server is named in text that agents receive, such as the
+ * cross-server notice and the copied proposal instructions. It is the server's name when that is
+ * set, otherwise "server N" by its place in [servers] (or "another server" if it is not there).
+ * It never contains the account, host or port, which [Server.label] falls back to.
+ */
+internal fun agentServerLabel(server: Server, servers: List<Server>): String {
+    server.name.trim().takeIf { it.isNotEmpty() }?.let { return it }
+    val n = servers.indexOfFirst { it.id == server.id }
+    return if (n >= 0) "server ${n + 1}" else "another server"
 }

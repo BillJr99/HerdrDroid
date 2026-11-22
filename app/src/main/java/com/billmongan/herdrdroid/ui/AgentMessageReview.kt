@@ -36,7 +36,7 @@ internal fun AgentMessagePanel(vm: AppViewModel, paneId: String) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
             if (request.text == null) {
                 TextButton(onClick = {
-                    val reachable = vm.agentMessageReachable(request).map { "${sessionName(it.pane)} on ${it.server.label}" }
+                    val reachable = vm.agentMessageReachable(request).map(vm::agentFacingName)
                     clipboard.setText(AnnotatedString(proposalInstructions(request.code, reachable)))
                 }) {
                     Text("Copy proposal instructions")

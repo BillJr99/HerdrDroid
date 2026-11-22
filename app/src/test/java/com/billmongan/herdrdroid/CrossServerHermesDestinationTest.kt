@@ -127,6 +127,43 @@ class CrossServerHermesDestinationTest {
         assertTrue(source.writes.isEmpty() && laptop2.writes.isEmpty())
     }
 
+    /**
+     * Grok's RC review 4: with laptop2 unnamed, the instructions the agent is given call it
+     * "server 2", with no account, host or port.
+     */
+    @Test fun anUnnamedServerIsNamedOnlyByItsPlaceInTheCopiedInstructions() {
+        unnameLaptop2()
+        vm.changeAgentMessaging(true)
+        assertTrue(vm.armAgentMessage("p1"))
+        rule.setContent { AgentMessagePanel(vm, "p1") }
+        rule.onNodeWithText("Copy proposal instructions").performClick()
+        rule.waitForIdle()
+        val clip = (app.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).primaryClip
+        val copied = checkNotNull(clip).getItemAt(0).text.toString()
+        assertTrue(copied, copied.contains("\n- Hermes on server 2"))
+        assertFalse(copied, copied.contains("fixture") || copied.contains(".invalid") || copied.contains(":22") || copied.contains("@"))
+    }
+
+    /** The consent dialog is seen only by the phone user: it keeps the full label for an unnamed server. */
+    @Test fun theConsentDialogKeepsTheFullLabelOfAnUnnamedServer() {
+        unnameLaptop2()
+        vm.changeAgentMessaging(true)
+        runBlocking { propose() }
+        rule.setContent { AgentMessagePanel(vm, "p1") }
+        rule.onNodeWithText("Review agent proposal").performClick()
+        rule.onNodeWithText("Hermes on fixture@laptop2.invalid · laptop2.invalid:22 · w2:p9").performScrollTo().assertIsDisplayed()
+        assertTrue(laptop2.writes.isEmpty())
+    }
+
+    private fun unnameLaptop2() {
+        val unnamed = laptop2.server.copy(name = "")
+        rule.runOnUiThread {
+            val watched = runBlocking { laptop2.client.panes() }
+            state(vm, "servers", listOf(source.server, unnamed))
+            state(field(vm, "fleet").get(vm) as Fleet, "states", mapOf(unnamed.id to FleetState(unnamed, watched, null, 0)))
+        }
+    }
+
     @Test fun consentDialogShowsHermes() {
         vm.changeAgentMessaging(true)
         runBlocking { propose() }

@@ -99,6 +99,23 @@ class CrossServerNoticeDeliveryTest {
         assertEquals(2, laptop2.writes.size)
     }
 
+    /** Grok's RC review 4: an unnamed server is "server N" in the notice, with no account, host or port. */
+    @Test fun anUnnamedServerIsNamedOnlyByItsPlaceInTheNotice() {
+        val unnamed = laptop2.server.copy(name = "")
+        assertEquals("fixture@laptop2.invalid", unnamed.label)
+        state(vm, "servers", listOf(laptop.server, unnamed))
+        state(fleet, "states", mapOf(unnamed.id to FleetState(unnamed, laptop2.panes(), null, 0)))
+        vm.changeAgentMessaging(true)
+        tick()
+        assertEquals(1, laptop.writes.size)
+        val told = laptop.writes[0]
+        assertTrue(told, told.contains("Agents on other servers: Claude · hermes on server 2, Claude · reviewer on server 2."))
+        assertFalse(told, told.contains("fixture") || told.contains(".invalid") || told.contains(":22") || told.contains("@"))
+        // The named server is still named.
+        assertEquals(2, laptop2.writes.size)
+        laptop2.writes.forEach { assertTrue(it, it.contains("Agents on other servers: Claude on laptop.")) }
+    }
+
     @Test fun enablingRunsTheFirstTickAtOnce() {
         vm.noticeLoopAllowed = true
         vm.changeAgentMessaging(true)
