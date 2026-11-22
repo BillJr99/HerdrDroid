@@ -894,13 +894,35 @@ class ComposeUiTest {
         rule.onNodeWithContentDescription("More").performClick()
         rule.onNodeWithText("Reading mode").assertDoesNotExist()
         rule.onNodeWithText("Leave reading mode").assertDoesNotExist()
-        rule.onNodeWithText("Running underneath").assertIsDisplayed()
-        rule.onNodeWithText("Running underneath").performClick()
+        // 2.1.5: the running pill replaces the "Running underneath" menu entry.
+        rule.onNodeWithText("Running underneath").assertDoesNotExist()
+        rule.onNodeWithText("Usage history, all agents").performClick()
         rule.onNodeWithText("⋯").performClick()
         rule.onNodeWithText("Reading mode").assertDoesNotExist()
         rule.onNodeWithText("Snippets").assertIsDisplayed()
         rule.onNodeWithText("Snippets").performClick()
         rule.onNodeWithText("Synthetic draft").assertExists()
+    }
+
+    @Test fun runningPillOpensWhatIsRunningAndMenuHasNoEntry() {
+        val app = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.app.Application>()
+        val vm = rule.runOnUiThread { com.billmongan.herdrdroid.AppViewModel(app) }
+        val proc = com.billmongan.herdrdroid.herdr.ProcInfo(4242, 1, 1, "npm", "npm test", 30, 1.0, 2048)
+        val sub = com.billmongan.herdrdroid.herdr.SubagentInfo("a1", "a1.jsonl", "Review", 0, true, 3)
+        rule.runOnIdle {
+            vm.work = mapOf("fixture:pane" to com.billmongan.herdrdroid.herdr.WorkInfo(listOf(proc), listOf(sub), emptyList(), agentOwnedOnly = true))
+        }
+        rule.setContent { if (vm.screen !is Screen.Work) AgentScreen(vm, "fixture:pane") }
+        rule.onNodeWithContentDescription("More").performClick()
+        rule.onNodeWithText("Running underneath").assertDoesNotExist()
+        rule.onNodeWithText("Usage history, all agents").performClick()
+        val pill = rule.onNodeWithContentDescription("1 shell and 1 subagent running")
+        pill.assertIsDisplayed()
+        rule.onNodeWithText("1 sh - 1 sub").assertIsDisplayed()
+        val labels = pill.fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsActions.OnClick].label
+        assertEquals("Show what's running", labels)
+        pill.performClick()
+        rule.runOnIdle { assertEquals(Screen.Work("fixture:pane"), vm.screen) }
     }
 
     @Test fun grokQueueDoesNotSupplyMissingQuestionOrChoices() {
