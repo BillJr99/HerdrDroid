@@ -50,6 +50,9 @@ class OpenCodeErrorVm220Test {
         assertTrue(p.openCodeStaleBlock)
         open(fake, p)
         assertEquals(Status.IDLE, vm.shownStatus(p))
+        // With the pane's screen read (as when its chat is open), nothing holds a message back.
+        state("paneTextPane", p.id)
+        state("paneText", error)
         assertFalse(vm.hasPendingQuestion(p))
         assertFalse(vm.blocksNormalSend(p, error, liveOpenCode = true))
         val notice = checkNotNull(vm.errorNoticeFor(p, error))

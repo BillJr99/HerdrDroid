@@ -5171,8 +5171,9 @@ class AppViewModel internal constructor(
                     val p = pane(q.paneId)
                     if (p == null) continue
                     if (q.hermesTarget?.sameCardOccupant(p) == false) continue
+                    // 2.2.0: an OpenCode pane herdr keeps blocked with no dialog on screen counts as ready; the send still checks.
                     val ready = p.status == Status.IDLE || p.status == Status.DONE ||
-                        p.status == Status.NEEDS_YOU && currentHermesUsage(p)?.composerReady == true
+                        p.status == Status.NEEDS_YOU && (currentHermesUsage(p)?.composerReady == true || p.openCodeStaleBlock)
                     if (ready && !hasPendingQuestion(p) && !waitingForHermesComposer(p.id)) {
                         queued = queued - q
                         sendMessage(p, q.text)
