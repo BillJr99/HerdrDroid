@@ -234,13 +234,14 @@ private fun rulesAbove(rows: List<String>, hintAt: Int): Region? {
 }
 
 /** No box or rules: the rows above the hint up to a gap of two blank rows (at most 24 rows). */
-private fun plainAbove(rows: List<String>, hintAt: Int): Region {
+private fun plainAbove(rows: List<String>, hintAt: Int): Region? {
     var top = hintAt
     var blanks = 0
     for (i in hintAt - 1 downTo (hintAt - 24).coerceAtLeast(0)) {
         if (rows[i].isBlank()) { if (++blanks >= 2) break; continue }
         blanks = 0
-        if (COMPOSER_ROW.matches(rows[i])) break
+        // The agent's composer (or its box) right above: the hint is under the composer, not a panel's footer.
+        if (COMPOSER_ROW.matches(rows[i]) || isBorderOnly(rows[i])) return null
         top = i
     }
     return Region(top, hintAt, 0, boxed = false, ruled = false)
@@ -274,7 +275,7 @@ internal fun infoPanelOn(agent: String?, visible: String): InfoPanel? {
     else null
     if (headerTitle != null) return InfoPanel(a, headerTitle, known = false, why = "its layout can't be checked from the screen text",
         frame = rows.drop(hintAt).filter { it.isNotBlank() }.take(20))
-    val region = boxAround(rows, hintAt, hintCol) ?: rulesAbove(rows, hintAt) ?: plainAbove(rows, hintAt)
+    val region = boxAround(rows, hintAt, hintCol) ?: rulesAbove(rows, hintAt) ?: plainAbove(rows, hintAt) ?: return null
     fun cut(r: String) = if (region.boxed) r.substring((region.col + 1).coerceAtMost(r.length), region.right.coerceAtMost(r.length).coerceAtLeast((region.col + 1).coerceAtMost(r.length))) else r
     val inside = rows.subList(region.top, region.bottom + 1).map(::cut)
     val content = inside.map(::body).filter { it.isNotEmpty() && !isRule(it) && !isBorderOnly(it) }
