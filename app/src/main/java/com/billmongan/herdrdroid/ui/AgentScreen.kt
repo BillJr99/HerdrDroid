@@ -12,6 +12,7 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -378,7 +379,12 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             // transcript tool-call ID, so a running tool's plan or diff may belong to another turn.
             // The screen the card was read from, for its layout only (2.1.1); never while a read failed.
             val cardScreen = screenText.takeIf { vm.paneReadProblem == null }
-            PromptQuestion(p, agent = pane?.agentName ?: "The agent", screen = cardScreen)
+            // 2.2.0: a question pill moves Claude's dialog to that question (QuestionPills), never answers.
+            PromptQuestion(p, agent = pane?.agentName ?: "The agent", screen = cardScreen,
+                onStep = if (shownTarget != null && openingPreview == null &&
+                    com.billmongan.herdrdroid.herdr.QuestionPills.tappable(pane?.agent, p)) { i, t ->
+                    if (!vm.answerInFlight(paneId)) vm.moveToQuestion(shownTarget, p, i, t.title)
+                } else null)
             Spacer(Modifier.height(10.dp))
             PromptCard(
                 p,
@@ -1185,32 +1191,45 @@ private fun ModifierKey(label: String, state: Hold, onChange: (Hold) -> Unit, mo
  * terminal. The orange [PromptCard] below it holds only the answers.
  */
 @Composable
-internal fun PromptQuestion(p: Prompt, agent: String, screen: String? = null) {
+internal fun PromptQuestion(p: Prompt, agent: String, screen: String? = null,
+    /** 2.2.0: a tap on a question pill, when the agent's dialog can move there ([QuestionPills]); null shows them for display only. */
+    onStep: ((Int, com.billmongan.herdrdroid.herdr.QTab) -> Unit)? = null,
+) {
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("$agent asks", color = Palette.OrangeInk, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
 
         val parts = p.shownParts()
-        if (parts.tabs.isNotEmpty()) QuestionSteps(parts)
+        if (parts.tabs.isNotEmpty()) QuestionSteps(parts, onStep)
         // The question first, then paragraphs, lists, commands and diffs laid out for the phone
         // (2.1.1); Show raw gives the parser's text as before (1.2.9).
         CardBody(parts, screen)
     }
 }
 
-/** Claude's multi-question dialog as steps: "Question 1 of 4", then a chip for each question and Submit. */
+/**
+ * Claude's multi-question dialog as steps: "Question 1 of 4", then a chip for each question and
+ * Submit. With [onStep] (2.2.0) each chip but the current one is a button that moves the dialog there.
+ */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun QuestionSteps(parts: com.billmongan.herdrdroid.herdr.QuestionParts) {
+private fun QuestionSteps(parts: com.billmongan.herdrdroid.herdr.QuestionParts,
+    onStep: ((Int, com.billmongan.herdrdroid.herdr.QTab) -> Unit)? = null,
+) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         parts.step?.let { Text(it, color = Palette.Muted, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold) }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            parts.tabs.forEach { t ->
+            parts.tabs.forEachIndexed { i, t ->
                 val (bg, edge, ink) = when {
                     t.current -> Triple(Palette.OrangeSoft, Palette.Orange, Palette.OrangeInk)
                     t.done -> Triple(Palette.GreenSoft, Palette.GreenSoft, Palette.Ink)
                     else -> Triple(Palette.Card, Palette.Line, Palette.Muted)
                 }
-                Surface(shape = RoundedCornerShape(50), color = bg, border = BorderStroke(1.dp, edge)) {
+                val tap = onStep?.takeIf { !t.current }
+                Surface(shape = RoundedCornerShape(50), color = bg, border = BorderStroke(1.dp, edge),
+                    modifier = Modifier.testTag(if (tap != null) "question-pill-tappable" else "question-pill")
+                        .then(if (tap != null) Modifier.clip(RoundedCornerShape(50)).clickable(
+                            onClickLabel = if (t.submit) "Go to the review step" else "Go to this question",
+                            role = androidx.compose.ui.semantics.Role.Button) { tap(i, t) } else Modifier)) {
                     Text((if (t.done) "✓ " else "") + t.title, color = ink, fontSize = 12.5.sp,
                         fontWeight = if (t.current) FontWeight.Bold else FontWeight.Medium, maxLines = 1,
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp))
