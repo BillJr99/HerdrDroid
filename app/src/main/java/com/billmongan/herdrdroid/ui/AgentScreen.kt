@@ -12,6 +12,7 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -61,6 +62,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
+import androidx.compose.ui.platform.testTag
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
@@ -280,7 +282,12 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             ?.takeIf { !it.codexQuestion || shownTarget != null }?.forCard()
     // An agent's error on screen (1.4.2): shown as a banner when there is no question.
     // Not from the last screen while the latest read failed (1.4.2, from review).
-    val agentError: String? = remember(screenText) { com.billmongan.herdrdroid.herdr.detectAgentError(screenText) }.takeIf { parsedPrompt == null && vm.paneReadProblem == null }
+    // 2.2.0: as its own card, with OpenCode's failed turn read whole; acknowledged ones are hidden.
+    val errorNotice = remember(screenText, pane?.agent) {
+        pane?.let { com.billmongan.herdrdroid.herdr.agentErrorNotice(screenText, it.agent, it.agentName) }
+    }.takeIf { parsedPrompt == null && vm.paneReadProblem == null }
+    val agentError: String? = errorNotice?.summary
+    val shownError = errorNotice?.takeUnless { pane != null && vm.errorAcknowledged(vm.current?.id, pane, it) }
     // 2.1.4 (Bill: "it showed the orange ... waiting on you icon but didn't actually render the
     // question in chat"): while the pane shows as needing you, a card is always there, the parsed
     // one or one that says the question couldn't be read, with Show terminal.
@@ -291,12 +298,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     fun send() {
         if (usageBlocksInput || backgroundDrawer || (openingPreview != null && prompt != null)) return
         val draft = answerDraft
-        // 2.1.5: a card's code typed here confirms that card and never reaches the pane.
-        val typed = (draft?.text ?: normalMessage).trim()
-        if (typed.isNotEmpty() && vm.crossServerCodeReply(paneId, typed)) {
-            if (draft != null) answerDraft = draft.withText("") else normalMessage = ""
-            return
-        }
+        // 2.2.0: cross-server proposals are approved with Yes/No on the phone, never by typing here.
         if (draft != null) {
             val text = draft.text.trim()
             if (text.isNotEmpty() && !vm.answerInFlight(paneId)) {
@@ -383,7 +385,12 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             // transcript tool-call ID, so a running tool's plan or diff may belong to another turn.
             // The screen the card was read from, for its layout only (2.1.1); never while a read failed.
             val cardScreen = screenText.takeIf { vm.paneReadProblem == null }
-            PromptQuestion(p, agent = pane?.agentName ?: "The agent", screen = cardScreen)
+            // 2.2.0: a question pill moves Claude's dialog to that question (QuestionPills), never answers.
+            PromptQuestion(p, agent = pane?.agentName ?: "The agent", screen = cardScreen,
+                onStep = if (shownTarget != null && openingPreview == null &&
+                    com.billmongan.herdrdroid.herdr.QuestionPills.tappable(pane?.agent, p)) { i, t ->
+                    if (!vm.answerInFlight(paneId)) vm.moveToQuestion(shownTarget, p, i, t.title)
+                } else null)
             Spacer(Modifier.height(10.dp))
             PromptCard(
                 p,
@@ -408,20 +415,16 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 Text("OpenCode's background drawer is open. Close it in Terminal to resume chat.", color = Palette.Muted)
                 TextButton(onClick = { hermesLive = false; fullTerminal = true; termFollow = true }) { Text("Show terminal") }
             }
-        } else agentError?.let { why ->
-            // An agent's error (1.4.2): a banner with the way to the terminal, never a question card.
-            Surface(shape = RoundedCornerShape(14.dp), color = Palette.OrangeSoft, border = BorderStroke(1.dp, Palette.Orange)) {
-                Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Icon(Icons.Filled.Warning, contentDescription = null, tint = Palette.OrangeInk, modifier = Modifier.size(18.dp))
-                        Text("${pane?.agentName ?: "The agent"}: $why", color = Palette.OrangeInk, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                    }
-                    Text("This is an error on the agent's screen, not a question. The terminal shows the whole message.",
-                        color = Palette.Muted, fontSize = 12.5.sp)
-                    if (!fullTerminal) TextButton(onClick = { hermesLive = false; fullTerminal = true }) { Text("Show terminal") }
-                }
-            }
-        }
+        } else pane?.let { pn -> shownError?.let { notice ->
+            // An agent's error (1.4.2; its own card since 2.2.0): never a question card, no answer keys.
+            AgentErrorCardView(
+                title = notice.title, summary = notice.summary, message = notice.message,
+                onAcknowledge = { vm.acknowledgeError(pn, notice) },
+                onRetry = vm.retryTextFor(pn, notice)?.let { { vm.retryAfterError(pn, notice) } },
+                onSwitchModel = if (notice.switchModel && status != Status.WORKING) ({ choosingModel = true }) else null,
+                onShowTerminal = if (!fullTerminal) ({ hermesLive = false; fullTerminal = true; termFollow = true }) else null,
+            )
+        } }
         // 2.1.0: a draft typed at the computer, with Send draft and Clear draft. Only while no
         // question is open, from this pane's own latest read.
         vm.paneDraft?.takeIf { prompt == null && !fullTerminal && !backgroundDrawer && usageOverlay == null &&
@@ -594,7 +597,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         ServerBanners(vm)
         // A held send's problem shows only in its own pane's chat, on its own server (2.1.2).
         vm.sendNoticeFor(paneId)?.let { ErrorBanner(it) { vm.dismissSendNotice(paneId) } }
-        // 2.1.5: cross-server cards from frames the agent rendered in this chat.
+        // 2.1.5: cross-server cards from frames the agent rendered in this chat (2.2.0: kept to a
+        // share of the window, so the message box below always fits).
         if (!live) CrossServerPanel(vm, paneId)
         // 2.2.0: herdr's session record is behind the terminal; the chat follows the terminal anyway.
         if (!live && vm.herdrOutOfDate(paneId)) HerdrOutOfDate()
@@ -696,7 +700,9 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 state = listState,
                 modifier = Modifier.fillMaxSize().then(pinchToZoom),
                 follow = chatFollow,
-            ) } } }
+            ) } }
+                if (vm.paneUpdating(paneId)) UpdatingChip(Modifier.align(Alignment.TopCenter).padding(top = 4.dp))
+            }
         } else Box(Modifier.weight(1f).fillMaxWidth()) {
             Column(
                 Modifier
@@ -706,11 +712,16 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     .padding(horizontal = 16.dp, vertical = 14.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                val text = screenText
+                // 2.2.0: until this visit's reads settle, the pane's last settled screen (display only).
+                val text = screenText.ifBlank { vm.heldScreenText(paneId).orEmpty() }
                 if (fullTerminal) {
                     // The terminal view (1.4.8: before, a pane with no good read yet showed the same note as
                     // the card, so Show terminal looked like it did nothing).
                     TerminalView(text, vm.paneReadProblem, liveSize)
+                } else if (!vm.screenViewReady(paneId) && vm.paneReadProblem == null) {
+                    // 2.2.0: an agent with a chat log shows that log; the terminal parsed into a chat showed
+                    // here for a moment first, then jumped to the chat. The card below still shows at once.
+                    Text("Loading the chat…", color = Palette.Muted, fontSize = 15.sp)
                 } else if (text.isBlank()) {
                     // Say why the screen isn't there, rather than "Loading…" for ever (1.4.2).
                     Text(vm.paneReadProblem?.let { "The app couldn't read this pane's screen yet ($it). It keeps trying." } ?: "Loading…",
@@ -748,6 +759,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 }
                 promptCard()
             }
+            if (vm.paneUpdating(paneId) && !fullTerminal) UpdatingChip(Modifier.align(Alignment.TopCenter).padding(top = 4.dp))
             if (!termFollow && screenText.isNotBlank()) {
                 Surface(
                     shape = RoundedCornerShape(20.dp), color = Palette.Card, border = BorderStroke(1.dp, Palette.Line), shadowElevation = 4.dp,
@@ -875,7 +887,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 onStop = pane?.let { p -> { vm.stopPane(p) } },
                 // herdr's agent prompt reaches a working agent, so a message sent now steers it.
                 steerLabel = if (pane?.agent != null && !typingAnswer && prompt == null) "Steer" else null,
-                onQueueWhenIdle = if (!typingAnswer && !usageBlocksInput) ({ composerSend(vm, paneId, normalMessage.trim()) { vm.enqueue(paneId, it) }; normalMessage = "" }) else null,
+                onQueueWhenIdle = if (!typingAnswer && !usageBlocksInput) ({ vm.enqueue(paneId, normalMessage.trim()); normalMessage = "" }) else null,
                 onAttach = { uri -> vm.attach(uri) { path -> editMessage((message.trimEnd() + " " + path).trim() + " ") } },
                 attachBusy = vm.uploading,
                 commands = SlashCommands.forAgent(pane?.agent),
@@ -1229,32 +1241,45 @@ private fun ModifierKey(label: String, state: Hold, onChange: (Hold) -> Unit, mo
  * terminal. The orange [PromptCard] below it holds only the answers.
  */
 @Composable
-internal fun PromptQuestion(p: Prompt, agent: String, screen: String? = null) {
+internal fun PromptQuestion(p: Prompt, agent: String, screen: String? = null,
+    /** 2.2.0: a tap on a question pill, when the agent's dialog can move there ([QuestionPills]); null shows them for display only. */
+    onStep: ((Int, com.billmongan.herdrdroid.herdr.QTab) -> Unit)? = null,
+) {
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("$agent asks", color = Palette.OrangeInk, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
 
         val parts = p.shownParts()
-        if (parts.tabs.isNotEmpty()) QuestionSteps(parts)
+        if (parts.tabs.isNotEmpty()) QuestionSteps(parts, onStep)
         // The question first, then paragraphs, lists, commands and diffs laid out for the phone
         // (2.1.1); Show raw gives the parser's text as before (1.2.9).
         CardBody(parts, screen)
     }
 }
 
-/** Claude's multi-question dialog as steps: "Question 1 of 4", then a chip for each question and Submit. */
+/**
+ * Claude's multi-question dialog as steps: "Question 1 of 4", then a chip for each question and
+ * Submit. With [onStep] (2.2.0) each chip but the current one is a button that moves the dialog there.
+ */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun QuestionSteps(parts: com.billmongan.herdrdroid.herdr.QuestionParts) {
+private fun QuestionSteps(parts: com.billmongan.herdrdroid.herdr.QuestionParts,
+    onStep: ((Int, com.billmongan.herdrdroid.herdr.QTab) -> Unit)? = null,
+) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         parts.step?.let { Text(it, color = Palette.Muted, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold) }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            parts.tabs.forEach { t ->
+            parts.tabs.forEachIndexed { i, t ->
                 val (bg, edge, ink) = when {
                     t.current -> Triple(Palette.OrangeSoft, Palette.Orange, Palette.OrangeInk)
                     t.done -> Triple(Palette.GreenSoft, Palette.GreenSoft, Palette.Ink)
                     else -> Triple(Palette.Card, Palette.Line, Palette.Muted)
                 }
-                Surface(shape = RoundedCornerShape(50), color = bg, border = BorderStroke(1.dp, edge)) {
+                val tap = onStep?.takeIf { !t.current }
+                Surface(shape = RoundedCornerShape(50), color = bg, border = BorderStroke(1.dp, edge),
+                    modifier = Modifier.testTag(if (tap != null) "question-pill-tappable" else "question-pill")
+                        .then(if (tap != null) Modifier.clip(RoundedCornerShape(50)).clickable(
+                            onClickLabel = if (t.submit) "Go to the review step" else "Go to this question",
+                            role = androidx.compose.ui.semantics.Role.Button) { tap(i, t) } else Modifier)) {
                     Text((if (t.done) "✓ " else "") + t.title, color = ink, fontSize = 12.5.sp,
                         fontWeight = if (t.current) FontWeight.Bold else FontWeight.Medium, maxLines = 1,
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp))
@@ -1537,6 +1562,21 @@ private fun markColor(mark: String): Color = when (mark) {
 private fun norm(s: String) = s.filterNot { it.isWhitespace() }.take(40)
 
 /**
+ * A quiet "Updating" chip over the chat (2.2.0) while a pane just opened shows its last good view and
+ * its fresh one is still settling.
+ */
+@Composable
+internal fun UpdatingChip(modifier: Modifier = Modifier) {
+    Surface(shape = RoundedCornerShape(12.dp), color = Palette.Card, border = BorderStroke(1.dp, Palette.Line),
+        modifier = modifier.testTag("pane-updating")) {
+        Row(Modifier.padding(horizontal = 10.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            androidx.compose.material3.CircularProgressIndicator(strokeWidth = 1.5.dp, color = Palette.Muted, modifier = Modifier.size(10.dp))
+            Text("Updating", color = Palette.Muted, fontSize = 11.5.sp, modifier = Modifier.padding(start = 6.dp))
+        }
+    }
+}
+
+/**
  * The pane as a conversation: the agent's paragraphs rewrapped for the phone in the reading
  * font, your messages as bubbles on the right, tables and boxes in monospace strips that scroll
  * sideways, and the agent's own input box and status line as a quiet footer.
@@ -1570,9 +1610,21 @@ internal fun ChatView(
     val prose = if (font == ReadingFont.MONO) size else size * 1.2f
     val showPending = pending != null && segs.none { it is Seg.You && norm(it.text).startsWith(norm(pending).take(20)) }
 
-    SelectionContainer {
+    // 2.2.0: long-press a message for Copy, Copy for each box in it and Select text; long-press a box
+    // to copy just it. Select text puts back the selection the screen view had before.
+    var selecting by remember { mutableStateOf(false) }
+    var menuAt by remember(text) { mutableStateOf<Int?>(null) }
+    val copy = rememberCopier()
+    val copies = remember(segs, msgs) { ScreenCopy(segs, msgs) }
+    val content: @Composable () -> Unit = {
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (selecting) Text("Done selecting", color = Palette.Blue, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.clip(RoundedCornerShape(14.dp)).clickable { selecting = false }.padding(horizontal = 8.dp, vertical = 6.dp))
             segs.forEachIndexed { i, s ->
+                val press = if (selecting || copies.whole(i) == null) Modifier
+                    else if (s is Seg.Code) Modifier.onLongPress("Copy this box") { copy(BoxCopy.clean(s.lines), "Copied box") }
+                    else Modifier.onLongPress("Copy options") { menuAt = i }
+                Box(press) {
                 when (s) {
                     Seg.Gap -> Spacer(Modifier.height(6.dp))
                     Seg.Rule -> HorizontalDivider(color = Palette.Line, modifier = Modifier.padding(vertical = 6.dp))
@@ -1636,6 +1688,10 @@ internal fun ChatView(
                         }
                     }
                 }
+                if (menuAt == i) copies.whole(i)?.let { whole ->
+                    CopyMenu(true, whole, copies.boxes(i), onDismiss = { menuAt = null }, onSelect = { selecting = true })
+                }
+                }
                 timeAfter[i]?.let { (at, mine) -> ChatTimestamp(at, end = mine) }
             }
             if (showPending) {
@@ -1643,6 +1699,37 @@ internal fun ChatView(
                 ChatTimestamp(pendingAt, end = true)
             }
         }
+    }
+    if (selecting) SelectionContainer { content() } else content()
+}
+
+/**
+ * What a long press copies in the screen view (2.2.0): the message a piece belongs to (yours, or the
+ * agent's reply from its first paragraph through its last box), and that message's boxes, each as
+ * the text it shows ([BoxCopy.clean]).
+ */
+internal class ScreenCopy(private val segs: List<Seg>, msgs: List<com.billmongan.herdrdroid.herdr.ScreenTimes.Msg>) {
+    private val owner: List<IntRange?> = segs.indices.map { i -> msgs.firstOrNull { i in it.first..it.last }?.let { it.first..it.last } }
+
+    private fun textOf(s: Seg): String? = when (s) {
+        is Seg.You -> s.text
+        is Seg.Para -> (s.mark?.takeIf { LIST_MARK.matches(it) }?.let { (if (it.first().isDigit()) it else "-") + " " } ?: "") + s.text
+        is Seg.Code -> BoxCopy.clean(s.lines)
+        else -> null
+    }
+
+    private fun range(i: Int): IntRange? = owner.getOrNull(i) ?: i.takeIf { segs.getOrNull(it)?.let(::textOf) != null }?.let { it..it }
+
+    /** The whole message piece [i] is in, or null when it is not text (a rule, a gap, the footer). */
+    fun whole(i: Int): String? = if (segs.getOrNull(i)?.let(::textOf) == null) null else range(i)?.mapNotNull { segs.getOrNull(it)?.let(::textOf) }?.filter { it.isNotBlank() }
+        ?.joinToString("\n\n")?.takeIf { it.isNotBlank() }
+
+    /** The boxes in the message piece [i] is in, each as it shows. */
+    fun boxes(i: Int): List<String> = range(i)?.mapNotNull { (segs.getOrNull(it) as? Seg.Code)?.let { c -> BoxCopy.clean(c.lines) } }
+        ?.filter { it.isNotBlank() }.orEmpty()
+
+    private companion object {
+        val LIST_MARK = Regex("""^([-*•·]|\d{1,3}[.)])$""")
     }
 }
 

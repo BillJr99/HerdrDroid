@@ -4,6 +4,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -25,40 +27,112 @@ import com.billmongan.herdrdroid.AppViewModel
 import com.billmongan.herdrdroid.AppViewModel.CrossServerState
 
 /**
- * 2.1.5: the cross-server cards in one pane's chat. Each shows the source pane, the destination
- * resolved against the reachable agents (with a choice when the frame's name matches more than
- * one or none), the decoded message and the code. Nothing is sent from here: the user confirms
- * by typing the code in this pane's composer (see [composerSend]), or taps Cancel.
+ * 2.1.5/2.2.0: the cross-server cards in one pane's chat. Each shows the source pane, the
+ * destination resolved against the reachable agents (with a choice when the frame's name matches
+ * more than one or none) and the decoded message, with Approve and Cancel. 2.2.0: the newest
+ * pending card also opens a Yes/No dialog ([CrossServerApprovalDialog]); the user never types the
+ * code.
  */
 @Composable
 internal fun CrossServerPanel(vm: AppViewModel, paneId: String) {
     val cards = vm.crossServerCardsFor(paneId)
     if (cards.isEmpty()) return
-    Column(Modifier.fillMaxWidth().heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+    Column(Modifier.fillMaxWidth().heightIn(max = crossServerPanelMax()).verticalScroll(rememberScrollState())) {
         cards.forEach { card ->
             val choices = destinationLabels(vm.crossServerChoices(card))
-            val source = "${sessionName(card.source.pane)} on ${vm.current?.label.orEmpty()}"
-            val destination = card.choice?.let { "${sessionName(it.pane)} on ${it.server.label}" }
+            val approval = vm.crossServerApprovalOf(card)
             CrossServerCardView(
-                source = source, requested = card.requested, destination = destination, text = card.text,
-                code = card.code, state = card.state, note = card.note,
+                source = crossServerSource(vm, card), requested = card.requested, destination = crossServerDestination(card),
+                text = card.text, code = card.code, state = card.state, note = card.note,
                 choices = if (card.state == CrossServerState.PENDING) choices.keys.toList() else emptyList(),
                 onChoose = { label -> choices[label]?.let { vm.chooseCrossServerDestination(card, it) } },
+                onApprove = approval?.let { a -> { vm.approveCrossServer(a); Unit } },
                 onCancel = { vm.cancelCrossServerCard(card) },
                 onClose = { vm.closeCrossServerCard(card) },
             )
         }
     }
+    // One dialog at a time, for the newest proposal; the others wait on their cards.
+    vm.crossServerDialogFor(paneId)?.let { card ->
+        androidx.compose.runtime.key(card.id) {
+            // Bound once, when this proposal's dialog opens: Yes approves only this id, code and destination.
+            val approval = androidx.compose.runtime.remember { vm.crossServerApprovalOf(card) }
+            if (approval != null) {
+                val waiting = cards.count { it.id != card.id && it.state == CrossServerState.PENDING }
+                CrossServerApprovalDialog(
+                    source = crossServerSource(vm, card), destination = crossServerDestination(card) ?: card.requested,
+                    text = card.text, code = card.code, waiting = waiting,
+                    onYes = { vm.approveCrossServer(approval) },
+                    onNo = { vm.cancelCrossServerCard(card) },
+                    onLater = { vm.deferCrossServerDialog(card) },
+                )
+            }
+        }
+    }
 }
 
 /**
- * The composer's send for one pane (2.1.5). Text that is exactly a card's code (trimmed, any case)
- * confirms that card and is never typed into the pane; anything else goes to [send] as before.
- * Only this composer calls it: pane output is never checked for a code.
+ * 2.2.0 step 1: the cards' box was up to 420 dp above the chat and the message box. In a window
+ * about 470 dp tall (a phone with the keyboard up) that left the message box no height at all, so
+ * nothing could be typed or sent there. The box now takes at most about a third of the window
+ * above the keyboard, and scrolls.
  */
-internal fun composerSend(vm: AppViewModel, paneId: String, text: String, send: (String) -> Unit) {
-    if (vm.crossServerCodeReply(paneId, text)) return
-    send(text)
+@Composable
+private fun crossServerPanelMax(): androidx.compose.ui.unit.Dp {
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val ime = with(density) { WindowInsets.ime.getBottom(density).toDp() }
+    val window = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp
+    return ((window - ime) * 0.34f).coerceIn(120.dp, 320.dp)
+}
+
+private fun crossServerSource(vm: AppViewModel, card: AppViewModel.CrossServerCard) =
+    "${sessionName(card.source.pane)} on ${vm.current?.label.orEmpty()}"
+
+private fun crossServerDestination(card: AppViewModel.CrossServerCard) =
+    card.choice?.let { "${sessionName(it.pane)} on ${it.server.label}" }
+
+/**
+ * 2.2.0: Yes or No for one proposal, with the source agent, the destination agent and server, and
+ * the whole decoded message (scrollable). Yes sends; No cancels; Back or a tap outside leaves the
+ * proposal pending on its card. Shown only while the pane is open and the app is in front and
+ * unlocked (see AppViewModel.crossServerDialogFor).
+ */
+@Composable
+internal fun CrossServerApprovalDialog(
+    source: String,
+    destination: String,
+    text: String,
+    code: String,
+    waiting: Int,
+    onYes: () -> Unit,
+    onNo: () -> Unit,
+    onLater: () -> Unit,
+) {
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onLater,
+        modifier = Modifier.semantics { contentDescription = "Approve cross-server message" },
+        title = { Text("Send this message to another server?") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("From: $source", color = Palette.Ink)
+                Text("To: $destination", color = Palette.Ink, fontWeight = FontWeight.SemiBold)
+                Text("Untrusted text from the agent. Read the whole message first. Proposal $code, expires 10 minutes after it appeared.",
+                    color = Palette.Muted, fontSize = 12.sp)
+                if (waiting > 0) Text(
+                    if (waiting == 1) "1 more proposal is waiting on its card." else "$waiting more proposals are waiting on their cards.",
+                    color = Palette.Muted, fontSize = 12.sp)
+                Column(
+                    Modifier.fillMaxWidth().heightIn(max = 240.dp).clip(RoundedCornerShape(8.dp)).background(Palette.BlueSoft)
+                        .verticalScroll(rememberScrollState()).padding(10.dp)
+                        .semantics { contentDescription = "Cross-server message text" },
+                ) {
+                    Text(text, fontFamily = FontFamily.Monospace, color = Palette.Ink)
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onYes) { Text("Yes, send") } },
+        dismissButton = { TextButton(onClick = onNo) { Text("No") } },
+    )
 }
 
 @Composable
@@ -72,6 +146,8 @@ internal fun CrossServerCardView(
     note: String?,
     choices: List<String>,
     onChoose: (String) -> Unit,
+    /** Null while the card has no destination or is no longer pending. */
+    onApprove: (() -> Unit)?,
     onCancel: () -> Unit,
     onClose: () -> Unit,
 ) {
@@ -85,15 +161,13 @@ internal fun CrossServerCardView(
         Text("From: $source", color = Palette.Ink)
         Text("To: " + (destination ?: "not chosen (the agent asked for \"$requested\")"), color = Palette.Ink)
         Text(text, fontFamily = FontFamily.Monospace, color = Palette.Ink)
-        Text("Code: $code", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold, color = Palette.Ink)
+        Text("Proposal $code", fontFamily = FontFamily.Monospace, color = Palette.Muted, fontSize = 12.sp)
         when (state) {
             CrossServerState.PENDING -> {
                 if (choices.isNotEmpty()) {
                     Text(if (destination == null) "Choose a destination:" else "Change the destination:", color = Palette.Muted, fontSize = 13.sp)
                     DestinationChoices(choices, enabled = true, onPick = onChoose)
                 }
-                Text("To send it, type $code in this chat's message box and tap Send. The code is not passed to the agent.",
-                    color = Palette.Muted, fontSize = 13.sp)
                 Text("Untrusted text from the pane. Check the whole message first. Expires 10 minutes after it appeared.",
                     color = Palette.Muted, fontSize = 12.sp)
             }
@@ -102,7 +176,10 @@ internal fun CrossServerCardView(
         note?.let { Text(it, color = Palette.Ink, fontSize = 13.sp) }
         Row {
             when (state) {
-                CrossServerState.PENDING -> TextButton(onClick = onCancel) { Text("Cancel") }
+                CrossServerState.PENDING -> {
+                    TextButton(onClick = { onApprove?.invoke() }, enabled = onApprove != null) { Text("Approve") }
+                    TextButton(onClick = onCancel) { Text("Cancel") }
+                }
                 CrossServerState.SENDING -> {}
                 else -> TextButton(onClick = onClose) { Text("Close") }
             }

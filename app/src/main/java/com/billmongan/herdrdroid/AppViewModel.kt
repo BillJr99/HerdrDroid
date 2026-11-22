@@ -1974,12 +1974,33 @@ class AppViewModel internal constructor(
             val useLive = liveCard != null && (livePrompt != null || verifyPi && preview != null || liveReport || recentReport || verifiedUsage != null || recentClarify || codexQuestionCleared || verifyOpenCode &&
                 (blocked || preview != null || openCodeBackgroundDrawer(agent, recent) || openCodeBackgroundDrawer(agent, liveCard)))
             val text = if (useLive) checkNotNull(liveCard) else recent
+            // 2.2.0: the first reads after a switch are held until they settle (two identical reads, or
+            // a read that must show at once); the last good view stays up meanwhile. See [SettleGate].
+            val urgent = com.billmongan.herdrdroid.herdr.urgentRead(
+                needsYou = blocked,
+                working = paneStatus == Status.WORKING || paneNow?.backgroundBusy == true,
+                question = preview != null || livePrompt != null,
+                error = paneNow != null && com.billmongan.herdrdroid.herdr.agentErrorNotice(text, agent, paneNow.agentName) != null,
+                // A draft typed at the computer has its own card (2.1.0), never held either.
+                dialog = useLive || liveUsage != null || verifiedUsage != null || com.billmongan.herdrdroid.herdr.showsQuestionDialog(text) ||
+                    !com.billmongan.herdrdroid.herdr.inputLineOf(text, agent).isNullOrEmpty() ||
+                    com.billmongan.herdrdroid.herdr.composerDraftOf(text, agent) != null,
+            )
+            val verdict = settleGate.offer(settleKey(serverId, paneId, visit), text, urgent)
+            if (verdict.why == com.billmongan.herdrdroid.herdr.SettleGate.Why.CAPPED)
+                com.billmongan.herdrdroid.diag.DiagLog.log("read", "$paneId: the screen kept changing over ${verdict.reads} reads; showing the newest")
+            else if (verdict.why != null && verdict.reads > 1)
+                com.billmongan.herdrdroid.diag.DiagLog.log("read", "$paneId: view settled after ${verdict.reads} reads (${verdict.why.name.lowercase()})")
+            paneViewSettled = verdict.show
+            // 2.1.5: a cross-server frame the agent rendered in this chat becomes a card; nothing is sent.
+            // A card, so never held by the settle gate (2.2.0).
+            noteCrossServerFrames(cardOwner, recent)
+            if (!verdict.show) return
+            noteSettledScreen(serverId, paneId, text, visit)
             lastAppliedPaneRead = attempt
             paneReadsApplied++
             openingPanePreview = null
             paneReadProblem = null
-            // 2.1.5: a cross-server frame the agent rendered in this chat becomes a card; nothing is sent.
-            noteCrossServerFrames(cardOwner, recent)
             openUsage = liveUsage
             noteSeenBtw(serverId, paneId, liveUsage)
             noteInputLine(paneId, text)
@@ -2138,8 +2159,64 @@ class AppViewModel internal constructor(
         current?.id?.let { questions(it, paneId) }
         resetTranscript(paneId)
         screen = Screen.Agent(paneId)
+        // 2.2.0: the new visit's view waits for settled reads; the pane's last good view shows meanwhile.
+        settleGate.reset(settleKey(current?.id, paneId, paneVisit))
+        paneViewSettled = false
+        transcriptGaveUp = false
+        transcriptWaitReads = 0
         takePanePreview(paneId)
     }
+
+    // ---- Settled view on a pane switch (2.2.0) ------------------------------------------------
+
+    private val settleGate = com.billmongan.herdrdroid.herdr.SettleGate()
+    private fun settleKey(serverId: String?, paneId: String, visit: Long) = "$serverId|$paneId|$visit"
+
+    /** False while the open pane's first reads after a switch are held until they settle. */
+    var paneViewSettled by mutableStateOf(true)
+        private set
+
+    /** The visit whose chat log has answered (loaded, or said there is none); -1 for none yet. */
+    private var transcriptAnsweredVisit by mutableStateOf(-1L)
+
+    /** The chat log never answered within [com.billmongan.herdrdroid.herdr.TRANSCRIPT_WAIT_READS] settled reads. */
+    private var transcriptGaveUp by mutableStateOf(false)
+    private var transcriptWaitReads = 0
+
+    /** Each pane's last settled screen, "server|pane" to text; memory only, a few panes. */
+    private val settledScreens = LinkedHashMap<String, String>()
+
+    private fun noteSettledScreen(serverId: String?, paneId: String, text: String, visit: Long) {
+        val key = "$serverId|$paneId"
+        settledScreens.remove(key)
+        settledScreens[key] = text
+        if (settledScreens.size > 12) settledScreens.remove(settledScreens.keys.first())
+        if (hasTranscriptReader(paneId) && transcriptState == TranscriptMode.UNKNOWN && transcriptAnsweredVisit != visit && !transcriptGaveUp &&
+            ++transcriptWaitReads >= com.billmongan.herdrdroid.herdr.TRANSCRIPT_WAIT_READS) {
+            transcriptGaveUp = true
+            com.billmongan.herdrdroid.diag.DiagLog.log("chat", "$paneId: no answer from the chat log after $transcriptWaitReads screen reads; showing the screen view")
+        }
+    }
+
+    /**
+     * The pane's last settled screen, display only, while this visit's first reads are held and
+     * nothing has been read yet (2.2.0). Never a source of a card, a target or question history.
+     */
+    internal fun heldScreenText(paneId: String): String? = settledScreens["${current?.id}|$paneId"]?.takeIf {
+        !paneViewSettled && (screen as? Screen.Agent)?.paneId == paneId && paneTextPane == paneId && paneText.isEmpty() && paneReadProblem == null
+    }
+
+    /** True while the open pane shows its last good view and its fresh one is still settling (2.2.0). */
+    fun paneUpdating(paneId: String): Boolean = (screen as? Screen.Agent)?.paneId == paneId && paneReadProblem == null &&
+        (!paneViewSettled || (hasTranscriptReader(paneId) && transcriptState == TranscriptMode.ON && transcriptAnsweredVisit != paneVisit))
+
+    /**
+     * Whether the screen view may show for [paneId] (2.2.0): not while an agent with a chat log is
+     * still waiting for that log's first answer this visit, which showed the terminal-parsed view
+     * for a moment before the chat replaced it.
+     */
+    fun screenViewReady(paneId: String): Boolean = com.billmongan.herdrdroid.herdr.screenViewAllowed(
+        hasTranscriptReader(paneId), transcriptAnsweredVisit == paneVisit || transcriptState == TranscriptMode.OFF, transcriptGaveUp)
 
     // ---- Structured conversations ------------------------------------------------------------
 
@@ -2493,6 +2570,8 @@ class AppViewModel internal constructor(
 
     private fun applyTranscript(paneId: String, r: com.billmongan.herdrdroid.transcript.TranscriptRead) {
         if (transcriptPane != paneId) return
+        // 2.2.0: the log answered for this visit (with its chat or with none), so the view may settle.
+        if ((screen as? Screen.Agent)?.paneId == paneId) transcriptAnsweredVisit = paneVisit
         if (!r.ok) {
             // Why the chat view stays off is worth a line in the diagnostics (1.4.1).
             if (transcriptItems.isEmpty()) com.billmongan.herdrdroid.diag.DiagLog.log("chat", "$paneId: no chat view (${pane(paneId)?.agent}): ${r.why}")
@@ -3307,14 +3386,17 @@ class AppViewModel internal constructor(
     internal suspend fun sendRemotePrompt(target: RemotePromptTarget, text: String, allowed: () -> Boolean) =
         promptRelay.send(target.route, text) { allowed() && remotePromptCurrent(target) }
 
-    // ---- 2.1.5: cross-server messages confirmed by a code typed back on the phone -------------
+    // ---- 2.1.5/2.2.0: cross-server messages approved on the phone ------------------------------
     //
     // The 2.1.4 "Listen for agent proposal" menu, its one-time code and its copied instructions are
     // gone. An agent asked in chat for a cross-server send renders a frame with a code it picks
-    // (CrossServerFrame); the open pane's read finds it and shows a card. Nothing is sent until the
-    // phone user types that code in this pane's composer on the phone (crossServerCodeReply), which
-    // is never typed into the pane. The code on the agent's screen proves nothing by itself: the
-    // consent is the user typing it back here.
+    // (CrossServerFrame); the open pane's read finds it and shows a card. 2.2.0 (Bill: "have it send
+    // a code and then have HerdrDroid pop up a yes/no menu to approve and then if approved it sends
+    // that code synthetically to proceed"): the card also opens a Yes/No dialog, and Yes (or Approve
+    // on the card) hands the frame's own code to the confirm path (approveCrossServer), bound to the
+    // proposal's id, code and destination. The user no longer types the code, and the code is never
+    // typed into any pane. The code on the agent's screen proves nothing by itself: the consent is
+    // the tap on the phone.
 
     internal enum class CrossServerState { PENDING, SENDING, SENT, REFUSED, FAILED, DRAFT, CANCELLED, EXPIRED }
 
@@ -3339,12 +3421,15 @@ class AppViewModel internal constructor(
         { prefs.crossServerCodes }, { prefs.crossServerCodes = it })
     private var crossServerExpiry: Job? = null
     private var crossServerPermit: WritePermit? = null
+    /** Proposals whose dialog the user put aside (Back): they stay on their cards, with Approve and Cancel. */
+    private var crossServerDeferred by mutableStateOf<Set<String>>(emptySet())
 
     /** Background, lock, a lost link or messaging turned off: every card goes. Unspent codes may show again on the next read. */
     private fun clearCrossServerCards() {
         crossServerPermit?.revoke()
         crossServerPermit = null
         crossServerCards = emptyList()
+        crossServerDeferred = emptySet()
         crossServerExpiry?.cancel()
         crossServerExpiry = null
     }
@@ -3364,6 +3449,7 @@ class AppViewModel internal constructor(
     /** Called with each good read of the open pane. Spent, expired or malformed codes raise no card. */
     private fun noteCrossServerFrames(owner: CardTarget?, recent: String) {
         if (owner == null || !crossServerSourceCurrent(owner)) return
+        resolveCrossServerDestinations()
         val frames = com.billmongan.herdrdroid.herdr.crossServerFrames(recent)
         if (frames.isEmpty()) return
         val now = crossServerClock()
@@ -3377,6 +3463,20 @@ class AppViewModel internal constructor(
             added = true
         }
         if (added) scheduleCrossServerExpiry()
+    }
+
+    /**
+     * 2.2.0 step 1: a card read before the other server's watcher had its panes kept no destination,
+     * and once the name matched exactly one agent the card offered no choice either (one match means
+     * no choices), so the typed code only ever said "Choose a destination". A pending card with no
+     * destination now takes the single match as soon as there is one.
+     */
+    private fun resolveCrossServerDestinations() {
+        if (crossServerCards.none { it.state == CrossServerState.PENDING && it.choice == null }) return
+        crossServerCards = crossServerCards.map { card ->
+            if (card.state != CrossServerState.PENDING || card.choice != null) card
+            else crossServerMatches(card).singleOrNull()?.let { card.copy(choice = it) } ?: card
+        }
     }
 
     private fun scheduleCrossServerExpiry() {
@@ -3447,6 +3547,8 @@ class AppViewModel internal constructor(
         val now = crossServerCards.firstOrNull { it.id == card.id } ?: return
         if (now.state != CrossServerState.PENDING || choice !in crossServerChoices(now)) return
         updateCrossServerCard(card.id) { it.copy(choice = choice, note = null) }
+        // A destination picked on the card is then asked about in the dialog, with the whole message.
+        crossServerDeferred = crossServerDeferred - card.id
     }
 
     internal fun cancelCrossServerCard(card: CrossServerCard) {
@@ -3464,27 +3566,64 @@ class AppViewModel internal constructor(
     }
 
     /**
-     * Only for text sent from this pane's composer on the phone, never for pane output. True when
-     * [typed] is the code of a card in this pane's chat: the text is then never typed into the pane.
-     * A pending card is confirmed and its message delivered through the relay; any other card says
-     * its code is no longer usable. False for anything else, which the composer sends as usual.
+     * What a Yes/No dialog (or a card's Approve) was shown and may approve: one proposal by its id
+     * and code, to the destination shown. A dialog keeps the approval it was opened with, so it can
+     * never approve a newer proposal, another code or a destination it did not show.
      */
-    internal fun crossServerCodeReply(paneId: String, typed: String): Boolean {
-        val code = com.billmongan.herdrdroid.herdr.CrossServerCode.reply(typed) ?: return false
+    internal data class CrossServerApproval(val id: String, val code: String, val server: String, val pane: String)
+
+    /** The approval for a pending card with a destination; null otherwise. */
+    internal fun crossServerApprovalOf(card: CrossServerCard): CrossServerApproval? {
+        val live = crossServerCards.firstOrNull { it.id == card.id } ?: return null
+        if (live.state != CrossServerState.PENDING || live.code != card.code) return null
+        val to = live.choice ?: return null
+        return CrossServerApproval(live.id, live.code, to.server.id, to.pane.id)
+    }
+
+    /**
+     * The proposal to ask about in a dialog in this pane's chat: the newest pending one with a
+     * destination that the user has not put aside, only while its pane is open, the app is in front
+     * and unlocked, and within its ten minutes. Older ones wait on their cards and come up in turn.
+     */
+    internal fun crossServerDialogFor(paneId: String): CrossServerCard? {
+        val now = crossServerClock()
+        return crossServerCardsFor(paneId).lastOrNull {
+            it.state == CrossServerState.PENDING && it.choice != null && it.id !in crossServerDeferred &&
+                now < it.deadline && crossServerSourceCurrent(it.source)
+        }
+    }
+
+    /** Back on the dialog: the proposal stays on its card, pending, and its dialog does not come back by itself. */
+    internal fun deferCrossServerDialog(card: CrossServerCard) {
+        crossServerDeferred = crossServerDeferred + card.id
+    }
+
+    /**
+     * Yes on the dialog or Approve on the card. The app supplies the frame's code itself to the
+     * confirm path, nothing is typed anywhere, and the code never reaches a pane. Refused (false,
+     * nothing sent) when the proposal is gone, finished, expired, has another code or destination
+     * than [approval], or its pane is no longer the one open. True when delivery started.
+     */
+    internal fun approveCrossServer(approval: CrossServerApproval): Boolean {
+        expireCrossServerCards()
+        val card = crossServerCards.firstOrNull { it.id == approval.id } ?: return false
+        if (card.code != approval.code || card.state != CrossServerState.PENDING) return false
+        val to = card.choice ?: return false
+        if (to.server.id != approval.server || to.pane.id != approval.pane) return false
+        if (!crossServerSourceCurrent(card.source)) return false
+        return confirmCrossServerCode(card.source.pane.id, approval.code)
+    }
+
+    /**
+     * The confirm path (2.1.5's, no longer reachable from the composer): [code] is a pending card's
+     * code in this pane's chat. The code is spent before anything is sent, so a card delivers at
+     * most once, and its message goes through the guarded relay.
+     */
+    private fun confirmCrossServerCode(paneId: String, code: String): Boolean {
+        if (!com.billmongan.herdrdroid.herdr.CrossServerCode.valid(code)) return false
         expireCrossServerCards()
         val card = crossServerCardsFor(paneId).firstOrNull { it.code == code } ?: return false
-        when (card.state) {
-            CrossServerState.PENDING -> {}
-            CrossServerState.SENDING -> return true
-            else -> {
-                updateCrossServerCard(card.id) { it.copy(note = "That code was already used or has expired. Nothing more was sent.") }
-                return true
-            }
-        }
-        if (card.choice == null) {
-            updateCrossServerCard(card.id) { it.copy(note = "Choose a destination, then type the code again.") }
-            return true
-        }
+        if (card.state != CrossServerState.PENDING || card.choice == null) return false
         updateCrossServerCard(card.id) { it.copy(state = CrossServerState.SENDING, note = "Checking and sending…") }
         crossServerCodes.spend(card.id, crossServerClock())
         viewModelScope.launch {
@@ -3831,6 +3970,68 @@ class AppViewModel internal constructor(
         answerCardInput(target, prompt, label, guarded = prompt.openCodeQuestionFrame != null) { h, t, _ ->
             h.sendKeys(t.pane.id, key, expectedConnection = t.connection)
             true
+        }
+    }
+
+    /**
+     * 2.2.0: each question's text as the app saw it, per dialog (server, pane, occupant and the
+     * dialog's tab titles), so a pill tap back to a question is checked against what it showed.
+     */
+    private val pillHeadings = LinkedHashMap<List<Any?>, MutableMap<Int, String>>()
+
+    /**
+     * 2.2.0 (Bill: "let me click on the pill buttons for multi question menus to go back to prior
+     * questions or forth to other questions to revise before submitting"): moves the dialog the
+     * card [shown] was read from to its question [index] with the dialog's own keys
+     * ([com.billmongan.herdrdroid.herdr.QuestionPills]), bound to the card's pane, server,
+     * connection and occupant like an answer. Never Enter, Esc or a digit; nothing is answered or
+     * submitted. Refused while the pane shows a draft, a usage screen or another dialog.
+     */
+    internal fun moveToQuestion(target: CardTarget?, shown: Prompt, index: Int, title: String) {
+        val pills = com.billmongan.herdrdroid.herdr.QuestionPills
+        fun refuse(why: String) {
+            com.billmongan.herdrdroid.diag.DiagLog.log("answer", "${target?.pane?.id}: question pill ${index + 1} not moved: $why")
+            flash("Not moved: $why. Refresh the question or open the terminal.")
+        }
+        if (target == null || !pills.tappable(target.pane.agent, shown)) { refuse("the question can't be moved from here"); return }
+        val id = target.pane.id
+        if (paneDraft?.target?.pane?.id == id) { refuse("the pane has a draft"); return }
+        if (usageOverlayFor(id) != null) { refuse("a usage screen is open"); return }
+        val tabs = shown.shownParts().tabs
+        val dialog = listOf(target.server, id, com.billmongan.herdrdroid.herdr.Occupant.of(target.pane), tabs.map { it.title })
+        val headings = pillHeadings.getOrPut(dialog) { mutableMapOf() }
+        while (pillHeadings.size > 16) pillHeadings.remove(pillHeadings.keys.first())
+        val agentName = pane(id)?.agentName ?: "the agent"
+        com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$id: tapped question pill ${index + 1} \"${title.take(40)}\"")
+        answerOnce(id) { h ->
+            var blocked = false
+            fun current() = target.isCurrent(h) && paneDraft?.target?.pane?.id != id && usageOverlayFor(id) == null
+            val outcome = pills.move(
+                target.pane.agent, shown, index, title, headings,
+                read = read@{
+                    if (!current()) return@read null
+                    val live = h.cardPane(id, target.connection) ?: return@read null
+                    if (!current() || !target.pane.sameCardOccupant(live) || live.scrollOffset != 0) return@read null
+                    blocked = live.status == Status.NEEDS_YOU
+                    h.readCardViewport(id, target.connection).takeUnless { it.isBlank() || !current() }
+                },
+                detect = { detectPrompt(it, blocked, target.pane.agent, versionOf(id)) },
+                stillCurrent = ::current,
+                send = { keys -> h.sendKeys(id, *keys.toTypedArray(), expectedConnection = target.connection) },
+                pause = { delay(200) },
+            )
+            when (outcome) {
+                is com.billmongan.herdrdroid.herdr.QuestionPills.Outcome.Moved -> com.billmongan.herdrdroid.diag.DiagLog.log("answer",
+                    "$id: moved to question pill ${index + 1} with ${outcome.keys.joinToString(" ") { keyName(it) }}")
+                com.billmongan.herdrdroid.herdr.QuestionPills.Outcome.Already -> Unit
+                is com.billmongan.herdrdroid.herdr.QuestionPills.Outcome.Refused -> refuse(outcome.why)
+                is com.billmongan.herdrdroid.herdr.QuestionPills.Outcome.Missed -> {
+                    com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$id: sent ${outcome.keys.joinToString(" ") { keyName(it) }} " +
+                        "for question pill ${index + 1}, but the screen did not show it; no more keys sent")
+                    flash("$agentName did not show \"${title.take(30)}\". The card shows what is on screen now.")
+                }
+            }
+            readPane(id)
         }
     }
 
@@ -4459,8 +4660,12 @@ class AppViewModel internal constructor(
                     if (text.isBlank()) { Notify.unread(app, serverId, serverLabel, p.id, p.agentName); return@launch }
                     val prompt = detectPrompt(text, blocked = true, agent = p.agent)
                     // An agent's error, not a question (1.4.2): its own alert, once per change of state.
-                    val error = if (prompt == null) com.billmongan.herdrdroid.herdr.detectAgentError(text) else null
-                    if (error != null) { Notify.agentError(app, serverId, serverLabel, p.id, p.agentName, error); return@launch }
+                    // 2.2.0: OpenCode's failed turn too, read whole; one already acknowledged raises nothing.
+                    val notice = if (prompt == null) com.billmongan.herdrdroid.herdr.agentErrorNotice(text, p.agent, p.agentName) else null
+                    if (notice != null) {
+                        if (!errorAcknowledged(serverId, p, notice)) Notify.agentError(app, serverId, serverLabel, p.id, p.agentName, notice.summary)
+                        return@launch
+                    }
                     // "Blocked" with nothing on screen that asks is a stale status, not a question (1.4.2):
                     // no alert. A screen that couldn't be read still alerts, saying so.
                     if (prompt == null && text.isNotBlank()) { com.billmongan.herdrdroid.diag.DiagLog.log("watch", "${p.id}: herdr says blocked, but nothing on screen asks; no alert"); return@launch }
@@ -5071,7 +5276,10 @@ class AppViewModel internal constructor(
     private var queueJob: Job? = null
 
     internal fun blocksNormalSend(pane: Pane, screen: String, liveOpenCode: Boolean = false): Boolean =
-        (pane.status == Status.NEEDS_YOU && !(liveOpenCode && isOpenCode(pane.agent) && openCodeEmptyComposer(screen))) ||
+        // 2.2.0: herdr keeps an OpenCode pane blocked after a failed turn (and after /new); its empty
+        // input box with no dialog on this screen is not a question, so the message may go in.
+        (pane.status == Status.NEEDS_YOU && !(isOpenCode(pane.agent) &&
+            ((liveOpenCode && openCodeEmptyComposer(screen)) || com.billmongan.herdrdroid.herdr.openCodeComposerEmpty(screen)))) ||
             openCodeBackgroundDrawer(pane.agent, screen) ||
             usageDialogShown(pane.agent, screen) ||
             (pane.agent == "hermes" && hermesUsageWaiting(screen)) ||
@@ -5167,8 +5375,9 @@ class AppViewModel internal constructor(
                     val p = pane(q.paneId)
                     if (p == null) continue
                     if (q.hermesTarget?.sameCardOccupant(p) == false) continue
+                    // 2.2.0: an OpenCode pane herdr keeps blocked with no dialog on screen counts as ready; the send still checks.
                     val ready = p.status == Status.IDLE || p.status == Status.DONE ||
-                        p.status == Status.NEEDS_YOU && currentHermesUsage(p)?.composerReady == true
+                        p.status == Status.NEEDS_YOU && (currentHermesUsage(p)?.composerReady == true || p.openCodeStaleBlock)
                     if (ready && !hasPendingQuestion(p) && !waitingForHermesComposer(p.id)) {
                         queued = queued - q
                         sendMessage(p, q.text)
@@ -5259,6 +5468,8 @@ class AppViewModel internal constructor(
     }
 
     fun shownStatus(p: Pane, serverId: String? = current?.id): Status {
+        // 2.2.0: herdr's stale "blocked" on an OpenCode pane whose screen shows no dialog is shown as idle.
+        if (p.openCodeStaleBlock && p.status == Status.NEEDS_YOU) return Status.IDLE
         val here = serverId == current?.id
         if (here && requiresLivePiQuestion(p) && currentPiQuestion(p) != null) return Status.NEEDS_YOU
         if (here && p.status == Status.NEEDS_YOU && hermesState != Status.NEEDS_YOU) {
@@ -5691,6 +5902,68 @@ class AppViewModel internal constructor(
                 readTranscript(paneId)
             }
         }
+    }
+
+    // -- Agent errors (2.2.0) ------------------------------------------------------------------------
+
+    /**
+     * Errors acknowledged on the phone, by server, pane, session and the error's own identity
+     * (2.2.0, Bill: "should clear the error on the pane when I acknowledge the notice in the app").
+     * OpenCode draws its error in the transcript, where no key removes it, so clearing it means the
+     * app stops showing it: the same error stays cleared, and a new one shows again.
+     */
+    private val acknowledgedErrors = mutableStateMapOf<String, Long>()
+    /** Errors already retried once, by the same key: Retry never sends twice. */
+    private val retriedErrors = mutableStateMapOf<String, Long>()
+
+    private fun errorKey(serverId: String?, pane: Pane, notice: com.billmongan.herdrdroid.herdr.AgentErrorNotice) =
+        listOf(serverId.orEmpty(), pane.id, pane.sessionId.orEmpty(), notice.identity).joinToString("|")
+
+    internal fun errorAcknowledged(serverId: String?, pane: Pane, notice: com.billmongan.herdrdroid.herdr.AgentErrorNotice): Boolean =
+        errorKey(serverId, pane, notice) in acknowledgedErrors
+
+    /** The error card for the open pane, or null when there is none or it was acknowledged. */
+    fun errorNoticeFor(pane: Pane, screen: String): com.billmongan.herdrdroid.herdr.AgentErrorNotice? =
+        com.billmongan.herdrdroid.herdr.agentErrorNotice(screen, pane.agent, pane.agentName)
+            ?.takeUnless { errorAcknowledged(current?.id, pane, it) }
+
+    /** Acknowledge: the card goes, and so does the pane's error alert. Nothing is typed into the pane. */
+    fun acknowledgeError(pane: Pane, notice: com.billmongan.herdrdroid.herdr.AgentErrorNotice) {
+        val serverId = current?.id
+        acknowledgedErrors[errorKey(serverId, pane, notice)] = System.currentTimeMillis()
+        com.billmongan.herdrdroid.diag.DiagLog.log("prompt", "${pane.id}: error acknowledged (${notice.summary})")
+        if (serverId != null) runCatching { Notify.clear(getApplication<Application>(), serverId, pane.id) }
+    }
+
+    /**
+     * The message Retry would resend, or null: the message the phone itself last sent to [pane]
+     * on this server, when it is exactly the one above OpenCode's failed turn, and it was not
+     * retried for this error already. A message from elsewhere (typed at the computer, or the app's
+     * own notice) is never resent.
+     */
+    fun retryTextFor(pane: Pane, notice: com.billmongan.herdrdroid.herdr.AgentErrorNotice): String? {
+        val shown = notice.retryText ?: return null
+        val (paneId, text) = lastSent ?: return null
+        if (paneId != pane.id || errorKey(current?.id, pane, notice) in retriedErrors) return null
+        fun norm(t: String) = t.trim().replace(Regex("\\s+"), " ")
+        return text.takeIf { norm(it) == norm(shown) }
+    }
+
+    /**
+     * Retry: the same message once more, through the usual guarded send (a fresh read, no dialog,
+     * an empty input box, held while a draft is typed), only while the agent is not working.
+     */
+    fun retryAfterError(pane: Pane, notice: com.billmongan.herdrdroid.herdr.AgentErrorNotice) {
+        val text = retryTextFor(pane, notice) ?: return
+        val fresh = pane(pane.id) ?: return
+        val shown = shownStatus(fresh)
+        if (shown == Status.WORKING || shown == Status.NEEDS_YOU) {
+            error = "${pane.agentName} isn't idle. Retry once it is."
+            return
+        }
+        retriedErrors[errorKey(current?.id, pane, notice)] = System.currentTimeMillis()
+        com.billmongan.herdrdroid.diag.DiagLog.log("send", "${pane.id}: retry after error (${notice.summary})")
+        sendMessage(fresh, text)
     }
 
     // -- Model -------------------------------------------------------------------------------------

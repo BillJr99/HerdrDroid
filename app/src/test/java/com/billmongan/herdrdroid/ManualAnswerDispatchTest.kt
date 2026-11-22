@@ -22,12 +22,14 @@ import kotlinx.coroutines.runBlocking
 import java.io.File
 import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Shadows.shadowOf
 
 @RunWith(AndroidJUnit4::class)
 class ManualAnswerDispatchTest {
+    @get:Rule val idleMainLooper = IdleMainLooperRule()
     @Test fun dispatchChecksLiveCardWithoutWaitingForBulkAndRefusesChangedApproval() = runBlocking {
         val fixture = System.getenv("HD_CARD_FIXTURE_DIR")?.let(::File)
         assumeTrue("no isolated approval SSH fixture", fixture != null)
