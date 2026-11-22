@@ -290,12 +290,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     fun send() {
         if (usageBlocksInput || backgroundDrawer || (openingPreview != null && prompt != null)) return
         val draft = answerDraft
-        // 2.1.5: a card's code typed here confirms that card and never reaches the pane.
-        val typed = (draft?.text ?: normalMessage).trim()
-        if (typed.isNotEmpty() && vm.crossServerCodeReply(paneId, typed)) {
-            if (draft != null) answerDraft = draft.withText("") else normalMessage = ""
-            return
-        }
+        // 2.2.0: cross-server proposals are approved with Yes/No on the phone, never by typing here.
         if (draft != null) {
             val text = draft.text.trim()
             if (text.isNotEmpty() && !vm.answerInFlight(paneId)) {
@@ -582,7 +577,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         ServerBanners(vm)
         // A held send's problem shows only in its own pane's chat, on its own server (2.1.2).
         vm.sendNoticeFor(paneId)?.let { ErrorBanner(it) { vm.dismissSendNotice(paneId) } }
-        // 2.1.5: cross-server cards from frames the agent rendered in this chat.
+        // 2.1.5: cross-server cards from frames the agent rendered in this chat (2.2.0: kept to a
+        // share of the window, so the message box below always fits).
         if (!live) CrossServerPanel(vm, paneId)
         if (openingPreview != null) {
             Text("Checking the live pane…", color = Palette.Muted, fontSize = 12.5.sp,
@@ -860,7 +856,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 onStop = pane?.let { p -> { vm.stopPane(p) } },
                 // herdr's agent prompt reaches a working agent, so a message sent now steers it.
                 steerLabel = if (pane?.agent != null && !typingAnswer && prompt == null) "Steer" else null,
-                onQueueWhenIdle = if (!typingAnswer && !usageBlocksInput) ({ composerSend(vm, paneId, normalMessage.trim()) { vm.enqueue(paneId, it) }; normalMessage = "" }) else null,
+                onQueueWhenIdle = if (!typingAnswer && !usageBlocksInput) ({ vm.enqueue(paneId, normalMessage.trim()); normalMessage = "" }) else null,
                 onAttach = { uri -> vm.attach(uri) { path -> editMessage((message.trimEnd() + " " + path).trim() + " ") } },
                 attachBusy = vm.uploading,
                 commands = SlashCommands.forAgent(pane?.agent),

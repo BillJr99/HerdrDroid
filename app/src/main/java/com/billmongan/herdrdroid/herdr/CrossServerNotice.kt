@@ -7,8 +7,8 @@ import org.json.JSONObject
  * servers when the cross server feature is enabled"). One short, informational notice per agent:
  * how to propose a message, which agents on other servers the phone can reach (by name and
  * server label only), and that the phone user approves every delivery. 2.1.5: the agent proposes
- * only when the user asks it in chat, with a code it picks, and the user confirms by typing that
- * code back in the pane's chat on the phone.
+ * only when the user asks it in chat, with a code it picks. 2.2.0: the user approves with Yes or No
+ * on the phone, which then uses the frame's code itself; nobody types it back.
  */
 internal object CrossServerNotice {
     const val MAX_CHARS = 1_200
@@ -24,7 +24,7 @@ HDTO <destination>
 HD> <standard padded Base64 of your UTF-8 message, chunks of at most 40 characters, each with its own HD> prefix>
 HDEND <code>
 <code> is a new code you pick for each frame: 6 characters from ${CrossServerCode.ALPHABET}. <destination> is one name from the list below, exactly as written. The message must be nonblank, at most 1024 UTF-8 bytes, with no controls except line feeds and no secrets. Do not run a remote command.
-Agents on other servers: ${names.joinToString(", ")}. The phone shows your frame to the user on a card, and it is delivered only if the user types the code back on the phone; you will not see that reply."""
+Agents on other servers: ${names.joinToString(", ")}. The phone shows your message to the user with a Yes/No question, and it is delivered only if the user taps Yes on the phone; you will not see that answer."""
     }
 
     /** Whether the known usage of an agent is at or above [threshold] percent. 100 never skips; unknown never skips. */
