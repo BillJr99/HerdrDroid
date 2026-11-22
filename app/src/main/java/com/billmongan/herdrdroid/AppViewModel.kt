@@ -1590,6 +1590,8 @@ class AppViewModel internal constructor(
     private val USAGE_SETTLE_MS = 700L
     private val USAGE_OPEN_MAX_MS = 3 * 60_000L
     private val USAGE_CLOSE_AUTO_TRIES = 3
+    /** 2.2.1: between panel Esc presses; longer than Grok's and Claude's double-Esc window (800 ms). */
+    private val PANEL_SETTLE_MS = 1_200L
     private val USAGE_NOTICE = "HerdrDroid couldn't confirm that"
     private val BTW_SETTLE_MS = 700L
 
@@ -1620,7 +1622,8 @@ class AppViewModel internal constructor(
         it.pane == paneId && paneReadProblem == null && currentUsage(it)
     }
 
-    internal fun usageDismissInFlight(paneId: String): Boolean = closingUsage?.let { it.pane == paneId && currentUsage(it) } == true
+    internal fun usageDismissInFlight(paneId: String): Boolean = closingUsage?.let { it.pane == paneId && currentUsage(it) } == true ||
+        current?.id?.let { "$it/$paneId" in closingPanels } == true
 
     internal fun dismissUsage(usage: OpenUsage) {
         if (usageOverlayFor(usage.pane) != usage || closingUsage != null) return
@@ -1634,6 +1637,8 @@ class AppViewModel internal constructor(
             closeAppUsage(usage.pane, "Close", automatic = false)
             return
         }
+        // 2.2.1: any other panel is closed and checked closed ([closePanelAndVerify]), at most 2 Esc.
+        if (current?.id == usage.server) { closeInfoPanel(usage.server, usage.pane, "Close panel", automatic = false); return }
         val dismissKey = "${usage.server}/${usage.pane}"
         if (!dismissingUsage.add(dismissKey)) return
         closingUsage = usage
@@ -1751,6 +1756,86 @@ class AppViewModel internal constructor(
                 closingAppUsage.remove(key)
             }
             if (current?.id == sid && (screen as? Screen.Agent)?.paneId == paneId) runCatching { readPane(paneId) }
+        }
+    }
+
+    // ---- 2.2.1: informational panels over the composer, for every agent ----------------------
+
+    /** (server/pane) keys whose panel close is running. */
+    private val closingPanels = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    /** Failed automatic closes per (server/pane); after one, only a Close panel tap tries again. */
+    private val panelCloseFailures = java.util.concurrent.ConcurrentHashMap<String, Int>()
+    /** (server/pane/visit) keys already closed once on opening the pane. */
+    private val panelOpenCloses = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    /** Why the last close of a panel in (server/pane) didn't finish, for its card. */
+    internal var panelCloseProblems by mutableStateOf<Map<String, String>>(emptyMap())
+        private set
+
+    internal fun panelCloseProblem(paneId: String): String? = current?.id?.let { panelCloseProblems["$it/$paneId"] }
+
+    /**
+     * Why a send to [p] waits on the panel [screen] shows (2.2.1), and, when the panel is positively
+     * identified and the agent idle on the open server, starts closing it ([closeInfoPanel]).
+     */
+    private fun panelHold(server: String?, p: Pane, screen: String): String {
+        val panel = com.billmongan.herdrdroid.herdr.infoPanelOn(p.agent, screen) ?: return USAGE_OPEN_HOLD
+        if (panel.known && p.status != Status.WORKING && server != null && server == current?.id &&
+            (closeInfoPanel(server, p.id, "a message was waiting") != null || "$server/${p.id}" in closingPanels)) {
+            return "its ${panel.kind.label} is open; HerdrDroid is closing it first"
+        }
+        val why = panel.why ?: panelCloseProblems["$server/${p.id}"] ?: "it couldn't be closed from here"
+        return "its ${panel.kind.label} may be open ($why); close it at the computer"
+    }
+
+    /** Bill opened the pane (2.2.1): a panel left open in it is closed once per visit. */
+    private fun closePanelOnOpen(u: OpenUsage) {
+        if (openedUsageOf(u.server, u.pane) != null) return // the app's own: its own flow closes it
+        if (com.billmongan.herdrdroid.herdr.claudeBtwOverlay(u.overlay.visible) != null) return
+        if (!panelOpenCloses.add("${u.server}/${u.pane}/${u.visit}")) return
+        closeInfoPanel(u.server, u.pane, "you opened the pane")
+    }
+
+    /**
+     * Closes an informational panel in [paneId] on [server] and confirms the composer is back
+     * ([closePanelAndVerify], 2.2.1): at most two Esc presses, each only for a positively identified
+     * panel and only after the server read the same frame twice, in the pane's dispatch lane, and
+     * NonCancellable. When it can't confirm, the pane's card says so and offers Close panel and
+     * Show terminal. Null when nothing was started (not the open server, already closing, or an
+     * automatic close that already failed once).
+     */
+    internal fun closeInfoPanel(server: String, paneId: String, why: String, automatic: Boolean = true): Job? {
+        if (current?.id != server) return null
+        val h = herdr ?: return null
+        val agent = pane(paneId)?.agent ?: return null
+        if (openedUsageOf(server, paneId) != null) return closeAppUsage(paneId, why, automatic)
+        val key = "$server/$paneId"
+        if (automatic && (panelCloseFailures[key] ?: 0) >= 1) return null
+        if (!closingPanels.add(key)) return null
+        return viewModelScope.launch {
+            try {
+                val outcome = withContext(kotlinx.coroutines.NonCancellable) {
+                    paneDispatch.run(server to paneId) {
+                        com.billmongan.herdrdroid.herdr.closePanelAndVerify(
+                            stillCurrent = { current?.id == server && herdr === h && pane(paneId)?.agent == agent && pane(paneId)?.status != Status.WORKING },
+                            readState = { h.readPanelState(paneId, agent) },
+                            sendEscape = { shown -> h.closeUsageOverlay(paneId, agent, shown) },
+                            settle = { delay(PANEL_SETTLE_MS) },
+                        )
+                    }
+                }
+                com.billmongan.herdrdroid.diag.DiagLog.log("panel", "$paneId: close ($why): " +
+                    if (outcome.closed) "closed, ${outcome.escapes} Esc" else "not confirmed, ${outcome.why}")
+                if (outcome.closed) {
+                    panelCloseFailures.remove(key)
+                    panelCloseProblems = panelCloseProblems - key
+                } else {
+                    panelCloseFailures.merge(key, 1, Int::plus)
+                    panelCloseProblems = panelCloseProblems + (key to (outcome.why ?: "it couldn't be closed"))
+                }
+            } finally {
+                closingPanels.remove(key)
+            }
+            if (current?.id == server && (screen as? Screen.Agent)?.paneId == paneId) runCatching { readPane(paneId) }
         }
     }
 
@@ -1914,7 +1999,9 @@ class AppViewModel internal constructor(
             // guarded live viewport may offer dismissal, and this check itself never sends a key.
             val liveUsage = if (foreground && !locked && client != null && serverId != null &&
                 agent != null && paneNow.status != Status.WORKING && (paneNow.scrollOffset ?: 0) == 0) {
-                quietly { h -> if (h === client) h.readUsageOverlay(paneId, agent) else null }
+                // 2.2.1: any agent whose recent read shows an informational panel gets the guarded read too.
+                val anyAgent = com.billmongan.herdrdroid.herdr.usageScreenShown(agent, recent)
+                quietly { h -> if (h === client) h.readUsageOverlay(paneId, agent, anyAgent) else null }
                     ?.let { OpenUsage(serverId, paneId, visit, client, agent, it) }
             } else null
             if (!isOpen()) return
@@ -2003,6 +2090,7 @@ class AppViewModel internal constructor(
             paneReadProblem = null
             openUsage = liveUsage
             noteSeenBtw(serverId, paneId, liveUsage)
+            liveUsage?.let(::closePanelOnOpen)
             noteInputLine(paneId, text)
             paneText = text
             paneTextPane = paneId
@@ -3027,7 +3115,7 @@ class AppViewModel internal constructor(
                     earlier -> "an earlier message to it is still waiting"
                     screenNow.isNullOrBlank() -> "its screen couldn't be read first"
                     leftOpen -> USAGE_HOLD
-                    usageDialogShown(now.agent, screenNow) -> USAGE_OPEN_HOLD
+                    usageDialogShown(now.agent, screenNow) -> panelHold(serverId, now, screenNow)
                     now.agent == "hermes" && hermesUsageWaiting(screenNow) -> "Hermes hasn't returned to its composer after Usage"
                     openCodeBackgroundDrawer(now.agent, screenNow) -> "its background drawer is open; close it in Terminal"
                     checkedSendBlocked(now, screenNow, openCodeRead) -> "a question is open in it; answer it first"
@@ -3207,7 +3295,7 @@ class AppViewModel internal constructor(
                             // 2.1.4: a usage dialog the app left open is closed first; one open
                             // otherwise is never typed into.
                             usageLeftOpen(p.paneId) -> { closeAppUsage(p.paneId, "a held send was waiting"); USAGE_HOLD }
-                            usageDialogShown(after.agent, screen) -> USAGE_OPEN_HOLD
+                            usageDialogShown(after.agent, screen) -> panelHold(server, after, screen)
                             after.agent == "hermes" && hermesUsageWaiting(screen) -> "Hermes hasn't returned to its composer after Usage"
                             openCodeBackgroundDrawer(after.agent, screen) -> "its background drawer is open; close it in Terminal"
                             checkedSendBlocked(after, screen, checked) -> "a question is open in it; answer it first"
@@ -4841,7 +4929,10 @@ class AppViewModel internal constructor(
                 // the app left open is closed first; the reply is never typed into either.
                 if (usageDialogShown(p.agent, fresh) || (a.serverId == current?.id && usageLeftOpen(p.id))) {
                     com.billmongan.herdrdroid.diag.DiagLog.log("answer", "${p.id}: alert reply refused, a usage screen is open")
-                    if (a.serverId == current?.id) withContext(Dispatchers.Main) { closeAppUsage(p.id, "an alert reply was waiting") }
+                    if (a.serverId == current?.id) withContext(Dispatchers.Main) {
+                        closeAppUsage(p.id, "an alert reply was waiting") ?: if (p.status != Status.WORKING)
+                            closeInfoPanel(a.serverId, p.id, "an alert reply was waiting") else null
+                    }
                     Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
                         "${p.agentName}'s usage screen is open, so your reply wasn't typed. Close it with Esc first.")
                     return
@@ -5733,6 +5824,8 @@ class AppViewModel internal constructor(
     /** Why a menu write must wait, from the fresh read: the checks of a normal send, said plainly. */
     private fun menuWriteBlock(fresh: Pane, viewport: String): String? {
         if (fresh.backgroundBusy) return "it is running work in the background"
+        // 2.2.1: an informational panel over the composer is closed first when it is positively known.
+        if (com.billmongan.herdrdroid.herdr.infoPanelOn(fresh.agent, viewport) != null) return panelHold(current?.id, fresh, viewport)
         com.billmongan.herdrdroid.herdr.PaneControls.writeBlock(fresh.agent, viewport)?.let { return it }
         if (blocksNormalSend(fresh, viewport)) return "a question, dialog or usage panel is open in it"
         return holdReason(fresh.id, viewport)
