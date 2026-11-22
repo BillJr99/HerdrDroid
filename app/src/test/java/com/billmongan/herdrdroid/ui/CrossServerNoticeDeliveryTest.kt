@@ -195,6 +195,48 @@ class CrossServerNoticeDeliveryTest {
         assertEquals(2, laptop2.writes.size)
     }
 
+    private fun shellsScreen(name: String) =
+        checkNotNull(javaClass.getResource("/screens/claude/derived-2.1.330-shells/$name")).readText()
+
+    /**
+     * 2.2.1 (Grok's review of the Claude exemption): on the open server, a Claude herdr calls idle
+     * with background shells is no longer held for that work alone, so a turn its screen shows
+     * running ("esc to interrupt" among the footer chips) must still hold the notice. With only
+     * shells and an empty box, the notice goes once.
+     */
+    @Test fun theOpenServersClaudeWithShellsIsHeldWhileItsFooterSaysWorkingThenToldOnce() {
+        state(vm, "panes", withBusy(laptop.panes(), mapOf("p1" to 3)))
+        laptop.screen["p1"] = shellsScreen("working-3-shells.ansi")
+        vm.changeAgentMessaging(true)
+        tick()
+        assertTrue(laptop.writes.toString(), laptop.writes.isEmpty())
+        laptop.screen["p1"] = shellsScreen("idle-3-shells-suggestion.ansi")
+        // A refused notice is tried again after the notifier's two-minute gap.
+        now += 120_001
+        tick()
+        assertEquals(1, laptop.writes.size)
+        tick()
+        assertEquals(1, laptop.writes.size)
+    }
+
+    /** The same on a watched server, through the relay: held while the footer says working, then told once. */
+    @Test fun aWatchedClaudeWithShellsIsHeldWhileItsFooterSaysWorkingThenToldOnce() {
+        state(fleet, "states", mapOf(laptop2.server.id to FleetState(laptop2.server,
+            withBusy(laptop2.panes(), mapOf("w2:p9" to 3, "w2:p5" to 0)), null, 0, mapOf("w2:p9" to 3))))
+        laptop2.screen["w2:p9"] = shellsScreen("working-3-shells.ansi")
+        vm.changeAgentMessaging(true)
+        tick()
+        assertEquals("only the reviewer is told", 1, laptop2.writes.size)
+        assertFalse(laptop2.writes.single().contains("'w2:p9'"))
+        laptop2.screen["w2:p9"] = shellsScreen("idle-3-shells.ansi")
+        now += 120_001
+        tick()
+        assertEquals(2, laptop2.writes.size)
+        assertTrue(laptop2.writes.last().contains("'w2:p9'"))
+        tick()
+        assertEquals(2, laptop2.writes.size)
+    }
+
     @Test fun heldForTheOpenChatsDraft() {
         vm.screen = Screen.Agent("p1")
         vm.noteVoiceComposerDraft(laptop.server.id, "p1", true)
