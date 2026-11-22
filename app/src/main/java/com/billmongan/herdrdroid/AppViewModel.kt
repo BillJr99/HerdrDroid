@@ -129,6 +129,9 @@ private class Queued(
     val serverId: String? = null,
 )
 
+/** 2.1.4: how often the cross-server notice loop looks for agents to tell. */
+private const val NOTICE_TICK_MS = 30_000L
+
 class AppViewModel internal constructor(
     app: Application,
     // Keep all adapter work in this scope; recheck cancellation at the final submission boundary.
@@ -155,6 +158,27 @@ class AppViewModel internal constructor(
         agentMessagingEnabled = on
         updateAgentMessagingSession()
         prefs.agentMessagingEnabled = on
+    }
+
+    /** 2.1.4: "Tell agents about cross-server messaging". It only acts while cross-server messaging is on. */
+    var crossServerNotice by mutableStateOf(prefs.crossServerNotice)
+        private set
+
+    /** 2.1.4: "Skip agents at or above X% of quota" for the notice; 100 never skips. */
+    var crossServerNoticeQuota by mutableStateOf(
+        com.billmongan.herdrdroid.herdr.CrossServerNotice.clampThreshold(prefs.crossServerNoticeQuota))
+        private set
+
+    fun changeCrossServerNotice(on: Boolean) {
+        crossServerNotice = on
+        prefs.crossServerNotice = on
+        updateNoticeLoop()
+    }
+
+    fun changeCrossServerNoticeQuota(percent: Int) {
+        val v = com.billmongan.herdrdroid.herdr.CrossServerNotice.clampThreshold(percent)
+        crossServerNoticeQuota = v
+        prefs.crossServerNoticeQuota = v
     }
 
     private val chatVisit = com.billmongan.herdrdroid.voice.SelectedChatVisit()
@@ -1101,6 +1125,7 @@ class AppViewModel internal constructor(
     private var agentMessagingRunning: Job? = null
 
     private fun updateAgentMessagingSession() {
+        updateNoticeLoop()
         if (!agentMessagingEnabled || !agentMessagingForeground || locked) {
             clearAgentMessage()
             agentMessagingActivation?.cancel()
@@ -3335,10 +3360,20 @@ class AppViewModel internal constructor(
             sameOccupant(it, expected) && it.status in setOf(Status.IDLE, Status.DONE) && !it.backgroundBusy
         } == true
 
-    internal fun agentMessageDestinations(request: AgentMessage): List<Session> =
-        if (currentAgentMessage !== request || request.text == null || !agentMessageSourceCurrent(request)) emptyList()
+    /**
+     * Every identifiable agent on another connected Fleet server, whatever its status (2.1.4). The
+     * copied proposal instructions name these, so the source agent knows which agents the phone
+     * can reach: before, it was told nothing, and Claude on one server concluded it could not see
+     * Hermes on another. Naming them chooses nothing; the review still lists only the idle ones.
+     */
+    internal fun agentMessageReachable(request: AgentMessage): List<Session> =
+        if (currentAgentMessage !== request || !agentMessageSourceCurrent(request)) emptyList()
         else sessions().filter { it.server.id != request.source.server && relayPort(it.server.id)?.connectionIdentity != null &&
-            hasStableOccupant(it.pane) && agentMessageDestinationCurrent(it.server.id, it.pane) }
+            hasStableOccupant(it.pane) }
+
+    internal fun agentMessageDestinations(request: AgentMessage): List<Session> =
+        if (request.text == null) emptyList()
+        else agentMessageReachable(request).filter { agentMessageDestinationCurrent(it.server.id, it.pane) }
 
     internal suspend fun bindAgentMessage(request: AgentMessage, selected: Session): AgentMessageRoute? {
         if (selected !in agentMessageDestinations(request)) return null
@@ -3373,6 +3408,151 @@ class AppViewModel internal constructor(
         } finally {
             dismissAgentMessage(request)
         }
+    }
+
+    // ---- 2.1.4: telling agents about cross-server messaging ------------------------------------
+
+    private val noticeLedger = com.billmongan.herdrdroid.herdr.NoticeLedger(
+        { prefs.crossServerNoticeLedger }, { prefs.crossServerNoticeLedger = it })
+    internal var noticeClock: () -> Long = System::currentTimeMillis
+    internal val notifier = com.billmongan.herdrdroid.herdr.CrossServerNotifier(noticeLedger, { noticeClock() })
+    /** Off in tests that drive [noticeTick] themselves. */
+    internal var noticeLoopAllowed = true
+    /**
+     * The wait between notice passes. It suspends without holding the main thread: no work is
+     * queued on the main looper while it waits. Tests replace it, so no real 30-second delay loop
+     * runs in a test that does not ask for one.
+     */
+    internal var noticeTicker: suspend () -> Unit = { delay(NOTICE_TICK_MS) }
+    private var noticeLoop: Job? = null
+    private val noticeLock = Mutex()
+    private val noticeForced = mutableSetOf<String>()
+
+    private fun noticeActive() = agentMessagingEnabled && crossServerNotice && agentMessagingForeground && !locked
+
+    /**
+     * The notice loop runs only while cross-server messaging and the notice are both on, the app is
+     * in the foreground and unlocked; any change away from that cancels it. Each pass reads Compose
+     * state, so the pass itself runs on the main thread, but nothing runs between passes.
+     */
+    private fun updateNoticeLoop() {
+        if (!noticeActive()) {
+            noticeLoop?.cancel()
+            noticeLoop = null
+            synchronized(noticeForced) { noticeForced.clear() }
+            return
+        }
+        if (!noticeLoopAllowed || noticeLoop?.isActive == true) return
+        // The first pass is posted at once, so turning the feature on tells the agents, but it
+        // never runs inside the call (a settings tap or a lifecycle callback) that started it.
+        noticeLoop = viewModelScope.launch(Dispatchers.Main) {
+            while (isActive && noticeActive()) {
+                noticeTick()
+                noticeTicker()
+            }
+        }
+    }
+
+    /** "Tell agents now": the next tick ignores the hourly limit for every agent, and only that. */
+    fun tellAgentsNow() {
+        if (!noticeActive()) return
+        synchronized(noticeForced) { noticeForced += noticeRecipients().map { "${it.server.id}|${it.pane.id}" } }
+        viewModelScope.launch { noticeTick() }
+    }
+
+    /** Whether the notice can reach [s]: an identifiable agent on a connected server. */
+    private fun noticeReachable(s: Session): Boolean = hasStableOccupant(s.pane) && if (s.current)
+        s.server.id == current?.id && link == Link.CONNECTED && herdr?.let { it.backend != Backend.CORE && it.connectionIdentity != null } == true
+    else relayPort(s.server.id)?.connectionIdentity != null
+
+    private fun noticeRecipients(): List<Session> = sessions().filter(::noticeReachable)
+
+    private fun noticeQuota(s: Session): QuotaReading? {
+        val key = QuotaProfiles.key(s.pane.agent) ?: return null
+        return (if (s.current) quotas else serverQuotas[s.server.id].orEmpty())[key]
+    }
+
+    /**
+     * An agent as text other agents receive name it: its session name and the server's
+     * agent-facing label (the server's name, or "server N"; never the account, host or port).
+     */
+    internal fun agentFacingName(s: Session): String =
+        "${com.billmongan.herdrdroid.ui.sessionName(s.pane)} on ${com.billmongan.herdrdroid.store.agentServerLabel(s.server, servers)}"
+
+    /** The candidates with the notice each would get: names of agents on other servers only. */
+    internal fun noticeCandidates(): List<Pair<Session, com.billmongan.herdrdroid.herdr.CrossServerNotifier.Candidate>> {
+        val all = noticeRecipients()
+        return all.mapNotNull { s ->
+            val others = all.filter { it.server.id != s.server.id }
+                .map(::agentFacingName)
+            val text = com.billmongan.herdrdroid.herdr.CrossServerNotice.text(others) ?: return@mapNotNull null
+            val raw = if (s.current) pane(s.pane.id) ?: s.pane else s.pane
+            val hold = raw.status != Status.IDLE && raw.status != Status.DONE || raw.backgroundBusy ||
+                !promptLaneClear(s.server.id, s.pane.id) ||
+                com.billmongan.herdrdroid.herdr.CrossServerNotice.quotaSkips(noticeQuota(s), crossServerNoticeQuota)
+            s to com.billmongan.herdrdroid.herdr.CrossServerNotifier.Candidate(s.server.id, s.pane, text, hold)
+        }
+    }
+
+    /** One pass: each due agent gets the notice through the guarded send paths, one at a time. */
+    internal suspend fun noticeTick() {
+        if (!noticeActive() || !noticeLock.tryLock()) return
+        try {
+            for ((s, c) in noticeCandidates()) {
+                if (!noticeActive()) return
+                val forced = synchronized(noticeForced) { c.key in noticeForced }
+                val decision = notifier.decide(c, forced)
+                if (decision != com.billmongan.herdrdroid.herdr.CrossServerNotifier.Decision.SEND) {
+                    // Already sent: the forced tap has nothing left to do for this agent.
+                    if (decision == com.billmongan.herdrdroid.herdr.CrossServerNotifier.Decision.ALREADY_SENT)
+                        synchronized(noticeForced) { noticeForced -= c.key }
+                    continue
+                }
+                synchronized(noticeForced) { noticeForced -= c.key }
+                when (sendNotice(s, c.text)) {
+                    true -> notifier.sent(c)
+                    false -> if (notifier.refused(c, forced)) noteSendProblem(s.server.id, s.pane.id,
+                        "HerdrDroid could not tell this agent about cross-server messaging after ${notifier.maxTries} tries. " +
+                            "Tap Tell agents now in Settings to try again.")
+                }
+            }
+        } finally {
+            noticeLock.unlock()
+        }
+    }
+
+    /** True when sent or possibly sent (never sent twice), false when refused and nothing went out. */
+    private suspend fun sendNotice(s: Session, text: String): Boolean {
+        if (!s.current) {
+            val route = promptRelay.bind(s.server.id, s.pane) ?: return false
+            return when (promptRelay.send(route, text) { noticeActive() && promptRelay.isCurrent(route) }) {
+                RelayResult.SENT, RelayResult.UNCERTAIN -> true
+                RelayResult.REFUSED, RelayResult.DRAFT -> false
+            }
+        }
+        val h = herdr ?: return false
+        val connection = h.connectionIdentity ?: return false
+        val server = s.server.id
+        fun allowed() = noticeActive() && current?.id == server && herdr === h && h.connectionIdentity === connection &&
+            link == Link.CONNECTED && promptLaneClear(server, s.pane.id)
+        val port = object : com.billmongan.herdrdroid.herdr.LocalPromptSend.Port {
+            override suspend fun pane(id: String) =
+                quietly(allowBackground = true) { if (it === h) it.panes().singleOrNull { p -> p.id == id } else null }
+            override suspend fun viewport(id: String) =
+                quietly(allowBackground = true) { if (it === h) it.readStyled(id, sendReadLines(s.pane.agent)) else null }
+            override fun blocked(fresh: Pane, viewport: String): Boolean {
+                if (fresh.backgroundBusy || blocksNormalSend(fresh, viewport)) return true
+                val line = com.billmongan.herdrdroid.herdr.inputLineOf(viewport, fresh.agent)
+                if (line != "" || com.billmongan.herdrdroid.herdr.composerDraftOf(viewport, fresh.agent) != null) return true
+                return holdReason(fresh.id, viewport) != null
+            }
+            override suspend fun send(fresh: Pane, text: String, permit: com.billmongan.herdrdroid.herdr.WritePermit) =
+                h.sendPermitted(fresh, text, connection, permit)
+        }
+        val result = localPromptSend.send(server, com.billmongan.herdrdroid.herdr.Occupant.of(s.pane), text, ::allowed, port)
+        (result.failure as? LinkDown)?.let { if (herdr === h) linkLost(it) }
+        return result.outcome == com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.SENT ||
+            result.outcome == com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.UNCERTAIN
     }
 
     internal suspend fun sendVoiceMessage(target: VoiceTarget, text: String, allowed: () -> Boolean): String {

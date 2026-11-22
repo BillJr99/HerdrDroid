@@ -122,6 +122,7 @@ fun SettingsScreen(vm: AppViewModel, back: Screen) {
                     "Listen for a proposal from the selected Herdr pane while the app is open and unlocked. Nothing is sent until you choose a destination and tap Send message.",
                     color = Palette.Muted, fontSize = 13.sp,
                 )
+                CrossServerNoticeSettings(vm)
             }
             LocalVoiceUi.current?.let { VoiceSettings(it, HandsFreeService.active, vm.appLock) }
             // Only the palettes for the look in use now (with System, whichever the phone shows).
@@ -533,3 +534,48 @@ private fun QuotaLine(
     }
 }
 
+
+/**
+ * 2.1.4: tell each agent, once per session and change in the reachable agents, how to propose a
+ * message and which agents on other servers the phone can reach. Acts only while cross-server
+ * messaging is on.
+ */
+@Composable
+internal fun CrossServerNoticeSettings(vm: AppViewModel) {
+    val feature = vm.agentMessagingEnabled
+    Row(
+        Modifier.fillMaxWidth().toggleable(
+            value = vm.crossServerNotice,
+            enabled = feature,
+            role = Role.Switch,
+            onValueChange = vm::changeCrossServerNotice,
+        ),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("Tell agents about cross-server messaging", color = if (feature) Palette.Ink else Palette.Muted,
+            fontSize = 16.sp, modifier = Modifier.weight(1f))
+        Switch(checked = feature && vm.crossServerNotice, enabled = feature, onCheckedChange = null)
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            "Each agent gets one short notice with the proposal instructions and the agents on other servers, by name only.",
+            color = Palette.Muted, fontSize = 13.sp, modifier = Modifier.weight(1f),
+        )
+        TextButton(enabled = feature && vm.crossServerNotice, onClick = vm::tellAgentsNow) { Text("Tell agents now") }
+    }
+    val pct = vm.crossServerNoticeQuota
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            if (pct >= 100) "Skip agents at or above 100% of quota (never skip)" else "Skip agents at or above $pct% of quota",
+            color = Palette.Ink, fontSize = 16.sp, modifier = Modifier.weight(1f),
+        )
+        TextButton(enabled = pct > 50, onClick = { vm.changeCrossServerNoticeQuota(pct - 5) },
+            modifier = Modifier.semantics { contentDescription = "Lower quota limit" }) { Text("\u2212") }
+        TextButton(enabled = pct < 100, onClick = { vm.changeCrossServerNoticeQuota(pct + 5) },
+            modifier = Modifier.semantics { contentDescription = "Raise quota limit" }) { Text("+") }
+    }
+    Text(
+        "Those agents are told once their usage falls below it. An agent whose usage is unknown is not skipped.",
+        color = Palette.Muted, fontSize = 13.sp,
+    )
+}
