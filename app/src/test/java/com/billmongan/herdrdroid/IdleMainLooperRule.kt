@@ -33,22 +33,45 @@ import kotlin.coroutines.ContinuationInterceptor
  *    [before] and [after] set that frame time back to zero.
  *
  * The rule's after() runs after the class's @After methods, so cancel view models there first.
- * AaaComposeOrderProbeTest makes the first problem show at once.
+ * ComposeMainLooperRegressionTest covers both; AaaComposeOrderProbeTest is a smoke sentinel.
  */
 class IdleMainLooperRule : ExternalResource() {
     override fun before() = resetComposeFrameTime()
 
     override fun after() {
-        Snapshot.sendApplyNotifications()
-        shadowOf(Looper.getMainLooper()).idle()
-        resetComposeFrameTime()
+        var failure: Throwable? = null
+        try {
+            Snapshot.sendApplyNotifications()
+            shadowOf(Looper.getMainLooper()).idle()
+        } catch (t: Throwable) {
+            failure = t
+        }
+        try {
+            resetComposeFrameTime()
+        } catch (t: Throwable) {
+            if (failure == null) failure = t else failure.addSuppressed(t)
+        }
+        failure?.let { throw it }
     }
 
-    private fun resetComposeFrameTime() {
-        runCatching {
-            val dispatcher = AndroidUiDispatcher.Main[ContinuationInterceptor] ?: return
-            val choreographer = dispatcher.javaClass.getDeclaredField("choreographer").apply { isAccessible = true }.get(dispatcher)
-            Choreographer::class.java.getDeclaredField("mLastFrameTimeNanos").apply { isAccessible = true }.setLong(choreographer, 0L)
+    companion object {
+        /**
+         * Sets the frame time of the Choreographer that AndroidUiDispatcher.Main keeps back to zero.
+         * Does nothing until a Compose test has made that dispatcher (this never makes it), and
+         * fails loudly if the fields it needs have changed in Compose or Robolectric.
+         */
+        fun resetComposeFrameTime() {
+            try {
+                val lazy = AndroidUiDispatcher::class.java.getDeclaredField("Main\$delegate").apply { isAccessible = true }.get(null) as Lazy<*>
+                if (!lazy.isInitialized()) return
+                val dispatcher = checkNotNull(AndroidUiDispatcher.Main[ContinuationInterceptor]) { "AndroidUiDispatcher.Main has no dispatcher" }
+                val choreographer = dispatcher.javaClass.getDeclaredField("choreographer").apply { isAccessible = true }.get(dispatcher) as Choreographer
+                Choreographer::class.java.getDeclaredField("mLastFrameTimeNanos").apply { isAccessible = true }.setLong(choreographer, 0L)
+            } catch (e: ReflectiveOperationException) {
+                throw AssertionError("IdleMainLooperRule could not reset Compose's frame time; Compose or Robolectric changed: $e", e)
+            } catch (e: ClassCastException) {
+                throw AssertionError("IdleMainLooperRule could not reset Compose's frame time; Compose or Robolectric changed: $e", e)
+            }
         }
     }
 }
