@@ -1,0 +1,27 @@
+
+ ▐▛███▛█   Claude Code v2.1.329
+▝▜██████▀  Opus 5.5 · API Usage Billing
+ ▝▝   ▝▝   /k/work
+
+▎ Auto mode is now Claude Code's default permission mode.
+▎ Auto mode lets Claude handle permission prompts automatically. Claude checks each tool call for risky actions and prompt injection
+▎ before executing, runs the ones it assesses as lower-risk, and blocks the rest.
+▎ https://code.claude.com/docs/en/permission-modes
+
+❯ PLEASE_ASK two questions
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Runners  ☐ Reports  ✔ Submit  →
+
+│ The sample suite can run under several runners. Each one runs in a throwaway container, so picking more than
+│ one only makes the run longer. Which runners should the sample use?
+
+  1. [ ] pytest
+     The standard runner for the sample tests.
+  2. [ ] tox
+     Runs the suite once per configured environment.
+  3. Type something.
+  ❯ Next
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel
