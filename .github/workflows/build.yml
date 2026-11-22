@@ -1,17 +1,24 @@
-# Tests HerdrDroid on every push and pull request: the unit tests, the Compose UI tests under
+# Tests HerdrDroid on every pull request: the unit tests, the Compose UI tests under
 # Robolectric and the SSH-over-WebSocket end-to-end test in one job, and the same Compose UI tests
 # on an Android emulator in a second job. Then it builds the APK. With the signing secrets set it is signed with the sideload key, so it installs
 # over the app; without them it is built unsigned, with a warning. A v* tag attaches it to a release.
 #
 # The secrets (KEYSTORE_B64, SIGNING_PROPERTIES) come from keystore/push-signing-secrets.sh, run by
 # the owner from the folder that holds the key.
+#
+# One run per release (Bill, 2026-11-22: "reduce the number of CI runs"): a pull request runs it, a
+# commit that only adds a release APK (release/*.apk, the file CI itself built and the owner checked)
+# does not, and a push to main does not, since the pull request already tested that code (main is
+# changed only by merging a tested pull request). release-apk.yml still publishes the APK after the
+# merge, a v* tag still builds, and workflow_dispatch still runs it by hand.
 name: build
 
 on:
   push:
-    branches: [main]
     tags: ["v*"]
   pull_request:
+    paths-ignore:
+      - "release/*.apk"
   workflow_dispatch:
 
 permissions:

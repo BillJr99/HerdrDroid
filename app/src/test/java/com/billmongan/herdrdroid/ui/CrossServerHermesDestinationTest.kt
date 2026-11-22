@@ -1,5 +1,7 @@
 package com.billmongan.herdrdroid.ui
 
+import com.billmongan.herdrdroid.OUTERMOST_RULE
+import com.billmongan.herdrdroid.IdleMainLooperRule
 import com.billmongan.herdrdroid.*
 
 import android.app.Application
@@ -42,6 +44,7 @@ import org.robolectric.Shadows.shadowOf
  */
 @RunWith(AndroidJUnit4::class)
 class CrossServerHermesDestinationTest {
+    @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = IdleMainLooperRule()
     @get:Rule val rule = createComposeRule()
 
     private val app = ApplicationProvider.getApplicationContext<Application>()

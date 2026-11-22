@@ -1,5 +1,6 @@
 package com.billmongan.herdrdroid
 
+import org.junit.Rule
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.billmongan.herdrdroid.herdr.*
 import org.junit.Assert.*
@@ -9,6 +10,7 @@ import org.junit.runner.RunWith
 /** 2.1.4: the cross-server notice's text and its sending rules, without a server. */
 @RunWith(AndroidJUnit4::class)
 class CrossServerNoticeTest {
+    @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = IdleMainLooperRule()
     private val others = listOf("Hermes on laptop2", "OpenCode · opencode-college on laptop2", "Claude on laptop2")
 
     /** Grok's RC review 4: a server with no name is "server N" to agents, never its account, host or port. */

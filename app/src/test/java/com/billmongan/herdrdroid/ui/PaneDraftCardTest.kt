@@ -1,5 +1,7 @@
 package com.billmongan.herdrdroid.ui
 
+import com.billmongan.herdrdroid.OUTERMOST_RULE
+import com.billmongan.herdrdroid.IdleMainLooperRule
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -16,6 +18,7 @@ import org.junit.runner.RunWith
 /** 2.1.0: the draft card sends only on a tap and clears only after a confirmation. */
 @RunWith(AndroidJUnit4::class)
 class PaneDraftCardTest {
+    @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = IdleMainLooperRule()
     @get:Rule val rule = createComposeRule()
 
     private var sends = 0

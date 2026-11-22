@@ -19,6 +19,7 @@ import org.junit.runner.RunWith
  */
 @RunWith(AndroidJUnit4::class)
 class AaaComposeOrderProbeTest {
+    @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = IdleMainLooperRule()
     @get:Rule val rule = createComposeRule()
 
     @Test fun aTrivialComposableRenders() {
