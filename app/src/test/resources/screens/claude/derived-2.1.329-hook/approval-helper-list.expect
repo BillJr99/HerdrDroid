@@ -1,0 +1,5 @@
+card: options
+blocked: false
+heading: Do you want to proceed?
+options: No | Yes
+source: derived for 2.1.4 from two real Claude Code 2.1.329 captures: captured-2.1.329-auto-approval/approval.txt with the mode row and helper list of captured-2.1.329-helper-list/composer.txt (rows copied exactly) under it, the layout to expect if Claude kept those rows under a dialog

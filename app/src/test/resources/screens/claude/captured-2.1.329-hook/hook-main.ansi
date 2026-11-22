@@ -1,0 +1,48 @@
+
+[38;5;174m ▐[48;5;16m▛███▛█[39m[49m   [1mClaude Code[0m[39m[49m [38;5;246mv2.1.329
+[38;5;174m▝▜[48;5;16m█████[49m█▀[39m  [38;5;246mOpus 5.5 · API Usage Billing
+[38;5;174m ▝▝   ▝▝ [39m  [38;5;246m/proj
+
+
+[48;5;237m❯ [38;5;231mrun-main[39m
+[49m
+[38;5;246m [39m Listing CI run artifacts
+[38;5;246m  ⎿  $ gh api repos/O/R/actions/runs/1/artifacts -q '.artifacts[] | {name, size_in_bytes}'[39m
+
+[38;5;153m──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m [1m[38;5;153mBash command[0m[39m[49m
+ [38;5;246mList CI run artifacts[39m
+[38;5;239m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+[39m [2m│[0m[39m[49m gh api repos/O/R/actions/runs/1/artifacts -q '.artifacts[] | {name, size_in_bytes}'
+[38;5;239m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+[39m [2m│[0m[39m[49m Hook [1mPreToolUse:Bash[0m[39m[49m requires confirmation for this command:
+ [2m│[0m[39m[49m gh policy: shared gh policy unavailable [2m[settings]
+[0m[39m[49m [38;5;246msettings.json to update hooks
+
+[39m Do you want to proceed?
+ [38;5;153m❯[39m [38;5;246m1. [38;5;153mYes
+[39m   [38;5;246m2. [39mNo
+
+ [38;5;246mEsc to cancel · Tab to amend
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[39m
+
+
+
+
+
+

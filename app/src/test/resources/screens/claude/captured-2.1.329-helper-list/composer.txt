@@ -1,0 +1,48 @@
+
+ ▐▛███▛█   Claude Code v2.1.329
+▝▜██████▀  Opus 5.5 · API Usage Billing
+ ▝▝   ▝▝   /proj
+
+
+❯ start-helpers
+
+● Done.
+
+✻ Baked for 0s · done 10:54 PM
+
+❯ start-helpers
+
+● Agent(Sample helper task 3)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+● Done.
+
+✻ Waiting for 1 background agent to finish
+
+❯ run-sub
+
+● Done.
+
+✻ Waiting for 1 background agent to finish
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ↓ to manage
+
+  ● main
+  ◯ general-purpose  Sample helper task 3                                                                                        49s

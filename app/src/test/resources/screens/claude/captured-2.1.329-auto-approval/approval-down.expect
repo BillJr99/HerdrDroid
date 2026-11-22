@@ -1,0 +1,4 @@
+card: options
+blocked: false
+options: No | Yes
+source: as approval.txt, after one Down: Yes highlighted (real)
