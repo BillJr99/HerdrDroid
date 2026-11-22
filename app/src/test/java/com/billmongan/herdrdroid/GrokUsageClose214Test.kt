@@ -19,6 +19,7 @@ import java.security.MessageDigest
 import java.time.Duration
 import org.junit.After
 import org.junit.Assert.*
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Shadows.shadowOf
@@ -29,6 +30,7 @@ import org.robolectric.Shadows.shadowOf
  */
 @RunWith(AndroidJUnit4::class)
 class GrokUsageClose214Test {
+    @get:Rule val idleMainLooper = IdleMainLooperRule()
     private val vm = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
     private val server = Server(id = "fixture-g", name = "FixtureG", host = "g.invalid", port = 22, user = "fixg", herdrPath = "/fixture/herdr")
     private val dialog = checkNotNull(javaClass.getResource("/screens/grok/reconstructed-1.0.92/usage-dialog.txt")).readText()

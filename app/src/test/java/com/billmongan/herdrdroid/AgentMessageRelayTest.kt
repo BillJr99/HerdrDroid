@@ -16,6 +16,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.*
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Shadows.shadowOf
@@ -26,6 +27,7 @@ import org.robolectric.Shadows.shadowOf
  */
 @RunWith(AndroidJUnit4::class)
 class AgentMessageRelayTest {
+    @get:Rule val idleMainLooper = IdleMainLooperRule()
     private val vm = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
     private val source = Endpoint("Source")
     private val destination = Endpoint("Destination")

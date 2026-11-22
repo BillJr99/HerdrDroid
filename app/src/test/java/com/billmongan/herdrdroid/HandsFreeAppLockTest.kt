@@ -10,6 +10,7 @@ import org.junit.After
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -22,6 +23,10 @@ class HandsFreeAppLockTest {
     private val app = ApplicationProvider.getApplicationContext<Application>()
     private val keyguard = shadowOf(app.getSystemService(KeyguardManager::class.java))
     private lateinit var vm: AppViewModel
+
+    // The lock tests change vm.locked and never idle the main looper themselves. In 2.1.4 that left
+    // Compose's queued snapshot callback to be dropped between tests, and every later Compose test hung.
+    @get:Rule val idleMainLooper = IdleMainLooperRule()
 
     @Before fun setUp() {
         keyguard.setIsDeviceSecure(false)
