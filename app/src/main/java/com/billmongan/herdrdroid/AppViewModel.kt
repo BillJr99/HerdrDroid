@@ -5094,8 +5094,18 @@ class AppViewModel internal constructor(
             com.billmongan.herdrdroid.herdr.inputLineOf(screen, "hermes") == ""
     }
 
+    /**
+     * A wait from Hermes's gateway that could be this pane's own (2.1.5, Bill: "hermes thinks there
+     * is a question right now but there is not and so it is stuck"): any conversation waiting, unless
+     * every wait is proven to belong to another stored conversation ([hermesWaitsAreElsewhere]). A
+     * Telegram or cron turn left on an open approval must not hold an idle pane whose screen asks
+     * nothing; the screen's own question, and herdr's blocked status, still hold it.
+     */
+    private fun hermesGatewayHolds(pane: Pane): Boolean =
+        pane.agent == "hermes" && hermesState == Status.NEEDS_YOU && !hermesWaitsAreElsewhere(pane)
+
     fun hasPendingQuestion(pane: Pane): Boolean {
-        if (pane.agent == "hermes" && hermesState == Status.NEEDS_YOU) return true
+        if (hermesGatewayHolds(pane)) return true
         val effective = if (pane.status == Status.NEEDS_YOU && currentHermesUsage(pane)?.composerReady == true)
             pane.copy(status = Status.IDLE) else pane
         return blocksNormalSend(effective, if (paneTextPane == pane.id && paneReadProblem == null) paneText else "",
@@ -5108,7 +5118,7 @@ class AppViewModel internal constructor(
     private data class OpenCodeSendRead(val pane: Pane, val connection: Any, val text: String)
 
     private fun checkedSendBlocked(pane: Pane, screen: String, checked: OpenCodeSendRead?): Boolean {
-        if (pane.agent == "hermes" && hermesState == Status.NEEDS_YOU) return true
+        if (hermesGatewayHolds(pane)) return true
         val recovered = pane.agent == "hermes" && checked != null &&
             pane.status in hermesUsageSendStates && checked.pane.status in hermesUsageSendStates && emptyHermesUsageComposer(screen) &&
             (hermesUsageEnd(screen) != null || currentHermesUsage(pane)?.target?.connection === checked.connection)
@@ -5250,11 +5260,12 @@ class AppViewModel internal constructor(
         if (here && p.status == Status.NEEDS_YOU && hermesState != Status.NEEDS_YOU) {
             currentHermesUsage(p)?.let { return if (it.composerReady) hermesState ?: Status.IDLE else Status.WORKING }
         }
-        // A DONE badge only ignores waits proven to belong to other stored conversations.
-        // This display exception does not relax the gateway wait in either terminal send guard.
+        // A done, idle or working pane ignores gateway waits proven to belong to other stored
+        // conversations (2.1.5; before, only a done one did, and an idle pane looked stuck on a
+        // question its screen never showed). The send guards use the same proof ([hermesGatewayHolds]).
         if (here && p.agent?.lowercase() == "hermes" && p.status != Status.NEEDS_YOU) hermesState?.let {
             if (it == Status.NEEDS_YOU) {
-                if (p.status != Status.DONE || !hermesWaitsAreElsewhere(p)) return it
+                if (!hermesWaitsAreElsewhere(p)) return it
             } else if (p.status != Status.WORKING) return it
         }
         // herdr's "done" is idle but not yet seen at the computer. Opening the agent here counts as
