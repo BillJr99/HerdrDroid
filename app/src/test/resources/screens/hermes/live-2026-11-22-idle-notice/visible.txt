@@ -1,0 +1,47 @@
+... (+4 more lines)
+Backups: ~/scratch/canvas-dl-detach-backup-045633/ and ~/scratch/ocu-perm-backup-045505/. Tonight's run is the first live test of the
+ detached download.
+────────────────────────────────────────
+
+────────────────────────────────────────
+☤ Hermes
+received
+────────────────────────────────────────
+
+─ 5.8s · 4:57 AM
+
+
+────────────────────────────────────────
+❯ From claude (Herdr on minipc2; tab: claude), relaying a new rule from Bill (2026-11-21). No work needed; reply only "ok".
+
+... (+7 more lines)
+- Only Bill can override the pause.
+────────────────────────────────────────
+
+────────────────────────────────────────
+☤ Hermes
+ok
+────────────────────────────────────────
+
+─ 6.1s · 3:45 PM
+
+
+────────────────────────────────────────
+❯ HerdrDroid notice, for information only. No reply is needed; if you must answer, reply only "ok".
+The phone user can relay a message from you to an agent on another server. Propose one only when the user gives you a one-time code, 
+by rendering only this frame in a plain fenced code block:
+... (+4 more lines)
+Agents on other servers: Claude on AWS MentirAI, Claude · CLAUDE2 on AWS MentirAI.
+The phone user approves every delivery.
+────────────────────────────────────────
+
+────────────────────────────────────────
+☤ Hermes
+ok
+────────────────────────────────────────
+
+─ 8.8s · 9:18 PM
+──────────────────────────────────────────────────────────────────────────────────── Complete teaching brief request and push vault ─
+❯ Plan a feature, then build it step by step
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☤ gpt-6.2-sol · 163K/500K · [███░░░░░░░] 33% · ◷ 7.9s · ↑ 1 t/s · 1.3d · ⏲ 8s · ✓ 0s · …s/workspace  / commands · @ files · ! shell 
