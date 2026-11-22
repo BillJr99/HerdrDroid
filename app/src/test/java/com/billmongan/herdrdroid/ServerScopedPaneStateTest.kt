@@ -3,7 +3,7 @@ package com.billmongan.herdrdroid
 import android.app.Application
 import android.os.Looper
 import androidx.compose.runtime.MutableState
-import androidx.compose.runtime.derivedStateOf
+import com.billmongan.herdrdroid.herdr.fixtureMessageFrame
 import androidx.lifecycle.viewModelScope
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -109,11 +109,10 @@ class ServerScopedPaneStateTest {
     }
 
     /**
-     * 2.1.1, from the 2.1.0 acceptance (unconfirmed): "Listen for agent proposal" was missing on the
-     * first open after messaging was turned on. The menu is built from the client and its connection,
-     * which are not Compose state; a completed pane read now makes it recompute.
+     * 2.1.5: the 2.1.1 "Listen for agent proposal" menu is gone. A frame on the first completed
+     * read, once the connection opens, still becomes a card, so nothing waits on a menu.
      */
-    @Test fun listenOptionFollowsTheFirstCompletedRead() = runBlocking {
+    @Test fun aFrameOnTheFirstCompletedReadBecomesACard() = runBlocking {
         val source = Endpoint(a)
         vm.onForeground()
         field(vm, "herdr").set(vm, source.client)
@@ -122,14 +121,13 @@ class ServerScopedPaneStateTest {
         state(vm, "panes", listOf(source.pane))
         vm.screen = Screen.Agent(source.pane.id)
         vm.changeAgentMessaging(true)
-        // The connection is not open yet (as after a reset), so there is nothing to bind a proposal to.
         source.connection = null
-        val offered = derivedStateOf { vm.canArmAgentMessage(source.pane.id) }
-        assertFalse(offered.value)
-        // The connection opens with the first command; the read that finishes makes the menu recompute.
+        source.recent = fixtureMessageFrame("K7P3QX", "hello")
+        vm.readPane(source.pane.id)
+        assertTrue(vm.crossServerCardsFor(source.pane.id).isEmpty())
         source.connection = Any()
         vm.readPane(source.pane.id)
-        assertTrue(offered.value)
+        assertEquals("K7P3QX", vm.crossServerCardsFor(source.pane.id).single().code)
     }
 
     private fun idle() {
@@ -140,11 +138,12 @@ class ServerScopedPaneStateTest {
         val ssh = HerdrSsh(server.host, server.port, server.user, Credentials(null, null), null, { null })
         val client = Herdr(ssh, server.herdrPath, Backend.TUI, null, this)
         override var connection: Any? = Any()
+        var recent = "Normal source output"
         val pane = Pane("w1:p1", "w1:t1", "w1", "claude", Status.IDLE, "", "/fixture", scrollOffset = 0, terminalId = "t1")
         override suspend fun bulk(command: String): ExecResult = error("Unexpected bulk command: $command")
         override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult = when {
             command.contains("'pane' 'get' 'w1:p1'") -> ok("""{"result":{"pane":{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1","agent":"claude","agent_status":"idle","cwd":"/fixture","terminal_id":"t1","scroll":{"offset_from_bottom":0}}}}""")
-            "'--source' 'recent'" in command -> ok("Normal source output")
+            "'--source' 'recent'" in command -> ok(recent)
             "'--source' 'visible'" in command -> ok("❯ ")
             else -> error("Unexpected fixture command: $command")
         }
