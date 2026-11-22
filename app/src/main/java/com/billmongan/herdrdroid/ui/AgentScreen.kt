@@ -444,19 +444,28 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 Icon(Icons.Filled.Menu, contentDescription = "All agents", tint = Palette.Ink)
             }
             AgentTile(pane?.initial ?: "?", status, size = 34)
-            Column(Modifier.weight(1f).padding(start = 10.dp)) {
-                // On Hermes the name opens the Hermes menu: this pane or live chat, your Telegram
-                // conversation, all conversations, a new chat, model and usage.
-                Box {
-                    Text(
-                        (if (isHermes) (if (live) "Hermes · live chat" else "Hermes · this pane") + "  ▾"
-                        else pane?.let { sessionName(it) } ?: paneId),
-                        fontWeight = FontWeight.SemiBold, fontSize = 17.sp, color = Palette.Ink,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.clickable {
-                            if (isHermes) { hermesMenu = true; vm.hermesChat()?.refreshSessions() } else vm.drawerOpen = true
-                        },
-                    )
+            // 2.1.4: three lines (Bill, 2026-11-21): the pane's name, the server in a smaller style,
+            // and the model in use smaller still (left off when it is unknown). Tap the name to switch
+            // agents (or, on Hermes, for the Hermes menu); tap the model to choose another one.
+            val headerModelText = com.billmongan.herdrdroid.herdr.headerModel(
+                pane?.agent, vm.modelLine(paneId),
+                screen = if (vm.paneTextPane == paneId) vm.paneText else "",
+                terminalTitle = pane?.title.orEmpty(),
+            )
+            PaneTitleLines(
+                name = if (isHermes) (if (live) "Hermes · live chat" else "Hermes · this pane") + "  ▾"
+                else pane?.let { sessionName(it) } ?: paneId,
+                server = vm.current?.name,
+                model = headerModelText,
+                modifier = Modifier.weight(1f).padding(start = 10.dp),
+                status = if (vm.link == Link.CONNECTED) look(status, pane?.backgroundBusy == true).label else null,
+                statusInk = look(status).ink,
+                compact = keyboardUp,
+                onName = { if (isHermes) { hermesMenu = true; vm.hermesChat()?.refreshSessions() } else vm.drawerOpen = true },
+                onModel = if (pane?.agent != null) ({ choosingModel = true }) else null,
+                nameAnchor = {
+                    // On Hermes the name opens the Hermes menu: this pane or live chat, your Telegram
+                    // conversation, all conversations, a new chat, model and usage.
                     if (isHermes) DropdownMenu(expanded = hermesMenu, onDismissRequest = { hermesMenu = false }) {
                         DropdownMenuItem(text = { Text((if (!live) "✓ " else "    ") + "This pane (the Hermes CLI)") }, onClick = { hermesMenu = false; hermesLive = false })
                         DropdownMenuItem(text = { Text((if (live) "✓ " else "    ") + "Live chat (streaming, approvals as buttons)") }, onClick = { hermesMenu = false; hermesLive = true })
@@ -486,26 +495,9 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                         HorizontalDivider(color = Palette.Line)
                         DropdownMenuItem(text = { Text("All agents…") }, onClick = { hermesMenu = false; vm.drawerOpen = true })
                     }
-                }
-                if (keyboardUp) {
-                    // Keyboard up: the name line only, so the chat keeps the room.
-                } else if (vm.link == Link.CONNECTED) {
-                    // Tap the model line to choose another model (or effort).
-                    Row(
-                        Modifier.clickable(enabled = pane?.agent != null) { choosingModel = true },
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Box(Modifier.size(7.dp).background(look(status).ink, CircleShape))
-                        Text(
-                            "  " + look(status, pane?.backgroundBusy == true).label + " · " + (vm.modelLine(paneId) ?: pane?.folder ?: paneId),
-                            color = Palette.Muted, fontSize = 12.5.sp,
-                            maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                } else {
-                    LinkLabel(vm, "")
-                }
-            }
+                },
+                statusLine = if (vm.link == Link.CONNECTED) null else ({ LinkLabel(vm, "") }),
+            )
             // Shells and subagents still running under the agent, as one small pill in the header
             // (a row of its own appeared and vanished as they started and finished, moving the chat).
             vm.work[paneId]?.let { w ->
