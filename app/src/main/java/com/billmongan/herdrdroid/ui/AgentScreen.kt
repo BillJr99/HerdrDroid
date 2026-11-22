@@ -274,7 +274,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             ?.takeIf { !it.codexQuestion || shownTarget != null }?.forCard()
     // An agent's error on screen (1.4.2): shown as a banner when there is no question.
     // Not from the last screen while the latest read failed (1.4.2, from review).
-    // 2.1.6: as its own card, with OpenCode's failed turn read whole; acknowledged ones are hidden.
+    // 2.2.0: as its own card, with OpenCode's failed turn read whole; acknowledged ones are hidden.
     val errorNotice = remember(screenText, pane?.agent) {
         pane?.let { com.billmongan.herdrdroid.herdr.agentErrorNotice(screenText, it.agent, it.agentName) }
     }.takeIf { parsedPrompt == null && vm.paneReadProblem == null }
@@ -408,7 +408,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 TextButton(onClick = { hermesLive = false; fullTerminal = true; termFollow = true }) { Text("Show terminal") }
             }
         } else pane?.let { pn -> shownError?.let { notice ->
-            // An agent's error (1.4.2; its own card since 2.1.6): never a question card, no answer keys.
+            // An agent's error (1.4.2; its own card since 2.2.0): never a question card, no answer keys.
             AgentErrorCardView(
                 title = notice.title, summary = notice.summary, message = notice.message,
                 onAcknowledge = { vm.acknowledgeError(pn, notice) },

@@ -19,7 +19,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** 2.1.6: an agent's error is its own card: Acknowledge first, Retry and the rest only when given, no answer keys. */
+/** 2.2.0: an agent's error is its own card: Acknowledge first, Retry and the rest only when given, no answer keys. */
 @RunWith(AndroidJUnit4::class)
 class AgentErrorCardUiTest {
     @get:Rule val rule = createComposeRule()
