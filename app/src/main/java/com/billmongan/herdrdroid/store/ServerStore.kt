@@ -177,6 +177,11 @@ class AppPrefs(context: Context) {
         get() = prefs.getString("crossServerNoticeLedger", "{}") ?: "{}"
         set(v) = prefs.edit().putString("crossServerNoticeLedger", v).apply()
 
+    /** 2.1.5: the cross-server confirmation codes seen and spent, as JSON (see CrossServerCodeLedger). */
+    var crossServerCodes: String
+        get() = prefs.getString("crossServerCodes", "{}") ?: "{}"
+        set(v) = prefs.edit().putString("crossServerCodes", v).apply()
+
     var theme: String
         get() = prefs.getString("theme", "SYSTEM") ?: "SYSTEM"
         set(v) = prefs.edit().putString("theme", v).apply()
@@ -619,7 +624,7 @@ object SshKeyVault {
 
 /**
  * 2.1.4 (Grok's RC review 4): how a server is named in text that agents receive, such as the
- * cross-server notice and the copied proposal instructions. It is the server's name when that is
+ * cross-server notice. It is the server's name when that is
  * set, otherwise "server N" by its place in [servers] (or "another server" if it is not there).
  * It never contains the account, host or port, which [Server.label] falls back to.
  */

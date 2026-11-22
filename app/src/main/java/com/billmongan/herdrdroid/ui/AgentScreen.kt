@@ -285,6 +285,12 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     fun send() {
         if (usageBlocksInput || backgroundDrawer || (openingPreview != null && prompt != null)) return
         val draft = answerDraft
+        // 2.1.5: a card's code typed here confirms that card and never reaches the pane.
+        val typed = (draft?.text ?: normalMessage).trim()
+        if (typed.isNotEmpty() && vm.crossServerCodeReply(paneId, typed)) {
+            if (draft != null) answerDraft = draft.withText("") else normalMessage = ""
+            return
+        }
         if (draft != null) {
             val text = draft.text.trim()
             if (text.isNotEmpty() && !vm.answerInFlight(paneId)) {
@@ -518,12 +524,6 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     // of the chat, out of sight when the chat sits at the bottom, so it seemed to do nothing
                     // (Bill, 2026-11-13). Every agent's usage is on the screen below.
                     DropdownMenuItem(text = { Text("Usage history, all agents") }, onClick = { menu = false; vm.screen = Screen.Usage })
-                    if (!live && vm.canArmAgentMessage(paneId) && vm.agentMessage(paneId) == null) {
-                        DropdownMenuItem(text = { Text("Listen for agent proposal") }, onClick = {
-                            menu = false
-                            vm.armAgentMessage(paneId)
-                        })
-                    }
                     if (pane != null) DropdownMenuItem(text = { Text("Files") }, onClick = { menu = false; vm.openFiles(pane.cwd.ifBlank { "~" }) })
                     if (pane?.agent != null && vm.hasTranscriptReader(paneId)) {
                         DropdownMenuItem(text = { Text("History") }, onClick = { menu = false; vm.screen = Screen.History(paneId) })
@@ -581,7 +581,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         ServerBanners(vm)
         // A held send's problem shows only in its own pane's chat, on its own server (2.1.2).
         vm.sendNoticeFor(paneId)?.let { ErrorBanner(it) { vm.dismissSendNotice(paneId) } }
-        if (!live) AgentMessagePanel(vm, paneId)
+        // 2.1.5: cross-server cards from frames the agent rendered in this chat.
+        if (!live) CrossServerPanel(vm, paneId)
         if (openingPreview != null) {
             Text("Checking the live pane…", color = Palette.Muted, fontSize = 12.5.sp,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
@@ -858,7 +859,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 onStop = pane?.let { p -> { vm.stopPane(p) } },
                 // herdr's agent prompt reaches a working agent, so a message sent now steers it.
                 steerLabel = if (pane?.agent != null && !typingAnswer && prompt == null) "Steer" else null,
-                onQueueWhenIdle = if (!typingAnswer && !usageBlocksInput) ({ vm.enqueue(paneId, normalMessage.trim()); normalMessage = "" }) else null,
+                onQueueWhenIdle = if (!typingAnswer && !usageBlocksInput) ({ composerSend(vm, paneId, normalMessage.trim()) { vm.enqueue(paneId, it) }; normalMessage = "" }) else null,
                 onAttach = { uri -> vm.attach(uri) { path -> editMessage((message.trimEnd() + " " + path).trim() + " ") } },
                 attachBusy = vm.uploading,
                 commands = SlashCommands.forAgent(pane?.agent),
