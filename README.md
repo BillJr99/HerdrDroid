@@ -100,7 +100,7 @@ Taken on an Android emulator against a demo computer ("demo-box") running herdr 
 
 - **Usage limits.** Each agent's card shows its tightest usage limit and when it resets, and **Usage** lists every limit. See [Usage limits](#usage-limits) for how the app reads them without spending a model call.
 - **Files.** Browse the files in an agent's folder, open text and images, and send a file from the phone to the computer for the agent to read.
-- **What runs under an agent.** Tap the pill in the pane's header (such as "2 sh - 1 sub") to list the shells, background tasks and subagents an agent started, with their output, and stop one.
+- **What runs under an agent.** To see what an agent has running, tap the pill in the pane's header, such as "2 sh - 1 sub" (two shells and one subagent). The pill shows while the agent has a shell, a background task or a subagent running. When nothing is running but the session has finished work, it shows a muted count such as "3 done", and it is hidden when there is nothing at all. The view it opens lists the running shells and background tasks, the running subagents, and the work that finished in this session. Tap a subagent to read its conversation, a background task to read its output, or a process to see its details and stop it. The pane's menu no longer has a "Running underneath" item.
 - **Debug bundle.** **Copy debug bundle** and **Share debug bundle** put one pane's state (the app and agent versions, the parser's decision on the last screen, recent diagnostic lines) on the phone's clipboard or share sheet, with API keys, tokens, passwords, web addresses and e-mail addresses taken out.
 
 ### Staying connected
