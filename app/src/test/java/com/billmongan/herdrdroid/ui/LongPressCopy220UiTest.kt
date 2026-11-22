@@ -1,5 +1,7 @@
 package com.billmongan.herdrdroid.ui
 
+import com.billmongan.herdrdroid.OUTERMOST_RULE
+import com.billmongan.herdrdroid.IdleMainLooperRule
 import android.content.ClipboardManager
 import android.content.Context
 import androidx.compose.foundation.clickable
@@ -25,6 +27,7 @@ import org.robolectric.shadows.ShadowToast
 /** 2.2.0: long-press a chat message for Copy and Copy box; long-press a box to copy just it. */
 @RunWith(AndroidJUnit4::class)
 class LongPressCopy220UiTest {
+    @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = IdleMainLooperRule()
     @get:Rule val rule = createComposeRule()
 
     private val screen = "Here is the table you asked for.\n\n│ name  │ size │\n│ alpha │ 1    │\n\nThat is all.\n"
