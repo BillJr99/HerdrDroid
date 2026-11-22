@@ -58,6 +58,17 @@ class OpenCodeSessionComposer215Test {
         }
     }
 
+    @Test fun `the placeholder words typed in a session box are never an empty line`() {
+        // Grok's review: the home check ignores colour, so these words in normal type must not pass.
+        for (s in listOf(hosted, sidebar, stripAnsi(hosted), stripAnsi(sidebar))) {
+            for (words in listOf("Ask anything…", "Ask anything...", "Ask anything… \"fix the build\"")) {
+                val typed = withComposerRow(s, words)
+                assertNotEquals(words, "", inputLineOf(typed, "opencode"))
+                assertTrue(words, !openCodeComposerEmpty(typed))
+            }
+        }
+    }
+
     @Test fun `a box grown by blank lines typed in it is never an empty line`() {
         // A draft of only line feeds makes the box taller: four or more bare rows.
         val rows = hosted.split('\n').toMutableList()

@@ -2496,9 +2496,12 @@ internal fun openCodeSessionComposerEmpty(screen: String): Boolean {
 }
 private val OPENCODE_PLACEHOLDER = Regex("""^Ask anything(?:\.\.\.|…)(?: "[^"]*")?$""")
 
-/** An OpenCode box with nothing typed in it, on the home screen (its placeholder) or in a session (2.1.5). */
-internal fun openCodeComposerEmpty(screen: String): Boolean =
-    openCodeEmptyComposer(screen) || openCodeSessionComposerEmpty(screen)
+/**
+ * An OpenCode box with nothing typed in it, on the home screen (its grey placeholder) or in a session
+ * (2.1.5). Only [openCodeSessionComposerEmpty] decides: the older [openCodeEmptyComposer] ignores
+ * colour, so the words "Ask anything…" typed in a session box would read as empty (Grok's review).
+ */
+internal fun openCodeComposerEmpty(screen: String): Boolean = openCodeSessionComposerEmpty(screen)
 
 private val OPENCODE_WEB_SEARCH_FOOTER =
     Regex("""^↑/?↓\s+select\s+enter\s+submit\s+esc\s+dismiss$""", RegexOption.IGNORE_CASE)
