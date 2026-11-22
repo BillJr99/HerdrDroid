@@ -84,6 +84,7 @@ import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -170,6 +171,11 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     /** The agent's own model menu, read off its screen, while it is open. */
     var readingPicker by remember { mutableStateOf(false) }
     var pickerMenu by remember { mutableStateOf<Prompt?>(null) }
+    /** 2.2.0: which picker is being read ("model" or "session"), and the mode, thinking and sessions dialogs. */
+    var pickerWhat by remember { mutableStateOf("model") }
+    var choosingMode by remember { mutableStateOf(false) }
+    var choosingThinking by remember { mutableStateOf(false) }
+    var choosingSession by remember { mutableStateOf(false) }
     /** Find in chat: what to look for, and which match is showing. */
     var finding by rememberSaveable(paneId) { mutableStateOf(false) }
     var findText by rememberSaveable(paneId) { mutableStateOf("") }
@@ -529,6 +535,11 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                         DropdownMenuItem(text = { Text("History") }, onClick = { menu = false; vm.screen = Screen.History(paneId) })
                     }
                     if (pane?.agent != null) DropdownMenuItem(text = { Text("Model…") }, onClick = { menu = false; choosingModel = true })
+                    // 2.2.0: the pane's sessions (switch, or start a new one), and its thinking level.
+                    if (!live && com.billmongan.herdrdroid.herdr.SessionControls.forAgent(pane?.agent) != null)
+                        DropdownMenuItem(text = { Text("Sessions…") }, onClick = { menu = false; choosingSession = true })
+                    if (!live && com.billmongan.herdrdroid.herdr.PaneControls.thinking(pane?.agent) != null)
+                        DropdownMenuItem(text = { Text("Thinking…") }, onClick = { menu = false; choosingThinking = true })
                     if (structured && vm.transcriptItems.isNotEmpty()) DropdownMenuItem(text = { Text("Find in chat") }, onClick = { menu = false; finding = true })
                     // 1.4.0: one pane's last screens, the parser's decision and the chat cursor, with
                     // secrets taken out, for a bug report. Only to this phone's clipboard or share sheet.
@@ -563,15 +574,17 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     }
                     // Kept out of the header so the agent's name has the room.
                     if (!live) DropdownMenuItem(text = { Text(if (fullTerminal) "Chat view" else "Terminal view") }, onClick = { menu = false; fullTerminal = !fullTerminal })
-                    // The permission mode (plan, accept edits, auto). For Claude this cycles it with
-                    // Shift+Tab, the same key as at the computer.
+                    // The permission mode (plan, accept edits, auto). 2.2.0: where the agent has a verified
+                    // way to switch (PaneControls.modes), a menu of named modes, each switch confirmed from
+                    // the footer; elsewhere the mode is only shown.
                     com.billmongan.herdrdroid.herdr.agentMode(pane?.agent, liveScreenText)?.takeIf { !live }?.let { mode ->
-                        val cycles = pane?.agent?.lowercase() == "claude"
+                        val spec = com.billmongan.herdrdroid.herdr.PaneControls.modes(pane?.agent)
+                        val label = spec?.options?.firstOrNull { it.name == mode }?.label
+                            ?: if (mode == "bypass") "bypass (approves every tool)" else mode
                         DropdownMenuItem(
-                            // Shown, never set: the app has no way to turn on a bypass mode.
-                            text = { Text("Mode: " + (if (mode == "bypass") "bypass (approves every tool)" else mode) + if (cycles) "  (tap to switch)" else "") },
-                            enabled = cycles,
-                            onClick = { menu = false; vm.sendKeys(paneId, "shift+tab") },
+                            text = { Text("Mode: $label" + if (spec != null) "…" else "") },
+                            enabled = spec != null,
+                            onClick = { menu = false; choosingMode = true },
                         )
                     }
                 }
@@ -583,6 +596,9 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         vm.sendNoticeFor(paneId)?.let { ErrorBanner(it) { vm.dismissSendNotice(paneId) } }
         // 2.1.5: cross-server cards from frames the agent rendered in this chat.
         if (!live) CrossServerPanel(vm, paneId)
+        // 2.2.0: herdr's session record is behind the terminal; the chat follows the terminal anyway.
+        if (!live && vm.herdrOutOfDate(paneId)) HerdrOutOfDate()
+        vm.paneControlBusy(paneId)?.let { Text(it, color = Palette.Muted, fontSize = 12.5.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) }
         if (openingPreview != null) {
             Text("Checking the live pane…", color = Palette.Muted, fontSize = 12.5.sp,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
@@ -938,10 +954,43 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 TextButton(enabled = idle, onClick = {
                     choosingModel = false
                     vm.runCommand(paneId, ModelPresets.pickerCommand(pane.agent))
+                    pickerWhat = "model"
                     readingPicker = true
                 }) { Text("Open the picker") }
             },
             dismissButton = { TextButton(onClick = { choosingModel = false }) { Text("Cancel") } },
+        )
+    }
+
+    if (choosingMode && pane != null) com.billmongan.herdrdroid.herdr.PaneControls.modes(pane.agent)?.let { spec ->
+        ModeDialog(pane.agentName, spec, com.billmongan.herdrdroid.herdr.agentMode(pane.agent, liveScreenText),
+            idle = status == Status.IDLE || status == Status.DONE, onPick = { vm.switchMode(paneId, it) }, onDismiss = { choosingMode = false })
+    }
+    if (choosingThinking && pane != null) com.billmongan.herdrdroid.herdr.PaneControls.thinking(pane.agent)?.let { spec ->
+        ThinkingDialog(pane.agentName, spec, spec.shown(liveScreenText) ?: vm.efforts[paneId],
+            idle = status == Status.IDLE || status == Status.DONE, onPick = { vm.setThinking(paneId, it) }, onDismiss = { choosingThinking = false })
+    }
+    if (choosingSession && pane != null) com.billmongan.herdrdroid.herdr.SessionControls.forAgent(pane.agent)?.let { spec ->
+        var sessions by remember(paneId) { mutableStateOf<List<com.billmongan.herdrdroid.herdr.PastSession>?>(null) }
+        var problem by remember(paneId) { mutableStateOf<String?>(null) }
+        LaunchedEffect(paneId) {
+            vm.pastSessions(paneId).onSuccess { sessions = it }.onFailure { problem = it.message ?: "The sessions couldn't be read." }
+        }
+        val liveNow = vm.liveSession(paneId)
+        val byId = spec.resumeById != null
+        SessionsDialog(
+            pane.agentName, sessions, problem,
+            isCurrent = { s -> liveNow?.isSession(s.ref, s.db) ?: (s == sessions?.firstOrNull()) },
+            canSwitch = byId || spec.picker != null,
+            switchNote = if (byId) "Tap a session to switch with ${spec.resumeById} <id>."
+                else if (spec.picker != null) "Tapping a session opens ${pane.agentName}'s own picker (${spec.picker}); choose it there."
+                else "${pane.agentName} switches sessions only at the computer.",
+            herdrOutOfDate = vm.herdrOutOfDate(paneId),
+            idle = status == Status.IDLE || status == Status.DONE,
+            onNew = { vm.newSession(paneId) },
+            onPick = { s -> if (vm.resumeSession(paneId, s)) { pickerWhat = "session"; readingPicker = true } },
+            onPicker = spec.picker?.takeIf { byId }?.let { cmd -> { vm.runCommand(paneId, cmd); pickerWhat = "session"; readingPicker = true } },
+            onDismiss = { choosingSession = false },
         )
     }
 
@@ -963,7 +1012,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     pickerMenu?.let { menuNow ->
         AlertDialog(
             onDismissRequest = { pickerMenu = null; vm.sendKeys(paneId, "esc") },
-            title = { Text(menuNow.question.lines().firstOrNull()?.take(80)?.ifBlank { null } ?: "Choose a model") },
+            title = { Text(menuNow.question.lines().firstOrNull()?.take(80)?.ifBlank { null } ?: if (pickerWhat == "session") "Choose a session" else "Choose a model") },
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     menuNow.choices.forEach { c ->
@@ -983,7 +1032,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         )
     }
     if (readingPicker) {
-        AlertDialog(onDismissRequest = {}, title = { Text("Reading the model menu…") }, text = { Text("Sent ${ModelPresets.pickerCommand(pane?.agent)}.") }, confirmButton = {})
+        AlertDialog(onDismissRequest = {}, title = { Text(if (pickerWhat == "session") "Reading the session picker…" else "Reading the model menu…") },
+            text = { Text(if (pickerWhat == "session") "Sent ${com.billmongan.herdrdroid.herdr.SessionControls.forAgent(pane?.agent)?.picker}." else "Sent ${ModelPresets.pickerCommand(pane?.agent)}.") }, confirmButton = {})
     }
 
     if (closingSession && pane != null) {
@@ -1128,11 +1178,11 @@ private fun ArrowKeys(onKey: (String) -> Unit, modifier: Modifier) {
 }
 
 @Composable
-private fun KeyButton(label: String, modifier: Modifier = Modifier, danger: Boolean = false, onClick: () -> Unit) {
+private fun KeyButton(label: String, modifier: Modifier = Modifier, danger: Boolean = false, selected: Boolean = false, onClick: () -> Unit) {
     Surface(
         shape = RoundedCornerShape(10.dp),
-        color = if (danger) Palette.OrangeSoft else Palette.Key,
-        border = BorderStroke(1.dp, if (danger) Palette.OrangeEdge else Palette.KeyEdge),
+        color = if (danger) Palette.OrangeSoft else if (selected) Palette.BlueSoft else Palette.Key,
+        border = BorderStroke(1.dp, if (danger) Palette.OrangeEdge else if (selected) Palette.Blue else Palette.KeyEdge),
         modifier = modifier.height(KEY_HEIGHT).widthIn(min = 44.dp).clickable(onClick = onClick),
     ) {
         Box(Modifier.padding(horizontal = 6.dp), contentAlignment = Alignment.Center) {
@@ -1247,6 +1297,22 @@ internal fun TerminalView(text: String, readProblem: String?, size: Float) {
     }
 }
 
+/** 2.2.0: a small marker that herdr hasn't heard of the session the terminal is in yet. */
+@Composable
+internal fun HerdrOutOfDate() {
+    Text("herdr out of date · the chat follows the terminal's session", color = Palette.OrangeInk, fontSize = 12.sp,
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp).semantics { contentDescription = "herdr out of date" })
+}
+
+/** The screen card's rows (2.2.0): the focused row bold and blue, marked as the card's choice instead of the terminal's "❯". */
+internal fun regionText(view: CardFormat.RegionView): androidx.compose.ui.text.AnnotatedString = androidx.compose.ui.text.buildAnnotatedString {
+    view.rows.forEachIndexed { i, row ->
+        if (i > 0) append("\n")
+        if (i == view.focused) withStyle(androidx.compose.ui.text.SpanStyle(color = Palette.Blue, background = Palette.BlueSoft, fontWeight = FontWeight.Bold)) { append(row) }
+        else append(row)
+    }
+}
+
 /** The question card, or in the terminal view a one-line bar that leads back to it (1.4.8). */
 @Composable
 internal fun CardOrTerminalBar(showingTerminal: Boolean, agent: String, onBackToQuestion: () -> Unit, card: @Composable () -> Unit) {
@@ -1344,13 +1410,15 @@ internal fun PromptCard(
                     Text(if (region == listOf(com.billmongan.herdrdroid.herdr.UNREAD_SCREEN)) "The app couldn't read this pane's screen yet; the keys below still go to it:"
                         else "The app couldn't read this question's options, so here is the screen and the keys to answer it:",
                         color = Palette.Muted, fontSize = 12.5.sp)
+                    // 2.2.0: without the dialog's gutter and focus marker; the focused row is the card's own highlight.
+                    val view = remember(region) { CardFormat.regionView(region) }
                     androidx.compose.foundation.text.selection.SelectionContainer {
-                        Text(region.joinToString("\n"), color = Palette.TerminalInk, fontFamily = Fonts.Mono, fontSize = 12.sp,
+                        Text(regionText(view), color = Palette.TerminalInk, fontFamily = Fonts.Mono, fontSize = 12.sp,
                             modifier = Modifier.fillMaxWidth().background(Palette.Terminal, RoundedCornerShape(10.dp)).padding(10.dp))
                     }
                     val numbers = region.mapNotNull { Regex("""^[❯›>▶➤\s]*(\d{1,2})[.)]\s""").find(it)?.groupValues?.get(1) }.distinct().take(9)
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        numbers.forEach { n -> KeyButton(n) { onKey(n) } }
+                        numbers.forEach { n -> KeyButton(n, selected = n == view.focusedKey) { onKey(n) } }
                         KeyButton("↑") { onKey("up") }
                         KeyButton("↓") { onKey("down") }
                         KeyButton("Space") { onKey("space") }

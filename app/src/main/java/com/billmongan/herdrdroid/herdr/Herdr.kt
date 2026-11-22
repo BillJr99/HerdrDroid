@@ -198,7 +198,8 @@ class Herdr internal constructor(
      */
     suspend fun followTranscript(pane: Pane, cursor: String, script: ByteArray, seconds: Int, onRead: suspend (TranscriptRead) -> Unit) {
         val agent = pane.agent ?: return
-        ssh.execStream("$PYZ __follow__ ${shq(agent)} ${shq(pane.cwd)} ${shq(cursor)} $seconds", z(script)) { line ->
+        val live = Transcript.withLive(cursor, pane.id, pane.sessionId)
+        ssh.execStream("$PYZ __follow__ ${shq(agent)} ${shq(pane.cwd)} ${shq(live)} $seconds", z(script)) { line ->
             runCatching { Transcript.parseRead(line) }.getOrNull()?.let { onRead(it) }
         }
     }
@@ -621,7 +622,7 @@ class Herdr internal constructor(
      */
     suspend fun transcript(pane: Pane, cursor: String, script: ByteArray): TranscriptRead? {
         val agent = pane.agent ?: return null
-        val r = ssh.execInput("$PYZ ${shq(agent)} ${shq(pane.cwd)} ${shq(cursor)}", z(script))
+        val r = ssh.execInput("$PYZ ${shq(agent)} ${shq(pane.cwd)} ${shq(Transcript.withLive(cursor, pane.id, pane.sessionId))}", z(script))
         if (r.exit != 0 || r.out.isBlank()) {
             val why = r.err.trim().lines().lastOrNull { it.isNotBlank() } ?: "the reader exited ${r.exit}"
             return TranscriptRead(false, why, "", false, false, null, emptyList())
@@ -2219,12 +2220,18 @@ internal fun activePiQuestion(text: String, version: String?): Prompt? {
     return detectPrompt(text, blocked = false, agent = "pi", version = version)?.takeIf { it.choices.isNotEmpty() }
 }
 
+/** OpenCode's input box bottom row, "┃  Build · Hosted Coding Model  Hosted AI" (2.2.0, from 2.3.2's screen). */
+private val OPENCODE_AGENT_ROW = Regex("""^\s*[┃│]\s+(Build|Plan)\s+·\s+\S""")
+
 /**
  * The permission mode an agent shows in its footer: "plan", "accept edits", "auto" or "bypass".
  * Claude in its default mode shows none, which reads as "default"; other agents return null.
  */
 fun agentMode(agent: String?, screen: String): String? {
     val tail = screen.lines().filter { it.isNotBlank() }.takeLast(8).joinToString("\n")
+    // 2.2.0: OpenCode's agent ("Build" or "Plan"), on its input box's bottom row: "┃  Build · <model>".
+    if (isOpenCode(agent)) return stripAnsi(screen).lines().takeLast(12)
+        .asReversed().firstNotNullOfOrNull { OPENCODE_AGENT_ROW.find(it)?.groupValues?.get(1)?.lowercase() }
     when (agent?.lowercase()) {
         // Vibe's footer names its mode: "Mistral Medium 3.5[high] · auto approve ─" (Shift+Tab
         // cycles ask, accept edits, smart approve, auto approve). Auto approve runs every tool.

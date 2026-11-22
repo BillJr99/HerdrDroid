@@ -2537,6 +2537,9 @@ class AppViewModel internal constructor(
             transcriptFile = runCatching { org.json.JSONObject(r.cursor).optString("file").ifBlank { null } }.getOrNull()
         }
         r.title?.let { transcriptTitle = it }
+        // 2.2.0: the session the terminal is really in, as the reader found it (the chat already follows it).
+        val liveKey = ck(paneId)
+        if (r.live != null && liveSessions[liveKey] != r.live) liveSessions = liveSessions + (liveKey to r.live)
         transcriptState = TranscriptMode.ON
         if (chatShownVisit != paneVisit) {
             chatShownVisit = paneVisit
@@ -5423,6 +5426,156 @@ class AppViewModel internal constructor(
         val md = toMarkdown(title, agent, items)
         val name = title.replace(Regex("[^A-Za-z0-9._-]+"), "-").trim('-').take(60).ifBlank { "conversation" } + ".md"
         com.billmongan.herdrdroid.ui.shareBytes(context, md.toByteArray(), name, "text/markdown", open = false)
+    }
+
+    // -- Mode, thinking and sessions (2.2.0) --------------------------------------------------------
+
+    /** The session each open pane's terminal is in, by "server|pane", from the log reader. */
+    var liveSessions by mutableStateOf<Map<String, com.billmongan.herdrdroid.transcript.LiveSession>>(emptyMap())
+        private set
+
+    /** A mode, thinking or session change running from the app, by "server|pane": what it is doing now. */
+    var paneControlBusy by mutableStateOf<Map<String, String>>(emptyMap())
+        private set
+
+    /** herdr's session id when the app started a new session or switched, until herdr reports another, by "server|pane". */
+    private var sessionAsked by mutableStateOf<Map<String, Pair<String?, Long>>>(emptyMap())
+
+    fun liveSession(paneId: String): com.billmongan.herdrdroid.transcript.LiveSession? = liveSessions[ck(paneId)]
+
+    fun paneControlBusy(paneId: String): String? = paneControlBusy[ck(paneId)]
+
+    /**
+     * Whether herdr's record of the pane's session is behind the terminal (2.2.0): the agent's own
+     * record names another session, or the app just started or switched one and herdr hasn't heard
+     * yet (OpenCode reports a new session only when its first message is sent). Display only.
+     */
+    fun herdrOutOfDate(paneId: String): Boolean {
+        val p = pane(paneId) ?: return false
+        val spec = com.billmongan.herdrdroid.herdr.SessionControls.forAgent(p.agent)
+        if (spec?.herdrTracks == false) return false
+        if (liveSession(paneId)?.herdrStale == true) return true
+        val (was, at) = sessionAsked[ck(paneId)] ?: return false
+        return p.sessionId == was && System.currentTimeMillis() - at < 30 * 60_000L
+    }
+
+    private fun paneIdle(paneId: String, what: String): Pane? {
+        val p = pane(paneId) ?: return null
+        if (link != Link.CONNECTED || herdr == null) { error = "$what: not connected."; return null }
+        if (p.status == Status.WORKING) { error = "${p.agentName} is working. $what once it's done."; return null }
+        if (p.status == Status.NEEDS_YOU) { error = "${p.agentName} is waiting for an answer. $what after that."; return null }
+        if (paneControlBusy[ck(paneId)] != null) { error = "$what: the last change is still being checked."; return null }
+        return p
+    }
+
+    private inline fun <T> controlling(paneId: String, what: String, block: () -> T): T {
+        val key = ck(paneId)
+        paneControlBusy = paneControlBusy + (key to what)
+        try { return block() } finally { paneControlBusy = paneControlBusy - key }
+    }
+
+    /**
+     * Switches the pane's permission mode to [target] (2.2.0): presses the agent's own key one step at a
+     * time and reads the footer after each press, until the footer shows [target]. A target the
+     * session's cycle doesn't hold goes on round to the starting mode, so nothing is left half done.
+     */
+    fun switchMode(paneId: String, target: String) {
+        val p = paneIdle(paneId, "Change the mode") ?: return
+        val spec = com.billmongan.herdrdroid.herdr.PaneControls.modes(p.agent) ?: return
+        val h = herdr ?: return
+        val server = current?.id
+        viewModelScope.launch {
+            controlling(paneId, "Changing the mode…") {
+                fun stillHere() = herdr === h && current?.id == server
+                val outcome = runCatching {
+                    var mode = spec.read(readPaneScreen(h, paneId, 60))
+                    val start = mode ?: return@runCatching "the footer doesn't show the mode, so nothing was sent"
+                    val sw = com.billmongan.herdrdroid.herdr.PaneControls.ModeSwitcher(spec, start, target)
+                    while (stillHere()) {
+                        when (val step = sw.next(mode)) {
+                            is com.billmongan.herdrdroid.herdr.PaneControls.Step.Done -> return@runCatching null
+                            is com.billmongan.herdrdroid.herdr.PaneControls.Step.Stop -> return@runCatching step.why
+                            com.billmongan.herdrdroid.herdr.PaneControls.Step.Press -> {
+                                val before = mode
+                                h.sendKeys(paneId, spec.key)
+                                // The footer redraws after the key; wait for it to change, up to 2.5 s.
+                                var seen: String? = before
+                                for (i in 0 until 10) {
+                                    kotlinx.coroutines.delay(250)
+                                    seen = spec.read(readPaneScreen(h, paneId, 60))
+                                    if (seen != before) break
+                                }
+                                if (seen == before) return@runCatching "the mode didn't change after ${spec.key}; check the pane"
+                                mode = seen
+                            }
+                        }
+                    }
+                    "the computer changed before it finished"
+                }.getOrElse { "the pane couldn't be read (${it.message})" }
+                val label = spec.options.firstOrNull { it.name == target }?.label ?: target
+                if (outcome == null) notice = "Mode: $label (the footer shows it now)"
+                else error = "Mode not changed to $label: $outcome."
+                com.billmongan.herdrdroid.diag.DiagLog.log("mode", "$paneId: to $target: ${outcome ?: "done"}")
+            }
+            readPane(paneId)
+        }
+    }
+
+    /** Sets the pane's thinking level with the agent's own command and confirms it from the screen (2.2.0). */
+    fun setThinking(paneId: String, level: String) {
+        val p = paneIdle(paneId, "Change the thinking level") ?: return
+        val spec = com.billmongan.herdrdroid.herdr.PaneControls.thinking(p.agent) ?: return
+        if (level !in spec.levels) return
+        val h = herdr ?: return
+        viewModelScope.launch {
+            controlling(paneId, "Setting thinking to $level…") {
+                val ok = runCatching {
+                    val before = readPaneScreen(h, paneId, 80)
+                    h.typeAndEnter(paneId, spec.command(level))
+                    var seen = false
+                    for (i in 0 until 16) {
+                        kotlinx.coroutines.delay(300)
+                        if (com.billmongan.herdrdroid.herdr.PaneControls.thinkingConfirmed(spec, level, before, readPaneScreen(h, paneId, 80))) { seen = true; break }
+                    }
+                    seen
+                }.getOrDefault(false)
+                if (ok) { notice = "Thinking: $level (confirmed on screen)"; efforts = efforts + (paneId to level) }
+                else error = "Sent ${spec.command(level)}, but the screen didn't confirm it. Check the pane: the model may not offer $level."
+            }
+            readPane(paneId)
+        }
+    }
+
+    /** Starts a new session in the pane with the agent's own command (2.2.0); the chat follows the terminal. */
+    fun newSession(paneId: String) {
+        val p = paneIdle(paneId, "Start a new session") ?: return
+        val spec = com.billmongan.herdrdroid.herdr.SessionControls.forAgent(p.agent) ?: return
+        sessionAsked = sessionAsked + (ck(paneId) to (p.sessionId to System.currentTimeMillis()))
+        answer(paneId, spec.newCommand, pressEnter = true)
+        rebindSoon(paneId)
+    }
+
+    /** Switches the pane to past session [s] with the agent's resume command, or opens its picker (returns true). */
+    fun resumeSession(paneId: String, s: PastSession): Boolean {
+        val p = paneIdle(paneId, "Switch sessions") ?: return false
+        val spec = com.billmongan.herdrdroid.herdr.SessionControls.forAgent(p.agent) ?: return false
+        val cmd = spec.resume(s)
+        sessionAsked = sessionAsked + (ck(paneId) to (p.sessionId to System.currentTimeMillis()))
+        if (cmd != null) { answer(paneId, cmd, pressEnter = true); rebindSoon(paneId); return false }
+        spec.picker?.let { answer(paneId, it, pressEnter = true); rebindSoon(paneId); return true }
+        return false
+    }
+
+    /** Reads the log again a few times after a session change, so the chat rebinds to the terminal's session at once. */
+    private fun rebindSoon(paneId: String) {
+        viewModelScope.launch {
+            for (wait in listOf(1_500L, 3_000L, 6_000L)) {
+                kotlinx.coroutines.delay(wait)
+                if ((screen as? Screen.Agent)?.paneId != paneId) return@launch
+                transcriptCursor = ""
+                readTranscript(paneId)
+            }
+        }
     }
 
     // -- Model -------------------------------------------------------------------------------------
