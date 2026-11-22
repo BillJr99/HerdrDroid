@@ -10,11 +10,12 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * A guard on test order. Gradle runs the classes in one JVM in name order, so this Compose test runs
- * first and starts Compose's global snapshot manager before the view-model-only classes run. If one
- * of those leaves the main thread's Compose dispatcher stuck, every later Compose test hangs with
- * AppNotIdleException ("Compose did not get idle"). IdleMainLooperRule explains the mechanism and the
- * fix. With this class first, such a test makes the next Compose class fail at once, whatever its name.
+ * A smoke sentinel for the full suite's usual order. Gradle has run the classes in one JVM in name
+ * order, so this Compose test runs first and starts Compose's global snapshot manager before the
+ * view-model-only classes run. If one of those leaves Compose's main-thread dispatcher stuck, the next
+ * Compose test fails ("Compose did not get idle"). Name order is not guaranteed, and a filtered run
+ * may skip this class: ComposeMainLooperRegressionTest checks the hazard in a fixed order.
+ * IdleMainLooperRule explains the mechanism and the fix.
  */
 @RunWith(AndroidJUnit4::class)
 class AaaComposeOrderProbeTest {

@@ -388,12 +388,12 @@ If you build for yourself without the project's key, use your own key (a standar
 
 ### Running the tests in Docker
 
-Two scripts in `tools/docker-test/` run the unit tests in a throwaway `eclipse-temurin:17-jdk` container, so a computer with Docker and bash needs no JDK, Android SDK or Gradle of its own.
+Two scripts in `tools/docker-test/` run the unit tests in a throwaway `eclipse-temurin:17-jdk` container, so a computer with Docker, bash and tar needs no JDK, Android SDK or Gradle of its own.
 
-- `docker-test.sh` runs on your computer. It starts the container with `--rm`, mounts the repository read-write, mounts the cache and the output folder, holds the run lock, and prints the summary at the end.
-- `run.sh` runs inside the container. It installs the Android SDK on first use, runs Gradle in the chosen mode, and writes the results to the output folder. Do not run it on your computer directly.
+- `docker-test.sh` runs on your computer. It checks the cache and output paths, takes the run locks, makes a new output folder for the run, streams a copy of the checkout into a `--rm` container with tar, and prints the summary at the end. It exits with the run's status.
+- `run.sh` runs inside the container, as your user rather than root. It unpacks the source, installs the Android SDK on first use, runs Gradle in the chosen mode, and writes the results to the run's output folder. Do not run it on your computer directly.
 
-Run `docker-test.sh` from anywhere in the repository:
+Run these commands from the repository root:
 
 ```
 bash tools/docker-test/docker-test.sh compile                                          # compile check
@@ -403,28 +403,30 @@ bash tools/docker-test/docker-test.sh full                                      
 HD_TEST_MIRROR=1 bash tools/docker-test/docker-test.sh full                            # Robolectric jars from Google's mirror
 ```
 
-**Modes.** `compile` compiles the app, unit-test and androidTest sources, which takes a minute or two once the cache is warm. `tests` runs the unit tests that match each Gradle `--tests` pattern, or all of them when no pattern is given. `full` is the default: it runs every unit test and then builds the debug APK.
+**Modes.** `compile` compiles the app, unit-test and androidTest sources, which takes about two minutes once the cache is warm. `tests` runs the unit tests that match the Gradle `--tests` patterns, or all of them when no pattern is given. Each pattern is passed on as one argument, so quote a pattern with `*` in it. `full` is the default: it runs every unit test and then builds the debug APK.
 
-**Where results land.** Each run writes these files to `build/docker-test/` in the repository, or to the folder named by `HD_TEST_OUT`:
+**What the container sees.** The checkout is never mounted and never written. The script streams a copy into the container with tar, leaving out `.git`, `keystore/`, `release/`, `local.properties` and the build folders. `run.sh` writes its own `local.properties` in that copy. The build points at an empty signing-key folder. No signing file is ever in the container, and tests and the debug APK need none.
+
+**Where results land.** Each run gets a new folder, `run-<date>-<time>-<random>`, in `$HOME/.cache/herdrdroid-docker-test-runs` (or the folder named by `HD_TEST_OUT`). A `latest` link points at the newest one. Nothing in a run's folder comes from an earlier run:
 
 - `build.log`, Gradle's full output, ending with a line such as `exit=0 seconds=150`;
-- `summary.txt`, the exit status, any compile errors, the failing tests and the totals, which the script also prints at the end;
-- `test-results/`, the JUnit XML for each test class;
+- `summary.txt`, the exit status, any setup or compile errors, the failing tests and the totals, which the script also prints at the end;
+- `test-results/`, the JUnit XML for each test class that ran;
 - the debug APK, in `full` mode only.
 
-The script exits with a non-zero status when the build or a test fails.
+The unpacked source is removed from the run's folder at the end; set `HD_TEST_KEEP_SRC=1` to keep it. Old run folders stay until you delete them.
 
 **The cache.** The Android SDK, Gradle's files and Robolectric's `~/.m2` folder stay in `$HOME/.cache/herdrdroid-docker-test` between runs. Set `HD_TEST_CACHE` to use another folder.
 
-**The first run.** When the cache has no SDK, `run.sh` downloads Google's SDK command-line tools, accepts the licences, and installs the platform and build-tools that `app/build.gradle.kts` asks for (platform 34 and build-tools 34.0.0 today). Gradle and Robolectric download their files on the first run too. The first run takes several minutes longer than later runs, which reuse everything in the cache.
+**Path checks.** Before it creates or mounts anything, the script resolves the cache and output paths, symlinks included. It refuses a path that is `/` or your home folder, a path that is inside the checkout or holds it, a path that overlaps `keystore/` (wherever its symlink points), a relative path or one with `.` or `..` in it, and a cache and output folder that overlap each other.
+
+**The first run.** When the cache has no SDK, `run.sh` downloads Google's SDK command-line tools, accepts the licences, and installs the platform and build-tools that `app/build.gradle.kts` asks for (platform 34 and build-tools 34.0.0 today). Gradle and Robolectric download their files on the first run too. The first run takes several minutes longer than later runs, which reuse everything in the cache. If the SDK cannot be downloaded or installed, the run stops with a `SETUP:` line in the summary and a non-zero exit status.
 
 **The Maven mirror for Robolectric.** Robolectric downloads an Android runtime jar (android-all) from Maven Central the first time each SDK level is used. Maven Central rate-limits busy addresses and answers with HTTP 429; on 2026-11-21 it did this to a build machine, and the test run failed with a download error. `HD_TEST_MIRROR=1` makes Robolectric use Google's copy of Maven Central (`https://maven-central.storage-download.googleapis.com/maven2/`) instead. `ROBOLECTRIC_REPO_URL` names any other repository. Both reach Gradle as `-Probolectric.repo.url`, which `app/build.gradle.kts` passes to Robolectric. Without them, Robolectric uses Maven Central.
 
-**The run lock.** The script holds a lock on `<cache>/lock` with `flock`, so a second run on the same computer waits until the first one ends. Runs must not overlap: two Robolectric suites at once starve each other of CPU, and Compose tests then fail with false `AppNotIdleException` errors that look like real hangs. Where `flock` is missing (for example on macOS), the script warns and runs without the lock.
+**The run locks.** The script holds two locks with `flock`: one for your user on this computer (`$HOME/.cache/herdrdroid-docker-test.lock`), whatever cache you choose, and one for the cache (`<cache>/lock`), which also covers another user sharing that cache. A second run waits until the first one ends. Runs must not overlap: two Robolectric suites at once starve each other of CPU, and Compose tests then fail with false `AppNotIdleException` errors that look like real hangs. Where `flock` is missing (for example on macOS), the script warns and runs without locks, so do not start two runs at once there. The checkout needs no lock, since no run writes to it.
 
-**No signing.** Tests and the debug APK need no signing key. The script hides `keystore/` behind an empty folder inside the container, and `run.sh` points the build at an empty key folder, so no signing file is read.
-
-**Other settings.** `HD_DOCKER` changes the docker command (for example `sudo -n docker`), `HD_DOCKER_ARGS` adds `docker run` options, and `HD_TEST_IMAGE` changes the image.
+**Other settings.** `HD_DOCKER` changes the docker command (for example `sudo -n docker`), `HD_DOCKER_ARGS` adds `docker run` options, and `HD_TEST_IMAGE` changes the image. `HD_DOCKER` and `HD_DOCKER_ARGS` are split on spaces, and quotes inside them are not honoured.
 
 ### Test-order hazard
 
@@ -432,15 +434,15 @@ Gradle runs every unit-test class in one JVM, in name order. In 2.1.4, the full 
 
 The cause was in the test, not the app. Once any Compose test has run, Compose watches every state change in the JVM. On the first change it posts one callback to the main looper and waits for that callback to run before it posts another. `HandsFreeAppLockTest` changed the view model's lock state and ended without running the main looper. Robolectric empties the main looper between tests, so the callback was dropped, Compose kept waiting for it, and nothing Compose scheduled on the main thread ran again in that JVM. A real device never empties its main looper, so the app itself is not affected.
 
-`AaaComposeOrderProbeTest` renders a trivial Compose screen and sorts first, so every other class runs after a Compose test. If a test leaves Compose stuck again, the next Compose test fails at once instead of only when names happen to sort badly.
+`AaaComposeOrderProbeTest` is a smoke sentinel for the full suite's usual order. It renders a trivial Compose screen and its name sorts first, so in a normal full run every other class runs after a Compose test, and a test that leaves Compose stuck makes the next Compose test fail. Name order is how Gradle happens to run the classes, not a promise, and a filtered run may leave the sentinel out. `ComposeMainLooperRegressionTest` is the real check: in one class, with its methods in a fixed order, it renders Compose, changes state and ends a test without running the main looper, and then checks that a later Compose render still recomposes and that the clock did not jump. It fails without `IdleMainLooperRule` and passes with it.
 
-A second, smaller effect showed up once the hang was fixed. The same Compose dispatcher keeps the first Compose test's frame timer, which remembers the time of its last frame, while Robolectric starts every test's clock again at 100 ms. In a later test that timer asks for a frame every millisecond until the clock catches up, and Robolectric moves its clock forward for each one. One idle of the main looper could then move a test's clock forward by as long as an earlier test ran (29 seconds after `HeldAcrossServersTest`), so a 5-second notice timer fired in `ManualAnswerDispatchTest` before the test checked the notice. `IdleMainLooperRule` sets that frame time back to zero before and after each test.
+A second, smaller effect showed up once the hang was fixed. The same Compose dispatcher keeps the first Compose test's frame timer, which remembers the time of its last frame, while Robolectric starts every test's clock again at 100 ms. In a later test that timer asks for a frame every millisecond until the clock catches up, and Robolectric moves its clock forward for each one. One idle of the main looper could then move a test's clock forward by as long as an earlier test ran (29 seconds after `HeldAcrossServersTest`), so a 5-second notice timer fired in `ManualAnswerDispatchTest` before the test checked the notice. `IdleMainLooperRule` sets that frame time back to zero before and after each test, and fails the test if it cannot, so a change in Compose or Robolectric cannot switch the fix off unnoticed.
 
 To keep a new test class safe:
 
 - A test that changes `AppViewModel` state without rendering anything must end with the main looper drained. Cancel the view model in `@After`, then add `@get:Rule val idleMainLooper = IdleMainLooperRule()`. Every view-model test class in the root test package uses it.
-- Do not rename `AaaComposeOrderProbeTest` or move it out of the root test package.
-- Run the full suite before a release. A run much longer than 4 minutes, or a run of `AppNotIdleException` failures, means a test has left Compose stuck: run the probe, the classes before the first failure, and that failing class with `docker-test.sh tests` to find it.
+- Keep `AaaComposeOrderProbeTest` in the root test package with a name that sorts first, and keep `ComposeMainLooperRegressionTest` passing.
+- Run the full suite before a release. A run much longer than 4 minutes, or a run of `AppNotIdleException` failures, means a test has left Compose stuck: run the probe, the classes before the first failure, and that failing class with `docker-test.sh tests` to find it, then add the rule to the class that leaves Compose stuck.
 
 ## Troubleshooting
 
