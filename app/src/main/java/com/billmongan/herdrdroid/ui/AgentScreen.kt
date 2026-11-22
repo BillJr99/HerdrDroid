@@ -61,6 +61,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
+import androidx.compose.ui.platform.testTag
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
@@ -217,6 +218,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             readScreen(paneId)
             kotlinx.coroutines.delay(when {
                 vm.pane(paneId)?.status == Status.NEEDS_YOU -> 750L
+                // 2.2.0: while a switch's first reads settle, the next read comes sooner; the gate caps how many.
+                !vm.paneViewSettled && vm.paneReadProblem == null -> 500L
                 !liveNow && vm.pane(paneId)?.status == Status.WORKING && vm.paneReadProblem == null -> 500L
                 structured -> 2_000L
                 else -> 1_500L
@@ -681,7 +684,9 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 state = listState,
                 modifier = Modifier.fillMaxSize().then(pinchToZoom),
                 follow = chatFollow,
-            ) } } }
+            ) } }
+                if (vm.paneUpdating(paneId)) UpdatingChip(Modifier.align(Alignment.TopCenter).padding(top = 4.dp))
+            }
         } else Box(Modifier.weight(1f).fillMaxWidth()) {
             Column(
                 Modifier
@@ -691,11 +696,16 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     .padding(horizontal = 16.dp, vertical = 14.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                val text = screenText
+                // 2.2.0: until this visit's reads settle, the pane's last settled screen (display only).
+                val text = screenText.ifBlank { vm.heldScreenText(paneId).orEmpty() }
                 if (fullTerminal) {
                     // The terminal view (1.4.8: before, a pane with no good read yet showed the same note as
                     // the card, so Show terminal looked like it did nothing).
                     TerminalView(text, vm.paneReadProblem, liveSize)
+                } else if (!vm.screenViewReady(paneId) && vm.paneReadProblem == null) {
+                    // 2.2.0: an agent with a chat log shows that log; the terminal parsed into a chat showed
+                    // here for a moment first, then jumped to the chat. The card below still shows at once.
+                    Text("Loading the chat…", color = Palette.Muted, fontSize = 15.sp)
                 } else if (text.isBlank()) {
                     // Say why the screen isn't there, rather than "Loading…" for ever (1.4.2).
                     Text(vm.paneReadProblem?.let { "The app couldn't read this pane's screen yet ($it). It keeps trying." } ?: "Loading…",
@@ -733,6 +743,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 }
                 promptCard()
             }
+            if (vm.paneUpdating(paneId) && !fullTerminal) UpdatingChip(Modifier.align(Alignment.TopCenter).padding(top = 4.dp))
             if (!termFollow && screenText.isNotBlank()) {
                 Surface(
                     shape = RoundedCornerShape(20.dp), color = Palette.Card, border = BorderStroke(1.dp, Palette.Line), shadowElevation = 4.dp,
@@ -1470,6 +1481,21 @@ private fun markColor(mark: String): Color = when (mark) {
 private fun norm(s: String) = s.filterNot { it.isWhitespace() }.take(40)
 
 /**
+ * A quiet "Updating" chip over the chat (2.2.0) while a pane just opened shows its last good view and
+ * its fresh one is still settling.
+ */
+@Composable
+internal fun UpdatingChip(modifier: Modifier = Modifier) {
+    Surface(shape = RoundedCornerShape(12.dp), color = Palette.Card, border = BorderStroke(1.dp, Palette.Line),
+        modifier = modifier.testTag("pane-updating")) {
+        Row(Modifier.padding(horizontal = 10.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            androidx.compose.material3.CircularProgressIndicator(strokeWidth = 1.5.dp, color = Palette.Muted, modifier = Modifier.size(10.dp))
+            Text("Updating", color = Palette.Muted, fontSize = 11.5.sp, modifier = Modifier.padding(start = 6.dp))
+        }
+    }
+}
+
+/**
  * The pane as a conversation: the agent's paragraphs rewrapped for the phone in the reading
  * font, your messages as bubbles on the right, tables and boxes in monospace strips that scroll
  * sideways, and the agent's own input box and status line as a quiet footer.
@@ -1503,9 +1529,21 @@ internal fun ChatView(
     val prose = if (font == ReadingFont.MONO) size else size * 1.2f
     val showPending = pending != null && segs.none { it is Seg.You && norm(it.text).startsWith(norm(pending).take(20)) }
 
-    SelectionContainer {
+    // 2.2.0: long-press a message for Copy, Copy for each box in it and Select text; long-press a box
+    // to copy just it. Select text puts back the selection the screen view had before.
+    var selecting by remember { mutableStateOf(false) }
+    var menuAt by remember(text) { mutableStateOf<Int?>(null) }
+    val copy = rememberCopier()
+    val copies = remember(segs, msgs) { ScreenCopy(segs, msgs) }
+    val content: @Composable () -> Unit = {
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (selecting) Text("Done selecting", color = Palette.Blue, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.clip(RoundedCornerShape(14.dp)).clickable { selecting = false }.padding(horizontal = 8.dp, vertical = 6.dp))
             segs.forEachIndexed { i, s ->
+                val press = if (selecting || copies.whole(i) == null) Modifier
+                    else if (s is Seg.Code) Modifier.onLongPress("Copy this box") { copy(BoxCopy.clean(s.lines), "Copied box") }
+                    else Modifier.onLongPress("Copy options") { menuAt = i }
+                Box(press) {
                 when (s) {
                     Seg.Gap -> Spacer(Modifier.height(6.dp))
                     Seg.Rule -> HorizontalDivider(color = Palette.Line, modifier = Modifier.padding(vertical = 6.dp))
@@ -1569,6 +1607,10 @@ internal fun ChatView(
                         }
                     }
                 }
+                if (menuAt == i) copies.whole(i)?.let { whole ->
+                    CopyMenu(true, whole, copies.boxes(i), onDismiss = { menuAt = null }, onSelect = { selecting = true })
+                }
+                }
                 timeAfter[i]?.let { (at, mine) -> ChatTimestamp(at, end = mine) }
             }
             if (showPending) {
@@ -1576,6 +1618,37 @@ internal fun ChatView(
                 ChatTimestamp(pendingAt, end = true)
             }
         }
+    }
+    if (selecting) SelectionContainer { content() } else content()
+}
+
+/**
+ * What a long press copies in the screen view (2.2.0): the message a piece belongs to (yours, or the
+ * agent's reply from its first paragraph through its last box), and that message's boxes, each as
+ * the text it shows ([BoxCopy.clean]).
+ */
+internal class ScreenCopy(private val segs: List<Seg>, msgs: List<com.billmongan.herdrdroid.herdr.ScreenTimes.Msg>) {
+    private val owner: List<IntRange?> = segs.indices.map { i -> msgs.firstOrNull { i in it.first..it.last }?.let { it.first..it.last } }
+
+    private fun textOf(s: Seg): String? = when (s) {
+        is Seg.You -> s.text
+        is Seg.Para -> (s.mark?.takeIf { LIST_MARK.matches(it) }?.let { (if (it.first().isDigit()) it else "-") + " " } ?: "") + s.text
+        is Seg.Code -> BoxCopy.clean(s.lines)
+        else -> null
+    }
+
+    private fun range(i: Int): IntRange? = owner.getOrNull(i) ?: i.takeIf { segs.getOrNull(it)?.let(::textOf) != null }?.let { it..it }
+
+    /** The whole message piece [i] is in, or null when it is not text (a rule, a gap, the footer). */
+    fun whole(i: Int): String? = range(i)?.mapNotNull { segs.getOrNull(it)?.let(::textOf) }?.filter { it.isNotBlank() }
+        ?.joinToString("\n\n")?.takeIf { it.isNotBlank() }
+
+    /** The boxes in the message piece [i] is in, each as it shows. */
+    fun boxes(i: Int): List<String> = range(i)?.mapNotNull { (segs.getOrNull(it) as? Seg.Code)?.let { c -> BoxCopy.clean(c.lines) } }
+        ?.filter { it.isNotBlank() }.orEmpty()
+
+    private companion object {
+        val LIST_MARK = Regex("""^([-*•·]|\d{1,3}[.)])$""")
     }
 }
 

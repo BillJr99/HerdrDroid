@@ -104,15 +104,18 @@ private fun CardCode(b: CardBlock.Code) {
     var all by remember(b) { mutableStateOf(false) }
     val long = b.lines.size > CARD_CODE_LINES + 2
     val shown = if (long && !all) b.lines.take(CARD_CODE_LINES) else b.lines
+    // 2.2.0: long-press the box to copy all of it (every line, folded or not), as it shows.
+    val copy = rememberCopier()
     Surface(shape = RoundedCornerShape(10.dp), color = Palette.Code, border = BorderStroke(1.dp, Palette.Line),
-        modifier = Modifier.fillMaxWidth().testTag(if (b.diff) "card-diff" else "card-code")) {
-        Column {
+        modifier = Modifier.fillMaxWidth().testTag(if (b.diff) "card-diff" else "card-code")
+            .onLongPress("Copy this box") { copy(BoxCopy.clean(b.lines), "Copied box") }) {
+        DisableSelection { Column {
             if (b.wrap) {
                 // One line: a long path or command wraps (at "/" and spaces) instead of running off the side.
                 Text(b.lines.joinToString("\n"), fontFamily = Fonts.Mono, fontSize = 13.5.sp, lineHeight = 19.sp,
                     color = Palette.Ink, modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp))
             } else {
-                // One Text, so the script selects and copies as a whole; diff lines take their colours.
+                // One Text, so the script copies as a whole (long-press, 2.2.0); diff lines take their colours.
                 val text = run {
                     buildAnnotatedString {
                         shown.forEachIndexed { i, line ->
@@ -129,12 +132,10 @@ private fun CardCode(b: CardBlock.Code) {
                 Text(text, fontFamily = Fonts.Mono, fontSize = 13.sp, lineHeight = 19.sp, color = Palette.Ink, softWrap = false,
                     modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 10.dp))
             }
-            if (long) DisableSelection {
-                TextButton(onClick = { all = !all }, modifier = Modifier.testTag("card-code-more")) {
-                    Text(if (all) "Show fewer lines" else "Show all ${b.lines.size} lines", fontSize = 12.5.sp)
-                }
+            if (long) TextButton(onClick = { all = !all }, modifier = Modifier.testTag("card-code-more")) {
+                Text(if (all) "Show fewer lines" else "Show all ${b.lines.size} lines", fontSize = 12.5.sp)
             }
-        }
+        } }
     }
 }
 
