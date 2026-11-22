@@ -139,11 +139,14 @@ if [ "$OUT" = "$(phys "$DEFAULT_OUT")" ]; then
   fi
 fi
 # The tree to test: HEAD, or HEAD updated from the working tree in a separate index in the run folder.
+# The same exclusions apply here, so git never reads or stores anything under keystore/ or release/
+# or local.properties: tracked files there keep their HEAD entries, which the archive leaves out.
 TREE=HEAD
 if [ "$WORKTREE" = 1 ]; then
   ADD=(-u); [ "${HD_TEST_INCLUDE_UNTRACKED:-0}" = 1 ] && ADD=(-A)
   TREE=$(export GIT_INDEX_FILE="$RUN/stage-index"
-         git -C "$REPO" read-tree HEAD && git -C "$REPO" add "${ADD[@]}" -- . && git -C "$REPO" write-tree) \
+         git -C "$REPO" read-tree HEAD && git -C "$REPO" add "${ADD[@]}" -- . "${EXCLUDE[@]}" \
+           && git -C "$REPO" write-tree) \
     || { echo "could not stage the working tree" >&2; exit 2; }
 fi
 echo "$MODE${*:+ ($*)} in $IMAGE; cache $CACHE; output $RUN${MIRROR:+; Robolectric from $MIRROR}"
