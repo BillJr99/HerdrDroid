@@ -29,6 +29,7 @@ import kotlinx.coroutines.cancel
 import java.time.Duration
 import org.junit.After
 import org.junit.Assert.*
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Shadows.shadowOf
@@ -41,6 +42,7 @@ import org.robolectric.Shadows.shadowOf
  */
 @RunWith(AndroidJUnit4::class)
 class TypedChatMerge214Test {
+    @get:Rule val idleMainLooper = IdleMainLooperRule()
     private val vm = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
     private val server = Server(id = "fixture-m", name = "FixtureM", host = "m.invalid", port = 22, user = "fixm", herdrPath = "/fixture/herdr")
     private val single = checkNotNull(javaClass.getResource("/screens/claude/captured-2.1.329/single-question.txt")).readText()

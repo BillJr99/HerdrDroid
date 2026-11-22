@@ -23,6 +23,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Shadows.shadowOf
@@ -31,6 +32,7 @@ import java.io.File
 /** Runs against an isolated loopback SSH server with tools/card-preview/herdr.py as its CLI. */
 @RunWith(AndroidJUnit4::class)
 class CardPreviewReadTest {
+    @get:Rule val idleMainLooper = IdleMainLooperRule()
     @Test fun workingCodexFindsANativeQuestionMissingFromRecentOutput() = withFixture { f ->
         val recent = "Codex is preparing a response."
         f.select("codex", Status.WORKING)
