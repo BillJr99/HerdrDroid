@@ -16,13 +16,14 @@ import org.json.JSONObject
  *     HD> <standard padded Base64 of the message, chunks of at most 40 characters>
  *     HDEND K7P3QX
  *
- * The frame is inert: it only puts a card on the phone. The message goes nowhere until the phone
- * user types the same code back in that pane's composer on the phone.
+ * The frame is inert: it only puts a card on the phone. 2.2.0: the phone asks Yes or No, and the
+ * message goes nowhere until the phone user taps Yes (or Approve on the card); the app then hands
+ * this frame's code to its confirm path itself. Nobody types the code.
  */
 internal data class CrossServerFrame(val code: String, val destination: String, val text: String)
 
 internal object CrossServerCode {
-    /** No 0/O, 1/I/L: a code is read off a phone screen and typed back. */
+    /** No 0/O, 1/I/L: a code can be read off a phone screen without doubt. */
     const val ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
     const val LENGTH = 6
     /** A card lives this long after its frame was first seen. */
@@ -31,8 +32,6 @@ internal object CrossServerCode {
     /** A frame's code: exactly six characters from [ALPHABET], as the agent wrote it. */
     fun valid(code: String): Boolean = code.length == LENGTH && code.all { it in ALPHABET }
 
-    /** What the user typed, as a code to compare with a card's: trimmed, any case. Null when it can't be one. */
-    fun reply(typed: String): String? = typed.trim().uppercase().takeIf(::valid)
 }
 
 /**
