@@ -64,36 +64,64 @@ import org.junit.runner.RunWith
 class ComposeUiTest {
     @get:Rule val rule = createComposeRule()
 
-    /** 2.1.5: the cross-server card shows source, destination, message and code, offers a choice when asked, and only Cancel or Close. */
-    @Test fun crossServerCardShowsTheMessageAndCodeAndOffersChoicesAndCancel() {
+    /** 2.1.5/2.2.0: the cross-server card shows source, destination and message, offers a choice when asked, and Approve and Cancel; it never asks for a typed code. */
+    @Test fun crossServerCardShowsTheMessageAndOffersChoicesApproveAndCancel() {
         val text = "Review the build.\nKeep  both spaces."
         val choices = listOf("Claude on Other server · h:22 · w1:p1", "Codex on Another server · h:22 · w1:p2")
         val picked = mutableListOf<String>()
         var cancelled = 0
+        var approved = 0
         var state by mutableStateOf(AppViewModel.CrossServerState.PENDING)
         var note by mutableStateOf<String?>(null)
+        var destination by mutableStateOf<String?>(null)
         rule.setContent {
             Box(Modifier.fillMaxSize().verticalScroll(androidx.compose.foundation.rememberScrollState())) {
-                CrossServerCardView("Claude on Source server", "Codex", null, text, "K7P3QX", state, note,
+                CrossServerCardView("Claude on Source server", "Codex", destination, text, "K7P3QX", state, note,
                     if (state == AppViewModel.CrossServerState.PENDING) choices else emptyList(),
-                    onChoose = { picked += it }, onCancel = { cancelled++ }, onClose = {})
+                    onChoose = { picked += it }, onApprove = if (destination != null) ({ approved++ }) else null,
+                    onCancel = { cancelled++ }, onClose = {})
             }
         }
         rule.onNodeWithText("Cross-server message").assertIsDisplayed()
         rule.onNodeWithText(text).assertIsDisplayed()
         rule.onNodeWithText("From: Claude on Source server").assertIsDisplayed()
         rule.onNodeWithText("To: not chosen", substring = true).assertIsDisplayed()
-        rule.onNodeWithText("Code: K7P3QX").assertIsDisplayed()
-        rule.onNodeWithText("type K7P3QX in this chat", substring = true).assertIsDisplayed()
+        rule.onAllNodesWithText("type", substring = true, ignoreCase = true).assertCountEquals(0)
+        // No destination yet: Approve is there but does nothing.
+        rule.onNodeWithText("Approve").performScrollTo().assertIsNotEnabled()
         rule.onNodeWithText(choices[1]).performScrollTo().performClick()
-        rule.runOnIdle { assertEquals(listOf(choices[1]), picked) }
+        rule.runOnIdle { assertEquals(listOf(choices[1]), picked); destination = "Codex on Another server" }
+        rule.onNodeWithText("To: Codex on Another server").assertIsDisplayed()
+        rule.onNodeWithText("Approve").performScrollTo().performClick()
+        rule.runOnIdle { assertEquals(1, approved) }
         rule.onNodeWithText("Cancel").performScrollTo().performClick()
         rule.runOnIdle { assertEquals(1, cancelled) }
         rule.runOnIdle { state = AppViewModel.CrossServerState.SENT; note = "Message sent." }
         rule.onNodeWithText("Message sent.").performScrollTo().assertIsDisplayed()
         rule.onNodeWithText("Close").performScrollTo().assertIsDisplayed()
         rule.onAllNodesWithText("Cancel").assertCountEquals(0)
+        rule.onAllNodesWithText("Approve").assertCountEquals(0)
         rule.onAllNodesWithText(choices[0]).assertCountEquals(0)
+    }
+
+    /** 2.2.0: the Yes/No dialog shows the source, the destination and server, and the whole message, scrolling a long one. */
+    @Test fun crossServerApprovalDialogShowsEverythingAndAnswersYesNoOrLater() {
+        val long = (1..40).joinToString("\n") { "Line $it of the proposed message." }
+        val answers = mutableListOf<String>()
+        rule.setContent {
+            CrossServerApprovalDialog("Claude on Source server", "Hermes on Other server", long, "K7P3QX", waiting = 1,
+                onYes = { answers += "yes" }, onNo = { answers += "no" }, onLater = { answers += "later" })
+        }
+        rule.onNodeWithText("Send this message to another server?").assertIsDisplayed()
+        rule.onNodeWithText("From: Claude on Source server").assertIsDisplayed()
+        rule.onNodeWithText("To: Hermes on Other server").assertIsDisplayed()
+        rule.onNodeWithText("1 more proposal is waiting on its card.").assertIsDisplayed()
+        rule.onAllNodesWithText("type", substring = true, ignoreCase = true).assertCountEquals(0)
+        // The whole message is there, the last line reachable by scrolling inside the dialog.
+        rule.onNodeWithText(long).performScrollTo().assertIsDisplayed()
+        rule.onNodeWithText("No").performClick()
+        rule.onNodeWithText("Yes, send").performClick()
+        rule.runOnIdle { assertEquals(listOf("no", "yes"), answers) }
     }
 
     /** 2.1.1 acceptance D2: four FixtureB panes were eligible and the review showed three (six here, past the old 160 dp box). */
