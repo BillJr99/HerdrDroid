@@ -508,17 +508,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             // (Bill, 2026-11-22). With nothing running it stays as a muted "N done" while the session has
             // finished work to read, and is hidden when there is nothing at all.
             vm.work[paneId]?.let { w ->
-                runningPill(w, pane?.agent, vm.endedProcs[paneId].orEmpty().size)?.let { pill ->
-                    Text(
-                        pill.label,
-                        color = if (pill.active) Palette.Blue else Palette.Muted,
-                        fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
-                        modifier = Modifier.clip(RoundedCornerShape(12.dp)).background(if (pill.active) Palette.BlueSoft else Palette.Line)
-                            .clickable(onClickLabel = "Show what's running", role = androidx.compose.ui.semantics.Role.Button) { vm.screen = Screen.Work(paneId) }
-                            .semantics { contentDescription = pill.description }
-                            .padding(horizontal = 8.dp, vertical = 4.dp),
-                    )
-                }
+                runningPill(w, pane?.agent, vm.endedProcs[paneId].orEmpty().size)?.let { RunningPillChip(vm, paneId, it) }
             }
             // Everything else lives in one menu, so the header stays readable on a phone.
             Box {
@@ -1717,6 +1707,20 @@ internal fun keysLabel(nav: List<String>?, c: com.billmongan.herdrdroid.herdr.Ch
     if (nav == null) return if (c.pressEnter) "sends ${c.keys} + Enter" else "sends ${c.keys}"
     val names = nav.map { when (it) { "up" -> "↑"; "down" -> "↓"; "left" -> "←"; "right" -> "→"; "enter" -> "Enter"; "esc" -> "Esc"; else -> it } }
     return "sends " + names.joinToString(" ")
+}
+
+/** The header pill; a tap opens what runs under the pane. */
+@Composable
+internal fun RunningPillChip(vm: AppViewModel, paneId: String, pill: RunningPill) {
+    Text(
+        pill.label,
+        color = if (pill.active) Palette.Blue else Palette.Muted,
+        fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
+        modifier = Modifier.clip(RoundedCornerShape(12.dp)).background(if (pill.active) Palette.BlueSoft else Palette.Line)
+            .clickable(onClickLabel = "Show what's running", role = androidx.compose.ui.semantics.Role.Button) { vm.screen = Screen.Work(paneId) }
+            .semantics { contentDescription = pill.description }
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+    )
 }
 
 /** The header pill for what runs under an agent: its text, its spoken description, and whether anything is active. */
