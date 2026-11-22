@@ -1767,6 +1767,8 @@ class AppViewModel internal constructor(
     private val panelCloseFailures = java.util.concurrent.ConcurrentHashMap<String, Int>()
     /** (server/pane/visit) keys already closed once on opening the pane. */
     private val panelOpenCloses = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    /** (server/pane/visit) keys whose first shown read was taken: only that read closes a panel on opening. */
+    private val panelVisitsRead = java.util.Collections.synchronizedSet(mutableSetOf<String>())
     /** Why the last close of a panel in (server/pane) didn't finish, for its card. */
     internal var panelCloseProblems by mutableStateOf<Map<String, String>>(emptyMap())
         private set
@@ -2090,7 +2092,9 @@ class AppViewModel internal constructor(
             paneReadProblem = null
             openUsage = liveUsage
             noteSeenBtw(serverId, paneId, liveUsage)
-            liveUsage?.let(::closePanelOnOpen)
+            // 2.2.1: a panel already open when you open the pane is closed; one you open from here stays.
+            if (panelVisitsRead.size > 256) { panelVisitsRead.clear(); panelOpenCloses.clear() }
+            if (panelVisitsRead.add("$serverId/$paneId/$visit")) liveUsage?.let { closePanelOnOpen(it) }
             noteInputLine(paneId, text)
             paneText = text
             paneTextPane = paneId
