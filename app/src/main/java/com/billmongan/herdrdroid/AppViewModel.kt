@@ -1981,7 +1981,10 @@ class AppViewModel internal constructor(
                 working = paneStatus == Status.WORKING || paneNow?.backgroundBusy == true,
                 question = preview != null || livePrompt != null,
                 error = paneNow != null && com.billmongan.herdrdroid.herdr.agentErrorNotice(text, agent, paneNow.agentName) != null,
-                dialog = useLive || liveUsage != null || verifiedUsage != null || com.billmongan.herdrdroid.herdr.showsQuestionDialog(text),
+                // A draft typed at the computer has its own card (2.1.0), never held either.
+                dialog = useLive || liveUsage != null || verifiedUsage != null || com.billmongan.herdrdroid.herdr.showsQuestionDialog(text) ||
+                    !com.billmongan.herdrdroid.herdr.inputLineOf(text, agent).isNullOrEmpty() ||
+                    com.billmongan.herdrdroid.herdr.composerDraftOf(text, agent) != null,
             )
             val verdict = settleGate.offer(settleKey(serverId, paneId, visit), text, urgent)
             if (verdict.why == com.billmongan.herdrdroid.herdr.SettleGate.Why.CAPPED)

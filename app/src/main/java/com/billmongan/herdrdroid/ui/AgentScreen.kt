@@ -218,8 +218,6 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             readScreen(paneId)
             kotlinx.coroutines.delay(when {
                 vm.pane(paneId)?.status == Status.NEEDS_YOU -> 750L
-                // 2.2.0: while a switch's first reads settle, the next read comes sooner; the gate caps how many.
-                !vm.paneViewSettled && vm.paneReadProblem == null -> 500L
                 !liveNow && vm.pane(paneId)?.status == Status.WORKING && vm.paneReadProblem == null -> 500L
                 structured -> 2_000L
                 else -> 1_500L

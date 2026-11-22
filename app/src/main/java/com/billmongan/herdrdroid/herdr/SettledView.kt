@@ -57,14 +57,14 @@ internal class SettleGate(private val maxReads: Int = MAX_READS) {
     }
 
     companion object {
-        /** At the open pane's quick read cadence, a bounded few reads; then the newest one shows. */
+        /** At the open pane's usual read cadence, a bounded few reads; then the newest one shows. */
         const val MAX_READS = 5
     }
 }
 
 /**
  * A read that shows at once, whatever the gate holds (2.2.0): the needs-you alert, a question or
- * approval read from it, an agent's error, a question dialog on screen, or a working agent (its
+ * approval read from it, an agent's error, a question dialog or a draft card on screen, or a working agent (its
  * stream is the view; holding it would hide live output).
  */
 internal fun urgentRead(needsYou: Boolean, working: Boolean, question: Boolean, error: Boolean, dialog: Boolean): Boolean =
