@@ -184,6 +184,9 @@ class MainActivity : FragmentActivity() {
                     LockScreen(lockMessage) { unlock { ok -> if (ok) vm.unlocked() } }
                     return@HerdrTheme
                 }
+                // 2.1.4: the daily update check once unlocked, and its prompt over any screen.
+                LaunchedEffect(Unit) { vm.updates.maybeCheckDaily() }
+                com.billmongan.herdrdroid.update.UpdatePrompt(vm.updates)
                 // A tablet, an unfolded phone or a wide window shows the list and the open agent
                 // side by side; a phone shows one at a time.
                 LaunchedEffect(HandsFreeService.problem) {
@@ -316,6 +319,9 @@ class MainActivity : FragmentActivity() {
     override fun onStart() {
         super.onStart()
         vm.onForeground(HandsFreeService.active && HandsFreeService.command === handsFreeCommand)
+        // Back from Android's settings, an allowed update continues; a resume may be due its daily check.
+        vm.updates.onResume()
+        if (!vm.locked) vm.updates.maybeCheckDaily()
     }
 
     override fun onStop() {

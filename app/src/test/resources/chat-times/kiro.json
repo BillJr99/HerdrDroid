@@ -1,0 +1,164 @@
+{
+ "about": "Synthetic kiro reader output (2.1.4 chat times): the shape its reader in transcript.py emits; no real text.",
+ "agent": "kiro",
+ "bulk": {
+  "ok": true,
+  "src": "kiro",
+  "cur": {
+   "file": "/home/user/.kiro/sessions/cli/s.jsonl",
+   "off": 900,
+   "start": 0
+  },
+  "reset": true,
+  "more": false,
+  "title": null,
+  "items": [
+   {
+    "k": "k100",
+    "t": "user",
+    "text": "From claude: run the check 100"
+   },
+   {
+    "k": "k101",
+    "t": "think",
+    "text": "I will run it."
+   },
+   {
+    "k": "k102",
+    "t": "tool",
+    "id": "call100",
+    "name": "bash",
+    "title": "$ ls",
+    "kind": "exec",
+    "input": "ls",
+    "state": "run"
+   },
+   {
+    "k": "k103.r",
+    "t": "result",
+    "ref": "call100",
+    "out": "a\nb"
+   },
+   {
+    "k": "k104",
+    "t": "text",
+    "text": "Done with check 100."
+   },
+   {
+    "k": "k0",
+    "t": "user",
+    "text": "From claude: run the check 0",
+    "ts": 1795290000000
+   },
+   {
+    "k": "k1",
+    "t": "think",
+    "text": "I will run it."
+   },
+   {
+    "k": "k2",
+    "t": "tool",
+    "id": "call0",
+    "name": "bash",
+    "title": "$ ls",
+    "kind": "exec",
+    "input": "ls",
+    "state": "run"
+   },
+   {
+    "k": "k3.r",
+    "t": "result",
+    "ref": "call0",
+    "out": "a\nb"
+   },
+   {
+    "k": "k4",
+    "t": "text",
+    "text": "Done with check 0.",
+    "at": 1795290004000
+   },
+   {
+    "k": "k10",
+    "t": "user",
+    "text": "From claude: run the check 10",
+    "ts": 1795290600000
+   },
+   {
+    "k": "k11",
+    "t": "think",
+    "text": "I will run it."
+   },
+   {
+    "k": "k12",
+    "t": "tool",
+    "id": "call10",
+    "name": "bash",
+    "title": "$ ls",
+    "kind": "exec",
+    "input": "ls",
+    "state": "run"
+   },
+   {
+    "k": "k13.r",
+    "t": "result",
+    "ref": "call10",
+    "out": "a\nb"
+   },
+   {
+    "k": "k14",
+    "t": "text",
+    "text": "Done with check 10.",
+    "at": 1795290604000
+   }
+  ],
+  "now": 1795291800000,
+  "tz": -300
+ },
+ "live": {
+  "ok": true,
+  "src": "kiro",
+  "cur": {
+   "file": "/home/user/.kiro/sessions/cli/s.jsonl",
+   "off": 1800,
+   "start": 0
+  },
+  "reset": false,
+  "more": false,
+  "title": null,
+  "items": [
+   {
+    "k": "k20",
+    "t": "user",
+    "text": "From claude: run the check 20"
+   },
+   {
+    "k": "k21",
+    "t": "think",
+    "text": "I will run it."
+   },
+   {
+    "k": "k22",
+    "t": "tool",
+    "id": "call20",
+    "name": "bash",
+    "title": "$ ls",
+    "kind": "exec",
+    "input": "ls",
+    "state": "run"
+   },
+   {
+    "k": "k23.r",
+    "t": "result",
+    "ref": "call20",
+    "out": "a\nb"
+   },
+   {
+    "k": "k24",
+    "t": "text",
+    "text": "Done with check 20."
+   }
+  ],
+  "now": 1795291860000,
+  "tz": -300
+ }
+}

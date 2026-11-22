@@ -43,6 +43,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.billmongan.herdrdroid.herdr.Herdr
 import com.billmongan.herdrdroid.herdr.Backend
+import com.billmongan.herdrdroid.herdr.NeedsYouCadence
 import com.billmongan.herdrdroid.herdr.detectBackend
 import com.billmongan.herdrdroid.herdr.HerdrError
 import com.billmongan.herdrdroid.herdr.Pane
@@ -129,6 +130,9 @@ private class Queued(
     val serverId: String? = null,
 )
 
+/** 2.1.4: how often the cross-server notice loop looks for agents to tell. */
+private const val NOTICE_TICK_MS = 30_000L
+
 class AppViewModel internal constructor(
     app: Application,
     // Keep all adapter work in this scope; recheck cancellation at the final submission boundary.
@@ -139,6 +143,15 @@ class AppViewModel internal constructor(
 
     private val store = ServerStore(app)
     private val prefs = AppPrefs(app)
+
+    /** 2.1.4: the in-app update check, the prompt and the install (Settings, Updates). */
+    val updates = com.billmongan.herdrdroid.update.Updater(
+        com.billmongan.herdrdroid.update.AppUpdatePrefs(app),
+        com.billmongan.herdrdroid.update.OkUpdateHttp(),
+        com.billmongan.herdrdroid.update.AndroidUpdatePlatform(app),
+        viewModelScope,
+        app.cacheDir,
+    )
     var agentMessagingEnabled by mutableStateOf(prefs.agentMessagingEnabled)
         private set
 
@@ -146,6 +159,27 @@ class AppViewModel internal constructor(
         agentMessagingEnabled = on
         updateAgentMessagingSession()
         prefs.agentMessagingEnabled = on
+    }
+
+    /** 2.1.4: "Tell agents about cross-server messaging". It only acts while cross-server messaging is on. */
+    var crossServerNotice by mutableStateOf(prefs.crossServerNotice)
+        private set
+
+    /** 2.1.4: "Skip agents at or above X% of quota" for the notice; 100 never skips. */
+    var crossServerNoticeQuota by mutableStateOf(
+        com.billmongan.herdrdroid.herdr.CrossServerNotice.clampThreshold(prefs.crossServerNoticeQuota))
+        private set
+
+    fun changeCrossServerNotice(on: Boolean) {
+        crossServerNotice = on
+        prefs.crossServerNotice = on
+        updateNoticeLoop()
+    }
+
+    fun changeCrossServerNoticeQuota(percent: Int) {
+        val v = com.billmongan.herdrdroid.herdr.CrossServerNotice.clampThreshold(percent)
+        crossServerNoticeQuota = v
+        prefs.crossServerNoticeQuota = v
     }
 
     private val chatVisit = com.billmongan.herdrdroid.voice.SelectedChatVisit()
@@ -310,6 +344,15 @@ class AppViewModel internal constructor(
     /** When the app first saw each item of the open chat, on the computer's clock (1.4.3). */
     var transcriptSeen by mutableStateOf<Map<String, Long>>(emptyMap())
         private set
+    /** The time shown on each item of the open chat with no time of its own (2.1.4, [Transcript.stampShown]). */
+    var transcriptShown by mutableStateOf<Map<String, Long>>(emptyMap())
+        private set
+    /** The time each item of the open chat shows (2.1.4): its own where it has one, else the one the app gave it. */
+    val chatTimes: Map<String, Long> get() = Transcript.shownTimes(transcriptLogTimes, transcriptShown)
+    /** Each server's UTC offset in minutes, from its last read (2.1.4), for the times Grok draws on its screen. */
+    private val hostTzs = java.util.concurrent.ConcurrentHashMap<String, Int>()
+    /** The open server's UTC offset in minutes, or null before its first read. */
+    fun hostTzMinutes(): Int? = current?.id?.let { hostTzs[it] }
     /**
      * Each server's phone clock minus its computer's clock, in ms (1.4.3): the smallest of the last
      * readings of (phone time a read arrived) minus (the computer's "now" in it), since the time a read
@@ -323,6 +366,7 @@ class AppViewModel internal constructor(
     fun hostOffsetMs(): Long = current?.id?.let { hostOffsets[it] } ?: 0L
     private fun noteHostClock(r: com.billmongan.herdrdroid.transcript.TranscriptRead) {
         val sid = current?.id ?: return
+        r.hostTz?.let { hostTzs[sid] = it }
         if (r.hostNow <= 0) return
         val q = offsetSamples.getOrPut(sid) { ArrayDeque() }
         val best = synchronized(q) {
@@ -358,6 +402,11 @@ class AppViewModel internal constructor(
     private var ssh: HerdrSsh? = null
     private var herdr: Herdr? = null
     private var foreground by mutableStateOf(true)
+    /**
+     * Whether the drawer is pulled out, behind [drawerOpen] (2.1.4). Declared here, before `init`,
+     * because `init` reaches [ensureFleet], which reads it.
+     */
+    private var drawerShown by mutableStateOf(false)
     /** The app is in front (the screens' own loops read nothing while it isn't, 1.4.0). */
     val inFront: Boolean get() = foreground
 
@@ -661,6 +710,8 @@ class AppViewModel internal constructor(
                 pollHermes()
                 // Sends held on this server while another was open go on waiting here (2.1.2).
                 resumeHeldSends(saved.id)
+                // A usage dialog the app left open here (the app was closed or killed) is closed first (2.1.4).
+                retryLeftOpenUsage()
                 val want = pendingOpen
                 pendingOpen = null
                 when {
@@ -1080,6 +1131,7 @@ class AppViewModel internal constructor(
     private var agentMessagingRunning: Job? = null
 
     private fun updateAgentMessagingSession() {
+        updateNoticeLoop()
         if (!agentMessagingEnabled || !agentMessagingForeground || locked) {
             clearAgentMessage()
             agentMessagingActivation?.cancel()
@@ -1103,6 +1155,7 @@ class AppViewModel internal constructor(
      *  so it is replaced before any poll can stall on it. */
     fun onForeground(handsFreeActive: Boolean = false) {
         foreground = true
+        tuneFleet()
         // Only an already-running, explicitly started session can defer the app prompt.
         // Keystore authentication and any lock already in effect are unchanged.
         if (!handsFreeActive) refreshAppLock()
@@ -1134,6 +1187,7 @@ class AppViewModel internal constructor(
         agentMessagingForeground = false
         updateAgentMessagingSession()
         foreground = false
+        tuneFleet()
         clearPanePrefetch()
         backgroundAt = System.currentTimeMillis()
         // The open chat is written to the phone, so reopening the app shows it at once (1.2.9).
@@ -1532,6 +1586,13 @@ class AppViewModel internal constructor(
     /** How many lines the alerts read, when made and when answered: the same both times (1.4.2). */
     private val NOTIFY_READ_LINES = 80
 
+    /** 2.1.4: closing a usage dialog the app opened. */
+    private val USAGE_SETTLE_MS = 700L
+    private val USAGE_OPEN_MAX_MS = 3 * 60_000L
+    private val USAGE_CLOSE_AUTO_TRIES = 3
+    private val USAGE_NOTICE = "HerdrDroid couldn't confirm that"
+    private val BTW_SETTLE_MS = 700L
+
     /** Why the open pane's screen couldn't be read, when the last read failed (1.4.2); null after a good read. */
     var paneReadProblem by mutableStateOf<String?>(null)
         private set
@@ -1563,6 +1624,16 @@ class AppViewModel internal constructor(
 
     internal fun dismissUsage(usage: OpenUsage) {
         if (usageOverlayFor(usage.pane) != usage || closingUsage != null) return
+        // One the app opened is closed and checked closed the same way as when you leave it (2.1.4).
+        if (openedUsageOf(usage.server, usage.pane) != null) { closeAppUsage(usage.pane, "Dismiss", automatic = false); return }
+        // A /btw panel opened in the terminal (2.1.4): its exchange is kept first, then the Close tap
+        // closes it the same checked way as one the app opened.
+        com.billmongan.herdrdroid.herdr.claudeBtwOverlay(usage.overlay.visible)?.let { b ->
+            recordBtw(usage.server, usage.pane, com.billmongan.herdrdroid.herdr.BtwRead(b.question, b.body, b.complete, b.more))
+            saveOpenedUsage(openedUsage + OpenedUsage(usage.server, usage.pane, usage.agent, System.currentTimeMillis(), btw = b.question))
+            closeAppUsage(usage.pane, "Close", automatic = false)
+            return
+        }
         val dismissKey = "${usage.server}/${usage.pane}"
         if (!dismissingUsage.add(dismissKey)) return
         closingUsage = usage
@@ -1590,6 +1661,214 @@ class AppViewModel internal constructor(
                 closingUsage = null
                 dismissingUsage.remove(dismissKey)
             }
+        }
+    }
+
+    // ---- 2.1.4: usage dialogs the app opened are closed, and checked closed -------------------
+
+    /** A usage dialog the app opened (a /usage sent from the composer) and hasn't confirmed closed. */
+    internal data class OpenedUsage(val server: String, val pane: String, val agent: String, val at: Long, val failures: Int = 0,
+        /** 2.1.4: the question of a /btw panel the app opened (null for a usage dialog). */
+        val btw: String? = null)
+
+    internal var openedUsage by mutableStateOf(loadOpenedUsage())
+        private set
+    private val closingAppUsage = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    /** The pane whose terminal view is showing a usage dialog the app opened, while you look at it. */
+    @Volatile private var usageViewPane: Pair<String, String>? = null
+
+    private fun loadOpenedUsage(): List<OpenedUsage> = runCatching {
+        val a = org.json.JSONArray(prefs.usageLeftOpen)
+        (0 until a.length()).map { i ->
+            val o = a.getJSONObject(i)
+            OpenedUsage(o.getString("server"), o.getString("pane"), o.getString("agent"), o.optLong("at"), o.optInt("failures"),
+                if (o.isNull("btw")) null else o.optString("btw").ifEmpty { null })
+        }
+    }.getOrDefault(emptyList())
+
+    private fun saveOpenedUsage(list: List<OpenedUsage>) {
+        openedUsage = list
+        prefs.usageLeftOpen = org.json.JSONArray(list.map {
+            org.json.JSONObject().put("server", it.server).put("pane", it.pane).put("agent", it.agent).put("at", it.at).put("failures", it.failures).putOpt("btw", it.btw)
+        }).toString()
+    }
+
+    private fun openedUsageOf(server: String, paneId: String) = openedUsage.firstOrNull { it.server == server && it.pane == paneId }
+
+    /** True while a usage dialog the app opened in [paneId] (on the open server) isn't confirmed closed. */
+    internal fun usageLeftOpen(paneId: String): Boolean = current?.id?.let { openedUsageOf(it, paneId) } != null
+
+    /** The chat shows (true) or stops showing (false) the terminal view of a usage dialog it opened. */
+    internal fun usageViewShown(paneId: String, shown: Boolean) {
+        val sid = current?.id ?: return
+        if (shown) usageViewPane = sid to paneId
+        else if (usageViewPane == sid to paneId) {
+            usageViewPane = null
+            if (openedUsageOf(sid, paneId) != null) closeAppUsage(paneId, "you left it")
+        }
+    }
+
+    /**
+     * Closes the usage dialog the app opened in [paneId] and confirms it closed ([closeUsageAndVerify]):
+     * at most three Esc presses, each only for its known layout, and nothing else typed. It runs in the
+     * pane's dispatch lane, so no other app action on that pane runs meanwhile, and NonCancellable, so
+     * leaving the screen or the app doesn't stop it halfway. When it can't confirm the close, the record
+     * stays (the next check or send tries again first) and the chat shows a pane notice.
+     */
+    internal fun closeAppUsage(paneId: String, why: String, automatic: Boolean = true): Job? {
+        val sid = current?.id ?: return null
+        val rec = openedUsageOf(sid, paneId) ?: return null
+        if (automatic && rec.failures >= USAGE_CLOSE_AUTO_TRIES) return null
+        val h = herdr ?: return null
+        val key = "$sid/$paneId"
+        if (!closingAppUsage.add(key)) return null
+        return viewModelScope.launch {
+            try {
+                val outcome = withContext(kotlinx.coroutines.NonCancellable) {
+                    paneDispatch.run(sid to paneId) {
+                        com.billmongan.herdrdroid.herdr.closeUsageAndVerify(
+                            stillCurrent = { current?.id == sid && herdr === h && pane(paneId)?.agent == rec.agent },
+                            readState = { h.readUsageState(paneId, rec.agent) },
+                            sendEscape = { shown -> h.closeUsageOverlay(paneId, rec.agent, shown) },
+                            settle = { delay(USAGE_SETTLE_MS) },
+                        )
+                    }
+                }
+                val name = pane(paneId)?.agentName ?: rec.agent
+                com.billmongan.herdrdroid.diag.DiagLog.log("usage", "$paneId: close ($why): " +
+                    if (outcome.closed) "closed, ${outcome.escapes} Esc" else "not confirmed, ${outcome.why}")
+                val now = openedUsageOf(sid, paneId)
+                if (outcome.closed) {
+                    saveOpenedUsage(openedUsage.filterNot { it.server == sid && it.pane == paneId })
+                    sendNotices = sendNotices.filterNot { it.serverId == sid && it.paneId == paneId && it.text.startsWith(USAGE_NOTICE) }
+                } else if (now != null) {
+                    saveOpenedUsage(openedUsage.map { if (it === now) it.copy(failures = it.failures + 1) else it })
+                    val what = if (rec.btw != null) "side-question panel" else "usage screen"
+                    noteSendProblem(sid, paneId, "$USAGE_NOTICE $name's $what closed (${outcome.why}). Nothing will be typed into it " +
+                        "until it is; close it with Esc in Terminal, or Dismiss.")
+                }
+            } finally {
+                closingAppUsage.remove(key)
+            }
+            if (current?.id == sid && (screen as? Screen.Agent)?.paneId == paneId) runCatching { readPane(paneId) }
+        }
+    }
+
+    /** True while the app is closing a usage dialog in [paneId] on [server]. */
+    private fun closingAppUsage(server: String?, paneId: String) = server != null && "$server/$paneId" in closingAppUsage
+
+    /** The next check (2.1.4): usage dialogs the app left open on the open server are closed first. */
+    private fun retryLeftOpenUsage() {
+        val sid = current?.id ?: return
+        if (link != Link.CONNECTED) return
+        openedUsage.filter { it.server == sid && usageViewPane != sid to it.pane }.forEach { closeAppUsage(it.pane, "a later check") }
+    }
+
+    /**
+     * After the app typed a usage command, close the dialog when you leave its terminal view, the
+     * pane or the app, or after [USAGE_OPEN_MAX_MS] at the most.
+     */
+    private fun watchOpenedUsage(sid: String, paneId: String) {
+        viewModelScope.launch {
+            val started = android.os.SystemClock.elapsedRealtime()
+            delay(1_500)
+            while (isActive && openedUsageOf(sid, paneId) != null) {
+                val viewing = foreground && current?.id == sid && (screen as? Screen.Agent)?.paneId == paneId && usageViewPane == sid to paneId
+                val tooLong = android.os.SystemClock.elapsedRealtime() - started > USAGE_OPEN_MAX_MS
+                if (!viewing || tooLong) {
+                    if (current?.id == sid) closeAppUsage(paneId, if (tooLong) "open for ${USAGE_OPEN_MAX_MS / 60_000} minutes" else "you left it")?.join()
+                    break
+                }
+                delay(1_000)
+            }
+        }
+    }
+
+    /** After the app typed /usage or /btw: a usage dialog is closed when you leave it; a /btw panel is read, then closed. */
+    private fun followOpened(rec: OpenedUsage) {
+        if (rec.btw != null) followBtw(rec) else watchOpenedUsage(rec.server, rec.pane)
+    }
+
+    /**
+     * A /btw the app sent (2.1.4): waits for the answer, reads it to the end (scrolling the panel,
+     * which only the app's own /btw is), keeps the exchange in the chat, then closes the panel and
+     * checks that it closed. The read runs in the pane's dispatch lane, so nothing else is typed in
+     * meanwhile; the keeping and the close run whatever happens to the read (finally, NonCancellable).
+     */
+    private fun followBtw(rec: OpenedUsage) {
+        val h = herdr ?: return
+        viewModelScope.launch {
+            var got: com.billmongan.herdrdroid.herdr.BtwRead? = null
+            try {
+                got = paneDispatch.run(rec.server to rec.pane) {
+                    var shown: UsageOverlay? = null
+                    com.billmongan.herdrdroid.herdr.readBtwToEnd(
+                        read = {
+                            if (current?.id != rec.server || herdr !== h) null
+                            else (h.readUsageState(rec.pane, "claude") as? com.billmongan.herdrdroid.herdr.UsageState.Open)?.overlay
+                                ?.let { o -> com.billmongan.herdrdroid.herdr.claudeBtwOverlay(o.visible)?.also { shown = o } }
+                        },
+                        settle = { delay(BTW_SETTLE_MS) },
+                        scrollDown = { _ -> shown?.let { h.scrollBtwOverlay(rec.pane, it) } ?: false },
+                    )
+                }
+            } catch (c: CancellationException) {
+                throw c
+            } catch (e: Exception) {
+                com.billmongan.herdrdroid.diag.DiagLog.log("btw", "${rec.pane}: reading the side answer failed: ${com.billmongan.herdrdroid.diag.DiagLog.describe(e)}")
+            } finally {
+                withContext(kotlinx.coroutines.NonCancellable) {
+                    val read = got
+                    if (read != null) recordBtw(rec.server, rec.pane, read)
+                    else com.billmongan.herdrdroid.diag.DiagLog.log("btw", "${rec.pane}: no side answer was read")
+                    if (current?.id == rec.server) closeAppUsage(rec.pane, "the side answer was read", automatic = false)?.join()
+                }
+            }
+        }
+    }
+
+    /** Keeps a /btw exchange in the pane's chat history (2.1.4). */
+    internal fun recordBtw(server: String, paneId: String, read: com.billmongan.herdrdroid.herdr.BtwRead) {
+        val log = loadedQuestions(server, paneId) ?: return
+        val answer = com.billmongan.herdrdroid.herdr.btwAnswerMarkdown(read.rows)
+        val next = com.billmongan.herdrdroid.transcript.QuestionLog.btw(log, read.question, answer, !read.complete || read.more,
+            questionAnchor(server, paneId), System.currentTimeMillis())
+        if (next != log) putQuestions(server, paneId, next)
+    }
+
+    /** The last /btw panel seen in each pane ("server|pane"), to keep one opened in the terminal once it is steady. */
+    private val lastBtwSeen = java.util.concurrent.ConcurrentHashMap<String, com.billmongan.herdrdroid.herdr.BtwOverlay>()
+
+    /**
+     * A /btw panel opened in the terminal (2.1.4): once its answer is there and two reads show it the
+     * same, the part in view is kept in the chat. Nothing is pressed; it stays open with Close on its
+     * banner, since you may be reading it there.
+     */
+    private fun noteSeenBtw(serverId: String?, paneId: String, live: OpenUsage?) {
+        if (serverId == null) return
+        val k = "$serverId|$paneId"
+        val b = live?.overlay?.visible?.let { com.billmongan.herdrdroid.herdr.claudeBtwOverlay(it) }
+        if (b == null) { lastBtwSeen.remove(k); return }
+        val before = lastBtwSeen.put(k, b)
+        if (openedUsageOf(serverId, paneId)?.btw != null) return
+        if (b.complete && before == b) recordBtw(serverId, paneId, com.billmongan.herdrdroid.herdr.BtwRead(b.question, b.body, true, b.more))
+    }
+
+    /**
+     * Why the app must not type [pane]'s usage command now (2.1.4), or null: it opens only on an
+     * idle agent with an empty input box, with nothing else from the app under way in that pane.
+     */
+    private fun usageOpenRefusal(pane: Pane, pendingId: Long, h: Herdr): String? {
+        val sid = current?.id
+        val now = pane(pane.id) ?: pane
+        return when {
+            h.backend != Backend.TUI -> "this herdr can't confirm that its usage screen closes again"
+            now.status !in setOf(Status.IDLE, Status.DONE) -> "${now.agentName} isn't idle"
+            (now.scrollOffset ?: 0) != 0 -> "its pane is scrolled back"
+            pendingSends.any { it.isFor(sid, pane.id) && it.id != pendingId && (it.waiting || it.awaitingLink) } -> "an earlier message to it is still waiting"
+            answerInFlight(pane.id) || closingAppUsage(sid, pane.id) || dismissingUsage.contains("$sid/${pane.id}") -> "another HerdrDroid action on it is still running"
+            sid != null && openedUsageOf(sid, pane.id) != null -> "its usage screen from before isn't confirmed closed"
+            else -> null
         }
     }
 
@@ -1704,6 +1983,7 @@ class AppViewModel internal constructor(
                 agentMessageFrame(recent, messageArm.code)?.let { currentAgentMessage = messageArm.copy(text = it) }
             }
             openUsage = liveUsage
+            noteSeenBtw(serverId, paneId, liveUsage)
             noteInputLine(paneId, text)
             paneText = text
             paneTextPane = paneId
@@ -1883,6 +2163,7 @@ class AppViewModel internal constructor(
             // gets its log time before questions are placed among them (1.4.3, from review).
             if (c.items.isNotEmpty() && c.times.isEmpty()) transcriptCursor = ""
             transcriptSeen = c.seen
+            transcriptShown = c.shown
             transcriptMore = c.more
             transcriptTitle = c.title
             transcriptStart = c.start
@@ -1895,11 +2176,51 @@ class AppViewModel internal constructor(
         transcriptTimes = emptyMap()
         transcriptLogTimes = emptyMap()
         transcriptSeen = emptyMap()
+        transcriptShown = emptyMap()
         transcriptMore = false
         transcriptTitle = null
         transcriptStart = -1L
         transcriptFile = null
         transcriptState = if (hasTranscriptReader(paneId)) TranscriptMode.UNKNOWN else TranscriptMode.OFF
+    }
+
+    /**
+     * Grok's times on its screen (2.1.4): the open chat's messages that Grok shows a time for, and that
+     * have no time of their own yet, take it as their label.
+     */
+    fun noteScreenClocks(paneId: String, screen: String) {
+        if (transcriptPane != paneId || transcriptItems.isEmpty() || com.billmongan.herdrdroid.herdr.canonicalAgent(pane(paneId)?.agent.orEmpty()) != "grok") return
+        val found = com.billmongan.herdrdroid.herdr.GrokClock.match(transcriptItems, screen, seenNow(), hostTzMinutes())
+            .filterKeys { it !in transcriptLogTimes }
+        if (found.isEmpty()) return
+        transcriptLogTimes = transcriptLogTimes + found
+        current?.id?.let { sid ->
+            val c = openChatNow(paneId)
+            transcriptCache[ck(paneId)] = c
+            if (transcriptCursor.isNotEmpty()) persistChat(sid, paneId, c)
+        }
+    }
+
+    /** When the app first saw each message on a pane's screen, "server|pane" to key to time (2.1.4). */
+    private val screenSeen = androidx.compose.runtime.mutableStateMapOf<String, Map<String, Long>>()
+    private fun screenPane(paneId: String) = "$paneId#screen"
+
+    /** The first-seen times of the messages on [paneId]'s screen view (2.1.4); read only, for drawing. */
+    fun screenTimesFor(paneId: String): Map<String, Long> = current?.id?.let { screenSeen["$it|$paneId"] }.orEmpty()
+
+    /**
+     * Gives the messages on [paneId]'s screen that have no first-seen time one (2.1.4), and keeps them
+     * on the phone. The kept times are loaded from the phone the first time.
+     */
+    fun noteScreenSeen(paneId: String, msgs: List<com.billmongan.herdrdroid.herdr.ScreenTimes.Msg>) {
+        val sid = current?.id ?: return
+        if (msgs.isEmpty()) return
+        val held = screenSeen["$sid|$paneId"]
+        val before = held ?: runCatching { chatStore?.load(sid, screenPane(paneId))?.shown }.getOrNull().orEmpty()
+        val next = com.billmongan.herdrdroid.herdr.ScreenTimes.stamp(before, msgs, System.currentTimeMillis())
+        if (held == null || next !== before) screenSeen["$sid|$paneId"] = next
+        if (next === before) return
+        persistChat(sid, screenPane(paneId), CachedChat(emptyList(), "", false, null, agent = pane(paneId)?.agent?.lowercase(), shown = next))
     }
 
     /** Every chat read so far, per server and pane; kept until the app exits, and on the phone (1.2.9). */
@@ -2031,7 +2352,7 @@ class AppViewModel internal constructor(
 
     /** The open chat as it is now. */
     private fun openChatNow(paneId: String) = CachedChat(transcriptItems, transcriptCursor, transcriptMore, transcriptTitle,
-        transcriptStart, transcriptFile, pane(paneId)?.agent?.lowercase(), transcriptTimes, transcriptSeen, transcriptLogTimes)
+        transcriptStart, transcriptFile, pane(paneId)?.agent?.lowercase(), transcriptTimes, transcriptSeen, transcriptLogTimes, transcriptShown)
 
     /** Keeps the open chat, in memory and on the phone, before it is left (another agent, a reconnect, a server switch). */
     private fun stashOpenChat() {
@@ -2062,7 +2383,8 @@ class AppViewModel internal constructor(
         }
         if (keptIds[sid] != ids) {
             keptIds[sid] = ids
-            viewModelScope.launch(Dispatchers.IO) { chatStore?.keepOnly(sid, ids) }
+            // A pane's screen times (2.1.4) are kept beside its chat, and go with it.
+            viewModelScope.launch(Dispatchers.IO) { chatStore?.keepOnly(sid, ids + ids.map(::screenPane)) }
         }
         for (p in fresh) {
             val was = before[p.id] ?: continue
@@ -2186,13 +2508,14 @@ class AppViewModel internal constructor(
         // Another session or file starts its times afresh: its keys start over (1.4.3, from review).
         if (r.reset && Transcript.sessionOf(transcriptCursor) != Transcript.sessionOf(r.cursor)) {
             transcriptTimes = emptyMap(); transcriptSeen = emptyMap()
-            transcriptLogTimes = emptyMap()
+            transcriptLogTimes = emptyMap(); transcriptShown = emptyMap()
         } else if (r.reset) {
             // The same session read again: a key whose item changed (a rewritten log) loses its old times.
             val fresh = Transcript.merge(emptyList(), r.items, true)
             transcriptTimes = Transcript.keptAcrossReset(transcriptTimes, transcriptItems, fresh)
             transcriptSeen = Transcript.keptAcrossReset(transcriptSeen, transcriptItems, fresh)
             transcriptLogTimes = Transcript.keptAcrossReset(transcriptLogTimes, transcriptItems, fresh)
+            transcriptShown = Transcript.keptAcrossReset(transcriptShown, transcriptItems, fresh)
         }
         transcriptCursor = r.cursor
         noteHostClock(r)
@@ -2201,10 +2524,12 @@ class AppViewModel internal constructor(
             // Log times where the log has them; otherwise, for a live read's new items, when the app
             // first saw them, kept across reloads. A bulk read makes none up (1.4.3).
             val recorded = Transcript.timesOf(r.items)
-            transcriptLogTimes = (transcriptLogTimes + recorded).filterKeys(Transcript.keysOfItems(transcriptItems)::contains)
+            // Labels also take the times the reader found in the agent's other files (2.1.4); questions don't.
+            transcriptLogTimes = (transcriptLogTimes + Transcript.labelTimesOf(r.items)).filterKeys(Transcript.keysOfItems(transcriptItems)::contains)
             val logged = transcriptTimes + recorded
             transcriptTimes = if (r.reset) logged else Transcript.stampSeen(logged, transcriptItems, seenNow(), Transcript.keysOf(r.items))
             transcriptSeen = Transcript.markSeen(transcriptSeen, transcriptItems, Transcript.keysOf(r.items), transcriptTimes, seenNow(), bulk = r.reset)
+            transcriptShown = Transcript.stampShown(transcriptShown, transcriptItems, transcriptLogTimes, transcriptTimes, seenNow())
         }
         if (r.reset) {
             transcriptMore = r.more
@@ -2286,9 +2611,10 @@ class AppViewModel internal constructor(
                 val have = transcriptItems.map { it.key }.toSet()
                 transcriptItems = older.filter { it.key !in have } + transcriptItems
                 val recorded = Transcript.timesOf(r.items)
-                transcriptLogTimes = (recorded + transcriptLogTimes).filterKeys(Transcript.keysOfItems(transcriptItems)::contains)
+                transcriptLogTimes = (Transcript.labelTimesOf(r.items) + transcriptLogTimes).filterKeys(Transcript.keysOfItems(transcriptItems)::contains)
                 transcriptTimes = recorded + transcriptTimes
                 transcriptSeen = Transcript.markSeen(transcriptSeen, transcriptItems, Transcript.keysOf(r.items), transcriptTimes, seenNow(), bulk = true)
+                transcriptShown = Transcript.stampShown(transcriptShown, transcriptItems, transcriptLogTimes, transcriptTimes, seenNow())
                 transcriptStart = runCatching { org.json.JSONObject(r.cursor).optLong("start", 0L) }.getOrDefault(0L)
                 transcriptMore = r.more
             } finally {
@@ -2597,9 +2923,17 @@ class AppViewModel internal constructor(
             val verifyOpenCode = isOpenCode(pane.agent) && h.backend == Backend.TUI
             val verifyHermes = pane.agent == "hermes" && h.backend == Backend.TUI
             var openCodeRead: OpenCodeSendRead? = null
+            // 2.1.4: a usage command opens a dialog that only Esc closes, so it goes only to an idle
+            // agent with an empty input box, and never through a held retry that types it later.
+            // 2.1.4: so does Claude's /btw, whose side answer is read into the chat and then closed.
+            val btwAsked = com.billmongan.herdrdroid.herdr.btwQuestion(pane.agent, text)
+            val opensUsage = com.billmongan.herdrdroid.herdr.opensUsageDialog(pane.agent, text) || btwAsked != null
             run {
                 // Behind an earlier held message unless the user explicitly chose Force send.
                 val earlier = !force && pendingSends.any { it.isFor(serverId, pane.id) && it.waiting && it.id != pendingId }
+                // A usage dialog the app left open is closed first (2.1.4); the send waits for that.
+                val leftOpen = usageLeftOpen(pane.id)
+                if (leftOpen) closeAppUsage(pane.id, "a send was waiting", automatic = false)
                 // Read with its styles (1.4.6), so an agent's dim placeholder isn't taken for typing.
                 val screenNow = if (earlier) null else if (verifyOpenCode || verifyHermes) {
                     openCodeRead = try { readOpenCodeForSend(h, pane) } catch (_: HerdrError) { null }
@@ -2607,16 +2941,27 @@ class AppViewModel internal constructor(
                 } else runCatching { h.readStyled(pane.id, sendReadLines(pane.agent)) }.getOrNull()
                 // A pane that can't be read first is not typed into blind (1.4.1, from a code review).
                 val now = pane(pane.id) ?: pane
-                val why = when {
+                val why = (if (opensUsage) usageOpenRefusal(pane, pendingId, h) else null) ?: when {
                     earlier -> "an earlier message to it is still waiting"
                     screenNow.isNullOrBlank() -> "its screen couldn't be read first"
+                    leftOpen -> USAGE_HOLD
+                    usageDialogShown(now.agent, screenNow) -> USAGE_OPEN_HOLD
                     now.agent == "hermes" && hermesUsageWaiting(screenNow) -> "Hermes hasn't returned to its composer after Usage"
                     openCodeBackgroundDrawer(now.agent, screenNow) -> "its background drawer is open; close it in Terminal"
                     checkedSendBlocked(now, screenNow, openCodeRead) -> "a question is open in it; answer it first"
                     verifyHermes && now.status != Status.WORKING &&
                         com.billmongan.herdrdroid.herdr.inputLineOf(screenNow, "hermes") == null -> "Hermes's composer isn't visible yet"
-                    force -> null
+                    force && !opensUsage -> null
                     else -> holdReason(pane.id, screenNow)
+                }
+                if (why != null && opensUsage) {
+                    // Refused, not held: a held usage command would open its dialog later, unwatched.
+                    com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${pane.id}: usage command not sent, $why")
+                    pendingSends = pendingSends.map { if (it.id == pendingId) it.copy(held = why, waiting = false, undelivered = true, awaitingLink = false) else it }
+                    serverId?.let { noteSendProblem(it, pane.id, "Not sent to ${pane.agentName}: ${text.substringBefore(' ')} opens " +
+                        (if (btwAsked != null) "a side-question panel" else "its usage screen") +
+                        ", which HerdrDroid opens only when the agent is idle with an empty input box ($why).") }
+                    return@act
                 }
                 if (why != null) {
                     // Held, then retried quietly (1.4.4, Bill: "have the app do that seamlessly and only
@@ -2636,6 +2981,13 @@ class AppViewModel internal constructor(
                     if (it.id == pendingId) it.copy(awaitingLink = false, at = System.currentTimeMillis()) else it
                 }
             }
+            // Recorded before it is typed (2.1.4), so a dialog opened just before the app is closed or
+            // killed is still closed first by the next check or send.
+            val usageRecord = if (opensUsage && serverId != null && pane.agent != null) {
+                OpenedUsage(serverId, pane.id, pane.agent, System.currentTimeMillis(), btw = btwAsked).also { o ->
+                    saveOpenedUsage(openedUsage.filterNot { it.server == o.server && it.pane == o.pane } + o)
+                }
+            } else null
             try {
                 val checked = openCodeRead
                 h.sendMessage(checked?.pane ?: pane, text, expectedConnection = checked?.connection)
@@ -2643,11 +2995,24 @@ class AppViewModel internal constructor(
                 delivered()
             } catch (e: Exception) {
                 com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${pane.id}: failed: ${com.billmongan.herdrdroid.diag.DiagLog.describe(e)}")
+                // It may still have gone in; the close checks the screen and only presses Esc on the dialog.
+                if (usageRecord != null) followOpened(usageRecord)
                 throw e
             }
+            if (usageRecord != null) followOpened(usageRecord)
             readPane(pane.id)
         }
     }
+
+    /** Why a send waits on a usage dialog or /btw panel the app opened (2.1.4). */
+    private val USAGE_HOLD = "its usage screen or side-question panel is still open; HerdrDroid is closing it first"
+    /** Why a send waits on a usage dialog or /btw panel open in the pane (2.1.4): typing would go nowhere. */
+    private val USAGE_OPEN_HOLD = "its usage screen or side-question panel is open; close it with Esc (or Dismiss) first"
+
+    /** An agent's usage dialog is drawn on [screen], in its known layout or by its close hint (2.1.4). */
+    private fun usageDialogShown(agent: String?, screen: String): Boolean =
+        dismissibleUsageFrame(agent, screen) != null ||
+            (agent in setOf("grok", "agy") && com.billmongan.herdrdroid.herdr.usageDialogHint(agent, screen))
 
     /**
      * How far back a pane is read before text is typed into it. 2.1.1 (Grok's RC review, H2):
@@ -2758,6 +3123,10 @@ class AppViewModel internal constructor(
                             // Its tab may have been closed during the read.
                             closing() -> "its tab is being closed"
                             after == null -> "the pane isn't listed just now"
+                            // 2.1.4: a usage dialog the app left open is closed first; one open
+                            // otherwise is never typed into.
+                            usageLeftOpen(p.paneId) -> { closeAppUsage(p.paneId, "a held send was waiting"); USAGE_HOLD }
+                            usageDialogShown(after.agent, screen) -> USAGE_OPEN_HOLD
                             after.agent == "hermes" && hermesUsageWaiting(screen) -> "Hermes hasn't returned to its composer after Usage"
                             openCodeBackgroundDrawer(after.agent, screen) -> "its background drawer is open; close it in Terminal"
                             checkedSendBlocked(after, screen, checked) -> "a question is open in it; answer it first"
@@ -2999,10 +3368,20 @@ class AppViewModel internal constructor(
             sameOccupant(it, expected) && it.status in setOf(Status.IDLE, Status.DONE) && !it.backgroundBusy
         } == true
 
-    internal fun agentMessageDestinations(request: AgentMessage): List<Session> =
-        if (currentAgentMessage !== request || request.text == null || !agentMessageSourceCurrent(request)) emptyList()
+    /**
+     * Every identifiable agent on another connected Fleet server, whatever its status (2.1.4). The
+     * copied proposal instructions name these, so the source agent knows which agents the phone
+     * can reach: before, it was told nothing, and Claude on one server concluded it could not see
+     * Hermes on another. Naming them chooses nothing; the review still lists only the idle ones.
+     */
+    internal fun agentMessageReachable(request: AgentMessage): List<Session> =
+        if (currentAgentMessage !== request || !agentMessageSourceCurrent(request)) emptyList()
         else sessions().filter { it.server.id != request.source.server && relayPort(it.server.id)?.connectionIdentity != null &&
-            hasStableOccupant(it.pane) && agentMessageDestinationCurrent(it.server.id, it.pane) }
+            hasStableOccupant(it.pane) }
+
+    internal fun agentMessageDestinations(request: AgentMessage): List<Session> =
+        if (request.text == null) emptyList()
+        else agentMessageReachable(request).filter { agentMessageDestinationCurrent(it.server.id, it.pane) }
 
     internal suspend fun bindAgentMessage(request: AgentMessage, selected: Session): AgentMessageRoute? {
         if (selected !in agentMessageDestinations(request)) return null
@@ -3037,6 +3416,151 @@ class AppViewModel internal constructor(
         } finally {
             dismissAgentMessage(request)
         }
+    }
+
+    // ---- 2.1.4: telling agents about cross-server messaging ------------------------------------
+
+    private val noticeLedger = com.billmongan.herdrdroid.herdr.NoticeLedger(
+        { prefs.crossServerNoticeLedger }, { prefs.crossServerNoticeLedger = it })
+    internal var noticeClock: () -> Long = System::currentTimeMillis
+    internal val notifier = com.billmongan.herdrdroid.herdr.CrossServerNotifier(noticeLedger, { noticeClock() })
+    /** Off in tests that drive [noticeTick] themselves. */
+    internal var noticeLoopAllowed = true
+    /**
+     * The wait between notice passes. It suspends without holding the main thread: no work is
+     * queued on the main looper while it waits. Tests replace it, so no real 30-second delay loop
+     * runs in a test that does not ask for one.
+     */
+    internal var noticeTicker: suspend () -> Unit = { delay(NOTICE_TICK_MS) }
+    private var noticeLoop: Job? = null
+    private val noticeLock = Mutex()
+    private val noticeForced = mutableSetOf<String>()
+
+    private fun noticeActive() = agentMessagingEnabled && crossServerNotice && agentMessagingForeground && !locked
+
+    /**
+     * The notice loop runs only while cross-server messaging and the notice are both on, the app is
+     * in the foreground and unlocked; any change away from that cancels it. Each pass reads Compose
+     * state, so the pass itself runs on the main thread, but nothing runs between passes.
+     */
+    private fun updateNoticeLoop() {
+        if (!noticeActive()) {
+            noticeLoop?.cancel()
+            noticeLoop = null
+            synchronized(noticeForced) { noticeForced.clear() }
+            return
+        }
+        if (!noticeLoopAllowed || noticeLoop?.isActive == true) return
+        // The first pass is posted at once, so turning the feature on tells the agents, but it
+        // never runs inside the call (a settings tap or a lifecycle callback) that started it.
+        noticeLoop = viewModelScope.launch(Dispatchers.Main) {
+            while (isActive && noticeActive()) {
+                noticeTick()
+                noticeTicker()
+            }
+        }
+    }
+
+    /** "Tell agents now": the next tick ignores the hourly limit for every agent, and only that. */
+    fun tellAgentsNow() {
+        if (!noticeActive()) return
+        synchronized(noticeForced) { noticeForced += noticeRecipients().map { "${it.server.id}|${it.pane.id}" } }
+        viewModelScope.launch { noticeTick() }
+    }
+
+    /** Whether the notice can reach [s]: an identifiable agent on a connected server. */
+    private fun noticeReachable(s: Session): Boolean = hasStableOccupant(s.pane) && if (s.current)
+        s.server.id == current?.id && link == Link.CONNECTED && herdr?.let { it.backend != Backend.CORE && it.connectionIdentity != null } == true
+    else relayPort(s.server.id)?.connectionIdentity != null
+
+    private fun noticeRecipients(): List<Session> = sessions().filter(::noticeReachable)
+
+    private fun noticeQuota(s: Session): QuotaReading? {
+        val key = QuotaProfiles.key(s.pane.agent) ?: return null
+        return (if (s.current) quotas else serverQuotas[s.server.id].orEmpty())[key]
+    }
+
+    /**
+     * An agent as text other agents receive name it: its session name and the server's
+     * agent-facing label (the server's name, or "server N"; never the account, host or port).
+     */
+    internal fun agentFacingName(s: Session): String =
+        "${com.billmongan.herdrdroid.ui.sessionName(s.pane)} on ${com.billmongan.herdrdroid.store.agentServerLabel(s.server, servers)}"
+
+    /** The candidates with the notice each would get: names of agents on other servers only. */
+    internal fun noticeCandidates(): List<Pair<Session, com.billmongan.herdrdroid.herdr.CrossServerNotifier.Candidate>> {
+        val all = noticeRecipients()
+        return all.mapNotNull { s ->
+            val others = all.filter { it.server.id != s.server.id }
+                .map(::agentFacingName)
+            val text = com.billmongan.herdrdroid.herdr.CrossServerNotice.text(others) ?: return@mapNotNull null
+            val raw = if (s.current) pane(s.pane.id) ?: s.pane else s.pane
+            val hold = raw.status != Status.IDLE && raw.status != Status.DONE || raw.backgroundBusy ||
+                !promptLaneClear(s.server.id, s.pane.id) ||
+                com.billmongan.herdrdroid.herdr.CrossServerNotice.quotaSkips(noticeQuota(s), crossServerNoticeQuota)
+            s to com.billmongan.herdrdroid.herdr.CrossServerNotifier.Candidate(s.server.id, s.pane, text, hold)
+        }
+    }
+
+    /** One pass: each due agent gets the notice through the guarded send paths, one at a time. */
+    internal suspend fun noticeTick() {
+        if (!noticeActive() || !noticeLock.tryLock()) return
+        try {
+            for ((s, c) in noticeCandidates()) {
+                if (!noticeActive()) return
+                val forced = synchronized(noticeForced) { c.key in noticeForced }
+                val decision = notifier.decide(c, forced)
+                if (decision != com.billmongan.herdrdroid.herdr.CrossServerNotifier.Decision.SEND) {
+                    // Already sent: the forced tap has nothing left to do for this agent.
+                    if (decision == com.billmongan.herdrdroid.herdr.CrossServerNotifier.Decision.ALREADY_SENT)
+                        synchronized(noticeForced) { noticeForced -= c.key }
+                    continue
+                }
+                synchronized(noticeForced) { noticeForced -= c.key }
+                when (sendNotice(s, c.text)) {
+                    true -> notifier.sent(c)
+                    false -> if (notifier.refused(c, forced)) noteSendProblem(s.server.id, s.pane.id,
+                        "HerdrDroid could not tell this agent about cross-server messaging after ${notifier.maxTries} tries. " +
+                            "Tap Tell agents now in Settings to try again.")
+                }
+            }
+        } finally {
+            noticeLock.unlock()
+        }
+    }
+
+    /** True when sent or possibly sent (never sent twice), false when refused and nothing went out. */
+    private suspend fun sendNotice(s: Session, text: String): Boolean {
+        if (!s.current) {
+            val route = promptRelay.bind(s.server.id, s.pane) ?: return false
+            return when (promptRelay.send(route, text) { noticeActive() && promptRelay.isCurrent(route) }) {
+                RelayResult.SENT, RelayResult.UNCERTAIN -> true
+                RelayResult.REFUSED, RelayResult.DRAFT -> false
+            }
+        }
+        val h = herdr ?: return false
+        val connection = h.connectionIdentity ?: return false
+        val server = s.server.id
+        fun allowed() = noticeActive() && current?.id == server && herdr === h && h.connectionIdentity === connection &&
+            link == Link.CONNECTED && promptLaneClear(server, s.pane.id)
+        val port = object : com.billmongan.herdrdroid.herdr.LocalPromptSend.Port {
+            override suspend fun pane(id: String) =
+                quietly(allowBackground = true) { if (it === h) it.panes().singleOrNull { p -> p.id == id } else null }
+            override suspend fun viewport(id: String) =
+                quietly(allowBackground = true) { if (it === h) it.readStyled(id, sendReadLines(s.pane.agent)) else null }
+            override fun blocked(fresh: Pane, viewport: String): Boolean {
+                if (fresh.backgroundBusy || blocksNormalSend(fresh, viewport)) return true
+                val line = com.billmongan.herdrdroid.herdr.inputLineOf(viewport, fresh.agent)
+                if (line != "" || com.billmongan.herdrdroid.herdr.composerDraftOf(viewport, fresh.agent) != null) return true
+                return holdReason(fresh.id, viewport) != null
+            }
+            override suspend fun send(fresh: Pane, text: String, permit: com.billmongan.herdrdroid.herdr.WritePermit) =
+                h.sendPermitted(fresh, text, connection, permit)
+        }
+        val result = localPromptSend.send(server, com.billmongan.herdrdroid.herdr.Occupant.of(s.pane), text, ::allowed, port)
+        (result.failure as? LinkDown)?.let { if (herdr === h) linkLost(it) }
+        return result.outcome == com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.SENT ||
+            result.outcome == com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.UNCERTAIN
     }
 
     internal suspend fun sendVoiceMessage(target: VoiceTarget, text: String, allowed: () -> Boolean): String {
@@ -3469,6 +3993,8 @@ class AppViewModel internal constructor(
         quotaJob = viewModelScope.launch {
             delay(300)
             while (isActive) {
+                // 2.1.4: a usage dialog the app left open is closed before anything else.
+                if (canPoll) runCatching { retryLeftOpenUsage() }
                 if (showQuotas && canPoll) runCatching { quotaRound(force = false) }
                 delay(30_000)
             }
@@ -3720,13 +4246,49 @@ class AppViewModel internal constructor(
             // running shell there shows as working in the drawer, cards and notifications.
             busyOf = { h -> h.workCounts(h.panes0Cache, transcriptScript).second },
         ).also { fleet = it }
-        f.everyMs = if (watching) 5_000L else 10_000L
+        f.everyMs = NeedsYouCadence.fleetGapMs(watching, drawerShown, foreground)
         f.screenOn = ::screenOn
         f.watch(watchable())
     }
 
+    /** The other servers' read gap for the drawer and the app's place (2.1.4). */
+    private fun tuneFleet() {
+        fleet?.everyMs = NeedsYouCadence.fleetGapMs(watching, drawerShown, foreground)
+    }
+
+    private var pushJob: Job? = null
+    private val statusPush = com.billmongan.herdrdroid.herdr.StatusPush { android.os.SystemClock.elapsedRealtime() }
+    private val backgroundPush = com.billmongan.herdrdroid.herdr.StatusPush { android.os.SystemClock.elapsedRealtime() }
+
+    /**
+     * 2.1.4 (Bill: "maybe you can pull in the background a little more often or something like that
+     * or even do a push thing"): while the app is in front, one herdr wait on the open server ends
+     * when any agent's state changes or a Claude or OpenCode screen shows a dialog, and the list is
+     * read at once. The screens' own list polls stay as the safety net. One loop per app, idle
+     * (no command) while the app is behind, locked, offline or on herdr-core.
+     */
+    private fun ensureStatusPush() {
+        if (pushJob?.isActive == true) return
+        pushJob = viewModelScope.launch {
+            while (isActive) {
+                val h = herdr
+                val list = panes
+                if (h == null || !foreground || locked || link != Link.CONNECTED || h.backend == Backend.CORE || list.none { it.agent != null }) {
+                    delay(1_000); continue
+                }
+                val r = try {
+                    statusPush.round(h, list, NeedsYouCadence.PUSH_WAIT_MS) {
+                        if (foreground && herdr === h) { refreshPanes(); panes } else null
+                    }
+                } catch (c: CancellationException) { throw c } catch (_: Exception) { null }
+                delay(if (r == null) NeedsYouCadence.WAIT_RETRY_MS else NeedsYouCadence.pauseAfter(r.wake != null, r.elapsedMs, NeedsYouCadence.PUSH_WAIT_MS))
+            }
+        }
+    }
+
     private fun startWatching() {
         if (herdr == null) return
+        ensureStatusPush()
         ensureFleet()
         if (!watching) return
         Notify.channels(getApplication())
@@ -3739,9 +4301,17 @@ class AppViewModel internal constructor(
                 if (foreground || h == null || current?.overWebSocket == true) { delay(3_000); continue }
                 // Behind (1.4.1): wait on herdr for any agent to change state, up to 60 s, instead of
                 // asking every few seconds; where herdr can't wait, poll every 3 s (12 s, screen off).
-                val changed = runCatching { h.waitForChange(panes, 60_000) }.getOrNull()
-                if (changed == null) delay(if (screenOn()) 3_000 else 12_000)
-                if (!foreground && herdr === h) runCatching { refreshPanes() }
+                // 2.1.4: the wait also watches the Claude and OpenCode screens herdr doesn't report on,
+                // and a wake reads the list at once, no more than once every 2 s.
+                val r = runCatching {
+                    backgroundPush.round(h, panes, NeedsYouCadence.BACKGROUND_WAIT_MS) {
+                        if (!foreground && herdr === h) { runCatching { refreshPanes() }; panes } else null
+                    }
+                }.getOrNull()
+                if (r?.wake == null) {
+                    delay(if (screenOn()) 3_000 else 12_000)
+                    if (!foreground && herdr === h) runCatching { refreshPanes() }
+                } else delay(NeedsYouCadence.pauseAfter(true, r.elapsedMs, NeedsYouCadence.BACKGROUND_WAIT_MS))
             }
         }
     }
@@ -3874,6 +4444,54 @@ class AppViewModel internal constructor(
         }
     }
 
+    /**
+     * The merged "Type your answer" alert button (2.1.4): the reply is typed through the question's
+     * typed row ("Type something.") only when the strict read shows the same question, the same
+     * options and the same identity as the alert, and the same typed row paired with "Chat about
+     * this". The highlight is moved to that row from where the live screen has it (never a fixed
+     * digit), the screen is read again to confirm it is there, then the text and Enter go in.
+     * Nothing is ever sent for the "Chat about this" row.
+     */
+    private suspend fun answerTypedFromAlert(h: Herdr, a: NotifyAction, p: Pane, fresh: Prompt?, app: Application, answered: () -> Unit) {
+        fun norm(s: String) = s.filterNot(Char::isWhitespace)
+        val text = a.keys.trim()
+        val same = fresh != null && !fresh.terminalReview && a.question.isNotBlank() && norm(fresh.question) == norm(a.question) &&
+            a.identity == com.billmongan.herdrdroid.notify.alertIdentity(fresh) &&
+            a.options == com.billmongan.herdrdroid.notify.alertOptionsSig(fresh.choices)
+        val row = fresh?.let { com.billmongan.herdrdroid.herdr.typedChatPair(it.choices)?.first }
+            ?.takeIf { it.keys == a.typedRow && norm(it.label) == norm(a.label) }
+        val typed = same && row != null && text.isNotEmpty() && text.none { it == '\n' || it == '\r' } && guardedAlertPane(h, p) &&
+            typeThroughRow(h, p, fresh!!, row) { text }
+        if (!typed) {
+            com.billmongan.herdrdroid.diag.DiagLog.log("answer", "${p.id}: alert typed answer not sent")
+            Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
+                if (same) "The app couldn't move to the answer row for this question, so your reply wasn't typed."
+                else "The question changed before your reply arrived, so nothing was sent.")
+            return
+        }
+        answered()
+        Notify.sending(app, a.serverId, a.paneId, "Answered", text.take(40))
+        withContext(Dispatchers.Main) { noteAnswer(a.paneId, fresh, text, a.serverId) }
+    }
+
+    /** Moves the highlight to [row] from where [fresh] has it, checks it got there, then types (2.1.4). */
+    internal suspend fun typeThroughRow(h: Herdr, p: Pane, fresh: Prompt, row: Choice, text: () -> String): Boolean {
+        // A menu answered by digits has no arrow route to check: typed only when the row is already highlighted.
+        if (fresh.numberKeys && fresh.selected != row.keys) return false
+        val move = (if (fresh.numberKeys) emptyList() else com.billmongan.herdrdroid.herdr.moveKeys(fresh, row)) ?: return false
+        if (move.isNotEmpty()) {
+            h.sendKeys(p.id, *move.toTypedArray())
+            delay(300)
+            val after = strictNotifyRead(h, p.id)?.takeUnless { it.isBlank() } ?: return false
+            val moved = detectPrompt(after, true, p.agent) ?: return false
+            if (moved.question.filterNot(Char::isWhitespace) != fresh.question.filterNot(Char::isWhitespace)) return false
+            val again = moved.choices.firstOrNull { it.keys == row.keys && it.label == row.label } ?: return false
+            if (com.billmongan.herdrdroid.herdr.moveKeys(moved, again)?.isEmpty() != true) return false
+        }
+        h.typeAndEnter(p.id, text())
+        return true
+    }
+
     /** When each question (server, pane, question text) was last answered from its alert. */
     private val notifyAnswered = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
@@ -3897,7 +4515,20 @@ class AppViewModel internal constructor(
                         "The pane's screen couldn't be read, so the reply wasn't sent.")
                     return
                 }
+                // 2.1.4: an agent's usage dialog takes no typing (Grok swallows it), and a usage dialog
+                // the app left open is closed first; the reply is never typed into either.
+                if (usageDialogShown(p.agent, fresh) || (a.serverId == current?.id && usageLeftOpen(p.id))) {
+                    com.billmongan.herdrdroid.diag.DiagLog.log("answer", "${p.id}: alert reply refused, a usage screen is open")
+                    if (a.serverId == current?.id) withContext(Dispatchers.Main) { closeAppUsage(p.id, "an alert reply was waiting") }
+                    Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
+                        "${p.agentName}'s usage screen is open, so your reply wasn't typed. Close it with Esc first.")
+                    return
+                }
                 val freshCard = detectPrompt(fresh, p.status == Status.NEEDS_YOU, p.agent)
+                if (a.typedRow.isNotEmpty()) {
+                    answerTypedFromAlert(h, a, p, freshCard, app, answered)
+                    return
+                }
                 // 2.1.2: OpenCode's question takes typed text only on its own answer row, opened by
                 // that row's digit after the same checks as its options.
                 if (freshCard?.openCodeQuestionFrame != null) {
@@ -4111,8 +4742,22 @@ class AppViewModel internal constructor(
             else if (current != null) Screen.Tabs else Screen.Servers
     }
 
-    /** Whether the drawer is pulled out. */
-    var drawerOpen by mutableStateOf(false)
+    /** Whether the drawer is pulled out ([drawerOpen]). */
+    /**
+     * 2.1.4 (Bill: the drawer's yellow badge lit late): opening the drawer reads the open server's
+     * list and pokes the other servers' watcher at once, and both are read more often while it is out.
+     */
+    var drawerOpen: Boolean
+        get() = drawerShown
+        set(v) {
+            val opened = v && !drawerShown
+            drawerShown = v
+            tuneFleet()
+            if (opened && foreground) {
+                fleet?.poke()
+                if (herdr != null) viewModelScope.launch { runCatching { refreshPanes() } }
+            }
+        }
 
     private val statusOrder = listOf(Status.NEEDS_YOU, Status.WORKING, Status.DONE, Status.IDLE, Status.UNKNOWN)
 
@@ -4311,7 +4956,7 @@ class AppViewModel internal constructor(
     internal fun blocksNormalSend(pane: Pane, screen: String, liveOpenCode: Boolean = false): Boolean =
         (pane.status == Status.NEEDS_YOU && !(liveOpenCode && isOpenCode(pane.agent) && openCodeEmptyComposer(screen))) ||
             openCodeBackgroundDrawer(pane.agent, screen) ||
-            dismissibleUsageFrame(pane.agent, screen) != null ||
+            usageDialogShown(pane.agent, screen) ||
             (pane.agent == "hermes" && hermesUsageWaiting(screen)) ||
             (pane.agent != null && detectPrompt(forPhone(screen), false, pane.agent, versionOf(pane.id)) != null)
 

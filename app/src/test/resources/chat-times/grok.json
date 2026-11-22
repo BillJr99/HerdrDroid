@@ -1,0 +1,168 @@
+{
+ "about": "Synthetic grok reader output (2.1.4 chat times): the shape its reader in transcript.py emits; no real text.",
+ "agent": "grok",
+ "bulk": {
+  "ok": true,
+  "src": "grok",
+  "cur": {
+   "file": "/home/user/.grok/sessions/s/chat_history.jsonl",
+   "off": 900,
+   "start": 0
+  },
+  "reset": true,
+  "more": false,
+  "title": null,
+  "items": [
+   {
+    "k": "g100",
+    "t": "user",
+    "text": "From claude: run the check 100"
+   },
+   {
+    "k": "g101",
+    "t": "think",
+    "text": "I will run it."
+   },
+   {
+    "k": "g102",
+    "t": "tool",
+    "id": "call100",
+    "name": "bash",
+    "title": "$ ls",
+    "kind": "exec",
+    "input": "ls",
+    "state": "run"
+   },
+   {
+    "k": "g103.r",
+    "t": "result",
+    "ref": "call100",
+    "out": "a\nb"
+   },
+   {
+    "k": "g104",
+    "t": "text",
+    "text": "Done with check 100."
+   },
+   {
+    "k": "g0",
+    "t": "user",
+    "text": "From claude: run the check 0",
+    "at": 1795290000000
+   },
+   {
+    "k": "g1",
+    "t": "think",
+    "text": "I will run it.",
+    "at": 1795290001000
+   },
+   {
+    "k": "g2",
+    "t": "tool",
+    "id": "call0",
+    "name": "bash",
+    "title": "$ ls",
+    "kind": "exec",
+    "input": "ls",
+    "state": "run",
+    "at": 1795290002000
+   },
+   {
+    "k": "g3.r",
+    "t": "result",
+    "ref": "call0",
+    "out": "a\nb"
+   },
+   {
+    "k": "g4",
+    "t": "text",
+    "text": "Done with check 0.",
+    "at": 1795290004000
+   },
+   {
+    "k": "g10",
+    "t": "user",
+    "text": "From claude: run the check 10",
+    "at": 1795290600000
+   },
+   {
+    "k": "g11",
+    "t": "think",
+    "text": "I will run it.",
+    "at": 1795290601000
+   },
+   {
+    "k": "g12",
+    "t": "tool",
+    "id": "call10",
+    "name": "bash",
+    "title": "$ ls",
+    "kind": "exec",
+    "input": "ls",
+    "state": "run",
+    "at": 1795290602000
+   },
+   {
+    "k": "g13.r",
+    "t": "result",
+    "ref": "call10",
+    "out": "a\nb"
+   },
+   {
+    "k": "g14",
+    "t": "text",
+    "text": "Done with check 10.",
+    "at": 1795290604000
+   }
+  ],
+  "now": 1795291800000,
+  "tz": -300
+ },
+ "live": {
+  "ok": true,
+  "src": "grok",
+  "cur": {
+   "file": "/home/user/.grok/sessions/s/chat_history.jsonl",
+   "off": 1800,
+   "start": 0
+  },
+  "reset": false,
+  "more": false,
+  "title": null,
+  "items": [
+   {
+    "k": "g20",
+    "t": "user",
+    "text": "From claude: run the check 20"
+   },
+   {
+    "k": "g21",
+    "t": "think",
+    "text": "I will run it."
+   },
+   {
+    "k": "g22",
+    "t": "tool",
+    "id": "call20",
+    "name": "bash",
+    "title": "$ ls",
+    "kind": "exec",
+    "input": "ls",
+    "state": "run"
+   },
+   {
+    "k": "g23.r",
+    "t": "result",
+    "ref": "call20",
+    "out": "a\nb"
+   },
+   {
+    "k": "g24",
+    "t": "text",
+    "text": "Done with check 20."
+   }
+  ],
+  "now": 1795291860000,
+  "tz": -300
+ }
+}

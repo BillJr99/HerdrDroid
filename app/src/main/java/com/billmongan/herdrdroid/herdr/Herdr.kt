@@ -212,6 +212,13 @@ class Herdr internal constructor(
         return r.out
     }
 
+    /**
+     * Each pane's status as herdr itself reported it in the last [panes] read, before the app's own
+     * screen promotion (2.1.4): herdr's waits match herdr's state, not the shown one.
+     */
+    @Volatile var herdrStates: Map<String, Status> = emptyMap()
+        private set
+
     /** The last pane list read, for a follow-up read on the same connection. */
     @Volatile var panes0Cache: List<Pane> = emptyList()
         private set
@@ -238,6 +245,7 @@ class Herdr internal constructor(
         // Claude's sessions list with a session awaiting input counts as needing you too.
         // 2.1.2: herdr skips screen detection for OpenCode and calls a pane with a permission dialog
         // done or idle, so those panes are read in the same round trip and marked for display only.
+        herdrStates = list.associate { it.id to it.status }
         val askable = screenAskable(list)
         val marked = if (askable.isEmpty()) list else {
             val tails = runCatching { previews(askable.map { it.id }, CLAUDE_STATUS_READ_LINES) }.getOrDefault(emptyMap())
@@ -396,22 +404,51 @@ class Herdr internal constructor(
      * lane, so it never holds up reads or answers. Returns the pane that changed, or null on a timeout,
      * or null when it can't wait here (herdr-core, no agent panes, or an error), so the caller polls.
      */
-    suspend fun waitForChange(panes: List<Pane>, timeoutMs: Long): String? {
+    suspend fun waitForChange(panes: List<Pane>, timeoutMs: Long): String? = waitForWake(panes, timeoutMs)?.paneId
+
+    /** What ended a [waitForWake]: a pane whose herdr state changed, or ([screen]) whose screen shows a dialog (2.1.4). */
+    data class Wake(val paneId: String, val screen: Boolean)
+
+    /**
+     * [waitForChange], and also (2.1.4, Bill: the drawer's yellow badge lit late) a wait on the
+     * screen of each pane in [screens] for the footer of a Claude or OpenCode dialog herdr doesn't
+     * report (`herdr pane wait-output`, which herdr checks on the computer, so nothing crosses the
+     * link until it matches). One command on the send lane, as before.
+     */
+    suspend fun waitForWake(panes: List<Pane>, timeoutMs: Long, screens: List<Pane> = emptyList()): Wake? {
         if (core) return null
-        val agents = panes.filter { it.agent != null }
-        if (agents.isEmpty()) return null
-        val body = agents.joinToString("") { p ->
-            val until = waitUntilStates(p).joinToString(" ") { "--until $it" }
-            "( $herdr agent wait ${shq(p.id)} $until --timeout $timeoutMs >/dev/null 2>&1 && echo ${shq("@@chg " + p.id)} ) & pids=\"\$pids \$!\"; "
-        }
-        // The first wait's own status is the script's (1.4.1, from a second review: a trailing
-        // "true" made a failed wait look like a timeout).
-        val script = "pids=; ${body}wait -n 2>/dev/null; rc=\$?; kill \$pids 2>/dev/null; exit \$rc"
-        val r = runCatching { ssh.execNow("bash -c " + shq(script), timeoutSeconds = timeoutMs / 1000 + 20) }.getOrNull() ?: return null
+        val script = waitScript(panes, timeoutMs, screens) ?: return null
+        val command = "bash -c " + shq(script)
+        val seconds = timeoutMs / 1000 + 20
+        val r = runCatching { commands?.immediate(command, seconds, null) ?: ssh.execNow(command, timeoutSeconds = seconds) }.getOrNull() ?: return null
         // A change is the pane that changed. Anything else (a timeout, a wait that failed, herdr
         // without agent wait) is null, and the caller polls with its usual gap instead of starting
         // another wait straight away (1.4.1, from two code reviews).
-        return r.out.lines().firstOrNull { it.startsWith("@@chg ") }?.removePrefix("@@chg ")?.trim()
+        return parseWake(r.out)
+    }
+
+    /** The shell script [waitForWake] runs, or null when there is nothing to wait on. */
+    internal fun waitScript(panes: List<Pane>, timeoutMs: Long, screens: List<Pane> = emptyList()): String? {
+        val agents = panes.filter { it.agent != null }
+        if (agents.isEmpty()) return null
+        val states = herdrStates
+        val body = StringBuilder()
+        for (p in agents) {
+            val until = waitUntilStates(p, states[p.id]).joinToString(" ") { "--until $it" }
+            body.append("( $herdr agent wait ${shq(p.id)} $until --timeout $timeoutMs >/dev/null 2>&1 && echo ${shq("@@chg " + p.id)} ) & pids=\"\$pids \$!\"; ")
+        }
+        val ids = agents.map { it.id }.toSet()
+        for (p in screens.filter { it.id in ids }.distinctBy { it.id }) {
+            val regex = screenWakeRegex(p.agent) ?: continue
+            // A herdr without wait-output, or one that fails, sleeps out the round instead of ending it,
+            // so the state waits still stand.
+            val wait = cmd("pane", "wait-output", "--regex", regex, "--source", "visible", "--timeout", timeoutMs.toString(), p.id)
+            body.append("( $wait >/dev/null 2>&1 && echo ${shq("@@scr " + p.id)} || sleep ${timeoutMs / 1000 + 5} ) & pids=\"\$pids \$!\"; ")
+        }
+        // The first wait's own status is the script's (1.4.1, from a second review: a trailing
+        // "true" made a failed wait look like a timeout). 2.1.4: the waits still running are stopped
+        // with their herdr processes, not only their subshells, so none is left behind on the computer.
+        return "pids=; ${body}wait -n 2>/dev/null; rc=\$?; for p in \$pids; do pkill -P \"\$p\" 2>/dev/null; done; kill \$pids 2>/dev/null; exit \$rc"
     }
 
     /** Each agent's program version here (1.4.0): agent kind to version, for the parsers and the debug bundle. */
@@ -537,14 +574,23 @@ class Herdr internal constructor(
     private fun usageSnapshotCommand(paneId: String, agent: String) =
         "$PY -c ${shq(USAGE_OVERLAY_SNAPSHOT)} $herdr ${shq(paneId)} ${shq(agent)}"
 
-    internal suspend fun readUsageOverlay(paneId: String, agent: String): UsageOverlay? {
-        if (core || (agent != "claude" && agent != "kiro")) return null
+    internal suspend fun readUsageOverlay(paneId: String, agent: String): UsageOverlay? =
+        (readUsageState(paneId, agent) as? UsageState.Open)?.overlay
+
+    /**
+     * The guarded live read of [paneId] (2.1.4): its usage dialog in a known layout, no dialog, or
+     * can't tell (the read was refused: the pane is working, scrolled back, or changed occupant;
+     * or the dialog's hint is drawn in a layout the app doesn't know).
+     */
+    internal suspend fun readUsageState(paneId: String, agent: String): UsageState {
+        if (core || agent !in USAGE_DIALOG_AGENTS) return UsageState.Unknown
         val json = runNow(usageSnapshotCommand(paneId, agent), timeoutSeconds = 5).trim()
-        if (json.isEmpty()) return null
-        val objectJson = JSONObject(json)
-        val visible = objectJson.getString("visible")
-        if (visible.length > 20_000 || dismissibleUsageFrame(agent, visible) == null) return null
-        return UsageOverlay(objectJson.getString("occupant"), visible)
+        if (json.isEmpty()) return UsageState.Unknown
+        val objectJson = runCatching { JSONObject(json) }.getOrNull() ?: return UsageState.Unknown
+        val visible = objectJson.optString("visible")
+        if (visible.length > 20_000) return UsageState.Unknown
+        if (dismissibleUsageFrame(agent, visible) != null) return UsageState.Open(UsageOverlay(objectJson.getString("occupant"), visible))
+        return if (usageDialogHint(agent, visible) || visible.isBlank()) UsageState.Unknown else UsageState.Closed
     }
 
     internal suspend fun closeUsageOverlay(paneId: String, agent: String, overlay: UsageOverlay): Boolean {
@@ -555,6 +601,17 @@ class Herdr internal constructor(
         // Repeat the exact compare on the server, rather than sending an unguarded Escape over SSH.
         // Herdr does not expose an atomic compare-and-send; the final local CLI call is still separate.
         return runNow("${usageSnapshotCommand(paneId, agent)} $expected", timeoutSeconds = 5).trim() == "sent"
+    }
+
+    /**
+     * Scrolls Claude's /btw panel one step (2.1.4): Down, under the same server-side exact-snapshot
+     * check as [closeUsageOverlay], so it goes only to the panel just read. Only for a panel the app opened.
+     */
+    internal suspend fun scrollBtwOverlay(paneId: String, overlay: UsageOverlay): Boolean {
+        if (core || claudeBtwOverlay(overlay.visible) == null) return false
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(overlay.visible.toByteArray()).joinToString("") { "%02x".format(it) }
+        return runNow("${usageSnapshotCommand(paneId, "claude")} ${shq(overlay.occupant)} ${shq(digest)} down", timeoutSeconds = 5).trim() == "sent"
     }
 
     /**
@@ -1042,6 +1099,11 @@ data class Prompt(
     internal val museQuota: Boolean = false,
     /** Claude's session moved to the background behind its sessions list (2.1.1): Esc returns to it. */
     internal val claudeBackground: Boolean = false,
+    /**
+     * 2.1.4: the pane shows as needing you, but no parser read a question from its screen. The card
+     * says so and offers Show terminal; it sends nothing (see [withNeedsYouCard]).
+     */
+    internal val unreadQuestion: Boolean = false,
 ) {
     /**
      * Never an empty card (1.4.2): a prompt with no choices always has something to show, the
@@ -1061,6 +1123,23 @@ data class Prompt(
 
 /** What a card with no options shows when the app couldn't read the screen (1.4.2). */
 const val UNREAD_SCREEN = "(The app couldn't read this pane's screen yet. Tap Show terminal, or answer with the keys below.)"
+
+/**
+ * The card for a pane the app shows as needing you (2.1.4, Bill: "it showed the orange you know
+ * waiting on you icon but didn't actually render the question in chat"): [prompt] when a parser
+ * read one; otherwise, while [status] is NEEDS_YOU, a card that says the app couldn't read the
+ * question and offers Show terminal, so the orange state never comes without a card. [suppressed]:
+ * something else holds the card's place (an answer being typed, a usage dialog, OpenCode's
+ * background drawer, an agent error banner).
+ */
+internal fun withNeedsYouCard(status: Status, prompt: Prompt?, suppressed: Boolean, agent: String): Prompt? =
+    prompt ?: if (status == Status.NEEDS_YOU && !suppressed) unreadQuestionCard(agent) else null
+
+/** [withNeedsYouCard]'s card: no options and no keys, only the way to the terminal. */
+internal fun unreadQuestionCard(agent: String): Prompt = Prompt(
+    "$agent is waiting for you, but the app couldn't read the question from its screen.",
+    emptyList(), terminalReview = true, unreadQuestion = true,
+)
 
 /** Dispatch identity, unlike history deduplication, must not discard punctuation or command text. */
 internal fun cardAnswerStillFits(shown: Prompt, fresh: Prompt?): Boolean =
@@ -1089,7 +1168,13 @@ data class QuestionParts(val tabs: List<QTab>, val blocks: List<QBlock>) {
 /** A line of a question as read off the screen: [cmd] when it sat in a box of its own (Grok, Copilot). */
 data class QLine(val text: String, val cmd: Boolean = false, val gapBefore: Boolean = false,
                  /** The line began with a single "│" (1.4.8): under a "$ " line, the rest of that command. */
-                 val bar: Boolean = false)
+                 val bar: Boolean = false,
+                 /**
+                  * One line of a command Grok drew row by row (2.1.4): it stays its own line in the
+                  * command block, so a multi-line command keeps its lines. [wraps]: Grok wrapped it
+                  * ("·" at the end of the row); [cont]: it carries on the row above ("┆" gutter).
+                  */
+                 val row: Boolean = false, val cont: Boolean = false, val wraps: Boolean = false)
 
 private val TAB_ITEM = Regex("""([☐☒✔✓☑])\s*([^☐☒✔✓☑←→]+)""")
 /** "Reason: …", "Environment: local", "Read: /path": a labelled line of context, never the heading. */
@@ -1102,6 +1187,32 @@ private val PATH_PIECE = Regex("""^[^\s]*[/._\-~][^\s]*$""")
 private val PATH_LABEL = Regex("""^(Destination|Path|File|Files|Directory|Target|URL|Host|Server|Tool):\s+(\S.*)$""")
 /** A line that only introduces the command under it. */
 private val COMMAND_INTRO = Regex("""^(Requesting permission for:?|Bash command|Command|Run command|Shell command)$""", RegexOption.IGNORE_CASE)
+/**
+ * Who asks, after a Claude Code 2.1.329 permission dialog's title (2.1.4, from the program's own
+ * strings): "· from the general-purpose agent", "· from a subagent", "· from the "x" workflow",
+ * "· from a workflow", "· from a remote cloud agent", "· from the x plugin", "· from a plugin".
+ */
+internal val CLAUDE_REQUEST_SOURCE = Regex("""\s+·\s+(from (?:the \S.{0,60} agent|a subagent|the ".{1,60}" workflow|a workflow|a remote cloud agent|the \S.{0,60} plugin|a plugin))\s*$""")
+/** A note in a Claude command title's parentheses: "Bash command (unsandboxed)", "(runs on devbox)". */
+private val PERMISSION_TITLE_NOTE = Regex("""\s*\([^)]{1,60}\)\s*$""")
+/** Claude Code 2.1.329's command dialog titles, with or without a note or who asks (2.1.4). */
+private val CLAUDE_COMMAND_TITLE = Regex("""^(Bash command|Run command|PowerShell command|Run PowerShell command)(\s*\([^)]{1,60}\))?(\s+·\s+.{1,80})?$""")
+/** Shell signs that make a line read as a command rather than a description. */
+private val SHELL_SIGN = Regex("""[/|&><$='"`\\;*~]|\s-{1,2}[A-Za-z]""")
+
+/**
+ * Whether [t], the line after a command title, is Claude Code 2.1.329's description of the command
+ * that [next] holds (2.1.4): a capitalised sentence with no shell signs, over a line (after Claude's
+ * dashed rule, captured) that has them or starts in lower case. The older layout (the command first)
+ * reads as before.
+ */
+private fun claudeDescriptionAbove(t: String, next: QLine?): Boolean {
+    if (next == null || t.isEmpty() || !t.first().isUpperCase() || !t.contains(' ')) return false
+    if (SHELL_SIGN.containsMatchIn(t)) return false
+    val n = next.text.trim()
+    return n.isNotEmpty() && (SHELL_SIGN.containsMatchIn(n) || n.first().isLowerCase())
+}
+
 /** Vibe's "Permission for the file_system.bash tool (…)": the command is the next line. */
 private val TOOL_PERMISSION = Regex("""^Permission for the \S+ tool(\s*\(.*\))?$""")
 private const val MARKS = "›❯◆◈●○•▸➤▶↓→│┃╭╰╮╯─ "
@@ -1190,19 +1301,45 @@ fun questionParts(lines: List<QLine>): QuestionParts {
         } else body += l
     }
     /** [inPlace]: a path or address block that stays with its label among the context (1.4.2). */
-    class Para(var text: String, val cmd: Boolean, val inPlace: Boolean = false)
+    class Para(var text: String, val cmd: Boolean, val inPlace: Boolean = false, val rows: Boolean = false)
     val paras = mutableListOf<Para>()
     var cmdNext = false
     // The current command block began with "$ ": its "│ ..." lines are the rest of it (1.4.8, from Grok's
     // review: Muse draws a script's lines under "$ python3 - <<'PY'" that way).
     var dollarBlock = false
-    for (l in body) {
+    for ((idx, l) in body.withIndex()) {
+        // A Grok command row (2.1.4, Bill: "parse them nicely maybe as newlines"): a line of its own
+        // in the command block, its indentation and every character kept, a ")" or "}" row too.
+        if (l.row) {
+            val t = l.text.trimEnd()
+            if (t.isBlank()) continue
+            val last = paras.lastOrNull()
+            if (last != null && last.rows && !l.gapBefore) last.text += "\n" + t else paras += Para(t, true, rows = true)
+            cmdNext = false; dollarBlock = false
+            continue
+        }
         val answerRow = l.text.trim().startsWith("→")
         var t = l.text.trim().trimStart { it in MARKS }.trimEnd { it in "│┃╮╯─ " }.trim()
         if (t.isEmpty() || !t.any(Char::isLetterOrDigit)) continue
         // Claude's review step: "● Close 537" over "→ Close it" reads "Close 537: Close it".
         if (answerRow && paras.lastOrNull()?.cmd == false) { paras.last().text += ": " + t; continue }
-        if (COMMAND_INTRO.matches(t)) { cmdNext = true; continue }
+        if (COMMAND_INTRO.matches(t) || CLAUDE_COMMAND_TITLE.matches(t) && CLAUDE_REQUEST_SOURCE.find(t) == null) { cmdNext = true; continue }
+        // 2.1.4: Claude Code 2.1.329 names who asks after the title ("Bash command · from the
+        // general-purpose agent"): the title still introduces the command, and the asker is context.
+        val source = CLAUDE_REQUEST_SOURCE.find(t)
+        if (source != null) {
+            val title = t.substring(0, source.range.first).trim()
+            if (COMMAND_INTRO.matches(title.replace(PERMISSION_TITLE_NOTE, ""))) cmdNext = true
+            paras += Para(if (title.isEmpty()) source.groupValues[1].replaceFirstChar { it.uppercase() }
+                else "$title, ${source.groupValues[1]}", false)
+            continue
+        }
+        // Claude Code 2.1.329 draws the command's description above the command (2.1.4, from the
+        // program): a sentence right over a line that reads as a command is text; the command follows.
+        if (cmdNext && claudeDescriptionAbove(t, body.getOrNull(idx + 1))) { paras += Para(t, false); continue }
+        // The dialog's own question is never the command, and starts a paragraph of its own (2.1.4).
+        val dialogQuestion = t.startsWith("Do you want to ")
+        if (dialogQuestion) cmdNext = false
         // "Destination: /path/to/file" (Codex's edit card), "Path:", "File:", "URL:": the label as
         // text and the value in a monospace block of its own (1.4.2).
         val pathLabel = PATH_LABEL.find(t)
@@ -1237,7 +1374,7 @@ fun questionParts(lines: List<QLine>): QuestionParts {
         // over "Allow access to this file?"); a wrapped label line goes on in lower case.
         val afterLabel = last != null && LABEL_LINE.containsMatchIn(last.text) && t.first().isUpperCase()
         val bullet = l.text.trim().first() in "●•◆"
-        if (last == null || last.cmd || l.gapBefore || afterLabel || bullet || LABEL_LINE.containsMatchIn(t) || last.text.endsWith("?") || last.text.endsWith(":"))
+        if (last == null || last.cmd || l.gapBefore || afterLabel || bullet || dialogQuestion || LABEL_LINE.containsMatchIn(t) || last.text.endsWith("?") || last.text.endsWith(":"))
             paras += Para(t, false)
         else last.text += " " + t
         if (TOOL_PERMISSION.matches(paras.last().text)) cmdNext = true
@@ -1398,6 +1535,45 @@ private val DRAFT_BOX_RULE = Regex("""^([\s ]*)([╭╰├└┌]?[─━═]{2
 private val DRAFT_TITLED_RULE = Regex("""^([\s\u00A0]*)([╭├┌]?[─━═]{20,} [^─━═\s][^─━═]{0,60}? [─━═]{1,4}[╮┤┐]?)[\s\u00A0]*$""")
 /** A row of the list Claude Code 2.1.329 draws under its box while helpers run ("  ● main", "  ◯ general-purpose  …  7s"). */
 private val CLAUDE_AGENT_LIST_ROW = Regex("""^ {2}[●◯○◉✓✔✗✘] \S.*$""")
+/** Claude Code 2.1.329's mode row under its input area: "  ⏵⏵ auto mode on · 4 shells · ↓ to manage", "  ⏸ plan mode on". */
+private val CLAUDE_MODE_ROW = Regex("""^ {1,4}(⏵⏵|⏸|⏵)\s+\S.*$""")
+/** The last rows of a Claude dialog: its key hints, or one of its option rows. */
+private val CLAUDE_DIALOG_END = Regex("""\bEsc to (cancel|reject)\b|^Esc cancel\b|Enter to select|↑/↓ to navigate|^([❯›]\s*)?\d{1,2}[.)]\s+\S""", RegexOption.IGNORE_CASE)
+
+/**
+ * [text] without the rows Claude Code 2.1.329 can keep under a dialog (2.1.4, Bill: "a claude pane
+ * ... showed the orange you know waiting on you icon but didn't actually render the question in
+ * chat"): its mode row ("⏵⏵ auto mode on · 4 shells") and the list of the session and its helpers
+ * ("● main", "◯ general-purpose  …"). Those rows have words and Claude's own bullets, so the parser
+ * took them for the agent going on after the dialog and dropped the dialog as an old one. Only a
+ * trailing block of such rows and blank rows goes, and only right under a dialog's hints or options.
+ */
+/**
+ * The hint row under Claude Code 2.1.329's permission dialogs: "Esc to cancel", "Esc to cancel · Tab
+ * to amend" (2.1.4, captured against a mock API; "ctrl+e to explain" from the program). Claude draws
+ * nothing under an open dialog, so this row last on screen means the dialog is open now.
+ */
+private val CLAUDE_PERMISSION_FOOTER = Regex("""^Esc to cancel(\s+·\s+(Tab to amend|ctrl\+e to explain))*$""", RegexOption.IGNORE_CASE)
+
+/** Whether [text] ends in Claude's permission-dialog hint row ([CLAUDE_PERMISSION_FOOTER]), 2.1.4. */
+internal fun claudePermissionFooterAtBottom(text: String): Boolean =
+    withoutClaudeChromeUnderDialog(stripAnsi(text)).lines().lastOrNull { it.isNotBlank() }
+        ?.trim()?.trim('│', '┃', '|')?.trim()?.let(CLAUDE_PERMISSION_FOOTER::matches) == true
+
+internal fun withoutClaudeChromeUnderDialog(text: String): String {
+    val rows = text.lines()
+    var k = rows.size
+    var chrome = false
+    while (k > 0) {
+        val r = rows[k - 1].trimEnd()
+        if (r.isBlank()) { k--; continue }
+        if (CLAUDE_AGENT_LIST_ROW.matches(r) || CLAUDE_MODE_ROW.matches(r)) { chrome = true; k--; continue }
+        break
+    }
+    if (!chrome || k == 0) return text
+    val end = rows.take(k).filter { !isChrome(it) }.takeLast(3).map { it.trim().trim('│', '┃', '|').trim() }
+    return if (end.any { CLAUDE_DIALOG_END.containsMatchIn(it) }) rows.take(k).joinToString("\n") else text
+}
 private val CLAUDE_LIST_RULE = Regex("""^[\s\u00A0╭╰├└┌]*[─━═]{20,}""")
 
 /**
@@ -1729,6 +1905,38 @@ private val OTHER_LABEL = Regex("""^(type something\.?|other\b.*|something else.
 // A checkbox before it ("[ ] Type something.", 1.4.9 from Grok's review) is not part of the words.
 fun isTypedAnswerChoice(label: String): Boolean = OTHER_LABEL.matches(label.trim().replace(Regex("""^(\[[ xX✓✔]\]|[☐☑☒◻◼□■])\s+"""), ""))
 
+/**
+ * 2.1.4, Bill: "some question cards show type something and also chat about this as separate
+ * options they seem redundant ... I'd like to merge them anytime that they would appear". Claude's
+ * AskUserQuestion ends with "Type something." (a free-text answer) and "Chat about this" (leave
+ * the question and talk instead); Oh My Pi's ask dialog ends with "Other (type your own)" and
+ * "Chat about this". When both are offered, the card and the alert show one option,
+ * [TYPED_ANSWER_LABEL], that answers through the typed row (move the highlight to that row, from
+ * the live screen, then type and Enter). The "Chat about this" row is never sent from it; it stays
+ * reachable through Terminal and the card's keys. [Prompt.choices] keep both rows, so keys, alert
+ * identity and option checks are unchanged. With only one of the two, nothing changes.
+ */
+const val TYPED_ANSWER_LABEL = "Type your answer"
+private val CHAT_INSTEAD_LABEL = Regex("""^chat about this\.?$""", RegexOption.IGNORE_CASE)
+private val CHOICE_BOX = Regex("""^(\[[ xX✓✔]\]|[☐☑☒◻◼□■])\s+""")
+
+/** The typed-answer row and the "Chat about this" row, when [choices] offer exactly one of each (2.1.4). */
+fun typedChatPair(choices: List<Choice>): Pair<Choice, Choice>? {
+    val chat = choices.filter { CHAT_INSTEAD_LABEL.matches(it.label.trim().replace(CHOICE_BOX, "")) }.singleOrNull() ?: return null
+    val typed = choices.filter { it != chat && isTypedAnswerChoice(it.label) }.singleOrNull() ?: return null
+    return typed to chat
+}
+
+/** The rows a card or alert shows (2.1.4): [rows] without "Chat about this" when it pairs with a typed row. */
+fun shownChoices(rows: List<Choice>): List<Choice> = typedChatPair(rows)?.let { (_, chat) -> rows.filter { it != chat } } ?: rows
+
+/** What [c] is called on a card or alert (2.1.4): the merged typed row is [TYPED_ANSWER_LABEL], a checkbox kept. */
+fun shownChoiceLabel(rows: List<Choice>, c: Choice): String {
+    if (typedChatPair(rows)?.first != c) return c.label
+    val box = CHOICE_BOX.find(c.label.trim())?.value.orEmpty()
+    return box + TYPED_ANSWER_LABEL
+}
+
 /** A checkbox row ("[ ] Tests", "[x] Docs", "☐ Lint", "◼ Build"), 1.4.0. */
 private val CHECKBOX = Regex("""^(\[[ xX✓✔]\]|[☐☑☒◻◼□■])\s+""")
 fun isCheckbox(label: String): Boolean = CHECKBOX.containsMatchIn(label.trim())
@@ -1907,10 +2115,39 @@ internal const val CLAUDE_STATUS_READ_LINES = 80
  * herdr's own status (2.1.2): waiting until "done" on a pane herdr already calls done, but the app
  * shows as needing you, would end at once and poll without a pause.
  */
-internal fun waitUntilStates(p: Pane): List<String> {
+internal fun waitUntilStates(p: Pane, herdrStatus: Status? = null): List<String> {
     val names = mapOf(Status.IDLE to "idle", Status.WORKING to "working", Status.NEEDS_YOU to "blocked", Status.DONE to "done")
-    return names.filterKeys { it != (p.screenNeedsYouFrom ?: p.status) }.values.toList()
+    // 2.1.4: herdr's own last status when it is known ([Herdr.herdrStates]). A Claude pane promoted to
+    // needs you, or a pane shown working for its background shells, would otherwise wait for the very
+    // state herdr already reports, and the wait would end at once, round after round.
+    return names.filterKeys { it != (herdrStatus ?: p.screenNeedsYouFrom ?: p.status) }.values.toList()
 }
+
+/** Splits a [Herdr.waitForWake] output into the pane that woke it, or null (2.1.4). */
+internal fun parseWake(out: String): Herdr.Wake? {
+    val line = out.lines().firstOrNull { it.startsWith("@@chg ") || it.startsWith("@@scr ") } ?: return null
+    return Herdr.Wake(line.substring(6).trim(), line.startsWith("@@scr "))
+}
+
+/**
+ * The footer a Claude or OpenCode dialog shows, for herdr's `pane wait-output` (Rust regex syntax),
+ * or null for other agents (2.1.4). Loose on purpose: a match only reads the list again, where
+ * [claudeNeedsYouReason] and [openCodeNeedsYouReason] decide, and a match that shows nothing is
+ * left alone for a while ([StatusPush]).
+ */
+internal fun screenWakeRegex(agent: String?): String? = when {
+    agent == "claude" -> """(?im)Enter to select.*(?:navigate|Esc to cancel)|↑/↓ to navigate|Tab/Arrow keys to navigate|\d{1,3} awaiting input\s*$"""
+    isOpenCode(agent) -> """(?m)(?:⇆|←→)\s+select\s+enter\s+confirm|enter\s+(?:submit|confirm|toggle)\s+esc\s+dismiss|Permission required"""
+    else -> null
+}
+
+/**
+ * The panes whose screens a [Herdr.waitForWake] watches (2.1.4): the ones [screenAskable] reads,
+ * by herdr's own status in [herdrStates], that the app doesn't already show as needing you.
+ */
+internal fun screenWatchPanes(list: List<Pane>, herdrStates: Map<String, Status>): List<Pane> =
+    screenAskable(list.map { p -> herdrStates[p.id]?.let { p.copy(status = it) } ?: p })
+        .filter { s -> list.firstOrNull { it.id == s.id }?.status != Status.NEEDS_YOU }
 
 /**
  * The panes whose screen [Herdr.panes] reads for a dialog herdr didn't report: Claude panes not
@@ -1964,7 +2201,8 @@ internal fun openCodeNeedsYouReason(tail: String): String? {
 }
 
 internal fun claudeNeedsYouReason(tail: String): String? = when {
-    showsQuestionDialog(tail) -> "a question dialog is open"
+    showsQuestionDialog(withoutClaudeChromeUnderDialog(stripAnsi(tail))) -> "a question dialog is open"
+    claudePermissionFooterAtBottom(tail) -> "a permission dialog is open"
     claudeSessionsAwaiting(tail) > 0 -> "Claude's sessions list shows a session awaiting input"
     else -> null
 }
@@ -2028,7 +2266,7 @@ private val BYPASS_WORDS = Regex(
 )
 private val KEY_HINT = Regex("""\b(ctrl|shift|alt|meta|cmd)\+[\w.]+\s*:\s*[\w-]+(\s+mode)?""", RegexOption.IGNORE_CASE)
 /** The gutters down the rows of a command Grok wrapped in its approval box (2.1.3). */
-private const val GROK_GUTTER = "┆┊╎╏"
+private const val GROK_GUTTER = GrokMeta.GUTTER
 
 private val CARD_ROW = Regex("""^[\s│┃|]*([❯›>▶➤⟩]\s*)?\d(?:[.)]|\s+\([○●◯◉]\))\s""")
 
@@ -2539,7 +2777,11 @@ internal fun claudeQuestionBehindDraft(text: String): Boolean =
     stripAnsi(text).lines().takeLast(80).any { it.trim().trim('│', '┃', '|').trim() == CLAUDE_DRAFT_CUE }
 
 private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, version: String?): Prompt? {
+    // 2.1.4: Claude's mode row and helper list under a dialog are not the agent going on after it.
+    @Suppress("NAME_SHADOWING") val text = if (agent.equals("claude", true)) withoutClaudeChromeUnderDialog(text) else text
     if ((agent == null || agent.equals("claude", true)) && claudeUsageOpen(text)) return null
+    // 2.1.4: Claude's /btw panel is a side answer, not a question.
+    if ((agent == null || agent.equals("claude", true)) && claudeBtwOverlay(text) != null) return null
     if (agent.equals("claude", true)) claudeBackgroundList(text)?.let { return it }
     if (agent.equals("codex", true)) {
         val rows = text.lines().takeLast(80)
@@ -2601,7 +2843,9 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
     }
     val rules = ParserRules.forAgent(agent, version)
     // A question dialog on screen means the agent waits, whatever herdr reported.
+    // 2.1.4: Claude's permission dialog, its hint row at the bottom, waits whatever herdr reported.
     @Suppress("NAME_SHADOWING") val blocked = blocked || showsQuestionDialog(text) ||
+        (agent.equals("claude", true) && claudePermissionFooterAtBottom(text)) ||
         (rules.extraFooter?.let { f -> text.lines().takeLast(6).any { f.containsMatchIn(it) } } == true)
     var raw = text.lines().takeLast(80)
     var pastDialog = false
@@ -2688,6 +2932,9 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
     // The whole question: every line above the first choice up to a blank line, the top of the
     // question's box or a rule (at most 20 lines), so a long question isn't cut.
     val firstOption = run.firstOrNull()?.let { raw.lastIndexOf(lines[it.first]) } ?: -1
+    // Grok's command rows ("│ git …·", "┆ …"), read whatever frame its box has (2.1.4): Grok's
+    // screen, or any screen with a row in Grok's "┆" gutter.
+    val grokRows = agent.equals("grok", true) || raw.any { r -> GrokMeta.commandRow(r, null)?.cont == true }
     val above = run.firstOrNull()?.let {
         val at = firstOption
         if (at <= 0) null else {
@@ -2721,6 +2968,13 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
                 if (got.isNotEmpty() && GROK_BANNER.containsMatchIn(c)) break
                 // A rule on its own line ("──────") ends the question; clean() would empty it.
                 if (got.isNotEmpty() && l.trim().matches(Regex("""^[─━═]{3,}$"""))) break
+                // The top of Grok's light box ("╭───╮") ends its question; clean() would empty it and
+                // the walk would cross it like a blank line into the reply above (2.1.4).
+                if (grokRows && got.isNotEmpty() && l.trimStart().startsWith("╭")) {
+                    val edgeTitle = l.trim().trim('╭', '╮', '─', ' ')
+                    if (got.any { it.row } && edgeTitle.any(Char::isLetter)) got.add(0, QLine(edgeTitle))
+                    break
+                }
                 if (l.isBlank() || c.isEmpty()) {
                     if (got.isNotEmpty() && !gap) { gap = true; gaps++; if (gaps > 2) break; got[0] = got[0].copy(gapBefore = true) }
                     i--; continue
@@ -2730,9 +2984,19 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
                 // line (1.2.7: before, Codex's card took in the conversation above it).
                 // A status line (Grok's "… 7.5s 26s ⇣87.0k [↓][stop]", "esc to interrupt") ends it too,
                 // wherever its marker is (1.2.7, Bill: "make sure you parse it correctly").
+                // Grok's "›" title inside its box's frame is not an echoed prompt, blank row or not (2.1.4).
+                val framedTitle = grokRows && l.trimStart().firstOrNull()?.let { it == '┃' || it == '│' } == true
                 if (got.isNotEmpty() && (ACTIVITY.containsMatchIn(c) || STATUS_LINE.containsMatchIn(c) ||
-                        (gap && PROMPT_ECHO.containsMatchIn(c)))) break
+                        (gap && PROMPT_ECHO.containsMatchIn(c) && !framedTitle))) break
                 gap = false
+                // Grok's command rows (2.1.4, Bill: "Herdrdroid still shows vertical bars for grok questions
+                // like this, parse then nicely maybe as newlines?"): read in any frame, each without its
+                // gutter and wrap mark; a "┆" row joins the row above it only when that row wrapped.
+                val cmdRow = if (grokRows) GrokMeta.commandRow(l, raw.getOrNull(i + 1)) else null
+                if (cmdRow != null) {
+                    if (cmdRow.text.isNotBlank()) got.add(0, QLine(cmdRow.text, cmd = true, row = true, cont = cmdRow.cont, wraps = cmdRow.wraps))
+                    i--; continue
+                }
                 // A box inside the card's frame holds the command: Grok's "┃  │ grok usage", Copilot's
                 // "│ │ mkdir -p sub" (1.2.9: Copilot's too, so it shows as a command).
                 val tl = l.trimStart()
@@ -2751,7 +3015,16 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
                 if (row.any(Char::isLetterOrDigit) && !row.contains("narrow scope")) got.add(0, QLine(row.trimStart('›', '❯', ' ').replace(Regex("""^\?\s+"""), ""), isCmd, bar = !isCmd && tl.startsWith("│")))
                 i--
             }
-            got.takeIf { it.isNotEmpty() }
+            // A "┆" row goes on the line above only when that row ends in Grok's "·" wrap mark; else
+            // it is a line of its own (2.1.4). The command reads in its true order, one line per row.
+            val joined = mutableListOf<QLine>()
+            for (q in got) {
+                val prev = joined.lastOrNull()
+                if (q.row && q.cont && prev != null && prev.row && prev.wraps && !q.gapBefore)
+                    joined[joined.size - 1] = prev.copy(text = prev.text.trimEnd() + " " + q.text.trimStart(), wraps = q.wraps)
+                else joined += q
+            }
+            joined.takeIf { it.isNotEmpty() }
         }
     }
     // The question's text (notifications, matching) leaves out Claude's tab bar; the app shows it as steps.
@@ -2774,7 +3047,10 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
     val question = aboveText ?: lines.lastOrNull { clean(it).endsWith("?") }?.let(clean)
     var parts = above?.let(::questionParts).takeIf { aboveText != null }
     val beforeOptions = lines.take(run.firstOrNull()?.first ?: lines.size)
-    val approvalHeader = beforeOptions.any { clean(it).startsWith("Do you want to ") || COMMAND_INTRO.matches(clean(it)) }
+    // 2.1.4: Claude Code 2.1.329's titles ("Bash command · from the general-purpose agent", and "Run
+    // command" in its fitted dialog, which draws no "Do you want to proceed?").
+    val approvalHeader = beforeOptions.any { clean(it).startsWith("Do you want to ") || COMMAND_INTRO.matches(clean(it)) ||
+        (agent?.lowercase() != "codex" && (CLAUDE_COMMAND_TITLE.matches(clean(it)) || CLAUDE_REQUEST_SOURCE.containsMatchIn(clean(it)))) }
     val questionHeader = beforeOptions.any {
         !PROMPT_ECHO.containsMatchIn(it.trimStart()) && clean(it).endsWith("?") && !CODE_LINE.containsMatchIn(clean(it))
     }

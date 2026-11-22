@@ -1,0 +1,47 @@
+
+[38;5;174m ▐[48;5;16m▛███▛█[39m[49m   [1mClaude Code[0m [38;5;246mv2.1.329[39m
+[38;5;174m▝▜[48;5;16m█████[49m█▀[39m  [38;5;246mOpus 5.5 · API Usage Billing[39m
+[38;5;174m ▝▝   ▝▝ [39m  [38;5;246m/k/work[39m
+
+[38;5;174m▎[39m [1mAuto mode is now Claude Code's default permission mode.[0m
+[38;5;174m▎[39m [38;5;246mAuto mode lets Claude handle permission prompts automatically. Claude checks each tool call for risky actions and prompt injection [39m
+[38;5;174m▎[39m [38;5;246mbefore executing, runs the ones it assesses as lower-risk, and blocks the rest.[39m
+[38;5;174m▎[39m [38;5;246m]8;id=awvmy8;https://code.claude.com/docs/en/permission-modes\https://code.claude.com/docs/en/permission-modes[39m]8;;\
+
+[38;5;246m[48;5;237m❯ [38;5;231mPLEASE_ASK two questions[39m
+
+[38;5;246m[49m──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m←  ☒ Allow rule  ☒ Host key [38;5;16m[48;5;153m ✔ Submit [38;5;246m[49m →[39m
+
+[1m[38;5;231mReview your answers[0m
+
+ [2m│[0m ● The requested rule allows `requests_read_files.sh` in ANY project worktree (`worktrees/*`). That includes worktrees the review
+ [2m│[0m   agent creates itself before review, so a new script with that name would read files with no prompt. On 2026-11-12 you switched
+ [2m│[0m   two similar wildcard folder rules from allow to ask for exactly that reason. Which rule should I add?
+   [38;5;114m→ Exact path (Recommended)[39m
+ [2m│[0m ● This machine has never connected to hostb (host-b.example.invalid), so SSH will ask to trust a new host key. How should I handle
+ [2m│[0m   the first connection?
+   [38;5;114m→ You connect first (Recommended)[39m
+
+[38;5;153m❯[39m [38;5;246m1. [38;5;153mSubmit answers[39m
+  [38;5;246m2. [39mCancel
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
