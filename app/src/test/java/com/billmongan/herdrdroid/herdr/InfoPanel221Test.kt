@@ -141,15 +141,17 @@ class InfoPanel221Test {
  cwd: /home/user/work/sample
  Model: Sample model
 
- Esc to cancel
+ Esc to close
 """.trimEnd('\n') + "\n"
 
     @Test fun claudeSettingsStatusTabIsKnown() {
         assertEquals(PanelKind.SETTINGS, known("claude", claudeStatus).kind)
-        assertEquals(PanelKind.SETTINGS, known("claude", claudeStatus.replace("Esc to cancel", "esc to close")).kind)
+        assertEquals(PanelKind.SETTINGS, known("claude", claudeStatus.replace("Esc to close", "esc close")).kind)
+        // Claude's permission dialogs end in "Esc to cancel": with that footer it is never closed from here.
+        notKnown("claude", claudeStatus.replace("Esc to close", "Esc to cancel"))
         assertEquals(PanelKind.SETTINGS, known("claude", claudeStatus.replace(" Model: Sample model\n", "")).kind)
         // "esc again to quit": a second Esc could quit the agent, so only a hold.
-        val quit = claudeStatus.replace("Esc to cancel", "esc to close · esc again to quit")
+        val quit = claudeStatus.replace("Esc to close", "esc to close · esc again to quit")
         assertFalse(checkNotNull(infoPanelOn("claude", quit)).known)
     }
 

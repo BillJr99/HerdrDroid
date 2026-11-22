@@ -49,7 +49,7 @@ class KiroUsagePanel215Test {
         assertNull(dismissibleUsageFrame("kiro", "$panel\n› fix the build"))
         // 2.2.1: a changed footer is not the exact layout; the panel's shape still reads ([infoPanelOn]).
         assertNull(exactUsageFrame("kiro", panel.replace("Tab to switch to /context", "Tab to switch to /model")))
-        assertNull(dismissibleUsageFrame("claude", panel))
+        assertNull(exactUsageFrame("claude", panel))
     }
 
     @Test fun `the open panel is no draft and no question, and holds sends for the panel`() {
