@@ -42,6 +42,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.DisableSelection
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -359,9 +360,16 @@ private fun ItemView(item: Item, rows: List<ChatRow>, size: Float, family: FontF
                 .let { it == null || (it as OneRow).item is UserItem }
             val files = remember(item.text) { mentionedFiles(item.text) }
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                SelectionContainer {
-                    MarkdownText(item.text, size * 1.12f, family)
+                // 2.2.0: long-press for Copy, Copy for each box, and Select text (which selects as before).
+                var selecting by remember(item.key) { mutableStateOf(false) }
+                var menu by remember(item.key) { mutableStateOf(false) }
+                val boxes = remember(item.text) { BoxCopy.markdownBoxes(item.text) }
+                Box {
+                    if (selecting) SelectionContainer { MarkdownText(item.text, size * 1.12f, family) }
+                    else MarkdownText(item.text, size * 1.12f, family, Modifier.onLongPress("Copy options") { menu = true })
+                    CopyMenu(menu, item.text, boxes, onDismiss = { menu = false }, onSelect = { selecting = true })
                 }
+                if (selecting) Pill("Done selecting") { selecting = false }
                 MentionedFiles(files)
                 if (endsTurn) ReplyActions(item.text, actions.onQuote, actions.onOpen)
                 else if (item.text.length > 700 && actions.onOpen != null) Pill("Expand") { actions.onOpen.invoke(item.text) }
@@ -443,7 +451,14 @@ private fun QuestionContent(q: QuestionItem, size: Float) {
                 if (p.question.isNotBlank()) Text(p.question, color = Palette.Ink, fontSize = (size * 1.08f).sp, fontWeight = FontWeight.SemiBold,
                     lineHeight = (size * 1.08f * 1.4f).sp)
                 p.details.forEach { Text(it, color = Palette.Ink, fontSize = (size * 1.0f).sp, lineHeight = (size * 1.4f).sp) }
-                p.command?.let { Text(it, color = Palette.Ink, fontFamily = Fonts.Mono, fontSize = (size * 0.92f).sp) }
+                p.command?.let { cmd ->
+                    // 2.2.0: long-press the command to copy it.
+                    val copy = rememberCopier()
+                    DisableSelection {
+                        Text(cmd, color = Palette.Ink, fontFamily = Fonts.Mono, fontSize = (size * 0.92f).sp,
+                            modifier = Modifier.onLongPress("Copy this box") { copy(BoxCopy.clean(listOf(cmd)), "Copied box") })
+                    }
+                }
                 if (p.options.isNotEmpty()) Column(Modifier.padding(start = 8.dp)) {
                     p.options.forEach { o ->
                         val picked = p.answer != null && o == p.answer
@@ -493,10 +508,13 @@ fun UserBubble(text: String, size: Float, sending: Boolean = false, onQuote: (St
 
 @Composable
 private fun MessageMenu(open: Boolean, text: String, onDismiss: () -> Unit, onQuote: (String) -> Unit) {
-    val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
+    val copy = rememberCopier()
+    val boxes = remember(text) { BoxCopy.markdownBoxes(text) }
     DropdownMenu(expanded = open, onDismissRequest = onDismiss) {
-        DropdownMenuItem(text = { Text("Copy") }, onClick = { clipboard.setText(AnnotatedString(text)); onDismiss() })
+        DropdownMenuItem(text = { Text("Copy") }, onClick = { copy(text, "Copied"); onDismiss() })
+        // 2.2.0: each box in the message too, by its first line.
+        boxes.forEach { b -> DropdownMenuItem(text = { Text("Copy box: " + BoxCopy.label(b)) }, onClick = { copy(b, "Copied box"); onDismiss() }) }
         DropdownMenuItem(text = { Text("Share") }, onClick = { share(context, text); onDismiss() })
         DropdownMenuItem(text = { Text("Quote in reply") }, onClick = { onQuote(text); onDismiss() })
     }

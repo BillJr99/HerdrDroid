@@ -16,16 +16,19 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.*
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Shadows.shadowOf
 
 /**
- * 2.1.5: a frame the agent renders in the open chat becomes a card; typing its code in that pane's
- * composer confirms and delivers it through the relay, and the code never reaches the pane.
+ * 2.1.5: a frame the agent renders in the open chat becomes a card. 2.2.0: the card also opens a
+ * Yes/No dialog; Yes (or Approve on the card) hands the frame's own code to the confirm path, which
+ * delivers through the relay exactly once. Nobody types the code, and it never reaches a pane.
  */
 @RunWith(AndroidJUnit4::class)
 class AgentMessageRelayTest {
+    @get:Rule val idleMainLooper = IdleMainLooperRule()
     private val vm = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
     private val source = Endpoint("Source")
     private val destination = Endpoint("Destination")
@@ -61,66 +64,76 @@ class AgentMessageRelayTest {
     private fun destinationStatus(s: Status) =
         state(fleet, "states", mapOf(destination.server.id to FleetState(destination.server, listOf(destination.pane.copy(status = s)), null, 0)))
 
-    @Test fun aFrameShowsACardAndTypingTheCodeDeliversItWithoutReachingTheSource() = runBlocking {
+    @Test fun aFrameOpensTheDialogAndYesDeliversItOnceWithTheFramesCode() = runBlocking {
         vm.changeAgentMessaging(true)
         val card = frame()
         assertEquals(sendTo, card.requested)
         assertEquals(exact, card.text)
         assertEquals(destination.server.id, checkNotNull(card.choice).server.id)
         assertEquals(CrossServerState.PENDING, card.state)
+        assertEquals(card.id, vm.crossServerDialogFor("p1")?.id)
+        val approval = checkNotNull(vm.crossServerApprovalOf(card))
+        assertEquals("the app supplies the frame's own code", code, approval.code)
+        assertEquals(destination.server.id, approval.server)
         assertTrue(source.writes.isEmpty() && destination.writes.isEmpty())
-        // Typed back in any case with spaces around it.
-        assertTrue(vm.crossServerCodeReply("p1", "  k7p3qx "))
+        assertTrue(vm.approveCrossServer(approval))
+        // A second tap while it sends, and again after, sends nothing more.
+        assertFalse(vm.approveCrossServer(approval))
         assertEquals(CrossServerState.SENT, settle().state)
-        assertEquals(listOf(prompt), destination.writes)
-        assertTrue("the code never reaches the source pane", source.writes.isEmpty())
-        // The same code again is caught and sends nothing more.
-        assertTrue(vm.crossServerCodeReply("p1", code))
+        assertFalse(vm.approveCrossServer(approval))
+        assertNull(vm.crossServerDialogFor("p1"))
         vm.readPane("p1")
         assertEquals(1, vm.crossServerCardsFor("p1").size)
-        assertEquals(1, destination.writes.size)
-        assertTrue(source.writes.isEmpty())
+        assertEquals(listOf(prompt), destination.writes)
+        assertTrue("the code never reaches the source pane", source.writes.isEmpty())
     }
 
-    @Test fun otherTextIsNotCaughtAndTheCardStaysPending() = runBlocking {
-        vm.changeAgentMessaging(true)
-        frame()
-        for (other in listOf("hello", "M4N5P6", "K7P3QX now", "K7P3Q", "")) assertFalse(other, vm.crossServerCodeReply("p1", other))
-        // A card's code in another pane's composer is not this pane's.
-        assertFalse(vm.crossServerCodeReply("p2", code))
-        assertEquals(CrossServerState.PENDING, vm.crossServerCardsFor("p1").single().state)
-        assertTrue(source.writes.isEmpty() && destination.writes.isEmpty())
-    }
-
-    @Test fun theCodeInTheAgentsOwnOutputConfirmsNothing() = runBlocking {
-        vm.changeAgentMessaging(true)
-        frame()
-        source.frame = fixtureMessageFrame(code, exact, sendTo) + "\nUser: $code\n$code\n❯ $code"
-        vm.readPane("p1")
-        settle()
-        assertEquals(CrossServerState.PENDING, vm.crossServerCardsFor("p1").single().state)
-        assertTrue(destination.writes.isEmpty())
-    }
-
-    @Test fun cancelSendsNothingAndSpendsTheCode() = runBlocking {
+    @Test fun noCancelsAndSpendsTheCode() = runBlocking {
         vm.changeAgentMessaging(true)
         val card = frame()
+        val approval = checkNotNull(vm.crossServerApprovalOf(card))
         vm.cancelCrossServerCard(card)
         assertEquals(CrossServerState.CANCELLED, vm.crossServerCardsFor("p1").single().state)
-        assertTrue(vm.crossServerCodeReply("p1", code))
+        assertNull(vm.crossServerDialogFor("p1"))
+        assertFalse(vm.approveCrossServer(approval))
         vm.closeCrossServerCard(card)
         vm.readPane("p1")
         assertTrue("a cancelled code shows no new card", vm.crossServerCardsFor("p1").isEmpty())
         assertTrue(source.writes.isEmpty() && destination.writes.isEmpty())
     }
 
-    @Test fun anExpiredCardFailsAndAnOldFrameShowsNoCard() = runBlocking {
+    @Test fun backLeavesItPendingOnTheCardWhereApproveStillSends() = runBlocking {
+        vm.changeAgentMessaging(true)
+        val card = frame()
+        vm.deferCrossServerDialog(card)
+        assertNull(vm.crossServerDialogFor("p1"))
+        vm.readPane("p1")
+        assertNull("a dialog put aside does not come back by itself", vm.crossServerDialogFor("p1"))
+        assertEquals(CrossServerState.PENDING, vm.crossServerCardsFor("p1").single().state)
+        assertTrue(vm.approveCrossServer(checkNotNull(vm.crossServerApprovalOf(card))))
+        assertEquals(CrossServerState.SENT, settle().state)
+        assertEquals(listOf(prompt), destination.writes)
+    }
+
+    @Test fun theCodeInTheAgentsOwnOutputConfirmsNothing() = runBlocking {
         vm.changeAgentMessaging(true)
         frame()
+        source.frame = fixtureMessageFrame(code, exact, sendTo) + "\nUser: $code\nYes\n$code\n❯ $code"
+        vm.readPane("p1")
+        settle()
+        assertEquals(CrossServerState.PENDING, vm.crossServerCardsFor("p1").single().state)
+        assertTrue(destination.writes.isEmpty())
+    }
+
+    @Test fun anExpiredProposalIsRefusedAndItsDialogGoes() = runBlocking {
+        vm.changeAgentMessaging(true)
+        val card = frame()
+        val approval = checkNotNull(vm.crossServerApprovalOf(card))
         now += 10 * 60_000L
-        vm.expireCrossServerCards()
+        // Past its ten minutes the dialog is gone even before the expiry job has run.
+        assertNull(vm.crossServerDialogFor("p1"))
+        assertFalse(vm.approveCrossServer(approval))
         assertEquals(CrossServerState.EXPIRED, vm.crossServerCardsFor("p1").single().state)
-        assertTrue(vm.crossServerCodeReply("p1", code))
         assertTrue(destination.writes.isEmpty())
         // A frame seen first more than ten minutes ago shows no card after the cards are cleared.
         vm.onBackground()
@@ -131,10 +144,40 @@ class AgentMessageRelayTest {
         assertTrue(source.writes.isEmpty() && destination.writes.isEmpty())
     }
 
+    /** A dialog is bound to its proposal's id, code and destination; it cannot approve another one. */
+    @Test fun aStaleDialogCannotApproveAnotherOrNewerProposal() = runBlocking {
+        vm.changeAgentMessaging(true)
+        vm.readPane("p1")
+        val newer = "M4N5P6"
+        source.frame = fixtureMessageFrame(code, exact, sendTo) + "\n" + fixtureMessageFrame(newer, "Second message.", sendTo)
+        vm.readPane("p1")
+        val (older, latest) = vm.crossServerCardsFor("p1")
+        assertEquals(newer, latest.code)
+        assertEquals("the newest proposal is asked about first", latest.id, vm.crossServerDialogFor("p1")?.id)
+        val olderApproval = checkNotNull(vm.crossServerApprovalOf(older))
+        val latestApproval = checkNotNull(vm.crossServerApprovalOf(latest))
+        // Mixed bindings are refused and spend nothing.
+        assertFalse(vm.approveCrossServer(olderApproval.copy(code = newer)))
+        assertFalse(vm.approveCrossServer(latestApproval.copy(code = code)))
+        assertFalse(vm.approveCrossServer(olderApproval.copy(id = latest.id)))
+        assertFalse(vm.approveCrossServer(latestApproval.copy(pane = "elsewhere")))
+        assertFalse(vm.approveCrossServer(latestApproval.copy(server = source.server.id)))
+        assertTrue(vm.crossServerCardsFor("p1").all { it.state == CrossServerState.PENDING })
+        assertTrue(destination.writes.isEmpty())
+        // No on the newest; the older one's dialog comes up next, and nothing was auto-approved.
+        vm.cancelCrossServerCard(latest)
+        assertEquals(older.id, vm.crossServerDialogFor("p1")?.id)
+        assertTrue(destination.writes.isEmpty())
+        assertTrue(vm.approveCrossServer(olderApproval))
+        repeat(100) { shadowOf(Looper.getMainLooper()).idle(); if (vm.crossServerCardsFor("p1").none { it.state == CrossServerState.SENDING }) return@repeat; Thread.sleep(5) }
+        assertEquals(CrossServerState.SENT, vm.crossServerCardsFor("p1").first { it.id == older.id }.state)
+        assertEquals(listOf(prompt), destination.writes)
+    }
+
     @Test fun aSpentCodeShowsNoCardAfterARestart() = runBlocking {
         vm.changeAgentMessaging(true)
-        frame()
-        assertTrue(vm.crossServerCodeReply("p1", code))
+        val card = frame()
+        assertTrue(vm.approveCrossServer(checkNotNull(vm.crossServerApprovalOf(card))))
         settle()
         assertEquals(1, destination.writes.size)
         // A second app on the same saved settings: the frame is still on screen.
@@ -150,6 +193,7 @@ class AgentMessageRelayTest {
         frame()
         vm.onBackground()
         assertTrue(vm.crossServerCardsFor("p1").isEmpty())
+        assertNull("no dialog in the background", vm.crossServerDialogFor("p1"))
         state(vm, "watchOthers", false)
         vm.onForeground()
         now += 60_000
@@ -159,26 +203,60 @@ class AgentMessageRelayTest {
         assertEquals(5_000_000L + 10 * 60_000L, card.deadline)
     }
 
+    @Test fun noDialogOrApprovalWhileLocked() = runBlocking {
+        vm.changeAgentMessaging(true)
+        val card = frame()
+        val approval = checkNotNull(vm.crossServerApprovalOf(card))
+        state(vm, "locked", true)
+        assertNull(vm.crossServerDialogFor("p1"))
+        assertFalse(vm.approveCrossServer(approval))
+        assertTrue(destination.writes.isEmpty())
+    }
+
     @Test fun noCardWhileMessagingIsOff() = runBlocking {
         source.frame = fixtureMessageFrame(code, exact, sendTo)
         vm.readPane("p1")
         assertTrue(vm.crossServerCardsFor("p1").isEmpty())
-        assertFalse(vm.crossServerCodeReply("p1", code))
+        assertNull(vm.crossServerDialogFor("p1"))
     }
 
-    @Test fun anUnknownDestinationMustBeChosenBeforeTheCodeSends() = runBlocking {
+    @Test fun anUnknownDestinationMustBeChosenBeforeTheDialogOrApprove() = runBlocking {
         vm.changeAgentMessaging(true)
         val card = frame(to = "Gemini on Elsewhere")
         assertNull(card.choice)
+        assertNull(vm.crossServerApprovalOf(card))
+        assertNull(vm.crossServerDialogFor("p1"))
         val choices = vm.crossServerChoices(card)
         assertEquals(listOf(destination.server.id), choices.map { it.server.id })
-        assertTrue(vm.crossServerCodeReply("p1", code))
-        val waiting = vm.crossServerCardsFor("p1").single()
-        assertEquals(CrossServerState.PENDING, waiting.state)
-        assertTrue(checkNotNull(waiting.note).contains("Choose a destination"))
         assertTrue(destination.writes.isEmpty())
-        vm.chooseCrossServerDestination(waiting, choices.single())
-        assertTrue(vm.crossServerCodeReply("p1", code))
+        vm.chooseCrossServerDestination(card, choices.single())
+        val chosen = vm.crossServerCardsFor("p1").single()
+        assertEquals(chosen.id, vm.crossServerDialogFor("p1")?.id)
+        assertTrue(vm.approveCrossServer(checkNotNull(vm.crossServerApprovalOf(chosen))))
+        assertEquals(CrossServerState.SENT, settle().state)
+        assertEquals(listOf(prompt), destination.writes)
+    }
+
+    /**
+     * 2.2.0 step 1, the reason the typed code "doesn't really let me send": the frame was read
+     * before the other server's watcher had its panes, so the card kept no destination; once the
+     * name matched exactly one agent the card offered no choice (one match means no choices) and
+     * the typed code only ever answered "Choose a destination". Now the next read fills it in.
+     */
+    @Test fun aDestinationThatArrivesAfterTheCardIsFilledInAndSends() = runBlocking {
+        vm.changeAgentMessaging(true)
+        state(fleet, "states", emptyMap<String, FleetState>())
+        val card = frame()
+        assertNull(card.choice)
+        assertNull(vm.crossServerDialogFor("p1"))
+        destinationStatus(Status.IDLE)
+        // The 2.1.5 dead end: a single match and therefore nothing to choose from.
+        assertTrue(vm.crossServerChoices(vm.crossServerCardsFor("p1").single()).isEmpty())
+        vm.readPane("p1")
+        val filled = vm.crossServerCardsFor("p1").single()
+        assertEquals(destination.server.id, checkNotNull(filled.choice).server.id)
+        assertEquals(filled.id, vm.crossServerDialogFor("p1")?.id)
+        assertTrue(vm.approveCrossServer(checkNotNull(vm.crossServerApprovalOf(filled))))
         assertEquals(CrossServerState.SENT, settle().state)
         assertEquals(listOf(prompt), destination.writes)
     }
@@ -192,45 +270,57 @@ class AgentMessageRelayTest {
 
     @Test fun aBusyDestinationIsRefusedOnTheCardAndTheCodeIsSpent() = runBlocking {
         vm.changeAgentMessaging(true)
-        frame()
+        val approval = checkNotNull(vm.crossServerApprovalOf(frame()))
         destinationStatus(Status.WORKING)
-        assertTrue(vm.crossServerCodeReply("p1", code))
+        assertTrue(vm.approveCrossServer(approval))
         val done = settle()
         assertEquals(CrossServerState.REFUSED, done.state)
         assertEquals(RelayResult.REFUSED.feedback, done.note)
         destinationStatus(Status.IDLE)
-        assertTrue(vm.crossServerCodeReply("p1", code))
+        assertFalse(vm.approveCrossServer(approval))
         settle()
+        assertTrue(source.writes.isEmpty() && destination.writes.isEmpty())
+    }
+
+    @Test fun aReplacedDestinationIsRefused() = runBlocking {
+        vm.changeAgentMessaging(true)
+        val approval = checkNotNull(vm.crossServerApprovalOf(frame()))
+        destination.terminal = "replacement"
+        destinationStatus(Status.IDLE)
+        assertTrue(vm.approveCrossServer(approval))
+        assertEquals(CrossServerState.REFUSED, settle().state)
         assertTrue(source.writes.isEmpty() && destination.writes.isEmpty())
     }
 
     @Test fun aLostAcknowledgementShowsFailedAndNeverReplays() = runBlocking {
         vm.changeAgentMessaging(true)
-        frame()
+        val approval = checkNotNull(vm.crossServerApprovalOf(frame()))
         destination.loseAck = true
-        assertTrue(vm.crossServerCodeReply("p1", code))
+        assertTrue(vm.approveCrossServer(approval))
         val done = settle()
         assertEquals(CrossServerState.FAILED, done.state)
         assertEquals(RelayResult.UNCERTAIN.feedback, done.note)
-        assertTrue(vm.crossServerCodeReply("p1", code))
+        assertFalse(vm.approveCrossServer(approval))
         settle()
         assertEquals(1, destination.writes.size)
     }
 
     @Test fun aReplacedSourceIsRefused() = runBlocking {
         vm.changeAgentMessaging(true)
-        frame()
+        val approval = checkNotNull(vm.crossServerApprovalOf(frame()))
         source.terminal = "replacement"
         state(vm, "panes", listOf(source.pane))
-        assertTrue(vm.crossServerCodeReply("p1", code))
-        assertEquals(CrossServerState.REFUSED, settle().state)
+        assertNull(vm.crossServerDialogFor("p1"))
+        assertFalse(vm.approveCrossServer(approval))
+        settle()
         assertTrue(source.writes.isEmpty() && destination.writes.isEmpty())
     }
 
-    /** The 2.1.4 listening mode is gone from the view model and the pane menu. */
-    @Test fun theListenMenuAndItsModeAreGone() {
+    /** The 2.1.4 listening mode and the 2.1.5 typed code are gone from the view model and the screens. */
+    @Test fun theListenMenuAndTheTypedCodeAreGone() {
         val names = AppViewModel::class.java.declaredMethods.map { it.name }
-        for (old in listOf("armAgentMessage", "canArmAgentMessage", "agentMessage", "confirmAgentMessage", "bindAgentMessage", "dismissAgentMessage")) {
+        for (old in listOf("armAgentMessage", "canArmAgentMessage", "agentMessage", "confirmAgentMessage", "bindAgentMessage",
+                "dismissAgentMessage", "crossServerCodeReply")) {
             assertFalse(old, names.any { it == old || it.startsWith("$old\$") })
         }
         val screen = java.io.File("src/main/java/com/billmongan/herdrdroid/ui/AgentScreen.kt")
@@ -238,9 +328,15 @@ class AgentMessageRelayTest {
             val text = screen.readText()
             assertFalse(text.contains("Listen for agent proposal"))
             assertFalse(text.contains("Copy proposal instructions"))
+            assertFalse(text.contains("composerSend") || text.contains("crossServerCodeReply"))
         }
         val review = java.io.File("src/main/java/com/billmongan/herdrdroid/ui/AgentMessageReview.kt")
-        if (review.exists()) assertFalse(review.readText().contains("proposalInstructions("))
+        if (review.exists()) {
+            val text = review.readText()
+            assertFalse(text.contains("proposalInstructions("))
+            assertFalse(text.contains("fun composerSend"))
+            assertFalse(text.contains("type the code") || text.contains("in this chat's message box"))
+        }
     }
 
     private suspend fun frame(to: String = sendTo): AppViewModel.CrossServerCard {
