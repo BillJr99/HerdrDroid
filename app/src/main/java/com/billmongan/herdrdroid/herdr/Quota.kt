@@ -270,6 +270,13 @@ internal fun opensUsageDialog(agent: String?, text: String): Boolean {
 }
 
 /**
+ * An agent's usage dialog is drawn on [visible], in its known layout or (Grok, Antigravity) by its
+ * close hint (2.1.4). For holding sends and hiding the draft card only, never for sending a key.
+ */
+internal fun usageScreenShown(agent: String?, visible: String): Boolean =
+    dismissibleUsageFrame(agent, visible) != null || (agent in setOf("grok", "agy") && usageDialogHint(agent, visible))
+
+/**
  * A loose sign that an agent's usage dialog is still drawn, used only to refuse to call it closed
  * (never to send a key): its own close hint is on screen even though the strict layout didn't match.
  */
@@ -286,7 +293,11 @@ internal fun usageDialogHint(agent: String?, visible: String): Boolean {
 }
 
 private val CLAUDE_USAGE_COST = Regex("""Total cost:\s+\$[\d,.]+""")
-private val KIRO_USAGE = Regex("""/usage\n─+\nThis session: [\d.]+ credits\nEstimated Usage \| resets on \d{4}-\d{2}-\d{2} \| [\w ]+\nCredits \([\d.]+ of [\d.]+ covered in plan\)\n[▀-▟ \t]+[\d.]+%\nTo manage your plan navigate to app\.kiro\.dev/account/usage\n─+\nesc to close[ \t]+Tab to switch to /context""", RegexOption.IGNORE_CASE)
+/**
+ * Kiro's /usage panel, top to bottom. 2.1.5: the "This session: N credits" row is not always drawn
+ * (a 2026-11-22 pane showed none), and without it the panel wasn't known, so it was never closed.
+ */
+private val KIRO_USAGE = Regex("""/usage\n─+\n(?:This session: [\d.]+ credits\n)?Estimated Usage \| resets on \d{4}-\d{2}-\d{2} \| [\w ]+\nCredits \([\d.]+ of [\d.]+ covered in plan\)\n[▀-▟ \t]+[\d.]+%\nTo manage your plan navigate to app\.kiro\.dev/account/usage\n─+\nesc to close[ \t]+Tab to switch to /context""", RegexOption.IGNORE_CASE)
 
 /** A coarse read-only parser for usage or model screens. Not a predicate for sending keys. */
 fun QuotaProfile.screenOpen(screen: String): Boolean {

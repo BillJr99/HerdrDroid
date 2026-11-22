@@ -2032,6 +2032,8 @@ class AppViewModel internal constructor(
         val agent = now?.agent
         val eligible = owner != null && foreground && !locked && owner.client.backend == Backend.TUI &&
             owner.isCurrent(owner.client) && question == null && agent != null && now.status != Status.NEEDS_YOU &&
+            // 2.1.5: a usage panel drawn where the box is (Kiro's /usage) is not text typed at the computer.
+            !usageDialogShown(agent, text) &&
             (now.scrollOffset ?: 0) == 0 && (!com.billmongan.herdrdroid.herdr.inputLineOf(text, agent).isNullOrEmpty() ||
                 com.billmongan.herdrdroid.herdr.composerDraftOf(text, agent) != null)
         if (!eligible) { if (stillShown()) { paneDraft = null; draftReadFor = null }; return }
@@ -3009,8 +3011,7 @@ class AppViewModel internal constructor(
 
     /** An agent's usage dialog is drawn on [screen], in its known layout or by its close hint (2.1.4). */
     private fun usageDialogShown(agent: String?, screen: String): Boolean =
-        dismissibleUsageFrame(agent, screen) != null ||
-            (agent in setOf("grok", "agy") && com.billmongan.herdrdroid.herdr.usageDialogHint(agent, screen))
+        com.billmongan.herdrdroid.herdr.usageScreenShown(agent, screen)
 
     /**
      * How far back a pane is read before text is typed into it. 2.1.1 (Grok's RC review, H2):
