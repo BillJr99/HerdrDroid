@@ -20,14 +20,13 @@ class SessionControls220Test {
         assertEquals("/clear", SessionControls.forAgent("claude")!!.newCommand)
         assertEquals("/resume 9989db43-2c5c-42c9-b31c-eab9c4663226",
             SessionControls.forAgent("claude")!!.resume(s("/h/.claude/projects/-w/9989db43-2c5c-42c9-b31c-eab9c4663226.jsonl")))
-        assertEquals("/resume 01a1d64e-b42a-730c-b63e-d2e673458ac9",
-            SessionControls.forAgent("omp")!!.resume(s("/h/.omp/agent/sessions/-x/2026-11-13T19-07-24-586Z_01a1d64e-b42a-730c-b63e-d2e673458ac9.jsonl")))
+        assertEquals("01a1d64e-b42a-730c-b63e-d2e673458ac9",
+            SessionControls.idOfLog("/h/.omp/agent/sessions/-x/2026-11-13T19-07-24-586Z_01a1d64e-b42a-730c-b63e-d2e673458ac9.jsonl"))
         assertEquals("/resume 01a1ff0c-fffa-7003-8ac9-b4cc39e8c1fb",
             SessionControls.forAgent("grok")!!.resume(s("/h/.grok/sessions/%2Fw/01a1ff0c-fffa-7003-8ac9-b4cc39e8c1fb/chat_history.jsonl")))
-        assertEquals("/resume abc", SessionControls.forAgent("copilot")!!.resume(s("/h/.copilot/session-state/abc/events.jsonl")))
         assertEquals("/resume 01a1df76", SessionControls.forAgent("muse")!!.resume(s("/h/.local/share/muse/sessions/2026/11/22/01a1df76/session.jsonl")))
         // Agents whose resume takes no id open their own picker.
-        for (a in listOf("codex", "opencode", "pi", "kiro", "vibe")) {
+        for (a in listOf("codex", "opencode", "kiro", "vibe")) {
             val spec = SessionControls.forAgent(a)!!
             assertNull(a, spec.resume(s("/x/y.jsonl")))
             assertTrue(a, spec.picker != null)
@@ -35,6 +34,8 @@ class SessionControls220Test {
         assertEquals("/chat new", SessionControls.forAgent("kiro")!!.newCommand)
         assertEquals("/sessions", SessionControls.forAgent("opencode-college")!!.picker)
         assertNull(SessionControls.forAgent("agy"))
+        // No input line the app can check before typing (see PaneControls220Test): no Sessions menu.
+        for (a in listOf("pi", "omp", "copilot")) assertNull(a, SessionControls.forAgent(a))
         assertNull(SessionControls.forAgent("gemini"))
     }
 
