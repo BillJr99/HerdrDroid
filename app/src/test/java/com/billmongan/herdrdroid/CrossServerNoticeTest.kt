@@ -11,6 +11,21 @@ import org.junit.runner.RunWith
 class CrossServerNoticeTest {
     private val others = listOf("Hermes on minipc2", "OpenCode · opencode-ursinus on minipc2", "Claude on minipc2")
 
+    /** Grok's RC review 4: a server with no name is "server N" to agents, never its account, host or port. */
+    @Test fun agentFacingServerLabelsCarryNoAccountHostOrPort() {
+        val named = com.billmongan.herdrdroid.store.Server(id = "a", name = "minipc2", host = "10.0.0.19", port = 2222, user = "bill", herdrPath = "herdr")
+        val blank = com.billmongan.herdrdroid.store.Server(id = "b", name = "  ", host = "10.0.0.26", port = 2222, user = "bill", herdrPath = "herdr")
+        val all = listOf(named, blank)
+        assertEquals("minipc2", com.billmongan.herdrdroid.store.agentServerLabel(named, all))
+        assertEquals("server 2", com.billmongan.herdrdroid.store.agentServerLabel(blank, all))
+        assertEquals("another server", com.billmongan.herdrdroid.store.agentServerLabel(blank, listOf(named)))
+        for (label in all.map { com.billmongan.herdrdroid.store.agentServerLabel(it, all) }) {
+            assertFalse(label, label.contains("bill") || label.contains("10.0.0") || label.contains("2222") || label.contains("@"))
+        }
+        // The phone user's own label is unchanged.
+        assertEquals("bill@10.0.0.26", blank.label)
+    }
+
     @Test fun noticeHasTheInstructionsTheAgentsAndTheApprovalLine() {
         val text = checkNotNull(CrossServerNotice.text(others))
         assertTrue(text.startsWith("HerdrDroid notice, for information only."))

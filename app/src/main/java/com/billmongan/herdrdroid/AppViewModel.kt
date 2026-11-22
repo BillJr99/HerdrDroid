@@ -3136,12 +3136,19 @@ class AppViewModel internal constructor(
         return (if (s.current) quotas else serverQuotas[s.server.id].orEmpty())[key]
     }
 
+    /**
+     * An agent as text other agents receive name it: its session name and the server's
+     * agent-facing label (the server's name, or "server N"; never the account, host or port).
+     */
+    internal fun agentFacingName(s: Session): String =
+        "${com.billmongan.herdrdroid.ui.sessionName(s.pane)} on ${com.billmongan.herdrdroid.store.agentServerLabel(s.server, servers)}"
+
     /** The candidates with the notice each would get: names of agents on other servers only. */
     internal fun noticeCandidates(): List<Pair<Session, com.billmongan.herdrdroid.herdr.CrossServerNotifier.Candidate>> {
         val all = noticeRecipients()
         return all.mapNotNull { s ->
             val others = all.filter { it.server.id != s.server.id }
-                .map { "${com.billmongan.herdrdroid.ui.sessionName(it.pane)} on ${it.server.label}" }
+                .map(::agentFacingName)
             val text = com.billmongan.herdrdroid.herdr.CrossServerNotice.text(others) ?: return@mapNotNull null
             val raw = if (s.current) pane(s.pane.id) ?: s.pane else s.pane
             val hold = raw.status != Status.IDLE && raw.status != Status.DONE || raw.backgroundBusy ||
