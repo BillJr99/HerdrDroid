@@ -169,15 +169,28 @@ private fun titleOf(row: String): PanelKind? {
     val kinds = words.map(::kindOf)
     // A dashboard is never closed with Esc: it wins over any other word on the row.
     if (PanelKind.DASHBOARD in kinds) return PanelKind.DASHBOARD
-    // A title is mostly the panel's own words; a sentence that mentions "status" is not a title.
+    // A title is the panel's own words, at most two more that read like a title ("Context window",
+    // "Agent Dashboard", "Select model"). A sentence ("Help is ready") or a key and its value
+    // ("Status: ready") that mentions a panel's name is not a title.
+    val after = t.substringAfter(':', "")
+    if (after.isNotBlank() && after.split(Regex("""[\s/·•|│]+""")).any { it.isNotEmpty() && !TITLE_WORDS.matches(it) && it.lowercase() !in TITLE_EXTRAS }) return null
     val rest = TITLE_WORDS.replace(t, "").replace(Regex("""[\s/:·•|│\[\]()-]+"""), " ").trim()
-    if (rest.split(' ').filter { it.isNotEmpty() }.size > 3) return null
+    val restWords = rest.split(' ').filter { it.isNotEmpty() }
+    if (restWords.size > 2) return null
+    if (restWords.any { w -> w.lowercase() !in TITLE_EXTRAS && (!w.first().isUpperCase() || w.lowercase() in NOT_TITLE) }) return null
     if (PanelKind.SETTINGS in kinds && kinds.size > 1) return PanelKind.SETTINGS
     // A tab header ("Session   Usage"): the most specific tab name names it.
     val order = listOf(PanelKind.USAGE, PanelKind.STATUS, PanelKind.CONTEXT, PanelKind.COST, PanelKind.STATS,
         PanelKind.SESSION, PanelKind.HELP, PanelKind.SHORTCUTS, PanelKind.SETTINGS, PanelKind.MODEL)
     return kinds.minByOrNull { order.indexOf(it) } ?: kinds.first()
 }
+
+/** Words that may stand beside a panel's name in its title. */
+private val TITLE_EXTRAS = setOf("window", "info", "limits", "keyboard", "agent", "agents", "current", "plan", "account",
+    "overview", "details", "and", "of", "tab", "tabs", "panel", "view", "select", "switch", "choose", "pick", "change",
+    "a", "the", "your", "this", "session")
+/** Capitalized words that make a row a sentence or a value, not a title. */
+private val NOT_TITLE = setOf("is", "are", "was", "were", "ready", "done", "ok", "okay", "ran", "passed", "failed", "updated", "shows", "changed")
 
 private fun isRule(row: String): Boolean {
     val t = row.trim()
@@ -219,18 +232,29 @@ private fun boxAround(rows: List<String>, hintAt: Int, hintCol: Int): Region? {
     return Region(top, bottom, col, boxed = true, ruled = false, right = right)
 }
 
-/** Rules above the hint (Kiro: rule, "/usage", rule, body, rule, hint), or none. */
+/**
+ * A closed frame of rules (Kiro: rule, "/usage", rule, body, rule, hint): the hint sits on a rule
+ * (the rule right above it) or right above one, and another rule closes the body above. A rule
+ * somewhere in the transcript with the composer straight under the hint is no frame (2.2.1 review).
+ */
 private fun rulesAbove(rows: List<String>, hintAt: Int): Region? {
+    val above = (hintAt - 1 downTo 0).firstOrNull { rows[it].isNotBlank() }
+    val below = (hintAt + 1 until rows.size).firstOrNull { rows[it].isNotBlank() }
+    val ruleOn = above != null && isRule(rows[above])
+    val ruleBelow = below != null && isRule(rows[below])
+    if (!ruleOn && !ruleBelow) return null
+    val bodyEnd = if (ruleOn) checkNotNull(above) else hintAt
     var top = -1
     var blanks = 0
-    for (i in hintAt - 1 downTo (hintAt - 30).coerceAtLeast(0)) {
+    for (i in bodyEnd - 1 downTo (hintAt - 30).coerceAtLeast(0)) {
         val r = rows[i]
         if (r.isBlank()) { if (++blanks > 2) break; continue }
         blanks = 0
         if (COMPOSER_ROW.matches(r) && !isRule(r)) break
         if (isRule(r)) top = i
     }
-    return if (top >= 0) Region(top, hintAt, 0, boxed = false, ruled = true) else null
+    if (top < 0 || top >= bodyEnd - 1) return null
+    return Region(top, if (ruleBelow) checkNotNull(below) else hintAt, 0, boxed = false, ruled = true)
 }
 
 /** No box or rules: the rows above the hint up to a gap of two blank rows (at most 24 rows). */
@@ -241,7 +265,14 @@ private fun plainAbove(rows: List<String>, hintAt: Int): Region? {
         if (rows[i].isBlank()) { if (++blanks >= 2) break; continue }
         blanks = 0
         // The agent's composer (or its box) right above: the hint is under the composer, not a panel's footer.
-        if (COMPOSER_ROW.matches(rows[i]) || isBorderOnly(rows[i])) return null
+        if (COMPOSER_ROW.matches(rows[i])) return null
+        if (isRule(rows[i])) {
+            // A plain rule ends the block, unless it is the edge of a composer drawn between rules.
+            val over = (i - 1 downTo 0).firstOrNull { rows[it].isNotBlank() }
+            if (over != null && COMPOSER_ROW.matches(rows[over])) return null
+            break
+        }
+        if (isBorderOnly(rows[i])) return null
         top = i
     }
     return Region(top, hintAt, 0, boxed = false, ruled = false)
@@ -296,7 +327,8 @@ internal fun infoPanelOn(agent: String?, visible: String): InfoPanel? {
     val framed = region.boxed || region.ruled
     // The title is the panel's first row (or one of its first three inside a box or rules).
     val kind = content.take(if (framed) 3 else 1).firstNotNullOfOrNull(::titleOf)
-    if (kind == null && !framed) return null
+    // No title it knows: a box with a close hint still holds sends; rules or nothing around it are no panel.
+    if (kind == null && !region.boxed) return null
     val k = kind ?: PanelKind.UNKNOWN
     fun maybe(why: String) = InfoPanel(a, k, known = false, why = why, frame = inside)
 
