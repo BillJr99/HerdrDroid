@@ -30,6 +30,40 @@ class CrossServerShells221Test {
         assertFalse(composerFooterSaysWorking(idle))
     }
 
+    /**
+     * The idle CLAUDE2 screen as captured on 2.1.330 (herdr: idle): Claude Code's prompt suggestion
+     * sits in the empty box, drawn faint (SGR 2), with "3 shells" in the footer. The escape
+     * sequences, rules and footer are the capture's; the suggestion's words are neutral ones of the
+     * same length. On a styled read a row drawn wholly faint is an empty box, whatever its words.
+     * The same row read plain (styles lost), or in normal weight, is typing and is never typed over.
+     */
+    @Test fun claude2130DimSuggestionIsAnEmptyBoxOnlyOnAStyledRead() = runBlocking {
+        val suggested = fixture("idle-3-shells-suggestion.ansi")
+        assertTrue(suggested.contains("\u001B[2mCheck the build log and summary"))
+        assertEquals("", inputLineOf(suggested, "claude"))
+        assertNull(composerDraftOf(suggested, "claude"))
+        assertFalse(composerFooterSaysWorking(suggested))
+        assertNull(detectPrompt(forPhone(suggested), false, "claude"))
+        val plain = stripAnsi(suggested)
+        assertEquals("Check the build log and summary", inputLineOf(plain, "claude"))
+        assertNotNull(composerDraftOf(plain, "claude"))
+        val normal = suggested.replace("\u001B[2mCheck", "Check")
+        assertEquals("Check the build log and summary", inputLineOf(normal, "claude"))
+        assertNotNull(composerDraftOf(normal, "claude"))
+        // Typed text followed by the dim suggestion's rest is still typing.
+        val partly = suggested.replace("\u001B[2mCheck", "Check\u001B[2m")
+        assertEquals("Check", checkNotNull(inputLineOf(partly, "claude")).take(5))
+        // End to end: idle, 3 shells, a dim suggestion: sent once. Plain or normal weight: a draft, nothing typed.
+        val host = Host(claude).apply { viewport = suggested }
+        assertEquals(RelayResult.SENT to null, relayTo(host))
+        assertEquals(1, host.writes.size)
+        for (other in listOf(plain, normal)) {
+            val h = Host(claude).apply { viewport = other }
+            assertEquals(RelayResult.DRAFT to RelayRefusal.DRAFT, relayTo(h))
+            assertTrue(h.writes.isEmpty())
+        }
+    }
+
     @Test fun claude2130WorkingFooterSaysWorking() {
         assertEquals("", inputLineOf(working, "claude"))
         assertTrue(composerFooterSaysWorking(working))

@@ -318,6 +318,22 @@ class AgentMessageRelayTest {
         assertTrue(source.writes.isEmpty())
     }
 
+    /** The captured idle CLAUDE2 (2.1.330): 3 shells and Claude's faint prompt suggestion in the empty box. Sent once. */
+    @Test fun anIdleClaudeWithShellsAndADimSuggestionGetsTheMessageOnce() = runBlocking {
+        vm.changeAgentMessaging(true)
+        destination.busy = 3
+        destination.visible = resource("/screens/claude/derived-2.1.330-shells/idle-3-shells-suggestion.ansi")
+        val approval = checkNotNull(vm.crossServerApprovalOf(frame()))
+        sweptDestination(3)
+        assertTrue(vm.approveCrossServer(approval))
+        val done = settle()
+        assertEquals(done.note, CrossServerState.SENT, done.state)
+        assertFalse(vm.approveCrossServer(approval))
+        settle()
+        assertEquals(listOf(prompt), destination.writes)
+        assertTrue(source.writes.isEmpty())
+    }
+
     /** The same Claude in the middle of a turn ("esc to interrupt" among its footer chips) is not typed into, whatever herdr says. */
     @Test fun aClaudeWhoseFooterSaysWorkingIsRefusedWithItsReason() = runBlocking {
         vm.changeAgentMessaging(true)
