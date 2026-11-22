@@ -1,0 +1,4 @@
+card: options
+blocked: false
+options: Cancel and stop the lane (Recommended) | Cancel and redo it in a container | Leave it | Type something. | Chat about this
+source: screens/claude/captured-2.1.329/single-question.txt (real, Claude Code 2.1.329 against a mock API) with the mode row and helper list of screens/claude/live-2026-11-20-composer appended under it (derived)

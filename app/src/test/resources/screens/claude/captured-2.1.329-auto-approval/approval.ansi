@@ -1,0 +1,48 @@
+
+[38;5;174m ▐[48;5;16m▛███▛█[39m[49m   [1mClaude Code[0m[39m[49m [38;5;246mv2.1.329
+[38;5;174m▝▜[48;5;16m█████[49m█▀[39m  [38;5;246mOpus 5.5 · API Usage Billing
+[38;5;174m ▝▝   ▝▝ [39m  [38;5;246m/proj
+
+
+●[39m [38;5;246mAuto mode lets Claude handle permission prompts automatically — Claude checks each tool call for risky actions and prompt
+[39m  [38;5;246minjection before executing. Actions Claude identifies as safe are executed, while actions Claude identifies as risky are
+[39m  [38;5;246mblocked and Claude may try a different approach. Ideal for long-running tasks. Sessions are slightly more expensive. Claude
+[39m  [38;5;246mcan make mistakes that allow harmful commands to run, it's recommended to only use in isolated environments. Shift+Tab to
+[39m  [38;5;246mchange mode.
+
+[48;5;237m❯ [38;5;231mstart-helpers[39m
+
+[38;5;231m[49m●[39m Done.
+
+[38;5;246m✻[39m [38;5;246mWorked for 0s · done 10:53 PM
+
+[48;5;237m❯ [38;5;231mstart-helpers[39m
+
+[38;5;246m[49m●[39m [1mAgent[0m[39m[49m(Sample helper task 2)
+
+[38;5;220m●[39m [38;5;220mAuto mode can't check actions in this session. Its safety check runs on the server, and your requests go through
+[39m  [38;5;220m127.0.0.1:8787, which doesn't pass it through. Actions that need the check now ask for your approval. To work without these
+[39m  [38;5;220mprompts, switch permission mode with Shift+Tab. To use auto mode, ask whoever runs 127.0.0.1:8787 to pass Claude Code's
+[39m  [38;5;220mserver-side safety check through: https://code.claude.com/docs/en/permission-modes#server-side-classifier-review
+
+[38;5;153m──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m [1m[38;5;153mTool use
+[0m[39m[49m [2m│[0m[39m[49m [38;5;246mLaunch a new agent
+[38;5;239m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+[39m Agent(Sample helper task 2)
+[38;5;239m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+[39m Auto mode can't check actions in this session, so this one needs your approval
+
+ Do you want to proceed?
+ [38;5;153m❯[39m [38;5;153mNo
+[39m   Yes
+
+ [38;5;246mEsc to cancel · Tab to amend[39m
+
+
+
+
+
+
+
+

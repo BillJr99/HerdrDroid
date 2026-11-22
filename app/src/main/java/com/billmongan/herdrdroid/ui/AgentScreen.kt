@@ -263,11 +263,21 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     val dismissingUsage = vm.usageDismissInFlight(paneId)
     val usageBlocksInput = usageOverlay != null || dismissingUsage
     val waitingForHermes = vm.waitingForHermesComposer(paneId)
-    val prompt: Prompt? = if (typingAnswer || usageOverlay != null) null
+    val parsedPrompt: Prompt? = if (typingAnswer || usageOverlay != null) null
         else if (vm.paneReadProblem != null) (if (status == Status.NEEDS_YOU) Prompt("This agent is waiting for you.", emptyList()).forCard() else null)
         else if (pane != null && vm.requiresLivePiQuestion(pane)) vm.currentPiQuestion(pane)?.forCard()
         else detectPrompt(screenText, status == Status.NEEDS_YOU, pane?.agent, vm.versionOf(paneId))
             ?.takeIf { !it.codexQuestion || shownTarget != null }?.forCard()
+    // An agent's error on screen (1.4.2): shown as a banner when there is no question.
+    // Not from the last screen while the latest read failed (1.4.2, from review).
+    val agentError: String? = remember(screenText) { com.billmongan.herdrdroid.herdr.detectAgentError(screenText) }.takeIf { parsedPrompt == null && vm.paneReadProblem == null }
+    // 2.1.4 (Bill: "it showed the orange ... waiting on you icon but didn't actually render the
+    // question in chat"): while the pane shows as needing you, a card is always there, the parsed
+    // one or one that says the question couldn't be read, with Show terminal.
+    val prompt: Prompt? = com.billmongan.herdrdroid.herdr.withNeedsYouCard(status, parsedPrompt,
+        suppressed = typingAnswer || usageBlocksInput || backgroundDrawer || agentError != null, agent = pane?.agentName ?: "The agent")
+    // The question a parser read; the unread-question card leaves the chat's open questions in place.
+    val questionCard: Prompt? = prompt?.takeUnless { it.unreadQuestion }
     fun send() {
         if (usageBlocksInput || backgroundDrawer || (openingPreview != null && prompt != null)) return
         val draft = answerDraft
@@ -295,9 +305,6 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             if (text.startsWith("/") && !live && com.billmongan.herdrdroid.herdr.btwQuestion(pane.agent, text) == null) { fullTerminal = true; commandScreen = text.substringBefore(' ') }
         }
     }
-    // An agent's error on screen (1.4.2): shown as a banner when there is no question.
-    // Not from the last screen while the latest read failed (1.4.2, from review).
-    val agentError: String? = remember(screenText) { com.billmongan.herdrdroid.herdr.detectAgentError(screenText) }.takeIf { prompt == null && vm.paneReadProblem == null }
     // The terminal (and screen) view follows new output only while you are at the bottom; once you
     // scroll up it stays where you put it, through updates and view switches (1.2.7; before, every
     // update jumped to the bottom). "Latest" below brings it back.
@@ -610,7 +617,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         // while its card is showing, so it isn't on screen twice.
         val questionsNow = vm.questionsFor(paneId)
         // Claude's sessions-list card (2.1.1) is not the question itself: the question stays in the chat.
-        val cardUp = prompt != null && !prompt.claudeBackground
+        val cardUp = questionCard != null && !questionCard.claudeBackground
         // Placed again when item times or the clock offset change, not only the items (1.4.3, from review).
         val chatItems = remember(vm.transcriptItems, questionsNow, cardUp, vm.transcriptTimes, vm.transcriptSeen, vm.hostOffsets) {
             com.billmongan.herdrdroid.transcript.QuestionLog.withQuestions(vm.transcriptItems, questionsNow, vm.transcriptTimes, vm.hostOffsetMs(), vm.transcriptSeen)
@@ -715,7 +722,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     // The pane's history (1.4.3, Bill): each earlier screen, then the question asked under
                     // it, oldest first, so anything newer is below a question; the live screen comes last.
                     com.billmongan.herdrdroid.transcript.QuestionLog.screenHistory(
-                        vm.questionsFor(paneId).filter { prompt == null || it.state != com.billmongan.herdrdroid.transcript.QState.OPEN },
+                        vm.questionsFor(paneId).filter { questionCard == null || it.state != com.billmongan.herdrdroid.transcript.QState.OPEN },
                     ).forEach { entry ->
                         when (entry) {
                             is com.billmongan.herdrdroid.transcript.ScreenSnapshot -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -733,7 +740,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     // Under a saved history, only the part of the screen not already shown above (1.4.3, from review).
                     // The same questions the history shows (from review): an open one's screen stays live.
                     ChatView(com.billmongan.herdrdroid.transcript.QuestionLog.liveTail(text,
-                        vm.questionsFor(paneId).filter { prompt == null || it.state != com.billmongan.herdrdroid.transcript.QState.OPEN }), pending, liveSize, vm.readingFont,
+                        vm.questionsFor(paneId).filter { questionCard == null || it.state != com.billmongan.herdrdroid.transcript.QState.OPEN }), pending, liveSize, vm.readingFont,
                         pendingAt = vm.lastSentAt, antigravity = antigravity, grok = grok, agent = chatAgent,
                         times = vm.screenTimesFor(paneId), onSeen = { vm.noteScreenSeen(paneId, it) },
                         hostOffsetMs = vm.hostOffsetMs(), hostTz = vm.hostTzMinutes())
@@ -1313,6 +1320,8 @@ internal fun PromptCard(
                     p.codexQuestion -> "Answer this Codex question in Terminal."
                     // 2.1.2: a question the app reads but can't answer for you (several questions or answers).
                     p.openCodeForm -> "Answer this OpenCode question in Terminal: it asks more than one question or takes more than one answer, which the app can't send for you."
+                    // 2.1.4: the pane needs you, but its question couldn't be read from the screen.
+                    p.unreadQuestion -> "The app couldn't read this question from the screen. Open the terminal to see it and answer it there."
                     else -> "This preview is incomplete. Open the terminal to review the full command before answering."
                 },
                     color = Palette.Muted, fontSize = 12.5.sp)
