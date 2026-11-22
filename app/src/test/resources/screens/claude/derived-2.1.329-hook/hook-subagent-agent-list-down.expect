@@ -1,0 +1,4 @@
+card: options
+blocked: false
+options: Yes | No
+source: as hook-subagent-agent-list, from captured-2.1.329-hook/hook-main-down.txt (No highlighted)

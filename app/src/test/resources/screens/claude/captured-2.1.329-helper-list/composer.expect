@@ -1,0 +1,3 @@
+card: none
+blocked: false
+source: captured 2026-11-21 for 2.1.4: Claude Code 2.1.329 (the version on laptop2, installed from npm) run in a throwaway container on laptop under tmux at 134x48, against a local mock of the Messages API; tmux capture-pane. Every row is as Claude drew it (real); the text is the mock's (neutral, made up for the capture). No live pane was read. Default (manual) mode with background helpers: the empty composer, then "⏸ manual mode on · ? for shortcuts · ↓ to manage", a blank row, "● main" and "◯ general-purpose  Sample helper task 3 ... 49s" (real).
