@@ -1519,6 +1519,35 @@ private fun inputRow(screen: String): Pair<String, String>? {
 }
 
 /**
+ * 2.2.1 (Bill: "try to be robust to harness version changes"): the chips of the status row under
+ * an agent's boxed input line, found by structure, not by wording or version: the lowest prompt
+ * row with a rule right above it, the next rule under it (the box's bottom edge), then up to three
+ * non-blank rows under that, each split at "·". Claude Code 2.1.329 and 2.1.330 draw "⏵⏵ auto mode
+ * on · 3 shells · ↓ to manage" there, with "esc to interrupt" among the chips while a turn runs.
+ * Empty when the screen shows no such box.
+ */
+internal fun composerFooterChips(screen: String): List<String> {
+    val rows = withoutClaudeAgentList(screen.lines().map { it.replace("\r", "") }).takeLast(14).map { it.replace(ANSI_SEQ, "") }
+    val rule = Regex("""^[\s\u00A0╭╰├└┌]*[─━═]{4,}""")
+    val prompt = rows.indices.lastOrNull { i ->
+        i > 0 && INPUT_LEAD.containsMatchIn(rows[i]) && rule.containsMatchIn(rows[i - 1])
+    } ?: return emptyList()
+    val close = (prompt + 1 until rows.size).firstOrNull { rule.containsMatchIn(rows[it]) } ?: return emptyList()
+    return rows.drop(close + 1).filter { it.isNotBlank() }.take(3)
+        .flatMap { row -> row.split('·', '•').map { it.trim() }.filter { it.isNotEmpty() } }
+}
+
+private val INTERRUPT_CHIP = Regex("""\besc\b.{0,12}\binterrupt""", RegexOption.IGNORE_CASE)
+
+/**
+ * 2.2.1: the status row under the input box offers to interrupt a running turn ("esc to
+ * interrupt", in any chip and any order), so the agent is working whatever its status says.
+ * Background work chips ("3 shells", "1 subagent", "2 background tasks", "↓ to manage") are not
+ * a running turn.
+ */
+internal fun composerFooterSaysWorking(screen: String): Boolean = composerFooterChips(screen).any { INTERRUPT_CHIP.containsMatchIn(it) }
+
+/**
  * What is typed in an agent's input box, all of its lines (2.1.0, Bill: "when a draft is in the pane
  * text box, maybe show it in chat view and give me the option to send or clear it there"). The first
  * row is found and judged the way [inputLineOf] judges it (prompt glyph, box edges, placeholders);
