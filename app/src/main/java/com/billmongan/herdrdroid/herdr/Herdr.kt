@@ -38,6 +38,13 @@ data class Pane(
      * sends keep the route herdr's own status picks ([sendStatus]), and herdr waits use it too.
      */
     val screenNeedsYouFrom: Status? = null,
+    /**
+     * herdr calls this OpenCode pane blocked, but its screen shows OpenCode's normal input box and
+     * no question or permission dialog (2.1.6): after a failed turn (llmproxy with no free model,
+     * for one) herdr keeps the pane blocked until the next turn. [status] stays herdr's, so every
+     * send keeps its guards; only the display shows the pane as idle ([com.billmongan.herdrdroid.AppViewModel.shownStatus]).
+     */
+    val openCodeStaleBlock: Boolean = false,
 ) {
     /** The status that picks how a message goes out: herdr's own, not the screen's (2.1.2). */
     val sendStatus: Status get() = screenNeedsYouFrom ?: status
@@ -246,7 +253,8 @@ class Herdr internal constructor(
         // 2.1.2: herdr skips screen detection for OpenCode and calls a pane with a permission dialog
         // done or idle, so those panes are read in the same round trip and marked for display only.
         herdrStates = list.associate { it.id to it.status }
-        val askable = screenAskable(list)
+        // 2.1.6: an OpenCode pane herdr calls blocked is read too, to tell a real dialog from a stale block.
+        val askable = screenAskable(list) + list.filter { isOpenCode(it.agent) && it.status == Status.NEEDS_YOU }
         val marked = if (askable.isEmpty()) list else {
             val tails = runCatching { previews(askable.map { it.id }, CLAUDE_STATUS_READ_LINES) }.getOrDefault(emptyMap())
             markScreenNeedsYou(list, tails.mapValues { it.value.tail })
@@ -2169,6 +2177,16 @@ internal fun screenAskable(list: List<Pane>): List<Pane> = list.filter {
 internal fun markScreenNeedsYou(list: List<Pane>, tails: Map<String, String>): List<Pane> {
     val askable = screenAskable(list).map { it.id }.toSet()
     return list.map { p ->
+        // 2.1.6: herdr's "blocked" on OpenCode with its normal input box on screen and no dialog
+        // (after an error, or after /new) is not a question: shown idle, sends unchanged.
+        if (isOpenCode(p.agent) && p.status == Status.NEEDS_YOU) {
+            val t = tails[p.id]
+            if (t != null && openCodeStaleBlocked(t)) {
+                com.billmongan.herdrdroid.diag.DiagLog.log("prompt", "${p.id}: herdr says blocked, but OpenCode shows its input box and no dialog; showing it as idle, sends unchanged")
+                return@map p.copy(openCodeStaleBlock = true)
+            }
+            return@map p
+        }
         val tail = tails[p.id]?.takeIf { p.id in askable }
         val why = when {
             tail == null -> null
@@ -2201,6 +2219,18 @@ internal fun openCodeNeedsYouReason(tail: String): String? {
     // 2.1.2: OpenCode's own question dialog (the "question" tool) needs you as much as a permission.
     if (detectOpenCodeQuestion(plain) != null) return "a question dialog is open"
     return detectOpenCodePermission(tail, plain)?.let { "a permission dialog is open" }
+}
+
+/**
+ * Whether an OpenCode screen herdr calls blocked shows nothing that waits for you (2.1.6): OpenCode's
+ * normal input box with its model row and commands footer at the bottom, no background drawer, and
+ * no question, permission or web-search dialog as the chat card would read it.
+ */
+internal fun openCodeStaleBlocked(tail: String): Boolean {
+    val plain = stripAnsi(tail)
+    if (openCodeBackgroundDrawer("opencode", plain) || openCodeComposerMode(plain.lines().takeLast(20)) < 0) return false
+    return detectOpenCodeQuestion(plain) == null && detectOpenCodePermission(tail, plain) == null &&
+        detectPrompt(tail, blocked = false, agent = "opencode") == null
 }
 
 internal fun claudeNeedsYouReason(tail: String): String? = when {
@@ -2360,9 +2390,13 @@ fun detectUnnumberedMenu(text: String): Prompt? {
  * own lines (">", "❯", "›") never count, so a conversation about rate limits shows no banner. A
  * crash (a panic, a traceback, a fatal error) counts wherever it is in those lines.
  */
-fun detectAgentError(text: String): String? {
+fun detectAgentError(text: String): String? = agentErrorLines(text)?.first
+
+/** [detectAgentError]'s summary with the lines that named the error, or null. */
+private fun agentErrorLines(text: String): Pair<String, List<String>>? {
     val all = text.lines().filter { it.isNotBlank() }.takeLast(12)
     val found = linkedSetOf<String>()
+    val lines = mutableListOf<String>()
     var carry = false
     for (raw in all) {
         // A row inside a box (a code view, a table) is the agent's content, never its error (1.4.2, from review).
@@ -2371,7 +2405,11 @@ fun detectAgentError(text: String): String? {
         val mine = YOUR_LINE.containsMatchIn(l)
         val marked = !mine && (ERROR_MARK.containsMatchIn(l) || AGENT_OWN_ERROR.containsMatchIn(l) || ERROR_LEAD.containsMatchIn(l))
         var added = false
-        if (marked || (carry && !mine)) for ((pattern, summary) in AGENT_ERRORS) if (pattern.containsMatchIn(l)) { found += summary; added = true }
+        if (marked || (carry && !mine)) for ((pattern, summary) in AGENT_ERRORS) if (pattern.containsMatchIn(l)) {
+            // 2.1.6: llmproxy's own wording names it, so the notice can too.
+            found += if (summary == NO_MODEL && l.contains("llmproxy", ignoreCase = true)) LLMPROXY_NO_MODEL else summary
+            lines += l; added = true
+        }
         // The next line continues an error only after a line that named one (1.4.2, from review).
         carry = marked && added
     }
@@ -2384,7 +2422,115 @@ fun detectAgentError(text: String): String? {
         rows.dropLast(1).any { r -> !YOUR_LINE.containsMatchIn(r) && AGENT_CRASHES.any { (p, _) -> p.containsMatchIn(r) } }) {
         found += "the agent crashed"; found += "the agent exited"
     }
-    return found.takeIf { it.isNotEmpty() }?.joinToString("; ")
+    return found.takeIf { it.isNotEmpty() }?.let { it.joinToString("; ") to lines }
+}
+
+/** 2.1.6: llmproxy's "No 'flagship' models are currently available" and "No model currently qualifies". */
+private val MODEL_UNAVAILABLE = Regex("""\bNo '[^']{1,80}' models? (?:is|are) currently available\b|\bNo model currently qualifies\b""", RegexOption.IGNORE_CASE)
+internal const val NO_MODEL = "no model is available for this tier right now"
+internal const val LLMPROXY_NO_MODEL = "llmproxy has no available model for this tier right now"
+
+/**
+ * An agent's error as its own card in the chat (2.1.6, Bill: "a different kind of card not a
+ * question card in the pane chat view that I can acknowledge and clear"). Never a question: no
+ * choices and no keys. [identity] is what acknowledging it keys on, with the server, pane and
+ * session, so the same error stays cleared and a new one shows again. [retryText] is the user's
+ * message right above OpenCode's failed turn, read from the screen; the app resends it only when
+ * it is the message the phone itself sent there. [message] is the agent's own text, when the app
+ * read it whole.
+ */
+data class AgentErrorNotice(
+    val title: String,
+    val summary: String,
+    val message: String?,
+    val identity: String,
+    val retryText: String? = null,
+    val modelUnavailable: Boolean = false,
+    /** Whether the agent's own model picker is a safe next step (OpenCode's /models, through the model dialog). */
+    val switchModel: Boolean = false,
+)
+
+/** OpenCode's turn footer under each reply: "Build · <model> · 1m 25s", "Plan · <model> · 5.4s · 37.7 tok/s". */
+private val OPENCODE_TURN_FOOTER = Regex("""^[A-Z][\w-]*\s+·\s+.+\s+·\s+(?:\d+h\s*)?(?:\d+m\s*)?\d+(?:\.\d+)?s(?:\s+·.*)?$""")
+
+/** OpenCode's failed turn: its error text, the user's message above it (when wholly on screen) and its footer. */
+internal class OpenCodeTurnError(val message: String, val userText: String?, val footer: String)
+
+/**
+ * OpenCode's error after a failed turn (2.1.6): in a session, right above the input box, the turn
+ * footer ("Build · <model> · 1m 25s") under a paragraph that starts "Error: ", drawn in the
+ * transcript, not as a dialog or a toast, so no key removes it. Rows are cut at the width of the
+ * box's "╹▀▀▀" edge, so OpenCode's sidebar is not read into the error. Null for anything else.
+ */
+internal fun openCodeTurnError(screen: String): OpenCodeTurnError? {
+    val rows = stripAnsi(screen).lines().map { it.replace("\r", "").trimEnd() }.takeLast(80)
+    val tail = rows.takeLast(20)
+    val modeInTail = openCodeComposerMode(tail)
+    if (modeInTail < 1) return null
+    val mode = rows.size - tail.size + modeInTail
+    val bar = rows[mode].indexOfFirst { it == '┃' || it == '│' }
+    if (bar < 0) return null
+    val edge = rows.subList(mode + 1, rows.size).firstOrNull { it.trimStart().startsWith("╹") }
+    val width = edge?.let { it.lastIndexOf('▀') + 1 }?.takeIf { it > bar + 1 } ?: Int.MAX_VALUE
+    fun cut(r: String) = if (r.length > width) r.substring(0, width) else r
+    fun boxRow(r: String) = r.length > bar && (r[bar] == '┃' || r[bar] == '│') && r.substring(0, bar).isBlank()
+    var i = mode
+    while (i > 0 && boxRow(rows[i - 1])) i--
+    i--
+    while (i >= 0 && cut(rows[i]).isBlank()) i--
+    if (i < 0 || boxRow(rows[i])) return null
+    val footer = cut(rows[i]).trim()
+    if (!OPENCODE_TURN_FOOTER.matches(footer)) return null
+    i--
+    while (i >= 0 && cut(rows[i]).isBlank()) i--
+    val end = i
+    while (i >= 0 && cut(rows[i]).isNotBlank() && !boxRow(rows[i])) i--
+    val start = i + 1
+    // The paragraph's first row must be on screen, with something read above it.
+    if (start > end || start == 0) return null
+    val block = (start..end).map { cut(rows[it]).trim() }
+    if (!block.first().startsWith("Error: ")) return null
+    // The user's message: OpenCode's box of "┃" rows above the reply, only when its top is on screen too.
+    while (i >= 0 && cut(rows[i]).isBlank()) i--
+    var userText: String? = null
+    if (i >= 0 && boxRow(rows[i])) {
+        val bottom = i
+        while (i >= 0 && boxRow(rows[i])) i--
+        if (i >= 0) userText = (i + 1..bottom).map { cut(rows[it]).substring(bar + 1).trim() }
+            .filter { it.isNotEmpty() }.joinToString(" ").ifEmpty { null }
+    }
+    return OpenCodeTurnError(block.joinToString(" "), userText, footer)
+}
+
+/**
+ * The error card for [screen], or null (2.1.6). OpenCode's failed turn is read whole, with its
+ * text; any other error [detectAgentError] finds gets its summary. A crash, a sign-in or a full
+ * context offers no retry: only the terminal.
+ */
+fun agentErrorNotice(screen: String, agent: String?, agentName: String): AgentErrorNotice? {
+    val plain = stripAnsi(screen)
+    if (isOpenCode(agent)) openCodeTurnError(plain)?.let { e ->
+        val noModel = MODEL_UNAVAILABLE.containsMatchIn(e.message)
+        val llmproxy = noModel && e.message.contains("llmproxy", ignoreCase = true)
+        val summary = when {
+            llmproxy -> LLMPROXY_NO_MODEL
+            noModel -> NO_MODEL
+            else -> AGENT_ERRORS.firstOrNull { it.first.containsMatchIn(e.message) }?.second ?: "its last turn failed"
+        }
+        return AgentErrorNotice(
+            title = when { llmproxy -> "llmproxy: no model available"; noModel -> "$agentName: no model available"; else -> "$agentName error" },
+            summary = summary, message = e.message,
+            identity = listOf("opencode-turn", e.footer, e.message, e.userText.orEmpty()).joinToString("\n"),
+            retryText = e.userText, modelUnavailable = noModel, switchModel = true,
+        )
+    }
+    val (why, lines) = agentErrorLines(plain) ?: return null
+    val noModel = why.contains(NO_MODEL) || why.contains(LLMPROXY_NO_MODEL)
+    return AgentErrorNotice(
+        title = if (why.contains(LLMPROXY_NO_MODEL)) "llmproxy: no model available" else "$agentName error",
+        summary = why, message = null,
+        identity = (listOf("screen", why) + lines).joinToString("\n"), modelUnavailable = noModel,
+    )
 }
 
 /** A line that opens with an error itself: "Rate limit exceeded", "429 Too Many Requests", "503 Service Unavailable" (1.4.2, from review). */
@@ -2394,9 +2540,10 @@ private val ERROR_LEAD = Regex("""^\W{0,3}(Rate limit (exceeded|reached)|429 Too
 private val YOUR_LINE = Regex("""^(>|❯|›|»)(\s|$)""")
 private val ERROR_MARK = Regex("""^(✗|⚠|×|✖|❌|■|⎿|‼|!)|^\W{0,3}(Error|ERROR|Fatal|FATAL|fatal|Failed|FAILED|error)\b|\b[Ee]rror:|\((HTTP|status) [45]\d\d\)|\bstatus [45]\d\d\b""")
 /** Messages the agents print on their own line (from their programs' strings, 2026-11-14). */
-private val AGENT_OWN_ERROR = Regex("""^\W{0,3}(You are not logged in|You're not logged in|Not logged in|Please (log|sign) in|Your credit balance is too low|Quota exceeded|Grok is temporarily overloaded|prompt is too long:|Context window exceeded|Compaction failed|Rate limited|Too Many Requests|Service Unavailable|Internal Server Error|Bad Gateway|Token refresh failed|Invalid .{0,40}credentials|Billing error|You've hit your usage limit|Claude usage limit reached|A network error occurred)""", RegexOption.IGNORE_CASE)
+private val AGENT_OWN_ERROR = Regex("""^\W{0,3}(You are not logged in|You're not logged in|Not logged in|Please (log|sign) in|Your credit balance is too low|Quota exceeded|Grok is temporarily overloaded|prompt is too long:|Context window exceeded|Compaction failed|Rate limited|Too Many Requests|Service Unavailable|Internal Server Error|Bad Gateway|Token refresh failed|Invalid .{0,40}credentials|Billing error|You've hit your usage limit|Claude usage limit reached|A network error occurred|No model currently qualifies|No '[^']{1,80}' models? (?:is|are) currently available)""", RegexOption.IGNORE_CASE)
 
 private val AGENT_ERRORS = listOf(
+    MODEL_UNAVAILABLE to NO_MODEL,
     Regex("""✗\s*Compaction|[Cc]ompaction failed|failed to (start )?compact|compaction:?error|compaction_failed""") to "compaction failed",
     Regex("""\bAll \d+ .{0,80}candidate\(?s?\)? failed""") to "every model candidate failed",
     // omp and pi on the llmproxy stack: "Error: Retry budget exhausted after 10 retries: 502 ...".
