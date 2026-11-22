@@ -132,6 +132,17 @@ private class Queued(
 /** 2.1.4: how often the cross-server notice loop looks for agents to tell. */
 private const val NOTICE_TICK_MS = 30_000L
 
+/**
+ * The notice loop's wait between passes. Under Robolectric it never returns, so a unit test never
+ * leaves a delayed main-looper message behind: Robolectric resets its clock for each test, and a
+ * later test that advances the clock (PanePrefetchTest moves it 30 s) could otherwise run a pass
+ * of a view model from an earlier test. A test that wants more passes calls noticeTick() itself.
+ */
+private suspend fun noticeWait() {
+    if (android.os.Build.FINGERPRINT == "robolectric") kotlinx.coroutines.awaitCancellation()
+    delay(NOTICE_TICK_MS)
+}
+
 class AppViewModel internal constructor(
     app: Application,
     // Keep all adapter work in this scope; recheck cancellation at the final submission boundary.
@@ -3083,11 +3094,10 @@ class AppViewModel internal constructor(
     /** Off in tests that drive [noticeTick] themselves. */
     internal var noticeLoopAllowed = true
     /**
-     * The wait between notice passes. It suspends without holding the main thread: no work is
-     * queued on the main looper while it waits. Tests replace it, so no real 30-second delay loop
-     * runs in a test that does not ask for one.
+     * The wait between notice passes (30 s; see noticeWait). It suspends without holding
+     * the main thread. Tests may replace it.
      */
-    internal var noticeTicker: suspend () -> Unit = { delay(NOTICE_TICK_MS) }
+    internal var noticeTicker: suspend () -> Unit = { noticeWait() }
     private var noticeLoop: Job? = null
     private val noticeLock = Mutex()
     private val noticeForced = mutableSetOf<String>()
