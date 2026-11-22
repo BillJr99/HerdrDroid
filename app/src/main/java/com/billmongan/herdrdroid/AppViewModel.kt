@@ -3849,6 +3849,9 @@ class AppViewModel internal constructor(
             override fun blocked(fresh: Pane, viewport: String): Boolean {
                 if ((fresh.backgroundBusy && !takesInputDuringBackgroundWork(fresh.agent)) ||
                     blocksNormalSend(fresh, viewport)) return true
+                // 2.2.1 (Grok's review): background work no longer holds a Claude here, so a turn the
+                // screen shows running ("esc to interrupt" under the box) is held, as the relay holds it.
+                if (com.billmongan.herdrdroid.herdr.composerFooterSaysWorking(viewport)) return true
                 val line = com.billmongan.herdrdroid.herdr.inputLineOf(viewport, fresh.agent)
                 if (line != "" || com.billmongan.herdrdroid.herdr.composerDraftOf(viewport, fresh.agent) != null) return true
                 return holdReason(fresh.id, viewport) != null
