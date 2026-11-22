@@ -274,7 +274,12 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             ?.takeIf { !it.codexQuestion || shownTarget != null }?.forCard()
     // An agent's error on screen (1.4.2): shown as a banner when there is no question.
     // Not from the last screen while the latest read failed (1.4.2, from review).
-    val agentError: String? = remember(screenText) { com.billmongan.herdrdroid.herdr.detectAgentError(screenText) }.takeIf { parsedPrompt == null && vm.paneReadProblem == null }
+    // 2.1.6: as its own card, with OpenCode's failed turn read whole; acknowledged ones are hidden.
+    val errorNotice = remember(screenText, pane?.agent) {
+        pane?.let { com.billmongan.herdrdroid.herdr.agentErrorNotice(screenText, it.agent, it.agentName) }
+    }.takeIf { parsedPrompt == null && vm.paneReadProblem == null }
+    val agentError: String? = errorNotice?.summary
+    val shownError = errorNotice?.takeUnless { pane != null && vm.errorAcknowledged(vm.current?.id, pane, it) }
     // 2.1.4 (Bill: "it showed the orange ... waiting on you icon but didn't actually render the
     // question in chat"): while the pane shows as needing you, a card is always there, the parsed
     // one or one that says the question couldn't be read, with Show terminal.
@@ -402,20 +407,16 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 Text("OpenCode's background drawer is open. Close it in Terminal to resume chat.", color = Palette.Muted)
                 TextButton(onClick = { hermesLive = false; fullTerminal = true; termFollow = true }) { Text("Show terminal") }
             }
-        } else agentError?.let { why ->
-            // An agent's error (1.4.2): a banner with the way to the terminal, never a question card.
-            Surface(shape = RoundedCornerShape(14.dp), color = Palette.OrangeSoft, border = BorderStroke(1.dp, Palette.Orange)) {
-                Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Icon(Icons.Filled.Warning, contentDescription = null, tint = Palette.OrangeInk, modifier = Modifier.size(18.dp))
-                        Text("${pane?.agentName ?: "The agent"}: $why", color = Palette.OrangeInk, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                    }
-                    Text("This is an error on the agent's screen, not a question. The terminal shows the whole message.",
-                        color = Palette.Muted, fontSize = 12.5.sp)
-                    if (!fullTerminal) TextButton(onClick = { hermesLive = false; fullTerminal = true }) { Text("Show terminal") }
-                }
-            }
-        }
+        } else pane?.let { pn -> shownError?.let { notice ->
+            // An agent's error (1.4.2; its own card since 2.1.6): never a question card, no answer keys.
+            AgentErrorCardView(
+                title = notice.title, summary = notice.summary, message = notice.message,
+                onAcknowledge = { vm.acknowledgeError(pn, notice) },
+                onRetry = vm.retryTextFor(pn, notice)?.let { { vm.retryAfterError(pn, notice) } },
+                onSwitchModel = if (notice.switchModel && status != Status.WORKING) ({ choosingModel = true }) else null,
+                onShowTerminal = if (!fullTerminal) ({ hermesLive = false; fullTerminal = true; termFollow = true }) else null,
+            )
+        } }
         // 2.1.0: a draft typed at the computer, with Send draft and Clear draft. Only while no
         // question is open, from this pane's own latest read.
         vm.paneDraft?.takeIf { prompt == null && !fullTerminal && !backgroundDrawer && usageOverlay == null &&

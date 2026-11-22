@@ -4456,8 +4456,12 @@ class AppViewModel internal constructor(
                     if (text.isBlank()) { Notify.unread(app, serverId, serverLabel, p.id, p.agentName); return@launch }
                     val prompt = detectPrompt(text, blocked = true, agent = p.agent)
                     // An agent's error, not a question (1.4.2): its own alert, once per change of state.
-                    val error = if (prompt == null) com.billmongan.herdrdroid.herdr.detectAgentError(text) else null
-                    if (error != null) { Notify.agentError(app, serverId, serverLabel, p.id, p.agentName, error); return@launch }
+                    // 2.1.6: OpenCode's failed turn too, read whole; one already acknowledged raises nothing.
+                    val notice = if (prompt == null) com.billmongan.herdrdroid.herdr.agentErrorNotice(text, p.agent, p.agentName) else null
+                    if (notice != null) {
+                        if (!errorAcknowledged(serverId, p, notice)) Notify.agentError(app, serverId, serverLabel, p.id, p.agentName, notice.summary)
+                        return@launch
+                    }
                     // "Blocked" with nothing on screen that asks is a stale status, not a question (1.4.2):
                     // no alert. A screen that couldn't be read still alerts, saying so.
                     if (prompt == null && text.isNotBlank()) { com.billmongan.herdrdroid.diag.DiagLog.log("watch", "${p.id}: herdr says blocked, but nothing on screen asks; no alert"); return@launch }
@@ -5068,7 +5072,10 @@ class AppViewModel internal constructor(
     private var queueJob: Job? = null
 
     internal fun blocksNormalSend(pane: Pane, screen: String, liveOpenCode: Boolean = false): Boolean =
-        (pane.status == Status.NEEDS_YOU && !(liveOpenCode && isOpenCode(pane.agent) && openCodeEmptyComposer(screen))) ||
+        // 2.1.6: herdr keeps an OpenCode pane blocked after a failed turn (and after /new); its empty
+        // input box with no dialog on this screen is not a question, so the message may go in.
+        (pane.status == Status.NEEDS_YOU && !(isOpenCode(pane.agent) &&
+            ((liveOpenCode && openCodeEmptyComposer(screen)) || com.billmongan.herdrdroid.herdr.openCodeComposerEmpty(screen)))) ||
             openCodeBackgroundDrawer(pane.agent, screen) ||
             usageDialogShown(pane.agent, screen) ||
             (pane.agent == "hermes" && hermesUsageWaiting(screen)) ||
@@ -5256,6 +5263,8 @@ class AppViewModel internal constructor(
     }
 
     fun shownStatus(p: Pane, serverId: String? = current?.id): Status {
+        // 2.1.6: herdr's stale "blocked" on an OpenCode pane whose screen shows no dialog is shown as idle.
+        if (p.openCodeStaleBlock && p.status == Status.NEEDS_YOU) return Status.IDLE
         val here = serverId == current?.id
         if (here && requiresLivePiQuestion(p) && currentPiQuestion(p) != null) return Status.NEEDS_YOU
         if (here && p.status == Status.NEEDS_YOU && hermesState != Status.NEEDS_YOU) {
@@ -5423,6 +5432,68 @@ class AppViewModel internal constructor(
         val md = toMarkdown(title, agent, items)
         val name = title.replace(Regex("[^A-Za-z0-9._-]+"), "-").trim('-').take(60).ifBlank { "conversation" } + ".md"
         com.billmongan.herdrdroid.ui.shareBytes(context, md.toByteArray(), name, "text/markdown", open = false)
+    }
+
+    // -- Agent errors (2.1.6) ------------------------------------------------------------------------
+
+    /**
+     * Errors acknowledged on the phone, by server, pane, session and the error's own identity
+     * (2.1.6, Bill: "should clear the error on the pane when I acknowledge the notice in the app").
+     * OpenCode draws its error in the transcript, where no key removes it, so clearing it means the
+     * app stops showing it: the same error stays cleared, and a new one shows again.
+     */
+    private val acknowledgedErrors = mutableStateMapOf<String, Long>()
+    /** Errors already retried once, by the same key: Retry never sends twice. */
+    private val retriedErrors = mutableStateMapOf<String, Long>()
+
+    private fun errorKey(serverId: String?, pane: Pane, notice: com.billmongan.herdrdroid.herdr.AgentErrorNotice) =
+        listOf(serverId.orEmpty(), pane.id, pane.sessionId.orEmpty(), notice.identity).joinToString("|")
+
+    internal fun errorAcknowledged(serverId: String?, pane: Pane, notice: com.billmongan.herdrdroid.herdr.AgentErrorNotice): Boolean =
+        errorKey(serverId, pane, notice) in acknowledgedErrors
+
+    /** The error card for the open pane, or null when there is none or it was acknowledged. */
+    fun errorNoticeFor(pane: Pane, screen: String): com.billmongan.herdrdroid.herdr.AgentErrorNotice? =
+        com.billmongan.herdrdroid.herdr.agentErrorNotice(screen, pane.agent, pane.agentName)
+            ?.takeUnless { errorAcknowledged(current?.id, pane, it) }
+
+    /** Acknowledge: the card goes, and so does the pane's error alert. Nothing is typed into the pane. */
+    fun acknowledgeError(pane: Pane, notice: com.billmongan.herdrdroid.herdr.AgentErrorNotice) {
+        val serverId = current?.id
+        acknowledgedErrors[errorKey(serverId, pane, notice)] = System.currentTimeMillis()
+        com.billmongan.herdrdroid.diag.DiagLog.log("prompt", "${pane.id}: error acknowledged (${notice.summary})")
+        if (serverId != null) runCatching { Notify.clear(getApplication<Application>(), serverId, pane.id) }
+    }
+
+    /**
+     * The message Retry would resend, or null: the message the phone itself last sent to [pane]
+     * on this server, when it is exactly the one above OpenCode's failed turn, and it was not
+     * retried for this error already. A message from elsewhere (typed at the computer, or the app's
+     * own notice) is never resent.
+     */
+    fun retryTextFor(pane: Pane, notice: com.billmongan.herdrdroid.herdr.AgentErrorNotice): String? {
+        val shown = notice.retryText ?: return null
+        val (paneId, text) = lastSent ?: return null
+        if (paneId != pane.id || errorKey(current?.id, pane, notice) in retriedErrors) return null
+        fun norm(t: String) = t.trim().replace(Regex("\\s+"), " ")
+        return text.takeIf { norm(it) == norm(shown) }
+    }
+
+    /**
+     * Retry: the same message once more, through the usual guarded send (a fresh read, no dialog,
+     * an empty input box, held while a draft is typed), only while the agent is not working.
+     */
+    fun retryAfterError(pane: Pane, notice: com.billmongan.herdrdroid.herdr.AgentErrorNotice) {
+        val text = retryTextFor(pane, notice) ?: return
+        val fresh = pane(pane.id) ?: return
+        val shown = shownStatus(fresh)
+        if (shown == Status.WORKING || shown == Status.NEEDS_YOU) {
+            error = "${pane.agentName} isn't idle. Retry once it is."
+            return
+        }
+        retriedErrors[errorKey(current?.id, pane, notice)] = System.currentTimeMillis()
+        com.billmongan.herdrdroid.diag.DiagLog.log("send", "${pane.id}: retry after error (${notice.summary})")
+        sendMessage(fresh, text)
     }
 
     // -- Model -------------------------------------------------------------------------------------
