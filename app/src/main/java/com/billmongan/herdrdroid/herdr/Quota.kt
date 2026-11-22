@@ -181,7 +181,14 @@ private val CLAUDE_OPTION = Regex("""^\d+[.)]\s""")
  * Only known live layouts may authorize an explicit Escape. For Claude that is its usage panel, or
  * (2.1.4) its /btw side-question panel ([claudeBtwOverlay]), which Esc closes the same way.
  */
-internal fun dismissibleUsageFrame(agent: String?, visible: String): List<String>? = when (agent) {
+internal fun dismissibleUsageFrame(agent: String?, visible: String): List<String>? =
+    exactUsageFrame(agent, visible) ?: infoPanelOn(agent, visible)?.takeIf { it.known }?.frame
+
+/**
+ * The exact layouts known in 2.1.4 and 2.1.5. 2.2.1: kept as positive evidence for [infoPanelOn],
+ * which also recognizes the other informational panels structurally, for every agent.
+ */
+internal fun exactUsageFrame(agent: String?, visible: String): List<String>? = when (agent) {
     "claude" -> claudeUsageFrame(visible)?.takeIf { frame ->
         CLAUDE_USAGE_HEADER.matches(frame.first()) && frame.drop(1).dropLast(1).all {
             CLAUDE_USAGE_SECTION.matches(it) || CLAUDE_USAGE_ROW.matches(it) ||
@@ -274,13 +281,16 @@ internal fun opensUsageDialog(agent: String?, text: String): Boolean {
  * close hint (2.1.4). For holding sends and hiding the draft card only, never for sending a key.
  */
 internal fun usageScreenShown(agent: String?, visible: String): Boolean =
-    dismissibleUsageFrame(agent, visible) != null || (agent in setOf("grok", "agy") && usageDialogHint(agent, visible))
+    dismissibleUsageFrame(agent, visible) != null || (agent in setOf("grok", "agy") && usageDialogHint(agent, visible)) ||
+        infoPanelOn(agent, visible) != null
 
 /**
  * A loose sign that an agent's usage dialog is still drawn, used only to refuse to call it closed
  * (never to send a key): its own close hint is on screen even though the strict layout didn't match.
  */
 internal fun usageDialogHint(agent: String?, visible: String): Boolean {
+    // 2.2.1: any informational panel that may be open, for every agent ([infoPanelOn]).
+    if (infoPanelOn(agent, visible) != null) return true
     val tail = stripAnsi(visible).lines().takeLast(40).joinToString("\n")
     return when (agent) {
         "grok" -> tail.contains("c copy session ID") && tail.contains("Esc close")

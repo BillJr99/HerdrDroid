@@ -274,6 +274,10 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     val usageOverlay = vm.usageOverlayFor(paneId)
     val dismissingUsage = vm.usageDismissInFlight(paneId)
     val usageBlocksInput = usageOverlay != null || dismissingUsage
+    // 2.2.1: an informational panel read off the last screen (status, session info, help...), for its card.
+    val shownPanel = remember(screenText, pane?.agent) {
+        if (vm.paneReadProblem == null) com.billmongan.herdrdroid.herdr.infoPanelOn(pane?.agent, screenText) else null
+    }
     val waitingForHermes = vm.waitingForHermesComposer(paneId)
     val parsedPrompt: Prompt? = if (typingAnswer || usageOverlay != null) null
         else if (vm.paneReadProblem != null) (if (status == Status.NEEDS_YOU) Prompt("This agent is waiting for you.", emptyList()).forCard() else null)
@@ -607,8 +611,11 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             Text("Checking the live pane…", color = Palette.Muted, fontSize = 12.5.sp,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
         }
-        if (usageBlocksInput) {
-            UsageOverlayBanner(dismissingUsage, btw = usageOverlay?.overlay?.visible?.let { com.billmongan.herdrdroid.herdr.claudeBtwOverlay(it) } != null) {
+        if (usageBlocksInput || shownPanel != null) {
+            UsageOverlayBanner(dismissingUsage, btw = usageOverlay?.overlay?.visible?.let { com.billmongan.herdrdroid.herdr.claudeBtwOverlay(it) } != null,
+                panel = usageOverlay?.let { com.billmongan.herdrdroid.herdr.infoPanelOn(it.agent, it.overlay.visible) } ?: shownPanel,
+                agentName = pane?.agentName ?: "The agent", problem = vm.panelCloseProblem(paneId), canClose = usageOverlay != null,
+                onShowTerminal = if (!fullTerminal) ({ fullTerminal = true; termFollow = true }) else null) {
                 usageOverlay?.let(vm::dismissUsage)
             }
         }
@@ -1074,12 +1081,58 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
 private val KEY_HEIGHT = 42.dp
 
 @Composable
-internal fun UsageOverlayBanner(dismissing: Boolean, btw: Boolean = false, onDismiss: () -> Unit) {
+internal fun UsageOverlayBanner(
+    dismissing: Boolean,
+    btw: Boolean = false,
+    /** 2.2.1: an informational panel read off the screen; null keeps the 2.1.4 usage banner. */
+    panel: com.billmongan.herdrdroid.herdr.InfoPanel? = null,
+    agentName: String = "The agent",
+    /** Why the last close didn't finish, if it didn't. */
+    problem: String? = null,
+    /** The panel is positively identified on the live screen, so Close panel may press Esc. */
+    canClose: Boolean = true,
+    onShowTerminal: (() -> Unit)? = null,
+    onDismiss: () -> Unit,
+) {
+    if (panel != null && !btw) {
+        PanelBanner(dismissing, panel, agentName, problem, canClose, onShowTerminal, onDismiss)
+        return
+    }
     Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
         // 2.1.4: Claude's /btw panel too; its exchange is in the chat, and Close shuts the panel.
         Text(if (btw) "Side question (/btw) is open; its answer is in the chat" else "Usage panel is open", Modifier.weight(1f), color = Palette.Ink)
         TextButton(onClick = onDismiss, enabled = !dismissing) {
             Text(if (dismissing) (if (btw) "Closing…" else "Dismissing…") else if (btw) "Close" else "Dismiss usage")
+        }
+    }
+}
+
+/**
+ * 2.2.1: an agent's informational panel (status, usage, session info, help...) over its composer.
+ * Positively identified: "<agent>'s <panel> is open" with Close panel (one checked Esc, at most two).
+ * Otherwise, or when a close didn't finish: "<agent> has a <panel> open; close it at the computer".
+ */
+@Composable
+internal fun PanelBanner(
+    closing: Boolean,
+    panel: com.billmongan.herdrdroid.herdr.InfoPanel,
+    agentName: String,
+    problem: String?,
+    canClose: Boolean,
+    onShowTerminal: (() -> Unit)?,
+    onClose: () -> Unit,
+) {
+    val closable = canClose && panel.known
+    val label = panel.kind.label
+    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
+        Text(
+            if (closable && problem == null) "$agentName's $label is open" else "$agentName has a $label open; close it at the computer",
+            color = Palette.Ink,
+        )
+        (problem ?: panel.why?.takeIf { !closable })?.let { Text(it.replaceFirstChar(Char::uppercase), color = Palette.Muted, fontSize = 12.5.sp) }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (closable) TextButton(onClick = onClose, enabled = !closing) { Text(if (closing) "Closing…" else "Close panel") }
+            onShowTerminal?.let { TextButton(onClick = it) { Text("Show terminal") } }
         }
     }
 }

@@ -1,0 +1,46 @@
+
+  ~/work/sample                                                                                            137k / 256k │ [Dashboard]
+
+
+     ❯ neutral sample text of an earlier prompt kept for its shape only, nothing more here now.                   1:58 PM
+       neutral sample text of an earlier prompt kept for its shape only neutral sample text of it.
+       neutral sample text kept for its shape …
+
+
+     ◆ Thought for 0.6s
+
+     ok                                                                                                                    1:58 PM
+
+     Worked for 11s
+
+
+
+
+
+
+
+
+
+
+
+
+
+  ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+  │ Session info                                                                                                                   │
+  │                                                                                                                                │
+  │ Session ID   00000000-0000-0000-0000-000000000000                                                                              │
+  │ Model        Grok 4.7 (high)                                                                                                   │
+  │ Auth         sample                                                                                                            │
+  │ Turns        3                                                                                                                 │
+  │ Context      137k / 256k (53%)                                                                                                 │
+  │                                                                                                                                │
+  │ click or drag to copy                                                                                                          │
+  │                                                                                                                                │
+  │ ↑/↓ scroll  |  c copy session ID  |  y copy all  |  Esc close                                                                  │
+  └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+  ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ ❯                                                                                                                              │
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────── Grok 4.7 (high) · auto-review ─╯
+
+  Shift+Tab:mode  │  Ctrl+.:shortcuts
