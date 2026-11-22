@@ -7,6 +7,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Text
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsOff
@@ -61,23 +64,36 @@ import org.junit.runner.RunWith
 class ComposeUiTest {
     @get:Rule val rule = createComposeRule()
 
-    @Test fun agentProposalReviewShowsExactTextAndNeedsASelectedDestinationAndSeparateSend() {
-        val destinations = listOf("Claude on Other server", "Codex on Another server")
-        val sends = mutableListOf<String>()
+    /** 2.1.5: the cross-server card shows source, destination, message and code, offers a choice when asked, and only Cancel or Close. */
+    @Test fun crossServerCardShowsTheMessageAndCodeAndOffersChoicesAndCancel() {
         val text = "Review the build.\nKeep  both spaces."
+        val choices = listOf("Claude on Other server · h:22 · w1:p1", "Codex on Another server · h:22 · w1:p2")
+        val picked = mutableListOf<String>()
+        var cancelled = 0
+        var state by mutableStateOf(AppViewModel.CrossServerState.PENDING)
+        var note by mutableStateOf<String?>(null)
         rule.setContent {
-            AgentMessageReview("Claude on Source server", text, destinations, onDismiss = {},
-                onSelect = { true }, onSend = { sends += it; com.billmongan.herdrdroid.herdr.RelayResult.UNCERTAIN })
+            Box(Modifier.fillMaxSize().verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+                CrossServerCardView("Claude on Source server", "Codex", null, text, "K7P3QX", state, note,
+                    if (state == AppViewModel.CrossServerState.PENDING) choices else emptyList(),
+                    onChoose = { picked += it }, onCancel = { cancelled++ }, onClose = {})
+            }
         }
+        rule.onNodeWithText("Cross-server message").assertIsDisplayed()
         rule.onNodeWithText(text).assertIsDisplayed()
-        rule.onNodeWithText("Claude on Source server", substring = true).assertIsDisplayed()
-        rule.onNodeWithText("Send message").assertIsNotEnabled()
-        rule.onNodeWithText(destinations[1]).performClick()
-        rule.runOnIdle { assertTrue(sends.isEmpty()) }
-        rule.onNodeWithText("Send message").performClick()
-        rule.onNodeWithText("Could not confirm delivery.", substring = true).assertIsDisplayed()
-        rule.onNodeWithText("Send message").assertIsNotEnabled()
-        rule.runOnIdle { assertEquals(listOf(destinations[1]), sends) }
+        rule.onNodeWithText("From: Claude on Source server").assertIsDisplayed()
+        rule.onNodeWithText("To: not chosen", substring = true).assertIsDisplayed()
+        rule.onNodeWithText("Code: K7P3QX").assertIsDisplayed()
+        rule.onNodeWithText("type K7P3QX in this chat", substring = true).assertIsDisplayed()
+        rule.onNodeWithText(choices[1]).performScrollTo().performClick()
+        rule.runOnIdle { assertEquals(listOf(choices[1]), picked) }
+        rule.onNodeWithText("Cancel").performScrollTo().performClick()
+        rule.runOnIdle { assertEquals(1, cancelled) }
+        rule.runOnIdle { state = AppViewModel.CrossServerState.SENT; note = "Message sent." }
+        rule.onNodeWithText("Message sent.").performScrollTo().assertIsDisplayed()
+        rule.onNodeWithText("Close").performScrollTo().assertIsDisplayed()
+        rule.onAllNodesWithText("Cancel").assertCountEquals(0)
+        rule.onAllNodesWithText(choices[0]).assertCountEquals(0)
     }
 
     /** 2.1.1 acceptance D2: four FixtureB panes were eligible and the review showed three (six here, past the old 160 dp box). */
@@ -894,13 +910,38 @@ class ComposeUiTest {
         rule.onNodeWithContentDescription("More").performClick()
         rule.onNodeWithText("Reading mode").assertDoesNotExist()
         rule.onNodeWithText("Leave reading mode").assertDoesNotExist()
-        rule.onNodeWithText("Running underneath").assertIsDisplayed()
-        rule.onNodeWithText("Running underneath").performClick()
+        // 2.1.5: the running pill replaces the "Running underneath" menu entry.
+        rule.onNodeWithText("Running underneath").assertDoesNotExist()
+        rule.onNodeWithText("Usage history, all agents").performClick()
         rule.onNodeWithText("⋯").performClick()
         rule.onNodeWithText("Reading mode").assertDoesNotExist()
         rule.onNodeWithText("Snippets").assertIsDisplayed()
         rule.onNodeWithText("Snippets").performClick()
         rule.onNodeWithText("Synthetic draft").assertExists()
+    }
+
+    @Test fun runningPillOpensWhatIsRunningAndMenuHasNoEntry() {
+        val app = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.app.Application>()
+        val vm = rule.runOnUiThread { com.billmongan.herdrdroid.AppViewModel(app) }
+        val proc = com.billmongan.herdrdroid.herdr.ProcInfo(4242, 1, 1, "npm", "npm test", 30, 1.0, 2048)
+        val sub = com.billmongan.herdrdroid.herdr.SubagentInfo("a1", "a1.jsonl", "Review", 0, true, 3)
+        val work = com.billmongan.herdrdroid.herdr.WorkInfo(listOf(proc), listOf(sub), emptyList(), agentOwnedOnly = true)
+        val shown = androidx.compose.runtime.mutableStateOf(false)
+        rule.setContent {
+            if (!shown.value) AgentScreen(vm, "fixture:pane")
+            else runningPill(work, null, 0)?.let { RunningPillChip(vm, "fixture:pane", it) }
+        }
+        rule.onNodeWithContentDescription("More").performClick()
+        rule.onNodeWithText("Running underneath").assertDoesNotExist()
+        rule.onNodeWithText("Usage history, all agents").performClick()
+        rule.runOnIdle { shown.value = true }
+        val pill = rule.onNodeWithContentDescription("1 shell and 1 subagent running")
+        pill.assertIsDisplayed()
+        rule.onNodeWithText("1 sh - 1 sub").assertIsDisplayed()
+        val labels = pill.fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsActions.OnClick].label
+        assertEquals("Show what's running", labels)
+        pill.performClick()
+        rule.runOnIdle { assertEquals(Screen.Work("fixture:pane"), vm.screen) }
     }
 
     @Test fun grokQueueDoesNotSupplyMissingQuestionOrChoices() {

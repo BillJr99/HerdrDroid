@@ -1,6 +1,8 @@
 package com.billmongan.herdrdroid.ui
 
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import com.billmongan.herdrdroid.herdr.screenLinks
 import com.billmongan.herdrdroid.herdr.openCodeBackgroundDrawer
 import androidx.compose.foundation.layout.PaddingValues
@@ -283,6 +285,12 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     fun send() {
         if (usageBlocksInput || backgroundDrawer || (openingPreview != null && prompt != null)) return
         val draft = answerDraft
+        // 2.1.5: a card's code typed here confirms that card and never reaches the pane.
+        val typed = (draft?.text ?: normalMessage).trim()
+        if (typed.isNotEmpty() && vm.crossServerCodeReply(paneId, typed)) {
+            if (draft != null) answerDraft = draft.withText("") else normalMessage = ""
+            return
+        }
         if (draft != null) {
             val text = draft.text.trim()
             if (text.isNotEmpty() && !vm.answerInFlight(paneId)) {
@@ -502,17 +510,11 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             )
             // Shells and subagents still running under the agent, as one small pill in the header
             // (a row of its own appeared and vanished as they started and finished, moving the chat).
+            // 2.1.5: the pill is the only way into the view; the "Running underneath" menu entry is gone
+            // (Bill, 2026-11-22). With nothing running it stays as a muted "N done" while the session has
+            // finished work to read, and is hidden when there is nothing at all.
             vm.work[paneId]?.let { w ->
-                val subs = w.activeSubagents
-                val shells = w.activeProcs(pane?.agent).size
-                if (subs > 0 || shells > 0) {
-                    Text(
-                        "$shells sh - $subs sub",
-                        color = Palette.Blue, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
-                        modifier = Modifier.clip(RoundedCornerShape(12.dp)).background(Palette.BlueSoft)
-                            .clickable { vm.screen = Screen.Work(paneId) }.padding(horizontal = 8.dp, vertical = 4.dp),
-                    )
-                }
+                runningPill(w, pane?.agent, vm.endedProcs[paneId].orEmpty().size)?.let { RunningPillChip(vm, paneId, it) }
             }
             // Everything else lives in one menu, so the header stays readable on a phone.
             Box {
@@ -522,19 +524,12 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     // of the chat, out of sight when the chat sits at the bottom, so it seemed to do nothing
                     // (Bill, 2026-11-13). Every agent's usage is on the screen below.
                     DropdownMenuItem(text = { Text("Usage history, all agents") }, onClick = { menu = false; vm.screen = Screen.Usage })
-                    if (!live && vm.canArmAgentMessage(paneId) && vm.agentMessage(paneId) == null) {
-                        DropdownMenuItem(text = { Text("Listen for agent proposal") }, onClick = {
-                            menu = false
-                            vm.armAgentMessage(paneId)
-                        })
-                    }
                     if (pane != null) DropdownMenuItem(text = { Text("Files") }, onClick = { menu = false; vm.openFiles(pane.cwd.ifBlank { "~" }) })
                     if (pane?.agent != null && vm.hasTranscriptReader(paneId)) {
                         DropdownMenuItem(text = { Text("History") }, onClick = { menu = false; vm.screen = Screen.History(paneId) })
                     }
                     if (pane?.agent != null) DropdownMenuItem(text = { Text("Model…") }, onClick = { menu = false; choosingModel = true })
                     if (structured && vm.transcriptItems.isNotEmpty()) DropdownMenuItem(text = { Text("Find in chat") }, onClick = { menu = false; finding = true })
-                    DropdownMenuItem(text = { Text("Running underneath") }, onClick = { menu = false; vm.screen = Screen.Work(paneId) })
                     // 1.4.0: one pane's last screens, the parser's decision and the chat cursor, with
                     // secrets taken out, for a bug report. Only to this phone's clipboard or share sheet.
                     DropdownMenuItem(text = { Text("Copy debug bundle") }, onClick = {
@@ -582,16 +577,12 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 }
             }
         }
-        // What the agent has running underneath: tap to drill in.
-        // One chip: how much is still active underneath (subagents, background tasks, processes the
-        // agent started). It drops as they finish; tap for active and finished.
-        // Two bubbles on their own row under the header: the shells the agent started that are
-        // still running, and its running subagents. Tap either for active and finished.
         HorizontalDivider(color = Palette.Line)
         ServerBanners(vm)
         // A held send's problem shows only in its own pane's chat, on its own server (2.1.2).
         vm.sendNoticeFor(paneId)?.let { ErrorBanner(it) { vm.dismissSendNotice(paneId) } }
-        if (!live) AgentMessagePanel(vm, paneId)
+        // 2.1.5: cross-server cards from frames the agent rendered in this chat.
+        if (!live) CrossServerPanel(vm, paneId)
         if (openingPreview != null) {
             Text("Checking the live pane…", color = Palette.Muted, fontSize = 12.5.sp,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
@@ -868,7 +859,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 onStop = pane?.let { p -> { vm.stopPane(p) } },
                 // herdr's agent prompt reaches a working agent, so a message sent now steers it.
                 steerLabel = if (pane?.agent != null && !typingAnswer && prompt == null) "Steer" else null,
-                onQueueWhenIdle = if (!typingAnswer && !usageBlocksInput) ({ vm.enqueue(paneId, normalMessage.trim()); normalMessage = "" }) else null,
+                onQueueWhenIdle = if (!typingAnswer && !usageBlocksInput) ({ composerSend(vm, paneId, normalMessage.trim()) { vm.enqueue(paneId, it) }; normalMessage = "" }) else null,
                 onAttach = { uri -> vm.attach(uri) { path -> editMessage((message.trimEnd() + " " + path).trim() + " ") } },
                 attachBusy = vm.uploading,
                 commands = SlashCommands.forAgent(pane?.agent),
@@ -1717,4 +1708,37 @@ internal fun keysLabel(nav: List<String>?, c: com.billmongan.herdrdroid.herdr.Ch
     if (nav == null) return if (c.pressEnter) "sends ${c.keys} + Enter" else "sends ${c.keys}"
     val names = nav.map { when (it) { "up" -> "↑"; "down" -> "↓"; "left" -> "←"; "right" -> "→"; "enter" -> "Enter"; "esc" -> "Esc"; else -> it } }
     return "sends " + names.joinToString(" ")
+}
+
+/** The header pill; a tap opens what runs under the pane. */
+@Composable
+internal fun RunningPillChip(vm: AppViewModel, paneId: String, pill: RunningPill) {
+    Text(
+        pill.label,
+        color = if (pill.active) Palette.Blue else Palette.Muted,
+        fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
+        modifier = Modifier.clip(RoundedCornerShape(12.dp)).background(if (pill.active) Palette.BlueSoft else Palette.Line)
+            .clickable(onClickLabel = "Show what's running", role = androidx.compose.ui.semantics.Role.Button) { vm.screen = Screen.Work(paneId) }
+            .semantics { contentDescription = pill.description }
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+    )
+}
+
+/** The header pill for what runs under an agent: its text, its spoken description, and whether anything is active. */
+internal data class RunningPill(val label: String, val description: String, val active: Boolean)
+
+/**
+ * Shells (processes the agent started, or its running background tasks when those are more) and
+ * running subagents. With none, a muted count of finished work so its output stays reachable; null
+ * when there is nothing to show.
+ */
+internal fun runningPill(w: com.billmongan.herdrdroid.herdr.WorkInfo, agent: String?, endedProcs: Int): RunningPill? {
+    val subs = w.activeSubagents
+    val shells = maxOf(w.activeProcs(agent).size, w.runningTasks)
+    if (subs > 0 || shells > 0) {
+        fun n(k: Int, one: String) = "$k $one" + if (k == 1) "" else "s"
+        return RunningPill("$shells sh - $subs sub", n(shells, "shell") + " and " + n(subs, "subagent") + " running", true)
+    }
+    val done = w.subagents.count { !it.active } + w.tasks.count { !it.running } + endedProcs
+    return if (done > 0) RunningPill("$done done", "Nothing running, $done finished", false) else null
 }
