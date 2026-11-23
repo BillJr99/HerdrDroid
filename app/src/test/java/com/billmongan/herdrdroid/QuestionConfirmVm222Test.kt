@@ -138,14 +138,16 @@ class QuestionConfirmVm222Test {
         assertEquals(null, f.vm.paneTextTarget)
         val target = targetFor("ask")
         val live = checkNotNull(detectPrompt(full, true, "gemini"))
-        fun state() = "screen ${f.vm.screen}, text ${f.vm.paneText.length}, preview ${f.vm.prefetchedPaneText("ask")?.length}, " +
-            "card ${f.vm.questionCardFor("ask", f.vm.cardParse("ask", full), "A")?.let { if (it.readingQuestion) "reading" else "shown" }}"
-        assertTrue(state(), f.vm.voiceCardStillReading(target))
-        assertFalse(state(), f.vm.voiceCardFitsChat(target, live))
+        // Before any read (the opening preview here shows no card): nothing to answer, refused.
+        assertFalse(f.vm.voiceCardFitsChat(target, live))
         f.vm.readPane("ask")
-        // Whatever the pane's target, one read of the screen (after the preview, two) is checked as Chat shows it.
-        assertEquals(state(), f.vm.questionCardFor("ask", f.vm.cardParse("ask", f.vm.paneText), "A")?.readingQuestion == true,
-            f.vm.voiceCardStillReading(target))
+        // One read: the card says it is reading the question. With the pane's target unset (OpenCode's
+        // question from the recent screen without its live viewport), it is still reading, and refused.
+        assertTrue(f.vm.voiceCardStillReading(target))
+        assertFalse(f.vm.voiceCardFitsChat(target, live))
+        f.state("paneTextTarget", null)
+        assertTrue(f.vm.voiceCardStillReading(target))
+        assertFalse(f.vm.voiceCardFitsChat(target, live))
         // Without a card on screen there is nothing to answer: still refused.
         f.screens["ask"] = "Earlier reply line.\n\n> "
         f.vm.readPane("ask"); f.vm.readPane("ask")
