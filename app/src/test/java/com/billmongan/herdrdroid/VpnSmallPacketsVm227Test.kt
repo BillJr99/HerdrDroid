@@ -37,34 +37,49 @@ class VpnSmallPacketsVm227Test {
     @After fun close() {
         vms.forEach { it.viewModelScope.cancel() }
         shadowOf(Looper.getMainLooper()).idle()
-        VpnSmallPackets.enabled = true
+        VpnSmallPackets.enabled = false
+        VpnSmallPackets.cellularEnabled = false
     }
 
-    @Test fun onByDefaultForAnExistingInstall() {
-        // An install from before 2.2.7 has other prefs saved but never this key.
+    /** 2.2.7 (Bill, after testing): both automatic settings are off unless turned on, also for existing installs. */
+    @Test fun offByDefaultForAnExistingInstall() {
         AppPrefs(app).alertUsage = false
         val vm = newVm()
-        assertTrue(vm.smallPacketsOnVpn)
-        assertTrue(AppPrefs(app).smallPacketsOnVpn)
-        assertTrue(VpnSmallPackets.enabled)
+        assertFalse(vm.smallPacketsOnVpn)
+        assertFalse(vm.smallPacketsOnCellular)
+        assertFalse(AppPrefs(app).smallPacketsOnVpn)
+        assertFalse(AppPrefs(app).smallPacketsOnCellular)
+        assertFalse(VpnSmallPackets.enabled)
+        assertFalse(VpnSmallPackets.cellularEnabled)
+        // Every connection starts with normal packets.
+        assertNull(HerdrSsh("127.0.0.1", 22, "u", Credentials(null, null), null, { null }, networkType = { "vpn" }, overCellular = { true }).activeMss)
     }
 
-    @Test fun theSettingPersistsAndDrivesEveryConnect() {
+    @Test fun theSettingsPersistAndDriveEveryConnect() {
         val vm = newVm()
-        vm.changeSmallPacketsOnVpn(false)
-        assertFalse(AppPrefs(app).smallPacketsOnVpn)
-        assertFalse(VpnSmallPackets.enabled)
-        // A connection built the normal way (default providers) reads the global setting at connect.
-        val s = HerdrSsh("127.0.0.1", 22, "u", Credentials(null, null), null, { null }, networkType = { "vpn" })
-        assertNull(s.activeMss)
+        // A connection built the normal way (default providers) reads the global settings at connect.
+        val vpn = HerdrSsh("127.0.0.1", 22, "u", Credentials(null, null), null, { null }, networkType = { "vpn" })
+        val cell = HerdrSsh("127.0.0.1", 22, "u", Credentials(null, null), null, { null }, networkType = { "cellular" }, overCellular = { true })
+        assertNull(vpn.activeMss)
+        vm.changeSmallPacketsOnVpn(true)
+        assertTrue(AppPrefs(app).smallPacketsOnVpn)
+        assertEquals(1200, vpn.activeMss)
+        assertNull("the VPN setting is not the cellular one", cell.activeMss)
+        vm.changeSmallPacketsOnCellular(true)
+        assertTrue(AppPrefs(app).smallPacketsOnCellular)
+        assertEquals(MssChoice.CELLULAR_AUTO, cell.mssChoice().reason)
 
-        VpnSmallPackets.enabled = true // as if the process restarted
+        VpnSmallPackets.enabled = false // as if the process restarted
+        VpnSmallPackets.cellularEnabled = false
         val again = newVm()
-        assertFalse("restored from the saved setting", again.smallPacketsOnVpn)
-        assertFalse(VpnSmallPackets.enabled)
-        again.changeSmallPacketsOnVpn(true)
-        assertTrue(newVm().smallPacketsOnVpn)
-        assertEquals(1200, s.activeMss)
+        assertTrue("restored from the saved setting", again.smallPacketsOnVpn)
+        assertTrue(again.smallPacketsOnCellular)
+        assertTrue(VpnSmallPackets.enabled && VpnSmallPackets.cellularEnabled)
+        again.changeSmallPacketsOnVpn(false)
+        again.changeSmallPacketsOnCellular(false)
+        assertFalse(newVm().smallPacketsOnVpn)
+        assertNull(vpn.activeMss)
+        assertNull(cell.activeMss)
     }
 
     private fun signedIn(vm: AppViewModel, ssh: HerdrSsh) {
@@ -78,6 +93,7 @@ class VpnSmallPacketsVm227Test {
 
     @Test fun theFallbackNeverFiresWhenVpnAutoWasInEffect() {
         val vm = newVm()
+        vm.changeSmallPacketsOnVpn(true)
         DiagLog.clear()
         val ssh = HerdrSsh(a.host, a.port, a.user, Credentials(null, null), null, { null }, networkType = { "vpn" })
         assertEquals(MssChoice.VPN_AUTO, ssh.mssChoice().reason)
@@ -90,6 +106,19 @@ class VpnSmallPacketsVm227Test {
         assertTrue(DiagLog.text().contains("fallback=skipped reason=vpn-auto trigger=link-drop"))
         assertNull(vm.smallPacketOffer)
         assertEquals(MssChoice(1200, MssChoice.VPN_AUTO, "vpn"), ssh.mssChoice())
+    }
+
+    @Test fun theFallbackNeverFiresWhenCellularAutoWasInEffect() {
+        val vm = newVm()
+        vm.changeSmallPacketsOnCellular(true)
+        DiagLog.clear()
+        val ssh = HerdrSsh(a.host, a.port, a.user, Credentials(null, null), null, { null }, networkType = { "cellular" }, overCellular = { true })
+        signedIn(vm, ssh)
+        vm.smallPacketFallback.arm(a.id, true, now, NetworkWatch.changes)
+        now += 5_000
+        assertFalse(vm.maybeSmallPacketFallback(LinkDown(java.io.IOException("stall")), ssh))
+        assertTrue(DiagLog.text().contains("fallback=skipped reason=cellular-auto trigger=link-drop"))
+        assertEquals(MssChoice(1200, MssChoice.CELLULAR_AUTO, "cellular"), ssh.mssChoice())
     }
 
     @Test fun withTheToggleOffTheFallbackWorksOnAVpnAsIn226() {

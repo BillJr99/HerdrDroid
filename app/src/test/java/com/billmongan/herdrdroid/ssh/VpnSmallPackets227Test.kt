@@ -56,6 +56,60 @@ class VpnSmallPackets227Test {
         assertEquals(MssChoice(1200, MssChoice.FALLBACK, "wifi"), fb.mssChoice())
     }
 
+    private fun cell(net: String, cellular: Boolean, vpnOn: Boolean, cellOn: Boolean, serverMss: Int? = null, ws: String? = null) =
+        HerdrSsh("127.0.0.1", 22, "u", Credentials(null, null), null, { null }, ws, serverMss, "fixture", FakeOps(),
+            { vpnOn }, { net }, cellularAuto = { cellOn }, overCellular = { cellular })
+
+    @Test fun cellularAtConnectFollowsTheCellularSetting() {
+        assertEquals(MssChoice(1200, MssChoice.CELLULAR_AUTO, "cellular"), cell("cellular", true, vpnOn = false, cellOn = true).mssChoice())
+        assertEquals(1200, cell("cellular", true, vpnOn = false, cellOn = true).socketFactoryForNext()!!.mss)
+        assertEquals(MssChoice(null, MssChoice.NONE, "cellular"), cell("cellular", true, vpnOn = false, cellOn = false).mssChoice())
+        // The VPN setting alone does nothing on plain cellular.
+        assertEquals(MssChoice.NONE, cell("cellular", true, vpnOn = true, cellOn = false).mssChoice().reason)
+        // The server's own setting still wins, with its value.
+        assertEquals(MssChoice(900, MssChoice.SETTING, "cellular"), cell("cellular", true, vpnOn = false, cellOn = true, serverMss = 900).mssChoice())
+        // Wi-Fi is never cellular.
+        assertEquals(MssChoice.NONE, cell("wifi", false, vpnOn = true, cellOn = true).mssChoice().reason)
+    }
+
+    @Test fun aVpnOverCellularAsksTheVpnSettingFirstAndEitherOneMeansSmallPackets() {
+        assertEquals(MssChoice.VPN_AUTO, cell("vpn", true, vpnOn = true, cellOn = true).mssChoice().reason)
+        assertEquals(MssChoice.VPN_AUTO, cell("vpn", true, vpnOn = true, cellOn = false).mssChoice().reason)
+        assertEquals(MssChoice(1200, MssChoice.CELLULAR_AUTO, "vpn"), cell("vpn", true, vpnOn = false, cellOn = true).mssChoice())
+        assertEquals(MssChoice.NONE, cell("vpn", true, vpnOn = false, cellOn = false).mssChoice().reason)
+        // A VPN over Wi-Fi is not cellular.
+        assertEquals(MssChoice.NONE, cell("vpn", false, vpnOn = false, cellOn = true).mssChoice().reason)
+    }
+
+    @Test fun cellularLeavesAWebSocketAlone() {
+        val ws = cell("cellular", true, vpnOn = true, cellOn = true, ws = "wss://bridge.invalid/ssh")
+        assertNull(ws.activeMss)
+        assertNull(ws.socketFactoryForNext())
+    }
+
+    @Test fun aSessionFallbackCarriesIntoANewConnectionUntilCleared() {
+        val s = HerdrSsh("127.0.0.1", 22, "u", Credentials(null, null), null, { null }, null, null, "fixture", FakeOps(),
+            { false }, { "vpn" }, sessionFallbackMss = 1200)
+        assertEquals(MssChoice(1200, MssChoice.FALLBACK, "vpn"), s.mssChoice())
+        s.clearSmallPackets()
+        assertEquals(MssChoice.NONE, s.mssChoice().reason)
+    }
+
+    @Test fun aReadWithNoFirstByteIsReportedOnceAfterTheThreshold() {
+        var stalls = 0
+        val w = FirstByteWatch(SmallPacketFallback.FIRST_BYTE_STALL_MS, 1_000L) { stalls++ }
+        w.tick(1_000L + SmallPacketFallback.FIRST_BYTE_STALL_MS - 1, 0)
+        assertEquals(0, stalls)
+        w.tick(1_000L + SmallPacketFallback.FIRST_BYTE_STALL_MS, 0)
+        w.tick(1_000L + 26_522, 0)
+        assertEquals("once per read", 1, stalls)
+        val fast = FirstByteWatch(SmallPacketFallback.FIRST_BYTE_STALL_MS, 0L) { stalls++ }
+        fast.tick(30_000L, 17)
+        assertEquals("a read that got its first byte is never a stall", 1, stalls)
+        assertEquals("no-first-byte", SmallPacketFallback.reasonFor(FirstByteStall()))
+        assertTrue(SmallPacketFallback.FIRST_BYTE_STALL_MS in 5_000L..10_000L)
+    }
+
     @Test fun aWebSocketIsUnaffected() {
         val ws = ssh({ "vpn" }, ws = "wss://bridge.invalid/ssh")
         assertNull(ws.activeMss)

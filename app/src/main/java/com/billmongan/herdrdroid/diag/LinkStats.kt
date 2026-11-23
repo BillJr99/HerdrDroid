@@ -251,6 +251,8 @@ object NetworkWatch {
     @Volatile var changes: Int = 0
         private set
     private var lastNetwork: Any? = null
+    /** 2.2.7: told of each change after the first network (type and change count); the app's view model listens. */
+    @Volatile var listener: ((String, Int) -> Unit)? = null
     private val started = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /** One default network seen with its transports; a different network or type counts as a change. */
@@ -261,6 +263,7 @@ object NetworkWatch {
         if (!first) changes++
         type = newType
         DiagLog.log("link", "network=$type changes=$changes")
+        if (!first) listener?.let { l -> runCatching { l(type, changes) } }
     }
 
     fun typeOf(vpn: Boolean, wifi: Boolean, cellular: Boolean, ethernet: Boolean): String = when {
@@ -290,6 +293,14 @@ object NetworkWatch {
                 caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET),
             )
         }.getOrDefault(type)
+    }
+
+    /** 2.2.7: whether the default network runs over cellular now (a VPN's own capabilities carry it too); false when unknown. */
+    fun currentCellular(): Boolean {
+        val cm = manager as? android.net.ConnectivityManager ?: return type == "cellular"
+        return runCatching {
+            cm.getNetworkCapabilities(cm.activeNetwork)?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) == true
+        }.getOrDefault(type == "cellular")
     }
 
     fun start(context: android.content.Context) {

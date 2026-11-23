@@ -163,7 +163,7 @@ fun ServersScreen(vm: AppViewModel) {
                     ) {
                         Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                             // The server's light: yellow needs you, green up, red unreachable, grey unchecked.
-                            val h = vm.serverHealth[s.id]
+                            val h = vm.healthFor(s.id)
                             val tileStatus = when (h?.health) {
                                 AppViewModel.Health.NEEDS_YOU -> com.billmongan.herdrdroid.herdr.Status.NEEDS_YOU
                                 AppViewModel.Health.UP -> com.billmongan.herdrdroid.herdr.Status.DONE
@@ -183,7 +183,7 @@ fun ServersScreen(vm: AppViewModel) {
                                 Text(s.label, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = Palette.Ink)
                                 // The WebSocket address is not shown in the list (it's a public endpoint).
                                 Text(if (s.overWebSocket) "${s.user} · SSH over WebSocket" else "${s.user}@${s.host}:${s.port}", color = Palette.Muted, fontSize = 13.sp)
-                                vm.serverHealth[s.id]?.let { h ->
+                                vm.healthFor(s.id)?.let { h ->
                                     Text(h.line, color = when (h.health) {
                                         AppViewModel.Health.NEEDS_YOU -> Palette.OrangeInk
                                         AppViewModel.Health.DOWN -> Palette.Red

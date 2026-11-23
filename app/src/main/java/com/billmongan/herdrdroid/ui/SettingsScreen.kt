@@ -202,7 +202,15 @@ fun SettingsScreen(vm: AppViewModel, back: Screen) {
                     Switch(checked = vm.smallPacketsOnVpn, onCheckedChange = { vm.changeSmallPacketsOnVpn(it) })
                 }
                 Text(
-                    "When the phone is on a VPN, direct connections use small packets so they fit through the tunnel; takes effect on the next connect.",
+                    "Off by default: connections start with normal packets and fall back to small ones for the session if large replies stall. On: a direct connection made on a VPN starts with small packets.",
+                    color = Palette.Muted, fontSize = 13.sp,
+                )
+                Row(Modifier.fillMaxWidth().clickable { vm.changeSmallPacketsOnCellular(!vm.smallPacketsOnCellular) }, verticalAlignment = Alignment.CenterVertically) {
+                    Text("Small packets on cellular (automatic)", color = Palette.Ink, fontSize = 16.sp, modifier = Modifier.weight(1f))
+                    Switch(checked = vm.smallPacketsOnCellular, onCheckedChange = { vm.changeSmallPacketsOnCellular(it) })
+                }
+                Text(
+                    "Off by default. On: a direct connection made on cellular (also a VPN over cellular) starts with small packets. Takes effect on the next connect.",
                     color = Palette.Muted, fontSize = 13.sp,
                 )
             }
@@ -343,12 +351,13 @@ fun ServerBanners(vm: AppViewModel) {
         ) { vm.retryNow() }
     }
     vm.error?.let { ErrorBanner(it) { vm.error = null } }
-    // 2.2.6: the session fell back to small packets; one tap keeps them on for this server.
+    // 2.2.6: the session fell back to small packets. 2.2.7: a notice, not a question (Bill: "fall back
+    // to small packets automatically without asking and just tell me when it does this").
     if (vm.smallPacketOffer != null && vm.smallPacketOffer == vm.current?.id) {
         ErrorBanner(
-            "Large replies stalled, so this session switched to small packets.",
-            actionLabel = "Keep small packets on",
-            secondLabel = "Not now", onSecond = { vm.dismissSmallPacketOffer() },
+            smallPacketNotice(vm.current?.label ?: "this server"),
+            actionLabel = "Keep for this server",
+            secondLabel = "Dismiss", onSecond = { vm.dismissSmallPacketOffer() },
         ) { vm.keepSmallPacketsOn() }
     }
     // A one-time note (1.4.0: "Debug bundle copied").
@@ -427,7 +436,8 @@ private fun Diagnostics() {
     ) { uri ->
         if (uri != null) {
             note = runCatching {
-                context.contentResolver.openOutputStream(uri)?.use { it.write(text.toByteArray()) }
+                // 2.2.7: the whole log as it is now, not the on-screen copy.
+                context.contentResolver.openOutputStream(uri)?.use { it.write(com.billmongan.herdrdroid.diag.DiagLog.text().toByteArray()) }
                 "Saved."
             }.getOrElse { "Couldn't save: ${it.message}" }
         }
@@ -440,7 +450,10 @@ private fun Diagnostics() {
     )
     Row(horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)) {
         androidx.compose.material3.OutlinedButton(enabled = text.isNotEmpty(), onClick = {
-            clipboard.setText(androidx.compose.ui.text.AnnotatedString(text)); note = "Copied."
+            // 2.2.7: the newest lines, whole, with a note when the oldest were left out.
+            val copy = com.billmongan.herdrdroid.diag.DiagLog.forClipboard()
+            clipboard.setText(androidx.compose.ui.text.AnnotatedString(copy))
+            note = if (copy.startsWith("(trimmed:")) "Copied the newest lines; use Save for the full log." else "Copied."
         }) { Text("Copy") }
         androidx.compose.material3.OutlinedButton(enabled = text.isNotEmpty(), onClick = {
             val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(java.util.Date())
@@ -597,3 +610,7 @@ internal fun CrossServerNoticeSettings(vm: AppViewModel) {
         color = Palette.Muted, fontSize = 13.sp,
     )
 }
+
+/** 2.2.7: the notice the automatic small-packets fallback shows (it has already switched). */
+internal fun smallPacketNotice(server: String) =
+    "Switched to small packets for $server for this session: large replies were stalling."
