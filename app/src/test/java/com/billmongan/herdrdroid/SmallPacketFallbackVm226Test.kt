@@ -105,18 +105,23 @@ class SmallPacketFallbackVm226Test {
         assertEquals(1200, vm.servers.single { it.id == a.id }.smallPacketsMss)
     }
 
-    @Test fun notAfterTheWindowNorForOtherErrorsNorAnotherConnection() {
+    @Test fun notForOtherErrorsNorAnotherConnectionButAtAnyTimeOnce() {
         val ssh = HerdrSsh(a.host, a.port, a.user, Credentials(null, null), null, { null })
         val other = HerdrSsh(a.host, a.port, a.user, Credentials(null, null), null, { null })
         signedIn(ssh)
         assertFalse(vm.maybeSmallPacketFallback(IllegalStateException("parse"), ssh))
         assertFalse("not the open connection", vm.maybeSmallPacketFallback(LinkDown(java.io.IOException("x")), other))
         assertFalse(vm.maybeSmallPacketFallback(LinkDown(java.io.IOException("x")), null))
-        now += 10 * 60_000
-        assertFalse(vm.maybeSmallPacketFallback(LinkDown(java.io.IOException("late")), ssh))
-        assertNull(ssh.activeMss)
         assertNull(other.activeMss)
         assertNull(vm.smallPacketOffer)
+        // 2.2.7 (Bill: "kick in anytime we are disconnected"): no window; a drop much later falls back, once.
+        now += 10 * 60_000
+        assertTrue(vm.maybeSmallPacketFallback(LinkDown(java.io.IOException("late")), ssh))
+        assertEquals(1200, ssh.activeMss)
+        assertNull(other.activeMss)
+        assertEquals(a.id, vm.smallPacketOffer)
+        now += 60 * 60_000
+        assertFalse("once per session", vm.maybeSmallPacketFallback(LinkDown(java.io.IOException("again")), ssh))
     }
 
     @Test fun neverOverAWebSocket() {
