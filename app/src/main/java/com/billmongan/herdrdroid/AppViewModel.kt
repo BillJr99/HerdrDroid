@@ -4855,12 +4855,14 @@ class AppViewModel internal constructor(
                         card = got.first
                         text = got.second
                     }
-                    withContext(Dispatchers.Main) { if (card != null && card.choices.isNotEmpty()) observeQuestion(serverId, p.id, card, p.status, p.agentName, text) }
+                    val asked = card
+                    val askedText = text
+                    withContext(Dispatchers.Main) { if (asked != null && asked.choices.isNotEmpty()) observeQuestion(serverId, p.id, asked, p.status, p.agentName, askedText) }
                     // 2.1.2: the alert offers the card's own options (Hermes's clarify and OpenCode's
                     // question included), answered through the same checks when tapped.
-                    Notify.needsYou(app, serverId, serverLabel, p.id, p.agentName, card?.question ?: "Waiting for you.", card?.choices.orEmpty(), p.agent,
-                        terminalReview = card?.terminalReview == true,
-                        reply = com.billmongan.herdrdroid.notify.notificationOffersReply(card), prompt = card,
+                    Notify.needsYou(app, serverId, serverLabel, p.id, p.agentName, asked?.question ?: "Waiting for you.", asked?.choices.orEmpty(), p.agent,
+                        terminalReview = asked?.terminalReview == true,
+                        reply = com.billmongan.herdrdroid.notify.notificationOffersReply(asked), prompt = asked,
                         quietUpdate = neutralFirst)
                 }
                 // Only agents that need you notify (Bill, 2026-11-13); finishing doesn't.
