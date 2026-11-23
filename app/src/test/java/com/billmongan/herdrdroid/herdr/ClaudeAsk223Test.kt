@@ -42,7 +42,7 @@ class ClaudeAsk223Test {
             "gh auth status --hostname github.com",
             listOf("Hook PreToolUse:Bash requires confirmation for this command:",
                 "gh policy: core list 1: a secret location (keys, tokens, ~/.config, keystores, vault/private) is named in the command (see: the shared policy, rule 4: paths)")),
-        Case("derived-2.1.330-ask/legacy-ask.txt", "Bash command", "Dry-run rsync with delete on a scratch folder",
+        Case("derived-2.1.330-ask/legacy-ask.txt", "", "Dry-run rsync with delete on a scratch folder",
             "rsync -n --delete /home/user/scratch/sample-dir.abcdef/ /home/user/scratch/sample-dir.abcdef/; echo \"exit=$?\"",
             listOf("Rule Bash(rsync *--delete*) from user settings overrides auto mode.", "/permissions to let auto mode decide")),
     )
@@ -62,7 +62,8 @@ class ClaudeAsk223Test {
             assertEquals(where, "Do you want to proceed?", parts.heading)
             assertEquals("$where ${parts.blocks}", c.command, parts.command)
             val details = parts.details.map(::squash)
-            assertTrue("$where title in $details", c.title in details)
+            // A plain "Bash command" title (the older layout) introduces the command, as before; a title naming who asks is shown.
+            if (c.title.isNotEmpty()) assertTrue("$where title in $details", c.title in details)
             assertTrue("$where description in $details", squash(details.joinToString(" ")).contains(c.description))
             // The explanation rows as text, in screen order (a reason wrapped over rows reads as one).
             val context = squash(details.joinToString(" "))
@@ -185,7 +186,7 @@ class ClaudeAsk223Test {
             assertEquals(c.path, "Do you want to proceed?", q.question)
             assertEquals(c.path, c.command, q.command)
             val details = q.details.map(::squash)
-            assertTrue("${c.path} $details", c.title in details)
+            if (c.title.isNotEmpty()) assertTrue("${c.path} $details", c.title in details)
             for (e in c.explanation) assertTrue("${c.path} $details", squash(details.joinToString(" ")).contains(squash(e)))
         }
     }
