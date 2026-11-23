@@ -3513,17 +3513,20 @@ class AppViewModel internal constructor(
         /**
          * 2.2.2: why the last try was refused, on a card pending again after it. A card that was
          * never tried has none and shows Approve; one with a refusal shows Retry, and Force Send
-         * when the refusal is one forcing may pass ([CROSS_SERVER_FORCEABLE]).
+         * when the refusal is one forcing may pass ([crossServerForceable]).
          */
         val refusal: RelayRefusal? = null,
     )
 
     /**
-     * 2.2.2: the refusals Force Send may pass: the destination is working, or has background work.
-     * Everything else (a question, a draft, a panel, no input line, the link, a replaced session,
-     * the lane) stays refused, forced or not.
+     * 2.2.2: Force Send may pass only one refusal, WORKING (herdr says working, or the footer shows
+     * "esc to interrupt"), and only for an agent that queues text typed during a turn: Claude Code
+     * ([takesForcedInput]). Everything else (background work, a question, a draft, a panel, no
+     * input line, scrolled back, unreachable, the link, a replaced session, the lane) and every
+     * other agent, OpenCode included, get Retry and Cancel only.
      */
-    internal val CROSS_SERVER_FORCEABLE = setOf(RelayRefusal.NOT_IDLE, RelayRefusal.BACKGROUND)
+    private fun crossServerForceable(why: RelayRefusal?, agent: String?): Boolean =
+        why == RelayRefusal.WORKING && com.billmongan.herdrdroid.herdr.takesForcedInput(agent)
 
     private var crossServerCards by mutableStateOf<List<CrossServerCard>>(emptyList())
     internal var crossServerClock: () -> Long = System::currentTimeMillis
@@ -3728,7 +3731,7 @@ class AppViewModel internal constructor(
     /** 2.2.2: Force Send is offered on a pending card whose last try found the destination busy (working or background work). */
     internal fun crossServerForceOffered(card: CrossServerCard): Boolean {
         val live = crossServerCards.firstOrNull { it.id == card.id } ?: return false
-        return live.state == CrossServerState.PENDING && live.choice != null && live.refusal in CROSS_SERVER_FORCEABLE
+        return live.state == CrossServerState.PENDING && live.choice != null && crossServerForceable(live.refusal, live.choice.pane.agent)
     }
 
     /**
@@ -3795,7 +3798,7 @@ class AppViewModel internal constructor(
                     RelayResult.DRAFT -> CrossServerState.DRAFT
                 }, note = result.feedback)
                 retry -> it.copy(state = CrossServerState.PENDING, refusal = why,
-                    note = "Not sent to $to: ${why.why}. Nothing was typed. " + if (why in CROSS_SERVER_FORCEABLE)
+                    note = "Not sent to $to: ${why.why}. Nothing was typed. " + if (crossServerForceable(why, card.choice?.pane?.agent))
                         "Retry to try again when it is idle, or Force Send to type it in while it works, before the proposal expires."
                     else "Retry to try again before the proposal expires.")
                 else -> it.copy(state = if (result == RelayResult.DRAFT) CrossServerState.DRAFT else CrossServerState.REFUSED,
@@ -3842,15 +3845,17 @@ class AppViewModel internal constructor(
 
     /**
      * Why the watched destination may not be written to now, or null when it may (2.2.1: Claude's
-     * background work alone does not hold it). 2.2.2: [force] skips only the busy checks; the pane
-     * must still be there with the same occupant.
+     * background work alone does not hold it). 2.2.2: each reason on its own, and [force] (Claude
+     * Code only) skips only WORKING; the pane must still be there with the same occupant.
      */
     private fun destinationRefusal(serverId: String, expected: Pane, force: Boolean = false): RelayRefusal? {
         val now = fleetStates[serverId]?.panes?.singleOrNull { it.id == expected.id } ?: return RelayRefusal.UNREACHABLE
+        val forced = force && com.billmongan.herdrdroid.herdr.takesForcedInput(now.agent)
         return when {
             !sameOccupant(now, expected) -> RelayRefusal.REPLACED
-            force -> null
+            now.status == Status.NEEDS_YOU -> RelayRefusal.QUESTION
             now.backgroundBusy && !takesInputDuringBackgroundWork(now.agent) -> RelayRefusal.BACKGROUND
+            now.status == Status.WORKING && !now.backgroundBusy -> if (forced) null else RelayRefusal.WORKING
             !idleForRelay(now) -> RelayRefusal.NOT_IDLE
             else -> null
         }

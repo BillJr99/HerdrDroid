@@ -154,8 +154,11 @@ class CrossServerShells221Test {
     /** Every way a relay ends in "not sent" names its check, and nothing is typed. */
     @Test fun eachRefusalNamesItsCheck() = runBlocking {
         fun host(viewport: String = idle, pane: Pane? = claude) = Host(pane).apply { this.viewport = viewport }
-        assertEquals(RelayRefusal.NOT_IDLE, relayTo(host(working)).second)
-        assertEquals(RelayRefusal.NOT_IDLE, relayTo(host(pane = claude.copy(status = Status.WORKING))).second)
+        // 2.2.2: working (herdr or the footer's interrupt chip) is its own reason, and waiting on you is a question.
+        assertEquals(RelayRefusal.WORKING, relayTo(host(working)).second)
+        assertEquals(RelayRefusal.WORKING, relayTo(host(pane = claude.copy(status = Status.WORKING))).second)
+        assertEquals(RelayRefusal.QUESTION, relayTo(host(pane = claude.copy(status = Status.NEEDS_YOU))).second)
+        assertEquals(RelayRefusal.SCROLLED, relayTo(host(pane = claude.copy(scrollOffset = 4))).second)
         assertEquals(RelayRefusal.NOT_IDLE, relayTo(host(pane = claude.copy(status = Status.UNKNOWN))).second)
         assertEquals(RelayRefusal.QUESTION, relayTo(host(question)).second)
         assertEquals(RelayRefusal.NO_INPUT, relayTo(host("Just output, no input box")).second)
