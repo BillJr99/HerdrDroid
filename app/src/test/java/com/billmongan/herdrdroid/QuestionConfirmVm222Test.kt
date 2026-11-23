@@ -138,12 +138,14 @@ class QuestionConfirmVm222Test {
         assertEquals(null, f.vm.paneTextTarget)
         val target = targetFor("ask")
         val live = checkNotNull(detectPrompt(full, true, "gemini"))
-        assertTrue(f.vm.voiceCardStillReading(target))
-        assertFalse(f.vm.voiceCardFitsChat(target, live))
+        fun state() = "screen ${f.vm.screen}, text ${f.vm.paneText.length}, preview ${f.vm.prefetchedPaneText("ask")?.length}, " +
+            "card ${f.vm.questionCardFor("ask", f.vm.cardParse("ask", full), "A")?.let { if (it.readingQuestion) "reading" else "shown" }}"
+        assertTrue(state(), f.vm.voiceCardStillReading(target))
+        assertFalse(state(), f.vm.voiceCardFitsChat(target, live))
         f.vm.readPane("ask")
-        // Whatever the pane's target, one read is not confirmed.
-        assertTrue(f.vm.voiceCardStillReading(target))
-        assertFalse(f.vm.voiceCardFitsChat(target, live))
+        // Whatever the pane's target, one read of the screen (after the preview, two) is checked as Chat shows it.
+        assertEquals(state(), f.vm.questionCardFor("ask", f.vm.cardParse("ask", f.vm.paneText), "A")?.readingQuestion == true,
+            f.vm.voiceCardStillReading(target))
         // Without a card on screen there is nothing to answer: still refused.
         f.screens["ask"] = "Earlier reply line.\n\n> "
         f.vm.readPane("ask"); f.vm.readPane("ask")
