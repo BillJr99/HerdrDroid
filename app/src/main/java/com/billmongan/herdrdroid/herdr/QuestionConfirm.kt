@@ -115,7 +115,7 @@ internal fun dialogRegion(rows: List<String>, p: Prompt, agent: String?, version
 }
 
 /** Marks that move while you choose (the highlight, a filled radio, the current tab), left out of the comparison. */
-private const val MOVING_MARKS = "❯›>▶➤⟩→●◉○◯▸$TAB_CURRENT_MARK"
+private val MOVING_MARKS = "❯›>▶➤⟩→●◉○◯▸$TAB_CURRENT_MARK"
 
 /**
  * Confirms question cards from consecutive reads, per pane (2.2.2): a card is confirmed when two
