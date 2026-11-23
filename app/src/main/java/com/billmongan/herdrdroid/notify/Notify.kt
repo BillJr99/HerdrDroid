@@ -104,7 +104,11 @@ internal fun alertBody(p: com.billmongan.herdrdroid.herdr.Prompt): String {
             }
         command != null && heading != null && !command.contains('\n') && command.length <= 400 -> {
             val context = parts.details.filter { d -> d.filterNot(Char::isWhitespace) != heading.filterNot(Char::isWhitespace) }
-            listOf(heading, command) + context.take(2).map { it.take(200) }
+            // 2.2.2 review: every line of context, up to a total length, the cut one ending in "…".
+            var budget = ALERT_CONTEXT_CHARS
+            listOf(heading, command) + context.mapNotNull { d ->
+                if (budget <= 0) null else (if (d.length <= budget) d else d.take(budget).trimEnd() + "…").also { budget -= d.length }
+            }
         }
         else -> listOf(alertText(p))
     }
@@ -112,6 +116,9 @@ internal fun alertBody(p: com.billmongan.herdrdroid.herdr.Prompt): String {
     val code = command?.lines().orEmpty()
     return lines.map { com.billmongan.herdrdroid.ui.QuestionText.alert(it, code) }.filter { it.isNotEmpty() }.joinToString("\n")
 }
+
+/** How much context an approval's alert carries under its command (2.2.2). */
+internal const val ALERT_CONTEXT_CHARS = 600
 
 /** How many action buttons Android shows on a notification. */
 internal const val MAX_ALERT_BUTTONS = 3

@@ -15,12 +15,19 @@ package com.billmongan.herdrdroid.ui
  */
 object QuestionText {
     /** ANSI escapes, and the "[0m" or "[38;5;16m" left behind when the escape byte was lost. */
+    /** Real escape sequences only: what code may lose (2.2.2 review: code stays byte-exact otherwise). */
+    private val ESC = Regex("""\u001B\[[0-9;?]*[ -/]*[@-~]|\u001B[@-Z\\-_]""")
     private val ANSI = Regex("""\u001B\[[0-9;?]*[ -/]*[@-~]|\u001B[@-Z\\-_]|(?<![\w\]])\[(?:\d{1,3}(?:;\d{1,3}){0,6})?m""")
     private val CONTROL = Regex("""[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F⁠​]""")
-    /** A gutter at the start of a row: a box bar, or "|" with a space after it. */
-    private val GUTTER = Regex("""^\s*(?:[│┃┆┇╎╏║]|\|(?=\s|$))\s?""")
+    /**
+     * A box gutter at the start of a row. A "|" counts only when the row also ends with one
+     * ([PIPE_ROW]) or when every row of the text has it ([pipeGutters]): a pipe at a wrap edge
+     * ("cat app.log |" over "grep ERROR") is content.
+     */
+    private val GUTTER = Regex("""^\s*[│┃┆┇╎╏║]\s?""")
     /** Box edges and bars left at the end of a row. */
-    private val GUTTER_END = Regex("""\s+[│┃┆║|]\s*$|[\s─━═╮╯┐┘╗╝]*[╮╯┐┘╗╝]\s*$""")
+    private val GUTTER_END = Regex("""\s+[│┃┆║]\s*$|[\s─━═╮╯┐┘╗╝]*[╮╯┐┘╗╝]\s*$""")
+    private val PIPE_ROW = Regex("""^\s*\|\s(.*\S)\s\|\s*$""")
     /** A row that is only box drawing (a rule, a corner): it shows nothing. */
     private val BOX_ONLY = Regex("""^[\s─━═╌╍┄┅┈┉│┃┆║╭╮╰╯┌┐└┘├┤┬┴┼╔╗╚╝-]*$""")
     /** Corners and rules at the start of a row ("╭─ Title"). */
@@ -30,15 +37,24 @@ object QuestionText {
      * ">" counts only before a numbered or boxed option ("> 2. No", "> [ ] Docs"), never before words.
      */
     private val FOCUS = Regex("""^[❯›▶▸➤⟩→]\s+(?=\S)|^>\s+(?=(?:\[[ xX✓✔]]\s+)?\d{1,2}[.)]\s)""")
-    /** A focus marker in front of a choice label: there, a leading "> " is always the marker. */
-    private val LABEL_FOCUS = Regex("""^(?:[❯›▶▸➤⟩→]|>(?=\s))\s*""")
+    /**
+     * A focus marker in front of a choice label: a terminal arrow with a space after it, or ">" only
+     * before the choice's number or box ("> 2. No"), never the label's own ">" ("> 100 MB").
+     */
+    private val LABEL_FOCUS = Regex("""^[❯›▶▸➤⟩→]\s+(?=\S)|^>\s+(?=(?:\[[ xX✓✔]]\s+)?\d{1,2}[.)]\s)""")
+    private val LEAD_NUMBER = Regex("""^(\d{1,2})[.)]\s+(?=\S)""")
     /** A dialog's key hints, as one row or as a tail ("· Enter to select · Esc to cancel"). */
     private val HINT = Regex(
-        """(?:enter|return|↵)\s+to\s+(?:select|confirm|submit|send|continue|choose)|esc(?:ape)?\s+to\s+(?:cancel|reject|go back|close|exit|dismiss|interrupt)|""" +
-            """(?:↑/?↓|↑\s*↓|arrow keys|tab/arrow keys|j/k)\s+to\s+(?:navigate|move|select)|tab\s+to\s+(?:amend|edit|switch|cycle)|ctrl\+\w+\s+to\s+\w+(?:\s+\w+)?|space\s+to\s+(?:toggle|select)""",
+        """\b(?:enter|return)\s+to\s+(?:select|confirm|submit|send|continue|choose)|↵\s+to\s+(?:select|confirm|submit|send|continue|choose)|\besc(?:ape)?\s+to\s+(?:cancel|reject|go back|close|exit|dismiss|interrupt)|""" +
+            """(?:↑/?↓|↑\s*↓|arrow keys|tab/arrow keys|j/k)\s+to\s+(?:navigate|move|select)|\btab\s+to\s+(?:amend|edit|switch|cycle)|\bctrl\+\w+\s+to\s+(?:edit|open|copy|expand|cancel|interrupt|exit)\b|\bspace\s+to\s+(?:toggle|select)""",
         RegexOption.IGNORE_CASE,
     )
-    private val HINT_TAIL = Regex("""\s*(?:[·•|]\s*)?\(?\s*(?:${HINT.pattern})\s*\)?(?:\s*[·•|]\s*(?:${HINT.pattern}))*\s*$""", RegexOption.IGNORE_CASE)
+    /**
+     * Key hints at the end of a row, only as a segment of their own: the whole row, or after a
+     * separator ("·", "•", "|", two spaces) or in parentheses. "Re-enter to confirm", "a data
+     * center to send" and "use ctrl+c to stop it" are text and stay.
+     */
+    private val HINT_TAIL = Regex("""(?:^\s*|\s*[·•|]\s*|\s{2,}|\s*\(\s*)(?:${HINT.pattern})\b\s*\)?(?:\s*[·•|]\s*(?:${HINT.pattern})\b\s*\)?)*\s*$""", RegexOption.IGNORE_CASE)
     private val SPACES = Regex("""[ \t  -  　]{2,}""")
     /** A list item at the start of a line: a bullet or a number with its stop. */
     private val ITEM = Regex("""^(?:[-*•·◦]|\d{1,3}[.)])\s+\S""")
@@ -47,8 +63,11 @@ object QuestionText {
     /** Words that end a "pre-" style dangling hyphen on purpose ("pre- and post-"). */
     private val OPEN_HYPHEN = setOf("and", "or", "nor", "to", "vs", "versus")
 
-    /** ANSI remnants and invisible control characters out. */
+    /** ANSI remnants and invisible control characters out (prose: a lost escape's "[0m" goes too). */
     fun noAnsi(s: String): String = CONTROL.replace(ANSI.replace(s, ""), "")
+
+    /** For code: only real escape sequences and invisible control characters out; "[1m" in code stays. */
+    fun escOnly(s: String): String = if (s.indexOf('\u001B') < 0 && !CONTROL.containsMatchIn(s)) s else CONTROL.replace(ESC.replace(s, ""), "")
 
     /**
      * One row of screen text for display: no ANSI remnants, no gutter, no focus marker at its start,
@@ -57,6 +76,7 @@ object QuestionText {
     fun line(raw: String): String {
         var l = noAnsi(raw).trimEnd()
         if (BOX_ONLY.matches(l)) return ""
+        PIPE_ROW.matchEntire(l)?.let { l = it.groupValues[1] }
         var g = GUTTER.find(l)
         while (g != null && g.range.first == 0) { l = l.substring(g.range.last + 1); g = GUTTER.find(l) }
         l = BOX_START.replace(l, "")
@@ -70,7 +90,18 @@ object QuestionText {
      * Text for display that may span lines: each row cleaned by [line], then [reflow]ed, so
      * terminal-wrapped rows read as one paragraph and real paragraphs and list items stay apart.
      */
-    fun text(raw: String): String = reflow(raw.lines().map(::line)).joinToString("\n")
+    fun text(raw: String): String = reflow(pipeGutters(raw.lines()).map(::line)).joinToString("\n")
+
+    /** A "|" gutter down every non-blank row (left, right or both) taken off, as [BoxCopy.clean] does. */
+    fun pipeGutters(rows: List<String>): List<String> {
+        var out = rows
+        val filled = { rs: List<String> -> rs.filter { it.isNotBlank() } }
+        if (filled(out).size >= 2 && filled(out).all { it.trimStart().startsWith("| ") || it.trim() == "|" })
+            out = out.map { if (it.isBlank()) "" else it.trimStart().drop(1).removePrefix(" ") }
+        if (filled(out).size >= 2 && filled(out).all { it.trimEnd().endsWith(" |") })
+            out = out.map { if (it.isBlank()) "" else it.trimEnd().dropLast(1).trimEnd() }
+        return out
+    }
 
     /**
      * Joins terminal-wrapped lines into paragraphs. A blank line is a paragraph break; a list item
@@ -88,7 +119,7 @@ object QuestionText {
             }
             val code = CODEISH.containsMatchIn(t) || isCodeLine(t)
             val item = ITEM.containsMatchIn(t.trimStart())
-            if (open && !code && !item) {
+            if (open && !code && !item && !realBreak(out.last(), t.trim())) {
                 out[out.size - 1] = join(out.last(), t.trim())
                 continue
             }
@@ -98,6 +129,20 @@ object QuestionText {
         while (out.isNotEmpty() && out.last().isEmpty()) out.removeAt(out.size - 1)
         return out
     }
+
+    /**
+     * Whether [next] starts a line of its own after [prev] rather than going on from a wrap: [prev]
+     * ends a sentence or a "Label: value" and is short (a row that ended well before the width), or
+     * [next] starts a new capitalised sentence after one that ended.
+     */
+    private fun realBreak(prev: String, next: String): Boolean {
+        val ended = prev.isNotEmpty() && prev.last() in ".?!:"
+        if (ended && prev.length <= SHORT_ROW) return true
+        if (LABEL_ROW.containsMatchIn(prev) && prev.length <= SHORT_ROW && next.firstOrNull()?.isUpperCase() == true) return true
+        return ended && next.firstOrNull()?.isUpperCase() == true
+    }
+    private const val SHORT_ROW = 40
+    private val LABEL_ROW = Regex("""^[A-Z][A-Za-z ]{0,24}:\s+\S""")
 
     /** Two wrapped pieces of one paragraph: a dangling hyphen joins without a space. */
     fun join(a: String, b: String): String {
@@ -113,12 +158,10 @@ object QuestionText {
      * Prose that was already joined into one line (a parser's paragraph): cleaned as one row,
      * with any hyphen left dangling by a join ("work- flow") closed up.
      */
-    fun prose(raw: String): String {
-        if (raw.contains('\n')) return text(raw)
-        val l = line(raw)
-        return DANGLING.replace(l) { m ->
-            if (m.groupValues[2].lowercase() in OPEN_HYPHEN) m.value else m.groupValues[1] + "-" + m.groupValues[2]
-        }
+    fun prose(raw: String): String = if (raw.contains('\n')) text(raw) else closeHyphens(line(raw))
+
+    private fun closeHyphens(l: String): String = DANGLING.replace(l) { m ->
+        if (m.groupValues[2].lowercase() in OPEN_HYPHEN) m.value else m.groupValues[1] + "-" + m.groupValues[2]
     }
     private val DANGLING = Regex("""(\p{L}{2,})- (\p{Ll}+)""")
 
@@ -128,12 +171,13 @@ object QuestionText {
      */
     fun label(raw: String, keys: String? = null): String {
         var l = noAnsi(raw).trim()
+        PIPE_ROW.matchEntire(l)?.let { l = it.groupValues[1] }
         var g = GUTTER.find(l)
         while (g != null && g.range.first == 0) { l = l.substring(g.range.last + 1).trimStart(); g = GUTTER.find(l) }
         l = l.replace(GUTTER_END, "").trim()
         l = LABEL_FOCUS.replace(l, "")
         if (keys != null) {
-            val n = Regex("""^(\d{1,2})[.)]\s+(?=\S)""").find(l)
+            val n = LEAD_NUMBER.find(l)
             if (n != null && n.groupValues[1] == keys) l = l.substring(n.range.last + 1)
         }
         l = l.replace(HINT_TAIL, "").trim()
@@ -145,8 +189,8 @@ object QuestionText {
         // 2.2.2: a command or fenced block in a description stays on lines of its own, fenced, so
         // [CardFormat.noteBlocks] shows it as a code block; the prose around it is one paragraph each.
         val segs = segments(raw)
-        if (segs.none { it.code }) return reflow(raw.lines().map(::line)).filter { it.isNotEmpty() }.joinToString(" ").let(::prose)
-        return segs.joinToString("\n") { if (it.code) "```\n${it.text}\n```" else it.text }
+        if (segs.none { it.code }) return reflow(pipeGutters(raw.lines()).map(::line)).filter { it.isNotEmpty() }.joinToString("\n") { closeHyphens(it) }
+        return segs.joinToString("\n") { if (it.code) "```\n" + (if (it.fenced) it.text else BoxCopy.cleanBlock(it.text.lines()).joinToString("\n")) + "\n```" else it.text }
     }
 
     /** A step's name in Claude's question pills. */
@@ -162,7 +206,7 @@ object QuestionText {
         val out = mutableListOf<String>()
         val prose = mutableListOf<String>()
         fun flush() { out += reflow(prose); prose.clear() }
-        for (l in noAnsi(raw).lines()) {
+        for (l in pipeGutters(noAnsi(raw).lines())) {
             if (l.trim() in keep || CODEISH.containsMatchIn(l) || isCodeLine(l)) { flush(); out += l.trimEnd() } else prose += line(l)
         }
         flush()
@@ -172,7 +216,7 @@ object QuestionText {
     // ---- Commands and code in question text (2.2.2) ----------------------------------------------
 
     /** A piece of question text: prose, or code to show exactly, in monospace, on lines of its own. */
-    data class Segment(val text: String, val code: Boolean)
+    data class Segment(val text: String, val code: Boolean, val fenced: Boolean = false)
 
     /** Program names a command row starts with (after "sudo" or a "./" path). */
     private val COMMANDS = setOf(
@@ -183,8 +227,22 @@ object QuestionText {
         "zip", "unzip", "echo", "printf", "export", "env", "bash", "sh", "zsh", "source", "brew", "apt", "apt-get", "dnf",
         "systemctl", "journalctl", "herdr", "hc", "jq", "yq", "tmux", "adb", "terraform", "ansible", "psql", "mysql", "sqlite3",
     )
-    /** Shell syntax a command row has beside its program: a flag, a path, a pipe, a redirect, "&&", ";" or "=". */
-    private val SHELL_SYNTAX = Regex("""\s-{1,2}[A-Za-z][\w-]*|\S/|/\S|\s\|\s|\s\d?>>?\s|\s<\s|&&|\|\||;\s|;$|\w=\S|\$\(|`""")
+    /**
+     * Real shell syntax after the program (2.2.2 review: a path or a "/" alone is not enough, so
+     * "make the same change in app/src/test" stays prose): a flag, a pipe, a redirect, "&&", "||",
+     * ";", "$(", an assignment, or a quoted argument.
+     */
+    private val SHELL_SYNTAX = Regex("""\s-{1,2}[A-Za-z][\w-]*|\s\|\s|\s\|$|\s\d?>>?\s|\s<\s|&&|\|\||;\s|;$|(?:^|\s)[A-Za-z_][\w.-]*=\S|\$\(|\s'[^']*'|\s"[^"]*"""")
+    private val WORDS = Regex("""\s+""")
+    private val STRONG = Regex("""\s-{1,2}[A-Za-z]|\||&&""")
+    /** A fence's language tag, only a known one, so "```npm run build```" keeps its "npm". */
+    private const val FENCE_TAG = """(?:(?:json|jsonc|yaml|yml|toml|sh|bash|zsh|shell|console|text|diff|kotlin|python|py|js|ts)\s)?"""
+    private val ONE_ROW_FENCE = Regex("""^\s*```$FENCE_TAG(.+?)```\s*$""")
+    private val INLINE_FENCE = Regex("""```$FENCE_TAG(.+?)```""")
+    private val LEAD_IN = Regex("""^(.*?\S:)\s+(\S.*)$""")
+    /** A row that carries a command on to the next one ("\\", "|", "&&", "||" at its end). */
+    private val CARRIES_ON = Regex("""(?:\\|\||&&|\|\|)\s*$""")
+    private val CARRIED = Regex("""^\s*(?:\||&&|\|\|)""")
     private val PATH_ONLY = Regex("""^(?:/|~/|\./|\.\./)[\w./~@%+=:-]*[\w/]$""")
     private val JSON_LINE = Regex("""^[\[{].*[:,"].*[\]}],?$""")
 
@@ -194,12 +252,21 @@ object QuestionText {
      * ("git -C /x log --oneline", "make test | tee out", not "git is where the history lives."); a
      * JSON line. A sentence that only mentions "a > b" or ends with a colon stays prose.
      */
+    /** The code of a fence opened and closed on one row ("```npm run build```"), or null. */
+    fun oneRowFence(row: String): String? = ONE_ROW_FENCE.matchEntire(row)?.groupValues?.get(1)?.trim()
+
+    /** A line that is code wherever it sits, even inside a sentence: a "$ " prompt or a JSON line. */
+    fun isPlainCode(raw: String): Boolean {
+        val t = raw.trim()
+        return (t.startsWith("$ ") && t.length > 2) || (JSON_LINE.matches(t) && t.contains('"'))
+    }
+
     fun isCodeLine(raw: String): Boolean {
         val t = raw.trim()
         if (t.length < 3) return false
         if (t.startsWith("$ ") && t.length > 2) return true
         if (JSON_LINE.matches(t) && t.contains('"')) return true
-        val words = t.split(Regex("""\s+"""))
+        val words = t.split(WORDS)
         // A path on its own ("/home/user/app.py", "~/proj/build.gradle", "./run.sh").
         if (words.size == 1 && PATH_ONLY.matches(t)) return true
         var first = words.first()
@@ -212,32 +279,52 @@ object QuestionText {
         val syntax = SHELL_SYNTAX.containsMatchIn(" $rest")
         // A sentence that starts with a program's name ("make sure it runs.") is prose.
         if (!syntax) return false
-        val sentence = t.last() in ".?!" && !Regex("""\s-{1,2}[A-Za-z]|\||&&""").containsMatchIn(t)
+        val sentence = t.last() in ".?!" && !STRONG.containsMatchIn(t)
         return !sentence
     }
 
     /**
-     * [raw] split into prose and code (2.2.2): a fenced block (```...```), a line [isCodeLine] calls
-     * code, and on one joined line a command after a lead-in ("Run this: git log --oneline"). Code
-     * keeps every character and its line breaks; prose is cleaned and reflowed as [prose] and [text] do.
+     * Whether [row] goes on the command [prev] started, as the terminal wrapped it (2.2.2 review: a
+     * box that held only a command's first row copied a command that runs differently): [prev] ends
+     * in "\", "|", "&&" or "||", or [row] starts with "|" or "&&", or [row] is a short piece with no
+     * sentence about it ("origin/main", "--coverage", "dist/").
+     */
+    fun continuesCode(prev: String, row: String): Boolean {
+        val t = row.trim()
+        if (t.isEmpty()) return false
+        if (CARRIES_ON.containsMatchIn(prev) || CARRIED.containsMatchIn(t)) return true
+        if (t.first().isUpperCase() || t.last() in ".?!:") return false
+        val words = t.split(WORDS)
+        return words.size <= 3 && (words.size == 1 || SHELL_SYNTAX.containsMatchIn(" $t"))
+    }
+
+    /** A command row and the row the terminal wrapped it onto, as one row. */
+    fun joinWrapped(prev: String, row: String): String = prev.trimEnd() + " " + row.trim()
+
+    /**
+     * [raw] split into prose and code (2.2.2): a fenced block (```...```, one row or many; an open
+     * fence ends with the text), a line [isCodeLine] calls code with the rows it wrapped onto, and on
+     * one joined line a command after a lead-in ("Run this: git log --oneline"). A row that goes on a
+     * sentence ("Should I also" over "make the same change") is never code. Code keeps every
+     * character but real escape sequences; prose is cleaned and reflowed as [prose] and [text] do.
      */
     fun segments(raw: String): List<Segment> {
-        val src = noAnsi(raw)
+        val src = escOnly(raw)
         val out = mutableListOf<Segment>()
-        fun add(piece: String, code: Boolean) {
-            if (code) { if (piece.isNotBlank()) out += Segment(piece.trimEnd('\n'), true); return }
+        fun add(piece: String, code: Boolean, fenced: Boolean = false) {
+            if (code) { if (piece.isNotBlank()) out += Segment(piece.trimEnd('\n'), true, fenced); return }
             val p = if (piece.contains('\n')) QuestionText.text(piece) else QuestionText.prose(piece)
             if (p.isNotEmpty()) out += Segment(p, false)
         }
         if (!src.contains('\n')) {
             // A fenced block on one joined line: "Use this ```{"a": 1}``` then go on".
-            val fence = Regex("""```(?:[\w+-]*\s)?(.+?)```""").find(src)
+            val fence = INLINE_FENCE.find(src)
             if (fence != null) {
-                add(src.substring(0, fence.range.first), false); add(fence.groupValues[1].trim(), true); add(src.substring(fence.range.last + 1), false)
+                add(src.substring(0, fence.range.first), false); add(fence.groupValues[1].trim(), true, fenced = true); add(src.substring(fence.range.last + 1), false)
                 return out
             }
             if (isCodeLine(src)) { add(src.trim(), true); return out }
-            val lead = Regex("""^(.*?\S:)\s+(\S.*)$""").find(src)
+            val lead = LEAD_IN.find(src)
             if (lead != null && isCodeLine(lead.groupValues[2]) && !lead.groupValues[1].contains("://")) {
                 add(lead.groupValues[1], false); add(lead.groupValues[2].trim(), true); return out
             }
@@ -247,21 +334,34 @@ object QuestionText {
         val code = mutableListOf<String>()
         var fenced = false
         fun flushProse() { if (prose.isNotEmpty()) add(prose.joinToString("\n"), false); prose.clear() }
-        fun flushCode() {
+        fun flushCode(wasFenced: Boolean = false) {
             if (code.isEmpty()) return
-            val indent = code.filter { it.isNotBlank() }.minOfOrNull { l -> l.indexOfFirst { !it.isWhitespace() } } ?: 0
-            add(code.joinToString("\n") { if (it.length >= indent) it.substring(indent).trimEnd() else it.trim() }, true); code.clear()
+            val indent = if (wasFenced) 0 else code.filter { it.isNotBlank() }.minOfOrNull { l -> l.indexOfFirst { !it.isWhitespace() } } ?: 0
+            add(code.joinToString("\n") { if (wasFenced) it else if (it.length >= indent) it.substring(indent).trimEnd() else it.trim() }, true, wasFenced)
+            code.clear()
         }
         for (l in src.lines()) {
+            val oneRow = if (!fenced) ONE_ROW_FENCE.matchEntire(l) else null
+            if (oneRow != null) { flushProse(); flushCode(); code += oneRow.groupValues[1].trim(); flushCode(true); continue }
             if (l.trim().startsWith("```")) {
-                if (fenced) { flushCode(); fenced = false } else { flushProse(); fenced = true }
+                if (fenced) { flushCode(true); fenced = false } else { flushProse(); flushCode(); fenced = true }
                 continue
             }
+            if (fenced) { code += l; continue }
             val indented = code.isNotEmpty() && l.isNotBlank() && l.takeWhile { it == ' ' }.length >= 4
-            if (fenced || isCodeLine(l) || indented) { flushProse(); code += l; continue }
+            if (indented) { code += l; continue }
+            // A row the terminal wrapped a command onto joins it, so the box copies one whole command;
+            // after a "\" the next row stays a row of its own, as the shell reads it.
+            if (code.isNotEmpty() && continuesCode(code.last(), l)) {
+                if (code.last().trimEnd().endsWith("\\")) code += l else code[code.size - 1] = joinWrapped(code.last(), l)
+                continue
+            }
+            // A row that carries on an unfinished sentence is prose, whatever word it starts with.
+            val midSentence = prose.isNotEmpty() && prose.last().trim().let { it.isNotEmpty() && it.last() !in ".?!:" }
+            if (isCodeLine(l) && (!midSentence || isPlainCode(l))) { flushProse(); code += l; continue }
             flushCode(); prose += l
         }
-        flushProse(); flushCode()
+        flushProse(); flushCode(fenced)
         return out
     }
 

@@ -31,7 +31,9 @@ sealed interface CardBlock {
      * A command, script, path or diff in monospace. [diff] colours its +/- lines; [wrap] is for one
      * line (a long path or command wraps instead of scrolling sideways).
      */
-    data class Code(val lines: List<String>, val diff: Boolean = false, val wrap: Boolean = false) : CardBlock
+    data class Code(val lines: List<String>, val diff: Boolean = false, val wrap: Boolean = false,
+        /** 2.2.2: a fenced block the agent wrote: shown and copied exactly, with no terminal glyph rules applied. */
+        val exact: Boolean = false) : CardBlock
 }
 
 /** One list entry: its own marker ("·", "-", "1.") and its text. */
@@ -144,20 +146,41 @@ object CardFormat {
         // monospace block with its lines, indentation and characters exactly as on the screen.
         val shell = mutableListOf<Line>()
         var fenced = false
-        fun flushShell() { if (shell.isNotEmpty()) out += CardBlock.Code(dedented(shell), wrap = shell.size == 1); shell.clear() }
+        var shellFenced = false
+        fun flushShell() {
+            if (shell.isNotEmpty()) out += CardBlock.Code(if (shellFenced) shell.map { it.text } else dedented(shell),
+                wrap = shell.size == 1, exact = shellFenced)
+            shell.clear(); shellFenced = false
+        }
         for ((i, l) in ls.withIndex()) {
             val t = texts[i]
             if (diff && (DIFF_LINE.containsMatchIn(t) || NUMBERED_CONTEXT.containsMatchIn(t) || (code.isNotEmpty() && l.col > code.first().col))) {
                 flushProse(); flushItems(); code += l; continue
             }
             flushCode()
+            // A fence opened and closed on one row ("```npm run build```") is a one-line block.
+            val oneRow = if (!fenced) QuestionText.oneRowFence(t) else null
+            if (oneRow != null) {
+                flushProse(); flushItems(); flushShell()
+                shell += Line(oneRow, oneRow, l.col); shellFenced = true; flushShell(); continue
+            }
             if (t.startsWith("```")) {
                 flushProse(); flushItems()
-                fenced = !fenced
-                if (!fenced) flushShell()
+                if (fenced) { fenced = false; flushShell() } else { flushShell(); fenced = true; shellFenced = true }
                 continue
             }
-            if (fenced || QuestionText.isCodeLine(t) || (shell.isNotEmpty() && l.col > shell.first().col)) {
+            // 2.2.2 review: a command goes on over the rows the terminal wrapped it onto, so its box
+            // (and what long-press copies) is the whole command; a row that carries on an unfinished
+            // sentence never starts one ("Should I also" over "make the same change in app/src").
+            if (fenced || (shell.isNotEmpty() && l.col > shell.first().col)) { shell += l; continue }
+            if (shell.isNotEmpty() && QuestionText.continuesCode(shell.last().text, t)) {
+                val last = shell.last()
+                if (last.text.trimEnd().endsWith("\\")) shell += l
+                else shell[shell.size - 1] = Line(last.norm + " " + l.norm, QuestionText.joinWrapped(last.text, l.text), last.col)
+                continue
+            }
+            val midSentence = prose.isNotEmpty() && prose.last().let { it.isNotEmpty() && it.last() !in ".?!:" }
+            if (QuestionText.isCodeLine(t) && (!midSentence || QuestionText.isPlainCode(t))) {
                 flushProse(); flushItems(); shell += l; continue
             }
             flushShell()
@@ -288,7 +311,7 @@ object CardFormat {
                 is CardBlock.Items -> b.items.map { it.copy(text = QuestionText.prose(it.text)) }.filter { it.text.isNotEmpty() }
                     .takeIf { it.isNotEmpty() }?.let { CardBlock.Items(it) }
                 // 2.2.2: no frame, gutter, wrap mark, focus marker or colour code; shown and copied the same.
-                is CardBlock.Code -> b.copy(lines = BoxCopy.cleanBlock(b.lines))
+                is CardBlock.Code -> b.copy(lines = if (b.exact) b.lines.map(QuestionText::escOnly) else BoxCopy.cleanBlock(b.lines))
             }
             if (t == null) continue
             if (t is CardBlock.Headline) headline = squash(t.text)
@@ -299,7 +322,8 @@ object CardFormat {
     }
 
     private fun segmentBlock(sg: QuestionText.Segment): CardBlock =
-        if (sg.code) BoxCopy.cleanBlock(sg.text.lines()).let { CardBlock.Code(it, wrap = it.size == 1) } else CardBlock.Prose(sg.text)
+        if (sg.code) (if (sg.fenced) sg.text.lines() else BoxCopy.cleanBlock(sg.text.lines())).let { CardBlock.Code(it, wrap = it.size == 1, exact = sg.fenced) }
+        else CardBlock.Prose(sg.text)
 
     /**
      * 2.2.2: an option's description laid out like the card's text: prose, with any command or
