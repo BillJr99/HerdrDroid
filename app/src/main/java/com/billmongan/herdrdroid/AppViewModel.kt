@@ -1523,6 +1523,11 @@ class AppViewModel internal constructor(
         val preview = panePreviews.remove(paneId)?.takeIf { it.matches(now) }
         openingPanePreview = preview
         if (preview == null) return
+        // 2.2.2: the preview is the visit's first read for the question card too (shown read-only meanwhile).
+        prefetchedPaneText(paneId)?.let { t ->
+            val p = pane(paneId)
+            offerQuestionRead(current?.id, paneId, detectPrompt(t, p?.status == Status.NEEDS_YOU, p?.agent, versionOf(paneId)), t, p?.status)
+        }
         viewModelScope.launch {
             delay(PANE_PREVIEW_TTL_MS - (now - preview.capturedAt))
             if (openingPanePreview === preview) openingPanePreview = null
@@ -2124,13 +2129,10 @@ class AppViewModel internal constructor(
             }
             // 2.2.2: a question card shows once two reads in a row give it from a complete dialog; until
             // then the card is a neutral one and nothing is recorded in the pane's question history.
-            val cardKey = "$serverId|$paneId"
-            val cardShows = questionConfirm.offer(cardKey, p?.let {
-                com.billmongan.herdrdroid.herdr.questionRead(text, it, pane(paneId)?.agent, versionOf(paneId), status == Status.NEEDS_YOU)
-            })
-            if (p != null && cardShows && com.billmongan.herdrdroid.herdr.needsConfirmation(p)) { if (confirmedCards[cardKey] != p) confirmedCards[cardKey] = p }
-            else confirmedCards.remove(cardKey)
-            if (p == null || cardShows) current?.id?.let { sid -> observeQuestion(sid, paneId, p, status, pane(paneId)?.agentName, text) }
+            // History takes a question from a complete dialog even before its second read.
+            val read = offerQuestionRead(serverId, paneId, p, text, status)
+            if (p == null || read?.complete != false || p.let { confirmedCards["$serverId|$paneId"] == it })
+                current?.id?.let { sid -> observeQuestion(sid, paneId, p, status, pane(paneId)?.agentName, text) }
             else com.billmongan.herdrdroid.diag.DiagLog.log("prompt", "$paneId: question card not confirmed yet")
             val dialog = com.billmongan.herdrdroid.herdr.showsQuestionDialog(text)
             val sig = if (p == null && !dialog) "none" else
@@ -2284,8 +2286,22 @@ class AppViewModel internal constructor(
      * The card to show for [parsed], read from the open pane's screen (2.2.2): [parsed] once two reads
      * in a row confirmed it from a complete dialog, else a neutral card with no options or keys.
      */
-    fun questionCardFor(paneId: String, parsed: Prompt?, agent: String): Prompt? =
-        com.billmongan.herdrdroid.herdr.shownCard(parsed, confirmedCards["${current?.id}|$paneId"], agent)
+    fun questionCardFor(paneId: String, parsed: Prompt?, agent: String): Prompt? {
+        val key = "${current?.id}|$paneId"
+        // A pane no read has reached yet (a screen set without one): as before 2.2.2.
+        if (!questionConfirm.seen(key)) return parsed
+        return com.billmongan.herdrdroid.herdr.shownCard(parsed, confirmedCards[key], agent)
+    }
+
+    /** One read of [paneId]'s screen offered to the question confirmation; the read, or null with no card. */
+    private fun offerQuestionRead(serverId: String?, paneId: String, p: Prompt?, text: String, status: Status?): com.billmongan.herdrdroid.herdr.QuestionRead? {
+        val key = "$serverId|$paneId"
+        val read = p?.let { com.billmongan.herdrdroid.herdr.questionRead(text, it, pane(paneId)?.agent, versionOf(paneId), status == Status.NEEDS_YOU) }
+        val shows = questionConfirm.offer(key, read)
+        if (p != null && shows && com.billmongan.herdrdroid.herdr.needsConfirmation(p)) { if (confirmedCards[key] != p) confirmedCards[key] = p }
+        else confirmedCards.remove(key)
+        return read
+    }
 
     // ---- Settled view on a pane switch (2.2.0) ------------------------------------------------
 
