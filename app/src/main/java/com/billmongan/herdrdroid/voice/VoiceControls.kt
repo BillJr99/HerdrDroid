@@ -228,7 +228,7 @@ internal class VoiceControls(
                 if (!stillAllowed()) return
                 val found = scanned.zip(reads).mapNotNull { (session, read) ->
                     read?.prompt?.let { prompt ->
-                        val title = if (prompt.terminalReview) "Open the terminal to review." else prompt.question.take(200)
+                        val title = if (prompt.terminalReview) "Open the terminal to review." else com.billmongan.herdrdroid.ui.QuestionText.prose(prompt.question).take(200)
                         "${session.pane.tabLabel.ifBlank { session.pane.agentName }} on ${session.server.label}: $title"
                     }
                 }

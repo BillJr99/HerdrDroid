@@ -61,6 +61,33 @@ internal object BoxCopy {
         return body.joinToString("\n") { if (it.isBlank()) "" else it.drop(cut) }
     }
 
+    /** A row that is only a box's frame: corners and rules, nothing else. */
+    private val FRAME_ROW = Regex("""^\s*[╭╮╰╯┌┐└┘├┤┬┴┼╔╗╚╝─━═┄┈╌]+[\s╭╮╰╯┌┐└┘├┤┬┴┼╔╗╚╝─━═┄┈╌]*$""")
+    /** A focus marker the terminal drew at a row's start, before its content (never ">", which code uses). */
+    private val ROW_FOCUS = Regex("""^(\s*)[❯›▶](\s+)(?=\S)""")
+
+    /**
+     * 2.2.2 (Bill: "strip the glyphs from question blocks too"): a question card's code block as it
+     * shows and copies, by [clean]'s rules: the frame rows above and below it (corners and rules)
+     * dropped, then [clean] (colour codes, a gutter only when every row has one at that edge, Grok's
+     * "·" wrap marks joined), then a terminal focus marker at a row's start taken off. A real "|" pipe,
+     * a "·" or ">" inside a row, "->" and "=>", and the rows' relative indentation stay.
+     */
+    fun cleanBlock(lines: List<String>): List<String> {
+        val rows = lines.flatMap { ANSI.replace(it, "").split('\n') }
+            .dropWhile { it.isBlank() || FRAME_ROW.matches(it) }.dropLastWhile { it.isBlank() || FRAME_ROW.matches(it) }
+        if (rows.isEmpty()) return lines
+        // A box inside a box ("┃ ┆ cp …"): [clean]'s gutter rule, applied while every row still has one,
+        // before [clean] joins Grok's wrapped rows.
+        var inner = rows
+        repeat(3) {
+            val filled = inner.filter { it.isNotBlank() }
+            if (filled.isNotEmpty() && filled.all { it.trimStart().first() in GUTTERS } && filled.any { it.trimStart().drop(1).trimStart().firstOrNull()?.let { c -> c in GUTTERS } == true })
+                inner = inner.map { r -> if (r.isBlank()) "" else r.trimStart().drop(1).removePrefix(" ") }
+        }
+        return clean(inner).lines().map { r -> ROW_FOCUS.replace(r) { m -> m.groupValues[1] } }
+    }
+
     /** A box's label in the menu: its first line, shortened. */
     fun label(text: String): String {
         val first = text.lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() }.orEmpty()

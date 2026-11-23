@@ -211,7 +211,8 @@ class QuestionOptions212Test {
     @Test fun museQuotaAndHermesClarifyAlertsOfferTheirCardsOptions() {
         val muse = card(res("/screens/muse/captured-2026-11-20/quota-fast.txt"), "muse", blocked = false)
         assertEquals(3, muse.choices.size)
-        assertEquals(listOf(muse.choices[0].label.take(24), muse.choices[1].label.take(24), "Esc"), titles(muse))
+        // 2.2.2: a title cut at 24 characters loses the space it may end on.
+        assertEquals(listOf(muse.choices[0].label.take(24).trimEnd(), muse.choices[1].label.take(24).trimEnd(), "Esc"), titles(muse))
         assertEquals(listOf(muse.choices[2].label), alertPlan(muse).inApp)
         assertFalse(notificationOffersReply(muse))
         val hermes = card(hermesClarify, "hermes", blocked = false)
