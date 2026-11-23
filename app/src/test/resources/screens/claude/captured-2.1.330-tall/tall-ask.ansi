@@ -1,0 +1,47 @@
+     [0m[38;2;153;153;153mvisible 2>/dev/null); if echo "$t" | grep -q -E "^\s*(❯ )?1\. Yes\s*$|^\s*Do you want to proceed\?\s*$"; then sleep 2; herdr pane[0m
+     [0m[38;2;153;153;153mread w2:p5 --source visible > $O/claude-tall… (7s)[0m
+     [0m[38;2;153;153;153m(ctrl+b to run in background)[0m
+  
+[0m[38;2;177;185;249m──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+ [0m[1m[38;2;177;185;249mBash command[0m [0m[38;2;153;153;153m· [0mfrom the general-purpose agent
+ [0m[38;2;153;153;153mPrint canned probe text for prompt capture test[0m 
+[0m[38;2;80;80;80m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌[0m
+ [0m[2m│[0m cd /home/user/scratch && python3 - <<'EOF'
+ [0m[2m│[0m # capture test for a tall permission prompt; this script only prints
+ [0m[2m│[0m probes = '''
+ [0m[2m│[0m $ id
+ [0m[2m│[0m uid=1000(demo) gid=1000(demo)
+ [0m[2m│[0m $ ls ~/.ssh
+ [0m[2m│[0m ls: cannot access '/home/demo/.ssh': No such file or directory
+ [0m[2m│[0m $ cat /etc/shadow
+ [0m[2m│ [0mcat: /etc/shadow: Permission denied
+ [0m[2m│[0m $ ls /home
+ [0m[2m│ [0mls: cannot open directory '/home': Permission denied
+ [0m[2m│[0m $ touch /usr/x
+ [0m[2m│ [0mtouch: cannot touch '/usr/x': Read-only file system
+ [0m[2m│[0m $ cat /sys/fs/cgroup/memory.max
+ [0m[2m│ [0m1073741824
+ [0m[2m│[0m $ cat /sys/fs/cgroup/pids.max
+ [0m[2m│[0m 256 
+ [0m[2m│ [0m$ grep Cap /proc/self/status
+ [0m[2m│[0m CapInh: 0000000000000000
+ [0m[2m│[0m CapPrm: 0000000000000000
+ [0m[2m│ [0mCapEff: 0000000000000000
+ [0m[2m│[0m $ env | grep -c KEY
+ [0m[2m│[0m 0
+ [0m[2m│[0m '''
+ [0m[2m│[0m for line in probes.strip().splitlines():
+ [0m[2m│   [0m  print(line)
+ [0m[2m│[0m print("done")
+ [0m[2m│[0m EOF
+[0m[38;2;80;80;80m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌[0m
+ [0m[2m│[0m [0m[38;2;255;193;7mHook [0m[1m[38;2;255;193;7mPreToolUse:Bash[0m[38;2;255;193;7m requires confirmation for this command:[0m
+ [0m[2m│[0m [0m[38;2;255;193;7mgh policy: core list 1: a secret location (keys, tokens, ~/.config, keystores, secret/private) [0m[2m[38;2;255;193;7m[settings][0m
+ [0m[38;2;153;153;153msettings.json to update hooks[0m
+
+ Do you want to proceed?
+ [0m[38;2;177;185;249m❯ [0m[38;2;153;153;153m1. [0m[38;2;177;185;249mYes[0m
+   [0m[38;2;153;153;153m2. [0mNo
+  
+ [0m[38;2;153;153;153mEsc to cancel · Tab to amend · ctrl+x ctrl+k twice to stop background agents[0m                     
+[0m[38;2;136;136;136m──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── Session ─[0m
