@@ -24,9 +24,23 @@ class PaneControls222Test {
     @Test fun piOmpAndCopilotEmptyBoxesLetAMenuWriteGo() {
         for (a in listOf("pi", "omp", "copilot")) {
             assertEquals(a, "", inputLineOf(res("${menus(a)}/empty.ansi"), a))
-            assertEquals(a, "", inputLineOf(stripAnsi(res("${menus(a)}/empty.ansi")), a))
             assertNull(a, PaneControls.writeBlock(a, res("${menus(a)}/empty.ansi")))
         }
+        for (a in listOf("omp", "copilot")) assertEquals(a, "", inputLineOf(stripAnsi(res("${menus(a)}/empty.ansi")), a))
+        // pi's blank box counts as empty only where its cursor shows: never on a plain read.
+        assertNull(inputLineOf(stripAnsi(res("${menus("pi")}/empty.ansi")), "pi"))
+    }
+
+    @Test fun typedSpacesAreNotAnEmptyBox() {
+        // pi: spaces typed before the cursor cell.
+        val spaced = res("${menus("pi")}/empty.ansi").replace("\u001B[0m\u001B[7m \u001B[0m", "\u001B[0m   \u001B[7m \u001B[0m")
+        assertTrue(spaced.contains("   \u001B[7m"))
+        assertNull(inputLineOf(spaced, "pi"))
+        // Oh My Pi and Copilot draw no cursor cell: their menu commands clear the line with Ctrl+U first.
+        assertEquals("ctrl+u", AgentComposers.clearKey("omp"))
+        assertEquals("ctrl+u", AgentComposers.clearKey("copilot"))
+        assertNull(AgentComposers.clearKey("pi"))
+        assertNull(AgentComposers.clearKey("claude"))
     }
 
     @Test fun textInTheirBoxesIsTyping() {
@@ -46,9 +60,12 @@ class PaneControls222Test {
         // No rules, no frame, no gutter: nothing is judged empty.
         for (a in listOf("pi", "omp", "copilot")) assertTrue(a, PaneControls.writeBlock(a, "some output\nmore output\n") != null)
         // pi with a list under its editor (autocomplete), or a top rule carrying a status: not known.
-        val pi = stripAnsi(res("${menus("pi")}/empty.ansi"))
+        val pi = res("${menus("pi")}/empty.ansi").trimEnd()
         assertNull(AgentComposers.pi(pi + "\n/new  start\n/resume  pick\n/model  choose\n/help  help\n/quit  quit"))
         assertNull(AgentComposers.pi(pi.replaceFirst("────────", "── Working ")))
+        // An unknown layout is no input line for these agents: the generic "❯"/">" search never runs.
+        assertNull(inputLineOf("output\n>\nmore\n", "pi"))
+        assertNull(inputLineOf("output\n❯ \n", "copilot"))
         // Copilot's box with something other than its frame inside.
         assertNull(AgentComposers.copilot(stripAnsi(res("${menus("copilot")}/empty.ansi")).replace(Regex("""(?m)^┃\s*$"""), "x")))
         // Oh My Pi's gutter with no status row above it.
@@ -63,11 +80,17 @@ class PaneControls222Test {
         assertTrue(PaneControls.canSwitch(spec, null))
         assertEquals(listOf(":read-only", ":workspace"), PaneControls.reachable(spec, null).map { it.name })
         assertEquals("/permissions :read-only", spec.commandFor(null, ":read-only"))
-        assertNull(spec.commandFor(":workspace", ":danger-full-access"))
+        assertNull(spec.commandFor(":workspace", "bypass"))
+        // The reply must name the picked profile; full access is an approve-all landing.
         val before = "› Ask Codex to do anything"
-        assertTrue(spec.confirmed!!(before, "$before\n• Permissions updated to Read Only\n› Ask Codex", ":read-only"))
-        assertFalse(spec.confirmed!!(before, before, ":read-only"))
-        assertFalse(spec.confirmed!!(before, "$before\n• Permissions updated to Full Access", ":workspace"))
+        assertEquals(":read-only", spec.replied!!(before, "$before\n• Permissions updated to Read Only\n› Ask Codex"))
+        assertEquals(":workspace", spec.replied!!(before, "$before\n• Permissions updated to Default"))
+        assertNull(spec.replied!!(before, before))
+        assertEquals("bypass", spec.replied!!(before, "$before\n• Permissions updated to Full Access"))
+        assertTrue(PaneControls.unconfirmedApproveAll(spec, "bypass", ":workspace"))
+        // A footer saying full access reads as approve-all, and the menu doesn't switch away from it.
+        assertEquals("bypass", spec.read("› Ask Codex\n\n  GPT-6.2-Sol high · full access · ~/x"))
+        assertFalse(PaneControls.canSwitch(spec, "bypass"))
     }
 
     @Test fun grokTogglesAutoReviewByItsCommand() {
@@ -84,21 +107,19 @@ class PaneControls222Test {
         assertFalse(PaneControls.reachable(spec, "default").any { it.approvesAll })
     }
 
-    @Test fun copilotPlanByShiftTabBackByAutopilotOffAndNeverPastAutopilot() {
+    @Test fun copilotNeverPressesShiftTabAndNeverLeavesAutopilotByTheMenu() {
         val spec = PaneControls.modes("copilot")!!
-        val screen = res("${menus("copilot")}/empty.ansi")
-        assertEquals("interactive", spec.read(screen))
-        assertEquals(listOf("interactive", "plan"), PaneControls.reachable(spec, "interactive").map { it.name })
-        assertNull(spec.commandFor("interactive", "plan"))
+        assertEquals("", spec.key)
+        assertEquals("interactive", spec.read(res("${menus("copilot")}/empty.ansi")))
+        // From Interactive nothing else is offered: Plan isn't reached by a command.
+        assertEquals(listOf("interactive"), PaneControls.reachable(spec, "interactive").map { it.name })
+        assertEquals(listOf("interactive", "plan"), PaneControls.reachable(spec, "plan").map { it.name })
         assertEquals("/autopilot off", spec.commandFor("plan", "interactive"))
-        assertEquals("/autopilot off", spec.commandFor("autopilot", "interactive"))
-        // From Autopilot, Plan would need two presses: not offered.
-        assertEquals(listOf("interactive", "autopilot"), PaneControls.reachable(spec, "autopilot").map { it.name })
-        // One press that doesn't land on Plan stops there instead of pressing on.
-        val sw = ModeSwitcher(spec, "interactive", "plan")
-        assertEquals(Step.Press, sw.next("interactive"))
-        assertEquals("autopilot", (sw.next("autopilot") as Step.Stop).mode)
-        assertEquals(Step.Done("plan"), ModeSwitcher(spec, "interactive", "plan").let { it.next("interactive"); it.next("plan") })
+        // Autopilot counts as approving everything: never a target, and the menu doesn't switch from it.
+        assertTrue(spec.options.single { it.name == "autopilot" }.approvesAll)
+        assertFalse(PaneControls.canSwitch(spec, "autopilot"))
+        assertNull(spec.commandFor("autopilot", "interactive"))
+        assertTrue(PaneControls.unconfirmedApproveAll(spec, "autopilot", "interactive"))
     }
 
     @Test fun copilotApprovalsNeverAllowAll() {
@@ -122,7 +143,11 @@ class PaneControls222Test {
         assertEquals("auto", spec.read("Auto mode: edits & safe commands auto-approved (shift+tab to cycle)"))
         // While it works the row shows "esc to cancel": the mode can't be read.
         assertNull(spec.read(res("${menus("agy")}/screen.ansi")))
-        assertTrue(spec.options.none { it.approvesAll })
+        // Skipping permissions, if a footer ever says so, is approve-all and never offered or left by the menu.
+        assertEquals("bypass", spec.read("? for shortcuts · skip permissions"))
+        assertTrue(spec.options.single { it.name == "bypass" }.approvesAll)
+        assertFalse(PaneControls.reachable(spec, "default").any { it.approvesAll })
+        assertFalse(PaneControls.canSwitch(spec, "bypass"))
     }
 
     @Test fun ompTogglesPlan() {
@@ -182,5 +207,9 @@ class PaneControls222Test {
         assertEquals("/resume", agy.picker)
         for (a in listOf("pi", "omp", "copilot", "agy", "hermes")) assertNotNull(a, SessionControls.forAgent(a))
         assertNull(SessionControls.forAgent("hermes")!!.resume(PastSession("x; rm", null, 0, null, 0)))
+        // An option-like id, and a Hermes id that is only digits (its /resume would pick by list position).
+        assertNull(SessionControls.forAgent("copilot")!!.resume(s("/h/.copilot/session-state/--help/events.jsonl")))
+        assertNull(SessionControls.forAgent("omp")!!.resume(s("/h/.omp/agent/sessions/-x/2026_-rf.jsonl")))
+        assertNull(SessionControls.forAgent("hermes")!!.resume(PastSession("12", null, 0, null, 0)))
     }
 }

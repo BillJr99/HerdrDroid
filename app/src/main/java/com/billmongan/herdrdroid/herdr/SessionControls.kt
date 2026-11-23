@@ -33,7 +33,8 @@ object SessionControls {
         fun resume(s: PastSession): String? = resumeById?.let { cmd -> idOf(s)?.let { "$cmd $it" } }
     }
 
-    private val ID = Regex("""^[A-Za-z0-9_.-]{1,128}$""")
+    /** 2.2.2 (from review): the first character is a letter or digit, so an id never reads as an option ("--help"). */
+    private val ID = Regex("""^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$""")
 
     private fun safe(id: String?): String? = id?.takeIf { ID.matches(it) }
 
@@ -45,6 +46,9 @@ object SessionControls {
 
     /** The folder a session's files are in, named by its id (Grok, Copilot, Muse). */
     internal fun idOfFolder(ref: String): String? = safe(ref.substringBeforeLast('/').substringAfterLast('/'))
+
+    /** Hermes's /resume takes a list number too, so an all-digit id would pick by position: never typed (2.2.2, from review). */
+    internal fun hermesId(ref: String): String? = safe(ref)?.takeIf { id -> !id.all(Char::isDigit) }
 
     fun forAgent(agent: String?): Spec? = when (agent?.lowercase()) {
         // Claude Code 2.1.329: /clear (aliases reset, new) starts a new session; /resume [session ID or
@@ -68,7 +72,7 @@ object SessionControls {
         "agy", "antigravity" -> Spec("agy", "/new", picker = "/resume", herdrAtOnce = false)
         // Hermes 0.23.3: /new (its plugin reports on_session_reset); 2.2.2: "/resume <session id>" ("Use
         // /resume <number>, /resume <session id>, or /resume <session title>"), the id from its state.db.
-        "hermes" -> Spec("hermes", "/new", resumeById = "/resume", idOf = { safe(it.ref) }, herdrAtOnce = false)
+        "hermes" -> Spec("hermes", "/new", resumeById = "/resume", idOf = { hermesId(it.ref) }, herdrAtOnce = false)
         // Grok 1.0.92: /new, /resume [id|title]; SessionStart reports both (sources new and load).
         "grok" -> Spec("grok", "/new", resumeById = "/resume", idOf = { idOfFolder(it.ref) }, picker = "/resume")
         // Kiro CLI 3.5.0: /chat new, /chat resume (picker). herdr drops Kiro's (third-party) session reports.
