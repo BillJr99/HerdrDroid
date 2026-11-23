@@ -47,7 +47,9 @@ class LinkDown(cause: Throwable) : Exception(cause.message ?: cause.javaClass.si
 data class ExecResult(val exit: Int, val out: String, val err: String)
 
 /** A command still running when its time was up; its channel was closed (1.3.0). */
-class CommandTimeout(seconds: Long) : Exception("the command did not finish within $seconds s")
+class CommandTimeout(seconds: Long) : Exception("$PREFIX $seconds s") {
+    companion object { const val PREFIX = "the command did not finish within" }
+}
 /** A command that printed more than the app takes; its channel was closed (1.3.0). */
 class OutputTooLarge(max: Int) : Exception("the command printed more than ${max / (1024 * 1024)} MB")
 /** A failure after the command reached the computer: reported, never retried. */
@@ -183,7 +185,32 @@ class HerdrSsh(
     private val pinnedFingerprint: String?,
     private val keystoreKey: (String) -> KeyProvider?,
     private val wsUrl: String? = null,
+    /** 2.2.6: the server's small-packets MSS, or null when off. Used on direct TCP only. */
+    smallPacketsMss: Int? = null,
+    /** 2.2.6: the app's server id, only to tag diagnostic lines (hashed by [LinkDiag]). */
+    private val diagServerId: String? = null,
+    private val mssOps: MssOps = AndroidMssOps,
 ) {
+    /**
+     * 2.2.6: the MSS the next connection opens with: the server's setting, or the fallback's for
+     * this session ([useSmallPackets]); null for the normal MSS.
+     */
+    @Volatile private var sessionMss: Int? = smallPacketsMss?.let { SmallPackets.clamp(it) }
+
+    /** The MSS a direct TCP connection uses now; always null over a WebSocket. */
+    val activeMss: Int? get() = if (wsUrl != null) null else sessionMss
+
+    /** 2.2.6 fallback: the next connection (after [reset]) uses [mss], for this object's life only. */
+    fun useSmallPackets(mss: Int) {
+        sessionMss = SmallPackets.clamp(mss)
+    }
+
+    /** The socket factory for the next connection: an [MssSocketFactory] when small packets apply, else null (SSHJ's default). */
+    internal fun socketFactoryForNext(): javax.net.SocketFactory? {
+        val mss = activeMss ?: return null
+        return MssSocketFactory(mss, mssOps) { com.billmongan.herdrdroid.diag.LinkDiag.mss(diagServerId, it) }
+    }
+
     private val lock = Mutex()
     // Keep bulk commands in order without holding the connection lock during remote I/O.
     private val bulkLock = Mutex()
@@ -228,7 +255,8 @@ class HerdrSsh(
                 DiagLog.log("ssh", "sshj connecting to ${b.host}:${b.port} (the WebSocket bridge)")
                 c.connect(b.host, b.port)
             } else {
-                DiagLog.log("ssh", "sshj connecting over TCP")
+                socketFactoryForNext()?.let { c.socketFactory = it }
+                DiagLog.log("ssh", "sshj connecting over TCP" + (activeMss?.let { " (small packets, MSS $it)" } ?: ""))
                 c.connect(host, port)
             }
             DiagLog.log("ssh", "key exchange done; server says \"${c.transport.serverVersion}\"; host key ${verifier.seen}")
