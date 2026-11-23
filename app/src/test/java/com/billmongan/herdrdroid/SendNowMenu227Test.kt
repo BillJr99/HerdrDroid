@@ -40,9 +40,15 @@ class SendNowMenu227Test {
     private class Quiet : Herdr.Commands {
         override val connection: Any? = Any()
         val writes = mutableListOf<String>()
-        override suspend fun bulk(command: String) = ExecResult(0, "", "")
+        /** The pane list keeps the working Claude pane listed, so a refresh never drops it. */
+        private val pane = """{"pane_id":"p1","workspace_id":"w1","tab_id":"tab","agent":"claude","agent_status":"working","cwd":"/fixture","terminal_id":"t1","scroll":{"offset_from_bottom":0}}"""
+        override suspend fun bulk(command: String) = ExecResult(0, """{"result":{"panes":[$pane]}}
+            |@@herdrdroid-tabs@@
+            |{"result":{"tabs":[]}}
+        """.trimMargin(), "")
         override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult {
             if (command.contains("send-") || command.contains("'agent' 'prompt'")) writes += command
+            if (command.endsWith("'pane' 'get' 'p1'")) return ExecResult(0, """{"result":{"pane":$pane}}""", "")
             return ExecResult(0, "", "")
         }
     }
@@ -51,6 +57,7 @@ class SendNowMenu227Test {
         val vm = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
         val server = Server(id = "fixture", name = "Fixture", host = "unused.invalid", port = 22, user = "u", herdrPath = "herdr")
         val claude = Pane("p1", "tab", "w1", "claude", Status.WORKING, "", "/fixture", terminalId = "t1")
+        // Notices from Send now show here, so a refusal is visible in the failure message.
         val commands = Quiet()
         fun field(name: String) = AppViewModel::class.java.getDeclaredField(name).apply { isAccessible = true }
         @Suppress("UNCHECKED_CAST")
