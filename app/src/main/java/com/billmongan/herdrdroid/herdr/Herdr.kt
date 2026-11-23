@@ -1356,16 +1356,13 @@ internal fun claudeFramedDialog(raw: List<String>, at: Int): ClaudeFramed? {
     if (topOff) out += QLine(if (j < 0) CLAUDE_TOP_OFF_NOTE else CLAUDE_TITLE_OFF_NOTE)
     titleRows.forEach { out += QLine(it) }
     command.filter { it.isNotBlank() }.forEach { out += QLine(it, cmd = true, row = true) }
-    // The explanation as text: a paragraph per run of rows in or out of the gutter, or between blank rows.
+    // The explanation as text, without the gutter, its paragraphs split at blank rows (questionParts lays it out as before).
     var gap = true
-    var inGutter: Boolean? = null
     for (r in explanation) {
-        if (r.isBlank()) { gap = true; continue }
-        val g = CLAUDE_GUTTER_ROW.find(r)
-        val text = (g?.groupValues?.get(1) ?: r).trim()
+        val text = (CLAUDE_GUTTER_ROW.find(r)?.groupValues?.get(1) ?: r).trim()
         if (text.isEmpty()) { gap = true; continue }
-        out += QLine(text, gapBefore = gap || (inGutter != null && inGutter != (g != null)))
-        gap = false; inGutter = g != null
+        out += QLine(text, gapBefore = gap)
+        gap = false
     }
     question.forEachIndexed { n, q -> out += QLine(q, gapBefore = n == 0) }
     return ClaudeFramed(out, topOff)
