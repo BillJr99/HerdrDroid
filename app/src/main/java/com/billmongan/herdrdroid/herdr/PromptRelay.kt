@@ -26,6 +26,13 @@ internal interface PromptRelayPort {
      * idle requirement is relaxed to allow herdr's working status.
      */
     suspend fun sendForced(pane: Pane, text: String, connection: Any, permit: WritePermit) = send(pane, text, connection, permit)
+
+    /**
+     * 2.2.7: puts [bytes] in that computer's inbox as [name], checked by size and SHA-256, for a
+     * message too long to type ([LongText]). A port that can't throws, and the message is refused.
+     */
+    suspend fun upload(name: String, bytes: ByteArray, connection: Any): UploadReceipt =
+        throw UnsupportedOperationException("this server can't take a file")
 }
 
 /** Who is in a pane: same pane, tab, workspace, agent, folder, terminal and agent session. */
@@ -81,6 +88,8 @@ internal enum class RelayRefusal(val why: String, val transient: Boolean) {
     FAILED("its pane or screen couldn't be read", true),
     SOURCE_CHANGED("this chat's pane is no longer open as it was when the proposal came", true),
     SOURCE_REPLACED("a different session is now in this chat's pane", false),
+    /** 2.2.7: a message too long to type couldn't be put on that computer whole as a file. */
+    UPLOAD("the long message couldn't be put on that computer whole as a file", true),
 }
 
 /**
@@ -177,6 +186,18 @@ internal class PromptRelay(
         val permit = gate.open(key, authorizedWrite) ?: run { release(); return refuse(RelayRefusal.CLOSING) }
         try {
             val port = target.port
+            // 2.2.7: a message too long to type goes as a checked file in that computer's inbox, and
+            // the agent is sent one line pointing at it, under the same checks and approval.
+            val outgoing = when (LongText.plan(text)) {
+                is LongText.Plan.Single -> text
+                is LongText.Plan.Attachment -> {
+                    invalid()?.let { return refuse(it) }
+                    val r = try { port.upload("agent-message.txt", text.toByteArray(Charsets.UTF_8), target.connection) }
+                        catch (c: CancellationException) { throw c } catch (_: Exception) { return refuse(RelayRefusal.UPLOAD) }
+                    SentFiles.remember(r.path, text)
+                    LongText.fileLine(r)
+                }
+            }
             // 2.2.1: background work alone does not hold an agent that takes input meanwhile.
             val waitsForBackground = !takesInputDuringBackgroundWork(target.pane.agent)
             var notIdle: RelayRefusal = RelayRefusal.UNREACHABLE
@@ -232,8 +253,8 @@ internal class PromptRelay(
                 val again = port.viewport(ready.id, target.connection)
                 invalid()?.let { return refuse(it) }
                 screenRefusal(again, ready.agent)?.let { return refuse(it) }
-                port.sendForced(ready, text, target.connection, permit)
-            } else port.send(ready, text, target.connection, permit)
+                port.sendForced(ready, outgoing, target.connection, permit)
+            } else port.send(ready, outgoing, target.connection, permit)
             return RelayResult.SENT
         } catch (c: CancellationException) {
             // Cancelled after the write started: it may have arrived, so it is reported and never

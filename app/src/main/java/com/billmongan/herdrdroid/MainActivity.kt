@@ -200,8 +200,9 @@ class MainActivity : FragmentActivity() {
                 val s0 = vm.screen
                 if (wide && (s0 is Screen.Agent || s0 == Screen.Home)) {
                     // Wide: the drawer stays out beside the agent.
-                    // 2.2.7: Back on the main screen stays in the app (the drawer is already out here).
-                    if (s0 == Screen.Home) BackHandler { }
+                    // 2.2.7: Back on the wide main screen (agent or Home) stays in the app: the drawer is
+                    // already out here, so there is nothing to open or close, and the app never closes from it.
+                    com.billmongan.herdrdroid.ui.StayInApp()
                     Row(Modifier.fillMaxSize()) {
                         com.billmongan.herdrdroid.ui.SessionDrawer(vm)
                         VerticalDivider(color = Palette.Line)

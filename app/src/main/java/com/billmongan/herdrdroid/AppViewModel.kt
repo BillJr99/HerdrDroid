@@ -3650,7 +3650,8 @@ class AppViewModel internal constructor(
                 }
                 return@act
             }
-            val line = "Pasted text (${com.billmongan.herdrdroid.herdr.LongText.size(receipt.size)}) attached: ${receipt.path}"
+            com.billmongan.herdrdroid.herdr.SentFiles.remember(receipt.path, text)
+            val line = com.billmongan.herdrdroid.herdr.LongText.fileLine(receipt)
             sendOne(pane(pane.id) ?: pane, line, force, failed, delivered)
         }
     }
@@ -4585,6 +4586,8 @@ class AppViewModel internal constructor(
             }
             override suspend fun send(fresh: Pane, text: String, permit: com.billmongan.herdrdroid.herdr.WritePermit) =
                 h.sendPermitted(fresh, text, connection, permit)
+            // 2.2.7: a notice too long to type goes as a checked file.
+            override suspend fun upload(name: String, bytes: ByteArray) = h.uploadVerified(name, bytes)
         }
         val result = localPromptSend.send(server, com.billmongan.herdrdroid.herdr.Occupant.of(s.pane), text, ::allowed, port)
         (result.failure as? LinkDown)?.let { if (herdr === h) linkLost(it) }
@@ -4613,6 +4616,8 @@ class AppViewModel internal constructor(
             }
             override suspend fun send(fresh: Pane, text: String, permit: com.billmongan.herdrdroid.herdr.WritePermit) =
                 h.sendPermitted(fresh, text, target.connection, permit)
+            // 2.2.7: a dictated message too long to type goes as a checked file.
+            override suspend fun upload(name: String, bytes: ByteArray) = h.uploadVerified(name, bytes)
         }
         val result = localPromptSend.send(target.server, target.occupant, text, ::allowedHere, port)
         (result.failure as? LinkDown)?.let { if (herdr === h) linkLost(it) }

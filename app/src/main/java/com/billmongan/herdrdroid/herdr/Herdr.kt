@@ -378,6 +378,8 @@ class Herdr internal constructor(
         // 2.2.2: Force Send's prompt to a working agent, still herdr's agent prompt (it reaches a working agent), never --force.
         override suspend fun sendForced(pane: Pane, text: String, connection: Any, permit: WritePermit) =
             sendMessage(pane, text, allowTerminalFallback = false, expectedConnection = connection, permit = permit, busyOk = true)
+        // 2.2.7: a message too long to type, as a checked file in this computer's inbox.
+        override suspend fun upload(name: String, bytes: ByteArray, connection: Any) = uploadVerified(name, bytes)
     }
 
     /** No tab list, status enrichment, bulk lock, or reconnect during a card tap. */
