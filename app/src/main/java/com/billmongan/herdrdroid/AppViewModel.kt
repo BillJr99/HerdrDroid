@@ -2361,6 +2361,7 @@ class AppViewModel internal constructor(
             // 2.1.5: a cross-server frame the agent rendered in this chat becomes a card; nothing is sent.
             // A card, so never held by the settle gate (2.2.0).
             noteCrossServerFrames(cardOwner, recent)
+            notePaneReadFrames(cardOwner, recent)
             if (!verdict.show) return
             noteSettledScreen(serverId, paneId, text, visit)
             lastAppliedPaneRead = attempt
@@ -3939,6 +3940,7 @@ class AppViewModel internal constructor(
 
     /** Background, lock, a lost link or messaging turned off: every card goes. Unspent codes may show again on the next read. */
     private fun clearCrossServerCards() {
+        paneReads.clear()
         crossServerPermit?.revoke()
         crossServerPermit = null
         crossServerCards = emptyList()
@@ -4259,6 +4261,82 @@ class AppViewModel internal constructor(
             !idleForRelay(now) -> RelayRefusal.NOT_IDLE
             else -> null
         }
+    }
+
+    // ---- 2.2.7: cross-server pane reads (herdr/PaneRead.kt, ui/PaneReadPanel.kt) -----------------
+
+    /** The captures, in the app's private storage only. */
+    internal val paneReadStore by lazy {
+        com.billmongan.herdrdroid.herdr.PaneReadStore(java.io.File(getApplication<Application>().filesDir, "pane-reads"))
+    }
+
+    /** Another server's client, as the relay would reach it; null for this chat's own server, or when it is not connected. */
+    private fun paneReadClient(serverId: String): Herdr? {
+        if (locked || serverId == current?.id) return null
+        val saved = servers.firstOrNull { it.id == serverId } ?: return null
+        val watched = fleetStates[serverId] ?: return null
+        if (watched.error != null || watched.server != saved || (!foreground && saved.overWebSocket)) return null
+        return fleet?.herdr(serverId)?.takeIf { it.connectionIdentity != null }
+    }
+
+    /** Each capture's attachment send: its server, pane and text, and whether herdr took it. */
+    private data class PaneReadSend(val server: String, val pane: String, val paneName: String, val text: String, val delivered: Boolean = false)
+    private var paneReadSends by mutableStateOf<Map<String, PaneReadSend>>(emptyMap())
+
+    private val paneReadPort = object : com.billmongan.herdrdroid.herdr.PaneReadRequests.Port<CardTarget> {
+        override fun enabled() = agentMessagingEnabled && agentMessagingForeground && !locked
+        override fun sourceCurrent(source: CardTarget) = crossServerSourceCurrent(source)
+        override fun servers() = this@AppViewModel.servers.let { all -> all.map { s ->
+            val label = com.billmongan.herdrdroid.store.agentServerLabel(s, all)
+            com.billmongan.herdrdroid.herdr.PaneReadServer(
+                s.id, listOfNotNull(s.name.trim().takeIf { it.isNotEmpty() }, label).distinct(), label,
+                own = s.id == current?.id, connected = paneReadClient(s.id) != null,
+                panes = fleetStates[s.id]?.panes.orEmpty(),
+            )
+        } }
+        override suspend fun read(server: com.billmongan.herdrdroid.herdr.PaneReadServer, pane: Pane, lines: Int?): String {
+            val h = paneReadClient(server.id) ?: throw HerdrError("not connected", 0)
+            return if (lines == null) h.readVisible(pane.id, preserveGlyphs = true) else h.read(pane.id, lines, preserveGlyphs = true)
+        }
+        override suspend fun deliver(source: CardTarget, capture: com.billmongan.herdrdroid.herdr.PaneCapture, message: String): String? {
+            val h = herdr ?: return "this chat's server is not connected"
+            if (source.client !== h || h.connectionIdentity !== source.connection || link != Link.CONNECTED || current?.id != source.server)
+                return "this chat's server connection changed"
+            val now = pane(source.pane.id)?.takeIf { sameOccupant(it, source.pane) } ?: return "a different session is now in this chat's pane"
+            // The message box's own attachment path: the file goes to ~/.herdrdroid/inbox there, its path in the message.
+            val path = h.upload(capture.name, capture.text.toByteArray(Charsets.UTF_8))
+            val text = "$message $path"
+            paneReadSends = paneReadSends + (capture.name to PaneReadSend(source.server, now.id, com.billmongan.herdrdroid.ui.sessionName(now), text))
+            sendMessage(now, text) {
+                paneReadSends[capture.name]?.let { paneReadSends = paneReadSends + (capture.name to it.copy(delivered = true)) }
+            }
+            return null
+        }
+        override fun log(message: String) = com.billmongan.herdrdroid.diag.DiagLog.log("relay", message)
+    }
+
+    internal val paneReads by lazy {
+        com.billmongan.herdrdroid.herdr.PaneReadRequests(paneReadPort, crossServerCodes, paneReadStore, viewModelScope) { crossServerClock() }
+    }
+
+    /** A read frame in the open pane, at its live bottom, while the app is in front and unlocked; refused on its card when the setting is off. */
+    private fun notePaneReadFrames(owner: CardTarget?, recent: String) {
+        if (owner == null || !agentMessagingForeground || locked || owner.client.backend != Backend.TUI) return
+        val now = cardTarget(owner.pane.id) ?: return
+        if (now.client !== owner.client || now.connection !== owner.connection || now.server != owner.server ||
+            !sameOccupant(now.pane, owner.pane) || now.pane.scrollOffset != 0 || !hasStableOccupant(now.pane)) return
+        val label = current?.let { com.billmongan.herdrdroid.store.agentServerLabel(it, servers) }.orEmpty()
+        paneReads.noteFrames(owner, owner.server, owner.pane.id, "${com.billmongan.herdrdroid.ui.sessionName(owner.pane)} on $label", recent)
+    }
+
+    /** What the card says about a capture's attachment send, live. */
+    internal fun paneReadDelivery(card: com.billmongan.herdrdroid.herdr.PaneReadRequests.Card<CardTarget>): String? {
+        card.undeliverable?.let { return com.billmongan.herdrdroid.herdr.PaneCaptures.deliveryNote(unavailable = it) }
+        val send = card.saved?.let { paneReadSends[it] } ?: return null
+        val p = pendingSends.firstOrNull { it.isFor(send.server, send.pane) && it.text == send.text }
+        return com.billmongan.herdrdroid.herdr.PaneCaptures.deliveryNote(
+            paneName = send.paneName, delivered = send.delivered, pending = p != null, waiting = p?.waiting == true,
+            awaitingLink = p?.awaitingLink == true, undelivered = p?.undelivered == true, held = p?.held)
     }
 
     // ---- 2.1.4: telling agents about cross-server messaging ------------------------------------
