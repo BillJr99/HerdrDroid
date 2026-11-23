@@ -157,9 +157,11 @@ internal fun dialogRead(rows: List<String>, p: Prompt, agent: String?, version: 
             ?.takeIf { !topEdge(rows[it], width) && !isDialogHeaderRow(rows[e]) }) }
     for (top in edges) {
         if ((top + 1 until first).any { ECHO_ROW.containsMatchIn(rows[it]) || NUMBERED_ECHO_ROW.containsMatchIn(rows[it]) }) break
-        // A header row ("Do you want to …") opens a dialog only with the dialog right under it: a
-        // blank row between it and the options is the chat's paragraph break, not the dialog's.
-        if (isDialogHeaderRow(rows[top]) && parseTabBar(rows[top].trim()) == null && (top + 1 until first).any { rows[it].isBlank() }) continue
+        // A header row that only starts like one ("Do you want to …") opens a dialog only with the dialog
+        // right under it: a blank row between it and the options is the chat's paragraph break. An
+        // agent's exact heading (Codex's, with blank rows in its dialog) is the dialog's own.
+        if (isDialogHeaderRow(rows[top]) && !isNamedDialogHeading(rows[top]) && parseTabBar(rows[top].trim()) == null &&
+            (top + 1 until first).any { rows[it].isBlank() }) continue
         if (detectPrompt(rows.drop(top).joinToString("\n"), blocked, agent, version)?.forCard() == p)
             return QuestionRead(p, topped = true, complete = footer != null)
     }
