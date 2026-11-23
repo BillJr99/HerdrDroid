@@ -51,8 +51,17 @@ data class Server(
     val wsUrl: String? = null,
     /** "tui" (herdr), "core" (herdr-core), or null to use whichever is running. */
     val backend: String? = null,
+    /**
+     * 2.2.6: "Small packets (for lossy Wi-Fi)": the phone advertises [mss] as its TCP maximum
+     * segment size, so the server's replies come in smaller packets. Direct TCP only.
+     */
+    val smallPackets: Boolean = false,
+    /** The MSS for [smallPackets], kept within [com.billmongan.herdrdroid.ssh.SmallPackets.MIN]..MAX. */
+    val mss: Int = com.billmongan.herdrdroid.ssh.SmallPackets.DEFAULT,
 ) {
     val overWebSocket: Boolean get() = !wsUrl.isNullOrBlank()
+    /** The MSS a connection to this server asks for, or null: off, or a WebSocket server (where it can't apply). */
+    val smallPacketsMss: Int? get() = if (smallPackets && !overWebSocket) com.billmongan.herdrdroid.ssh.SmallPackets.clamp(mss) else null
     /** For the phone user only: falls back to the account and host. Text agents receive uses [agentServerLabel]. */
     val label: String get() = name.ifBlank { "$user@$host" }
     val keystoreAlias: String get() = "herdrdroid_ssh_$id"
@@ -71,6 +80,8 @@ data class Server(
         .put("textSize", textSize.toDouble())
         .put("wsUrl", wsUrl ?: JSONObject.NULL)
         .put("backend", backend ?: JSONObject.NULL)
+        .put("smallPackets", smallPackets)
+        .put("mss", mss)
 
     companion object {
         private fun JSONObject.str(k: String) = optString(k).takeIf { !isNull(k) && it.isNotBlank() }
@@ -92,6 +103,8 @@ data class Server(
             textSize = o.optDouble("textSize", 12.5).toFloat(),
             wsUrl = o.str("wsUrl"),
             backend = o.str("backend"),
+            smallPackets = o.optBoolean("smallPackets", false),
+            mss = com.billmongan.herdrdroid.ssh.SmallPackets.clamp(o.optInt("mss", com.billmongan.herdrdroid.ssh.SmallPackets.DEFAULT)),
         )
     }
 }

@@ -333,6 +333,14 @@ fun ServerBanners(vm: AppViewModel) {
         ) { vm.retryNow() }
     }
     vm.error?.let { ErrorBanner(it) { vm.error = null } }
+    // 2.2.6: the session fell back to small packets; one tap keeps them on for this server.
+    if (vm.smallPacketOffer != null && vm.smallPacketOffer == vm.current?.id) {
+        ErrorBanner(
+            "Large replies stalled, so this session switched to small packets.",
+            actionLabel = "Keep small packets on",
+            secondLabel = "Not now", onSecond = { vm.dismissSmallPacketOffer() },
+        ) { vm.keepSmallPacketsOn() }
+    }
     // A one-time note (1.4.0: "Debug bundle copied").
     vm.notice?.let { ErrorBanner(it) { vm.notice = null } }
 }
