@@ -340,7 +340,9 @@ object Notify {
      * (2.1.2), from [prompt] when given, else from [choices].
      */
     fun needsYou(ctx: Context, serverId: String, serverLabel: String, paneId: String, agent: String, question: String, choices: List<Choice>, agentKind: String? = null, terminalReview: Boolean = false, reply: Boolean = true,
-        prompt: com.billmongan.herdrdroid.herdr.Prompt? = null) {
+        prompt: com.billmongan.herdrdroid.herdr.Prompt? = null,
+        /** 2.2.2: this replaces the neutral alert for the same question (same id), so it doesn't sound again. */
+        quietUpdate: Boolean = false) {
         if (!allowed(ctx)) return
         // Past the fingerprint window (1.3.1): the alert still comes, without the question or the
         // answer buttons; opening it asks for the fingerprint first.
@@ -370,6 +372,8 @@ object Notify {
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setContentIntent(openIntent(ctx, serverId, paneId))
             .setAutoCancel(true)
+            .setOnlyAlertOnce(quietUpdate)
+            .setSilent(quietUpdate)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
         if (plan.buttons.isEmpty()) {
             runCatching { NotificationManagerCompat.from(ctx).notify(id(serverId, paneId), b.build()) }
@@ -488,6 +492,12 @@ object Notify {
             .build()
         runCatching { NotificationManagerCompat.from(ctx).notify(("usage|$serverId|$agentKey|$label").hashCode(), n) }
     }
+
+    /** Whether this pane's alert is still showing (2.2.2): not tapped (it cancels itself) or dismissed. */
+    fun isShowing(ctx: Context, serverId: String, paneId: String): Boolean = runCatching {
+        val m = ctx.getSystemService(android.app.NotificationManager::class.java) ?: return false
+        m.activeNotifications.any { it.id == id(serverId, paneId) }
+    }.getOrDefault(false)
 
     fun clear(ctx: Context, serverId: String, paneId: String) {
         NotificationManagerCompat.from(ctx).cancel(id(serverId, paneId))

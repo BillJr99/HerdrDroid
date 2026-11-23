@@ -951,10 +951,13 @@ class SuccessiveCardAnswerTest {
     }
 
     @Test fun voiceStagesVisibleApprovalDirectlyAndSendsOnlyAfterFullReadback() = bothMessagingSettings("codex", command("alpha-beta")) {
+        // 2.2.2: voice answers only the open pane's confirmed card, so Chat reads it twice first.
+        readSelectedPane(); readSelectedPane()
+        val chatReads = recentReads
         recentResult = ExecResult(0, "Working on the report", "")
         assertTrue(shown().choices.isNotEmpty())
         speak("option 1")
-        assertEquals(0, recentReads)
+        assertEquals("voice itself reads no recent output", chatReads, recentReads)
         assertTrue(spoken.contains("Fixture") && spoken.contains("echo alpha-beta") && spoken.contains("Yes, proceed"))
         assertNull(voice.confirmationGrammar())
         assertTrue(sent.isEmpty())
@@ -978,6 +981,9 @@ class SuccessiveCardAnswerTest {
         speak("confirm answer")
         drainUntil { !vm.answerInFlight("p1") }
         assertTrue(sent.isEmpty())
+        // 2.2.2: voice sends only once Chat has confirmed the changed card (two matching reads, the
+        // open pane's own read cadence); the refused confirm above read it only once.
+        readSelectedPane(); readSelectedPane()
         speak("answer option three")
         completeSpeech()
         speak("confirm answer")
@@ -1031,6 +1037,8 @@ class SuccessiveCardAnswerTest {
     }
 
     @Test fun voiceUsesLiveHighlightAndDoesNotRepeatUnconfirmedDelivery() = fixture("claude", firstStep.replace("  ☐ Size", "")) {
+        // 2.2.2: voice answers only the open pane's confirmed card, so Chat reads it twice first.
+        readSelectedPane(); readSelectedPane()
         speak("option 2")
         completeSpeech()
         frame = frame.replace("❯ 1. Blue", "  1. Blue").replace("  2. Orange", "❯ 2. Orange")
