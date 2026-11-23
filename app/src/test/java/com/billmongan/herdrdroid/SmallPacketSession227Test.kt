@@ -42,7 +42,9 @@ class SmallPacketSession227Test {
     private val server = Server(id = "fixture-session", name = "MiniFixture", host = "s.invalid", port = 22, user = "u", herdrPath = "herdr", fingerprint = "SHA256:fixture")
     private val pane = Pane("w2:p5", "w2:t5", "w2", "claude", Status.IDLE, "", "/fixture", terminalId = "t5")
     private var now = 50_000L
-    private val fleetScope = CoroutineScope(SupervisorJob())
+    // A scope that runs nothing: only the watcher's connection setup is under test, never its loop
+    // (which on another thread raced the test's stop).
+    private val fleetScope = CoroutineScope(SupervisorJob().apply { cancel() })
 
     @After fun close() {
         vm.viewModelScope.cancel()
