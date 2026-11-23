@@ -50,7 +50,11 @@ class CardFormatTest {
             val s = f.readText()
             val p = detectPrompt(s, true, agent) ?: continue
             val parts = p.shownParts()
-            val shown = CardFormat.format(parts, s).joinToString("") { CardFormat.plain(it) }
+            // 2.2.2: Claude's review step shows the answer under its question as "Your answer: …",
+            // in place of the parser's "…?: answer"; read here as the ":" it stands for.
+            val shown = CardFormat.format(parts, s).joinToString("") {
+                if (it is CardBlock.Labelled && it.label == "Your answer") ":" + it.value else CardFormat.plain(it)
+            }
             assertEquals(f.path, chars(parts.blocks.joinToString("") { it.text }), chars(shown))
             checked++
         }
@@ -94,7 +98,7 @@ class CardFormatTest {
 
     @Test fun headingLeadInIsACaption() {
         val (blocks, _) = card("codex/derived-1.4.9/0206-request-user-input-multi-question.txt")
-        assertEquals(CardBlock.Caption("Question 1/2  Database"), blocks[0])
+        assertEquals(CardBlock.Caption("Question 1/2 Database"), blocks[0])
         assertEquals(CardBlock.Headline("Which database should demo-box use?"), blocks[1])
     }
 

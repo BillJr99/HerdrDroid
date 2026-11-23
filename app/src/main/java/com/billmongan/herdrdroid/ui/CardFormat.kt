@@ -134,22 +134,40 @@ object CardFormat {
         val items = mutableListOf<CardItem>()
         var itemCol = -1
         val code = mutableListOf<Line>()
-        fun flushProse() { if (prose.isNotEmpty()) out += single(prose.joinToString(" ")).let { if (it is CardBlock.Code) CardBlock.Prose(prose.joinToString(" ")) else it }; prose.clear() }
+        // 2.2.2: wrapped pieces join as one paragraph; a word split at a hyphen joins without a space.
+        fun joined() = prose.fold("") { a, b -> QuestionText.join(a, b) }
+        fun flushProse() { if (prose.isNotEmpty()) out += single(joined()).let { if (it is CardBlock.Code) CardBlock.Prose(joined()) else it }; prose.clear() }
         fun flushItems() { if (items.isNotEmpty()) out += CardBlock.Items(items.toList()); items.clear(); itemCol = -1 }
         fun flushCode() { if (code.isNotEmpty()) out += CardBlock.Code(dedented(code), diff = true); code.clear() }
+        // 2.2.2 (Bill: "rendering commands and code a bit more nicely in the question text so that it's
+        // not a wall of text"): a fenced block, or command rows the agent wrote inside its text, as one
+        // monospace block with its lines, indentation and characters exactly as on the screen.
+        val shell = mutableListOf<Line>()
+        var fenced = false
+        fun flushShell() { if (shell.isNotEmpty()) out += CardBlock.Code(dedented(shell), wrap = shell.size == 1); shell.clear() }
         for ((i, l) in ls.withIndex()) {
             val t = texts[i]
             if (diff && (DIFF_LINE.containsMatchIn(t) || NUMBERED_CONTEXT.containsMatchIn(t) || (code.isNotEmpty() && l.col > code.first().col))) {
                 flushProse(); flushItems(); code += l; continue
             }
             flushCode()
+            if (t.startsWith("```")) {
+                flushProse(); flushItems()
+                fenced = !fenced
+                if (!fenced) flushShell()
+                continue
+            }
+            if (fenced || QuestionText.isCodeLine(t) || (shell.isNotEmpty() && l.col > shell.first().col)) {
+                flushProse(); flushItems(); shell += l; continue
+            }
+            flushShell()
             val b = BULLET.find(t)
             if (b != null) {
                 flushProse()
                 items += CardItem(b.groupValues[1], b.groupValues[2]); itemCol = l.col; continue
             }
             if (items.isNotEmpty() && l.col > itemCol) {
-                val last = items.removeAt(items.size - 1); items += last.copy(text = last.text + " " + t); continue
+                val last = items.removeAt(items.size - 1); items += last.copy(text = QuestionText.join(last.text, t)); continue
             }
             flushItems()
             val h = HEADER.find(t)
@@ -164,7 +182,7 @@ object CardFormat {
             if (prose.isNotEmpty() && prose.last().length <= SHORT && t.first().isUpperCase()) flushProse()
             prose += t
         }
-        flushProse(); flushItems(); flushCode()
+        flushProse(); flushItems(); flushCode(); flushShell()
         return out
     }
 
@@ -227,7 +245,7 @@ object CardFormat {
         }
         // An edit's numbered lines read as one diff, even when the parser split them into blocks.
         val out = mutableListOf<CardBlock>()
-        for (b in placed.flatMap { it.blocks }) {
+        for (b in tidy(placed.flatMap { it.blocks }, review = parts.tabs.any { it.submit && it.current })) {
             val last = out.lastOrNull()
             if (b is CardBlock.Code && last is CardBlock.Code && !b.wrap && !last.wrap && (b.diff || last.diff) &&
                 (b.lines + last.lines).all { DIFF_LINE.containsMatchIn(it.trim()) || NUMBERED_CONTEXT.containsMatchIn(it.trim()) }) {
@@ -236,6 +254,64 @@ object CardFormat {
         }
         return out
     }
+
+    /**
+     * 2.2.2 (Bill: "the rendering could be a little bit nicer on question text"): every block's
+     * text through [QuestionText]: no focus marker, gutter, box edge, key hint, ANSI remnant or
+     * repeated space, and a hyphen a join left dangling closed up. Code keeps its characters (only
+     * ANSI remnants go). A block left empty is dropped, and so is a paragraph that only repeats the
+     * question above it.
+     */
+    private fun tidy(blocks: List<CardBlock>, review: Boolean = false): List<CardBlock> {
+        val out = mutableListOf<CardBlock>()
+        var headline: String? = null
+        for (b in blocks) {
+            // Claude's review step: each question, then the answer given under it (not "…?: answer").
+            val qa = if (review && b is CardBlock.Prose) QuestionText.reviewAnswer(QuestionText.prose(b.text)) else null
+            if (qa != null) { out += CardBlock.Prose(qa.first); out += CardBlock.Labelled("Your answer", qa.second); continue }
+            val t: CardBlock? = when (b) {
+                is CardBlock.Headline -> QuestionText.prose(b.text).takeIf { it.isNotEmpty() }?.let { CardBlock.Headline(it) }
+                is CardBlock.Caption -> QuestionText.prose(b.text).takeIf { it.isNotEmpty() }?.let { CardBlock.Caption(it) }
+                is CardBlock.Subhead -> QuestionText.prose(b.text).takeIf { it.isNotEmpty() }?.let { CardBlock.Subhead(it) }
+                // 2.2.2: a command, a fenced block or a JSON line inside a paragraph is its own code block.
+                is CardBlock.Prose -> {
+                    val segs = QuestionText.segments(b.text)
+                    if (segs.size == 1 && !segs[0].code) segs[0].text.takeIf { it.isNotEmpty() }?.let { CardBlock.Prose(it) }
+                    else { out += segs.map(::segmentBlock); null }
+                }
+                // 2.2.2: "I will run: git -C /x log" shows the command as its own block under its lead-in.
+                // A short path stays beside its label ("Workspace: /home/user/work").
+                is CardBlock.Labelled -> if (QuestionText.isCodeLine(b.value) && !isPath(b.value.trim())) {
+                    out += CardBlock.Prose(QuestionText.line(b.label).ifEmpty { b.label } + ":")
+                    out += CardBlock.Code(BoxCopy.cleanBlock(listOf(b.value.trim())), wrap = true); null
+                } else CardBlock.Labelled(QuestionText.line(b.label).ifEmpty { b.label }, QuestionText.prose(b.value))
+                is CardBlock.Items -> b.items.map { it.copy(text = QuestionText.prose(it.text)) }.filter { it.text.isNotEmpty() }
+                    .takeIf { it.isNotEmpty() }?.let { CardBlock.Items(it) }
+                // 2.2.2: no frame, gutter, wrap mark, focus marker or colour code; shown and copied the same.
+                is CardBlock.Code -> b.copy(lines = BoxCopy.cleanBlock(b.lines))
+            }
+            if (t == null) continue
+            if (t is CardBlock.Headline) headline = squash(t.text)
+            else if ((t is CardBlock.Prose || t is CardBlock.Caption) && headline != null && squash(plain(t)) == headline) continue
+            out += t
+        }
+        return out
+    }
+
+    private fun segmentBlock(sg: QuestionText.Segment): CardBlock =
+        if (sg.code) BoxCopy.cleanBlock(sg.text.lines()).let { CardBlock.Code(it, wrap = it.size == 1) } else CardBlock.Prose(sg.text)
+
+    /**
+     * 2.2.2: an option's description laid out like the card's text: prose, with any command or
+     * fenced block in it as a code block of its own. For [optionNotes]' text.
+     */
+    fun noteBlocks(note: String): List<CardBlock> = QuestionText.segments(note).map(::segmentBlock)
+
+    /**
+     * One saved line of a question's context, laid out as the card lays it out (2.2.2): for the
+     * question history in the chat, so a path or an edit's numbered lines show in monospace there too.
+     */
+    fun detail(text: String): List<CardBlock> = tidy(listOf(single(text)))
 
     /** The plain text of a block, for Show raw and tests. */
     fun plain(b: CardBlock): String = when (b) {
@@ -283,7 +359,9 @@ object CardFormat {
                 if (squash(choice.label).contains(squash(t))) continue
                 note += t
             }
-            if (note.isNotEmpty() && note.any { s -> s.any(Char::isLetter) }) out[choice.keys] = note.joinToString(" ")
+            // 2.2.2: the description's wrapped lines read as one paragraph, without gutters or hints.
+            if (note.isNotEmpty() && note.any { s -> s.any(Char::isLetter) })
+                QuestionText.note(note.joinToString("\n")).takeIf { it.isNotEmpty() }?.let { out[choice.keys] = it }
         }
         return out
     }
