@@ -206,8 +206,16 @@ object QuestionText {
         val out = mutableListOf<String>()
         val prose = mutableListOf<String>()
         fun flush() { out += reflow(prose); prose.clear() }
+        var inCode = false
         for (l in pipeGutters(noAnsi(raw).lines())) {
-            if (l.trim() in keep || CODEISH.containsMatchIn(l) || isCodeLine(l)) { flush(); out += l.trimEnd() } else prose += line(l)
+            // 2.2.2 review: the row a command wrapped onto stays with the command ("origin/main").
+            val how = if (inCode && prose.isEmpty() && l.isNotBlank() && l.trim() !in keep) codeRow(out.last(), l, false) else null
+            when {
+                how == CodeRow.JOIN -> out[out.size - 1] = joinWrapped(out.last(), l)
+                how == CodeRow.NEW_LINE -> out += l.trimEnd()
+                l.trim() in keep || CODEISH.containsMatchIn(l) || isCodeLine(l) -> { flush(); out += l.trimEnd(); inCode = true }
+                else -> { prose += line(l); inCode = false }
+            }
         }
         flush()
         return out.dropWhile { it.isBlank() }.dropLastWhile { it.isBlank() }.joinToString("\n")
@@ -293,10 +301,32 @@ object QuestionText {
         val t = row.trim()
         if (t.isEmpty()) return false
         if (CARRIES_ON.containsMatchIn(prev) || CARRIED.containsMatchIn(t)) return true
+        // More flags ("-o install.sh --retry 3", "--since=2024-01-01 -- path/to/file").
+        if (t.startsWith("-")) return true
         if (t.first().isUpperCase() || t.last() in ".?!:") return false
         val words = t.split(WORDS)
-        return words.size <= 3 && (words.size == 1 || SHELL_SYNTAX.containsMatchIn(" $t"))
+        // One token only when it is a path, a ref or an assignment ("origin/main", "dist/", "A=1"),
+        // never a bare word: "git status --short" over "tonight" is a command and then prose.
+        if (words.size == 1) return t.contains('/') || t.contains('=')
+        // Several words only when the row has shell syntax of its own, however long it is.
+        return SHELL_SYNTAX.containsMatchIn(" $t")
     }
+
+    /**
+     * How [row] goes on a code block whose last row is [prev] (2.2.2 review): joined to it when the
+     * terminal wrapped the command ([continuesCode]), as a row of its own after a backslash, when it
+     * is a command of its own, or when it is deeper and does not continue, or null when it does not
+     * go on the block.
+     */
+    fun codeRow(prev: String, row: String, indented: Boolean): CodeRow? = when {
+        prev.trimEnd().endsWith("\\") -> CodeRow.NEW_LINE
+        // A command of its own ("$ make test", "git -C /x status") is its own row, at any indent.
+        isCodeLine(row) && !row.trimStart().startsWith("-") -> CodeRow.NEW_LINE
+        continuesCode(prev, row) -> CodeRow.JOIN
+        indented -> CodeRow.NEW_LINE
+        else -> null
+    }
+    enum class CodeRow { JOIN, NEW_LINE }
 
     /** A command row and the row the terminal wrapped it onto, as one row. */
     fun joinWrapped(prev: String, row: String): String = prev.trimEnd() + " " + row.trim()
@@ -348,14 +378,11 @@ object QuestionText {
                 continue
             }
             if (fenced) { code += l; continue }
-            val indented = code.isNotEmpty() && l.isNotBlank() && l.takeWhile { it == ' ' }.length >= 4
-            if (indented) { code += l; continue }
             // A row the terminal wrapped a command onto joins it, so the box copies one whole command;
-            // after a "\" the next row stays a row of its own, as the shell reads it.
-            if (code.isNotEmpty() && continuesCode(code.last(), l)) {
-                if (code.last().trimEnd().endsWith("\\")) code += l else code[code.size - 1] = joinWrapped(code.last(), l)
-                continue
-            }
+            // after a backslash, or a deeper command of its own, the row stays a row of its own.
+            val how = if (code.isNotEmpty() && l.isNotBlank()) codeRow(code.last(), l, l.takeWhile { it == ' ' }.length >= 4) else null
+            if (how == CodeRow.NEW_LINE) { code += l; continue }
+            if (how == CodeRow.JOIN) { code[code.size - 1] = joinWrapped(code.last(), l); continue }
             // A row that carries on an unfinished sentence is prose, whatever word it starts with.
             val midSentence = prose.isNotEmpty() && prose.last().trim().let { it.isNotEmpty() && it.last() !in ".?!:" }
             if (isCodeLine(l) && (!midSentence || isPlainCode(l))) { flushProse(); code += l; continue }
