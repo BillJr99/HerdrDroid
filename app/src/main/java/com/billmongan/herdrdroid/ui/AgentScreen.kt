@@ -209,7 +209,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 if (vm.transcriptState == TranscriptMode.ON && streamFailures < 3) {
                     if (vm.followTranscript(paneId)) { streamFailures = 0; continue } else streamFailures++
                 }
-                if (vm.transcriptState != TranscriptMode.OFF || tick % 10 == 0) vm.readTranscript(paneId)
+                // 2.2.2: and at once while the view waits for this visit's answer (an agent that started mid-visit).
+                if (vm.transcriptState != TranscriptMode.OFF || tick % 10 == 0 || !vm.screenViewReady(paneId)) vm.readTranscript(paneId)
             }
             tick++
             kotlinx.coroutines.delay(1_500)
@@ -281,11 +282,11 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     val waitingForHermes = vm.waitingForHermesComposer(paneId)
     val parsedPrompt: Prompt? = if (typingAnswer || usageOverlay != null) null
         else if (vm.paneReadProblem != null) (if (status == Status.NEEDS_YOU) Prompt("This agent is waiting for you.", emptyList()).forCard() else null)
-        else if (pane != null && vm.requiresLivePiQuestion(pane)) vm.currentPiQuestion(pane)?.forCard()
         // 2.2.2: a question card shows once the reads confirmed it (a complete dialog, read the same
-        // twice); until then a neutral card with no options or keys, never chat text as the question.
-        else vm.questionCardFor(paneId, detectPrompt(screenText, status == Status.NEEDS_YOU, pane?.agent, vm.versionOf(paneId))
-            ?.takeIf { !it.codexQuestion || shownTarget != null }?.forCard(), pane?.agentName ?: "The agent")
+        // twice), parsed exactly as the read path parses it (pi's live question included); until then a
+        // neutral card with no options or keys, never chat text as the question.
+        else vm.questionCardFor(paneId, vm.cardParse(paneId, screenText)
+            ?.takeIf { !it.codexQuestion || shownTarget != null }, pane?.agentName ?: "The agent")
     // An agent's error on screen (1.4.2): shown as a banner when there is no question.
     // Not from the last screen while the latest read failed (1.4.2, from review).
     // 2.2.0: as its own card, with OpenCode's failed turn read whole; acknowledged ones are hidden.

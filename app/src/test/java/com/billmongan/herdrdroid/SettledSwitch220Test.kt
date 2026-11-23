@@ -146,6 +146,17 @@ class SettledSwitch220Test {
         assertTrue(f.vm.screenViewReady("plain"))
     }
 
+    @Test fun reopeningThePaneYouAreOnKeepsItsLogAnswer() = runBlocking {
+        // Tapping the open pane's alert or drawer row starts a new visit of the same pane: its log
+        // already answered in this app run, so its view shows at once instead of "Loading the chat".
+        f.screens["log"] = settled
+        f.vm.openPane("log")
+        f.answerLog("log")
+        assertTrue(f.vm.screenViewReady("log"))
+        f.vm.openPane("log")
+        assertTrue(f.vm.screenViewReady("log"))
+    }
+
     @Test fun aReaderThatKeepsFailingLetsTheScreenViewShow() {
         assertFalse(com.billmongan.herdrdroid.herdr.screenViewAllowed(hasReader = true, transcriptAnswered = false, gaveUp = false))
         assertTrue(com.billmongan.herdrdroid.herdr.screenViewAllowed(hasReader = true, transcriptAnswered = false, gaveUp = true))
