@@ -1,0 +1,47 @@
+     visible 2>/dev/null); if echo "$t" | grep -q -E "^\s*(❯ )?1\. Yes\s*$|^\s*Do you want to proceed\?\s*$"; then sleep 2; herdr pane
+     read w2:p5 --source visible > $O/claude-tall… (7s)
+     (ctrl+b to run in background)
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Bash command · from the general-purpose agent
+ Print canned probe text for prompt capture test
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │ cd /home/user/scratch && python3 - <<'EOF'
+ │ # capture test for a tall permission prompt; this script only prints
+ │ probes = '''
+ │ $ id
+ │ uid=1000(demo) gid=1000(demo)
+ │ $ ls ~/.ssh
+ │ ls: cannot access '/home/demo/.ssh': No such file or directory
+ │ $ cat /etc/shadow
+ │ cat: /etc/shadow: Permission denied
+ │ $ ls /home
+ │ ls: cannot open directory '/home': Permission denied
+ │ $ touch /usr/x
+ │ touch: cannot touch '/usr/x': Read-only file system
+ │ $ cat /sys/fs/cgroup/memory.max
+ │ 1073741824
+ │ $ cat /sys/fs/cgroup/pids.max
+ │ 256
+ │ $ grep Cap /proc/self/status
+ │ CapInh: 0000000000000000
+ │ CapPrm: 0000000000000000
+ │ CapEff: 0000000000000000
+ │ $ env | grep -c KEY
+ │ 0
+ │ '''
+ │ for line in probes.strip().splitlines():
+ │     print(line)
+ │ print("done")
+ │ EOF
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │ Hook PreToolUse:Bash requires confirmation for this command:
+ │ gh policy: core list 1: a secret location (keys, tokens, ~/.config, keystores, secret/private) [settings]
+ settings.json to update hooks
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No
+
+ Esc to cancel · Tab to amend · ctrl+x ctrl+k twice to stop background agents
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── Session ─

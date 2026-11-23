@@ -1,0 +1,5 @@
+card: options
+blocked: true
+heading: Do you want to proceed?
+options: Yes | No
+source: captured 2026-11-23 for 2.2.4 from a live Claude Code 2.1.330 pane (herdr pane read --source visible, plain and ansi, 47 rows), a permission prompt raised by a helper agent for a tall heredoc command that a PreToolUse hook answered "ask". The hook's reason rows sit in the "│" gutter under the second dashed rule. The home folder, a private folder name and the session title are replaced by neutral text of the same length. The chat above the dialog quotes "1. Yes" and "Do you want to proceed?".

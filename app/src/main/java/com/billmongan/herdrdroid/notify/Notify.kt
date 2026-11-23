@@ -110,6 +110,17 @@ internal fun alertBody(p: com.billmongan.herdrdroid.herdr.Prompt): String {
                 if (budget <= 0) null else (if (d.length <= budget) d else d.take(budget).trimEnd() + "…").also { budget -= d.length }
             }
         }
+        // 2.2.4: a tall command (Claude's heredoc): the heading, the command's first lines, how many more, then the context.
+        command != null && heading != null && command.contains('\n') && command.length > 400 -> {
+            val all = command.lines()
+            val shown = all.take(ALERT_COMMAND_LINES)
+            val context = parts.details.filter { d -> d.filterNot(Char::isWhitespace) != heading.filterNot(Char::isWhitespace) }
+            var budget = ALERT_CONTEXT_CHARS
+            listOf(heading) + shown + listOfNotNull("(${all.size - shown.size} more lines in the app)".takeIf { all.size > shown.size }) +
+                context.mapNotNull { d ->
+                    if (budget <= 0) null else (if (d.length <= budget) d else d.take(budget).trimEnd() + "…").also { budget -= d.length }
+                }
+        }
         else -> listOf(alertText(p))
     }
     // Each piece cleaned on its own, so a heading and the line under it never run together.
@@ -119,6 +130,9 @@ internal fun alertBody(p: com.billmongan.herdrdroid.herdr.Prompt): String {
 
 /** How much context an approval's alert carries under its command (2.2.2). */
 internal const val ALERT_CONTEXT_CHARS = 600
+
+/** How many lines of a tall command an approval's alert shows (2.2.4). */
+internal const val ALERT_COMMAND_LINES = 8
 
 /** How many action buttons Android shows on a notification. */
 internal const val MAX_ALERT_BUTTONS = 3
