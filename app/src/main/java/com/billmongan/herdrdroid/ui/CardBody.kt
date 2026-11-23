@@ -60,17 +60,17 @@ internal fun CardBody(parts: QuestionParts, screen: String?) {
 }
 
 @Composable
-private fun CardBlockView(b: CardBlock, first: Boolean) {
+internal fun CardBlockView(b: CardBlock, first: Boolean) {
     when (b) {
-        is CardBlock.Headline -> Text(b.text, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, lineHeight = 24.sp,
+        is CardBlock.Headline -> Text(withInlineCode(b.text), fontSize = 17.sp, fontWeight = FontWeight.SemiBold, lineHeight = 24.sp,
             color = Palette.Ink, modifier = Modifier.testTag("card-headline"))
         is CardBlock.Caption -> Text(b.text, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = Palette.Muted,
             modifier = Modifier.padding(top = if (first) 0.dp else 2.dp))
         is CardBlock.Subhead -> Text(b.text, fontSize = 15.5.sp, fontWeight = FontWeight.SemiBold, lineHeight = 21.sp, color = Palette.Ink)
-        is CardBlock.Prose -> Text(b.text, fontSize = 15.sp, lineHeight = 21.sp, color = Palette.Ink)
+        is CardBlock.Prose -> Text(withInlineCode(b.text), fontSize = 15.sp, lineHeight = 21.sp, color = Palette.Ink)
         is CardBlock.Labelled -> Text(buildAnnotatedString {
             withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, color = Palette.Muted)) { append(b.label + ": ") }
-            append(b.value)
+            append(withInlineCode(b.value))
         }, fontSize = 14.5.sp, lineHeight = 20.sp, color = Palette.Ink)
         is CardBlock.Items -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             b.items.forEach { item ->
@@ -78,7 +78,7 @@ private fun CardBlockView(b: CardBlock, first: Boolean) {
                     val ordered = item.mark.first().isDigit()
                     Text(if (ordered) item.mark else "•", fontSize = 15.sp, lineHeight = 21.sp, color = Palette.Muted,
                         modifier = Modifier.widthIn(min = if (ordered) 24.dp else 16.dp).padding(end = 4.dp))
-                    Text(item.text, fontSize = 15.sp, lineHeight = 21.sp, color = Palette.Ink)
+                    Text(withInlineCode(item.text), fontSize = 15.sp, lineHeight = 21.sp, color = Palette.Ink)
                 }
             }
         }
@@ -100,15 +100,16 @@ private fun diffKind(line: String): DiffKind {
 
 /** A command, path or diff: monospace on the code background, sideways scroll, long ones folded. */
 @Composable
-private fun CardCode(b: CardBlock.Code) {
+internal fun CardCode(b: CardBlock.Code) {
     var all by remember(b) { mutableStateOf(false) }
     val long = b.lines.size > CARD_CODE_LINES + 2
     val shown = if (long && !all) b.lines.take(CARD_CODE_LINES) else b.lines
-    // 2.2.0: long-press the box to copy all of it (every line, folded or not), as it shows.
+    // 2.2.0: long-press the box to copy all of it (every line, folded or not), as it shows. 2.2.2: the
+    // lines are already clean (BoxCopy.cleanBlock in CardFormat), so the copy is exactly what shows.
     val copy = rememberCopier()
     Surface(shape = RoundedCornerShape(10.dp), color = Palette.Code, border = BorderStroke(1.dp, Palette.Line),
         modifier = Modifier.fillMaxWidth().testTag(if (b.diff) "card-diff" else "card-code")
-            .onLongPress("Copy this box") { copy(BoxCopy.clean(b.lines), "Copied box") }) {
+            .onLongPress("Copy this box") { copy(b.lines.joinToString("\n"), "Copied box") }) {
         DisableSelection { Column {
             if (b.wrap) {
                 // One line: a long path or command wraps (at "/" and spaces) instead of running off the side.
@@ -139,11 +140,47 @@ private fun CardCode(b: CardBlock.Code) {
     }
 }
 
-/** An option's label for its button: its words as they are, a key hint or tail in [quiet]; the text is unchanged. */
-internal fun optionLabel(label: String, quiet: Color): AnnotatedString {
-    val (main, tail) = CardFormat.labelParts(label)
+/**
+ * An option's label for its button: its words, a key hint or tail in [quiet]. 2.2.2: shown through
+ * [QuestionText.label] (no focus marker, gutter, trailing hint or repeated number [keys]); the
+ * choice's own label, which its answer checks, is unchanged.
+ */
+internal fun optionLabel(label: String, quiet: Color, keys: String? = null): AnnotatedString {
+    val (rawMain, rawTail) = CardFormat.labelParts(label)
+    val main = QuestionText.label(rawMain, keys)
+    val tail = if (rawTail.isEmpty()) "" else " " + QuestionText.label(rawTail)
     return buildAnnotatedString {
-        append(main)
+        append(withInlineCode(main))
         if (tail.isNotEmpty()) withStyle(SpanStyle(fontWeight = FontWeight.Normal, color = quiet)) { append(tail) }
+    }
+}
+
+/**
+ * 2.2.2: prose with its inline code ("run `make test` first") in monospace on the code
+ * background, without the backticks; text with no code is returned as it is.
+ */
+internal fun withInlineCode(text: String): AnnotatedString {
+    val spans = QuestionText.codeSpans(text)
+    if (spans.none { it.second }) return AnnotatedString(text)
+    return buildAnnotatedString {
+        spans.forEach { (t, code) ->
+            if (code) withStyle(SpanStyle(fontFamily = Fonts.Mono, background = Palette.Code)) { append(t) } else append(t)
+        }
+    }
+}
+
+/**
+ * 2.2.2: an option's description under its label: smaller and quieter prose, with any command or
+ * fenced block in it as its own monospace box (long-press copies exactly the code).
+ */
+@Composable
+internal fun OptionNote(note: String, color: Color) {
+    val blocks = remember(note) { CardFormat.noteBlocks(note) }
+    Column(Modifier.padding(top = 2.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        blocks.forEach { b ->
+            if (b is CardBlock.Code) CardCode(b)
+            else Text(withInlineCode(CardFormat.plain(b)), fontSize = 13.sp, lineHeight = 18.sp, color = color,
+                modifier = Modifier.testTag("choice-note"))
+        }
     }
 }

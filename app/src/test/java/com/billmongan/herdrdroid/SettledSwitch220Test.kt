@@ -119,19 +119,48 @@ class SettledSwitch220Test {
         assertTrue(f.vm.paneViewSettled)
     }
 
-    @Test fun anAgentWithAChatLogDoesNotShowTheScreenViewUntilTheLogAnswersOrABoundIsReached() = runBlocking {
-        // A codex pane, whose chat log never answers here (the fixture has no log reader).
+    // 2.2.2 (Bill: "renders whatever is in the terminal before snapping to the proper chat"): before,
+    // TRANSCRIPT_WAIT_READS settled screen reads let the screen view stand in for a slow log, and an
+    // answer from an earlier visit counted. Now only this visit's answer from the log does (or a
+    // reader that keeps failing to run), so this test no longer expects the screen-read bound.
+    @Test fun anAgentWithAChatLogDoesNotShowTheScreenViewUntilThisVisitsLogAnswers() = runBlocking {
+        // A codex pane, whose chat log answers late here (the test delivers it).
         f.screens["log"] = settled
         f.vm.openPane("log")
         assertFalse(f.vm.screenViewReady("log"))
-        f.vm.readPane("log"); f.vm.readPane("log")
+        repeat(12) {
+            f.vm.readPane("log")
+            assertFalse("the screen view must not stand in for the chat yet (read ${it + 1})", f.vm.screenViewReady("log"))
+        }
         assertEquals(settled, f.vm.paneText)
-        assertFalse("the screen view must not stand in for the chat yet", f.vm.screenViewReady("log"))
-        repeat(com.billmongan.herdrdroid.herdr.TRANSCRIPT_WAIT_READS) { f.vm.readPane("log") }
+        f.answerLog("log")
+        assertTrue(f.vm.screenViewReady("log"))
+        // The next visit waits for its own answer: the earlier one no longer counts.
+        f.vm.openPane("plain")
+        f.vm.openPane("log")
+        repeat(4) { f.vm.readPane("log"); assertFalse(f.vm.screenViewReady("log")) }
+        f.answerLog("log")
         assertTrue(f.vm.screenViewReady("log"))
         // An agent with no chat log shows its screen view as soon as it settles.
         f.vm.openPane("plain")
         assertTrue(f.vm.screenViewReady("plain"))
+    }
+
+    @Test fun reopeningThePaneYouAreOnKeepsItsLogAnswer() = runBlocking {
+        // Tapping the open pane's alert or drawer row starts a new visit of the same pane: its log
+        // already answered in this app run, so its view shows at once instead of "Loading the chat".
+        f.screens["log"] = settled
+        f.vm.openPane("log")
+        f.answerLog("log")
+        assertTrue(f.vm.screenViewReady("log"))
+        f.vm.openPane("log")
+        assertTrue(f.vm.screenViewReady("log"))
+    }
+
+    @Test fun aReaderThatKeepsFailingLetsTheScreenViewShow() {
+        assertFalse(com.billmongan.herdrdroid.herdr.screenViewAllowed(hasReader = true, transcriptAnswered = false, gaveUp = false))
+        assertTrue(com.billmongan.herdrdroid.herdr.screenViewAllowed(hasReader = true, transcriptAnswered = false, gaveUp = true))
+        assertTrue(com.billmongan.herdrdroid.herdr.screenViewAllowed(hasReader = false, transcriptAnswered = false, gaveUp = false))
     }
 
     private class Fixture : Herdr.Commands {
@@ -140,6 +169,13 @@ class SettledSwitch220Test {
         private val ssh = HerdrSsh(server.host, server.port, server.user, Credentials(null, null), null, { null })
         override var connection: Any? = Any()
         val screens = mutableMapOf<String, String>()
+
+        /** The chat log's answer for [paneId] arriving: no log for this agent (as a reader says). */
+        fun answerLog(paneId: String) {
+            val m = AppViewModel::class.java.getDeclaredMethod("applyTranscript", String::class.java, com.billmongan.herdrdroid.transcript.TranscriptRead::class.java)
+            m.isAccessible = true
+            m.invoke(vm, paneId, com.billmongan.herdrdroid.transcript.TranscriptRead(false, "no log", "", false, false, null, emptyList()))
+        }
 
         fun install() {
             field("herdr").set(vm, Herdr(ssh, "/fixture/herdr", Backend.TUI, null, this))

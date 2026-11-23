@@ -33,7 +33,8 @@ object SessionControls {
         fun resume(s: PastSession): String? = resumeById?.let { cmd -> idOf(s)?.let { "$cmd $it" } }
     }
 
-    private val ID = Regex("""^[A-Za-z0-9_.-]{1,128}$""")
+    /** 2.2.2 (from review): the first character is a letter or digit, so an id never reads as an option ("--help"). */
+    private val ID = Regex("""^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$""")
 
     private fun safe(id: String?): String? = id?.takeIf { ID.matches(it) }
 
@@ -46,6 +47,9 @@ object SessionControls {
     /** The folder a session's files are in, named by its id (Grok, Copilot, Muse). */
     internal fun idOfFolder(ref: String): String? = safe(ref.substringBeforeLast('/').substringAfterLast('/'))
 
+    /** Hermes's /resume takes a list number too, so an all-digit id would pick by position: never typed (2.2.2, from review). */
+    internal fun hermesId(ref: String): String? = safe(ref)?.takeIf { id -> !id.all(Char::isDigit) }
+
     fun forAgent(agent: String?): Spec? = when (agent?.lowercase()) {
         // Claude Code 2.1.329: /clear (aliases reset, new) starts a new session; /resume [session ID or
         // search term]. Its SessionStart hook reports both to herdr (sources clear and resume).
@@ -55,11 +59,20 @@ object SessionControls {
         // OpenCode 2.3.2: /new goes to its home page, and the new session exists (and herdr's TUI plugin
         // reports it) only when the first message is sent; /sessions opens its picker.
         "opencode", "opencode-college" -> Spec("opencode", "/new", picker = "/sessions", herdrAtOnce = false)
-        // pi 1.6.0 (/new, /resume) and Oh My Pi 19.0.1 (/new, /resume [session id]) are left out, with
-        // Copilot below: the app can't find their input line on screen, so it can't check that nothing
-        // is typed there before a command goes in, which every write from these menus needs.
-        // Hermes 0.23.3: /new (its plugin reports on_session_reset). Its /resume takes a name, not an id.
-        "hermes" -> Spec("hermes", "/new")
+        // 2.2.2: pi, Oh My Pi and Copilot are back, now that the app finds their empty input boxes by
+        // shape (AgentComposers). pi 1.6.0: /new, and /resume opens its picker (it takes no id in the
+        // session; --session does, at launch).
+        "pi" -> Spec("pi", "/new", picker = "/resume")
+        // Oh My Pi 19.0.1: /new, /resume [session id] (the id after the "_" in its log's name), or its picker.
+        "omp" -> Spec("omp", "/new", resumeById = "/resume", idOf = { idOfLog(it.ref) }, picker = "/resume")
+        // GitHub Copilot CLI 1.0.114: /new, /resume [sessionId or name] (its session-state folder's name).
+        "copilot" -> Spec("copilot", "/new", resumeById = "/resume", idOf = { idOfFolder(it.ref) }, picker = "/resume")
+        // Antigravity 1.5.14: /new, and /resume opens its picker ("/resume <id>" takes an id prefix, but the
+        // app has no list of its conversations to take one from). herdr hears of the session at its next prompt.
+        "agy", "antigravity" -> Spec("agy", "/new", picker = "/resume", herdrAtOnce = false)
+        // Hermes 0.23.3: /new (its plugin reports on_session_reset); 2.2.2: "/resume <session id>" ("Use
+        // /resume <number>, /resume <session id>, or /resume <session title>"), the id from its state.db.
+        "hermes" -> Spec("hermes", "/new", resumeById = "/resume", idOf = { hermesId(it.ref) }, herdrAtOnce = false)
         // Grok 1.0.92: /new, /resume [id|title]; SessionStart reports both (sources new and load).
         "grok" -> Spec("grok", "/new", resumeById = "/resume", idOf = { idOfFolder(it.ref) }, picker = "/resume")
         // Kiro CLI 3.5.0: /chat new, /chat resume (picker). herdr drops Kiro's (third-party) session reports.
