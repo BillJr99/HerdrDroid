@@ -1,0 +1,47 @@
+ │ $ nproc
+ │ 4
+ │ $ df -h /
+ │ Filesystem      Size  Used Avail Use% Mounted on
+ │ overlay          20G  4.0G   16G  20% /
+ │ $ cat /proc/loadavg
+ │ 0.10 0.20 0.30 1/200 4242
+ │ $ ulimit -n
+ │ 1024
+ │ $ echo $?
+ │ 0
+ │ $ id
+ │ uid=1000(demo) gid=1000(demo)
+ │ $ ls ~/.ssh
+ │ ls: cannot access '/home/demo/.ssh': No such file or directory
+ │ $ cat /etc/shadow
+ │ cat: /etc/shadow: Permission denied
+ │ $ ls /home
+ │ ls: cannot open directory '/home': Permission denied
+ │ $ touch /usr/x
+ │ touch: cannot touch '/usr/x': Read-only file system
+ │ $ cat /sys/fs/cgroup/memory.max
+ │ 1073741824
+ │ $ cat /sys/fs/cgroup/pids.max
+ │ 256
+ │ $ grep Cap /proc/self/status
+ │ CapInh: 0000000000000000
+ │ CapPrm: 0000000000000000
+ │ CapEff: 0000000000000000
+ │ $ env | grep -c KEY
+ │ 0
+ │ '''
+ │ for line in probes.strip().splitlines():
+ │     print(line)
+ │ print("done")
+ │ EOF
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │ Hook PreToolUse:Bash requires confirmation for this command:
+ │ gh policy: core list 1: a secret location (keys, tokens, ~/.config, keystores, secret/private) [settings]
+ settings.json to update hooks
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No
+
+ Esc to cancel · Tab to amend · ctrl+x ctrl+k twice to stop background agents
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── Session ─
