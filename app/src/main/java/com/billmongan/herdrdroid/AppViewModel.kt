@@ -3622,43 +3622,15 @@ class AppViewModel internal constructor(
      * either way its pending row is removed, so the queued message is the one place it shows.
      */
     fun sendMessage(pane: Pane, text: String, force: Boolean = false, failed: ((String, Boolean) -> Unit)? = null, delivered: () -> Unit = {}) {
-        // 2.2.7: never truncated. Long text goes as numbered parts, or as a checked .txt file.
-        when (val plan = com.billmongan.herdrdroid.herdr.LongText.plan(text)) {
+        // 2.2.7: never truncated. Text too long for one message goes as a checked .txt file.
+        when (com.billmongan.herdrdroid.herdr.LongText.plan(text)) {
             is com.billmongan.herdrdroid.herdr.LongText.Plan.Single -> sendOne(pane, text, force, failed, delivered)
-            is com.billmongan.herdrdroid.herdr.LongText.Plan.Parts -> sendParts(pane, plan.parts, 0, force, failed, delivered)
             is com.billmongan.herdrdroid.herdr.LongText.Plan.Attachment -> sendAsFile(pane, text, force, failed, delivered)
         }
     }
 
     /**
-     * 2.2.7: [parts] from [from] on, each only after the one before was delivered (each its own
-     * guarded send, so none is typed twice). If one isn't sent, it and the rest wait in the queue
-     * ("Queued until idle", with a note), to go by themselves or with Send now; the caller is told
-     * it was delivered once any part went (its own copy must not be sent again), or failed when none did.
-     */
-    private fun sendParts(pane: Pane, parts: List<String>, from: Int, force: Boolean, failed: ((String, Boolean) -> Unit)?, delivered: () -> Unit) {
-        if (from >= parts.size) { delivered(); return }
-        com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${pane.id}: long text, part ${from + 1} of ${parts.size} (${parts[from].length} chars)")
-        sendOne(pane, parts[from], force,
-            failed = { why, started ->
-                if (from == 0 && failed != null) { failed(why, started); return@sendOne }
-                val serverId = current?.id
-                parts.drop(from).forEachIndexed { k, part ->
-                    enqueue(pane.id, part)
-                    queued.lastOrNull()?.let { q ->
-                        updateQueued(q.id) { it.copy(mayHaveSent = started && k == 0,
-                            note = "Part ${from + k + 1} of ${parts.size} not sent yet: $why.") }
-                    }
-                }
-                if (serverId != null) noteSendProblem(serverId, pane.id,
-                    "Sent ${from} of ${parts.size} parts to ${pane.agentName}; the rest are queued ($why).")
-                if (from > 0) delivered()
-            },
-            delivered = { sendParts(pane(pane.id) ?: pane, parts, from + 1, force, failed, delivered) })
-    }
-
-    /**
-     * 2.2.7: text too long for a few parts goes as a .txt file in the computer's inbox, checked by
+     * 2.2.7: text too long for one message goes as a .txt file in the computer's inbox, checked by
      * size and SHA-256, then one short message points at it. If the file can't be put there whole,
      * the text waits in the queue, never cut.
      */
