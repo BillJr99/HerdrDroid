@@ -125,6 +125,31 @@ class QuestionConfirmVm222Test {
         assertEquals(com.billmongan.herdrdroid.transcript.QState.OPEN, f.vm.questionsFor("ask").single().state)
     }
 
+    private fun targetFor(pane: String) = AppViewModel.CardTarget(
+        AppViewModel::class.java.getDeclaredField("herdr").apply { isAccessible = true }.get(f.vm) as Herdr,
+        Any(), "fixture", 0, checkNotNull(f.vm.pane(pane)))
+
+    @Test fun voiceFailsClosedBeforeAnyReadAndWithNoPaneTarget() = runBlocking {
+        // The review's cases: the open pane with no read yet (only an opening preview at most, and
+        // openPane has cleared the pane's target), and a question read without a pane target (as
+        // OpenCode's from the recent screen without its live viewport): voice sends nothing.
+        f.screens["ask"] = full
+        f.vm.openPane("ask")
+        assertEquals(null, f.vm.paneTextTarget)
+        val target = targetFor("ask")
+        val live = checkNotNull(detectPrompt(full, true, "gemini"))
+        assertTrue(f.vm.voiceCardStillReading(target))
+        assertFalse(f.vm.voiceCardFitsChat(target, live))
+        f.vm.readPane("ask")
+        // Whatever the pane's target, one read is not confirmed.
+        assertTrue(f.vm.voiceCardStillReading(target))
+        assertFalse(f.vm.voiceCardFitsChat(target, live))
+        // Without a card on screen there is nothing to answer: still refused.
+        f.screens["ask"] = "Earlier reply line.\n\n> "
+        f.vm.readPane("ask"); f.vm.readPane("ask")
+        assertFalse(f.vm.voiceCardFitsChat(target, live))
+    }
+
     @Test fun voiceSendsNothingWhileTheCardIsStillBeingRead() = runBlocking {
         f.screens["ask"] = full
         f.vm.openPane("ask")

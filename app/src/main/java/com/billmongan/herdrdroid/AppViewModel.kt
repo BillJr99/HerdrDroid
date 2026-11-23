@@ -2314,11 +2314,6 @@ class AppViewModel internal constructor(
         return com.billmongan.herdrdroid.herdr.shownCard(parsed, cardDecisions[key], agent)
     }
 
-    /** The open pane's confirmed card, or null (2.2.2): what voice may read and answer. */
-    internal fun confirmedCardFor(paneId: String): Prompt? = cardParse(paneId, paneText)?.let { parsed ->
-        questionCardFor(paneId, parsed, "")?.takeUnless { it.readingQuestion || it.unreadQuestion }
-    }
-
     /** One read of [paneId]'s screen offered to the question confirmation: the card [cardParse] gives for it. */
     private fun offerQuestionRead(serverId: String?, paneId: String, text: String): Pair<Prompt?, com.billmongan.herdrdroid.herdr.CardShows> {
         val key = "$serverId|$paneId"
@@ -2341,13 +2336,19 @@ class AppViewModel internal constructor(
      */
     internal fun voiceCardStillReading(target: CardTarget): Boolean {
         val id = target.pane.id
-        if (paneTextTarget?.let { it.isCurrent(target.client) && it.pane.id == id } != true) return false
+        if ((screen as? Screen.Agent)?.paneId != id) return false
+        // Fails closed: nothing read yet (or only the opening preview), or a card that isn't confirmed
+        // for exactly what the screen shows, whatever the pane's target says.
+        val text = openCardText(id) ?: return true
+        val parsed = cardParse(id, text)?.takeIf { com.billmongan.herdrdroid.herdr.needsConfirmation(it) } ?: return false
         val key = "${current?.id}|$id"
-        if (!questionConfirm.seen(key)) return false
-        val parsed = cardParse(id, paneText)?.takeIf { com.billmongan.herdrdroid.herdr.needsConfirmation(it) } ?: return false
         val d = cardDecisions[key]
-        return !(d != null && d.parsed == parsed && d.verdict.shows == com.billmongan.herdrdroid.herdr.CardShows.CARD)
+        return !(questionConfirm.seen(key) && d != null && d.parsed == parsed && d.verdict.shows == com.billmongan.herdrdroid.herdr.CardShows.CARD)
     }
+
+    /** The text the open pane's card is drawn from (2.2.2): its read screen, or the opening preview before one. */
+    private fun openCardText(paneId: String): String? =
+        paneText.takeIf { paneTextPane == paneId && it.isNotEmpty() } ?: prefetchedPaneText(paneId)
 
     // ---- Settled view on a pane switch (2.2.0) ------------------------------------------------
 
@@ -4119,12 +4120,16 @@ class AppViewModel internal constructor(
     /** If Chat already shows an actionable card, a spoken option must mean the same thing on it. */
     internal fun voiceCardFitsChat(target: CardTarget, live: Prompt): Boolean {
         if (!voiceCardCurrent(target) || voiceCardStillReading(target)) return false
-        // 2.2.2: the card Chat shows once confirmed, else the card Chat's screen parses to (still being
-        // read): a spoken option must mean the same thing on either, as before.
-        val displayed = paneTextTarget?.takeIf { it.isCurrent(target.client) && it.pane.id == target.pane.id }
-            ?.let { confirmedCardFor(target.pane.id) ?: cardParse(target.pane.id, paneText) }
-        return displayed?.takeIf { it.choices.isNotEmpty() && !it.terminalReview }
-            ?.let { cardAnswerStillFits(it, live) } ?: true
+        // 2.2.2: fails closed. The open pane's card must be confirmed and must mean the same as the
+        // live read; with no confirmed, actionable card on the open pane, voice sends nothing.
+        val displayed = openCardText(target.pane.id)?.let { cardParse(target.pane.id, it) }?.let { parsed ->
+            val key = "${current?.id}|${target.pane.id}"
+            val d = cardDecisions[key]
+            parsed.takeIf { !com.billmongan.herdrdroid.herdr.needsConfirmation(it) ||
+                (questionConfirm.seen(key) && d != null && d.parsed == it && d.verdict.shows == com.billmongan.herdrdroid.herdr.CardShows.CARD) }
+        } ?: return false
+        if (displayed.choices.isEmpty() || displayed.terminalReview) return false
+        return cardAnswerStillFits(displayed, live)
     }
 
     // Fleet discovery is read-only. A drawer row or cached status alone cannot verify a card.
