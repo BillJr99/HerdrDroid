@@ -34,7 +34,8 @@ class QuestionConfirmVm222Test {
     @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = IdleMainLooperRule()
 
     private val full = "Earlier reply line.\n\n────────────────────\n Allow this command?\n\n   ls -la\n\n ❯ 1. Yes\n   2. No\n\n Esc to cancel · Tab to amend"
-    private val gatewayMenu = "Earlier reply line.\n\n────────────────────\n Approve this change?\n ❯ Keep the change\n   Undo it\n────────────────────\n ↑↓ to navigate · enter to select"
+    // Read as a menu only while the pane needs you (an unnumbered menu with no footer of its own).
+    private val gatewayMenu = "Earlier reply line.\n\n────────────────────\n Approve this change?\n ❯ Keep the change\n   Undo it\n"
     private val halfDrawn = "Earlier reply line.\n\n❯ 1. Quokka first thing\n  2. Quokka second thing\n\n"
 
     private lateinit var f: Fixture
@@ -94,8 +95,11 @@ class QuestionConfirmVm222Test {
         assertEquals(com.billmongan.herdrdroid.herdr.Status.NEEDS_YOU, f.vm.shownStatus(checkNotNull(f.vm.pane("hermes"))))
         // herdr's own status reads no card here; the shown status does.
         assertEquals(null, detectPrompt(gatewayMenu, false, "hermes"))
-        f.vm.readPane("hermes")
-        assertTrue(card("hermes")!!.readingQuestion)
+        // Its top is proven but it draws no footer: four reads in a row.
+        repeat(com.billmongan.herdrdroid.herdr.FALLBACK_READS - 1) {
+            f.vm.readPane("hermes")
+            assertTrue(card("hermes")!!.readingQuestion)
+        }
         f.vm.readPane("hermes")
         val shown = checkNotNull(card("hermes"))
         assertFalse("the card must not stay on Reading it", shown.readingQuestion)
