@@ -254,6 +254,22 @@ class QuestionConfirm222Test {
         assertTrue(QuestionPills.tappable("claude", p2))
     }
 
+    @Test fun theReviewStepOfAConfirmedMultiQuestionDialogShowsAtOnce() {
+        // The review step has the same tab titles, a proven top and no footer: no "Reading it…" between.
+        val q1 = screen("claude/captured-2.1.329-two-questions/q1.txt")
+        val review = screen("claude/captured-2.1.329-two-questions/review.txt")
+        val p1 = requireNotNull(detectPrompt(q1, false, "claude"))
+        val pr = requireNotNull(detectPrompt(review, false, "claude"))
+        assertEquals(p1.shownParts().tabs.map { it.title }, pr.shownParts().tabs.map { it.title })
+        val gate = QuestionConfirm()
+        gate.offer("a", questionRead(q1, p1, "claude", null, false))
+        assertTrue(gate.offer("a", questionRead(q1, p1, "claude", null, false)))
+        val r = questionRead(review, pr, "claude", null, false)
+        assertTrue(r.topped)
+        assertFalse(r.complete)
+        assertTrue("Submit and Cancel show at once", gate.offer("a", r))
+    }
+
     @Test fun ticksInAMultiSelectKeepTheCardUp() {
         val text = screen("claude/captured-2.1.329/single-question.txt")
         val p = requireNotNull(detectPrompt(text, false, "claude"))
