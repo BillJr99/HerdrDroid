@@ -230,6 +230,17 @@ class AppViewModel internal constructor(
 
     var link by mutableStateOf(Link.CONNECTED)
         private set
+    private var linkSince = System.currentTimeMillis()
+
+    /** Changes [link] and logs why (2.2.5): opaque server tag, the states, a fixed reason word, timing. */
+    private fun linkTo(to: Link, reason: String) {
+        val now = System.currentTimeMillis()
+        if (to != link) {
+            com.billmongan.herdrdroid.diag.LinkDiag.transition(current?.id, link.name, to.name, reason, now - linkSince)
+            linkSince = now
+        }
+        link = to
+    }
     var linkProblem by mutableStateOf<String?>(null)
         private set
     var queuedCount by mutableStateOf(0)
@@ -624,6 +635,8 @@ class AppViewModel internal constructor(
         error = null
         val run = ++connectRun
         connectJob = viewModelScope.launch {
+            val t0 = System.currentTimeMillis()
+            var stage = com.billmongan.herdrdroid.diag.LinkDiag.Stage.LOGIN
             val creds = credentialsFor(server, password)
             val s = HerdrSsh(server.host, server.port, server.user, creds, server.fingerprint, SshKeyVault::provider, server.wsUrl?.takeIf { server.overWebSocket })
             connectingSsh = s
@@ -649,7 +662,12 @@ class AppViewModel internal constructor(
                 } else {
                     sNow = s
                     // Which herdr: the server's choice, or whichever one is running there.
+                    // 2.2.5: the probe's first command opens the connection, so a failure before it
+                    // answers is the sign-in's (login); after, the probe's.
+                    stage = com.billmongan.herdrdroid.diag.LinkDiag.Stage.PROBE
                     val found = detectBackend(s, server.herdrPath)
+                    com.billmongan.herdrdroid.diag.LinkDiag.stage(run.toLong(), server.id, com.billmongan.herdrdroid.diag.LinkDiag.Stage.LOGIN, "ok", System.currentTimeMillis() - t0,
+                        mapOf("transport" to s.transportName, "algs" to s.negotiated?.let { "[" + it + "]" }))
                     val backend = when (server.backend) {
                         "tui" -> Backend.TUI
                         "core" -> Backend.CORE
@@ -669,6 +687,10 @@ class AppViewModel internal constructor(
                     com.billmongan.herdrdroid.diag.DiagLog.log("connect", "herdr on this computer: TUI ${if (found.tuiRunning) "running" else if (found.tuiInstalled) "installed" else "absent"}, " +
                         "herdr-core ${if (found.coreRunning) "running" else if (found.coreInstalled) "installed" else "absent"}; using ${if (backend == Backend.CORE) "herdr-core" else "herdr"}")
                     activeBackend = backend
+                    com.billmongan.herdrdroid.diag.LinkDiag.stage(run.toLong(), server.id, com.billmongan.herdrdroid.diag.LinkDiag.Stage.PROBE, "ok", System.currentTimeMillis() - t0,
+                        mapOf("backend" to backend.name.lowercase(), "tui" to (if (found.tuiRunning) "running" else if (found.tuiInstalled) "installed" else "absent"),
+                            "core" to (if (found.coreRunning) "running" else if (found.coreInstalled) "installed" else "absent")))
+                    stage = com.billmongan.herdrdroid.diag.LinkDiag.Stage.CHANNEL
                     h = Herdr(s, server.herdrPath, backend, found.hcPath)
                     // A WebSocket server may be asleep and take a while to answer, so a failed
                     // connection is tried again with growing waits before it is reported.
@@ -687,6 +709,15 @@ class AppViewModel internal constructor(
                     }
                 }
                 connectNote = null
+                com.billmongan.herdrdroid.diag.LinkDiag.stage(run.toLong(), server.id, com.billmongan.herdrdroid.diag.LinkDiag.Stage.CHANNEL, "ok", System.currentTimeMillis() - t0,
+                    mapOf("reused" to reused, "transport" to sNow.transportName, "backend" to h.backend.name.lowercase()))
+                // 2.2.5: an attempt that a newer one replaced (or Cancel stopped) applies nothing.
+                if (run != connectRun) {
+                    com.billmongan.herdrdroid.diag.LinkDiag.stage(run.toLong(), server.id, com.billmongan.herdrdroid.diag.LinkDiag.Stage.APPLY, "stale-attempt-dropped", System.currentTimeMillis() - t0)
+                    sNow.close()
+                    return@launch
+                }
+                stage = com.billmongan.herdrdroid.diag.LinkDiag.Stage.APPLY
                 var saved = server
                 if (remember && password != null) saved = saved.copy(passwordCipher = PasswordVault.encrypt(password))
                 if (saved != server) store.save(saved)
@@ -696,7 +727,7 @@ class AppViewModel internal constructor(
                 herdr = h
                 current = saved
                 chatServerId = saved.id
-                link = Link.CONNECTED
+                linkTo(Link.CONNECTED, "signed-in")
                 linkProblem = null
                 // What was last seen on this server shows at once; fresh reads replace it.
                 panes = serverPanes[saved.id].orEmpty()
@@ -730,12 +761,15 @@ class AppViewModel internal constructor(
                     openAgent -> bestAgent()?.let { openPane(it, "after connecting") } ?: run { screen = Screen.Tabs; drawerOpen = true }
                 }
             } catch (e: UnconfirmedHostKey) {
+                com.billmongan.herdrdroid.diag.LinkDiag.stage(run.toLong(), server.id, stage, "failed", System.currentTimeMillis() - t0, mapOf("error" to "UnconfirmedHostKey"))
                 s.close()
                 pendingHostKey = PendingHostKey(server, password, remember, e.fingerprint)
             } catch (e: HostKeyChanged) {
+                com.billmongan.herdrdroid.diag.LinkDiag.stage(run.toLong(), server.id, stage, "failed", System.currentTimeMillis() - t0, mapOf("error" to "HostKeyChanged"))
                 s.close()
                 error = hostKeyMessage(e)
             } catch (e: AuthRejected) {
+                com.billmongan.herdrdroid.diag.LinkDiag.stage(run.toLong(), server.id, stage, "failed", System.currentTimeMillis() - t0, mapOf("error" to "AuthRejected"))
                 s.close()
                 if (server.overWebSocket) {
                     // Key only: there is no password to fall back to.
@@ -752,6 +786,8 @@ class AppViewModel internal constructor(
                 s.close()
                 throw c
             } catch (e: Exception) {
+                com.billmongan.herdrdroid.diag.LinkDiag.stage(run.toLong(), server.id, stage, "failed", System.currentTimeMillis() - t0,
+                    mapOf("error" to com.billmongan.herdrdroid.diag.LinkDiag.errorClass(e), "cause" to e.cause?.let { com.billmongan.herdrdroid.diag.LinkDiag.errorClass(it) }, "exit" to (e as? HerdrError)?.exit))
                 s.close()
                 error = friendly(e)
             } finally {
@@ -1113,7 +1149,7 @@ class AppViewModel internal constructor(
         current = null
         panes = emptyList()
         quotas = emptyMap()
-        link = Link.CONNECTED
+        linkTo(Link.CONNECTED, "left-quietly")
         linkProblem = null
     }
 
@@ -1127,7 +1163,7 @@ class AppViewModel internal constructor(
         current = null
         panes = emptyList()
         quotas = emptyMap()
-        link = Link.CONNECTED
+        linkTo(Link.CONNECTED, "disconnected")
         linkProblem = null
         screen = Screen.Servers
     }
@@ -1219,7 +1255,7 @@ class AppViewModel internal constructor(
         if (link == Link.CONNECTED) {
             clearCrossServerCards()
             clearPanePrefetch()
-            link = Link.RECONNECTING
+            linkTo(Link.RECONNECTING, "link-lost:${com.billmongan.herdrdroid.diag.LinkDiag.errorClass(e)}")
             downSince = System.currentTimeMillis()
         }
         e?.let { linkProblem = friendly(it) }
@@ -1242,7 +1278,7 @@ class AppViewModel internal constructor(
                 try {
                     ssh?.reset()
                     h.check()
-                    link = Link.CONNECTED
+                    linkTo(Link.CONNECTED, "reconnected")
                     linkProblem = null
                     flushQueue()
                     refreshPanes()
@@ -1257,7 +1293,7 @@ class AppViewModel internal constructor(
                     return@launch
                 } catch (e: Exception) {
                     linkProblem = friendly(e)
-                    if (System.currentTimeMillis() - downSince > 15_000) link = Link.OFFLINE
+                    if (System.currentTimeMillis() - downSince > 15_000) linkTo(Link.OFFLINE, "down-over-15s:${com.billmongan.herdrdroid.diag.LinkDiag.errorClass(e)}")
                 }
                 // A second at a time, so coming back to the front ends a long background wait at once
                 // (1.4.1, from a code review: the 15 or 60 s gap went on after the app was opened).
@@ -1278,7 +1314,7 @@ class AppViewModel internal constructor(
     fun retryNow() {
         clearPanePrefetch()
         reconnectJob?.cancel()
-        link = Link.RECONNECTING
+        linkTo(Link.RECONNECTING, "retry-pressed")
         downSince = System.currentTimeMillis()
         startReconnect()
     }
@@ -1291,7 +1327,13 @@ class AppViewModel internal constructor(
     }
 
     /** Runs a background read. A dropped link turns into a quiet reconnect; nothing is shown. */
-    private suspend fun <T> quietly(allowBackground: Boolean = false, block: suspend (Herdr) -> T): T? {
+    /** The last quiet failure logged, per stage and error class, to keep a polling failure to one line a minute (2.2.5). */
+    private val quietFailLogged = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    private suspend fun <T> quietly(allowBackground: Boolean = false, block: suspend (Herdr) -> T): T? =
+        quietly(allowBackground, null, block)
+
+    private suspend fun <T> quietly(allowBackground: Boolean, stage: com.billmongan.herdrdroid.diag.LinkDiag.Stage?, block: suspend (Herdr) -> T): T? {
         if (!canPoll && !(allowBackground && !locked && link == Link.CONNECTED)) return null
         val h = herdr ?: return null
         return try {
@@ -1304,7 +1346,17 @@ class AppViewModel internal constructor(
             stopForProblem(authMessage(current, null, e)); null
         } catch (e: HostKeyChanged) {
             stopForProblem(hostKeyMessage(e)); null
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            // 2.2.5: this used to vanish without a word, so a list that never arrived left no trace.
+            if (stage != null) {
+                val key = "${stage.label}|${e.javaClass.simpleName}"
+                val now = System.currentTimeMillis()
+                if (now - (quietFailLogged[key] ?: 0L) >= 60_000L) {
+                    quietFailLogged[key] = now
+                    com.billmongan.herdrdroid.diag.LinkDiag.stage(connectRun.toLong(), current?.id, stage, "failed",
+                        fields = mapOf("error" to com.billmongan.herdrdroid.diag.LinkDiag.errorClass(e), "exit" to (e as? HerdrError)?.exit))
+                }
+            }
             null
         }
     }
@@ -1408,8 +1460,16 @@ class AppViewModel internal constructor(
     suspend fun refreshPanes(allowBackground: Boolean = false) {
         val client = herdr
         val prefetchConnection = client?.connectionIdentity?.takeIf { foreground && !locked }
-        quietly(allowBackground) { it.panes() }?.let { fresh0 ->
-            if (herdr !== client) return
+        val readAt = System.currentTimeMillis()
+        val readServer = current?.id
+        quietly(allowBackground, com.billmongan.herdrdroid.diag.LinkDiag.Stage.LIST_READ) { it.panes() }?.let { fresh0 ->
+            // A list read on a connection that has since been replaced (a reconnect, another server)
+            // is dropped: it must not land on whichever server is open now.
+            if (herdr !== client || current?.id != readServer) {
+                com.billmongan.herdrdroid.diag.LinkDiag.stage(connectRun.toLong(), readServer, com.billmongan.herdrdroid.diag.LinkDiag.Stage.APPLY, "stale-dropped",
+                    System.currentTimeMillis() - readAt, mapOf("parsed" to fresh0.size))
+                return
+            }
             // herdr sometimes reports a pane's agent as missing for a moment (while it redraws, or
             // just after a screen closes). Keep the agent last seen in that pane, so its card keeps
             // its usage and model instead of going blank until the next read.
@@ -1433,6 +1493,7 @@ class AppViewModel internal constructor(
             rawWorkPanes = fresh
             maintainChats(before, fresh)
             applyWorkStatus()
+            logListCounts(client, readServer, fresh0.size, System.currentTimeMillis() - readAt)
             current?.let { s -> noticeChanges(s.id, s.label, fresh) { herdr } }
             schedulePanePrefetch(prefetchConnection)
             // Footers (each agent's model) every 30 seconds wherever you are in the app; before
@@ -1448,6 +1509,19 @@ class AppViewModel internal constructor(
                 viewModelScope.launch { runCatching { refreshPreviews() } }
             }
         }
+    }
+
+    /** The counts last logged per server: a list read is logged when they change (2.2.5). */
+    private val listCountsLogged = HashMap<String, String>()
+
+    private fun logListCounts(client: Herdr?, serverId: String?, parsed: Int, ms: Long) {
+        val raw = client?.lastListCounts?.raw
+        val visible = panes.count { it.agent != null }
+        val key = "$raw/$parsed/${panes.size}/$visible"
+        if (serverId == null || listCountsLogged[serverId] == key) return
+        listCountsLogged[serverId] = key
+        com.billmongan.herdrdroid.diag.LinkDiag.stage(connectRun.toLong(), serverId, com.billmongan.herdrdroid.diag.LinkDiag.Stage.APPLY, "ok", ms,
+            mapOf("raw" to raw, "parsed" to parsed, "shown" to panes.size, "visible" to visible, "backend" to client?.backend?.name?.lowercase()))
     }
 
     private data class PanePreview(

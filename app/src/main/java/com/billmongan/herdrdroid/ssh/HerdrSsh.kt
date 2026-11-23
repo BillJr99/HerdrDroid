@@ -191,6 +191,17 @@ class HerdrSsh(
     internal val connectionIdentity: Any? get() = client
     private var bridge: WsBridge? = null
 
+    /**
+     * 2.2.5: the algorithms the last key exchange settled on (names only), for the diagnostic log.
+     * Recorded by an [net.schmizz.sshj.transport.verification.AlgorithmsVerifier] that always
+     * accepts: it never changes what is negotiated, and the host key is still checked by
+     * [PinnedVerifier].
+     */
+    @Volatile var negotiated: String? = null
+        private set
+    /** "tcp" or "ws": how this connection reaches the computer. */
+    val transportName: String get() = if (wsUrl != null) "ws" else "tcp"
+
     private fun config() = DefaultConfig().apply {
         keyAlgorithms = keyAlgorithms.map { if (it.name == "ecdsa-sha2-nistp256") neutralEcdsa(it) else it }
     }
@@ -206,6 +217,10 @@ class HerdrSsh(
         c.connectTimeout = 8_000
         c.timeout = 15_000
         c.addHostKeyVerifier(verifier)
+        c.addAlgorithmsVerifier { a ->
+            negotiated = "kex=${a.keyExchangeAlgorithm} hostkey=${a.signatureAlgorithm} cipher=${a.client2ServerCipherAlgorithm} mac=${a.client2ServerMACAlgorithm}"
+            true
+        }
         try {
             if (wsUrl != null) {
                 val b = WsBridge.open(wsUrl)
@@ -217,6 +232,7 @@ class HerdrSsh(
                 c.connect(host, port)
             }
             DiagLog.log("ssh", "key exchange done; server says \"${c.transport.serverVersion}\"; host key ${verifier.seen}")
+            DiagLog.log("ssh", "negotiated over $transportName: ${negotiated ?: "unknown"}")
         } catch (e: Exception) {
             val seen = verifier.seen
             DiagLog.log("ssh", "connect failed: ${DiagLog.describe(e)}; host key seen: ${seen ?: "none"}")
