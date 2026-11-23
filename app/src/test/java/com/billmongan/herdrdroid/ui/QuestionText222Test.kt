@@ -268,6 +268,21 @@ class QuestionText222Test {
         assertEquals(CardBlock.Code(listOf("curl -fsSL https://example.com/install.sh -o install.sh --retry 3 --fail"), wrap = true), got.last())
     }
 
+    @Test fun grokReviewABulletListUnderACommandIsNotCopiedIntoIt() {
+        val got = QuestionText.segments("Run:\ngit status --short\n- check the tree\n- commit the fix")
+        assertEquals(QuestionText.Segment("git status --short", true), got[1])
+        assertTrue(got.toString(), got.drop(2).none { it.code })
+        assertTrue(got.toString(), got.drop(2).joinToString("\n") { it.text }.contains("- check the tree"))
+        assertTrue(!QuestionText.continuesCode("git status --short", "- Do this thing."))
+        assertTrue(!QuestionText.continuesCode("git status --short", "- check the tree"))
+        assertTrue(!QuestionText.continuesCode("git status --short", "* commit the fix"))
+        // Flags still join: "-o", "--coverage", "--since=…", "-5" and a lone "--".
+        for (row in listOf("-o install.sh --retry 3 --fail", "--coverage", "--since=2024-01-01 --author=bill -- path/to/file", "-5", "-- path/to/file"))
+            assertTrue(row, QuestionText.continuesCode("git log --oneline", row))
+        val alert = QuestionText.alert("Run:\ngit status --short\n- check the tree\n- commit the fix")
+        assertEquals("Run:\ngit status --short\n- check the tree\n- commit the fix", alert)
+    }
+
     @Test fun grokReviewTheAlertKeepsAWrappedRefInItsCommand() {
         assertEquals("Reset with:\ngit -C /home/u/repo reset --hard origin/main\nThen I report back.",
             QuestionText.alert("Reset with:\ngit -C /home/u/repo reset --hard\norigin/main\nThen I report back."))

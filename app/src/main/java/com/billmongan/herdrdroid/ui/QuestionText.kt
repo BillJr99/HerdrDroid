@@ -242,6 +242,8 @@ object QuestionText {
      */
     private val SHELL_SYNTAX = Regex("""\s-{1,2}[A-Za-z][\w-]*|\s\|\s|\s\|$|\s\d?>>?\s|\s<\s|&&|\|\||;\s|;$|(?:^|\s)[A-Za-z_][\w.-]*=\S|\$\(|\s'[^']*'|\s"[^"]*"""")
     private val WORDS = Regex("""\s+""")
+    /** A row that starts with a flag: "-" or "--" right before a letter, digit or "=", or a lone "--". */
+    private val FLAG_ROW = Regex("""^(?:-{1,2}[A-Za-z0-9=]|--(?:\s|$))""")
     private val STRONG = Regex("""\s-{1,2}[A-Za-z]|\||&&""")
     /** A fence's language tag, only a known one, so "```npm run build```" keeps its "npm". */
     private const val FENCE_TAG = """(?:(?:json|jsonc|yaml|yml|toml|sh|bash|zsh|shell|console|text|diff|kotlin|python|py|js|ts)\s)?"""
@@ -301,8 +303,11 @@ object QuestionText {
         val t = row.trim()
         if (t.isEmpty()) return false
         if (CARRIES_ON.containsMatchIn(prev) || CARRIED.containsMatchIn(t)) return true
-        // More flags ("-o install.sh --retry 3", "--since=2024-01-01 -- path/to/file").
-        if (t.startsWith("-")) return true
+        // A list item or a finished sentence under a command is prose ("- check the tree", "- Do this.").
+        if (ITEM.containsMatchIn(t) && !FLAG_ROW.containsMatchIn(t)) return false
+        if (t.last() in ".?!:" && !STRONG.containsMatchIn(t)) return false
+        // More flags ("-o install.sh --retry 3", "--since=2024-01-01 -- path/to/file", a lone "--").
+        if (FLAG_ROW.containsMatchIn(t)) return true
         if (t.first().isUpperCase() || t.last() in ".?!:") return false
         val words = t.split(WORDS)
         // One token only when it is a path, a ref or an assignment ("origin/main", "dist/", "A=1"),
