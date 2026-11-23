@@ -338,7 +338,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             // A slash command answers on the screen (a menu, a sign-in code), not in the agent's log,
             // so show the screen and the keys to move through it.
             // 2.1.4: not for /btw, whose answer the app reads into the chat and then closes.
-            if (text.startsWith("/") && !live && com.billmongan.herdrdroid.herdr.btwQuestion(pane.agent, text) == null) { fullTerminal = true; commandScreen = text.substringBefore(' ') }
+            // 2.2.7: a slash command only ("/model"), never a path such as an attachment's ("/home/…").
+            if (com.billmongan.herdrdroid.herdr.isSlashCommand(text) && !live && com.billmongan.herdrdroid.herdr.btwQuestion(pane.agent, text) == null) { fullTerminal = true; commandScreen = text.substringBefore(' ') }
         }
     }
     // The terminal (and screen) view follows new output only while you are at the bottom; once you
@@ -958,7 +959,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 // herdr's agent prompt reaches a working agent, so a message sent now steers it.
                 steerLabel = if (pane?.agent != null && !typingAnswer && prompt == null) "Steer" else null,
                 onQueueWhenIdle = if (!typingAnswer && !usageBlocksInput) ({ vm.enqueue(paneId, normalMessage.trim()); normalMessage = "" }) else null,
-                onAttach = { uri -> vm.attach(uri) { path -> editMessage((message.trimEnd() + " " + path).trim() + " ") } },
+                onAttach = { uri -> vm.attach(uri) { path -> editMessage(com.billmongan.herdrdroid.herdr.withAttachment(message, path)) } },
                 attachBusy = vm.uploading,
                 commands = SlashCommands.forAgent(pane?.agent),
                 // One row: Keys, Snippets and When idle live in the "⋯" menu with attach and dictate.

@@ -6,7 +6,7 @@ import org.junit.Test
 
 /** 2.2.7: Bill's two copies of the log stopped at the same character; Copy keeps the newest whole lines. */
 class DiagCopy227Test {
-    @After fun clear() = DiagLog.clear()
+    @After fun clear() { DiagLog.clear() }
 
     @Test fun aCopyLargerThanTheCapKeepsTheNewestWholeLinesWithANote() {
         val rows = (1..3_000).map { "17:49:%02d.000 [link] line $it ".format(it % 60) + "x".repeat(40) }

@@ -51,8 +51,12 @@ object DiagLog {
         return "(trimmed: oldest ${all.size - kept.size} lines omitted; use Save for the full log)\n" + kept.joinToString("\n")
     }
 
-    /** 2.2.7: a clipboard copy larger than this is trimmed to its newest lines (Save has no limit). */
-    const val COPY_MAX_CHARS = 64_000
+    /**
+     * 2.2.7: a clipboard copy larger than this is trimmed to its newest lines (Save has no limit).
+     * Bill's two pastes of a 55,710-character log both ended at character 19,888, so the paste
+     * target held about 20,000; a copy stays under that and keeps the newest lines.
+     */
+    const val COPY_MAX_CHARS = 18_000
 
     fun size(): Int = synchronized(lines) { lines.size }
 

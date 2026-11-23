@@ -3389,21 +3389,41 @@ class AppViewModel internal constructor(
         if (uploading) return
         val app = getApplication<Application>()
         uploading = true
+        attachFailure = null
         act(null, "Couldn't attach the file") { h ->
+            var name = "attachment"
             try {
-                val (name, bytes) = withContext(Dispatchers.IO) {
+                val (n, bytes) = withContext(Dispatchers.IO) {
                     val n = app.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
                         if (c.moveToFirst()) c.getString(0) else null
                     } ?: "attachment"
                     val b = app.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: ByteArray(0)
                     n to b
                 }
+                name = n
                 if (bytes.size > 50 * 1024 * 1024) throw IllegalArgumentException("That file is over 50 MB.")
-                done(h.upload(name, bytes))
+                // 2.2.7: the message points at the file only once the computer has all of it.
+                val receipt = h.uploadVerified(name, bytes)
+                notice = "Attached $name (${com.billmongan.herdrdroid.herdr.LongText.size(receipt.size)}), checked on the computer."
+                done(receipt.path)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                attachFailure = AttachFailure(uri, name, com.billmongan.herdrdroid.diag.DiagLog.describe(e), done)
             } finally {
                 uploading = false
             }
         }
+    }
+
+    /** 2.2.7: an attachment that didn't arrive whole: shown with Retry; nothing points at it. */
+    data class AttachFailure(val uri: Uri, val name: String, val why: String, internal val done: (String) -> Unit)
+    var attachFailure by mutableStateOf<AttachFailure?>(null)
+
+    fun retryAttach() {
+        val f = attachFailure ?: return
+        attachFailure = null
+        attach(f.uri, f.done)
     }
 
     // ---- Attachments ----------------------------------------------------------------------------
@@ -3602,6 +3622,68 @@ class AppViewModel internal constructor(
      * either way its pending row is removed, so the queued message is the one place it shows.
      */
     fun sendMessage(pane: Pane, text: String, force: Boolean = false, failed: ((String, Boolean) -> Unit)? = null, delivered: () -> Unit = {}) {
+        // 2.2.7: never truncated. Long text goes as numbered parts, or as a checked .txt file.
+        when (val plan = com.billmongan.herdrdroid.herdr.LongText.plan(text)) {
+            is com.billmongan.herdrdroid.herdr.LongText.Plan.Single -> sendOne(pane, text, force, failed, delivered)
+            is com.billmongan.herdrdroid.herdr.LongText.Plan.Parts -> sendParts(pane, plan.parts, 0, force, failed, delivered)
+            is com.billmongan.herdrdroid.herdr.LongText.Plan.Attachment -> sendAsFile(pane, text, force, failed, delivered)
+        }
+    }
+
+    /**
+     * 2.2.7: [parts] from [from] on, each only after the one before was delivered (each its own
+     * guarded send, so none is typed twice). If one isn't sent, it and the rest wait in the queue
+     * ("Queued until idle", with a note), to go by themselves or with Send now; the caller is told
+     * it was delivered once any part went (its own copy must not be sent again), or failed when none did.
+     */
+    private fun sendParts(pane: Pane, parts: List<String>, from: Int, force: Boolean, failed: ((String, Boolean) -> Unit)?, delivered: () -> Unit) {
+        if (from >= parts.size) { delivered(); return }
+        com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${pane.id}: long text, part ${from + 1} of ${parts.size} (${parts[from].length} chars)")
+        sendOne(pane, parts[from], force,
+            failed = { why, started ->
+                if (from == 0 && failed != null) { failed(why, started); return@sendOne }
+                val serverId = current?.id
+                parts.drop(from).forEachIndexed { k, part ->
+                    enqueue(pane.id, part)
+                    queued.lastOrNull()?.let { q ->
+                        updateQueued(q.id) { it.copy(mayHaveSent = started && k == 0,
+                            note = "Part ${from + k + 1} of ${parts.size} not sent yet: $why.") }
+                    }
+                }
+                if (serverId != null) noteSendProblem(serverId, pane.id,
+                    "Sent ${from} of ${parts.size} parts to ${pane.agentName}; the rest are queued ($why).")
+                if (from > 0) delivered()
+            },
+            delivered = { sendParts(pane(pane.id) ?: pane, parts, from + 1, force, failed, delivered) })
+    }
+
+    /**
+     * 2.2.7: text too long for a few parts goes as a .txt file in the computer's inbox, checked by
+     * size and SHA-256, then one short message points at it. If the file can't be put there whole,
+     * the text waits in the queue, never cut.
+     */
+    private fun sendAsFile(pane: Pane, text: String, force: Boolean, failed: ((String, Boolean) -> Unit)?, delivered: () -> Unit) {
+        val bytes = text.toByteArray(Charsets.UTF_8)
+        com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${pane.id}: long text, ${bytes.size} bytes as a file")
+        act(pane.id, "Couldn't attach the pasted text", input = true) { h ->
+            val receipt = try {
+                h.uploadVerified("pasted-text.txt", bytes)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val why = com.billmongan.herdrdroid.diag.DiagLog.describe(e)
+                if (failed != null) failed(why, false) else {
+                    enqueue(pane.id, text)
+                    queued.lastOrNull()?.let { q -> updateQueued(q.id) { it.copy(note = "Not sent yet: the pasted text couldn't be put on the computer whole ($why).") } }
+                }
+                return@act
+            }
+            val line = "Pasted text (${com.billmongan.herdrdroid.herdr.LongText.size(receipt.size)}) attached: ${receipt.path}"
+            sendOne(pane(pane.id) ?: pane, line, force, failed, delivered)
+        }
+    }
+
+    private fun sendOne(pane: Pane, text: String, force: Boolean = false, failed: ((String, Boolean) -> Unit)? = null, delivered: () -> Unit = {}) {
         val serverId = current?.id
         markSent(serverId, pane.id, text)
         lastSentAt = System.currentTimeMillis()

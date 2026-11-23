@@ -781,16 +781,36 @@ class Herdr internal constructor(
      * Copies a file from the phone to ~/.herdrdroid/inbox on the computer and returns its full
      * path there, so a message can point the agent at it.
      */
-    suspend fun upload(name: String, bytes: ByteArray): String {
+    suspend fun upload(name: String, bytes: ByteArray): String = uploadVerified(name, bytes).path
+
+    /**
+     * 2.2.7 (Bill: "I'm not sure if that attached file actually got to you"): [upload] with a
+     * receipt. The same command that writes the file reads back its size and SHA-256 on the
+     * computer; a mismatch is written again once, then refused ([UploadMismatch]), so a message
+     * never points at a missing or partial file. Logged with the inbox file name, size and result only.
+     */
+    suspend fun uploadVerified(name: String, bytes: ByteArray): UploadReceipt {
         val safe = name.replace(Regex("[^A-Za-z0-9._-]"), "_").trim('_').take(80).ifBlank { "file" }
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
         val rel = ".herdrdroid/inbox/$stamp-$safe"
-        val r = ssh.execInput(
-            "mkdir -p \"\$HOME/.herdrdroid/inbox\" && cat > \"\$HOME\"/${shq(rel)} && printf %s \"\$HOME\"/${shq(rel)}",
-            bytes, timeoutSeconds = 120,
-        )
-        if (r.exit != 0) throw HerdrError(r.err.trim().ifBlank { "The upload failed (exit ${r.exit})." }, r.exit)
-        return r.out.trim()
+        val want = sha256Hex(bytes)
+        val f = "\"\$HOME\"/${shq(rel)}"
+        val command = "mkdir -p \"\$HOME/.herdrdroid/inbox\" && cat > $f && printf '%s\\n' $f && wc -c < $f && " +
+            "{ sha256sum $f 2>/dev/null || shasum -a 256 $f; } | cut -d' ' -f1"
+        var last: String? = null
+        for (attempt in 1..2) {
+            val r = commands?.let { it.input(command, bytes, it.connection ?: Any()) } ?: ssh.execInput(command, bytes, timeoutSeconds = 120)
+            if (r.exit != 0) throw HerdrError(r.err.trim().ifBlank { "The upload failed (exit ${r.exit})." }, r.exit)
+            val out = r.out.trim().lines().map { it.trim() }
+            val path = out.getOrNull(0).orEmpty()
+            val size = out.getOrNull(1)?.toLongOrNull()
+            val hash = out.getOrNull(2)?.lowercase()
+            val ok = path.isNotEmpty() && size == bytes.size.toLong() && hash == want
+            com.billmongan.herdrdroid.diag.DiagLog.log("send", "upload $stamp-$safe bytes=${bytes.size} try=$attempt verify=${if (ok) "ok" else "mismatch"} remote_bytes=${size ?: "unknown"}")
+            if (ok) return UploadReceipt(path, bytes.size.toLong(), want)
+            last = if (size != bytes.size.toLong()) "the computer has ${size ?: "unknown"} of ${bytes.size} bytes" else "its checksum didn't match"
+        }
+        throw UploadMismatch(last ?: "it couldn't be checked")
     }
 
     /** Automatic usage collection must never write to a pane. No inline-command fallback. */
@@ -3935,3 +3955,12 @@ fun parseDetect(line: String): Detected {
 fun withBusy(list: List<Pane>, busy: Map<String, Int>): List<Pane> = list.map { p ->
     if ((p.status == Status.IDLE || p.status == Status.DONE || p.status == Status.UNKNOWN) && (busy[p.id] ?: 0) > 0) p.copy(status = Status.WORKING, backgroundBusy = true) else p
 }
+
+/** 2.2.7: a file the computer has, checked: its path there, size and SHA-256 (hex). */
+data class UploadReceipt(val path: String, val size: Long, val sha256: String)
+
+/** 2.2.7: the file on the computer didn't match what the phone sent, after one retry. */
+class UploadMismatch(why: String) : Exception("The file didn't arrive whole ($why).")
+
+internal fun sha256Hex(bytes: ByteArray): String =
+    java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }

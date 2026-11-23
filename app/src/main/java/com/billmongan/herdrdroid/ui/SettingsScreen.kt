@@ -360,6 +360,11 @@ fun ServerBanners(vm: AppViewModel) {
             secondLabel = "Dismiss", onSecond = { vm.dismissSmallPacketOffer() },
         ) { vm.keepSmallPacketsOn() }
     }
+    // 2.2.7: an attachment that didn't arrive whole; the message box doesn't point at it.
+    vm.attachFailure?.let { f ->
+        ErrorBanner("Couldn't attach ${f.name}: ${f.why}", actionLabel = "Retry",
+            secondLabel = "Dismiss", onSecond = { vm.attachFailure = null }) { vm.retryAttach() }
+    }
     // A one-time note (1.4.0: "Debug bundle copied").
     vm.notice?.let { ErrorBanner(it) { vm.notice = null } }
 }
