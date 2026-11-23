@@ -137,7 +137,11 @@ private class CardAnswerDraft(
 @Composable
 internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (String) -> Unit = vm::readPane) {
     val pane = vm.pane(paneId)
-    var normalMessage by rememberSaveable(paneId) { mutableStateOf(vm.takePrefill(paneId) ?: "") }
+    // 2.2.7: the unsent text lives in the view model by server and pane, so it survives leaving
+    // this screen and coming back (Settings, the server list, another pane, a brief app switch).
+    val draftBox = remember(vm, vm.current?.id, paneId) { ComposerDraftBox(vm, paneId) }
+    androidx.compose.runtime.LaunchedEffect(draftBox) { vm.takePrefill(paneId)?.let { vm.setComposerDraft(paneId, it) } }
+    var normalMessage by draftBox
     val draftServer = vm.current?.id
     // Keep answers out of the ordinary (saveable) composer. A restored message must never
     // silently become an unbound answer or be sent as chat after losing its target.
@@ -330,11 +334,11 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             val text = normalMessage.trim()
             if (waitingForHermes || prompt != null || vm.hasPendingQuestion(pane)) {
                 vm.enqueue(paneId, text)
-                normalMessage = ""
+                vm.clearComposerDraft(paneId)
                 return
             }
-            vm.sendMessage(pane, text)
-            normalMessage = ""
+            // 2.2.7: out of the box now; its draft ends once delivered, and comes back if it never was.
+            vm.sendFromComposer(pane, text)
             // A slash command answers on the screen (a menu, a sign-in code), not in the agent's log,
             // so show the screen and the keys to move through it.
             // 2.1.4: not for /btw, whose answer the app reads into the chat and then closes.
@@ -978,7 +982,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 onStop = pane?.let { p -> { vm.stopPane(p) } },
                 // herdr's agent prompt reaches a working agent, so a message sent now steers it.
                 steerLabel = if (pane?.agent != null && !typingAnswer && prompt == null) "Steer" else null,
-                onQueueWhenIdle = if (!typingAnswer && !usageBlocksInput) ({ vm.enqueue(paneId, normalMessage.trim()); normalMessage = "" }) else null,
+                onQueueWhenIdle = if (!typingAnswer && !usageBlocksInput) ({ vm.enqueue(paneId, normalMessage.trim()); vm.clearComposerDraft(paneId) }) else null,
                 onAttach = { uri -> vm.attach(uri, paneId) },
                 attachBusy = vm.uploading,
                 commands = SlashCommands.forAgent(pane?.agent),
@@ -2042,4 +2046,10 @@ internal fun runningPill(w: com.billmongan.herdrdroid.herdr.WorkInfo, agent: Str
     }
     val done = w.subagents.count { !it.active } + w.tasks.count { !it.running } + endedProcs
     return if (done > 0) RunningPill("$done done", "Nothing running, $done finished", false) else null
+}
+
+/** 2.2.7: the message box's text as a property backed by the view model's draft for this pane. */
+internal class ComposerDraftBox(private val vm: AppViewModel, private val paneId: String) {
+    operator fun getValue(thisRef: Any?, property: kotlin.reflect.KProperty<*>): String = vm.composerDraft(paneId)
+    operator fun setValue(thisRef: Any?, property: kotlin.reflect.KProperty<*>, value: String) = vm.setComposerDraft(paneId, value)
 }

@@ -7147,6 +7147,89 @@ class AppViewModel internal constructor(
 
     fun takePrefill(paneId: String): String? = prefills.remove(prefillKey(current?.id, paneId))
 
+    // ---- Unsent drafts in the message box (2.2.7) ------------------------------------------------
+
+    /**
+     * 2.2.7 (Bill: "unsent text typed into the message box can disappear when switching screens
+     * briefly and returning"): each pane's unsent text, by server and pane, kept here rather than
+     * in the screen, so it outlives Settings, the server list, another pane and a configuration
+     * change; sealed on the phone for a few hours so a brief app switch that ends the process
+     * keeps it too. Never shown in another pane or server, never sent by itself.
+     */
+    private val composerDrafts = mutableStateMapOf<String, String>()
+    /** Text handed to a send and not yet delivered, by the same key (see [composerDraft]). */
+    private val draftsInFlight = mutableStateMapOf<String, String>()
+    private fun draftKey(serverId: String, paneId: String) = "$serverId|$paneId"
+    private val draftStore = app.getSharedPreferences("composer-drafts", android.content.Context.MODE_PRIVATE)
+    private var draftSave: Job? = null
+
+    /**
+     * The unsent text for [paneId] on the open server. A send that was never delivered (its pending
+     * row was removed) gives its text back here; while its pending row is up (with Resend), it
+     * does not, so a message never shows in two places to be sent twice.
+     */
+    fun composerDraft(paneId: String): String {
+        val sid = current?.id.orEmpty()
+        val key = draftKey(sid, paneId)
+        composerDrafts[key]?.let { return it }
+        val back = draftsInFlight[key] ?: return ""
+        return if (pendingSends.any { it.isFor(sid, paneId) && it.text == back }) "" else back
+    }
+
+    fun setComposerDraft(paneId: String, text: String) {
+        val sid = current?.id.orEmpty()
+        val key = draftKey(sid, paneId)
+        if (text.isEmpty()) composerDrafts.remove(key) else composerDrafts[key] = text
+        if (text.isNotEmpty()) draftsInFlight.remove(key)
+        saveDrafts()
+    }
+
+    /** The message box sends [text]: it leaves the box now, and its draft ends once delivered. */
+    fun sendFromComposer(pane: Pane, text: String) {
+        val sid = current?.id.orEmpty()
+        val key = draftKey(sid, pane.id)
+        composerDrafts.remove(key)
+        draftsInFlight[key] = text
+        saveDrafts()
+        sendMessage(pane, text) { if (draftsInFlight[key] == text) draftsInFlight.remove(key) }
+    }
+
+    /** An explicit clear (or the text moved to the idle queue): gone from the box and the phone. */
+    fun clearComposerDraft(paneId: String) {
+        val sid = current?.id.orEmpty()
+        composerDrafts.remove(draftKey(sid, paneId)); draftsInFlight.remove(draftKey(sid, paneId))
+        saveDrafts()
+    }
+
+    private fun saveDrafts() {
+        draftSave?.cancel()
+        val snapshot = composerDrafts.toMap()
+        draftSave = viewModelScope.launch(Dispatchers.IO) {
+            delay(300)
+            runCatching {
+                if (snapshot.isEmpty()) { draftStore.edit().remove("sealed").apply(); return@runCatching }
+                val json = org.json.JSONObject().put("at", System.currentTimeMillis()).put("drafts", org.json.JSONObject(snapshot)).toString()
+                val sealed = DraftSeal.seal(json.toByteArray())
+                draftStore.edit().putString("sealed", android.util.Base64.encodeToString(sealed, android.util.Base64.NO_WRAP)).apply()
+            }
+        }
+    }
+
+    private fun loadDrafts() {
+        runCatching {
+            val b64 = draftStore.getString("sealed", null) ?: return
+            val json = org.json.JSONObject(String(DraftSeal.open(android.util.Base64.decode(b64, android.util.Base64.NO_WRAP))))
+            if (System.currentTimeMillis() - json.optLong("at") > DRAFT_KEEP_MS) { draftStore.edit().remove("sealed").apply(); return }
+            val d = json.optJSONObject("drafts") ?: return
+            d.keys().forEach { k -> d.optString(k).takeIf { it.isNotEmpty() }?.let { composerDrafts[k] = it } }
+        }
+    }
+
+    /** How long unsent drafts are kept on the phone after the app last saved them. */
+    private val DRAFT_KEEP_MS = 6 * 60 * 60_000L
+
+    init { loadDrafts() }
+
     /** The next (or previous) agent pane in the list, for swiping between agents. */
     fun neighbor(paneId: String, step: Int): String? {
         val list = panes.filter { it.agent != null }
@@ -7240,4 +7323,14 @@ class AppViewModel internal constructor(
         ssh?.close()
         super.onCleared()
     }
+}
+
+/**
+ * 2.2.7: how unsent drafts are sealed on the phone: the chats' Keystore key, bound to its own
+ * associated data. A seam for tests, where the Android Keystore is not there.
+ */
+internal object DraftSeal {
+    private val AAD = "herdrdroid-composer-drafts".toByteArray()
+    @Volatile var seal: (ByteArray) -> ByteArray = { com.billmongan.herdrdroid.store.ChatVault.seal(it, AAD) }
+    @Volatile var open: (ByteArray) -> ByteArray = { com.billmongan.herdrdroid.store.ChatVault.open(it, AAD) }
 }
