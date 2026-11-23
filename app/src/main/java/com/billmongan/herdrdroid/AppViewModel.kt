@@ -2126,11 +2126,11 @@ class AppViewModel internal constructor(
                 else -> detectPrompt(text, status == Status.NEEDS_YOU, pane(paneId)?.agent, versionOf(paneId))
             }
             // 2.2.2: a question card shows once the reads confirm the card the screen shows (the same
-            // parse, from the same status); until then the card is a neutral one and nothing is
-            // recorded in the pane's question history.
-            val cardShows = offerQuestionRead(serverId, paneId, text)
-            if (p == null || !com.billmongan.herdrdroid.herdr.needsConfirmation(p) || cardShows == com.billmongan.herdrdroid.herdr.CardShows.CARD)
-                current?.id?.let { sid -> observeQuestion(sid, paneId, p, status, pane(paneId)?.agentName, text) }
+            // parse, from the same status). The history records that card once it shows; while it is
+            // still being read, nothing is recorded and no miss is counted against an open question.
+            val (cardParsed, cardShows) = offerQuestionRead(serverId, paneId, text)
+            if (cardShows == com.billmongan.herdrdroid.herdr.CardShows.CARD || cardShows == com.billmongan.herdrdroid.herdr.CardShows.NONE)
+                current?.id?.let { sid -> observeQuestion(sid, paneId, cardParsed, status, pane(paneId)?.agentName, text) }
             else com.billmongan.herdrdroid.diag.DiagLog.log("prompt", "$paneId: question card not confirmed yet")
             val dialog = com.billmongan.herdrdroid.herdr.showsQuestionDialog(text)
             val sig = if (p == null && !dialog) "none" else
@@ -2320,7 +2320,7 @@ class AppViewModel internal constructor(
     }
 
     /** One read of [paneId]'s screen offered to the question confirmation: the card [cardParse] gives for it. */
-    private fun offerQuestionRead(serverId: String?, paneId: String, text: String): com.billmongan.herdrdroid.herdr.CardShows {
+    private fun offerQuestionRead(serverId: String?, paneId: String, text: String): Pair<Prompt?, com.billmongan.herdrdroid.herdr.CardShows> {
         val key = "$serverId|$paneId"
         val pane = pane(paneId)
         val parsed = cardParse(paneId, text)
@@ -2332,7 +2332,21 @@ class AppViewModel internal constructor(
         if (verdict.gaveUp) com.billmongan.herdrdroid.diag.DiagLog.log("prompt", "$paneId: the dialog kept changing; showing the newest complete read")
         val d = com.billmongan.herdrdroid.herdr.CardDecision(parsed, verdict)
         if (cardDecisions[key] != d) cardDecisions[key] = d
-        return verdict.shows
+        return parsed to verdict.shows
+    }
+
+    /**
+     * Whether [target]'s open card is still being read (2.2.2): Chat shows "Reading it…" (or that it
+     * couldn't read the question) for the card its screen parses to. Voice sends nothing then.
+     */
+    internal fun voiceCardStillReading(target: CardTarget): Boolean {
+        val id = target.pane.id
+        if (paneTextTarget?.let { it.isCurrent(target.client) && it.pane.id == id } != true) return false
+        val key = "${current?.id}|$id"
+        if (!questionConfirm.seen(key)) return false
+        val parsed = cardParse(id, paneText)?.takeIf { com.billmongan.herdrdroid.herdr.needsConfirmation(it) } ?: return false
+        val d = cardDecisions[key]
+        return !(d != null && d.parsed == parsed && d.verdict.shows == com.billmongan.herdrdroid.herdr.CardShows.CARD)
     }
 
     // ---- Settled view on a pane switch (2.2.0) ------------------------------------------------
@@ -4104,7 +4118,7 @@ class AppViewModel internal constructor(
 
     /** If Chat already shows an actionable card, a spoken option must mean the same thing on it. */
     internal fun voiceCardFitsChat(target: CardTarget, live: Prompt): Boolean {
-        if (!voiceCardCurrent(target)) return false
+        if (!voiceCardCurrent(target) || voiceCardStillReading(target)) return false
         // 2.2.2: the card Chat shows once confirmed, else the card Chat's screen parses to (still being
         // read): a spoken option must mean the same thing on either, as before.
         val displayed = paneTextTarget?.takeIf { it.isCurrent(target.client) && it.pane.id == target.pane.id }

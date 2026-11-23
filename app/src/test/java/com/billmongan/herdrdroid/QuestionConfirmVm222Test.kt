@@ -104,6 +104,37 @@ class QuestionConfirmVm222Test {
         val shown = checkNotNull(card("hermes"))
         assertFalse("the card must not stay on Reading it", shown.readingQuestion)
         assertEquals(listOf("Keep the change", "Undo it"), shown.choices.map { it.label })
+        // The history has that question, once, still open, from the confirmed card; more reads keep it.
+        val log = f.vm.questionsFor("hermes")
+        assertEquals(1, log.size)
+        assertEquals(com.billmongan.herdrdroid.transcript.QState.OPEN, log.single().state)
+        repeat(3) { f.vm.readPane("hermes") }
+        assertEquals(1, f.vm.questionsFor("hermes").size)
+        assertEquals(com.billmongan.herdrdroid.transcript.QState.OPEN, f.vm.questionsFor("hermes").single().state)
+    }
+
+    @Test fun anOpenQuestionIsNotSettledWhileItsNextCardIsStillBeingRead() = runBlocking {
+        f.screens["ask"] = full
+        f.vm.openPane("ask")
+        f.vm.readPane("ask"); f.vm.readPane("ask")
+        assertEquals(com.billmongan.herdrdroid.transcript.QState.OPEN, f.vm.questionsFor("ask").single().state)
+        // Half-drawn reads (still being read) are not misses: the open question stays open.
+        f.screens["ask"] = halfDrawn
+        repeat(3) { f.vm.readPane("ask") }
+        assertTrue(card()!!.readingQuestion)
+        assertEquals(com.billmongan.herdrdroid.transcript.QState.OPEN, f.vm.questionsFor("ask").single().state)
+    }
+
+    @Test fun voiceSendsNothingWhileTheCardIsStillBeingRead() = runBlocking {
+        f.screens["ask"] = full
+        f.vm.openPane("ask")
+        f.vm.readPane("ask")
+        val target = checkNotNull(f.vm.paneTextTarget)
+        val live = checkNotNull(detectPrompt(full, true, "gemini"))
+        assertTrue(f.vm.voiceCardStillReading(target))
+        assertFalse(f.vm.voiceCardFitsChat(target, live))
+        f.vm.readPane("ask")
+        assertFalse(f.vm.voiceCardStillReading(checkNotNull(f.vm.paneTextTarget)))
     }
 
     private class Fixture : Herdr.Commands {

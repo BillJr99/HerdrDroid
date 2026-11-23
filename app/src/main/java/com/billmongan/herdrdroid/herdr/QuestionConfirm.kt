@@ -236,8 +236,9 @@ internal class QuestionConfirm {
                 s.family = family; s.confirmedId = id; s.differing = 0; s.waiting = 0
                 return Verdict(CardShows.CARD, gaveUp)
             }
-            // A confirmed dialog stays up through its own changes: the highlight, ticks, steps.
-            if (family == s.family && (read.complete || id == s.confirmedId)) { s.lastId = id; return shown() }
+            // A confirmed dialog stays up through its own changes: the highlight, ticks, steps, and a
+            // step with no footer of its own (Claude's review step) whose top is proven.
+            if (family == s.family) { s.lastId = id; return shown() }
             s.run = if (s.lastId == id) s.run + 1 else 1
             s.lastId = id
             if (s.run >= (if (read.complete) 2 else FALLBACK_READS)) return shown()
