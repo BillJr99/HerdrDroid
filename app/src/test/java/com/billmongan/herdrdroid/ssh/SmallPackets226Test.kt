@@ -102,8 +102,10 @@ class SmallPackets226Test {
     @Test fun aPermittedSendIsNeverReplayedAfterTheLinkGoes() = withListener { port ->
         val sendOps = FakeOps()
         val send = HerdrSsh("127.0.0.1", port, "nobody", Credentials(null, null), null, { null }, null, 1200, "fixture", sendOps)
-        val sent = runCatching { runBlocking { send.execNow("send-keys", 5, null, com.billmongan.herdrdroid.herdr.WritePermit()) } }.exceptionOrNull()
+        val trace = SendTrace()
+        val sent = runCatching { runBlocking(trace) { send.execNow("send-keys", 5, null, com.billmongan.herdrdroid.herdr.WritePermit()) } }.exceptionOrNull()
         assertTrue("expected a lost link, got $sent", sent is LinkDown)
+        assertFalse("the connection failed before any exec, so the action may be queued", trace.started)
         assertEquals("one connection, no replay", 1, sendOps.sets.size)
         assertEquals(0, send.sendsRunning)
 

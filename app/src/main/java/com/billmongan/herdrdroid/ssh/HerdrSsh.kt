@@ -44,6 +44,17 @@ class AuthRejected(message: String) : Exception(message)
 /** The network path to the server failed: a dropped socket, a timeout, or a refused connection. */
 class LinkDown(cause: Throwable) : Exception(cause.message ?: cause.javaClass.simpleName, cause)
 
+/**
+ * 2.2.6 (Grok's review of the fallback): marks, for one user action, whether any of its commands
+ * reached the computer (its exec request went out). The action runs under withContext(SendTrace());
+ * the transport sets [started] just before each command's exec. An action whose command started is
+ * never put back in the retry queue after a lost link, so a key or message is never sent twice.
+ */
+class SendTrace : kotlin.coroutines.AbstractCoroutineContextElement(Key) {
+    @Volatile var started = false
+    companion object Key : kotlin.coroutines.CoroutineContext.Key<SendTrace>
+}
+
 data class ExecResult(val exit: Int, val out: String, val err: String)
 
 /** A command still running when its time was up; its channel was closed (1.3.0). */
@@ -387,13 +398,13 @@ class HerdrSsh(
      * open) gets one fresh retry; one after it started is reported and never retried, so a message
      * or a key press is never sent twice.
      */
-    private fun runOn(c: SSHClient, command: String, input: ByteArray?, timeoutSeconds: Long, maxOut: Int, label: String? = null): Triple<Int, ByteArray, ByteArray> {
+    private fun runOn(c: SSHClient, command: String, input: ByteArray?, timeoutSeconds: Long, maxOut: Int, label: String? = null, trace: SendTrace? = null): Triple<Int, ByteArray, ByteArray> {
         // 2.2.6: bytes and timings of each read, logged for a labelled one (list-read, log-read, probe).
         val meter = com.billmongan.herdrdroid.diag.ReadMeter()
         var exit: Int? = null
         var timedOut = false
         try {
-            return runMetered(c, command, input, timeoutSeconds, maxOut, meter).also { exit = it.first }
+            return runMetered(c, command, input, timeoutSeconds, maxOut, meter, trace).also { exit = it.first }
         } catch (e: CommandTimeout) {
             timedOut = true
             stalls.incrementAndGet()
@@ -403,12 +414,14 @@ class HerdrSsh(
         }
     }
 
-    private fun runMetered(c: SSHClient, command: String, input: ByteArray?, timeoutSeconds: Long, maxOut: Int, meter: com.billmongan.herdrdroid.diag.ReadMeter): Triple<Int, ByteArray, ByteArray> {
+    private fun runMetered(c: SSHClient, command: String, input: ByteArray?, timeoutSeconds: Long, maxOut: Int, meter: com.billmongan.herdrdroid.diag.ReadMeter, trace: SendTrace?): Triple<Int, ByteArray, ByteArray> {
         val session = c.startSession()
         meter.channelOpen()
         // A failure from exec itself may come after the computer accepted the command (1.3.2,
         // from a code review), so it is reported, never retried; only a session that wouldn't
         // open is retried.
+        // From here the command may reach the computer, even if exec then fails.
+        trace?.started = true
         val cmd = try { session.exec(command) } catch (e: Exception) { runCatching { session.close() }; throw AfterStart(e) }
         try {
             input?.let { b -> cmd.outputStream.use { it.write(b); it.flush() } }
@@ -463,7 +476,8 @@ class HerdrSsh(
                     c
                 }
                 connection = opened
-                return runOn(opened, command, input, timeoutSeconds, maxOut, kotlin.coroutines.coroutineContext[com.billmongan.herdrdroid.diag.ReadLabel]?.label)
+                return runOn(opened, command, input, timeoutSeconds, maxOut, kotlin.coroutines.coroutineContext[com.billmongan.herdrdroid.diag.ReadLabel]?.label,
+                    kotlin.coroutines.coroutineContext[SendTrace])
             } catch (e: UnconfirmedHostKey) {
                 throw e
             } catch (e: HostKeyChanged) {

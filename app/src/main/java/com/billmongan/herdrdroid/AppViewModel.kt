@@ -1556,7 +1556,9 @@ class AppViewModel internal constructor(
             }
             return
         }
-        try {
+        // 2.2.6 (Grok's review): notes whether any command of this action reached the computer.
+        val trace = com.billmongan.herdrdroid.ssh.SendTrace()
+        try { kotlinx.coroutines.withContext(trace) {
             val key = q.dispatchKey
             if (key == null) q.run(h)
             else {
@@ -1568,11 +1570,21 @@ class AppViewModel internal constructor(
                     if (connected != null && link == Link.CONNECTED) q.run(connected) else enqueue(q)
                 }
             }
-        } catch (c: CancellationException) {
+        } } catch (c: CancellationException) {
             throw c
         } catch (e: LinkDown) {
-            enqueue(q)
-            linkLost(e)
+            if (trace.started) {
+                // It may have reached the computer (the link went, or a reset cut it, mid-command):
+                // sending it again could type it twice, so it is reported instead of queued.
+                com.billmongan.herdrdroid.diag.DiagLog.log("send", "not sent again, it had started when the link went: ${q.label}")
+                q.pendingId?.let { id ->
+                    pendingSends = pendingSends.map {
+                        if (it.id == id) it.copy(awaitingLink = false, waiting = false, undelivered = true, held = "the link dropped while it was being sent") else it
+                    }
+                }
+                error = "${q.label}: the link dropped while it was being sent. Check the agent before sending it again."
+            } else enqueue(q)
+            if (herdr === h) linkLost(e)
         } catch (e: AuthRejected) {
             stopForProblem(authMessage(current, null, e))
         } catch (e: HostKeyChanged) {
