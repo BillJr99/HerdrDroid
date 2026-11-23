@@ -2128,8 +2128,8 @@ class AppViewModel internal constructor(
             // 2.2.2: a question card shows once the reads confirm the card the screen shows (the same
             // parse, from the same status); until then the card is a neutral one and nothing is
             // recorded in the pane's question history.
-            val verdict = offerQuestionRead(serverId, paneId, text)
-            if (p == null || !com.billmongan.herdrdroid.herdr.needsConfirmation(p) || verdict == com.billmongan.herdrdroid.herdr.CardShows.CARD)
+            val cardShows = offerQuestionRead(serverId, paneId, text)
+            if (p == null || !com.billmongan.herdrdroid.herdr.needsConfirmation(p) || cardShows == com.billmongan.herdrdroid.herdr.CardShows.CARD)
                 current?.id?.let { sid -> observeQuestion(sid, paneId, p, status, pane(paneId)?.agentName, text) }
             else com.billmongan.herdrdroid.diag.DiagLog.log("prompt", "$paneId: question card not confirmed yet")
             val dialog = com.billmongan.herdrdroid.herdr.showsQuestionDialog(text)
