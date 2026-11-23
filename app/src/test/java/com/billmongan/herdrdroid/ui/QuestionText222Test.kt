@@ -247,6 +247,32 @@ class QuestionText222Test {
         assertEquals(CardBlock.Code(listOf("git -C /home/u/repo reset --hard origin/main"), wrap = true), got.last())
     }
 
+    @Test fun grokReviewABareWordIsNotGluedOntoACommand() {
+        assertEquals(listOf(QuestionText.Segment("Run:", false), QuestionText.Segment("git status --short", true), QuestionText.Segment("tonight", false)),
+            QuestionText.segments("Run:\ngit status --short\ntonight"))
+    }
+
+    @Test fun grokReviewLongFlagWrapsJoinTheWholeCommand() {
+        for ((rows, whole) in listOf(
+            listOf("curl -fsSL https://example.com/install.sh", "-o install.sh --retry 3 --fail") to
+                "curl -fsSL https://example.com/install.sh -o install.sh --retry 3 --fail",
+            listOf("git log --oneline --decorate --graph --all", "--since=2024-01-01 --author=bill -- path/to/file") to
+                "git log --oneline --decorate --graph --all --since=2024-01-01 --author=bill -- path/to/file",
+        )) {
+            assertEquals(rows.toString(), QuestionText.Segment(whole, true), QuestionText.segments((listOf("Get it:") + rows).joinToString("\n"))[1])
+        }
+        // On the screen, a deeper wrapped row is part of the same one-line command (what long-press copies).
+        val screen = "│ Get it:\n│ curl -fsSL https://example.com/install.sh\n│   -o install.sh --retry 3 --fail"
+        val got = layout(QBlock(QKind.HEADING, "Go?"),
+            QBlock(QKind.TEXT, "Get it: curl -fsSL https://example.com/install.sh -o install.sh --retry 3 --fail"), screen = screen)
+        assertEquals(CardBlock.Code(listOf("curl -fsSL https://example.com/install.sh -o install.sh --retry 3 --fail"), wrap = true), got.last())
+    }
+
+    @Test fun grokReviewTheAlertKeepsAWrappedRefInItsCommand() {
+        assertEquals("Reset with:\ngit -C /home/u/repo reset --hard origin/main\nThen I report back.",
+            QuestionText.alert("Reset with:\ngit -C /home/u/repo reset --hard\norigin/main\nThen I report back."))
+    }
+
     @Test fun aRowInsideASentenceIsNeverCode() {
         val text = "Should I also\nmake the same change in app/src/test --dry-run so the\ntests match?"
         assertTrue(QuestionText.segments(text).none { it.code })

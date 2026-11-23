@@ -172,11 +172,14 @@ object CardFormat {
             // 2.2.2 review: a command goes on over the rows the terminal wrapped it onto, so its box
             // (and what long-press copies) is the whole command; a row that carries on an unfinished
             // sentence never starts one ("Should I also" over "make the same change in app/src").
-            if (fenced || (shell.isNotEmpty() && l.col > shell.first().col)) { shell += l; continue }
-            if (shell.isNotEmpty() && QuestionText.continuesCode(shell.last().text, t)) {
+            if (fenced) { shell += l; continue }
+            // A wrapped row joins the command (one line to copy); a deeper row after a backslash or
+            // a command of its own stays a row of its own (Grok's review).
+            val how = if (shell.isNotEmpty()) QuestionText.codeRow(shell.last().text, t, l.col > shell.first().col) else null
+            if (how == QuestionText.CodeRow.NEW_LINE) { shell += l; continue }
+            if (how == QuestionText.CodeRow.JOIN) {
                 val last = shell.last()
-                if (last.text.trimEnd().endsWith("\\")) shell += l
-                else shell[shell.size - 1] = Line(last.norm + " " + l.norm, QuestionText.joinWrapped(last.text, l.text), last.col)
+                shell[shell.size - 1] = Line(last.norm + " " + l.norm, QuestionText.joinWrapped(last.text, l.text), last.col)
                 continue
             }
             val midSentence = prose.isNotEmpty() && prose.last().let { it.isNotEmpty() && it.last() !in ".?!:" }
