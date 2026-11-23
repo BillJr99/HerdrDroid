@@ -125,6 +125,25 @@ object LinkStats {
         DiagLog.log("link", readLine(serverId, r, held))
     }
 
+    /**
+     * The per-connection lines (connect timings, socket facts, MSS) once per 30 s per server and
+     * kind, so a watcher that reconnects often can't crowd the log; the next line says how many
+     * were held back.
+     */
+    private val perConnection = RateLimit(30_000L)
+
+    private fun admitConnection(serverId: String?, kind: String, line: String) {
+        val held = perConnection.admit("${LinkDiag.serverTag(serverId)}|$kind") ?: return
+        DiagLog.log("link", if (held > 0) "$line similar_held=$held" else line)
+    }
+
+    fun connect(serverId: String?, line: String) = admitConnection(serverId, "connect", line)
+
+    fun socket(serverId: String?, f: SocketFacts) = admitConnection(serverId, "socket", socketLine(serverId, f))
+
+    fun mss(serverId: String?, r: com.billmongan.herdrdroid.ssh.MssReport) =
+        admitConnection(serverId, if (r.applied) "mss-ok" else "mss-failed", LinkDiag.mssLine(serverId, r))
+
     /** Stage timings of one connect, in ms; null where a stage did not happen (a WebSocket has no TCP stage here). */
     data class ConnectTimes(
         val tcpMs: Long?,

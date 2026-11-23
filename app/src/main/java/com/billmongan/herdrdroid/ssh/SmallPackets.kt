@@ -209,12 +209,21 @@ class SmallPacketFallback(private val windowMs: Long = WINDOW_MS, private val ms
     private var armedAt = 0L
     private var fired = false
 
+    /** The phone's network change count when it was armed: a change since then is not lossy Wi-Fi. */
+    @Volatile var armedNetChanges = 0
+        private set
+
     /** At each sign-in. [eligible]: a direct TCP server whose connection has small packets off. */
-    @Synchronized fun arm(serverId: String, eligible: Boolean, now: Long) {
+    @Synchronized fun arm(serverId: String, eligible: Boolean, now: Long, netChanges: Int = 0) {
         armedFor = if (eligible) serverId else null
         armedAt = now
+        armedNetChanges = netChanges
         fired = false
     }
+
+    /** True when [fire] would fire now; changes nothing. */
+    @Synchronized fun wouldFire(serverId: String?, reason: String?, now: Long): Boolean =
+        reason != null && serverId != null && !fired && armedFor == serverId && now - armedAt <= windowMs
 
     @Synchronized fun disarm() {
         armedFor = null
@@ -222,8 +231,7 @@ class SmallPacketFallback(private val windowMs: Long = WINDOW_MS, private val ms
 
     /** The MSS to reconnect with, once, when [reason] is a trigger for [serverId] inside the window; else null. */
     @Synchronized fun fire(serverId: String?, reason: String?, now: Long): Int? {
-        if (reason == null || serverId == null || fired || armedFor != serverId) return null
-        if (now - armedAt > windowMs) return null
+        if (!wouldFire(serverId, reason, now)) return null
         fired = true
         armedFor = null
         return mss

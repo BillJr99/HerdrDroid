@@ -94,6 +94,25 @@ class SmallPackets226Test {
         assertTrue("every set happened before connect", ops.sets.all { (mss, connected) -> mss == 1200 && !connected })
     }
 
+    /**
+     * Pre-review M2: the fallback's reset can drop a send's connection. A permitted send (the send
+     * lane) is then reported, never sent again, and the send counter the fallback waits on is
+     * released; an unpermitted read gets its one retry.
+     */
+    @Test fun aPermittedSendIsNeverReplayedAfterTheLinkGoes() = withListener { port ->
+        val sendOps = FakeOps()
+        val send = HerdrSsh("127.0.0.1", port, "nobody", Credentials(null, null), null, { null }, null, 1200, "fixture", sendOps)
+        val sent = runCatching { runBlocking { send.execNow("send-keys", 5, null, com.billmongan.herdrdroid.herdr.WritePermit()) } }.exceptionOrNull()
+        assertTrue("expected a lost link, got $sent", sent is LinkDown)
+        assertEquals("one connection, no replay", 1, sendOps.sets.size)
+        assertEquals(0, send.sendsRunning)
+
+        val readOps = FakeOps()
+        val read = HerdrSsh("127.0.0.1", port, "nobody", Credentials(null, null), null, { null }, null, 1200, "fixture", readOps)
+        runCatching { runBlocking { read.exec("read") } }
+        assertEquals("a read is retried once", 2, readOps.sets.size)
+    }
+
     @Test fun offOrOverAWebSocketTheDefaultFactoryIsUsed() {
         val off = HerdrSsh("127.0.0.1", 22, "u", Credentials(null, null), null, { null })
         assertNull(off.activeMss)

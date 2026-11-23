@@ -249,6 +249,10 @@ class AppViewModel internal constructor(
      * with small packets off; a dropped link or a timed-out read soon after makes this session
      * reconnect once with a smaller MSS (see [com.billmongan.herdrdroid.ssh.SmallPacketFallback]).
      */
+    private companion object SmallPacketWaits {
+        /** The longest the fallback's reconnect waits for a send in flight (the send lane's own timeout is 30 s). */
+        const val FALLBACK_SEND_WAIT_MS = 45_000L
+    }
     internal val smallPacketFallback = com.billmongan.herdrdroid.ssh.SmallPacketFallback()
     internal var smallPacketClock: () -> Long = System::currentTimeMillis
     /** The server whose session fell back to small packets, for the one-tap "keep it on" offer; null when none. */
@@ -259,15 +263,29 @@ class AppViewModel internal constructor(
      * When [e] is a fallback trigger inside the window after sign-in, switches this session to
      * small packets (the next connection uses them), logs it and offers to keep it; true when it fired.
      */
-    internal fun maybeSmallPacketFallback(e: Throwable?): Boolean {
+    internal fun maybeSmallPacketFallback(e: Throwable?, failing: HerdrSsh?): Boolean {
         val server = current ?: return false
         val s = ssh ?: return false
+        // Only the connection that failed, and only while it is still the open one: a read on the
+        // server just left that fails after a switch never touches the new server (pre-review H1).
+        if (failing == null || failing !== s) return false
         val reason = com.billmongan.herdrdroid.ssh.SmallPacketFallback.reasonFor(e) ?: return false
         val now = smallPacketClock()
+        if (!smallPacketFallback.wouldFire(server.id, reason, now)) return false
+        // A drop from a network change or from going to the background is not lossy Wi-Fi.
+        val skip = when {
+            com.billmongan.herdrdroid.diag.NetworkWatch.changes != smallPacketFallback.armedNetChanges -> "network-change"
+            !foreground -> "background"
+            else -> null
+        }
+        if (skip != null) {
+            smallPacketFallback.disarm()
+            com.billmongan.herdrdroid.diag.DiagLog.log("link", com.billmongan.herdrdroid.diag.LinkDiag.fallbackSkippedLine(server.id, skip, reason))
+            return false
+        }
         val mss = smallPacketFallback.fire(server.id, reason, now) ?: return false
         s.useSmallPackets(mss)
         linkSession?.fallbackUsed = true
-        reconnectReason = "small-packets-fallback"
         com.billmongan.herdrdroid.diag.LinkDiag.fallback(server.id, reason, mss, smallPacketFallback.sinceArmed(now))
         smallPacketOffer = server.id
         return true
@@ -287,6 +305,29 @@ class AppViewModel internal constructor(
     }
 
     fun dismissSmallPacketOffer() { smallPacketOffer = null }
+
+    /**
+     * After a read timed out and the fallback fired: reconnect [h]'s connection with small packets,
+     * but only once nothing is being sent on its send lane (pre-review M2), so a message or key
+     * press in flight is never cut off. A send that outlives [FALLBACK_SEND_WAIT_MS] has passed its
+     * own timeout and is treated as abandoned. Nothing happens if [h] is no longer the open server.
+     */
+    internal fun reconnectForFallback(h: Herdr) {
+        val s = h.transport
+        viewModelScope.launch {
+            val start = System.currentTimeMillis()
+            var waited = false
+            while (s.sendsRunning > 0 && System.currentTimeMillis() - start < FALLBACK_SEND_WAIT_MS) {
+                waited = true
+                delay(100)
+            }
+            if (waited) com.billmongan.herdrdroid.diag.DiagLog.log("link",
+                "server=${com.billmongan.herdrdroid.diag.LinkDiag.serverTag(current?.id)} fallback-reconnect waited_for_send=" +
+                    (if (s.sendsRunning > 0) "abandoned" else "done") + " ms=${System.currentTimeMillis() - start}")
+            if (herdr !== h) return@launch
+            linkLost(null, "small-packets-fallback")
+        }
+    }
 
     // ---- 2.2.6 link diagnostics ----------------------------------------------------------------
 
@@ -799,8 +840,10 @@ class AppViewModel internal constructor(
                 linkProblem = null
                 // 2.2.6: a direct TCP session without small packets may fall back to them once.
                 beginLinkSession(saved.id)
-                smallPacketFallback.arm(saved.id, !sNow.overWebSocket && sNow.activeMss == null, smallPacketClock())
-                if (smallPacketOffer != saved.id) smallPacketOffer = null
+                smallPacketFallback.arm(saved.id, !sNow.overWebSocket && sNow.activeMss == null, smallPacketClock(),
+                    com.billmongan.herdrdroid.diag.NetworkWatch.changes)
+                // A new sign-in is a new session: an offer from an earlier one no longer holds.
+                smallPacketOffer = null
                 // What was last seen on this server shows at once; fresh reads replace it.
                 panes = serverPanes[saved.id].orEmpty()
                 previews = previewCache[saved.id].orEmpty()
@@ -1189,6 +1232,7 @@ class AppViewModel internal constructor(
     }
 
     private fun closeSession() {
+        smallPacketFallback.disarm()
         clearPanePrefetch()
         // The open chat is kept before the connection goes, so a reconnect shows it at once (1.2.9).
         stashOpenChat()
@@ -1228,6 +1272,7 @@ class AppViewModel internal constructor(
     fun disconnect() {
         endLinkSession("disconnect")
         smallPacketFallback.disarm()
+        smallPacketOffer = null
         fleet?.stop()
         fleet = null
         watchJob?.cancel()
@@ -1324,11 +1369,12 @@ class AppViewModel internal constructor(
         }
     }
 
-    private fun linkLost(e: Exception?) {
+    private fun linkLost(e: Exception?, reason: String? = null) {
         if (herdr == null) return
         // 2.2.6: soon after sign-in, a drop may be large replies lost on the Wi-Fi; the reconnect
-        // below then uses small packets (once per sign-in).
-        val fellBack = maybeSmallPacketFallback(e)
+        // below then uses small packets (once per sign-in). Every caller has checked that the
+        // failure is the open connection's.
+        val fellBack = reason == null && maybeSmallPacketFallback(e, ssh)
         if (link == Link.CONNECTED) {
             // 2.2.6: the error's class chain, the silence before it and the keepalive setting.
             val sh = ssh
@@ -1336,7 +1382,7 @@ class AppViewModel internal constructor(
             com.billmongan.herdrdroid.diag.DiagLog.log("link", com.billmongan.herdrdroid.diag.LinkStats.lostLine(
                 current?.id, e, last?.let { System.currentTimeMillis() - it }, com.billmongan.herdrdroid.ssh.KEEPALIVE_SECONDS, sh?.inbound?.bytes ?: 0L,
             ))
-            if (!fellBack) reconnectReason = if (e == null) "read-timeout" else "link-lost"
+            reconnectReason = reason ?: if (fellBack) "small-packets-fallback" else if (e == null) "read-timeout" else "link-lost"
             clearCrossServerCards()
             clearPanePrefetch()
             linkTo(Link.RECONNECTING, "link-lost:${com.billmongan.herdrdroid.diag.LinkDiag.errorClass(e)}")
@@ -1438,15 +1484,18 @@ class AppViewModel internal constructor(
         } catch (c: CancellationException) {
             throw c
         } catch (e: LinkDown) {
-            linkLost(e); null
+            // 2.2.6 (pre-review H1): a read on a connection that is no longer the open one (a
+            // server switch closed it) does not reconnect the new one.
+            if (herdr === h) linkLost(e)
+            null
         } catch (e: AuthRejected) {
             stopForProblem(authMessage(current, null, e)); null
         } catch (e: HostKeyChanged) {
             stopForProblem(hostKeyMessage(e)); null
         } catch (e: Exception) {
             // 2.2.6: a read that timed out soon after sign-in: reconnect once with small packets.
-            if (maybeSmallPacketFallback(e)) {
-                linkLost(null)
+            if (herdr === h && maybeSmallPacketFallback(e, h.transport)) {
+                reconnectForFallback(h)
                 return null
             }
             // 2.2.5: this used to vanish without a word, so a list that never arrived left no trace.
@@ -3281,8 +3330,10 @@ class AppViewModel internal constructor(
         val screenText = if (paneTextPane == paneId) paneText else ""
         val prompt = com.billmongan.herdrdroid.herdr.detectPrompt(screenText, p?.status == Status.NEEDS_YOU, p?.agent, versionOf(paneId))
         // 2.2.6: the link's own lines too (opaque tags and numbers only), for a stalling connection.
-        val diag = com.billmongan.herdrdroid.diag.DiagLog.text().lines().filter { it.contains(paneId) }.takeLast(40) +
-            com.billmongan.herdrdroid.diag.DiagLog.text().lines().filter { it.contains(" [link] ") }.takeLast(40)
+        // The two sets are disjoint, so no line shows twice (a short pane id can match a link line's digits).
+        val logLines = com.billmongan.herdrdroid.diag.DiagLog.text().lines()
+        val diag = logLines.filter { it.contains(paneId) && !it.contains(" [link] ") }.takeLast(40) +
+            logLines.filter { it.contains(" [link] ") }.takeLast(40)
         val raw = buildString {
             appendLine("HerdrDroid ${com.billmongan.herdrdroid.BuildConfig.VERSION_NAME} debug bundle, pane $paneId")
             appendLine("agent: ${p?.agent ?: "none"} (${p?.agentName ?: "?"}) version ${versionOf(paneId) ?: "unknown"}, status ${p?.status}, focused ${p?.focused}, scroll offset ${p?.scrollOffset}")

@@ -216,6 +216,21 @@ class HerdrSsh(
     val inbound = InboundCounter()
     /** 2.2.6 diagnostics: commands that ran out of time on this object's connections. */
     val stalls = java.util.concurrent.atomic.AtomicLong()
+    /**
+     * 2.2.6: commands running on the send lane ([execNow], and [execInput] bound to a connection).
+     * The small-packets fallback waits for these before it resets the connection, so it never cuts
+     * off a message or key press being sent.
+     */
+    private val sendsInFlight = java.util.concurrent.atomic.AtomicInteger()
+    val sendsRunning: Int get() = sendsInFlight.get()
+    internal fun beginSend() { sendsInFlight.incrementAndGet() }
+    internal fun endSend() { sendsInFlight.decrementAndGet() }
+    private inline fun <T> asSend(on: Boolean, block: () -> T): T {
+        if (!on) return block()
+        beginSend()
+        try { return block() } finally { endSend() }
+    }
+
     /** The TCP connect time of the last direct connection, for the connect line. */
     @Volatile private var lastTcpMs: Long? = null
 
@@ -226,9 +241,9 @@ class HerdrSsh(
      */
     internal fun socketFactoryForNext(): MssSocketFactory? {
         if (wsUrl != null) return null
-        return MssSocketFactory(activeMss, mssOps, { com.billmongan.herdrdroid.diag.LinkDiag.mss(diagServerId, it) }, { ms, f ->
+        return MssSocketFactory(activeMss, mssOps, { com.billmongan.herdrdroid.diag.LinkStats.mss(diagServerId, it) }, { ms, f ->
             lastTcpMs = ms
-            DiagLog.log("link", com.billmongan.herdrdroid.diag.LinkStats.socketLine(diagServerId, f))
+            com.billmongan.herdrdroid.diag.LinkStats.socket(diagServerId, f)
         }, inbound)
     }
 
@@ -310,7 +325,7 @@ class HerdrSsh(
             val hostKeyAt = verifier.at
             val kexinit = kexinitAt
             val connected = connectedAt
-            DiagLog.log("link", com.billmongan.herdrdroid.diag.LinkStats.connectLine(
+            com.billmongan.herdrdroid.diag.LinkStats.connect(diagServerId, com.billmongan.herdrdroid.diag.LinkStats.connectLine(
                 diagServerId, transportName,
                 com.billmongan.herdrdroid.diag.LinkStats.ConnectTimes(
                     tcpMs = tcp,
@@ -516,9 +531,11 @@ class HerdrSsh(
     ): ExecResult = withContext(Dispatchers.IO) {
         // Fails fast on a permit already revoked; the binding check is the claim under the lock.
         if (permit?.revoked == true) throw com.billmongan.herdrdroid.herdr.WriteRevoked()
-        capped {
-            val (exit, out, err) = runRetrying(command, null, timeoutSeconds, MAX_OUT, expectedConnection, permit)
-            ExecResult(exit, out.toString(Charsets.UTF_8), err.toString(Charsets.UTF_8))
+        asSend(true) {
+            capped {
+                val (exit, out, err) = runRetrying(command, null, timeoutSeconds, MAX_OUT, expectedConnection, permit)
+                ExecResult(exit, out.toString(Charsets.UTF_8), err.toString(Charsets.UTF_8))
+            }
         }
     }
 
@@ -567,9 +584,11 @@ class HerdrSsh(
      * uploaded file reach the computer without anything being installed there.
      */
     suspend fun execInput(command: String, input: ByteArray, timeoutSeconds: Long = 60, expectedConnection: Any? = null): ExecResult = withContext(Dispatchers.IO) {
-        capped {
-            val (exit, out, err) = bulkLock.withLock { runRetrying(command, input, timeoutSeconds, MAX_OUT, expectedConnection) }
-            ExecResult(exit, out.toString(Charsets.UTF_8), err.toString(Charsets.UTF_8))
+        asSend(expectedConnection != null) {
+            capped {
+                val (exit, out, err) = bulkLock.withLock { runRetrying(command, input, timeoutSeconds, MAX_OUT, expectedConnection) }
+                ExecResult(exit, out.toString(Charsets.UTF_8), err.toString(Charsets.UTF_8))
+            }
         }
     }
 
