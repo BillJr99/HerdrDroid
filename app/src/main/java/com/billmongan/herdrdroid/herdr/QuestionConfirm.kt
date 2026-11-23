@@ -124,9 +124,9 @@ internal fun dialogRead(rows: List<String>, p: Prompt, agent: String?, version: 
         .take(FOOTER_WITHIN).firstOrNull { isDialogFooterRow(rows[it]) }
         // The user's echoed message as a menu with nothing of a dialog under it: the chat, never a card.
         ?: return QuestionRead(p, null, refused = ECHO_ROW.containsMatchIn(rows[first]))
-    // Its top: the nearest edge above the options (or the title row sitting on it) from which the same card reads.
+    // Its top: the nearest edge above the options (or the title row just over it, as Kiro draws its tool) from which the same card reads.
     val edges = (first - 1 downTo maxOf(0, first - TOP_WITHIN)).filter { topEdge(rows[it]) }.take(EDGES_TRIED)
-        .flatMap { e -> listOfNotNull(e, (e - 1).takeIf { it >= 0 && rows[it].isNotBlank() && !topEdge(rows[it]) }) }
+        .flatMap { e -> listOfNotNull(e, (e - 1 downTo maxOf(0, e - 2)).firstOrNull { rows[it].isNotBlank() }?.takeIf { !topEdge(rows[it]) }) }
     for (top in edges) {
         if ((top + 1 until first).any { ECHO_ROW.containsMatchIn(rows[it].trimStart()) }) return incomplete
         if (detectPrompt(rows.drop(top).joinToString("\n"), blocked, agent, version) == p) return QuestionRead(p, rows.subList(top, footer + 1))
