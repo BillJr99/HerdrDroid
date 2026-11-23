@@ -175,6 +175,11 @@ class AppPrefs(context: Context) {
         get() = prefs.getBoolean("agentMessagingEnabled", false)
         set(v) = prefs.edit().putBoolean("agentMessagingEnabled", v).apply()
 
+    /** 2.2.7: small packets automatically when the phone is on a VPN. On by default, also for existing installs. */
+    var smallPacketsOnVpn: Boolean
+        get() = prefs.getBoolean("smallPacketsOnVpn", true)
+        set(v) = prefs.edit().putBoolean("smallPacketsOnVpn", v).apply()
+
     /** 2.1.4: tell agents about cross-server messaging. On by default with the feature; the user can turn it off. */
     var crossServerNotice: Boolean
         get() = prefs.getBoolean("crossServerNotice", true)
