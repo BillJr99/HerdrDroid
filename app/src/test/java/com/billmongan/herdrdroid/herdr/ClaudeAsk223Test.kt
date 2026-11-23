@@ -64,7 +64,9 @@ class ClaudeAsk223Test {
             val details = parts.details.map(::squash)
             assertTrue("$where title in $details", c.title in details)
             assertTrue("$where description in $details", c.description in details)
-            for (e in c.explanation) assertTrue("$where \"$e\" in $details", squash(e) in details)
+            // The explanation rows as text, in screen order (a reason wrapped over rows reads as one).
+            val context = squash(details.joinToString(" "))
+            for (e in c.explanation) assertTrue("$where \"$e\" in $details", context.contains(squash(e)))
             // Nothing from the chat above the dialog, and no frame, footer or rule rows.
             val all = parts.blocks.joinToString("\n") { it.text } + "\n" + p.question
             for (bad in listOf("Claude tab", "grep -q", "kanban", "Esc to cancel", "Session", "╌", "──", "│", "❯"))
@@ -113,7 +115,7 @@ class ClaudeAsk223Test {
     @Test fun theChatAboveTheDialogNeverBecomesTheQuestionOrAnOption() {
         // The live chat has a row quoting "1. Yes" and "Do you want to proceed?" and the user's echoed message.
         for (c in cases) {
-            val rows = screen(c.path).lines().dropLastWhile { it.isBlank() }
+            val rows = stripAnsi(screen(c.path)).lines().dropLastWhile { it.isBlank() }
             val title = rows.indexOfFirst { stripAnsi(it).trim().startsWith("Bash command") }
             // Only the dialog's options and footer drawn so far under the chat: never a card with chat text.
             val options = rows.indexOfFirst { stripAnsi(it).contains("1. Yes") && it.trimStart().startsWith("❯") && it.startsWith(" ") }
@@ -184,7 +186,7 @@ class ClaudeAsk223Test {
             assertEquals(c.path, c.command, q.command)
             val details = q.details.map(::squash)
             assertTrue("${c.path} $details", c.title in details)
-            for (e in c.explanation) assertTrue("${c.path} $details", squash(e) in details)
+            for (e in c.explanation) assertTrue("${c.path} $details", squash(details.joinToString(" ")).contains(squash(e)))
         }
     }
 
@@ -194,7 +196,14 @@ class ClaudeAsk223Test {
             assertTrue(row, isDialogFooterRow(row))
             assertNotNull(row, claudeNeedsYouReason("──────────────────────────────\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n\n$row\n"))
         }
-        // Chat prose that mentions Esc is not a footer.
+        for (row in listOf(" Esc to cancel · Tab to amend · ctrl+x ctrl+k twice to stop background agents", " Esc to cancel"))
+            assertTrue(row, isClaudePermissionFooter(row))
+        // A chip that is not a key hint, chat prose that mentions Esc, or chat under the hint row: not the dialog's footer.
+        assertFalse(isClaudePermissionFooter(" Esc to cancel · Quokka went home"))
         assertNull(claudeNeedsYouReason("  Press Esc to cancel the run if it hangs.\n"))
+        assertNull(claudeNeedsYouReason(" Do you want to proceed?\n ❯ 1. Yes\n   2. No\n\n Esc to cancel · Tab to amend\n\n  Quokka went on with the next step.\n  And another row.\n"))
+        // The closing rule, with or without the session's title, under the hint row.
+        for (rule in listOf("─".repeat(60), "─".repeat(50) + " Session ─"))
+            assertNotNull(rule, claudeNeedsYouReason(" Do you want to proceed?\n ❯ 1. Yes\n   2. No\n\n Esc to cancel · Tab to amend\n$rule\n"))
     }
 }

@@ -1646,12 +1646,36 @@ private val CLAUDE_DIALOG_END = Regex("""\bEsc to (cancel|reject)\b|^Esc cancel\
  * to amend" (2.1.4, captured against a mock API; "ctrl+e to explain" from the program). Claude draws
  * nothing under an open dialog, so this row last on screen means the dialog is open now.
  */
-private val CLAUDE_PERMISSION_FOOTER = Regex("""^Esc to cancel(\s+·\s+(Tab to amend|ctrl\+e to explain))*$""", RegexOption.IGNORE_CASE)
+private val CLAUDE_PERMISSION_FOOTER_LEAD = Regex("""^Esc to cancel$""", RegexOption.IGNORE_CASE)
 
-/** Whether [text] ends in Claude's permission-dialog hint row ([CLAUDE_PERMISSION_FOOTER]), 2.1.4. */
-internal fun claudePermissionFooterAtBottom(text: String): Boolean =
-    withoutClaudeChromeUnderDialog(stripAnsi(text)).lines().lastOrNull { it.isNotBlank() }
-        ?.trim()?.trim('│', '┃', '|')?.trim()?.let(CLAUDE_PERMISSION_FOOTER::matches) == true
+/**
+ * 2.2.3 (Bill: "Claude tab herdrdroid failed to parse that yes/no question"): the hint row read by
+ * its structure, so later chips keep working: "Esc to cancel" first, then any number of " · " chips
+ * that are each a key hint ([HINT_SEGMENT]: "Tab to amend", "ctrl+e to explain", Claude Code
+ * 2.1.330's "ctrl+x ctrl+k twice to stop background agents"). 2.1.4 took only the first two chips.
+ */
+internal fun isClaudePermissionFooter(row: String): Boolean {
+    val chips = row.trim().trim('│', '┃', '|').trim().split(Regex("""\s+·\s+"""))
+    return CLAUDE_PERMISSION_FOOTER_LEAD.matches(chips.first()) && chips.drop(1).all { HINT_SEGMENT.containsMatchIn(it.trim()) }
+}
+
+/**
+ * A rule across the screen, plain or with the session's title in it ("──── … ──── Session ─"). 2.2.3:
+ * Claude Code 2.1.330 draws its input area's closing rule, with the title, under an open dialog's
+ * hint row, so the hint row is no longer the last row on screen.
+ */
+private val CLAUDE_CLOSING_RULE = Regex("""^[\s\u00A0]*[╭╰├└┌]?[─━═]{20,}( [^─━═\s][^─━═]{0,60}? [─━═]{1,4})?[╮╯┤┘┐]?[\s\u00A0]*$""")
+
+/**
+ * Whether [text] ends in Claude's permission-dialog hint row ([isClaudePermissionFooter]), 2.1.4;
+ * 2.2.3: with the closing rule Claude Code 2.1.330 draws under it.
+ */
+internal fun claudePermissionFooterAtBottom(text: String): Boolean {
+    val rows = withoutClaudeChromeUnderDialog(stripAnsi(text)).lines().filter { it.isNotBlank() }
+    val end = rows.indexOfLast { !CLAUDE_CLOSING_RULE.matches(it) }
+    // At most two rules under the hint row: the closing rule (and a frame's own bottom edge).
+    return end >= 0 && rows.size - 1 - end <= 2 && isClaudePermissionFooter(rows[end])
+}
 
 internal fun withoutClaudeChromeUnderDialog(text: String): String {
     val rows = text.lines()
