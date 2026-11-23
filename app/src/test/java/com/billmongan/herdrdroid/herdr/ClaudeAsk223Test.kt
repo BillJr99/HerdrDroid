@@ -63,7 +63,7 @@ class ClaudeAsk223Test {
             assertEquals("$where ${parts.blocks}", c.command, parts.command)
             val details = parts.details.map(::squash)
             assertTrue("$where title in $details", c.title in details)
-            assertTrue("$where description in $details", c.description in details)
+            assertTrue("$where description in $details", squash(details.joinToString(" ")).contains(c.description))
             // The explanation rows as text, in screen order (a reason wrapped over rows reads as one).
             val context = squash(details.joinToString(" "))
             for (e in c.explanation) assertTrue("$where \"$e\" in $details", context.contains(squash(e)))

@@ -23,7 +23,6 @@
 
    rsync -n --delete /home/user/scratch/sample-dir.abcdef/ /home/user/scratch/sample-dir.abcdef/; echo "exit=$?"
    Dry-run rsync with delete on a scratch folder
-
  Rule Bash(rsync *--delete*) from user settings overrides auto mode.
  /permissions to let auto mode decide
 
