@@ -122,7 +122,7 @@ fun TabsScreen(vm: AppViewModel) {
                         }
                         DropdownMenu(expanded = machines, onDismissRequest = { machines = false }) {
                             vm.servers.filter { it.id != vm.current?.id }.forEach { s ->
-                                val h = vm.serverHealth[s.id]
+                                val h = vm.healthFor(s.id)
                                 DropdownMenuItem(
                                     text = {
                                         Column {

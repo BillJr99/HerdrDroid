@@ -222,12 +222,21 @@ class HerdrSsh(
     private val vpnAuto: () -> Boolean = { VpnSmallPackets.enabled },
     /** 2.2.7: the phone's network type at connect ("vpn", "wifi", ...); a seam for tests. */
     private val networkType: () -> String = { VpnSmallPackets.networkType() },
+    /**
+     * 2.2.7: this server's session already fell back to small packets (the app's per-session
+     * choice), so this connection (a reconnect, the watcher, a status check) starts with them too.
+     */
+    sessionFallbackMss: Int? = null,
+    /** 2.2.7: the global "Small packets on cellular (automatic)" setting, read at each connect. */
+    private val cellularAuto: () -> Boolean = { VpnSmallPackets.cellularEnabled },
+    /** 2.2.7: whether the network runs over cellular at connect (also under a VPN); a seam for tests. */
+    private val overCellular: () -> Boolean = { VpnSmallPackets.cellular() },
 ) {
     /** 2.2.6: the server's own small-packets MSS, or null when its setting is off. */
     private val serverMss: Int? = smallPacketsMss?.let { SmallPackets.clamp(it) }
 
     /** 2.2.6: the fallback's MSS for this session ([useSmallPackets]), or null when it has not fired. */
-    @Volatile private var fallbackMss: Int? = null
+    @Volatile private var fallbackMss: Int? = sessionFallbackMss?.let { SmallPackets.clamp(it) }
 
     /**
      * 2.2.7: the MSS a connection made now would use, and why: decided afresh at every connect and
@@ -238,6 +247,8 @@ class HerdrSsh(
         wsUrl != null, serverMss, fallbackMss,
         runCatching { vpnAuto() }.getOrDefault(false),
         runCatching { networkType() }.getOrDefault("unknown"),
+        runCatching { cellularAuto() }.getOrDefault(false),
+        runCatching { overCellular() }.getOrDefault(false),
     )
 
     /** The MSS a direct TCP connection uses now; always null over a WebSocket. */
@@ -254,6 +265,17 @@ class HerdrSsh(
     fun useSmallPackets(mss: Int) {
         fallbackMss = SmallPackets.clamp(mss)
     }
+
+    /** 2.2.7: the network changed, so the session's fallback ends: the next connection starts with normal packets. */
+    fun clearSmallPackets() {
+        fallbackMss = null
+    }
+
+    /**
+     * 2.2.7: told (on the reading thread) when a read here has had no first byte for
+     * [SmallPacketFallback.FIRST_BYTE_STALL_MS]; the app's session uses it to fall back early.
+     */
+    @Volatile var firstByteStallListener: (() -> Unit)? = null
 
     /** 2.2.6 diagnostics: bytes received over this object's direct TCP connections, and when the last one came. */
     val inbound = InboundCounter()
@@ -468,9 +490,13 @@ class HerdrSsh(
             val err = Capped(MAX_ERR, meter)
             val t1 = kotlin.concurrent.thread(isDaemon = true, name = "ssh-out") { out.drain(cmd.inputStream) }
             val t2 = kotlin.concurrent.thread(isDaemon = true, name = "ssh-err") { err.drain(cmd.errorStream) }
-            val deadline = System.currentTimeMillis() + timeoutSeconds * 1000
+            val began = System.currentTimeMillis()
+            val deadline = began + timeoutSeconds * 1000
+            // 2.2.7: a read (never a write) with no first byte for a while tells the session.
+            val watch = firstByteStallListener?.takeIf { trace == null }?.let { l -> FirstByteWatch(SmallPacketFallback.FIRST_BYTE_STALL_MS, began, l) }
             while ((t1.isAlive || t2.isAlive) && System.currentTimeMillis() < deadline && !out.over) {
                 t1.join(100); if (!t1.isAlive) t2.join(100)
+                watch?.tick(System.currentTimeMillis(), meter.bytes())
             }
             if (out.over || t1.isAlive || t2.isAlive) {
                 runCatching { session.close() }

@@ -185,12 +185,23 @@ class AppViewModel internal constructor(
     }
 
     /**
-     * 2.2.7: "Small packets on VPN (automatic)", on by default (also for installs from before
-     * 2.2.7). While on, a direct TCP connect made when the phone's network is a VPN uses small
+     * 2.2.7: "Small packets on VPN (automatic)", off by default (Bill: "start with normal size
+     * packets and fall back per session to small"). While on, a direct TCP connect made when the phone's network is a VPN uses small
      * packets; off restores 2.2.6. It is read at each connect, so it never resets an open link.
      */
     var smallPacketsOnVpn by mutableStateOf(prefs.smallPacketsOnVpn.also { com.billmongan.herdrdroid.ssh.VpnSmallPackets.enabled = it })
         private set
+
+    /** 2.2.7: "Small packets on cellular (automatic)", off by default; read at each connect like the VPN one. */
+    var smallPacketsOnCellular by mutableStateOf(prefs.smallPacketsOnCellular.also { com.billmongan.herdrdroid.ssh.VpnSmallPackets.cellularEnabled = it })
+        private set
+
+    fun changeSmallPacketsOnCellular(on: Boolean) {
+        smallPacketsOnCellular = on
+        prefs.smallPacketsOnCellular = on
+        com.billmongan.herdrdroid.ssh.VpnSmallPackets.cellularEnabled = on
+        com.billmongan.herdrdroid.diag.DiagLog.log("link", "small-packets-on-cellular=${if (on) "on" else "off"}")
+    }
 
     fun changeSmallPacketsOnVpn(on: Boolean) {
         smallPacketsOnVpn = on
@@ -273,6 +284,8 @@ class AppViewModel internal constructor(
     private companion object SmallPacketWaits {
         /** The longest the fallback's reconnect waits for a send in flight (the send lane's own timeout is 30 s). */
         const val FALLBACK_SEND_WAIT_MS = 45_000L
+        /** 2.2.7: how long after a network change the server lights are checked again (a VPN takes a moment to come up). */
+        const val NETWORK_RECHECK_MS = 4_000L
     }
     internal val smallPacketFallback = com.billmongan.herdrdroid.ssh.SmallPacketFallback()
     internal var smallPacketClock: () -> Long = System::currentTimeMillis
@@ -294,25 +307,102 @@ class AppViewModel internal constructor(
         val now = smallPacketClock()
         if (!smallPacketFallback.wouldFire(server.id, reason, now)) return false
         // A drop from a network change or from going to the background is not lossy Wi-Fi.
-        // 2.2.7: automatic small packets on a VPN were (or will now be) in effect: nothing to fall back to.
-        val vpnAuto = com.billmongan.herdrdroid.ssh.MssChoice.VPN_AUTO
+        // 2.2.7: automatic small packets (VPN or cellular) were, or will now be, in effect: nothing to fall back to.
+        val auto = com.billmongan.herdrdroid.ssh.MssChoice.AUTOMATIC
         val skip = when {
-            s.lastMssChoice?.reason == vpnAuto || s.mssChoice().reason == vpnAuto -> "vpn-auto"
+            s.lastMssChoice?.reason?.takeIf { it in auto } != null -> s.lastMssChoice!!.reason
+            s.mssChoice().reason in auto -> s.mssChoice().reason
             com.billmongan.herdrdroid.diag.NetworkWatch.changes != smallPacketFallback.armedNetChanges -> "network-change"
             !foreground -> "background"
             else -> null
         }
         if (skip != null) {
-            smallPacketFallback.disarm()
+            // 2.2.7: a network change defers the fallback to the next connect on the new network
+            // (armed again from now) rather than dropping it for the sign-in.
+            if (skip == "network-change") rearmAfterNetworkChange() else smallPacketFallback.disarm()
             com.billmongan.herdrdroid.diag.DiagLog.log("link", com.billmongan.herdrdroid.diag.LinkDiag.fallbackSkippedLine(server.id, skip, reason))
             return false
         }
         val mss = smallPacketFallback.fire(server.id, reason, now) ?: return false
         s.useSmallPackets(mss)
+        // 2.2.7: the choice holds for this server's session: reconnects, the watcher and the status check use it too.
+        sessionSmallPackets[server.id] = mss
         linkSession?.fallbackUsed = true
         com.billmongan.herdrdroid.diag.LinkDiag.fallback(server.id, reason, mss, smallPacketFallback.sinceArmed(now))
         smallPacketOffer = server.id
         return true
+    }
+
+    /**
+     * 2.2.7: the servers whose session fell back to small packets, server id to MSS. Until that
+     * session ends (disconnect) or the phone's network changes, after which connections start
+     * with normal packets again.
+     */
+    private val sessionSmallPackets = java.util.concurrent.ConcurrentHashMap<String, Int>()
+    internal fun sessionMssFor(serverId: String): Int? = sessionSmallPackets[serverId]
+
+    /** 2.2.7: the fallback was armed again by a network change, so a failed reconnect on the new network may fire it. */
+    private var armedByNetChange = false
+
+    private fun rearmAfterNetworkChange() {
+        val server = current ?: return
+        val sh = ssh ?: return
+        armedByNetChange = true
+        smallPacketFallback.arm(server.id, !sh.overWebSocket && sh.activeMss == null, smallPacketClock(),
+            com.billmongan.herdrdroid.diag.NetworkWatch.changes)
+    }
+
+    private var networkRecheck: Job? = null
+
+    /**
+     * 2.2.7: the phone's network changed. The session's small packets end (the next connection
+     * starts with normal ones), the fallback is armed again for the new network, and the server
+     * list's lights are checked again shortly instead of keeping a stale "Can't reach it".
+     */
+    internal fun onNetworkChanged(type: String) {
+        if (sessionSmallPackets.isNotEmpty() || ssh?.lastMssChoice?.reason == com.billmongan.herdrdroid.ssh.MssChoice.FALLBACK) {
+            sessionSmallPackets.clear()
+            ssh?.clearSmallPackets()
+            com.billmongan.herdrdroid.diag.DiagLog.log("link", "server=${com.billmongan.herdrdroid.diag.LinkDiag.serverTag(current?.id)} small-packets=reset reason=network-change net=$type")
+        }
+        rearmAfterNetworkChange()
+        networkRecheck?.cancel()
+        if (type == "none") return
+        networkRecheck = viewModelScope.launch {
+            delay(NETWORK_RECHECK_MS)
+            com.billmongan.herdrdroid.diag.DiagLog.log("check", "recheck reason=network-change net=$type")
+            if (foreground && !locked) runCatching { checkServers() }
+        }
+    }
+
+    /**
+     * 2.2.7 (Bill's log: after the switch to cellular plus a VPN, the pane list read got no byte for
+     * 26.5 s before the link was declared lost): a read on the open connection with no first byte
+     * for [com.billmongan.herdrdroid.ssh.SmallPacketFallback.FIRST_BYTE_STALL_MS] after sign-in
+     * falls back to small packets at once, with every fallback guard (this server's open
+     * connection only, once per sign-in, never mid-send, never over a WebSocket).
+     */
+    internal fun onFirstByteStall(failing: HerdrSsh) {
+        val h = herdr ?: return
+        if (h.transport !== failing) return
+        if (maybeSmallPacketFallback(com.billmongan.herdrdroid.ssh.FirstByteStall(), failing)) reconnectForFallback(h)
+    }
+
+    /**
+     * 2.2.7: a server's light on the server list. While the open server's session is connected it
+     * is shown from that session (its agents), whatever the last separate check found, so a
+     * session that works is never listed as "Can't reach it".
+     */
+    fun healthFor(serverId: String): ServerHealth? {
+        if (serverId == current?.id && link == Link.CONNECTED && herdr != null) {
+            val list = panes
+            val need = list.count { it.status == Status.NEEDS_YOU }
+            val w = list.count { it.status == Status.WORKING }
+            val at = serverHealth[serverId]?.at ?: 0L
+            return if (need > 0) ServerHealth(Health.NEEDS_YOU, "$need need you · $w working", at)
+            else ServerHealth(Health.UP, if (w > 0) "Up · $w working" else "Up · agents idle", at)
+        }
+        return serverHealth[serverId]
     }
 
     /** The one tap on the offer: small packets stay on for this server from now on. */
@@ -355,7 +445,13 @@ class AppViewModel internal constructor(
 
     // ---- 2.2.6 link diagnostics ----------------------------------------------------------------
 
-    init { com.billmongan.herdrdroid.diag.NetworkWatch.start(app) }
+    init {
+        com.billmongan.herdrdroid.diag.NetworkWatch.start(app)
+        // 2.2.7: told on the main thread; the latest view model is the one listening.
+        com.billmongan.herdrdroid.diag.NetworkWatch.listener = { type, _ ->
+            viewModelScope.launch(Dispatchers.Main) { onNetworkChanged(type) }
+        }
+    }
 
     /** Counted from a sign-in to its disconnect, for the session summary line. */
     private var linkSession: com.billmongan.herdrdroid.diag.LinkStats.Session? = null
@@ -780,7 +876,10 @@ class AppViewModel internal constructor(
             val t0 = System.currentTimeMillis()
             var stage = com.billmongan.herdrdroid.diag.LinkDiag.Stage.LOGIN
             val creds = credentialsFor(server, password)
-            val s = HerdrSsh(server.host, server.port, server.user, creds, server.fingerprint, SshKeyVault::provider, server.wsUrl?.takeIf { server.overWebSocket }, server.smallPacketsMss, server.id)
+            val s = HerdrSsh(server.host, server.port, server.user, creds, server.fingerprint, SshKeyVault::provider, server.wsUrl?.takeIf { server.overWebSocket }, server.smallPacketsMss, server.id,
+                sessionFallbackMss = sessionMssFor(server.id))
+            // 2.2.7: a read with no first byte for a while falls back early (see [onFirstByteStall]).
+            s.firstByteStallListener = { viewModelScope.launch(Dispatchers.Main) { onFirstByteStall(s) } }
             connectingSsh = s
             try {
                 // Back to the server just left: its connection is kept open for a few minutes, so
@@ -874,6 +973,7 @@ class AppViewModel internal constructor(
                 // 2.2.6: a direct TCP session without small packets may fall back to them once.
                 beginLinkSession(saved.id)
                 // 2.2.7: not when this connection already used small packets (setting or vpn-auto).
+                armedByNetChange = false
                 smallPacketFallback.arm(saved.id, !sNow.overWebSocket && sNow.activeMss == null && sNow.lastMssChoice?.mss == null, smallPacketClock(),
                     com.billmongan.herdrdroid.diag.NetworkWatch.changes)
                 // A new sign-in is a new session: an offer from an earlier one no longer holds.
@@ -1004,7 +1104,8 @@ class AppViewModel internal constructor(
                 }
                 serverQuotas = serverQuotas + (s.id to prefs.quotas(s.id))
                 val panes: List<Pane>? = if (s.id == current?.id && herdr != null) panes else runCatching {
-                    val ssh = HerdrSsh(s.host, s.port, s.user, credentialsFor(s, savedPassword(s)), s.fingerprint, SshKeyVault::provider, s.wsUrl?.takeIf { s.overWebSocket }, s.smallPacketsMss, s.id)
+                    val ssh = HerdrSsh(s.host, s.port, s.user, credentialsFor(s, savedPassword(s)), s.fingerprint, SshKeyVault::provider, s.wsUrl?.takeIf { s.overWebSocket }, s.smallPacketsMss, s.id,
+                        sessionFallbackMss = sessionMssFor(s.id))
                     try {
                         val d = if (s.backend == null) detectBackend(ssh, s.herdrPath) else null
                         val core = s.backend == "core" || (d != null && d.coreRunning && !d.tuiRunning)
@@ -1026,6 +1127,11 @@ class AppViewModel internal constructor(
                         ssh.close()
                         throw e
                     }
+                }.onFailure {
+                    // 2.2.7: why the light went red, and with which packets (names and numbers only).
+                    com.billmongan.herdrdroid.diag.DiagLog.log("check", "server=${com.billmongan.herdrdroid.diag.LinkDiag.serverTag(s.id)} result=down " +
+                        "reason=${com.billmongan.herdrdroid.diag.LinkDiag.errorClass(it)} mss=${s.smallPacketsMss ?: sessionMssFor(s.id) ?: "normal"} " +
+                        "net=${com.billmongan.herdrdroid.diag.NetworkWatch.type} session=${if (s.id == current?.id) link.name.lowercase() else "none"}")
                 }.getOrNull()
                 panes?.let { serverPanes = serverPanes + (s.id to it) }
                 if (s.id != current?.id) { if (panes == null) failed(s.id) else succeeded(s.id) }
@@ -1313,6 +1419,7 @@ class AppViewModel internal constructor(
         WatchService.stop(getApplication())
         park()
         closeSession()
+        current?.id?.let { sessionSmallPackets.remove(it) }
         current = null
         panes = emptyList()
         quotas = emptyMap()
@@ -1468,6 +1575,9 @@ class AppViewModel internal constructor(
                     if (attempt <= 5 || attempt % 10 == 0) com.billmongan.herdrdroid.diag.DiagLog.log("link", com.billmongan.herdrdroid.diag.LinkStats.reconnectLine(
                         current?.id, attempt, backoff, reconnectReason, "failed", System.currentTimeMillis() - tryAt, e))
                     linkProblem = friendly(e)
+                    // 2.2.7: a reconnect that fails right after a network change (once there is a
+                    // network again) falls back to small packets for the next try, as a drop would.
+                    if (armedByNetChange && com.billmongan.herdrdroid.diag.NetworkWatch.type != "none" && e is LinkDown) maybeSmallPacketFallback(e, ssh)
                     if (System.currentTimeMillis() - downSince > 15_000) linkTo(Link.OFFLINE, "down-over-15s:${com.billmongan.herdrdroid.diag.LinkDiag.errorClass(e)}")
                 }
                 // A second at a time, so coming back to the front ends a long background wait at once
@@ -5191,6 +5301,7 @@ class AppViewModel internal constructor(
             // 1.2.8: watched servers get the same work sweep as the open one, so an agent with a
             // running shell there shows as working in the drawer, cards and notifications.
             busyOf = { h -> h.workCounts(h.panes0Cache, transcriptScript).second },
+            sessionMss = ::sessionMssFor,
         ).also { fleet = it }
         f.everyMs = NeedsYouCadence.fleetGapMs(watching, drawerShown, foreground)
         f.screenOn = ::screenOn

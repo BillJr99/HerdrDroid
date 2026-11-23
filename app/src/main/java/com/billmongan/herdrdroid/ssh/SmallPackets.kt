@@ -243,11 +243,19 @@ class SmallPacketFallback(private val windowMs: Long = WINDOW_MS, private val ms
     companion object {
         const val WINDOW_MS = 90_000L
 
+        /**
+         * 2.2.7 (Bill's log over cellular plus a VPN: a pane list read got no byte for 26.5 s
+         * before the link was declared lost): a read with no first byte for this long after
+         * sign-in triggers the fallback without waiting for the link to drop.
+         */
+        const val FIRST_BYTE_STALL_MS = 8_000L
+
         /** "link-drop" for a lost connection, "read-timeout" for a command that ran out of time, else null. */
         fun reasonFor(e: Throwable?): String? = when {
             e == null -> null
             e is LinkDown -> "link-drop"
             e is CommandTimeout -> "read-timeout"
+            e is FirstByteStall -> "no-first-byte"
             e is com.billmongan.herdrdroid.herdr.HerdrError && e.exit == -2 && e.message.orEmpty().startsWith(CommandTimeout.PREFIX) -> "read-timeout"
             else -> null
         }
@@ -263,8 +271,14 @@ class SmallPacketFallback(private val windowMs: Long = WINDOW_MS, private val ms
  * real ConnectivityManager. The type is a word only ("vpn", "wifi", ...), never a name or address.
  */
 object VpnSmallPackets {
-    @Volatile var enabled: Boolean = true
+    /** 2.2.7 (Bill, after testing over cellular plus a VPN): off by default; every connection starts with normal packets. */
+    @Volatile var enabled: Boolean = false
     @Volatile var networkType: () -> String = { com.billmongan.herdrdroid.diag.NetworkWatch.current() }
+
+    /** 2.2.7: the global "Small packets on cellular (automatic)" setting (off by default). */
+    @Volatile var cellularEnabled: Boolean = false
+    /** 2.2.7: whether the default network runs over cellular now (also under a VPN); a seam for tests. */
+    @Volatile var cellular: () -> Boolean = { com.billmongan.herdrdroid.diag.NetworkWatch.currentCellular() }
 }
 
 /**
@@ -275,20 +289,46 @@ data class MssChoice(val mss: Int?, val reason: String, val net: String) {
     companion object {
         const val SETTING = "setting"
         const val VPN_AUTO = "vpn-auto"
+        const val CELLULAR_AUTO = "cellular-auto"
+        /** The reasons that are the app's automatic choice at connect (the fallback never fires on top of them). */
+        val AUTOMATIC = setOf(VPN_AUTO, CELLULAR_AUTO)
         const val FALLBACK = "fallback"
         const val NONE = "none"
 
         /**
          * The rules, in order: a WebSocket never sets an MSS; the server's own small-packets
          * setting wins (its value, also on a VPN); then this session's 2.2.6 fallback; then, on a
-         * VPN with the automatic setting on, [SmallPackets.DEFAULT]; otherwise the normal MSS.
+         * VPN with the automatic setting on, [SmallPackets.DEFAULT]; then (2.2.7) on cellular, or a
+         * VPN over cellular, with the cellular setting on; otherwise the normal MSS. On a VPN over
+         * cellular the VPN setting is asked first, and either one on means small packets.
          */
-        fun choose(overWebSocket: Boolean, serverMss: Int?, fallbackMss: Int?, vpnAuto: Boolean, net: String): MssChoice = when {
+        fun choose(
+            overWebSocket: Boolean, serverMss: Int?, fallbackMss: Int?, vpnAuto: Boolean, net: String,
+            cellularAuto: Boolean = false, overCellular: Boolean = false,
+        ): MssChoice = when {
             overWebSocket -> MssChoice(null, NONE, net)
             serverMss != null -> MssChoice(SmallPackets.clamp(serverMss), SETTING, net)
             fallbackMss != null -> MssChoice(SmallPackets.clamp(fallbackMss), FALLBACK, net)
             vpnAuto && net == "vpn" -> MssChoice(SmallPackets.DEFAULT, VPN_AUTO, net)
+            cellularAuto && (net == "cellular" || (net == "vpn" && overCellular)) -> MssChoice(SmallPackets.DEFAULT, CELLULAR_AUTO, net)
             else -> MssChoice(null, NONE, net)
         }
     }
+}
+
+/** 2.2.7: a read on this connection has had no first byte for [SmallPacketFallback.FIRST_BYTE_STALL_MS]. */
+class FirstByteStall : Exception("no first byte")
+
+/**
+ * 2.2.7: watches one read for its first byte. [tick] is called while the read waits; once
+ * [thresholdMs] pass with no byte, [onStall] runs, once per read. Writes are never watched.
+ */
+class FirstByteWatch(private val thresholdMs: Long, private val start: Long, private val onStall: () -> Unit) {
+    private var reported = false
+    fun tick(now: Long, bytes: Long) {
+        if (reported || bytes > 0 || now - start < thresholdMs) return
+        reported = true
+        runCatching { onStall() }
+    }
+    val stalled: Boolean get() = reported
 }
