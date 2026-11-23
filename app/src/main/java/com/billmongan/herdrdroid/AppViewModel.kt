@@ -97,6 +97,12 @@ sealed interface Screen {
     /** Add or edit a server; a new one can start with an address and name found on the network. */
     data class EditServer(val server: Server?, val prefillHost: String? = null, val prefillName: String? = null) : Screen
     data object Tabs : Screen
+    /**
+     * 2.2.7: the main screen with no agent open: the chat's place, with the left drawer of every
+     * pane, when no server is open or none of its agents is remembered. Back from the server list
+     * comes here rather than leaving the app.
+     */
+    data object Home : Screen
     data class Agent(val paneId: String) : Screen
     data class Settings(val back: Screen) : Screen
     data class Files(val path: String, val back: Screen) : Screen
@@ -590,20 +596,30 @@ class AppViewModel internal constructor(
     }
 
     /**
-     * Where Back leaves the server list for: the screen it was opened from, or this server's
-     * main screen. Null when no server is open: the list is then the app's main screen and Back
-     * leaves the app, as it always has.
+     * Where Back leaves the server list for: the screen it was opened from, or the main screen.
+     * 2.2.7 (Bill: "when I hit the back button on my phone it's still exits the app back to the
+     * desktop rather than going back to the app main screen"): never out of the app. With no
+     * origin (the list shown at startup, after a disconnect or a failed connect, or for a locked
+     * server) it is [mainScreen]: the open server's last agent, else [Screen.Home].
      */
-    val serversBack: Screen?
+    val serversBack: Screen
         get() {
-            if (current == null) return null
             val from = serversOrigin
             return when {
-                from == null -> homeScreen()
-                from is Screen.Agent && panes.none { it.id == from.paneId } -> homeScreen()
+                // The pane list is not the chat: Back from it goes to the chat's main screen too.
+                from == null || from == Screen.Tabs -> mainScreen()
+                from is Screen.Agent && (current == null || panes.none { it.id == from.paneId }) -> mainScreen()
                 else -> from
             }
         }
+
+    /** 2.2.7: the chat with the left drawer: the open server's last agent when it is still there, else [Screen.Home]. */
+    internal fun mainScreen(): Screen {
+        val last = prefs.lastAgent.split("|", limit = 2)
+        val cur = current
+        return if (cur != null && last.getOrNull(0) == cur.id && panes.any { it.id == last.getOrNull(1) }) Screen.Agent(last[1])
+            else Screen.Home
+    }
 
     /**
      * The machine menu's "All servers…" (2.2.5, Bill: Back from the list left the app). It used to
@@ -612,10 +628,9 @@ class AppViewModel internal constructor(
      */
     fun showAllServers() = openServers()
 
-    /** Back on the server list. False when there is nowhere to go in the app (Back leaves it). */
+    /** Back on the server list (2.2.7: always somewhere in the app; true for the callers that ask). */
     fun leaveServers(): Boolean {
-        val to = serversBack ?: return false
-        screen = to
+        screen = serversBack
         return true
     }
 
