@@ -2338,7 +2338,12 @@ class AppViewModel internal constructor(
             val codexQuestionCleared = recentCodexQuestion && liveCandidate == null
             val useLive = liveCard != null && (livePrompt != null || verifyPi && preview != null || liveReport || recentReport || verifiedUsage != null || recentClarify || codexQuestionCleared || verifyOpenCode &&
                 (blocked || preview != null || openCodeBackgroundDrawer(agent, recent) || openCodeBackgroundDrawer(agent, liveCard)))
-            val text = if (useLive) checkNotNull(liveCard) else recent
+            val shownText = if (useLive) checkNotNull(liveCard) else recent
+            // 2.2.7: a Claude dialog taller than the screen is completed from the pane's history when that proves it (herdr/TallDialog.kt).
+            val text = if (agent.equals("claude", true) && client != null) com.billmongan.herdrdroid.herdr.completeTallDialog(shownText, blocked, version) { n ->
+                quietly { h -> if (h === client && isOpen()) h.read(paneId, n, preserveGlyphs = true) else null }
+            } else shownText
+            if (!isOpen()) return
             // 2.2.0: the first reads after a switch are held until they settle (two identical reads, or
             // a read that must show at once); the last good view stays up meanwhile. See [SettleGate].
             val urgent = com.billmongan.herdrdroid.herdr.urgentRead(
