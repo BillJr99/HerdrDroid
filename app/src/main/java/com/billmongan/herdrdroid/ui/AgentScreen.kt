@@ -175,7 +175,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     var pickerMenu by remember { mutableStateOf<Prompt?>(null) }
     /** 2.2.0: which picker is being read ("model" or "session"), and the mode, thinking and sessions dialogs. */
     var pickerWhat by remember { mutableStateOf("model") }
-    var choosingMode by remember { mutableStateOf(false) }
+    var choosingMode by remember { mutableStateOf<String?>(null) }
     var choosingThinking by remember { mutableStateOf(false) }
     var choosingSession by remember { mutableStateOf(false) }
     /** Find in chat: what to look for, and which match is showing. */
@@ -584,15 +584,24 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     // The permission mode (plan, accept edits, auto). 2.2.0: where the agent has a verified
                     // way to switch (PaneControls.modes), a menu of named modes, each switch confirmed from
                     // the footer; elsewhere the mode is only shown.
-                    com.billmongan.herdrdroid.herdr.agentMode(pane?.agent, liveScreenText)?.takeIf { !live }?.let { mode ->
-                        val spec = com.billmongan.herdrdroid.herdr.PaneControls.modes(pane?.agent)
-                        val label = spec?.options?.firstOrNull { it.name == mode }?.label
-                            ?: if (mode == "bypass") "bypass (approves every tool)" else mode
+                    // 2.2.2: every mode menu the agent has (Copilot also has Approvals), shown where its
+                    // current setting reads off the screen or every switch sets it outright (Codex).
+                    val menus = com.billmongan.herdrdroid.herdr.PaneControls.modeMenus(pane?.agent)
+                    if (!live && menus.isEmpty()) com.billmongan.herdrdroid.herdr.agentMode(pane?.agent, liveScreenText)?.let { mode ->
                         DropdownMenuItem(
-                            text = { Text("Mode: $label" + if (spec != null) "…" else "") },
-                            enabled = spec != null,
-                            onClick = { menu = false; choosingMode = true },
+                            text = { Text("Mode: " + if (mode == "bypass") "bypass (approves every tool)" else mode) },
+                            enabled = false, onClick = {},
                         )
+                    }
+                    if (!live) menus.forEach { spec ->
+                        val mode = spec.read(liveScreenText)
+                        if (mode != null || spec.absolute) {
+                            val label = spec.options.firstOrNull { it.name == mode }?.label?.substringBefore(" (") ?: mode
+                            DropdownMenuItem(
+                                text = { Text(spec.title + (label?.let { ": $it" } ?: "") + "…") },
+                                onClick = { menu = false; choosingMode = spec.title },
+                            )
+                        }
                     }
                 }
             }
@@ -981,9 +990,9 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         )
     }
 
-    if (choosingMode && pane != null) com.billmongan.herdrdroid.herdr.PaneControls.modes(pane.agent)?.let { spec ->
-        ModeDialog(pane.agentName, spec, com.billmongan.herdrdroid.herdr.agentMode(pane.agent, liveScreenText),
-            idle = status == Status.IDLE || status == Status.DONE, onPick = { vm.switchMode(paneId, it) }, onDismiss = { choosingMode = false })
+    if (choosingMode != null && pane != null) com.billmongan.herdrdroid.herdr.PaneControls.modeMenus(pane.agent).firstOrNull { it.title == choosingMode }?.let { spec ->
+        ModeDialog(pane.agentName, spec, spec.read(liveScreenText),
+            idle = status == Status.IDLE || status == Status.DONE, onPick = { vm.switchMode(paneId, it, spec.title) }, onDismiss = { choosingMode = null })
     }
     if (choosingThinking && pane != null) com.billmongan.herdrdroid.herdr.PaneControls.thinking(pane.agent)?.let { spec ->
         ThinkingDialog(pane.agentName, spec, spec.shown(liveScreenText) ?: vm.efforts[paneId],
