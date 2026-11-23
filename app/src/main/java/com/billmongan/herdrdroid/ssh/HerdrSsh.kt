@@ -239,12 +239,18 @@ class HerdrSsh(
     @Volatile private var fallbackMss: Int? = sessionFallbackMss?.let { SmallPackets.clamp(it) }
 
     /**
+     * 2.2.7 (pre-review L4): the session's current choice, asked at each connect, for a connection
+     * that outlives it (the watcher): a fallback made later is picked up, and one that ended is dropped.
+     */
+    @Volatile var sessionFallback: (() -> Int?)? = null
+
+    /**
      * 2.2.7: the MSS a connection made now would use, and why: decided afresh at every connect and
      * reconnect, so a VPN coming up or dropping mid-session takes effect on the next connection
      * only (an open socket's MSS is fixed when it connects).
      */
     fun mssChoice(): MssChoice = MssChoice.choose(
-        wsUrl != null, serverMss, fallbackMss,
+        wsUrl != null, serverMss, fallbackMss ?: sessionFallback?.let { f -> runCatching { f() }.getOrNull() },
         runCatching { vpnAuto() }.getOrDefault(false),
         runCatching { networkType() }.getOrDefault("unknown"),
         runCatching { cellularAuto() }.getOrDefault(false),
@@ -465,7 +471,7 @@ class HerdrSsh(
         var exit: Int? = null
         var timedOut = false
         try {
-            return runMetered(c, command, input, timeoutSeconds, maxOut, meter, trace).also { exit = it.first }
+            return runMetered(c, command, input, timeoutSeconds, maxOut, meter, trace, label).also { exit = it.first }
         } catch (e: CommandTimeout) {
             timedOut = true
             stalls.incrementAndGet()
@@ -475,7 +481,7 @@ class HerdrSsh(
         }
     }
 
-    private fun runMetered(c: SSHClient, command: String, input: ByteArray?, timeoutSeconds: Long, maxOut: Int, meter: com.billmongan.herdrdroid.diag.ReadMeter, trace: SendTrace?): Triple<Int, ByteArray, ByteArray> {
+    private fun runMetered(c: SSHClient, command: String, input: ByteArray?, timeoutSeconds: Long, maxOut: Int, meter: com.billmongan.herdrdroid.diag.ReadMeter, trace: SendTrace?, label: String? = null): Triple<Int, ByteArray, ByteArray> {
         val session = c.startSession()
         meter.channelOpen()
         // A failure from exec itself may come after the computer accepted the command (1.3.2,
@@ -492,8 +498,10 @@ class HerdrSsh(
             val t2 = kotlin.concurrent.thread(isDaemon = true, name = "ssh-err") { err.drain(cmd.errorStream) }
             val began = System.currentTimeMillis()
             val deadline = began + timeoutSeconds * 1000
-            // 2.2.7: a read (never a write) with no first byte for a while tells the session.
-            val watch = firstByteStallListener?.takeIf { trace == null }?.let { l -> FirstByteWatch(SmallPacketFallback.FIRST_BYTE_STALL_MS, began, l) }
+            // 2.2.7: the pane list and chat log reads (never a write, nor a search, git or sessions
+            // script that may rightly stay quiet) with no first byte for a while tell the session.
+            val watch = firstByteStallListener?.takeIf { trace == null && label in FIRST_BYTE_WATCHED }
+                ?.let { l -> FirstByteWatch(SmallPacketFallback.FIRST_BYTE_STALL_MS, began, l) }
             while ((t1.isAlive || t2.isAlive) && System.currentTimeMillis() < deadline && !out.over) {
                 t1.join(100); if (!t1.isAlive) t2.join(100)
                 watch?.tick(System.currentTimeMillis(), meter.bytes())
@@ -724,3 +732,6 @@ internal fun <T : Any> requireCurrentConnection(expected: Any, current: T?): T {
     if (current == null || current !== expected) throw ConnectionChanged()
     return current
 }
+
+/** 2.2.7: the labelled reads the no-first-byte fallback watches (the reads Bill's stall was on). */
+internal val FIRST_BYTE_WATCHED = setOf("list-read", "log-read")

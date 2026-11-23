@@ -54,6 +54,7 @@ class SendNowVm227Test {
         /** The screen after Ctrl+B (null: unchanged). */
         var afterCtrlB: String? = null
         var failSends = false
+        var dropAtCtrlB = false
         var statusNow = Status.WORKING
 
         init {
@@ -122,6 +123,7 @@ class SendNowVm227Test {
             command.contains("'pane' 'send-keys' 'p1' ") -> {
                 val keys = command.substringAfter("'p1' ").replace("'", "")
                 writes += "keys:$keys"
+                if (keys == "ctrl+b" && dropAtCtrlB) throw com.billmongan.herdrdroid.ssh.LinkDown(java.io.IOException("reset at ctrl+b"))
                 if (keys == "ctrl+b") afterCtrlB?.let { frame = it }
                 ok("")
             }
@@ -233,5 +235,58 @@ class SendNowVm227Test {
         drain()
         drainUntil { vm.queued.single().note?.startsWith("Not sent") == true }
         assertTrue("no Ctrl+B and no text over a draft", writes.isEmpty())
+    }
+
+    /** Pre-review M1: Remove during the check after Ctrl+B means nothing is typed. */
+    @Test fun removedDuringTheCtrlBCheckIsNeverSent() = fixture("claude", withHint) {
+        afterCtrlB = working
+        vm.backgroundCheckMs = 2_000
+        shown()
+        val q = queue("removed while checking")
+        vm.sendQueuedNow(q)
+        drainUntil { writes.contains("keys:ctrl+b") }
+        vm.cancelQueued(q)
+        drain(400)
+        assertEquals(listOf("keys:ctrl+b"), writes)
+        assertTrue(vm.queued.isEmpty())
+    }
+
+    /** Pre-review M2: a link drop at Ctrl+B is never replayed; the row stays queued, not sending. */
+    @Test fun aLinkDropAtCtrlBIsNotReplayed() = fixture("claude", withHint) {
+        dropAtCtrlB = true
+        shown()
+        val q = queue("after the drop")
+        vm.sendQueuedNow(q)
+        drainUntil { vm.queued.single().note?.startsWith("Not sent") == true }
+        drain(400)
+        val left = vm.queued.single()
+        assertFalse(left.inFlight())
+        assertTrue("never typed", writes.none { it.startsWith("prompt:") || it.startsWith("text:") })
+    }
+
+    /** Pre-review L1: a row whose attempt was dropped without a word is free again after a while. */
+    @Test fun aStuckSendingRowIsFreeAgain() {
+        val stuck = AppViewModel.QueuedPrompt(1L, "s", "p1", "x", sending = true, sendingSince = 1_000L)
+        assertTrue(stuck.inFlight(now = 1_000L + 60_000L))
+        assertFalse(stuck.inFlight(now = 1_000L + AppViewModel.QueuedPrompt.SENDING_STALE_MS))
+    }
+
+    /** Pre-review L3: a row that may have gone in asks before it is sent again. */
+    @Test fun aRowThatMayHaveGoneInAsksFirst() = fixture("claude", working.replace("esc to interrupt", "")) {
+        status(Status.IDLE)
+        shown()
+        val q = queue("maybe sent")
+        state("queued", vm.queued.map { it.copy(mayHaveSent = true) })
+        vm.sendQueuedNow(vm.queued.single())
+        drain()
+        assertEquals(q.id, vm.resendConfirm?.id)
+        assertTrue(writes.isEmpty())
+        vm.cancelResend()
+        vm.sendQueuedImmediately(vm.queued.single())
+        drain()
+        assertTrue(writes.isEmpty())
+        vm.confirmResend()
+        drainUntil { vm.queued.isEmpty() }
+        assertEquals(listOf("prompt:maybe sent"), writes)
     }
 }

@@ -111,10 +111,12 @@ class SmallPacketSession227Test {
             sessionFallbackMss = vm.sessionMssFor(server.id))
         assertEquals(MssChoice.FALLBACK, check.mssChoice().reason)
         assertEquals(1200, check.activeMss)
-        // The watcher too.
+        // The watcher too, and it follows the session's choice as it changes (pre-review L4).
         val fleet = Fleet(fleetScope, { Credentials(null, null) }, { null }, {}, sessionMss = vm::sessionMssFor)
         fleet.watch(listOf(server))
         assertEquals(1200, fleet.clientMss(server.id))
+        vm.onNetworkChanged("wifi")
+        assertNull("the session's small packets ended", fleet.clientMss(server.id))
         fleet.stop()
     }
 
@@ -143,7 +145,12 @@ class SmallPacketSession227Test {
         assertNull(vm.sessionMssFor(server.id))
         assertEquals(MssChoice.NONE, ssh.mssChoice().reason)
         assertTrue(DiagLog.text().contains("small-packets=reset reason=network-change net=wifi"))
-        // And the fallback is armed for the new network: a drop there falls back again.
+        // A drop or failed connect right after the change is not a stall (pre-review M5)...
+        now += 1_000
+        assertFalse(vm.maybeSmallPacketFallback(LinkDown(java.io.IOException("the switch itself")), ssh))
+        assertNull(ssh.activeMss)
+        // ...but once signed in on the new network, a drop there falls back again.
+        vm.rearmAfterSignIn()
         now += 1_000
         assertTrue(vm.maybeSmallPacketFallback(LinkDown(java.io.IOException("drop on the new network")), ssh))
         assertEquals(1200, ssh.activeMss)

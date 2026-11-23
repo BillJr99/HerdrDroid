@@ -39,14 +39,8 @@ internal class LocalPromptSend(private val dispatch: PaneDispatch, private val g
         val permit = gate.open(key) ?: run { release(); return refused }
         try {
             if (!valid()) return refused
-            val fresh = port.pane(expected.pane)
-            if (!valid() || fresh == null || !ready(fresh)) return refused
-            val visible = port.viewport(expected.pane)
-            if (!valid() || visible.isNullOrBlank() || port.blocked(fresh, visible)) return refused
-            // The occupant may have been replaced while the screen was read.
-            val last = port.pane(expected.pane)
-            if (!valid() || last == null || !ready(last)) return refused
-            // 2.2.7: too long to type: a checked file in the inbox, and one line pointing at it.
+            // 2.2.7: too long to type: a checked file in the inbox first, then every check below on a
+            // fresh read, and one line pointing at it (pre-review L2: checked after the upload, not before).
             val outgoing = when (LongText.plan(text)) {
                 is LongText.Plan.Single -> text
                 is LongText.Plan.Attachment -> port.upload("agent-message.txt", text.toByteArray(Charsets.UTF_8)).let { r ->
@@ -54,6 +48,13 @@ internal class LocalPromptSend(private val dispatch: PaneDispatch, private val g
                 }
             }
             if (!valid()) return refused
+            val fresh = port.pane(expected.pane)
+            if (!valid() || fresh == null || !ready(fresh)) return refused
+            val visible = port.viewport(expected.pane)
+            if (!valid() || visible.isNullOrBlank() || port.blocked(fresh, visible)) return refused
+            // The occupant may have been replaced while the screen was read.
+            val last = port.pane(expected.pane)
+            if (!valid() || last == null || !ready(last)) return refused
             port.send(last, outgoing, permit)
             return Result(Outcome.SENT)
         } catch (c: CancellationException) {

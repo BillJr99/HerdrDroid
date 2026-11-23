@@ -108,6 +108,8 @@ class VpnSmallPackets227Test {
         assertEquals("a read that got its first byte is never a stall", 1, stalls)
         assertEquals("no-first-byte", SmallPacketFallback.reasonFor(FirstByteStall()))
         assertTrue(SmallPacketFallback.FIRST_BYTE_STALL_MS in 5_000L..10_000L)
+        // Pre-review M3: only the pane list and chat log reads are watched, never quiet scripts.
+        assertEquals(setOf("list-read", "log-read"), FIRST_BYTE_WATCHED)
     }
 
     @Test fun aWebSocketIsUnaffected() {
