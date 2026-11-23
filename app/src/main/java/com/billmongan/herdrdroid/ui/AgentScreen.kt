@@ -469,6 +469,19 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         }
     }
 
+    // 2.2.7: Send now on a queued message to a working Claude Code with no background hint: the
+    // 2.2.2 Force Send question. Only Send anyway sends; Cancel or a tap outside keeps it queued.
+    vm.sendNowConfirm?.takeIf { it.paneId == paneId && it.serverId == vm.current?.id }?.let {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { vm.cancelSendNow() },
+            modifier = Modifier.semantics { contentDescription = "Force send queued message" },
+            title = { Text("Force send?") },
+            text = { Text(forceDialogText(pane?.agentName ?: "Claude", vm.current?.name ?: "this server"), color = Palette.Ink) },
+            confirmButton = { TextButton(onClick = { vm.confirmSendNow() }) { Text("Send anyway") } },
+            dismissButton = { TextButton(onClick = { vm.cancelSendNow() }) { Text("Cancel") } },
+        )
+    }
+
     Column(Modifier.fillMaxSize().background(Palette.Ground).systemBarsPadding().imePadding()) {
         // ---- Header: the agent, what it's doing, and its model -----------------------------
         // Tap the agent's name to switch to another agent on this server (no swipe: a sideways
@@ -846,14 +859,22 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     idleQueue.forEach { q ->
-                        PendingMessageRow(
-                            title = "Queued until idle",
-                            text = q.text,
-                            onRemove = { vm.cancelQueued(q) },
-                            sendLabel = "Send immediately",
-                            onSend = { vm.sendQueuedImmediately(q) },
-                            sendEnabled = vm.link == Link.CONNECTED && !usageBlocksInput && !waitingForHermes && prompt == null && !typingAnswer && status != Status.NEEDS_YOU,
-                        )
+                        androidx.compose.runtime.key(q.id) {
+                            val canSend = !q.sending && vm.link == Link.CONNECTED && !usageBlocksInput && !waitingForHermes && prompt == null && !typingAnswer && status != Status.NEEDS_YOU
+                            PendingMessageRow(
+                                title = if (q.sending) "Sending now" else "Queued until idle",
+                                text = q.text,
+                                note = q.note,
+                                onRemove = { vm.cancelQueued(q) },
+                                sendLabel = "Send immediately",
+                                onSend = { vm.sendQueuedImmediately(q) },
+                                sendEnabled = canSend,
+                                // 2.2.7: long-press for Send now (Ctrl+B first where Claude shows its background hint).
+                                forceSendMenu = true,
+                                menuSendLabel = "Send now",
+                                onMenuSend = { vm.sendQueuedNow(q) },
+                            )
+                        }
                     }
                     unsent.forEach { p ->
                         androidx.compose.runtime.key(p.id) {
@@ -1194,8 +1215,12 @@ internal fun PendingMessageRow(
     note: String? = null,
     sendEnabled: Boolean = true,
     forceSendMenu: Boolean = false,
+    /** 2.2.7: the long-press menu's send entry and its action (a queued message's Send now). */
+    menuSendLabel: String = "Force send immediately",
+    onMenuSend: (() -> Unit)? = onSend,
 ) {
     var menu by remember { mutableStateOf(false) }
+    val clipboard = LocalClipboardManager.current
     Column(
         Modifier.fillMaxWidth().background(Palette.BlueSoft, RoundedCornerShape(12.dp))
             .padding(start = 12.dp, end = 4.dp),
@@ -1214,10 +1239,11 @@ internal fun PendingMessageRow(
             if (forceSendMenu) {
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                     DropdownMenuItem(
-                        text = { Text("Force send immediately") },
-                        enabled = sendEnabled && onSend != null,
-                        onClick = { menu = false; onSend?.invoke() },
+                        text = { Text(menuSendLabel) },
+                        enabled = sendEnabled && onMenuSend != null,
+                        onClick = { menu = false; onMenuSend?.invoke() },
                     )
+                    DropdownMenuItem(text = { Text("Copy") }, onClick = { menu = false; clipboard.setText(androidx.compose.ui.text.AnnotatedString(text)) })
                     DropdownMenuItem(text = { Text("Remove") }, onClick = { menu = false; onRemove() })
                 }
             }
