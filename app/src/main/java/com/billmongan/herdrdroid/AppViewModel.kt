@@ -287,7 +287,9 @@ class AppViewModel internal constructor(
         /** 2.2.7: how long after a network change the server lights are checked again (a VPN takes a moment to come up). */
         const val NETWORK_RECHECK_MS = 4_000L
     }
-    internal val smallPacketFallback = com.billmongan.herdrdroid.ssh.SmallPacketFallback()
+    // 2.2.7 (Bill: "have it kick in anytime we are disconnected"): no window after sign-in; any
+    // unexpected drop or stall of the session's direct TCP link falls back, once per session.
+    internal val smallPacketFallback = com.billmongan.herdrdroid.ssh.SmallPacketFallback(windowMs = Long.MAX_VALUE)
     internal var smallPacketClock: () -> Long = System::currentTimeMillis
     /** The server whose session fell back to small packets, for the one-tap "keep it on" offer; null when none. */
     var smallPacketOffer by mutableStateOf<String?>(null)
@@ -1525,7 +1527,8 @@ class AppViewModel internal constructor(
         // 2.2.6: soon after sign-in, a drop may be large replies lost on the Wi-Fi; the reconnect
         // below then uses small packets (once per sign-in). Every caller has checked that the
         // failure is the open connection's.
-        val fellBack = reason == null && maybeSmallPacketFallback(e, ssh)
+        // 2.2.7: a link declared lost with no error (silent keepalives) counts as a drop too.
+        val fellBack = reason == null && maybeSmallPacketFallback(e ?: LinkDown(java.io.IOException("the link went silent")), ssh)
         if (link == Link.CONNECTED) {
             // 2.2.6: the error's class chain, the silence before it and the keepalive setting.
             val sh = ssh
