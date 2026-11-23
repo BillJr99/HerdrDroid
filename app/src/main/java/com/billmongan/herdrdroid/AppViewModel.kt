@@ -243,6 +243,48 @@ class AppViewModel internal constructor(
     }
     var linkProblem by mutableStateOf<String?>(null)
         private set
+
+    /**
+     * 2.2.6: the automatic small-packets fallback. Armed at each sign-in to a direct TCP server
+     * with small packets off; a dropped link or a timed-out read soon after makes this session
+     * reconnect once with a smaller MSS (see [com.billmongan.herdrdroid.ssh.SmallPacketFallback]).
+     */
+    internal val smallPacketFallback = com.billmongan.herdrdroid.ssh.SmallPacketFallback()
+    internal var smallPacketClock: () -> Long = System::currentTimeMillis
+    /** The server whose session fell back to small packets, for the one-tap "keep it on" offer; null when none. */
+    var smallPacketOffer by mutableStateOf<String?>(null)
+        private set
+
+    /**
+     * When [e] is a fallback trigger inside the window after sign-in, switches this session to
+     * small packets (the next connection uses them), logs it and offers to keep it; true when it fired.
+     */
+    internal fun maybeSmallPacketFallback(e: Throwable?): Boolean {
+        val server = current ?: return false
+        val s = ssh ?: return false
+        val reason = com.billmongan.herdrdroid.ssh.SmallPacketFallback.reasonFor(e) ?: return false
+        val now = smallPacketClock()
+        val mss = smallPacketFallback.fire(server.id, reason, now) ?: return false
+        s.useSmallPackets(mss)
+        com.billmongan.herdrdroid.diag.LinkDiag.fallback(server.id, reason, mss, smallPacketFallback.sinceArmed(now))
+        smallPacketOffer = server.id
+        return true
+    }
+
+    /** The one tap on the offer: small packets stay on for this server from now on. */
+    fun keepSmallPacketsOn() {
+        val id = smallPacketOffer ?: return
+        smallPacketOffer = null
+        val stored = store.get(id) ?: return
+        val mss = (if (current?.id == id) ssh?.activeMss else null) ?: com.billmongan.herdrdroid.ssh.SmallPackets.DEFAULT
+        val saved = stored.copy(smallPackets = true, mss = mss)
+        store.save(saved)
+        if (current?.id == id) current = current?.copy(smallPackets = true, mss = mss)
+        reloadServers()
+        com.billmongan.herdrdroid.diag.DiagLog.log("link", "server=${com.billmongan.herdrdroid.diag.LinkDiag.serverTag(id)} small-packets=kept mss=$mss")
+    }
+
+    fun dismissSmallPacketOffer() { smallPacketOffer = null }
     var queuedCount by mutableStateOf(0)
         private set
 
@@ -638,7 +680,7 @@ class AppViewModel internal constructor(
             val t0 = System.currentTimeMillis()
             var stage = com.billmongan.herdrdroid.diag.LinkDiag.Stage.LOGIN
             val creds = credentialsFor(server, password)
-            val s = HerdrSsh(server.host, server.port, server.user, creds, server.fingerprint, SshKeyVault::provider, server.wsUrl?.takeIf { server.overWebSocket })
+            val s = HerdrSsh(server.host, server.port, server.user, creds, server.fingerprint, SshKeyVault::provider, server.wsUrl?.takeIf { server.overWebSocket }, server.smallPacketsMss, server.id)
             connectingSsh = s
             try {
                 // Back to the server just left: its connection is kept open for a few minutes, so
@@ -729,6 +771,9 @@ class AppViewModel internal constructor(
                 chatServerId = saved.id
                 linkTo(Link.CONNECTED, "signed-in")
                 linkProblem = null
+                // 2.2.6: a direct TCP session without small packets may fall back to them once.
+                smallPacketFallback.arm(saved.id, !sNow.overWebSocket && sNow.activeMss == null, smallPacketClock())
+                if (smallPacketOffer != saved.id) smallPacketOffer = null
                 // What was last seen on this server shows at once; fresh reads replace it.
                 panes = serverPanes[saved.id].orEmpty()
                 previews = previewCache[saved.id].orEmpty()
@@ -855,7 +900,7 @@ class AppViewModel internal constructor(
                 }
                 serverQuotas = serverQuotas + (s.id to prefs.quotas(s.id))
                 val panes: List<Pane>? = if (s.id == current?.id && herdr != null) panes else runCatching {
-                    val ssh = HerdrSsh(s.host, s.port, s.user, credentialsFor(s, savedPassword(s)), s.fingerprint, SshKeyVault::provider, s.wsUrl?.takeIf { s.overWebSocket })
+                    val ssh = HerdrSsh(s.host, s.port, s.user, credentialsFor(s, savedPassword(s)), s.fingerprint, SshKeyVault::provider, s.wsUrl?.takeIf { s.overWebSocket }, s.smallPacketsMss, s.id)
                     try {
                         val d = if (s.backend == null) detectBackend(ssh, s.herdrPath) else null
                         val core = s.backend == "core" || (d != null && d.coreRunning && !d.tuiRunning)
@@ -1154,6 +1199,7 @@ class AppViewModel internal constructor(
     }
 
     fun disconnect() {
+        smallPacketFallback.disarm()
         fleet?.stop()
         fleet = null
         watchJob?.cancel()
@@ -1252,6 +1298,9 @@ class AppViewModel internal constructor(
 
     private fun linkLost(e: Exception?) {
         if (herdr == null) return
+        // 2.2.6: soon after sign-in, a drop may be large replies lost on the Wi-Fi; the reconnect
+        // below then uses small packets (once per sign-in).
+        maybeSmallPacketFallback(e)
         if (link == Link.CONNECTED) {
             clearCrossServerCards()
             clearPanePrefetch()
@@ -1347,6 +1396,11 @@ class AppViewModel internal constructor(
         } catch (e: HostKeyChanged) {
             stopForProblem(hostKeyMessage(e)); null
         } catch (e: Exception) {
+            // 2.2.6: a read that timed out soon after sign-in: reconnect once with small packets.
+            if (maybeSmallPacketFallback(e)) {
+                linkLost(null)
+                return null
+            }
             // 2.2.5: this used to vanish without a word, so a list that never arrived left no trace.
             if (stage != null) {
                 val key = "${stage.label}|${e.javaClass.simpleName}"
