@@ -47,7 +47,16 @@ class SmallPacketFallbackVm226Test {
         val gate = CompletableDeferred<ExecResult>()
         override val connection: Any? = Any()
         override suspend fun bulk(command: String): ExecResult = gate.await()
-        override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult = ExecResult(1, "", "fixture")
+        /** Send-lane commands seen; with [dropAfterStart] set, each one reaches the computer and then the link goes. */
+        val sends = mutableListOf<String>()
+        var dropAfterStart: Boolean? = null
+        override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult {
+            val drop = dropAfterStart ?: return ExecResult(1, "", "fixture")
+            sends += command
+            // As HerdrSsh does just before exec: from here the command may have reached the computer.
+            if (drop) kotlin.coroutines.coroutineContext[com.billmongan.herdrdroid.ssh.SendTrace]?.started = true
+            throw LinkDown(java.io.IOException("reset mid-command"))
+        }
     }
 
     private fun open(e: Endpoint, s: Server) {
@@ -113,6 +122,8 @@ class SmallPacketFallbackVm226Test {
     @Test fun aNetworkChangeOrTheBackgroundSkipsItAndSaysSo() {
         DiagLog.clear()
         val ssh = HerdrSsh(a.host, a.port, a.user, Credentials(null, null), null, { null })
+        // The first network seen is the baseline, not a change.
+        NetworkWatch.observe(Any(), "fixture-base-${System.nanoTime()}")
         signedIn(ssh)
         NetworkWatch.observe(Any(), "fixture-net-${System.nanoTime()}")
         assertFalse(vm.maybeSmallPacketFallback(LinkDown(java.io.IOException("handoff")), ssh))
@@ -179,6 +190,35 @@ class SmallPacketFallbackVm226Test {
         val deadline = System.currentTimeMillis() + 10_000
         while (!DiagLog.text().contains("reconnect attempt=1") && System.currentTimeMillis() < deadline) idle(100)
         assertTrue(DiagLog.text().lines().any { it.contains("reconnect attempt=1") && it.contains("reason=small-packets-fallback") })
+    }
+
+    /**
+     * Grok's review: a reset while a key press is running on the send lane comes back as LinkDown
+     * for a command that already reached the computer. It is reported, never queued and re-sent.
+     */
+    @Test fun aSendCutOffAfterItStartedIsNeverSentAgain() {
+        val ep = Endpoint(a)
+        open(ep, a)
+        ep.dropAfterStart = true
+        vm.sendKeys("w1:p1", "Enter")
+        idle(200)
+        assertEquals(1, ep.sends.size)
+        assertEquals("not queued for the reconnect", 0, vm.queuedCount)
+        assertTrue(vm.error.orEmpty().contains("while it was being sent"))
+        // Back on the link: nothing waits to go again.
+        state("link", Link.CONNECTED)
+        idle(200)
+        assertEquals(1, ep.sends.size)
+    }
+
+    @Test fun aSendThatNeverStartedStillWaitsForTheLink() {
+        val ep = Endpoint(a)
+        open(ep, a)
+        ep.dropAfterStart = false
+        vm.sendKeys("w1:p1", "Enter")
+        idle(200)
+        assertEquals(1, ep.sends.size)
+        assertEquals("queued to go once the link is back", 1, vm.queuedCount)
     }
 
     private fun field(name: String) = AppViewModel::class.java.getDeclaredField(name).apply { isAccessible = true }
