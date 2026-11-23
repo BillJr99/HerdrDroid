@@ -60,8 +60,11 @@ private const val MAX_OUT = 16 * 1024 * 1024
 private const val MAX_BYTES = 64 * 1024 * 1024
 private const val MAX_ERR = 256 * 1024
 
+/** SSHJ's keepalive (a heartbeat) interval on every connection, in seconds. */
+const val KEEPALIVE_SECONDS = 15
+
 /** A stream read into memory up to [cap] bytes; [over] once more arrived. Stderr past its cap is dropped, not an error. */
-private class Capped(private val cap: Int) {
+internal class Capped(private val cap: Int, private val meter: com.billmongan.herdrdroid.diag.ReadMeter? = null) {
     private val buf = java.io.ByteArrayOutputStream()
     @Volatile var over = false
         private set
@@ -72,6 +75,7 @@ private class Capped(private val cap: Int) {
             while (true) {
                 val n = s.read(b)
                 if (n < 0) break
+                meter?.onBytes(n)
                 synchronized(buf) {
                     // stderr past its cap is read on and dropped, so the command never stalls on a
                     // full pipe (1.3.2, from a code review); stdout past its cap stops the command.
@@ -115,8 +119,11 @@ fun authorizedKeysLine(key: PublicKey, comment: String): String {
 /** Accepts only the fingerprint the user confirmed; reports anything else. */
 private class PinnedVerifier(private val pinned: String?) : HostKeyVerifier {
     var seen: String? = null
+    /** 2.2.6: when the server's key exchange reply (with its host key) arrived. */
+    @Volatile var at: Long? = null
 
     override fun verify(hostname: String?, port: Int, key: PublicKey): Boolean {
+        at = System.currentTimeMillis()
         val fp = sha256Fingerprint(key)
         seen = fp
         return pinned != null && pinned == fp
@@ -205,10 +212,24 @@ class HerdrSsh(
         sessionMss = SmallPackets.clamp(mss)
     }
 
-    /** The socket factory for the next connection: an [MssSocketFactory] when small packets apply, else null (SSHJ's default). */
-    internal fun socketFactoryForNext(): javax.net.SocketFactory? {
-        val mss = activeMss ?: return null
-        return MssSocketFactory(mss, mssOps) { com.billmongan.herdrdroid.diag.LinkDiag.mss(diagServerId, it) }
+    /** 2.2.6 diagnostics: bytes received over this object's direct TCP connections, and when the last one came. */
+    val inbound = InboundCounter()
+    /** 2.2.6 diagnostics: commands that ran out of time on this object's connections. */
+    val stalls = java.util.concurrent.atomic.AtomicLong()
+    /** The TCP connect time of the last direct connection, for the connect line. */
+    @Volatile private var lastTcpMs: Long? = null
+
+    /**
+     * The socket factory for the next connection: for direct TCP, an [MssSocketFactory] that sets
+     * the small-packets MSS when on and always times the connect, logs the socket's facts and
+     * counts bytes in; null over a WebSocket (SSHJ's default socket to the local bridge).
+     */
+    internal fun socketFactoryForNext(): MssSocketFactory? {
+        if (wsUrl != null) return null
+        return MssSocketFactory(activeMss, mssOps, { com.billmongan.herdrdroid.diag.LinkDiag.mss(diagServerId, it) }, { ms, f ->
+            lastTcpMs = ms
+            DiagLog.log("link", com.billmongan.herdrdroid.diag.LinkStats.socketLine(diagServerId, f))
+        }, inbound)
     }
 
     private val lock = Mutex()
@@ -244,14 +265,20 @@ class HerdrSsh(
         c.connectTimeout = 8_000
         c.timeout = 15_000
         c.addHostKeyVerifier(verifier)
+        var kexinitAt: Long? = null
         c.addAlgorithmsVerifier { a ->
-            negotiated = "kex=${a.keyExchangeAlgorithm} hostkey=${a.signatureAlgorithm} cipher=${a.client2ServerCipherAlgorithm} mac=${a.client2ServerMACAlgorithm}"
+            kexinitAt = System.currentTimeMillis()
+            negotiated = "kex=${a.keyExchangeAlgorithm} hostkey=${a.signatureAlgorithm} cipher=${a.client2ServerCipherAlgorithm} mac=${a.client2ServerMACAlgorithm} comp=${a.client2ServerCompressionAlgorithm}"
             true
         }
+        lastTcpMs = null
+        var t0 = System.currentTimeMillis()
+        var connectedAt: Long? = null
         try {
             if (wsUrl != null) {
                 val b = WsBridge.open(wsUrl)
                 bridge = b
+                t0 = System.currentTimeMillis()
                 DiagLog.log("ssh", "sshj connecting to ${b.host}:${b.port} (the WebSocket bridge)")
                 c.connect(b.host, b.port)
             } else {
@@ -259,6 +286,7 @@ class HerdrSsh(
                 DiagLog.log("ssh", "sshj connecting over TCP" + (activeMss?.let { " (small packets, MSS $it)" } ?: ""))
                 c.connect(host, port)
             }
+            connectedAt = System.currentTimeMillis()
             DiagLog.log("ssh", "key exchange done; server says \"${c.transport.serverVersion}\"; host key ${verifier.seen}")
             DiagLog.log("ssh", "negotiated over $transportName: ${negotiated ?: "unknown"}")
         } catch (e: Exception) {
@@ -276,6 +304,23 @@ class HerdrSsh(
         try {
             c.auth(user, methods(c))
             DiagLog.log("ssh", "signed in")
+            // 2.2.6: each stage's time, after the TCP connect (or from the bridge being ready).
+            val tcp = lastTcpMs
+            val tcpDone = t0 + (tcp ?: 0L)
+            val hostKeyAt = verifier.at
+            val kexinit = kexinitAt
+            val connected = connectedAt
+            DiagLog.log("link", com.billmongan.herdrdroid.diag.LinkStats.connectLine(
+                diagServerId, transportName,
+                com.billmongan.herdrdroid.diag.LinkStats.ConnectTimes(
+                    tcpMs = tcp,
+                    identKexinitMs = kexinit?.let { it - tcpDone },
+                    kexReplyMs = if (kexinit != null && hostKeyAt != null) hostKeyAt - kexinit else null,
+                    newKeysMs = if (hostKeyAt != null && connected != null) connected - hostKeyAt else null,
+                    authMs = connected?.let { System.currentTimeMillis() - it },
+                ),
+                negotiated, com.billmongan.herdrdroid.diag.NetworkWatch.type, com.billmongan.herdrdroid.diag.NetworkWatch.changes, KEEPALIVE_SECONDS,
+            ))
         } catch (e: UserAuthException) {
             DiagLog.log("ssh", "sign-in refused: ${DiagLog.describe(e)}")
             runCatching { c.disconnect() }
@@ -290,7 +335,7 @@ class HerdrSsh(
             bridge?.close(); bridge = null
             throw LinkDown(e)
         }
-        c.connection.keepAlive.keepAliveInterval = 15
+        c.connection.keepAlive.keepAliveInterval = KEEPALIVE_SECONDS
         client = c
         return c
     }
@@ -327,16 +372,33 @@ class HerdrSsh(
      * open) gets one fresh retry; one after it started is reported and never retried, so a message
      * or a key press is never sent twice.
      */
-    private fun runOn(c: SSHClient, command: String, input: ByteArray?, timeoutSeconds: Long, maxOut: Int): Triple<Int, ByteArray, ByteArray> {
+    private fun runOn(c: SSHClient, command: String, input: ByteArray?, timeoutSeconds: Long, maxOut: Int, label: String? = null): Triple<Int, ByteArray, ByteArray> {
+        // 2.2.6: bytes and timings of each read, logged for a labelled one (list-read, log-read, probe).
+        val meter = com.billmongan.herdrdroid.diag.ReadMeter()
+        var exit: Int? = null
+        var timedOut = false
+        try {
+            return runMetered(c, command, input, timeoutSeconds, maxOut, meter).also { exit = it.first }
+        } catch (e: CommandTimeout) {
+            timedOut = true
+            stalls.incrementAndGet()
+            throw e
+        } finally {
+            if (label != null) runCatching { com.billmongan.herdrdroid.diag.LinkStats.read(diagServerId, meter.finish(label, exit, timedOut)) }
+        }
+    }
+
+    private fun runMetered(c: SSHClient, command: String, input: ByteArray?, timeoutSeconds: Long, maxOut: Int, meter: com.billmongan.herdrdroid.diag.ReadMeter): Triple<Int, ByteArray, ByteArray> {
         val session = c.startSession()
+        meter.channelOpen()
         // A failure from exec itself may come after the computer accepted the command (1.3.2,
         // from a code review), so it is reported, never retried; only a session that wouldn't
         // open is retried.
         val cmd = try { session.exec(command) } catch (e: Exception) { runCatching { session.close() }; throw AfterStart(e) }
         try {
             input?.let { b -> cmd.outputStream.use { it.write(b); it.flush() } }
-            val out = Capped(maxOut)
-            val err = Capped(MAX_ERR)
+            val out = Capped(maxOut, meter)
+            val err = Capped(MAX_ERR, meter)
             val t1 = kotlin.concurrent.thread(isDaemon = true, name = "ssh-out") { out.drain(cmd.inputStream) }
             val t2 = kotlin.concurrent.thread(isDaemon = true, name = "ssh-err") { err.drain(cmd.errorStream) }
             val deadline = System.currentTimeMillis() + timeoutSeconds * 1000
@@ -386,7 +448,7 @@ class HerdrSsh(
                     c
                 }
                 connection = opened
-                return runOn(opened, command, input, timeoutSeconds, maxOut)
+                return runOn(opened, command, input, timeoutSeconds, maxOut, kotlin.coroutines.coroutineContext[com.billmongan.herdrdroid.diag.ReadLabel]?.label)
             } catch (e: UnconfirmedHostKey) {
                 throw e
             } catch (e: HostKeyChanged) {
