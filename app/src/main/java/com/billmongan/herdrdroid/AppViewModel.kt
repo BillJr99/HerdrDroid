@@ -3470,7 +3470,13 @@ class AppViewModel internal constructor(
     /** Why a send waits for a draft at the computer (2.1.0): the chat's draft card shows it, with Send draft and Clear draft. */
     private val DRAFT_HOLD = "a draft is typed in its input box at the computer (the chat's Draft in the pane card can send or clear it)"
 
-    fun sendMessage(pane: Pane, text: String, force: Boolean = false, delivered: () -> Unit = {}) {
+    /**
+     * [failed] (2.2.7, Send now on a queued message): when set, a send that a guard refuses is not
+     * held and retried here but handed back (with false: nothing was typed), and a write that fails
+     * is handed back with whether it may have reached the computer ([com.billmongan.herdrdroid.ssh.SendTrace]);
+     * either way its pending row is removed, so the queued message is the one place it shows.
+     */
+    fun sendMessage(pane: Pane, text: String, force: Boolean = false, failed: ((String, Boolean) -> Unit)? = null, delivered: () -> Unit = {}) {
         val serverId = current?.id
         markSent(serverId, pane.id, text)
         lastSentAt = System.currentTimeMillis()
@@ -3518,6 +3524,12 @@ class AppViewModel internal constructor(
                     force && !opensUsage -> null
                     else -> holdReason(pane.id, screenNow)
                 }
+                if (why != null && failed != null) {
+                    com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${pane.id}: send now not sent, $why; still queued")
+                    pendingSends = pendingSends.filterNot { it.id == pendingId }
+                    failed(why, false)
+                    return@act
+                }
                 if (why != null && opensUsage) {
                     // Refused, not held: a held usage command would open its dialog later, unwatched.
                     com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${pane.id}: usage command not sent, $why")
@@ -3561,6 +3573,12 @@ class AppViewModel internal constructor(
                 com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${pane.id}: failed: ${com.billmongan.herdrdroid.diag.DiagLog.describe(e)}")
                 // It may still have gone in; the close checks the screen and only presses Esc on the dialog.
                 if (usageRecord != null) followOpened(usageRecord)
+                if (failed != null && e !is CancellationException) {
+                    // Removed first, so a replay of this action after a reconnect finds nothing to send.
+                    pendingSends = pendingSends.filterNot { it.id == pendingId }
+                    failed(com.billmongan.herdrdroid.diag.DiagLog.describe(e),
+                        kotlin.coroutines.coroutineContext[com.billmongan.herdrdroid.ssh.SendTrace]?.started == true)
+                }
                 throw e
             }
             if (usageRecord != null) followOpened(usageRecord)
@@ -5902,7 +5920,13 @@ class AppViewModel internal constructor(
     // -- Send when idle --------------------------------------------------------------------------
 
     data class QueuedPrompt(val id: Long, val serverId: String, val paneId: String, val text: String,
-                            internal val hermesTarget: Pane? = null)
+                            internal val hermesTarget: Pane? = null,
+                            /** 2.2.7: Send now is sending it (Ctrl+B first, or the message); the idle loop leaves it. */
+                            val sending: Boolean = false,
+                            /** 2.2.7: a Send now write failed after it may have reached the computer: never sent again by itself. */
+                            val mayHaveSent: Boolean = false,
+                            /** 2.2.7: why Send now didn't send it, shown on its row. */
+                            val note: String? = null)
 
     var queued by mutableStateOf<List<QueuedPrompt>>(emptyList())
         private set
@@ -6005,6 +6029,8 @@ class AppViewModel internal constructor(
                 if (link != Link.CONNECTED) continue
                 for (q in queued.toList()) {
                     if (q !in queued || q.serverId != current?.id) continue
+                    // 2.2.7: never behind a Send now in flight, nor after one that may have gone in.
+                    if (q.sending || q.mayHaveSent) continue
                     val p = pane(q.paneId)
                     if (p == null) continue
                     if (q.hermesTarget?.sameCardOccupant(p) == false) continue
@@ -6021,8 +6047,10 @@ class AppViewModel internal constructor(
     }
 
     /** Skip this app's idle wait. Normal screen and input guards still apply. */
-    fun sendQueuedImmediately(q: QueuedPrompt) {
-        if (q !in queued || q.serverId != current?.id) return
+    fun sendQueuedImmediately(row: QueuedPrompt) {
+        // 2.2.7: by id (a row's copy may be older than its note), and never while Send now is sending it.
+        val q = queued.firstOrNull { it.id == row.id } ?: return
+        if (q.sending || q.serverId != current?.id) return
         val target = pane(q.paneId) ?: return
         if (q.hermesTarget?.sameCardOccupant(target) == false) {
             flash("Not sent: the Hermes pane changed. Cancel the queued message to remove it.")
@@ -6036,12 +6064,140 @@ class AppViewModel internal constructor(
             flash("Reconnect or answer the pending question before sending.")
             return
         }
-        queued = queued - q
+        queued = queued.filterNot { it.id == q.id }
         sendMessage(target, q.text)
     }
 
     fun cancelQueued(q: QueuedPrompt) {
-        queued = queued - q
+        queued = queued.filterNot { it.id == q.id }
+        if (sendNowConfirm?.id == q.id) sendNowConfirm = null
+    }
+
+    // -- Send now (2.2.7) ---------------------------------------------------------------------------
+
+    /** The queued message waiting on the Force Send confirmation, or null. */
+    var sendNowConfirm by mutableStateOf<QueuedPrompt?>(null)
+        private set
+
+    private fun queuedById(id: Long) = queued.firstOrNull { it.id == id }
+    private fun updateQueued(id: Long, change: (QueuedPrompt) -> QueuedPrompt) {
+        queued = queued.map { if (it.id == id) change(it) else it }
+    }
+
+    /**
+     * The long-press "Send now" on a queued message. Every send guard still applies (a question, a
+     * panel, a draft, the link); then the route ([com.billmongan.herdrdroid.herdr.sendNowRoute]):
+     * an idle agent gets it at once; a Claude Code command showing its background hint is moved to
+     * the background with Ctrl+B first; a working Claude Code asks first (Force Send); any other
+     * working agent keeps it queued and says why. It leaves the queue only once delivered.
+     */
+    fun sendQueuedNow(q: QueuedPrompt) {
+        val item = queuedById(q.id) ?: return
+        if (item.sending || item.serverId != current?.id) return
+        val target = pane(item.paneId) ?: run { flash("Not sent: that pane isn't open on the computer just now."); return }
+        if (item.hermesTarget?.sameCardOccupant(target) == false) {
+            flash("Not sent: the Hermes pane changed. Cancel the queued message to remove it.")
+            return
+        }
+        if (waitingForHermesComposer(target.id)) { flash("Waiting for Hermes to return to its composer after Usage."); return }
+        if (link != Link.CONNECTED || herdr == null || hasPendingQuestion(target)) {
+            flash("Reconnect or answer the pending question before sending.")
+            return
+        }
+        val screen = if (paneTextPane == target.id && paneReadProblem == null) paneText else ""
+        val route = com.billmongan.herdrdroid.herdr.sendNowRoute(target.agent, target.status, screen)
+        com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${target.id}: send now, route ${route.name.lowercase()}")
+        when (route) {
+            com.billmongan.herdrdroid.herdr.SendNowRoute.NORMAL -> dispatchQueued(item, target)
+            com.billmongan.herdrdroid.herdr.SendNowRoute.FORCE_CONFIRM -> sendNowConfirm = item
+            com.billmongan.herdrdroid.herdr.SendNowRoute.WAIT_FOR_IDLE -> {
+                val why = com.billmongan.herdrdroid.herdr.sendNowWaitText(target.agentName)
+                updateQueued(item.id) { it.copy(note = why) }
+                flash(why)
+            }
+            com.billmongan.herdrdroid.herdr.SendNowRoute.BACKGROUND_THEN_SEND -> backgroundThenSend(item, target)
+        }
+    }
+
+    /** Send anyway, from the Force Send confirmation: typed in while Claude works, taken after its current step. */
+    fun confirmSendNow() {
+        val item = sendNowConfirm?.let { queuedById(it.id) }
+        sendNowConfirm = null
+        if (item == null || item.sending || item.serverId != current?.id) return
+        val target = pane(item.paneId) ?: return
+        if (link != Link.CONNECTED || hasPendingQuestion(target)) { flash("Reconnect or answer the pending question before sending."); return }
+        dispatchQueued(item, target)
+    }
+
+    fun cancelSendNow() { sendNowConfirm = null }
+
+    /** Sends [item] once through [sendMessage] with all its guards; it leaves the queue only when delivered. */
+    private fun dispatchQueued(item: QueuedPrompt, target: Pane) {
+        updateQueued(item.id) { it.copy(sending = true, note = null) }
+        sendMessage(target, item.text,
+            delivered = {
+                queued = queued.filterNot { it.id == item.id }
+                com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${target.id}: send now delivered; removed from the queue")
+            },
+            failed = { why, started ->
+                updateQueued(item.id) {
+                    it.copy(sending = false, mayHaveSent = it.mayHaveSent || started,
+                        note = if (started) "The link dropped while it was being sent, so it may have gone in. Check the agent before sending it again."
+                        else "Not sent: $why. Still queued.")
+                }
+            })
+    }
+
+    /** How often, and how many times, the screen is read after Ctrl+B for the task to show in the background. */
+    internal var backgroundCheckMs = 700L
+    private val BACKGROUND_CHECKS = 4
+
+    /**
+     * Ctrl+B, then the message (2.2.7). A fresh read must still show Claude's background hint and
+     * no question, panel or draft before Ctrl+B goes; then reads must show the hint gone (the
+     * command moved to the background) or the agent idle before the message is sent, once.
+     */
+    private fun backgroundThenSend(item: QueuedPrompt, target: Pane) {
+        updateQueued(item.id) { it.copy(sending = true, note = "Moving the running task to the background…") }
+        fun fail(why: String) = updateQueued(item.id) { it.copy(sending = false, note = "Not sent: $why. Still queued.") }
+        act(target.id, "Couldn't move the task to the background", input = true) { h ->
+            try {
+                val lines = sendReadLines(target.agent)
+                suspend fun fresh(): String? = runCatching { h.readStyled(target.id, lines) }.getOrNull()?.takeIf { it.isNotBlank() }
+                val before = fresh() ?: return@act fail("its screen couldn't be read first")
+                val now = pane(target.id)?.takeIf { it.sameCardOccupant(target) } ?: return@act fail("the pane changed")
+                if (checkedSendBlocked(now, before, null) || usageDialogShown(now.agent, before)) return@act fail("a question or panel is open in it")
+                holdReason(target.id, before)?.let { return@act fail(it) }
+                if (!com.billmongan.herdrdroid.herdr.claudeBackgroundHint(before)) {
+                    // The command finished, or went to the background on its own, since the chat's read.
+                    updateQueued(item.id) { it.copy(sending = false, note = null) }
+                    if (com.billmongan.herdrdroid.herdr.agentWorking(now.status, before)) sendNowConfirm = queuedById(item.id)
+                    else dispatchQueued(item, now)
+                    return@act
+                }
+                h.sendKeys(target.id, com.billmongan.herdrdroid.herdr.Backgrounding.KEY)
+                com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${target.id}: send now pressed Ctrl+B; checking the task moved to the background")
+                var moved = false
+                for (i in 0 until BACKGROUND_CHECKS) {
+                    delay(backgroundCheckMs)
+                    val after = fresh() ?: continue
+                    val p = pane(target.id) ?: now
+                    if (checkedSendBlocked(p, after, null)) return@act fail("a question opened after Ctrl+B")
+                    if (!com.billmongan.herdrdroid.herdr.claudeBackgroundHint(after) || !com.billmongan.herdrdroid.herdr.agentWorking(p.status, after)) {
+                        moved = true
+                        break
+                    }
+                }
+                if (!moved) return@act fail("the task didn't show as moved to the background after Ctrl+B")
+                com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${target.id}: send now saw the task in the background; sending")
+                dispatchQueued(item, pane(target.id) ?: now)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                fail(com.billmongan.herdrdroid.diag.DiagLog.describe(e))
+                throw e
+            }
+        }
     }
 
     // -- Work under a pane ---------------------------------------------------------------------------
