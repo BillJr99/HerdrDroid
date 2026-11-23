@@ -3410,6 +3410,21 @@ class AppViewModel internal constructor(
         return com.billmongan.herdrdroid.diag.Redact.text(raw)
     }
 
+    /**
+     * 2.2.7: Export pane screen, read fresh after the tap (see diag/PaneScreenExport.kt). Builds the
+     * file's text only; sharing it is a second tap in the dialog. Null without a connected client.
+     */
+    internal suspend fun paneScreenExport(paneId: String): com.billmongan.herdrdroid.diag.PaneScreenExport? {
+        val h = herdr ?: return null
+        val p = pane(paneId)
+        val (plain, ansi) = h.exportScreens(paneId)
+        val prompt = com.billmongan.herdrdroid.herdr.detectPrompt(
+            com.billmongan.herdrdroid.herdr.forPhone(ansi), p?.status == Status.NEEDS_YOU, p?.agent, versionOf(paneId))
+        return com.billmongan.herdrdroid.diag.PaneScreenExports.build(
+            com.billmongan.herdrdroid.BuildConfig.VERSION_NAME, current?.label.orEmpty(), paneId, p, versionOf(paneId),
+            plain, ansi, prompt, System.currentTimeMillis())
+    }
+
     /** When each open pane's input line last held typing (1.4.0, the send guard). */
     private val typedAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
 

@@ -167,6 +167,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     androidx.compose.runtime.DisposableEffect(paneId) { onDispose { vm.usageViewShown(paneId, false) } }
     var menu by remember { mutableStateOf(false) }
     var choosingModel by remember { mutableStateOf(false) }
+    // 2.2.7: Export pane screen's dialog (PaneScreenExportDialog.kt).
+    var exportingScreen by remember(paneId) { mutableStateOf(false) }
     var showSnippets by remember { mutableStateOf(false) }
     var hermesMenu by remember { mutableStateOf(false) }
     var closingSession by remember { mutableStateOf(false) }
@@ -588,6 +590,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                             .putExtra(android.content.Intent.EXTRA_TEXT, vm.debugBundle(paneId))
                         runCatching { context.startActivity(android.content.Intent.createChooser(send, "Share debug bundle")) }
                     })
+                    DropdownMenuItem(text = { Text("Export pane screen") }, onClick = { menu = false; exportingScreen = true })
                     // The agent's own key for moving a running command to the background (Ctrl+B),
                     // offered only for agents where that is what the key does.
                     if (com.billmongan.herdrdroid.herdr.Backgrounding.supported(pane?.agent)) DropdownMenuItem(
@@ -958,6 +961,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     opened?.let { t ->
         FullMessage(t, liveSize, vm.readingFont.family, onQuote = { quote(t); opened = null }, onClose = { opened = null })
     }
+
+    if (exportingScreen) PaneScreenExportHost(vm, paneId) { exportingScreen = false }
 
     if (choosingModel && pane != null) {
         val presets = ModelPresets.forAgent(pane.agent)
