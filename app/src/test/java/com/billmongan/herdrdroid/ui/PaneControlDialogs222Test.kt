@@ -40,10 +40,17 @@ class PaneControlDialogs222Test {
         rule.runOnIdle { assertEquals(listOf("assisted"), picked) }
     }
 
-    @Test fun copilotModeOffersPlanButNotAutopilot() {
-        rule.setContent { ModeDialog("Copilot", PaneControls.modes("copilot")!!, "interactive", idle = true, onPick = {}, onDismiss = {}) }
-        rule.onNodeWithText("Interactive  (now)").assertIsDisplayed()
-        rule.onNodeWithText("Plan").assertIsDisplayed()
+    @Test fun copilotModeGoesFromPlanBackToInteractiveOnly() {
+        val picked = mutableListOf<String>()
+        rule.setContent { ModeDialog("Copilot", PaneControls.modes("copilot")!!, "plan", idle = true, onPick = { picked += it }, onDismiss = {}) }
+        rule.onNodeWithText("Plan  (now)").assertIsDisplayed()
         rule.onNodeWithText("Autopilot (keeps going on its own)").assertDoesNotExist()
+        rule.onNodeWithText("Interactive").performClick()
+        rule.runOnIdle { assertEquals(listOf("interactive"), picked) }
+    }
+
+    @Test fun copilotInAutopilotIsNotSwitchedFromTheMenu() {
+        rule.setContent { ModeDialog("Copilot", PaneControls.modes("copilot")!!, "autopilot", idle = true, onPick = {}, onDismiss = {}) }
+        rule.onNodeWithText("The app doesn't switch away from this setting; change it at the computer.").assertIsDisplayed()
     }
 }

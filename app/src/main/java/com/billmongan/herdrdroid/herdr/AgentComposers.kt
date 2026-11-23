@@ -16,24 +16,46 @@ internal object AgentComposers {
         else -> null
     }
 
-    private fun rows(screen: String): List<String> =
-        screen.lines().map { stripAnsi(it.replace("\r", "")).trimEnd() }.dropLastWhile { it.isBlank() }.takeLast(16)
+    /** The agents this reader owns: for them a layout it doesn't know is no input line at all (2.2.2, from review). */
+    fun handles(agent: String?): Boolean = agent?.lowercase() in setOf("pi", "omp", "copilot")
+
+    /**
+     * The key that empties a box holding only typed spaces, which a screen read can't tell from an
+     * empty one (no cursor cell is drawn): Oh My Pi 19.0.1's "tui.editor.deleteToLineStart" (ctrl+u,
+     * "Delete to line start") and Copilot 1.0.114's ctrl+u ("delete from cursor to beginning of line").
+     * pi draws its cursor, so a blank pi box is judged by it instead.
+     */
+    fun clearKey(agent: String?): String? = when (agent?.lowercase()) { "omp", "copilot" -> "ctrl+u"; else -> null }
+
+    private fun rawRows(screen: String): List<String> =
+        screen.lines().map { it.replace("\r", "").trimEnd() }.dropLastWhile { stripAnsi(it).isBlank() }.takeLast(40)
+
+    private fun rows(screen: String): List<String> = rawRows(screen).map { stripAnsi(it).trimEnd() }
 
     private val PLAIN_RULE = Regex("""^[─━]{20,}$""")
 
+    /** A row whose first cell is drawn in reverse video (SGR 7) after any resets: pi's cursor at column 0. */
+    private val CURSOR_AT_START = Regex("""^(?:\u001B\[0?m)*\u001B\[7m """)
+
     /**
      * pi 1.6.0: its editor sits between two full-width rules, with its folder and its token line under
-     * the bottom rule; the empty editor is one row holding only the cursor cell. Only the last rule pair
-     * on screen with at most four rows under it counts; an autocomplete list under it doesn't.
+     * the bottom rule. Only the last rule pair on screen with at most four rows under it counts; an
+     * autocomplete list under it doesn't. The empty editor is one row whose first cell is pi's cursor
+     * (reverse video): typed spaces put the cursor after them, and a plain read can't show the cursor,
+     * so a blank row is empty only on a styled read with the cursor at column 0.
      */
     internal fun pi(screen: String): String? {
-        val r = rows(screen)
+        val raw = rawRows(screen)
+        val r = raw.map { stripAnsi(it).trimEnd() }
         val bottom = r.indices.lastOrNull { PLAIN_RULE.matches(r[it]) } ?: return null
         val under = r.drop(bottom + 1)
         if (under.count { it.isNotBlank() } !in 1..4 || under.any { PLAIN_RULE.matches(it.trim()) }) return null
         val top = (bottom - 1 downTo maxOf(0, bottom - 31)).firstOrNull { PLAIN_RULE.matches(r[it]) } ?: return null
         if (kotlin.math.abs(r[top].length - r[bottom].length) > 2 || bottom - top < 2) return null
-        return r.subList(top + 1, bottom).joinToString("\n") { it.trim() }.trim()
+        val text = r.subList(top + 1, bottom).joinToString("\n") { it.trim() }.trim()
+        if (text.isNotEmpty()) return text
+        if (bottom - top != 2) return null
+        return if (CURSOR_AT_START.containsMatchIn(raw[top + 1])) "" else null
     }
 
     private val COPILOT_TOP = Regex("""^╻▄{20,}$""")

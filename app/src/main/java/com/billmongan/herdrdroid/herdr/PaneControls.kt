@@ -50,8 +50,11 @@ object PaneControls {
          * [key] gets there. A command is sent once and confirmed by reading the screen again.
          */
         val command: ((from: String?, to: String) -> String?)? = null,
-        /** 2.2.2: confirms a command from the agent's reply when its footer doesn't show the mode (Codex). */
-        val confirmed: ((before: String, after: String, to: String) -> Boolean)? = null,
+        /**
+         * 2.2.2: the mode the agent's newest reply names after a command, when its footer doesn't show
+         * the mode (Codex's "Permissions updated to …"), or null when no new reply shows yet.
+         */
+        val replied: ((before: String, after: String) -> String?)? = null,
         /**
          * 2.2.2: every offered command sets its mode outright, whatever the mode is now, so the menu
          * works when the screen doesn't show the current one (Codex's /permissions <profile>).
@@ -60,7 +63,16 @@ object PaneControls {
         /** 2.2.2: after a press that didn't reach the target, stop where it is instead of pressing on round the cycle. */
         val returnByKey: Boolean = true,
     ) {
-        fun read(screen: String): String? = reader?.invoke(screen) ?: if (reader == null) agentMode(agent, screen) else null
+        /**
+         * The mode on [screen]. A custom reader still yields to [footerBypass] (2.2.2, from review): a
+         * footer that says every tool runs without asking reads as "bypass", so the menu shows it and
+         * never switches away from it.
+         */
+        fun read(screen: String): String? = when {
+            reader == null -> agentMode(agent, screen)
+            agent != "claude" && footerBypass(stripAnsi(screen)) -> "bypass"
+            else -> reader.invoke(screen)
+        }
 
         /** How the menu gets from [from] to [to]: the agent's command, or null for [key]. */
         fun commandFor(from: String?, to: String): String? = command?.invoke(from, to)
@@ -132,11 +144,11 @@ object PaneControls {
             listOf(
                 ModeOption(":read-only", "Read Only (asks before edits and internet)"),
                 ModeOption(":workspace", "Default (edits the workspace, asks before going outside it)"),
-                ModeOption(":danger-full-access", "Full Access (approves everything)", approvesAll = true, offered = false),
+                ModeOption("bypass", "Full Access (approves everything)", approvesAll = true, offered = false),
             ),
             maxPresses = 1, reader = { null }, absolute = true,
             command = { _, to -> if (to == ":read-only" || to == ":workspace") "/permissions $to" else null },
-            confirmed = { before, after, _ -> codexPermissionReplies(after) > codexPermissionReplies(before) },
+            replied = ::codexReplied,
         )
         // Grok 1.0.92: the chip after the model on the box edge ("Grok 4.7 (high) · auto-review") names
         // the mode; none is ask. "/auto-review" turns auto-review on and, run again, goes back to ask.
@@ -152,18 +164,20 @@ object PaneControls {
             maxPresses = 1, reader = ::grokMode,
             command = { from, to -> if ((from == "default" && to == "auto") || (from == "auto" && to == "default")) "/auto-review" else null },
         )
-        // GitHub Copilot CLI 1.0.114: Shift+Tab cycles Interactive, Plan, Autopilot (its footer reads
-        // "Interactive · Manual Approval"); "/autopilot off" goes back to Interactive from either.
-        // Autopilot may open its own confirmation, so it is never a target and no press goes round it.
+        // GitHub Copilot CLI 1.0.114: its footer reads "Interactive · Manual Approval"; "/autopilot off"
+        // goes back to Interactive from Plan ("r==="off"?s="interactive""). Shift+Tab's cycle order
+        // can't be proven for every build and may stop on Autopilot (which keeps going on its own and
+        // counts as approving everything), so the app never presses it: Plan is shown, not offered,
+        // and the menu switches from Plan back to Interactive only.
         "copilot" -> ModeSpec(
-            "copilot", "shift+tab", listOf("interactive", "plan", "autopilot"),
+            "copilot", "", null,
             listOf(
                 ModeOption("interactive", "Interactive"),
-                ModeOption("plan", "Plan"),
-                ModeOption("autopilot", "Autopilot (keeps going on its own)", offered = false),
+                ModeOption("plan", "Plan", offered = false),
+                ModeOption("autopilot", "Autopilot (keeps going on its own)", approvesAll = true, offered = false),
             ),
             maxPresses = 1, reader = { copilotFooter(it)?.first }, returnByKey = false,
-            command = { from, to -> if (to == "interactive" && (from == "plan" || from == "autopilot")) "/autopilot off" else null },
+            command = { from, to -> if (to == "interactive" && from == "plan") "/autopilot off" else null },
         )
         // Antigravity 1.5.14: Shift+Tab cycles its agent modes ("Press shift+tab to cycle modes
         // (default, accept-edits, plan)", and Auto where it is offered); the status row names the
@@ -177,6 +191,7 @@ object PaneControls {
                 ModeOption("accept edits", "Accept edits"),
                 ModeOption("plan", "Plan"),
                 ModeOption("auto", "Auto (edits and safe commands approved)"),
+                ModeOption("bypass", "Skipping permissions (approves every tool)", approvesAll = true, offered = false),
             ),
             maxPresses = 5, reader = ::agyMode,
         )
@@ -185,7 +200,8 @@ object PaneControls {
         // approval setting is only in /settings, so the menu has Default and Plan.
         "omp" -> ModeSpec(
             "omp", "", null,
-            listOf(ModeOption("default", "Default"), ModeOption("plan", "Plan")),
+            listOf(ModeOption("default", "Default"), ModeOption("plan", "Plan"),
+                ModeOption("bypass", "Yolo (approves every tool)", approvesAll = true, offered = false)),
             maxPresses = 1, reader = ::ompMode,
             command = { from, to -> if ((from == "default" && to == "plan") || (from == "plan" && to == "default")) "/plan" else null },
         )
@@ -255,9 +271,23 @@ object PaneControls {
     /** Every mode menu [agent] has, in menu order. */
     fun modeMenus(agent: String?): List<ModeSpec> = listOfNotNull(modes(agent), approvals(agent))
 
-    /** Codex's reply to /permissions, counted on the last rows; a reply naming full access doesn't count. */
-    internal fun codexPermissionReplies(screen: String): Int =
-        tail(screen, 40).count { it.contains("Permissions updated to", ignoreCase = true) && !it.contains("full", ignoreCase = true) }
+    private fun codexReplies(screen: String) = tail(screen, 40).filter { it.contains("Permissions updated to", ignoreCase = true) }
+
+    /**
+     * The profile Codex's newest "Permissions updated to …" names, once one more shows than before:
+     * ":read-only", ":workspace" (Default, Workspace or Agent), "bypass" (full access), or "other".
+     */
+    internal fun codexReplied(before: String, after: String): String? {
+        val now = codexReplies(after)
+        if (now.size <= codexReplies(before).size) return null
+        val name = now.last().substringAfter("Permissions updated to", "").lowercase()
+        return when {
+            Regex("""\bfull\b|danger""").containsMatchIn(name) -> "bypass"
+            Regex("""read[- ]only""").containsMatchIn(name) -> ":read-only"
+            Regex("""\b(default|workspace|agent)\b""").containsMatchIn(name) -> ":workspace"
+            else -> "other"
+        }
+    }
 
     private val GROK_EDGE = Regex("""Grok\b[^()\n]{0,40}\((?:low|medium|high|xhigh)\)\s*(?:·\s*([a-z][a-z-]*))?\s*─""")
 

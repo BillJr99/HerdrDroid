@@ -596,7 +596,13 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     if (!live) menus.forEach { spec ->
                         val mode = spec.read(liveScreenText)
                         if (mode != null || spec.absolute) {
-                            val label = spec.options.firstOrNull { it.name == mode }?.label?.substringBefore(" (") ?: mode
+                            // 2.2.2 (from review): a mode that approves every tool keeps its warning on the item.
+                            val option = spec.options.firstOrNull { it.name == mode }
+                            val label = when {
+                                option == null -> if (mode == "bypass") "bypass (approves every tool)" else mode
+                                option.approvesAll -> option.label
+                                else -> option.label.substringBefore(" (")
+                            }
                             DropdownMenuItem(
                                 text = { Text(spec.title + (label?.let { ": $it" } ?: "") + "…") },
                                 onClick = { menu = false; choosingMode = spec.title },
