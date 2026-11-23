@@ -132,6 +132,14 @@ fun forPhone(s: String): String = GLYPHS.fold(stripAnsi(s)) { acc, (from, to) ->
 enum class Backend { TUI, CORE }
 
 /** What a computer has: which herdr is installed and which one's server is running. */
+/** herdr's own pane count in a list read, and how many of them this app parsed (2.2.5). */
+data class PaneListCounts(val raw: Int, val parsed: Int)
+
+/** One parsed pane list read (2.2.5). */
+data class TuiPaneList(val panes: List<Pane>, val raw: Int)
+
+private const val TABS_MARK = "@@herdrdroid-tabs@@"
+
 data class Detected(val tuiInstalled: Boolean, val tuiRunning: Boolean, val coreInstalled: Boolean, val coreRunning: Boolean, val hcPath: String?)
 
 class Herdr internal constructor(
@@ -231,21 +239,23 @@ class Herdr internal constructor(
     @Volatile var panes0Cache: List<Pane> = emptyList()
         private set
 
+    /**
+     * 2.2.5: what the last pane list read gave, for the diagnostic log: herdr's own count (raw) and
+     * how many parsed. Null before the first read.
+     */
+    @Volatile var lastListCounts: PaneListCounts? = null
+        private set
+
     suspend fun panes(): List<Pane> {
-        if (core) return corePanes(run(hcCmd("ls", "--json")))
+        if (core) return corePanes(run(hcCmd("ls", "--json"))).also { lastListCounts = PaneListCounts(it.size, it.size) }
         // Panes and tab labels in one round trip; a tab list failure only loses the labels.
-        val both = run(cmd("pane", "list") + "; echo @@herdrdroid-tabs@@; " + cmd("tab", "list") + " 2>/dev/null || true")
-        val paneJson = both.substringBefore("@@herdrdroid-tabs@@")
-        val labels = runCatching {
-            val tabs = JSONObject(both.substringAfter("@@herdrdroid-tabs@@").trim()).getJSONObject("result").getJSONArray("tabs")
-            (0 until tabs.length()).associate { tabs.getJSONObject(it).let { t -> t.optString("tab_id") to t.optString("label") } }
-        }.getOrDefault(emptyMap())
-        val root = JSONObject(paneJson)
-        val arr = root.getJSONObject("result").getJSONArray("panes")
-        val list = (0 until arr.length()).map { i ->
-            val p = arr.getJSONObject(i)
-            tuiPane(p).copy(tabLabel = labels[p.optString("tab_id")].orEmpty())
-        }
+        // 2.2.5: the pane list's own exit status comes back after the marker. Before, the line's
+        // status was the tab list's (always 0), so a failed pane list reached the parser as empty
+        // text and its error was lost.
+        val both = run(cmd("pane", "list") + "; s=\$?; echo \"$TABS_MARK \$s\"; " + cmd("tab", "list") + " 2>/dev/null || true")
+        val read = parseTuiPaneList(both)
+        lastListCounts = PaneListCounts(read.raw, read.panes.size)
+        val list = read.panes
         // herdr doesn't always mark a Claude question dialog (AskUserQuestion) as blocked, so the
         // bottom of each Claude pane that isn't already waiting is checked for the dialog's footer.
         // 2.1.1: the read is long enough to reach past the blank rows a short conversation leaves
@@ -258,11 +268,48 @@ class Herdr internal constructor(
         val askable = screenAskable(list) + list.filter { isOpenCode(it.agent) && it.status == Status.NEEDS_YOU }
         val marked = if (askable.isEmpty()) list else {
             val tails = runCatching { previews(askable.map { it.id }, CLAUDE_STATUS_READ_LINES) }.getOrDefault(emptyMap())
-            markScreenNeedsYou(list, tails.mapValues { it.value.tail })
+            // 2.2.5: a screen this app can't read must not cost the whole list; herdr's states stand.
+            try {
+                markScreenNeedsYou(list, tails.mapValues { it.value.tail })
+            } catch (c: kotlinx.coroutines.CancellationException) {
+                throw c
+            } catch (e: Exception) {
+                com.billmongan.herdrdroid.diag.DiagLog.log("link", "stage=parse result=screen-check-skipped error=${e.javaClass.simpleName}")
+                list
+            }
         }
         val order = listOf(Status.NEEDS_YOU, Status.WORKING, Status.DONE, Status.IDLE, Status.UNKNOWN)
         panes0Cache = marked
         return marked.sortedWith(compareBy({ order.indexOf(it.status) }, { it.id }))
+    }
+
+    /**
+     * The pane list and tab list from one [panes] read (2.2.5, separated out so herdr 0.9.5's real
+     * output can be tested). A pane list that failed throws [HerdrError] with its exit status. A
+     * line printed before the JSON is skipped, and one pane herdr reports in a shape this app can't
+     * read is left out instead of losing the whole list.
+     */
+    internal fun parseTuiPaneList(both: String): TuiPaneList {
+        val paneText = both.substringBefore(TABS_MARK)
+        val after = both.substringAfter(TABS_MARK, "")
+        val statusWord = after.substringBefore('\n').trim()
+        val status = statusWord.toIntOrNull()
+        if (status != null && status != 0) throw HerdrError("herdr pane list exited $status", status)
+        val tabsText = if (status != null) after.substringAfter('\n', "") else after
+        val labels = runCatching {
+            val tabs = JSONObject(tabsText.trim()).getJSONObject("result").getJSONArray("tabs")
+            (0 until tabs.length()).associate { tabs.getJSONObject(it).let { t -> t.optString("tab_id") to t.optString("label") } }
+        }.getOrDefault(emptyMap())
+        val start = paneText.indexOf('{')
+        if (start < 0) throw HerdrError("herdr pane list printed no JSON", -3)
+        val arr = JSONObject(paneText.substring(start)).getJSONObject("result").getJSONArray("panes")
+        val panes = (0 until arr.length()).mapNotNull { i ->
+            runCatching {
+                val p = arr.getJSONObject(i)
+                tuiPane(p).copy(tabLabel = labels[p.optString("tab_id")].orEmpty())
+            }.getOrNull()
+        }
+        return TuiPaneList(panes, arr.length())
     }
 
     private fun tuiPane(p: JSONObject): Pane = Pane(
