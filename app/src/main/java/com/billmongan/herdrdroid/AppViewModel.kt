@@ -4105,9 +4105,10 @@ class AppViewModel internal constructor(
     /** If Chat already shows an actionable card, a spoken option must mean the same thing on it. */
     internal fun voiceCardFitsChat(target: CardTarget, live: Prompt): Boolean {
         if (!voiceCardCurrent(target)) return false
-        // 2.2.2: the card Chat shows, confirmed; while Chat still reads it, there is no card to match.
+        // 2.2.2: the card Chat shows once confirmed, else the card Chat's screen parses to (still being
+        // read): a spoken option must mean the same thing on either, as before.
         val displayed = paneTextTarget?.takeIf { it.isCurrent(target.client) && it.pane.id == target.pane.id }
-            ?.let { confirmedCardFor(target.pane.id) }
+            ?.let { confirmedCardFor(target.pane.id) ?: cardParse(target.pane.id, paneText) }
         return displayed?.takeIf { it.choices.isNotEmpty() && !it.terminalReview }
             ?.let { cardAnswerStillFits(it, live) } ?: true
     }
