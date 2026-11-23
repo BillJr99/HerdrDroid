@@ -457,6 +457,14 @@ class Herdr internal constructor(
     private fun screenText(text: String, preserveGlyphs: Boolean) = if (preserveGlyphs) stripAnsi(text) else forPhone(text)
 
     /**
+     * 2.2.7, Export pane screen: the visible screen exactly as herdr returns it, plain and then
+     * ANSI, unchanged by the app. herdr-core has one plain read, given for both.
+     */
+    internal suspend fun exportScreens(paneId: String): Pair<String, String> =
+        if (core) runNow(hcCmd("read", paneId, "--lines", "80"), timeoutSeconds = 5).let { it to it }
+        else runNow(visibleSnapshot(paneId, ansi = false), timeoutSeconds = 5) to runNow(visibleSnapshot(paneId, ansi = true), timeoutSeconds = 5)
+
+    /**
      * The notification's strict read (2.1.2) with its styles kept: the same [read] (the bottom
      * [lines] rows, no card-recovery fallback), as ANSI, so an OpenCode permission's highlighted
      * button can be seen before a key goes in. herdr-core gives plain text, where no button counts
