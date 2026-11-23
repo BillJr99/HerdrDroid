@@ -1,0 +1,5 @@
+card: options
+blocked: true
+heading: Do you want to proceed?
+options: Yes | No
+source: derived 2026-11-23 for 2.2.3 from captured-2.1.330-ask/rule-ask.txt (real Claude Code 2.1.330 layout): the same prompt as an older Claude Code draws it, with no "· from" suffix on the title, no dashed frame around the command, and the older "Esc to cancel · Tab to amend" footer.

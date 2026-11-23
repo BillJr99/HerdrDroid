@@ -1,0 +1,5 @@
+card: options
+blocked: true
+heading: Do you want to proceed?
+options: Yes | No
+source: derived 2026-11-23 for 2.2.3 from captured-2.1.330-ask/rule-ask.txt (real Claude Code 2.1.330 layout): a PreToolUse hook's "ask" in place of the permissions rule rows, with a reason that wraps over two rows and has colons and parentheses; the command and description are neutral.

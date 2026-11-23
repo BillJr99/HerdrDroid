@@ -1,0 +1,5 @@
+card: options
+blocked: true
+heading: Do you want to proceed?
+options: Yes | No
+source: captured 2026-11-23 for 2.2.3 from a live Claude Code 2.1.330 pane (herdr pane read --source visible, plain and ansi), a permission prompt raised by a helper agent for a dry-run rsync that a permissions rule sends to the user. Rows from the user's echoed message down; the paths and the session title are replaced by neutral text of the same length. The chat above the dialog has a row quoting "1. Yes" and "Do you want to proceed?".
