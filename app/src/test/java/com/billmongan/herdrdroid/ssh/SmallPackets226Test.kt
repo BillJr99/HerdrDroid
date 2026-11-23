@@ -46,7 +46,7 @@ class SmallPackets226Test {
     @Test fun theOptionIsSetBeforeConnectAndReadBackAfter() = withListener { port ->
         val ops = FakeOps()
         val reports = mutableListOf<MssReport>()
-        val socket = MssSocketFactory(1200, ops) { reports += it }.createSocket()
+        val socket = MssSocketFactory(1200, ops, report = { reports += it }).createSocket()
         assertFalse(socket.isConnected)
         socket.connect(InetSocketAddress(InetAddress.getLoopbackAddress(), port), 2_000)
         socket.use { assertTrue(it.isConnected) }
@@ -59,7 +59,7 @@ class SmallPackets226Test {
         for (failure in listOf<Throwable>(IOException("refused"), UnsatisfiedLinkError("no native"))) {
             val ops = FakeOps(fail = failure)
             val reports = mutableListOf<MssReport>()
-            MssSocketFactory(1200, ops) { reports += it }.createSocket(InetAddress.getLoopbackAddress(), port).use {
+            MssSocketFactory(1200, ops, report = { reports += it }).createSocket(InetAddress.getLoopbackAddress(), port).use {
                 assertTrue(it.isConnected)
             }
             assertEquals(1, ops.sets.size)
@@ -72,7 +72,7 @@ class SmallPackets226Test {
     }
 
     @Test fun aReportThatThrowsDoesNotFailTheConnection() = withListener { port ->
-        MssSocketFactory(1200, FakeOps()) { error("diag broke") }.createSocket("127.0.0.1", port).use { assertTrue(it.isConnected) }
+        MssSocketFactory(1200, FakeOps(), report = { error("diag broke") }, facts = { _, _ -> error("diag broke") }).createSocket("127.0.0.1", port).use { assertTrue(it.isConnected) }
     }
 
     @Test fun theMssIsBounded() {
@@ -97,7 +97,8 @@ class SmallPackets226Test {
     @Test fun offOrOverAWebSocketTheDefaultFactoryIsUsed() {
         val off = HerdrSsh("127.0.0.1", 22, "u", Credentials(null, null), null, { null })
         assertNull(off.activeMss)
-        assertNull(off.socketFactoryForNext())
+        // 2.2.6 diagnostics: direct TCP always gets the timing factory; it sets no MSS when off.
+        assertNull(off.socketFactoryForNext()!!.mss)
 
         val ws = HerdrSsh("unused", 0, "u", Credentials(null, null), null, { null }, "wss://bridge.invalid/ssh", 1200, "fixture", FakeOps())
         assertNull(ws.activeMss)
@@ -107,15 +108,15 @@ class SmallPackets226Test {
 
         val tcp = HerdrSsh("127.0.0.1", 22, "u", Credentials(null, null), null, { null }, null, 99999, "fixture", FakeOps())
         assertEquals(SmallPackets.MAX, tcp.activeMss)
-        assertEquals(SmallPackets.MAX, (tcp.socketFactoryForNext() as MssSocketFactory).mss)
+        assertEquals(SmallPackets.MAX, tcp.socketFactoryForNext()!!.mss)
     }
 
     @Test fun theSessionFallbackSwitchesTheNextConnection() {
         val ssh = HerdrSsh("127.0.0.1", 22, "u", Credentials(null, null), null, { null }, null, null, "fixture", FakeOps())
-        assertNull(ssh.socketFactoryForNext())
+        assertNull(ssh.socketFactoryForNext()!!.mss)
         ssh.useSmallPackets(1200)
         assertEquals(1200, ssh.activeMss)
-        assertEquals(1200, (ssh.socketFactoryForNext() as MssSocketFactory).mss)
+        assertEquals(1200, ssh.socketFactoryForNext()!!.mss)
     }
 
     @Test fun theFallbackFiresOnceAndOnlyOnce() {

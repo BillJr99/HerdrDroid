@@ -246,7 +246,10 @@ class Herdr internal constructor(
     @Volatile var lastListCounts: PaneListCounts? = null
         private set
 
-    suspend fun panes(): List<Pane> {
+    /** 2.2.6: the read is named "list-read" in the diagnostic log. */
+    suspend fun panes(): List<Pane> = kotlinx.coroutines.withContext(com.billmongan.herdrdroid.diag.ReadLabel("list-read")) { panesRead() }
+
+    private suspend fun panesRead(): List<Pane> {
         if (core) return corePanes(run(hcCmd("ls", "--json"))).also { lastListCounts = PaneListCounts(it.size, it.size) }
         // Panes and tab labels in one round trip; a tab list failure only loses the labels.
         // 2.2.5: the pane list's own exit status comes back after the marker. Before, the line's
@@ -714,7 +717,11 @@ class Herdr internal constructor(
      * the transcript reader on standard input to the computer's python3. Nothing is installed or
      * written there. Null when the pane has no agent.
      */
-    suspend fun transcript(pane: Pane, cursor: String, script: ByteArray): TranscriptRead? {
+    /** 2.2.6: the read is named "log-read" in the diagnostic log. */
+    suspend fun transcript(pane: Pane, cursor: String, script: ByteArray): TranscriptRead? =
+        kotlinx.coroutines.withContext(com.billmongan.herdrdroid.diag.ReadLabel("log-read")) { transcriptRead(pane, cursor, script) }
+
+    private suspend fun transcriptRead(pane: Pane, cursor: String, script: ByteArray): TranscriptRead? {
         val agent = pane.agent ?: return null
         val r = ssh.execInput("$PYZ ${shq(agent)} ${shq(pane.cwd)} ${shq(Transcript.withLive(cursor, pane.id, pane.sessionId))}", z(script))
         if (r.exit != 0 || r.out.isBlank()) {
@@ -3884,7 +3891,11 @@ fun corePanes(json: String): List<Pane> {
  * says whether its server runs, and herdr-core counts as running when its socket and process are
  * both there (`hc server status` would start a core, so it isn't used).
  */
-suspend fun detectBackend(ssh: HerdrSsh, herdrPath: String): Detected {
+/** 2.2.6: the read is named "probe" in the diagnostic log. */
+suspend fun detectBackend(ssh: HerdrSsh, herdrPath: String): Detected =
+    kotlinx.coroutines.withContext(com.billmongan.herdrdroid.diag.ReadLabel("probe")) { detectBackendRead(ssh, herdrPath) }
+
+private suspend fun detectBackendRead(ssh: HerdrSsh, herdrPath: String): Detected {
     val h = programPath(herdrPath.trim().ifBlank { "herdr" })
     val script = """
 h=${'$'}(command -v $h 2>/dev/null || command -v herdr 2>/dev/null || { [ -x "${'$'}HOME/.local/bin/herdr" ] && echo "${'$'}HOME/.local/bin/herdr"; })

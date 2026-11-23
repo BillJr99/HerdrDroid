@@ -100,16 +100,45 @@ object AndroidMssOps : MssOps {
  */
 data class MssReport(val requested: Int, val applied: Boolean, val route: String?, val error: String?, val effective: Int?)
 
-/** A socket that sets the MSS just before it connects, then reports what happened. */
+/**
+ * Bytes received on the current connection's socket and when the last one came (2.2.6
+ * diagnostics): the silence before a link is declared lost, and a session's bytes in.
+ */
+class InboundCounter {
+    private val total = java.util.concurrent.atomic.AtomicLong()
+    @Volatile var lastAt: Long = 0L
+        private set
+    val bytes: Long get() = total.get()
+    fun add(n: Int) {
+        if (n <= 0) return
+        total.addAndGet(n.toLong())
+        lastAt = System.currentTimeMillis()
+    }
+}
+
+private class CountingInput(private val inner: java.io.InputStream, private val counter: InboundCounter) : java.io.FilterInputStream(inner) {
+    override fun read(): Int = inner.read().also { if (it >= 0) counter.add(1) }
+    override fun read(b: ByteArray, off: Int, len: Int): Int = inner.read(b, off, len).also { counter.add(it) }
+}
+
+/**
+ * A direct TCP socket for SSHJ. With [mss] set it applies TCP_MAXSEG just before it connects; in
+ * every case (2.2.6 diagnostics) it times the TCP connect, reads the socket's facts afterwards,
+ * and counts the bytes it receives. Nothing here can fail the connection.
+ */
 internal class MssSocket(
-    private val mss: Int,
+    private val mss: Int?,
     private val ops: MssOps,
     private val report: (MssReport) -> Unit,
+    private val facts: (Long, com.billmongan.herdrdroid.diag.LinkStats.SocketFacts) -> Unit = { _, _ -> },
+    private val inbound: InboundCounter? = null,
 ) : Socket() {
+    @Volatile private var counted: java.io.InputStream? = null
+
     override fun connect(endpoint: SocketAddress?, timeout: Int) {
         var route: String? = null
         var error: String? = null
-        try {
+        if (mss != null) try {
             route = ops.set(this, mss)
         } catch (e: Exception) {
             error = e.javaClass.simpleName.ifBlank { "Exception" }
@@ -117,25 +146,44 @@ internal class MssSocket(
             error = e.javaClass.simpleName.ifBlank { "LinkageError" }
         }
         // A failed option never fails the connection: it connects with the normal MSS.
+        val t0 = System.currentTimeMillis()
         super.connect(endpoint, timeout)
-        val effective = if (route != null) runCatching { ops.get(this) }.getOrNull() else null
-        runCatching { report(MssReport(mss, route != null, route, error, effective)) }
+        val connectMs = System.currentTimeMillis() - t0
+        // Read back whenever possible: with small packets off it still shows the MSS in use.
+        val effective = if (mss == null || route != null) runCatching { ops.get(this) }.getOrNull() else null
+        val asked = mss
+        if (asked != null) runCatching { report(MssReport(asked, route != null, route, error, effective)) }
+        runCatching {
+            facts(connectMs, com.billmongan.herdrdroid.diag.LinkStats.SocketFacts(
+                mss, effective,
+                runCatching { sendBufferSize }.getOrNull(), runCatching { receiveBufferSize }.getOrNull(),
+                runCatching { tcpNoDelay }.getOrNull(), runCatching { keepAlive }.getOrNull(),
+            ))
+        }
+    }
+
+    override fun getInputStream(): java.io.InputStream {
+        val counter = inbound ?: return super.getInputStream()
+        counted?.let { return it }
+        return synchronized(this) { counted ?: CountingInput(super.getInputStream(), counter).also { counted = it } }
     }
 }
 
 /**
- * The socket factory SSHJ's direct TCP transport uses for a server with small packets on
- * (SSHClient.socketFactory). SSHJ calls [createSocket] with no arguments and then connects the
- * socket with its own connect timeout, so the option is set before the SYN goes out.
+ * The socket factory SSHJ's direct TCP transport uses (SSHClient.socketFactory). SSHJ calls
+ * [createSocket] with no arguments and then connects the socket with its own connect timeout, so
+ * a small-packets MSS ([mss], null when off) is set before the SYN goes out.
  */
 class MssSocketFactory(
-    mss: Int,
+    mss: Int?,
     private val ops: MssOps = AndroidMssOps,
     private val report: (MssReport) -> Unit = {},
+    private val facts: (Long, com.billmongan.herdrdroid.diag.LinkStats.SocketFacts) -> Unit = { _, _ -> },
+    private val inbound: InboundCounter? = null,
 ) : SocketFactory() {
-    val mss: Int = SmallPackets.clamp(mss)
+    val mss: Int? = mss?.let { SmallPackets.clamp(it) }
 
-    override fun createSocket(): Socket = MssSocket(mss, ops, report)
+    override fun createSocket(): Socket = MssSocket(mss, ops, report, facts, inbound)
 
     override fun createSocket(host: String?, port: Int): Socket =
         createSocket().apply { connect(InetSocketAddress(host, port)) }
