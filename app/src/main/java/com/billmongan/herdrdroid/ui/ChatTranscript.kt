@@ -447,22 +447,34 @@ private fun QuestionContent(q: QuestionItem, size: Float) {
         Column(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(QuestionLog.label(q), color = Palette.Muted, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
             q.parts.forEach { p ->
-                p.title?.takeIf { q.parts.size >= 2 }?.let { Text(it, color = Palette.Muted, fontSize = (size * 0.95f).sp, fontWeight = FontWeight.SemiBold) }
-                if (p.question.isNotBlank()) Text(p.question, color = Palette.Ink, fontSize = (size * 1.08f).sp, fontWeight = FontWeight.SemiBold,
+                // 2.2.2: shown as the card shows it (QuestionText); the record itself is unchanged.
+                p.title?.takeIf { q.parts.size >= 2 }?.let { Text(QuestionText.title(it), color = Palette.Muted, fontSize = (size * 0.95f).sp, fontWeight = FontWeight.SemiBold) }
+                // 2.2.2 review: the layout is worked out once per saved part, not on every recomposition.
+                val question = remember(p) { QuestionText.prose(p.question) }
+                val details = remember(p) {
+                    p.details.filter { QuestionText.prose(it).let { t -> t.isNotEmpty() && t != question } }.flatMap(CardFormat::detail)
+                }
+                val cmd = remember(p) { p.command?.let { BoxCopy.cleanBlock(it.lines()).joinToString("\n") } }
+                if (p.question.isNotBlank()) Text(withInlineCode(question), color = Palette.Ink, fontSize = (size * 1.08f).sp, fontWeight = FontWeight.SemiBold,
                     lineHeight = (size * 1.08f * 1.4f).sp)
-                p.details.forEach { Text(it, color = Palette.Ink, fontSize = (size * 1.0f).sp, lineHeight = (size * 1.4f).sp) }
-                p.command?.let { cmd ->
+                // 2.2.2: each saved line laid out as the card lays it out (a path or an edit in monospace).
+                details.forEach { b ->
+                        if (b is CardBlock.Prose) Text(withInlineCode(b.text), color = Palette.Ink, fontSize = (size * 1.0f).sp, lineHeight = (size * 1.4f).sp)
+                        else CardBlockView(b, first = false)
+                    }
+                cmd?.let { cmd ->
+                    // 2.2.2: without terminal glyphs, shown and copied the same.
                     // 2.2.0: long-press the command to copy it.
                     val copy = rememberCopier()
                     DisableSelection {
                         Text(cmd, color = Palette.Ink, fontFamily = Fonts.Mono, fontSize = (size * 0.92f).sp,
-                            modifier = Modifier.onLongPress("Copy this box") { copy(BoxCopy.clean(listOf(cmd)), "Copied box") })
+                            modifier = Modifier.onLongPress("Copy this box") { copy(cmd, "Copied box") })
                     }
                 }
                 if (p.options.isNotEmpty()) Column(Modifier.padding(start = 8.dp)) {
                     p.options.forEach { o ->
                         val picked = p.answer != null && o == p.answer
-                        Text("- $o" + if (picked) "   (your answer)" else "", color = if (picked) Palette.Blue else Palette.Muted,
+                        Text("- ${QuestionText.label(o)}" + if (picked) "   (your answer)" else "", color = if (picked) Palette.Blue else Palette.Muted,
                             fontSize = (size * 0.98f).sp, fontWeight = if (picked) FontWeight.SemiBold else FontWeight.Normal)
                     }
                 }

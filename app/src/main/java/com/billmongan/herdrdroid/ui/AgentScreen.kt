@@ -1333,7 +1333,7 @@ private fun QuestionSteps(parts: com.billmongan.herdrdroid.herdr.QuestionParts,
                         .then(if (tap != null) Modifier.clip(RoundedCornerShape(50)).clickable(
                             onClickLabel = if (t.submit) "Go to the review step" else "Go to this question",
                             role = androidx.compose.ui.semantics.Role.Button) { tap(i, t) } else Modifier)) {
-                    Text((if (t.done) "✓ " else "") + t.title, color = ink, fontSize = 12.5.sp,
+                    Text((if (t.done) "✓ " else "") + QuestionText.title(t.title), color = ink, fontSize = 12.5.sp,
                         fontWeight = if (t.current) FontWeight.Bold else FontWeight.Medium, maxLines = 1,
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp))
                 }
@@ -1526,12 +1526,14 @@ internal fun PromptCard(
                     val body: @Composable () -> Unit = {
                         Column(Modifier.fillMaxWidth()) {
                             // A key hint ("(esc)") or tail reads quieter; the label's text is unchanged (2.1.1).
-                            Text(optionLabel(com.billmongan.herdrdroid.herdr.shownChoiceLabel(allRows, c), if (first) Palette.OnBlue.copy(alpha = 0.8f) else Palette.Muted),
+                            Text(optionLabel(com.billmongan.herdrdroid.herdr.shownChoiceLabel(allRows, c), if (first) Palette.OnBlue.copy(alpha = 0.8f) else Palette.Muted, c.keys),
                                 fontSize = 15.sp, fontWeight = FontWeight.SemiBold, lineHeight = 20.sp,
-                                color = if (first) Palette.OnBlue else Palette.Ink)
+                                color = if (first) Palette.OnBlue else Palette.Ink,
+                                // 2.2.2: the highlighted row is the card's own blue button; tagged for the UI tests.
+                                modifier = Modifier.testTag(if (first) "choice-label-focused" else "choice-label"))
                             optionNotes[c.keys]?.let { note ->
-                                Text(note, fontSize = 13.sp, lineHeight = 18.sp,
-                                    color = if (first) Palette.OnBlue.copy(alpha = 0.9f) else Palette.Muted)
+                                // 2.2.2: the description under its label, smaller and quieter, one paragraph.
+                                OptionNote(note, if (first) Palette.OnBlue.copy(alpha = 0.9f) else Palette.Muted)
                             }
                             Text(what, fontSize = 12.sp, color = if (first) Palette.OnBlue.copy(alpha = 0.8f) else Palette.Muted)
                             // Standing permission (1.4.0): say so before it is tapped.
