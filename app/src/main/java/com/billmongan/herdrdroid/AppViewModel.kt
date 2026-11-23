@@ -3063,7 +3063,10 @@ class AppViewModel internal constructor(
      * already in its input line at the computer, or someone typing there in the last 4 seconds.
      * Null to send. A pane waiting on a question is answered, not typed into, so it is never held.
      */
-    private fun holdReason(paneId: String, screen: String, menuWrite: Boolean = false): String? {
+    private fun holdReason(paneId: String, screen: String): String? = holdReasonFor(paneId, screen, menuWrite = false)
+
+    /** [holdReason], for a menu write when [menuWrite] (2.2.2: a blank Oh My Pi or Copilot box counts as empty there). */
+    private fun holdReasonFor(paneId: String, screen: String, menuWrite: Boolean): String? {
         // The agent's own hint in an empty line ("Press up to edit queued messages") is not typing (1.4.4).
         val agent = pane(paneId)?.agent
         // A draft of several lines can hide the one-row input line (2.1.0): it is still typing.
@@ -5881,7 +5884,7 @@ class AppViewModel internal constructor(
         if (com.billmongan.herdrdroid.herdr.infoPanelOn(fresh.agent, viewport) != null) return panelHold(current?.id, fresh, viewport)
         com.billmongan.herdrdroid.herdr.PaneControls.writeBlock(fresh.agent, viewport)?.let { return it }
         if (blocksNormalSend(fresh, viewport)) return "a question, dialog or usage panel is open in it"
-        return holdReason(fresh.id, viewport, menuWrite = true)
+        return holdReasonFor(fresh.id, viewport, menuWrite = true)
     }
 
     /** A menu write that didn't go: said in the pane's chat, nothing sent. */
