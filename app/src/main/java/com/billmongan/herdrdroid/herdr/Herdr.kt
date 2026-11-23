@@ -1505,6 +1505,8 @@ fun inputLineOf(screen: String, agent: String? = null): String? {
     // OpenCode draws no prompt glyph (2.1.5): its box, positively found empty, is an empty line;
     // otherwise nothing is judged, as before.
     if (isOpenCode(agent) && openCodeComposerEmpty(screen)) return ""
+    // 2.2.2: pi, Oh My Pi and Copilot draw no prompt glyph either; their boxes are found by shape.
+    AgentComposers.line(screen, agent)?.let { return it }
     val (raw, typed) = inputRow(screen) ?: return null
     if (typed.isEmpty()) return ""
     // A row read with its styles is judged only by how it is drawn: the same words as a known hint

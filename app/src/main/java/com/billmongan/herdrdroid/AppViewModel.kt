@@ -5906,16 +5906,32 @@ class AppViewModel internal constructor(
      * stops on a mode that approves everything that wasn't the confirmed target: it presses on to the
      * start, and if it can't get back it says so loudly, in the chat and as an alert.
      */
-    fun switchMode(paneId: String, target: String) {
-        val p = paneIdle(paneId, "Change the mode") ?: return
-        val spec = com.billmongan.herdrdroid.herdr.PaneControls.modes(p.agent) ?: return
+    fun switchMode(paneId: String, target: String, title: String = "Mode") {
+        val p = paneIdle(paneId, "Change the ${title.lowercase()}") ?: return
+        val spec = com.billmongan.herdrdroid.herdr.PaneControls.modeMenus(p.agent).firstOrNull { it.title == title } ?: return
         val t = menuTarget(p) ?: return
         viewModelScope.launch {
             var last: String? = null
-            controlling(paneId, "Changing the mode…") {
+            controlling(paneId, "Changing the ${title.lowercase()}…") {
                 val outcome = runCatching {
-                    var mode = spec.read(readPaneScreen(t.h, paneId, 60))
+                    val first = readPaneScreen(t.h, paneId, 60)
+                    var mode = spec.read(first)
                     last = mode
+                    // 2.2.2: where the agent has a command for this switch, it goes once, as a menu write,
+                    // and the screen is read until it shows the target (or the agent's reply confirms it).
+                    spec.commandFor(mode, target)?.takeIf { mode != null || spec.absolute }?.let { cmd ->
+                        menuCommand(paneId, t, cmd)?.let { return@runCatching "$cmd wasn't sent, because $it" }
+                        for (i in 0 until 16) {
+                            kotlinx.coroutines.delay(300)
+                            val after = runCatching { readPaneScreen(t.h, paneId, 60) }.getOrNull() ?: continue
+                            val seen = spec.read(after)
+                            if (seen != null) last = seen
+                            if (spec.confirmed?.invoke(first, after, target) == true) { last = target; return@runCatching null }
+                            if (seen == target) return@runCatching null
+                            if (com.billmongan.herdrdroid.herdr.PaneControls.unconfirmedApproveAll(spec, seen, target)) return@runCatching "it shows ${seen} after $cmd"
+                        }
+                        return@runCatching "the screen didn't confirm it after $cmd"
+                    }
                     val start = mode ?: return@runCatching "the footer doesn't show the mode, so nothing was sent"
                     val sw = com.billmongan.herdrdroid.herdr.PaneControls.ModeSwitcher(spec, start, target)
                     var step = sw.next(mode)
@@ -5946,8 +5962,8 @@ class AppViewModel internal constructor(
                 val stuck = com.billmongan.herdrdroid.herdr.PaneControls.unconfirmedApproveAll(spec, last, target)
                 when {
                     stuck -> modeAlarm(paneId, p, spec.options.firstOrNull { it.name == last }?.label ?: last.orEmpty(), outcome ?: "")
-                    outcome == null -> notice = "Mode: $label (the footer shows it now)"
-                    else -> error = "Mode not changed to $label: $outcome."
+                    outcome == null -> notice = "$title: $label (confirmed on screen)"
+                    else -> error = "$title not changed to $label: $outcome."
                 }
                 com.billmongan.herdrdroid.diag.DiagLog.log("mode", "$paneId: to $target: ${outcome ?: "done"}, now $last")
             }

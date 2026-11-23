@@ -41,9 +41,39 @@ object PaneControls {
          * there, between plan and auto). The app's menu has always cycled Claude this way.
          */
         val crossesApproveAll: Boolean = false,
+        /** 2.2.2: the menu's name ("Mode", or Copilot's "Approvals"). */
+        val title: String = "Mode",
+        /** 2.2.2: reads the mode off the screen for agents [agentMode] doesn't know; null uses [agentMode]. */
+        val reader: ((String) -> String?)? = null,
+        /**
+         * 2.2.2: the agent's own command that goes from one mode straight to another, or null where only
+         * [key] gets there. A command is sent once and confirmed by reading the screen again.
+         */
+        val command: ((from: String?, to: String) -> String?)? = null,
+        /** 2.2.2: confirms a command from the agent's reply when its footer doesn't show the mode (Codex). */
+        val confirmed: ((before: String, after: String, to: String) -> Boolean)? = null,
+        /**
+         * 2.2.2: every offered command sets its mode outright, whatever the mode is now, so the menu
+         * works when the screen doesn't show the current one (Codex's /permissions <profile>).
+         */
+        val absolute: Boolean = false,
+        /** 2.2.2: after a press that didn't reach the target, stop where it is instead of pressing on round the cycle. */
+        val returnByKey: Boolean = true,
     ) {
-        fun read(screen: String): String? = agentMode(agent, screen)
+        fun read(screen: String): String? = reader?.invoke(screen) ?: if (reader == null) agentMode(agent, screen) else null
+
+        /** How the menu gets from [from] to [to]: the agent's command, or null for [key]. */
+        fun commandFor(from: String?, to: String): String? = command?.invoke(from, to)
+
+        /** What the dialog says about how a switch is made. */
+        val how: String get() = when {
+            command != null && key.isNotEmpty() -> "The app uses the agent's own command or ${keyLabel(key)}, and reads the screen until it shows the mode you picked."
+            command != null -> "The app types the agent's own command and reads the screen for the change."
+            else -> "The app presses ${keyLabel(key)} until the footer shows the mode you picked, and goes back to where it started if it can't get there."
+        }
     }
+
+    fun keyLabel(key: String) = when (key) { "shift+tab" -> "Shift+Tab"; else -> key }
 
     /** The mode menu for [agent], or null when it has none. */
     fun modes(agent: String?): ModeSpec? = when (agent?.lowercase()) {
@@ -94,12 +124,161 @@ object PaneControls {
             listOf(ModeOption("build", "Build"), ModeOption("plan", "Plan")),
             maxPresses = 6,
         )
+        // Codex 0.171.0: "/permissions <profile-id>" sets a permission profile outright (":read-only",
+        // ":workspace"; ":danger-full-access" is never sent) and replies "Permissions updated to …". Its
+        // footer shows no mode unless its status line is set up to, so the reply confirms it.
+        "codex" -> ModeSpec(
+            "codex", "", null,
+            listOf(
+                ModeOption(":read-only", "Read Only (asks before edits and internet)"),
+                ModeOption(":workspace", "Default (edits the workspace, asks before going outside it)"),
+                ModeOption(":danger-full-access", "Full Access (approves everything)", approvesAll = true, offered = false),
+            ),
+            maxPresses = 1, reader = { null }, absolute = true,
+            command = { _, to -> if (to == ":read-only" || to == ":workspace") "/permissions $to" else null },
+            confirmed = { before, after, _ -> codexPermissionReplies(after) > codexPermissionReplies(before) },
+        )
+        // Grok 1.0.92: the chip after the model on the box edge ("Grok 4.7 (high) · auto-review") names
+        // the mode; none is ask. "/auto-review" turns auto-review on and, run again, goes back to ask.
+        // Shift+Tab's cycle puts always-approve between auto-review and ask, and plan's chip couldn't
+        // be checked, so the menu uses only the command: Ask and Auto-review.
+        "grok" -> ModeSpec(
+            "grok", "", null,
+            listOf(
+                ModeOption("default", "Ask (asks before tools)"),
+                ModeOption("auto", "Auto-review (a check approves safe tools)"),
+                ModeOption("bypass", "Always-approve (approves every tool)", approvesAll = true, offered = false),
+            ),
+            maxPresses = 1, reader = ::grokMode,
+            command = { from, to -> if ((from == "default" && to == "auto") || (from == "auto" && to == "default")) "/auto-review" else null },
+        )
+        // GitHub Copilot CLI 1.0.114: Shift+Tab cycles Interactive, Plan, Autopilot (its footer reads
+        // "Interactive · Manual Approval"); "/autopilot off" goes back to Interactive from either.
+        // Autopilot may open its own confirmation, so it is never a target and no press goes round it.
+        "copilot" -> ModeSpec(
+            "copilot", "shift+tab", listOf("interactive", "plan", "autopilot"),
+            listOf(
+                ModeOption("interactive", "Interactive"),
+                ModeOption("plan", "Plan"),
+                ModeOption("autopilot", "Autopilot (keeps going on its own)", offered = false),
+            ),
+            maxPresses = 1, reader = { copilotFooter(it)?.first }, returnByKey = false,
+            command = { from, to -> if (to == "interactive" && (from == "plan" || from == "autopilot")) "/autopilot off" else null },
+        )
+        // Antigravity 1.5.14: Shift+Tab cycles its agent modes ("Press shift+tab to cycle modes
+        // (default, accept-edits, plan)", and Auto where it is offered); the status row names the
+        // mode ("Plan mode: research & plan only (shift+tab to cycle)") and shows "? for shortcuts" in
+        // the default mode. --dangerously-skip-permissions is a launch flag, not in the cycle. Where
+        // Auto sits depends on the build, so the app presses and reads, as for Claude.
+        "agy", "antigravity" -> ModeSpec(
+            "agy", "shift+tab", null,
+            listOf(
+                ModeOption("default", "Default (asks before edits and commands)"),
+                ModeOption("accept edits", "Accept edits"),
+                ModeOption("plan", "Plan"),
+                ModeOption("auto", "Auto (edits and safe commands approved)"),
+            ),
+            maxPresses = 5, reader = ::agyMode,
+        )
+        // Oh My Pi 19.0.1: "/plan" toggles plan mode ("Toggle plan mode (agent plans before executing)"),
+        // and its status row gains a "Plan" segment ("π > 🗺 Plan > ⬢ model > 📁 dir"). Its tool
+        // approval setting is only in /settings, so the menu has Default and Plan.
+        "omp" -> ModeSpec(
+            "omp", "", null,
+            listOf(ModeOption("default", "Default"), ModeOption("plan", "Plan")),
+            maxPresses = 1, reader = ::ompMode,
+            command = { from, to -> if ((from == "default" && to == "plan") || (from == "plan" && to == "default")) "/plan" else null },
+        )
         else -> null
+    }
+
+    private val AGY_MODE = Regex("""^\s*(Accept-edits|Plan|Auto) mode:""")
+    private val AGY_DEFAULT = Regex("""^\s*\? for shortcuts\b""")
+
+    /** Antigravity's mode from the row under its input box, or null when that row shows neither a mode nor its default hint. */
+    internal fun agyMode(screen: String): String? {
+        val row = stripAnsi(screen).lines().lastOrNull { it.isNotBlank() } ?: return null
+        AGY_MODE.find(row)?.let { return when (it.groupValues[1]) { "Accept-edits" -> "accept edits"; "Plan" -> "plan"; else -> "auto" } }
+        return if (AGY_DEFAULT.containsMatchIn(row)) "default" else null
+    }
+
+    /** Oh My Pi's status row: the row right above its "╰─" prompt, segments split at " > ". */
+    private fun ompStatus(screen: String): List<String>? {
+        val rows = stripAnsi(screen).lines().map { it.trimEnd() }.dropLastWhile { it.isBlank() }.takeLast(16)
+        val prompt = rows.indexOfLast { it.trimStart().startsWith("╰─") }
+        if (prompt < 1 || !rows[prompt - 1].contains(" > ")) return null
+        return rows[prompt - 1].split(" > ").map { it.trim() }
+    }
+
+    /** Oh My Pi's mode: "plan" with a Plan segment, null with another mode segment (Vibe, Goal, Loop), else "default". */
+    internal fun ompMode(screen: String): String? {
+        val seg = ompStatus(screen) ?: return null
+        if (seg.none { it.contains("⬢") }) return null
+        if (seg.any { Regex("""^(\S+\s+)?Plan\b""").containsMatchIn(it) }) return "plan"
+        if (seg.any { Regex("""^(\S+\s+)?(Vibe|Goal|Loop)\b""").containsMatchIn(it) }) return null
+        return "default"
+    }
+
+    private val OMP_EFFORT = Regex("""⬢[^>]*·\s*[○◔◑◒◕◉⦸⟳]\s*(min|low|med|high|xhigh|max|off|auto)\b""")
+
+    /** Oh My Pi's effort from its model segment ("⬢ model · ◒ high"); shown only for a thinking model. */
+    internal fun ompEffort(screen: String): String? {
+        val seg = ompStatus(screen) ?: return null
+        val m = seg.firstNotNullOfOrNull { OMP_EFFORT.find(it) } ?: return null
+        return when (val l = m.groupValues[1]) { "min" -> "minimal"; "med" -> "medium"; else -> l }
+    }
+
+    private val PI_EFFORT = Regex("""•\s+(?:thinking\s+)?(off|minimal|low|medium|high|xhigh|max)\s*$""")
+
+    /** pi's effort from the end of its token row ("… model • high", "… model • thinking off"); shown only for a reasoning model. */
+    internal fun piEffort(screen: String): String? = tail(screen, 3).asReversed().firstNotNullOfOrNull { PI_EFFORT.find(it.trimEnd())?.groupValues?.get(1) }
+
+    /**
+     * 2.2.2: a second menu for agents with two settings: Copilot's permission policy, the second chip of
+     * its footer ("Manual Approval", "Assisted Permissions", "Allow All"), set with "/permissions". Allow
+     * All approves every request and is never offered.
+     */
+    fun approvals(agent: String?): ModeSpec? = when (agent?.lowercase()) {
+        "copilot" -> ModeSpec(
+            "copilot", "", null,
+            listOf(
+                ModeOption("manual", "Manual Approval (asks for each request)"),
+                ModeOption("assisted", "Assisted Permissions (a safety check approves safe requests)"),
+                ModeOption("bypass", "Allow All (approves every request)", approvesAll = true, offered = false),
+            ),
+            maxPresses = 1, title = "Approvals", reader = { copilotFooter(it)?.second },
+            command = { _, to -> when (to) { "manual" -> "/permissions default"; "assisted" -> "/permissions assisted"; else -> null } },
+        )
+        else -> null
+    }
+
+    /** Every mode menu [agent] has, in menu order. */
+    fun modeMenus(agent: String?): List<ModeSpec> = listOfNotNull(modes(agent), approvals(agent))
+
+    /** Codex's reply to /permissions, counted on the last rows; a reply naming full access doesn't count. */
+    internal fun codexPermissionReplies(screen: String): Int =
+        tail(screen, 40).count { it.contains("Permissions updated to", ignoreCase = true) && !it.contains("full", ignoreCase = true) }
+
+    private val GROK_EDGE = Regex("""Grok\b[^()\n]{0,40}\((?:low|medium|high|xhigh)\)\s*(?:·\s*([a-z][a-z-]*))?\s*─""")
+
+    /** Grok's mode from its box edge: "default" with no chip, "auto" for auto-review, "bypass" for always-approve, null for any other chip. */
+    internal fun grokMode(screen: String): String? {
+        val m = tail(screen, 12).asReversed().firstNotNullOfOrNull { GROK_EDGE.find(it) } ?: return null
+        return when (m.groupValues[1]) { "" -> "default"; "auto-review" -> "auto"; "always-approve" -> "bypass"; else -> null }
+    }
+
+    private val COPILOT_CHIPS = Regex("""·\s+(Interactive|Plan|Autopilot|Shell)\s+·\s+(Manual Approval|Assisted Permissions|Allow All)(?=\s+·|\s*$)""")
+
+    /** Copilot's execution mode and permission policy from its footer ("… · Interactive · Manual Approval · …"). */
+    internal fun copilotFooter(screen: String): Pair<String, String>? {
+        val m = tail(screen, 4).asReversed().firstNotNullOfOrNull { COPILOT_CHIPS.find(it) } ?: return null
+        val policy = when (m.groupValues[2]) { "Manual Approval" -> "manual"; "Assisted Permissions" -> "assisted"; else -> "bypass" }
+        return m.groupValues[1].lowercase() to policy
     }
 
     /** Whether the menu can switch from [current]: never away from, or round, a mode that approves everything, except Claude's. */
     fun canSwitch(spec: ModeSpec, current: String?): Boolean =
-        current != null && (spec.crossesApproveAll || spec.options.none { it.approvesAll && it.name == current }) &&
+        (current == null && spec.absolute) || current != null && (spec.crossesApproveAll || spec.options.none { it.approvesAll && it.name == current }) &&
             spec.options.any { it.name == current }
 
     /**
@@ -121,14 +300,19 @@ object PaneControls {
      * already reached it, and on a known cycle only those reached without passing over one.
      */
     fun reachable(spec: ModeSpec, current: String?): List<ModeOption> {
-        val avoid = spec.options.filter { it.approvesAll }.map { it.name }.toSet()
+        // 2.2.2: a mode that isn't offered (Copilot's Autopilot, Vibe's Smart approve) is never passed over either.
+        val avoid = spec.options.filter { it.approvesAll || !it.offered }.map { it.name }.toSet()
         return spec.options.filter { o ->
             when {
                 o.name == current -> true
                 !o.offered -> false
                 o.approvesAll && !spec.crossesApproveAll -> false
-                spec.cycle == null || current == null -> true
-                else -> pressesOnCycle(spec.cycle, current, o.name, avoid) != null
+                spec.absolute -> spec.commandFor(current, o.name) != null
+                current == null -> spec.command == null
+                spec.commandFor(current, o.name) != null -> true
+                spec.command != null && spec.key.isEmpty() -> false
+                spec.cycle == null -> true
+                else -> pressesOnCycle(spec.cycle, current, o.name, avoid)?.let { it <= spec.maxPresses } == true
             }
         }
     }
@@ -190,7 +374,8 @@ object PaneControls {
             if (read == target) return Step.Done(read)
             if (presses > 0 && read == start) return Step.Stop(read, "${labelOf(target)} isn't in this session's cycle")
             if (unsafe(read) && !spec.crossesApproveAll) return back("it stopped on ${labelOf(read)}, which approves every tool, so it went back")
-            if (presses >= spec.maxPresses) return back("${labelOf(target)} wasn't reached")
+            if (presses >= spec.maxPresses) return if (spec.returnByKey) back("${labelOf(target)} wasn't reached")
+                else Step.Stop(read, "${labelOf(target)} wasn't reached; it stopped on ${labelOf(read)}")
             return press()
         }
 
@@ -246,6 +431,11 @@ object PaneControls {
     /** Grok's box edge names the model and effort: "╰──── Grok 4.7 (high) ─╯", "Grok 4.7 (high) · auto-review". */
     private val GROK_EFFORT = Regex("""\((low|medium|high|xhigh)\)(?=\s*(?:·|─|╯|$))""")
     /** Muse's and Antigravity's footers: "muse-wonder-full-1.0 · max · ~/agents/muse", "Gemini 4 Argon · medium · ~/agents/agy". */
+    /** Antigravity 1.5.14's status row ends with the level ("Orchestrator · Gemini 4 Neon · xhigh"); older ones had it mid-row. */
+    private val END_EFFORT = Regex("""\s·\s(low|medium|high|xhigh|max)\s*$""")
+
+    internal fun agyEffort(s: String): String? = tail(s, 4).lastOrNull()?.let { DOT_EFFORT.find(it)?.groupValues?.get(1) ?: END_EFFORT.find(it.trimEnd())?.groupValues?.get(1) }
+
     private val DOT_EFFORT = Regex("""\s·\s(none|minimal|low|medium|high|xhigh|max|ultra)\s·\s""")
 
     fun thinking(agent: String?): ThinkingSpec? = when (agent?.lowercase()) {
@@ -261,12 +451,32 @@ object PaneControls {
             shown = { s -> tail(s, 4).lastOrNull()?.let { DOT_EFFORT.find(it)?.groupValues?.get(1) } })
         // Antigravity 1.5.14: "/effort <level>" (low to max); its footer shows "· medium ·".
         "agy", "antigravity" -> ThinkingSpec("agy", listOf("low", "medium", "high", "xhigh", "max"), { "/effort $it" },
-            shown = { s -> tail(s, 4).lastOrNull()?.let { DOT_EFFORT.find(it)?.groupValues?.get(1) } })
+            shown = ::agyEffort)
+        // pi 1.6.0: "/thinking [level]" (off, minimal, low, medium, high, xhigh, max); the end of its token
+        // row shows "• <level>" (or "• thinking off") for a reasoning model.
+        "pi" -> ThinkingSpec("pi", listOf("off", "minimal", "low", "medium", "high", "xhigh", "max"), { "/thinking $it" }, shown = ::piEffort)
+        // Oh My Pi 19.0.1: "/effort [level]"; its model segment shows "⬢ model · ◒ high" for a thinking model.
+        "omp" -> ThinkingSpec("omp", listOf("off", "minimal", "low", "medium", "high", "xhigh", "max"), { "/effort $it" }, shown = ::ompEffort)
         // Kiro CLI 3.5.0: "/effort [level]" (low to max); it replies "Effort set to <level>".
         "kiro" -> ThinkingSpec("kiro", listOf("low", "medium", "high", "xhigh", "max"), { "/effort $it" },
             replies = { screen, level -> tail(screen, 40).count { it.contains("Effort set to $level", ignoreCase = true) } })
+        // Codex 0.171.0: "/model --reasoning=<level>" ("Use '--reasoning=<level>' or '--speed=<tier>'")
+        // changes the effort in the session; the footer's model-with-reasoning item reads "GPT-6.2-Sol
+        // high" ("default" before one is picked), and the reply is "Model changed to …".
+        "codex" -> ThinkingSpec("codex", listOf("low", "medium", "high", "xhigh", "max"), { "/model --reasoning=$it" },
+            shown = ::codexEffort,
+            replies = { screen, level -> tail(screen, 40).count { it.contains("Model changed to", ignoreCase = true) && Regex("""\b${Regex.escape(level)}\b""").containsMatchIn(it) } })
+        // Hermes 0.23: "/reasoning <level>" replies "✓ Reasoning effort set to '<level>' …"; its status bar doesn't show it.
+        "hermes" -> ThinkingSpec("hermes", listOf("none", "low", "medium", "high", "xhigh", "max"), { "/reasoning $it" },
+            replies = { screen, level -> tail(screen, 40).count { it.contains("Reasoning effort set to", ignoreCase = true) &&
+                (it.contains("'$level'") || it.contains("`$level`")) } })
         else -> null
     }
+
+    private val CODEX_EFFORT = Regex("""^\s{1,4}\S[^·]*?\s(default|none|minimal|low|medium|high|xhigh|max|ultra)\s+·\s""")
+
+    /** Codex's effort from its footer's first item ("  GPT-6.2-Sol high · ~/dir"); "default" is none picked. */
+    internal fun codexEffort(screen: String): String? = tail(screen, 4).asReversed().firstNotNullOfOrNull { CODEX_EFFORT.find(it)?.groupValues?.get(1) }
 
     /** Whether the screen after [command] shows [level] took: the footer shows it, or the agent replied once more than before. */
     fun thinkingConfirmed(spec: ThinkingSpec, level: String, before: String, after: String): Boolean =

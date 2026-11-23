@@ -32,10 +32,11 @@ class PaneControls220Test {
     }
 
     @Test fun menusOnlyWhereTheAgentHasAVerifiedWay() {
-        for (a in listOf("claude", "vibe", "kiro", "opencode")) assertNotNull(a, PaneControls.modes(a))
-        for (a in listOf("codex", "grok", "copilot", "agy", "gemini", "pi", "omp", "hermes", "muse")) assertNull(a, PaneControls.modes(a))
-        for (a in listOf("claude", "grok", "muse", "agy", "kiro")) assertNotNull(a, PaneControls.thinking(a))
-        for (a in listOf("codex", "opencode", "copilot", "pi", "omp", "hermes", "vibe", "gemini")) assertNull(a, PaneControls.thinking(a))
+        // 2.2.2 added Codex, Grok, Copilot, Antigravity and Oh My Pi (see PaneControls222Test).
+        for (a in listOf("claude", "vibe", "kiro", "opencode", "codex", "grok", "copilot", "agy", "omp")) assertNotNull(a, PaneControls.modes(a))
+        for (a in listOf("gemini", "pi", "hermes", "muse")) assertNull(a, PaneControls.modes(a))
+        for (a in listOf("claude", "grok", "muse", "agy", "kiro", "codex", "hermes", "pi", "omp")) assertNotNull(a, PaneControls.thinking(a))
+        for (a in listOf("opencode", "copilot", "vibe", "gemini")) assertNull(a, PaneControls.thinking(a))
     }
 
     @Test fun claudeReachesPlanByPressingAndReading() {
@@ -135,11 +136,11 @@ class PaneControls220Test {
         val question = res("claude/captured-2.1.329/single-question.txt")
         assertEquals("a question or dialog is open in it", PaneControls.writeBlock("claude", question))
         assertNull(PaneControls.writeBlock("claude", res("claude/captured-2.1.329/composer-titled-list-empty.ansi")))
-        // The empty input boxes captured live let a menu write go for every agent with a menu. pi, Oh My
-        // Pi and Copilot draw no input line the app can find, so nothing would be typed: they have none.
+        // The empty input boxes captured live let a menu write go for every agent with a menu. 2.2.2: pi,
+        // Oh My Pi and Copilot too, now that their boxes are found by shape.
         val all = listOf("claude", "vibe", "kiro", "opencode", "grok", "muse", "agy", "codex", "pi", "omp", "hermes", "copilot")
         val refused = all.filter { a -> PaneControls.writeBlock(a, res("$a/live-2026-11-20-composer/empty.ansi")) != null }
-        assertEquals(listOf("pi", "omp", "copilot"), refused)
+        assertEquals(emptyList<String>(), refused)
         for (a in all) if (PaneControls.modes(a) != null || PaneControls.thinking(a) != null || SessionControls.forAgent(a) != null)
             assertTrue(a, a !in refused)
     }
