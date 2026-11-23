@@ -5,7 +5,6 @@ import com.billmongan.herdrdroid.notify.alertText
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -64,7 +63,7 @@ class QuestionConfirm222Test {
             val text = screen(path)
             val full = requireNotNull(detectPrompt(text, blocked, agent)) { path }
             assertTrue(path, full.choices.isNotEmpty())
-            assertNotNull("$path: the dialog is complete", questionRead(text, full, agent, null, blocked).region)
+            assertTrue("$path: the dialog is complete", questionRead(text, full, agent, null, blocked).complete)
             assertEquals(path, full, confirmedTwice(text, agent, blocked))
             // Shown once confirmed, exactly as parsed; before that, the neutral card.
             assertSame(path, full, shownCard(full, full, "Agent"))
@@ -72,10 +71,16 @@ class QuestionConfirm222Test {
         }
     }
 
-    /** Every capture in the library that parses as a card with options is a complete dialog (no regression). */
-    @Test fun everyLibraryCardWithOptionsIsStructurallyComplete() {
+    /**
+     * Every card with options in the library is confirmed by reads that keep giving it (no
+     * regression), none is refused, and every real capture of a dialog with a footer is complete.
+     * The ones that are not complete (fragments derived from documentation, Claude's review step,
+     * which draws no footer, a reconstructed Grok prompt with no frame) take [FALLBACK_READS] reads.
+     */
+    @Test fun everyLibraryCardWithOptionsIsConfirmedByMatchingReads() {
         val root = javaClass.classLoader?.getResource("screens")?.let { File(it.toURI()) } ?: error("no screens")
         val broken = mutableListOf<String>()
+        val incomplete = mutableListOf<String>()
         root.walkTopDown().filter { it.isFile && it.name.endsWith(".txt") }.sortedBy { it.path }.forEach { f ->
             val e = File(f.path.removeSuffix(".txt") + ".expect").takeIf { it.isFile }?.readLines()
                 ?.mapNotNull { l -> l.split(": ", limit = 2).takeIf { it.size == 2 }?.let { it[0].trim() to it[1].trim() } }?.toMap()
@@ -85,9 +90,16 @@ class QuestionConfirm222Test {
             val blocked = e["blocked"] == "true"
             val text = f.readText()
             val p = detectPrompt(text, blocked, agent) ?: return@forEach
-            if (questionRead(text, p, agent, null, blocked).region == null) broken += f.relativeTo(root).path
+            val read = questionRead(text, p, agent, null, blocked)
+            val rel = f.relativeTo(root).path
+            if (read.refused) broken += "refused $rel"
+            if (!read.complete) incomplete += rel
+            val gate = QuestionConfirm()
+            if ((1..FALLBACK_READS).none { gate.offer("k", read) }) broken += "never confirmed $rel"
         }
-        assertTrue("incomplete: " + broken.joinToString("\n"), broken.isEmpty())
+        println("2.2.2 cards confirmed by $FALLBACK_READS reads (structure not shown complete):\n" + incomplete.joinToString("\n"))
+        assertTrue(broken.joinToString("\n"), broken.isEmpty())
+        for ((path, _, _) in dialogs) assertFalse(path, path in incomplete)
     }
 
     @Test fun aDialogCutOffAtAnyHeightIsNeverConfirmed() {
@@ -102,8 +114,11 @@ class QuestionConfirm222Test {
                 val text = rows.take(cut).joinToString("\n")
                 val p = detectPrompt(text, true, agent) ?: continue
                 if (!needsConfirmation(p)) continue
-                assertNull("$path cut at $cut: \"${p.question}\" ${p.choices.map { it.label }}", confirmedTwice(text, agent, true))
                 assertTrue(shownCard(p, null, "Agent")!!.readingQuestion)
+                // The screen-and-keys card shows the rows as they are, once two reads agree; a card with options waits for its footer.
+                if (p.choices.isEmpty()) continue
+                assertFalse("$path cut at $cut: \"${p.question}\" ${p.choices.map { it.label }}", questionRead(text, p, agent, null, true).complete)
+                assertNull(confirmedTwice(text, agent, true))
             }
         }
     }
@@ -147,7 +162,7 @@ class QuestionConfirm222Test {
             println("2.2.2 repro, card read today: " + today?.let { "\"${it.question}\" ${it.choices.map { c -> c.label }}" })
             if (today != null && today.choices.isNotEmpty()) assertTrue("the old card took the chat", mentionsChat(today))
             if (today != null) {
-                assertNull(questionRead(text, today, "claude", null, true).region)
+                assertFalse(questionRead(text, today, "claude", null, true).complete)
                 assertNull(confirmedTwice(text, "claude", true))
                 val shown = shownCard(today, null, "Claude")!!
                 assertTrue(shown.readingQuestion)
@@ -158,6 +173,11 @@ class QuestionConfirm222Test {
         // The unnumbered case does reproduce: the message rows were the options.
         val today = requireNotNull(detectPrompt(unnumbered, blocked = true, agent = "claude"))
         assertTrue(today.choices.any { it.label.contains("Quokka") })
+        // The echoed message as a menu's first option, with nothing of a dialog under it, is never confirmed.
+        val read = questionRead(unnumbered, today, "claude", null, true)
+        assertTrue(read.refused)
+        val gate = QuestionConfirm()
+        repeat(10) { assertFalse(gate.offer("k", read)) }
     }
 
     @Test fun twoConsecutiveIdenticalReadsConfirm() {
@@ -218,9 +238,14 @@ class QuestionConfirm222Test {
         val reads = ArrayDeque(listOf(full, full))
         val got = requireNotNull(confirmByReads(partial, first, "claude", null) { reads.removeFirstOrNull() })
         assertEquals(detectPrompt(full, true, "claude"), got.first)
-        // A dialog that never finishes drawing is never confirmed: the alert stays neutral.
-        val never = ArrayDeque(List(ALERT_CONFIRM_READS) { partial })
-        assertNull(confirmByReads(partial, first, "claude", null) { never.removeFirstOrNull() })
+        // A dialog not finished drawing is not confirmed by two reads: the alert stays neutral.
+        val again = ArrayDeque(listOf(partial))
+        assertNull(confirmByReads(partial, first, "claude", null, maxReads = 1) { again.removeFirstOrNull() })
+        // The user's echoed message, read as a menu, is never confirmed: the alert stays neutral.
+        val echo = "  Quokka reply.\n\n❯ Please look at these Quokka items\n  Quokka item one\n  Quokka item two\n\n"
+        val echoed = requireNotNull(detectPrompt(echo, true, "claude"))
+        val never = ArrayDeque(List(ALERT_CONFIRM_READS) { echo })
+        assertNull(confirmByReads(echo, echoed, "claude", null) { never.removeFirstOrNull() })
         // The pane stopped waiting: no more reads, nothing confirmed.
         assertNull(confirmByReads(partial, first, "claude", null) { null })
     }

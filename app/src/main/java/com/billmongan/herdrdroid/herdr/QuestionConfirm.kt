@@ -20,6 +20,11 @@ package com.billmongan.herdrdroid.herdr
  *   ("❯ my message") may sit between the edge and the options;
  * - data: two reads in a row give the same card from the same dialog rows ([QuestionConfirm]),
  *   the pattern [SettleGate] uses. No timer decides.
+ * A dialog whose structure can't be shown complete (one an agent draws with no footer, such as
+ * Claude's review step, or with no edge above its question) is confirmed by [FALLBACK_READS] reads
+ * in a row instead: a half-drawn screen lasts a read or two, so it never gets that far. One sign of
+ * the chat is never confirmed: the user's own message, echoed at the left edge ("❯ my message"), as
+ * the first option of a menu with no footer under it.
  * Until then the card is [readingQuestionCard]: no options, no keys, only Show terminal. The
  * needs-you state and the alert are not held; the alert says only that a question is being asked
  * ([alertCard]) and is updated in place once the question is confirmed.
@@ -50,14 +55,19 @@ internal fun needsConfirmation(p: Prompt): Boolean =
 private fun selfFramed(p: Prompt): Boolean =
     p.hermesClarify || p.openCodeQuestionFrame != null || p.openCodePermission || p.numberKeys || p.museQuota || p == GROK_PRIVACY_PROMPT
 
-/** One read's card and, when its dialog is structurally complete, the dialog's rows; [region] null otherwise. */
-internal data class QuestionRead(val prompt: Prompt, val region: List<String>?)
+/**
+ * One read's card: [region], the dialog's rows when its structure is complete (null otherwise), and
+ * [refused] when the read shows the chat, not a dialog (see the notes above).
+ */
+internal data class QuestionRead(val prompt: Prompt, val region: List<String>?, val refused: Boolean = false) {
+    val complete: Boolean get() = region != null
+}
 
 /** [p], read from [text], with the rows of its dialog when the dialog is complete (see the notes above). */
 internal fun questionRead(text: String, p: Prompt, agent: String?, version: String?, blocked: Boolean): QuestionRead = when {
     !needsConfirmation(p) || selfFramed(p) -> QuestionRead(p, emptyList())
     p.choices.isEmpty() -> QuestionRead(p, p.region)
-    else -> QuestionRead(p, dialogRegion(stripAnsi(text).lines().takeLast(80), p, agent, version, blocked))
+    else -> dialogRead(stripAnsi(text).lines().takeLast(80), p, agent, version, blocked)
 }
 
 private fun letters(s: String) = s.filter(Char::isLetterOrDigit).lowercase()
@@ -69,6 +79,9 @@ private fun headOf(c: Choice) = letters(c.label.replace(CHECKBOX_PREFIX, "")).ta
 private fun topEdge(row: String): Boolean {
     val t = row.trim()
     if (t.isEmpty()) return false
+    // A rule inside a frame ("│ ──────── │").
+    val inner = t.trim('│', '┃', '║', ' ')
+    if (inner.length >= 3 && inner.all { it in "─━═╌" }) return true
     return t.startsWith("───") || t.startsWith("━━━") || t.startsWith("═══") || t.startsWith("╌╌╌") ||
         Regex("""^[-_]{3,}$""").matches(t) || t.first() in "╭┌┏╔" || t.all { it in "│┃║ " } ||
         (t.first() in "│┃║" && t.drop(1).trimStart().firstOrNull()?.let { it in "╭┌" } == true) ||
@@ -82,7 +95,10 @@ private val ECHO_ROW = Regex("""^[❯›>]\s+(?!\d{1,2}[.)\s])\S""")
 private const val FOOTER_WITHIN = 8
 /** How far above its first option a dialog's top edge may be, and how many edges are tried. */
 private const val TOP_WITHIN = 60
-private const val EDGES_TRIED = 8
+private const val EDGES_TRIED = 24
+
+/** Consecutive identical reads that confirm a card whose dialog structure couldn't be shown complete. */
+internal const val FALLBACK_READS = 4
 
 /**
  * The rows of [p]'s dialog, its top edge down to its footer, or null when the dialog is not
@@ -90,28 +106,32 @@ private const val EDGES_TRIED = 8
  * question, a card that changes when read from the edge down (part of it came from above), or the
  * user's echoed message inside the question.
  */
-internal fun dialogRegion(rows: List<String>, p: Prompt, agent: String?, version: String?, blocked: Boolean): List<String>? {
+internal fun dialogRead(rows: List<String>, p: Prompt, agent: String?, version: String?, blocked: Boolean): QuestionRead {
+    val incomplete = QuestionRead(p, null)
     val heads = p.choices.map(::headOf)
-    if (heads.any { it.isEmpty() }) return null
+    if (heads.any { it.isEmpty() }) return incomplete
     // Each option's row, from the last one up, each at or above the one after it.
     var at = rows.indexOfLast { letters(it).contains(heads.last()) }
-    if (at < 0) return null
+    if (at < 0) return incomplete
     val last = at
     for (h in heads.dropLast(1).asReversed()) {
         val from = if (p.horizontal) at else at - 1
-        at = (from downTo maxOf(0, at - 12)).firstOrNull { letters(rows[it]).contains(h) } ?: return null
+        at = (from downTo maxOf(0, at - 12)).firstOrNull { letters(rows[it]).contains(h) } ?: return incomplete
     }
     val first = at
     // The dialog's own footer or hint row under its options.
     val footer = (last + (if (p.horizontal) 0 else 1)..rows.lastIndex).filter { rows[it].isNotBlank() }
-        .take(FOOTER_WITHIN).firstOrNull { isDialogFooterRow(rows[it]) } ?: return null
-    // Its top: the nearest edge above the options from which the same card reads.
+        .take(FOOTER_WITHIN).firstOrNull { isDialogFooterRow(rows[it]) }
+        // The user's echoed message as a menu with nothing of a dialog under it: the chat, never a card.
+        ?: return QuestionRead(p, null, refused = ECHO_ROW.containsMatchIn(rows[first]))
+    // Its top: the nearest edge above the options (or the title row sitting on it) from which the same card reads.
     val edges = (first - 1 downTo maxOf(0, first - TOP_WITHIN)).filter { topEdge(rows[it]) }.take(EDGES_TRIED)
+        .flatMap { e -> listOfNotNull(e, (e - 1).takeIf { it >= 0 && rows[it].isNotBlank() && !topEdge(rows[it]) }) }
     for (top in edges) {
-        if ((top + 1 until first).any { ECHO_ROW.containsMatchIn(rows[it].trimStart()) }) return null
-        if (detectPrompt(rows.drop(top).joinToString("\n"), blocked, agent, version) == p) return rows.subList(top, footer + 1)
+        if ((top + 1 until first).any { ECHO_ROW.containsMatchIn(rows[it].trimStart()) }) return incomplete
+        if (detectPrompt(rows.drop(top).joinToString("\n"), blocked, agent, version) == p) return QuestionRead(p, rows.subList(top, footer + 1))
     }
-    return null
+    return incomplete
 }
 
 /** Marks that move while you choose (the highlight, a filled radio, the current tab), left out of the comparison. */
@@ -120,26 +140,31 @@ private val MOVING_MARKS = "❯›>▶➤⟩→●◉○◯▸$TAB_CURRENT_MARK"
 /**
  * Confirms question cards from consecutive reads, per pane (2.2.2): a card is confirmed when two
  * reads in a row give the same card (the highlight aside) from the same dialog rows, both
- * structurally complete. It stays confirmed while reads keep giving it; a changed card, an
- * incomplete read or no card starts over. Memory only.
+ * structurally complete, or [FALLBACK_READS] reads in a row give the same card when its structure
+ * couldn't be shown complete. It stays confirmed while reads keep giving it; a changed card, a
+ * refused read or no card starts over. Memory only.
  */
 internal class QuestionConfirm {
     private val last = HashMap<String, Any>()
+    private val runs = HashMap<String, Int>()
     private val confirmed = HashMap<String, Any>()
 
     /** True when [read]'s card may show: confirmed now, or a card that needs no confirming. */
     fun offer(key: String, read: QuestionRead?): Boolean {
         if (read == null || !needsConfirmation(read.prompt)) { forget(key); return read != null }
-        val region = read.region ?: run { forget(key); return false }
-        val sig = read.prompt.copy(selected = null) to region.map { r -> r.filterNot { it in MOVING_MARKS }.replace(Regex("""\s+"""), " ").trim() }
+        if (read.refused) { forget(key); return false }
+        val rows = read.region?.map { r -> r.filterNot { it in MOVING_MARKS }.replace(Regex("""\s+"""), " ").trim() }
+        val sig = Triple(read.prompt.copy(selected = null), read.complete, rows)
         if (confirmed[key] == sig) return true
         confirmed.remove(key)
-        if (last[key] == sig) { confirmed[key] = sig; return true }
+        val run = if (last[key] == sig) (runs[key] ?: 1) + 1 else 1
         last[key] = sig
+        runs[key] = run
+        if (run >= (if (read.complete) 2 else FALLBACK_READS)) { confirmed[key] = sig; return true }
         return false
     }
 
-    fun forget(key: String) { last.remove(key); confirmed.remove(key) }
+    fun forget(key: String) { last.remove(key); runs.remove(key); confirmed.remove(key) }
 }
 
 /**
