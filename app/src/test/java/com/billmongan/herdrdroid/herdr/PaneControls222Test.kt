@@ -50,7 +50,7 @@ class PaneControls222Test {
         assertNull(AgentComposers.pi(pi + "\n/new  start\n/resume  pick\n/model  choose\n/help  help\n/quit  quit"))
         assertNull(AgentComposers.pi(pi.replaceFirst("────────", "── Working ")))
         // Copilot's box with something other than its frame inside.
-        assertNull(AgentComposers.copilot(stripAnsi(res("${menus("copilot")}/empty.ansi")).replace("┃\n", "x\n")))
+        assertNull(AgentComposers.copilot(stripAnsi(res("${menus("copilot")}/empty.ansi")).replace(Regex("""(?m)^┃\s*$"""), "x")))
         // Oh My Pi's gutter with no status row above it.
         assertNull(AgentComposers.omp("output\n╰─ \n"))
     }
