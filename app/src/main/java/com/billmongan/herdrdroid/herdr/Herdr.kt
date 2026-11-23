@@ -1501,13 +1501,18 @@ fun isComposerHint(agent: String?, text: String): Boolean {
  * text drawn entirely as a placeholder ([isPlaceholderText]: faint, or a grey colour); on a plain
  * screen, the known hints ([isComposerHint], 1.4.4).
  */
-fun inputLineOf(screen: String, agent: String? = null): String? {
+fun inputLineOf(screen: String, agent: String? = null, menuWrite: Boolean = false): String? {
     // OpenCode draws no prompt glyph (2.1.5): its box, positively found empty, is an empty line;
     // otherwise nothing is judged, as before.
     if (isOpenCode(agent) && openCodeComposerEmpty(screen)) return ""
     // 2.2.2: pi, Oh My Pi and Copilot draw no prompt glyph either; their boxes are found by shape, and
     // a layout their reader doesn't know is no input line (never the generic glyph search below).
-    if (AgentComposers.handles(agent)) return AgentComposers.line(screen, agent)
+    // A blank Oh My Pi or Copilot box can hold typed spaces the screen can't show (no cursor cell), so
+    // for a normal send it is typing (held); only a menu write, which clears the line with the agent's
+    // own Ctrl+U before its command, takes it as empty (2.2.2, from Grok's review).
+    if (AgentComposers.handles(agent)) return AgentComposers.line(screen, agent)?.let {
+        if (it.isEmpty() && !menuWrite && AgentComposers.clearKey(agent) != null) AgentComposers.UNSURE_BLANK else it
+    }
     val (raw, typed) = inputRow(screen) ?: return null
     if (typed.isEmpty()) return ""
     // A row read with its styles is judged only by how it is drawn: the same words as a known hint

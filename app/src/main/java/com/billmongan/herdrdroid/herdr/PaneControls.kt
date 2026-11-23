@@ -434,7 +434,7 @@ object PaneControls {
     fun writeBlock(agent: String?, viewport: String): String? {
         if (detectPrompt(forPhone(viewport), false, agent) != null) return "a question or dialog is open in it"
         val draft = composerDraftOf(viewport, agent)
-        val line = inputLineOf(viewport, agent) ?: return if (draft != null) TYPED else "its input line isn't on screen"
+        val line = inputLineOf(viewport, agent, menuWrite = true) ?: return if (draft != null) TYPED else "its input line isn't on screen"
         if (line.isNotEmpty() || draft != null) return TYPED
         return null
     }

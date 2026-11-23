@@ -23,10 +23,11 @@ class PaneControls222Test {
 
     @Test fun piOmpAndCopilotEmptyBoxesLetAMenuWriteGo() {
         for (a in listOf("pi", "omp", "copilot")) {
-            assertEquals(a, "", inputLineOf(res("${menus(a)}/empty.ansi"), a))
+            assertEquals(a, "", inputLineOf(res("${menus(a)}/empty.ansi"), a, menuWrite = true))
             assertNull(a, PaneControls.writeBlock(a, res("${menus(a)}/empty.ansi")))
         }
-        for (a in listOf("omp", "copilot")) assertEquals(a, "", inputLineOf(stripAnsi(res("${menus(a)}/empty.ansi")), a))
+        assertEquals("", inputLineOf(res("${menus("pi")}/empty.ansi"), "pi"))
+        for (a in listOf("omp", "copilot")) assertEquals(a, "", inputLineOf(stripAnsi(res("${menus(a)}/empty.ansi")), a, menuWrite = true))
         // pi's blank box counts as empty only where its cursor shows: never on a plain read.
         assertNull(inputLineOf(stripAnsi(res("${menus("pi")}/empty.ansi")), "pi"))
     }
@@ -37,6 +38,12 @@ class PaneControls222Test {
         assertTrue(spaced.contains("   \u001B[7m"))
         assertNull(inputLineOf(spaced, "pi"))
         // Oh My Pi and Copilot draw no cursor cell: their menu commands clear the line with Ctrl+U first.
+        // A normal send (a queued, voice or cross-server message) never takes their blank box for empty:
+        // it may hold spaces. Only a menu write does, and it clears the line with Ctrl+U first.
+        for (a in listOf("omp", "copilot")) {
+            assertEquals(a, AgentComposers.UNSURE_BLANK, inputLineOf(res("${menus(a)}/empty.ansi"), a))
+            assertEquals(a, AgentComposers.UNSURE_BLANK, inputLineOf(stripAnsi(res("${menus(a)}/empty.ansi")), a))
+        }
         assertEquals("ctrl+u", AgentComposers.clearKey("omp"))
         assertEquals("ctrl+u", AgentComposers.clearKey("copilot"))
         assertNull(AgentComposers.clearKey("pi"))
@@ -51,8 +58,8 @@ class PaneControls222Test {
     }
 
     @Test fun ompsOwnHintIsEmptyButTheSameWordsInNormalTypeAreTyping() {
-        assertEquals("", inputLineOf(res("${menus("omp")}/hint.ansi"), "omp"))
-        assertEquals("", inputLineOf(stripAnsi(res("${menus("omp")}/hint.ansi")), "omp"))
+        assertEquals("", inputLineOf(res("${menus("omp")}/hint.ansi"), "omp", menuWrite = true))
+        assertEquals("", inputLineOf(stripAnsi(res("${menus("omp")}/hint.ansi")), "omp", menuWrite = true))
         assertEquals("shift+tab to change thinking effort", inputLineOf(res("${menus("omp")}/hint-typed.ansi"), "omp"))
     }
 
