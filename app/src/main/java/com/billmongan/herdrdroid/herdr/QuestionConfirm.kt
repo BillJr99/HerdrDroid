@@ -74,7 +74,7 @@ internal data class QuestionRead(val prompt: Prompt, val topped: Boolean, val co
  */
 internal fun questionRead(text: String, p: Prompt, agent: String?, version: String?, blocked: Boolean, framed: Boolean = false): QuestionRead {
     if (!needsConfirmation(p) || selfFramed(p) || framed) return QuestionRead(p, topped = true, complete = true)
-    val rows = stripAnsi(text).lines().takeLast(80)
+    val rows = claudeDialogWindow(stripAnsi(text).lines(), agent)
     return if (p.choices.isEmpty()) regionRead(rows, p) else dialogRead(rows, p, agent, version, blocked)
 }
 
@@ -156,7 +156,9 @@ internal fun dialogRead(rows: List<String>, p: Prompt, agent: String?, version: 
         .flatMap { e -> listOfNotNull(e, (e - 1 downTo maxOf(0, e - 2)).firstOrNull { rows[it].isNotBlank() }
             ?.takeIf { !topEdge(rows[it], width) && !isDialogHeaderRow(rows[e]) }) } +
         // 2.2.4: a Claude dialog taller than the screen, read from its frame: its top is the screen's top row.
-        listOfNotNull(0.takeIf { p.topOffScreen && first > 0 })
+        listOfNotNull(0.takeIf { p.topOffScreen && first > 0 }) +
+        // 2.2.7: the whole of such a dialog, read back from the pane's history: its top rule is the first row.
+        listOfNotNull(0.takeIf { !p.topOffScreen && first > TOP_WITHIN && claudeFramedDialog(rows, first)?.top == 0 })
     for (top in edges) {
         if ((top + 1 until first).any { ECHO_ROW.containsMatchIn(rows[it]) || NUMBERED_ECHO_ROW.containsMatchIn(rows[it]) }) break
         // A header row that only starts like one ("Do you want to …") opens a dialog only with the dialog
