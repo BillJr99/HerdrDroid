@@ -10,33 +10,33 @@ class LongText227Test {
         while (length < chars) append("17:49:%02d.000 [link] row ${i++} ".format(i % 60)).append("x".repeat(60)).append('\n')
     }.take(chars)
 
-    @Test fun shortTextIsOneMessage() {
+    @Test fun textUpTo20KbQuotedIsOneMessage() {
         assertEquals(LongText.Plan.Single("hello"), LongText.plan("hello"))
-        val edge = "a".repeat(LongText.PART_MAX_BYTES)
+        // The 8,795-character paste goes whole, as one message.
+        val paste = lines(8_795)
+        assertEquals(LongText.Plan.Single(paste), LongText.plan(paste))
+        // Right at the limit (the quotes take two bytes), and one byte over.
+        val edge = "a".repeat(LongText.SINGLE_MAX_BYTES - 2)
+        assertEquals(LongText.SINGLE_MAX_BYTES, LongText.quotedBytes(edge))
         assertEquals(LongText.Plan.Single(edge), LongText.plan(edge))
+        assertEquals(LongText.Plan.Attachment(edge + "a"), LongText.plan(edge + "a"))
     }
 
-    @Test fun mediumTextGoesAsNumberedPartsOnLineBoundariesWithNothingLost() {
-        val text = lines(8_795) // the paste that arrived cut
-        val plan = LongText.plan(text) as LongText.Plan.Parts
-        assertTrue(plan.parts.size in 2..LongText.MAX_PARTS)
-        plan.parts.forEachIndexed { i, p ->
-            assertTrue(p.startsWith("(${i + 1}/${plan.parts.size}) "))
-            assertTrue("part ${i + 1} fits", p.toByteArray().size <= LongText.PART_MAX_BYTES)
-            if (i < plan.parts.size - 1) assertTrue("split at a line end", p.endsWith("\n"))
-        }
-        assertEquals(text, LongText.join(plan.parts))
-    }
-
-    @Test fun oneVeryLongLineIsCutBetweenCharactersNotLost() {
-        val text = "é".repeat(4_000) + "😀".repeat(300)
-        val plan = LongText.plan(text) as LongText.Plan.Parts
-        assertEquals(text, LongText.join(plan.parts))
-        plan.parts.forEach { assertTrue(it.toByteArray().size <= LongText.PART_MAX_BYTES) }
+    @Test fun apostrophesCountAsTheyAreQuoted() {
+        // 19 KB of text, but each ' becomes four characters on the command line.
+        val words = "it's Bill's log, don't cut it\n"
+        val text = words.repeat(19 * 1024 / words.length)
+        assertTrue(text.toByteArray().size < LongText.SINGLE_MAX_BYTES)
+        assertTrue(LongText.quotedBytes(text) > LongText.SINGLE_MAX_BYTES)
+        assertEquals(LongText.Plan.Attachment(text), LongText.plan(text))
+        // Fewer of them and it fits.
+        val few = "it's fine\n" + "a".repeat(15_000)
+        assertEquals(LongText.Plan.Single(few), LongText.plan(few))
+        assertTrue(LongText.COMMAND_GUARD_BYTES < 128 * 1024)
     }
 
     @Test fun largeTextGoesAsAFile() {
-        for (size in listOf(20_000, 55_710, 500_000)) {
+        for (size in listOf(21_000, 55_710, 500_000)) {
             val text = lines(size)
             assertEquals("$size", LongText.Plan.Attachment(text), LongText.plan(text))
         }

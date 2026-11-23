@@ -27,8 +27,8 @@ import java.time.Duration
 /**
  * 2.2.7, Bill: "make sure larger pastes become file attachments automatically at the appropriate
  * size so we never actually truncate anything". Every send path (the message box, the idle queue,
- * Send now; voice uses the same send) delivers all of it: as parts in order, or as a file whose
- * SHA-256 the computer confirms.
+ * Send now; voice uses the same send) delivers all of it: as one message up to 20 KB quoted, or as
+ * a file whose SHA-256 the computer confirms.
  */
 @RunWith(AndroidJUnit4::class)
 class LongTextSend227Test {
@@ -61,8 +61,6 @@ class LongTextSend227Test {
         val prompts = mutableListOf<String>()
         /** Files written to the inbox: the bytes that arrived. */
         val uploads = mutableListOf<ByteArray>()
-        /** A prompt containing this is refused. */
-        var failMatch: String? = null
         var corruptUploads = false
 
         init {
@@ -98,8 +96,8 @@ class LongTextSend227Test {
             command.contains("'pane' 'read' 'p1'") -> ok(idle)
             command.contains("'agent' 'prompt' 'p1' ") || command.contains("'pane' 'send-text' 'p1' ") -> {
                 val text = command.substringAfter("'p1' ").removeSurrounding("'")
-                if (failMatch != null && text.contains(failMatch!!)) ExecResult(1, "", "fixture refused")
-                else { if (command.contains("'agent' 'prompt'")) prompts += text; ok("") }
+                if (command.contains("'agent' 'prompt'")) prompts += text
+                ok("")
             }
             else -> ok("")
         }
@@ -118,16 +116,26 @@ class LongTextSend227Test {
         fun state(name: String, value: Any?) { (field("$name\$delegate").get(vm) as MutableState<Any?>).value = value }
     }
 
-    @Test fun aMediumPasteArrivesWholeAsPartsInOrderOnce() = fixture {
-        val text = paste(8_795)
-        val n = (LongText.plan(text) as LongText.Plan.Parts).parts.size
-        vm.sendMessage(pane(), text)
-        drainUntil { prompts.size == n }
+    @Test fun aPasteUnder20KbArrivesWholeAsOneMessage() = fixture {
+        for (size in listOf(8_795, 19_000)) {
+            val text = paste(size)
+            val sent = prompts.size
+            vm.sendMessage(pane(), text)
+            drainUntil { prompts.size == sent + 1 }
+            assertEquals(text, prompts.last())
+        }
         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(2))
-        assertEquals("no part sent twice", n, prompts.size)
-        prompts.forEachIndexed { i, p -> assertTrue(p.startsWith("(${i + 1}/$n) ")) }
-        assertEquals(text, LongText.join(prompts))
+        assertEquals("nothing sent twice", 2, prompts.size)
         assertTrue(uploads.isEmpty())
+    }
+
+    @Test fun apostrophesNear20KbGoAsAFileSinceTheyGrowWhenQuoted() = fixture {
+        val words = "it's Bill's log, don't cut it\n"
+        val text = words.repeat(19 * 1024 / words.length)
+        vm.sendMessage(pane(), text)
+        drainUntil { prompts.size == 1 }
+        assertArrayEquals(text.toByteArray(), uploads.single())
+        assertTrue(prompts.single().startsWith("Pasted text ("))
     }
 
     @Test fun pastesOf55kAnd500kGoAsCheckedFilesFromEveryPath() = fixture {
@@ -148,25 +156,6 @@ class LongTextSend227Test {
             assertTrue(prompts.last(), prompts.last().startsWith("Pasted text (") && prompts.last().endsWith("attached: /home/fixture/.herdrdroid/inbox/pasted-text.txt"))
             drainUntil { vm.queued.isEmpty() }
         }
-    }
-
-    @Test fun aFailedPartStopsTheRestWhichResumeFromTheQueueWithNothingTwice() = fixture {
-        val text = paste(8_795)
-        val parts = (LongText.plan(text) as LongText.Plan.Parts).parts
-        assertTrue(parts.size >= 3)
-        failMatch = "(2/${parts.size}) "
-        vm.sendMessage(pane(), text)
-        drainUntil { vm.queued.size == parts.size - 1 }
-        assertEquals(listOf(parts[0]), prompts)
-        assertTrue(vm.queued.first().note.orEmpty(), vm.queued.first().note.orEmpty().startsWith("Part 2 of ${parts.size} not sent yet"))
-        assertEquals(parts.drop(1), vm.queued.map { it.text })
-
-        // The pane is idle, so the queue sends the rest by itself, in order.
-        failMatch = null
-        drainUntil { vm.queued.isEmpty() && prompts.size == parts.size }
-        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(4))
-        assertEquals(parts, prompts)
-        assertEquals(text, LongText.join(prompts))
     }
 
     @Test fun aFileThatDoesNotArriveWholeIsRetriedOnceThenTheTextWaitsUncut() = fixture {
