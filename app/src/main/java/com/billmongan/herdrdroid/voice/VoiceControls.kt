@@ -228,7 +228,7 @@ internal class VoiceControls(
                 if (!stillAllowed()) return
                 val found = scanned.zip(reads).mapNotNull { (session, read) ->
                     read?.prompt?.let { prompt ->
-                        val title = if (prompt.terminalReview) "Open the terminal to review." else prompt.question.take(200)
+                        val title = if (prompt.terminalReview) "Open the terminal to review." else com.billmongan.herdrdroid.ui.QuestionText.prose(prompt.question).take(200)
                         "${session.pane.tabLabel.ifBlank { session.pane.agentName }} on ${session.server.label}: $title"
                     }
                 }
@@ -259,7 +259,10 @@ internal class VoiceControls(
                 val prompt = target?.let { vm.readVoiceCard(it)?.prompt }
                 if (!stillAllowed()) return
                 val choice = prompt?.choices?.getOrNull(command.index)
-                if (target == null || prompt == null || server == null || !vm.voiceCardFitsChat(target, prompt)) {
+                // 2.2.2: never while the open card still says it is reading the question.
+                if (target != null && vm.voiceCardStillReading(target)) {
+                    say("The question is still being read on the phone. No answer was sent.")
+                } else if (target == null || prompt == null || server == null || !vm.voiceCardFitsChat(target, prompt)) {
                     say("I could not verify a pending question in the open pane. No answer was sent.")
                 } else if (choice == null || voiceCardKeys(prompt, choice) == null) {
                     say("Use the question card on the phone for this answer. No answer was sent.")
@@ -283,6 +286,10 @@ internal class VoiceControls(
                 answerExpires = 0L
                 if (answer == null || !vm.voiceCardCurrent(answer.target) || speaking() || SystemClock.elapsedRealtime() >= expires) {
                     say("There is no answer to confirm.")
+                    return
+                }
+                if (vm.voiceCardStillReading(answer.target)) {
+                    say("The question is still being read on the phone. No answer was sent.")
                     return
                 }
                 vm.answerChoice(answer.target.pane.id, answer.prompt, answer.choice, target = answer.target,

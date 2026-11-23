@@ -283,8 +283,8 @@ class AgentMessageRelayTest {
         assertEquals(CrossServerState.PENDING, done.state)
         assertEquals(card.deadline, done.deadline)
         val note = checkNotNull(done.note)
-        assertTrue(note, note.startsWith("Not sent to Claude on Destination (pane p1): " + RelayRefusal.NOT_IDLE.why))
-        assertTrue(note, "Approve to try again" in note)
+        assertTrue(note, note.startsWith("Not sent to Claude on Destination (pane p1): " + RelayRefusal.WORKING.why))
+        assertTrue(note, "Retry to try again" in note)
         assertNull("no dialog loop after a refusal", vm.crossServerDialogFor("p1"))
         assertFalse(spent(card))
         assertTrue(destination.writes.isEmpty())
@@ -344,7 +344,7 @@ class AgentMessageRelayTest {
         assertTrue(vm.approveCrossServer(approval))
         val done = settle()
         assertEquals(CrossServerState.PENDING, done.state)
-        assertTrue(checkNotNull(done.note).contains(RelayRefusal.NOT_IDLE.why))
+        assertTrue(checkNotNull(done.note).contains(RelayRefusal.WORKING.why))
         assertTrue(destination.writes.isEmpty())
     }
 
@@ -452,6 +452,239 @@ class AgentMessageRelayTest {
         }
     }
 
+    // ---- 2.2.2: Retry, Force Send and Cancel on a card pending again after a refusal ------------
+
+    /** A working destination: herdr says so on the watched pane and on a fresh read; the card offers Retry and Force Send. */
+    private suspend fun refusedBusy(): AppViewModel.CrossServerCard {
+        destination.status = "working"
+        destinationStatus(Status.WORKING)
+        val card = vm.crossServerCardsFor("p1").singleOrNull() ?: frame()
+        assertTrue(vm.approveCrossServer(checkNotNull(vm.crossServerApprovalOf(card))))
+        val done = settle()
+        assertEquals(CrossServerState.PENDING, done.state)
+        assertEquals(RelayRefusal.WORKING, done.refusal)
+        assertTrue(vm.crossServerForceOffered(done))
+        return done
+    }
+
+    @Test fun aFreshCardIsApproveNotRetryAndOffersNoForce() = runBlocking {
+        vm.changeAgentMessaging(true)
+        val card = frame()
+        assertNull(card.refusal)
+        assertFalse(vm.crossServerForceOffered(card))
+        assertFalse(vm.forceCrossServer(checkNotNull(vm.crossServerApprovalOf(card))))
+        assertEquals(CrossServerState.PENDING, vm.crossServerCardsFor("p1").single().state)
+        assertTrue(destination.writes.isEmpty())
+    }
+
+    @Test fun retryAfterNotIdleSendsOnceWhenIdle() = runBlocking {
+        vm.changeAgentMessaging(true)
+        val busy = refusedBusy()
+        assertTrue(checkNotNull(busy.note), "Retry to try again when it is idle, or Force Send" in busy.note!!)
+        assertFalse(spent(busy))
+        destination.status = "idle"
+        destinationStatus(Status.IDLE)
+        val approval = checkNotNull(vm.crossServerApprovalOf(busy))
+        assertTrue(vm.approveCrossServer(approval))
+        assertFalse("a second Retry while it sends does nothing", vm.approveCrossServer(approval))
+        assertEquals(CrossServerState.SENT, settle().state)
+        assertFalse(vm.approveCrossServer(approval))
+        assertFalse(vm.forceCrossServer(approval))
+        settle()
+        assertEquals(listOf(prompt), destination.writes)
+        assertTrue(spent(busy))
+    }
+
+    /** Claude in the middle of a turn ("esc to interrupt", 3 shells) with an empty box: Force Send types it in once. */
+    @Test fun forceSendOnAWorkingClaudeWithAnEmptyBoxSendsExactlyOnce() = runBlocking {
+        vm.changeAgentMessaging(true)
+        destination.busy = 3
+        destination.visible = resource("/screens/claude/derived-2.1.330-shells/working-3-shells.ansi")
+        val busy = refusedBusy()
+        assertTrue(destination.writes.isEmpty())
+        val approval = checkNotNull(vm.crossServerApprovalOf(busy))
+        assertTrue(vm.forceCrossServer(approval))
+        // Double taps on Send anyway, Retry or Approve while it sends, and after, send nothing more.
+        assertFalse(vm.forceCrossServer(approval))
+        assertFalse(vm.approveCrossServer(approval))
+        val done = settle()
+        assertEquals(done.note, CrossServerState.SENT, done.state)
+        assertFalse(vm.forceCrossServer(approval))
+        assertFalse(vm.approveCrossServer(approval))
+        settle()
+        assertEquals(listOf(prompt), destination.writes)
+        assertTrue("never herdr's own --force", destination.writes.none { "--force" in it })
+        assertTrue(spent(busy))
+        assertTrue(source.writes.isEmpty())
+        // A restart on the same saved settings: the code is spent, so the frame raises no card to send again.
+        val again = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
+        try {
+            assertTrue((field(again, "crossServerCodes").get(again) as CrossServerCodeLedger).spent(busy.id))
+        } finally { again.viewModelScope.cancel() }
+        vm.closeCrossServerCard(done)
+        vm.readPane("p1")
+        assertTrue(vm.crossServerCardsFor("p1").isEmpty())
+        assertEquals(1, destination.writes.size)
+    }
+
+    /** Hermes with background work: BACKGROUND is not forceable, so Retry and Cancel only, and a forced call sends nothing. */
+    @Test fun backgroundWorkIsNeverForced() = runBlocking {
+        vm.changeAgentMessaging(true)
+        destination.agent = "hermes"
+        destination.busy = 1
+        destinationStatus(Status.IDLE)
+        val card = frame(to = "hermes")
+        sweptDestination(1)
+        assertTrue(vm.approveCrossServer(checkNotNull(vm.crossServerApprovalOf(card))))
+        val done = settle()
+        assertEquals(RelayRefusal.BACKGROUND, done.refusal)
+        assertFalse(vm.crossServerForceOffered(done))
+        assertFalse(vm.forceCrossServer(checkNotNull(vm.crossServerApprovalOf(done))))
+        assertTrue(destination.writes.isEmpty())
+    }
+
+    /** Only Claude Code queues typed input during a turn: a working OpenCode (or any other agent) is never offered Force Send. */
+    @Test fun aWorkingOpenCodeIsNeverOfferedForce() = runBlocking {
+        vm.changeAgentMessaging(true)
+        destination.agent = "opencode"
+        destination.status = "working"
+        destinationStatus(Status.WORKING)
+        val card = frame(to = "opencode")
+        assertTrue(vm.approveCrossServer(checkNotNull(vm.crossServerApprovalOf(card))))
+        val done = settle()
+        assertEquals(RelayRefusal.WORKING, done.refusal)
+        assertFalse(vm.crossServerForceOffered(done))
+        assertFalse(done.note!!.contains("Force Send"))
+        assertFalse(vm.forceCrossServer(checkNotNull(vm.crossServerApprovalOf(done))))
+        assertTrue(destination.writes.isEmpty())
+    }
+
+    /** A question opening between the forced send's first screen read and the write: refused, nothing typed, card pending. */
+    @Test fun aDialogOpeningBeforeTheForcedWriteIsRefused() = runBlocking {
+        vm.changeAgentMessaging(true)
+        destination.busy = 3
+        val working = resource("/screens/claude/derived-2.1.330-shells/working-3-shells.ansi")
+        destination.visible = working
+        val busy = refusedBusy()
+        destination.visibleNext.addLast(working)
+        destination.visible = resource("/screens/claude/captured-2.1.329/single-question.txt")
+        assertTrue(vm.forceCrossServer(checkNotNull(vm.crossServerApprovalOf(busy))))
+        val done = settle()
+        assertEquals(done.note, CrossServerState.PENDING, done.state)
+        assertEquals(RelayRefusal.QUESTION, done.refusal)
+        assertTrue("the first read passed and the second was read", destination.visibleNext.isEmpty())
+        assertFalse(vm.crossServerForceOffered(done))
+        assertFalse(spent(done))
+        assertTrue(destination.writes.isEmpty())
+    }
+
+    /** A scrolled-back destination says so, offers no Force Send, and a forced call can't loop on it. */
+    @Test fun aScrolledBackDestinationSaysSoAndOffersNoForce() = runBlocking {
+        vm.changeAgentMessaging(true)
+        val busy = refusedBusy()
+        destination.scroll = 5
+        assertTrue(vm.forceCrossServer(checkNotNull(vm.crossServerApprovalOf(busy))))
+        val done = settle()
+        assertEquals(CrossServerState.PENDING, done.state)
+        assertEquals(RelayRefusal.SCROLLED, done.refusal)
+        assertTrue(done.note!!.contains("scrolled back at the computer"))
+        assertFalse(vm.crossServerForceOffered(done))
+        assertTrue(destination.writes.isEmpty())
+    }
+
+    /** herdr refuses a blocked agent before any input (agent_blocked): a transient QUESTION, the code released, the card pending. */
+    @Test fun herdrsAgentBlockedIsATransientRefusal() = runBlocking {
+        vm.changeAgentMessaging(true)
+        destination.busy = 3
+        destination.visible = resource("/screens/claude/derived-2.1.330-shells/working-3-shells.ansi")
+        val busy = refusedBusy()
+        destination.promptError = "error: agent_blocked: the agent is waiting for input"
+        assertTrue(vm.forceCrossServer(checkNotNull(vm.crossServerApprovalOf(busy))))
+        val done = settle()
+        assertEquals(done.note, CrossServerState.PENDING, done.state)
+        assertEquals(RelayRefusal.QUESTION, done.refusal)
+        assertFalse(spent(done))
+        assertTrue(destination.writes.isEmpty())
+        // Once herdr takes it, Retry on an idle Claude sends once.
+        destination.promptError = null
+        destination.status = "idle"
+        destinationStatus(Status.IDLE)
+        destination.visible = "❯ "
+        assertTrue(vm.approveCrossServer(checkNotNull(vm.crossServerApprovalOf(done))))
+        assertEquals(CrossServerState.SENT, settle().state)
+        assertEquals(1, destination.writes.size)
+    }
+
+    /** Force skips only the busy checks: a question, a draft, a panel or no input line still refuse it, and the card stays pending. */
+    @Test fun forceSendIsStillRefusedByEveryOtherCheck() = runBlocking {
+        vm.changeAgentMessaging(true)
+        val panel = buildString {
+            appendLine("  ┌──────────────────────────────────────────────────────────────────────┐")
+            appendLine("  │ ${"Status".padEnd(68)} │")
+            appendLine("  │ ${"Model      sample".padEnd(68)} │")
+            appendLine("  │ ${"Esc close".padEnd(68)} │")
+            appendLine("  └──────────────────────────────────────────────────────────────────────┘")
+            appendLine()
+            appendLine("❯ ")
+        }
+        for ((screen, why) in listOf(
+            resource("/screens/claude/captured-2.1.329/single-question.txt") to RelayRefusal.QUESTION,
+            "❯ unsent words" to RelayRefusal.DRAFT,
+            panel to RelayRefusal.USAGE,
+            "Output only, the input box is not drawn" to RelayRefusal.NO_INPUT,
+        )) {
+            destination.visible = "❯ "
+            val busy = refusedBusy()
+            destination.visible = screen
+            assertTrue(why.name, vm.forceCrossServer(checkNotNull(vm.crossServerApprovalOf(busy))))
+            val done = settle()
+            assertEquals(why.name, CrossServerState.PENDING, done.state)
+            assertEquals(why.name, why, done.refusal)
+            assertTrue(done.note, checkNotNull(done.note).contains(why.why))
+            assertFalse("${why.name}: no Force Send for this reason", vm.crossServerForceOffered(done))
+            assertFalse(why.name, vm.forceCrossServer(checkNotNull(vm.crossServerApprovalOf(done))))
+            assertFalse(why.name, spent(done))
+        }
+        assertTrue(destination.writes.isEmpty() && source.writes.isEmpty())
+    }
+
+    @Test fun forceSendIsRefusedForAReplacedDestination() = runBlocking {
+        vm.changeAgentMessaging(true)
+        val busy = refusedBusy()
+        val approval = checkNotNull(vm.crossServerApprovalOf(busy))
+        destination.terminal = "replacement"
+        destinationStatus(Status.WORKING)
+        assertTrue(vm.forceCrossServer(approval))
+        val done = settle()
+        assertEquals(CrossServerState.REFUSED, done.state)
+        assertTrue(checkNotNull(done.note).contains(RelayRefusal.REPLACED.why))
+        assertTrue(spent(done))
+        assertFalse(vm.forceCrossServer(approval))
+        assertTrue(destination.writes.isEmpty())
+    }
+
+    /** Refusals other than busy (a draft, a question, no input line) offer Retry and Cancel only. */
+    @Test fun forceIsNotOfferedForOtherRefusals() = runBlocking {
+        vm.changeAgentMessaging(true)
+        frame()
+        for ((screen, why) in listOf(
+            "❯ unsent words" to RelayRefusal.DRAFT,
+            resource("/screens/claude/captured-2.1.329/single-question.txt") to RelayRefusal.QUESTION,
+            "Output only, the input box is not drawn" to RelayRefusal.NO_INPUT,
+        )) {
+            destination.visible = screen
+            val live = vm.crossServerCardsFor("p1").single()
+            assertTrue(vm.approveCrossServer(checkNotNull(vm.crossServerApprovalOf(live))))
+            val done = settle()
+            assertEquals(why, done.refusal)
+            assertTrue(done.note, "Retry to try again before" in checkNotNull(done.note))
+            assertFalse(done.note!!.contains("Force Send"))
+            assertFalse(vm.crossServerForceOffered(done))
+            assertFalse(vm.forceCrossServer(checkNotNull(vm.crossServerApprovalOf(done))))
+        }
+        assertTrue(destination.writes.isEmpty())
+    }
+
     private suspend fun frame(to: String = sendTo): AppViewModel.CrossServerCard {
         vm.readPane("p1")
         assertTrue(vm.crossServerCardsFor("p1").isEmpty())
@@ -481,6 +714,14 @@ class AgentMessageRelayTest {
         var agent = "claude"
         var busy = 0
         var visible = "❯ "
+        /** herdr's agent_status on a fresh `pane get`. */
+        var status = "idle"
+        /** herdr's scroll offset on a fresh `pane get`. */
+        var scroll = 0
+        /** 2.2.2: screens the next visible reads return, in turn, before [visible]. */
+        val visibleNext = ArrayDeque<String>()
+        /** 2.2.2: herdr refuses the agent prompt with this, before any input (agent_blocked). */
+        var promptError: String? = null
         val writes = mutableListOf<String>()
         val pane get() = Pane("p1", "tab", "w1", agent, Status.IDLE, "", "/fixture", scrollOffset = 0, terminalId = terminal)
         override suspend fun bulk(command: String): ExecResult = error("Unexpected bulk command")
@@ -492,9 +733,10 @@ class AgentMessageRelayTest {
         override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult {
             expectedConnection?.let { assertSame(connection, it) }
             return when {
-                command.endsWith("'pane' 'get' 'p1'") -> ok("""{"result":{"pane":{"pane_id":"p1","workspace_id":"w1","tab_id":"tab","agent":"$agent","agent_status":"idle","cwd":"/fixture","terminal_id":"$terminal","scroll":{"offset_from_bottom":0}}}}""")
+                command.endsWith("'pane' 'get' 'p1'") -> ok("""{"result":{"pane":{"pane_id":"p1","workspace_id":"w1","tab_id":"tab","agent":"$agent","agent_status":"$status","cwd":"/fixture","terminal_id":"$terminal","scroll":{"offset_from_bottom":$scroll}}}}""")
                 "'--source' 'recent'" in command -> ok(frame)
-                "'--source' 'visible'" in command -> ok(visible)
+                "'--source' 'visible'" in command -> ok(visibleNext.removeFirstOrNull() ?: visible)
+                "'agent' 'prompt' 'p1'" in command && promptError != null -> ExecResult(1, "", promptError!!)
                 "'agent' 'prompt' 'p1'" in command -> { writes += command; if (loseAck) ExecResult(1, "", "lost acknowledgement") else ok("") }
                 else -> error("Unexpected fixture command: $command")
             }

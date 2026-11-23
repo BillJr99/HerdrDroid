@@ -6,6 +6,76 @@ OPTION Yes, run command
 OPTION Yes, and always allow in this conversation for commands that start with 'go test'
 OPTION Yes, and always allow for commands that start with 'go test' (Persist to settings.json)
 OPTION No, and tell Antigravity what to do differently
+##### claude/captured-2.1.329-auto-approval/approval-down.txt
+HEADLINE Do you want to proceed?
+OPTION No
+OPTION Yes
+##### claude/captured-2.1.329-auto-approval/approval.txt
+HEADLINE Do you want to proceed?
+OPTION No
+OPTION Yes
+##### claude/captured-2.1.329-hook/hook-main-down.txt
+HEADLINE Do you want to proceed?
+CODE wrap
+  | gh api repos/O/R/actions/runs/1/artifacts -q '.artifacts[] | {name, size_in_bytes}'
+PROSE List CI run artifacts
+PROSE Hook PreToolUse:Bash requires confirmation for this command:
+PROSE gh policy: shared gh policy unavailable [settings] settings.json to update hooks
+OPTION Yes
+OPTION No
+##### claude/captured-2.1.329-hook/hook-main.txt
+HEADLINE Do you want to proceed?
+CODE wrap
+  | gh api repos/O/R/actions/runs/1/artifacts -q '.artifacts[] | {name, size_in_bytes}'
+PROSE List CI run artifacts
+PROSE Hook PreToolUse:Bash requires confirmation for this command:
+PROSE gh policy: shared gh policy unavailable [settings] settings.json to update hooks
+OPTION Yes
+OPTION No
+##### claude/captured-2.1.329-two-questions/q1-down.txt
+HEADLINE The requested rule allows `requests_read_files.sh` in ANY project worktree (`worktrees/*`). That includes worktrees the review agent creates itself before review, so a new script with that name would read files with no prompt. On 2026-11-12 you switched two similar wildcard folder rules from allow to ask for exactly that reason. Which rule should I add?
+OPTION Exact path (Recommended)
+  NOTE I list which worktrees on hostb have that script, then you pick one. The allow names only that file, so a copy in any other worktree still asks.
+OPTION Wildcard as written
+  NOTE Add `Bash(bash /home/user/Documents/project/worktrees/*/scripts/agent/orders/access-requests/requests_read_files.sh)` exactly as requested.
+OPTION Don't add it
+  NOTE Leave the settings unchanged, so the script keeps asking.
+OPTION Type something.
+OPTION Chat about this
+##### claude/captured-2.1.329-two-questions/q1.txt
+HEADLINE The requested rule allows `requests_read_files.sh` in ANY project worktree (`worktrees/*`). That includes worktrees the review agent creates itself before review, so a new script with that name would read files with no prompt. On 2026-11-12 you switched two similar wildcard folder rules from allow to ask for exactly that reason. Which rule should I add?
+OPTION Exact path (Recommended)
+  NOTE I list which worktrees on hostb have that script, then you pick one. The allow names only that file, so a copy in any other worktree still asks.
+OPTION Wildcard as written
+  NOTE Add `Bash(bash /home/user/Documents/project/worktrees/*/scripts/agent/orders/access-requests/requests_read_files.sh)` exactly as requested.
+OPTION Don't add it
+  NOTE Leave the settings unchanged, so the script keeps asking.
+OPTION Type something.
+OPTION Chat about this
+##### claude/captured-2.1.329-two-questions/q2-down.txt
+HEADLINE This machine has never connected to hostb (host-b.example.invalid), so SSH will ask to trust a new host key. How should I handle the first connection?
+OPTION You connect first (Recommended)
+  NOTE You run `! ssh user@host-b.example.invalid hostname` once and check the fingerprint yourself. After that I connect with BatchMode.
+OPTION Trust on first use
+  NOTE I connect once with StrictHostKeyChecking=accept-new. That adds the key to known_hosts without anyone checking the fingerprint.
+OPTION Type something.
+OPTION Chat about this
+##### claude/captured-2.1.329-two-questions/q2.txt
+HEADLINE This machine has never connected to hostb (host-b.example.invalid), so SSH will ask to trust a new host key. How should I handle the first connection?
+OPTION You connect first (Recommended)
+  NOTE You run `! ssh user@host-b.example.invalid hostname` once and check the fingerprint yourself. After that I connect with BatchMode.
+OPTION Trust on first use
+  NOTE I connect once with StrictHostKeyChecking=accept-new. That adds the key to known_hosts without anyone checking the fingerprint.
+OPTION Type something.
+OPTION Chat about this
+##### claude/captured-2.1.329-two-questions/review.txt
+HEADLINE Review your answers
+PROSE The requested rule allows `requests_read_files.sh` in ANY project worktree (`worktrees/*`). That includes worktrees the review agent creates itself before review, so a new script with that name would read files with no prompt. On 2026-11-12 you switched two similar wildcard folder rules from allow to ask for exactly that reason. Which rule should I add?
+LABEL Your answer = Exact path (Recommended)
+PROSE This machine has never connected to hostb (host-b.example.invalid), so SSH will ask to trust a new host key. How should I handle the first connection?
+LABEL Your answer = You connect first (Recommended)
+OPTION Submit answers
+OPTION Cancel
 ##### claude/captured-2.1.329/background-awaiting-input.txt
 HEADLINE Claude's session is in the background, and its sessions list shows a session waiting for your input. Its question shows once you return to it.
 ##### claude/captured-2.1.329/multi-question-first.txt
@@ -152,14 +222,72 @@ OPTION Chat about this
 ##### claude/derived-1.4.9/0109-askuserquestion-multi-select-review-and-.txt
 HEADLINE Ready to submit your answers?
 PROSE Review your answers
-PROSE Which language for the demo?: Python
-PROSE Which test runners?: pytest, tox
+PROSE Which language for the demo?
+LABEL Your answer = Python
+PROSE Which test runners?
+LABEL Your answer = pytest, tox
 OPTION Submit answers
 OPTION Cancel
 ##### claude/derived-1.4.9/0111-custom-api-key-detected.txt
 HEADLINE Do you want to use this API key?
 OPTION Yes
 OPTION No (recommended)
+##### claude/derived-2.1.329-hook/approval-helper-list.txt
+HEADLINE Do you want to proceed?
+OPTION No
+OPTION Yes
+##### claude/derived-2.1.329-hook/ask-agent-list.txt
+HEADLINE The sender is on a stale hold for one of the helpers, which is also waiting on a permission prompt for a local test. Its lane is a test I already finished in a throwaway container. How should I redirect it?
+OPTION Cancel and stop the lane (Recommended)
+  NOTE Answer No on its pending prompt, tell it the lane is done with a pointer to my receipt, and move its scratch folder away once it is idle.
+OPTION Cancel and redo it in a container
+  NOTE Same, but keep the lane and run all of its work only inside a throwaway container.
+OPTION Leave it
+  NOTE Do nothing for now.
+OPTION Type something.
+OPTION Chat about this
+##### claude/derived-2.1.329-hook/hook-subagent-agent-list-down.txt
+HEADLINE Do you want to proceed?
+CODE wrap
+  | gh api repos/O/R/actions/runs/1/artifacts -q '.artifacts[] | {name, size_in_bytes}'
+PROSE Bash command, from the general-purpose agent
+PROSE List CI run artifacts
+PROSE Hook PreToolUse:Bash requires confirmation for this command:
+PROSE gh policy: shared gh policy unavailable [settings] settings.json to update hooks
+OPTION Yes
+OPTION No
+##### claude/derived-2.1.329-hook/hook-subagent-agent-list.txt
+HEADLINE Do you want to proceed?
+CODE wrap
+  | gh api repos/O/R/actions/runs/1/artifacts -q '.artifacts[] | {name, size_in_bytes}'
+PROSE Bash command, from the general-purpose agent
+PROSE List CI run artifacts
+PROSE Hook PreToolUse:Bash requires confirmation for this command:
+PROSE gh policy: shared gh policy unavailable [settings] settings.json to update hooks
+OPTION Yes
+OPTION No
+##### claude/derived-2.1.329-hook/hook-subagent-other-command.txt
+HEADLINE Do you want to proceed?
+CODE wrap
+  | gh api repos/O/R/actions/runs/2/artifacts -q '.artifacts[] | {name, size_in_bytes}'
+PROSE Bash command, from the general-purpose agent
+PROSE List CI run artifacts
+PROSE Hook PreToolUse:Bash requires confirmation for this command:
+PROSE gh policy: shared gh policy unavailable [settings] settings.json to update hooks
+OPTION Yes
+OPTION No
+##### claude/derived-2.1.329-hook/hook-subagent.txt
+HEADLINE Do you want to proceed?
+CODE wrap
+  | gh api repos/O/R/actions/runs/1/artifacts -q '.artifacts[] | {name, size_in_bytes}'
+PROSE Bash command, from the general-purpose agent
+PROSE List CI run artifacts
+PROSE Hook PreToolUse:Bash requires confirmation for this command:
+PROSE gh policy: shared gh policy unavailable [settings] settings.json to update hooks
+OPTION Yes
+OPTION No
+##### claude/derived-2.2.0-gutter/next-focus-gutter.txt
+HEADLINE The sample suite can run under several runners. Each one runs in a throwaway container, so picking more than one only makes the run longer. Which runners should the sample use?
 ##### claude/derived-checkbox-2.1.326/next.txt
 HEADLINE Which runners should the sample use?
 OPTION [ ] pytest
@@ -210,7 +338,9 @@ OPTION No, and block this host in the future ~ (b)~
 OPTION No, and tell Codex what to do differently ~ (esc)~
 ##### codex/derived-1.4.9/0203-mcp-app-tool-approval.txt
 HEADLINE Approve app tool call?
-PROSE mcp tool: demo-notes/search_notes {"query": "release checklist"}
+PROSE mcp tool: demo-notes/search_notes
+CODE wrap
+  | {"query": "release checklist"}
 OPTION Allow
   NOTE Run the tool and continue.
 OPTION Allow for this session
@@ -228,7 +358,7 @@ OPTION No, and tell Codex what to do differently ~ (esc)~
 ##### codex/derived-1.4.9/0206-request-user-input-multi-question-2.txt
 HEADLINE Submit with unanswered questions?
 ##### codex/derived-1.4.9/0206-request-user-input-multi-question.txt
-CAPTION Question 1/2  Database
+CAPTION Question 1/2 Database
 HEADLINE Which database should demo-box use?
 OPTION SQLite (Recommended)
   NOTE Single file, no server
@@ -258,7 +388,9 @@ CODE wrap
 CAPTION Tool:
 CODE wrap
   | search_notes
-LABEL Arguments = {"query": "HerdrDroid"}
+PROSE Arguments:
+CODE wrap
+  | {"query": "HerdrDroid"}
 OPTION Yes, proceed ~ (y)~
 OPTION Yes, and don't ask again for this tool ~ (a)~
 OPTION No, and tell Codex what to do differently ~ (esc)~
@@ -404,8 +536,48 @@ OPTION Quit plan
 HEADLINE Do you trust the contents of this directory?
 OPTION Yes, proceed
 OPTION No, quit
+##### grok/live-2026-11-21/bill-example.txt
+HEADLINE Retry removal of temporary CI files
+CODE wrap
+  | rm -f /tmp/hd-ui-attempt1.log /tmp/hd-ui-attempt1.err /tmp/hd-ci-a.zip /tmp/hd-ci-b.zip; rmdir /tmp/hd-ci-a /tmp/hd-ci-b 2>/dev/null; ls /tmp/hd-ui-attempt1.log /tmp/hd-ci-a.zip 2>&1 | head
+OPTION Yes, and don't ask again for anything (always-approve mode)
+OPTION Yes, proceed
+OPTION No, reject (type to add feedback)
+OPTION Never allow: rm -f /tmp/hd-ui-attempt1.log /tmp/hd-ui-attempt1.err
+##### grok/live-2026-11-21/multirow-approval.txt
+HEADLINE List HerdrDroid source files and confirm commit
+CODE wrap
+  | find /home/user/src/app -type d \( -name keystore -o -name release -o -name build -o -name .git \) -prune -o -type f -print | sed 's|/home/user/src/app/||' | head -400; echo '---'; git -C /home/user/src/app rev-parse HEAD; git -C /home/user/src/app describe --tags --always 2>/dev/null | head -5
+OPTION Yes, and don't ask again for anything (always-approve mode)
+OPTION Yes, proceed
+OPTION No, reject (type to add feedback)
+OPTION Never allow: find /home/user/src/app -type
+##### grok/live-2026-11-21b/heavy-box.txt
+HEADLINE Confirm the back arrow click line
+CODE wrap
+  | git -C /home/bill/Documents/repos/HerdrDroid show 507e0344560ef35cbd6f843ff81c4aa499376ca7:app/src/main/java/com/billmongan/herdrdroid/ui/ServersScreen.kt | awk 'NR>=114 && NR<=120 {printf "%d:%s\n", NR, $0}'
+OPTION Yes, and don't ask again for anything (always-approve mode)
+OPTION Yes, proceed
+OPTION No, reject (type to add feedback)
+OPTION Never allow: git -C /home/bill/Documents/repos/HerdrDroid show
+##### grok/live-2026-11-21b/light-box.txt
+HEADLINE Confirm the back arrow click line
+CODE wrap
+  | git -C /home/bill/Documents/repos/HerdrDroid show 507e0344560ef35cbd6f843ff81c4aa499376ca7:app/src/main/java/com/billmongan/herdrdroid/ui/ServersScreen.kt | awk 'NR>=114 && NR<=120 {printf "%d:%s\n", NR, $0}'
+OPTION Yes, and don't ask again for anything (always-approve mode)
+OPTION Yes, proceed
+OPTION No, reject (type to add feedback)
+OPTION Never allow: git -C /home/bill/Documents/repos/HerdrDroid show
+##### grok/live-2026-11-21b/no-box.txt
+HEADLINE Confirm the back arrow click line
+CODE wrap
+  | git -C /home/bill/Documents/repos/HerdrDroid show 507e0344560ef35cbd6f843ff81c4aa499376ca7:app/src/main/java/com/billmongan/herdrdroid/ui/ServersScreen.kt | awk 'NR>=114 && NR<=120 {printf "%d:%s\n", NR, $0}'
+OPTION Yes, and don't ask again for anything (always-approve mode)
+OPTION Yes, proceed
+OPTION No, reject (type to add feedback)
+OPTION Never allow: git -C /home/bill/Documents/repos/HerdrDroid show
 ##### hermes/derived-1.4.9/1001-dangerous-command-approval.txt
-HEADLINE ⚠️  Dangerous Command
+HEADLINE ⚠️ Dangerous Command
 CODE wrap
   | rm -rf /home/user/work/demo/build
 OPTION Allow once
@@ -449,7 +621,9 @@ HEADLINE Would you like to run the following command?
 CODE wrap
   | sudo -n chmod -R 777 /home/user/agents/muse/probe-dir
 PROSE Stage 1/1
-LABEL Current argv = ["sudo","-n","chmod","-R","777","/home/user/agents/muse/probe-dir"]
+PROSE Current argv:
+CODE wrap
+  | ["sudo","-n","chmod","-R","777","/home/user/agents/muse/probe-dir"]
 OPTION Allow this stage once ~ (y)~
 OPTION Always allow in this workspace: sudo -n chmod ... ~ (p)~
 OPTION Abort the entire command ~ (esc)~

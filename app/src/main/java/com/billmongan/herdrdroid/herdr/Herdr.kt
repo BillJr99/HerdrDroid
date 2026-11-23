@@ -295,7 +295,8 @@ class Herdr internal constructor(
     internal fun relayPort(script: ByteArray): PromptRelayPort = object : PromptRelayPort {
         override val owner get() = this@Herdr
         override val connectionIdentity get() = this@Herdr.connectionIdentity
-        override suspend fun pane(id: String, connection: Any) = cardPane(id, connection)
+        // 2.2.2: a scrolled-back pane comes back with its offset, so the relay can say so (SCROLLED) instead of "not reachable".
+        override suspend fun pane(id: String, connection: Any) = relayPane(id, connection)
         override suspend fun viewport(id: String, connection: Any) =
             runNow(cmd("pane", "read", id, "--source", "visible", "--format", "ansi"), 5, connection)
         override suspend fun hasWork(pane: Pane, connection: Any): Boolean {
@@ -313,6 +314,9 @@ class Herdr internal constructor(
         // The permit is checked by the SSH transport after it has the connection (2.0.1 finding 4).
         override suspend fun send(pane: Pane, text: String, connection: Any, permit: WritePermit) =
             sendPermitted(pane, text, connection, permit)
+        // 2.2.2: Force Send's prompt to a working agent, still herdr's agent prompt (it reaches a working agent), never --force.
+        override suspend fun sendForced(pane: Pane, text: String, connection: Any, permit: WritePermit) =
+            sendMessage(pane, text, allowTerminalFallback = false, expectedConnection = connection, permit = permit, busyOk = true)
     }
 
     /** No tab list, status enrichment, bulk lock, or reconnect during a card tap. */
@@ -320,6 +324,15 @@ class Herdr internal constructor(
         if (core) return corePanes(runNow(hcCmd("ls", "--json"), 5, connection)).singleOrNull { it.id == id }
         val p = JSONObject(runNow(cmd("pane", "get", id), 5, connection)).getJSONObject("result").getJSONObject("pane")
         return tuiPane(p).takeIf { it.id == id && p.optJSONObject("scroll")?.opt("offset_from_bottom") == 0 }
+    }
+
+    /** [cardPane], but a scrolled-back pane is returned with its offset rather than as null (2.2.2: the relay refuses it as SCROLLED). */
+    internal suspend fun relayPane(id: String, connection: Any): Pane? {
+        if (core) return cardPane(id, connection)
+        val p = JSONObject(runNow(cmd("pane", "get", id), 5, connection)).getJSONObject("result").getJSONObject("pane")
+        val pane = tuiPane(p).takeIf { it.id == id } ?: return null
+        val offset = p.optJSONObject("scroll")?.opt("offset_from_bottom")
+        return if (offset == 0) pane else pane.copy(scrollOffset = (offset as? Number)?.toInt()?.takeIf { it != 0 } ?: -1)
     }
 
     /** Only the live viewport, with no fallback into old scrollback. */
@@ -525,11 +538,14 @@ class Herdr internal constructor(
 
     private suspend fun sendMessage(
         pane: Pane, text: String, allowTerminalFallback: Boolean, expectedConnection: Any?, permit: WritePermit?,
+        busyOk: Boolean = false,
     ) {
         // herdr's own status picks the route: an OpenCode pane marked needs-you from its screen
         // keeps the send it had (2.1.2).
         val status = pane.sendStatus
-        require(allowTerminalFallback || (pane.agent != null && status in setOf(Status.IDLE, Status.DONE)))
+        // 2.2.2: a forced relay may prompt a working agent; never one waiting on you.
+        val sendable = if (busyOk) setOf(Status.IDLE, Status.DONE, Status.WORKING) else setOf(Status.IDLE, Status.DONE)
+        require(allowTerminalFallback || (pane.agent != null && status in sendable))
         require(permit == null || (!allowTerminalFallback && expectedConnection != null))
         lastSendRoute = when {
             core -> "hc send"
@@ -1136,6 +1152,11 @@ data class Prompt(
      * says so and offers Show terminal; it sends nothing (see [withNeedsYouCard]).
      */
     internal val unreadQuestion: Boolean = false,
+    /**
+     * 2.2.2: the question is on screen but not yet confirmed (a complete dialog, read the same twice):
+     * a neutral card with no options and no keys, only Show terminal (see [readingQuestionCard]).
+     */
+    internal val readingQuestion: Boolean = false,
 ) {
     /**
      * Never an empty card (1.4.2): a prompt with no choices always has something to show, the
@@ -1175,7 +1196,7 @@ internal fun unreadQuestionCard(agent: String): Prompt = Prompt(
 
 /** Dispatch identity, unlike history deduplication, must not discard punctuation or command text. */
 internal fun cardAnswerStillFits(shown: Prompt, fresh: Prompt?): Boolean =
-    !shown.terminalReview && fresh != null && !fresh.terminalReview &&
+    !shown.terminalReview && !shown.readingQuestion && fresh != null && !fresh.terminalReview && !fresh.readingQuestion &&
         shown.forCard().region != listOf(UNREAD_SCREEN) &&
         shown.copy(selected = null).forCard() == fresh.copy(selected = null).forCard()
 
@@ -1501,10 +1522,18 @@ fun isComposerHint(agent: String?, text: String): Boolean {
  * text drawn entirely as a placeholder ([isPlaceholderText]: faint, or a grey colour); on a plain
  * screen, the known hints ([isComposerHint], 1.4.4).
  */
-fun inputLineOf(screen: String, agent: String? = null): String? {
+fun inputLineOf(screen: String, agent: String? = null, menuWrite: Boolean = false): String? {
     // OpenCode draws no prompt glyph (2.1.5): its box, positively found empty, is an empty line;
     // otherwise nothing is judged, as before.
     if (isOpenCode(agent) && openCodeComposerEmpty(screen)) return ""
+    // 2.2.2: pi, Oh My Pi and Copilot draw no prompt glyph either; their boxes are found by shape, and
+    // a layout their reader doesn't know is no input line (never the generic glyph search below).
+    // A blank Oh My Pi or Copilot box can hold typed spaces the screen can't show (no cursor cell), so
+    // for a normal send it is typing (held); only a menu write, which clears the line with the agent's
+    // own Ctrl+U before its command, takes it as empty (2.2.2, from Grok's review).
+    if (AgentComposers.handles(agent)) return AgentComposers.line(screen, agent)?.let {
+        if (it.isEmpty() && !menuWrite && AgentComposers.clearKey(agent) != null) AgentComposers.UNSURE_BLANK else it
+    }
     val (raw, typed) = inputRow(screen) ?: return null
     if (typed.isEmpty()) return ""
     // A row read with its styles is judged only by how it is drawn: the same words as a known hint
@@ -2161,6 +2190,50 @@ private val VIBE_CARD_FOOTER = Regex("""↑↓/jk navigate.*(Esc reject|Enter se
 
 fun showsQuestionDialog(text: String): Boolean =
     text.lines().filter { it.isNotBlank() }.takeLast(6).any { QUESTION_FOOTER.containsMatchIn(it) }
+
+/** One hint of a dialog's footer: a key, then what it does ("Esc to cancel", "Tab:next option", "1/3:select"). */
+private val HINT_SEGMENT = Regex("""^(?:esc|enter|tab|space|return|↵|(?:shift|ctrl|alt|cmd)[+-]\S+|[↑↓←→/]+(?:/?jk)?|\d+/\d+)(?:\s+|:)\S""", RegexOption.IGNORE_CASE)
+
+/**
+ * 2.2.2: a question dialog's own footer or hint row, read from its structure rather than one
+ * harness's words: Claude's and Kiro's hint rows, Codex's "Press enter to confirm or esc to cancel",
+ * Grok's "1/3:select │ Tab:next option", Vibe's and Muse's footers, a button row's "⇆ select", any
+ * row of two or more key hints, or the bottom edge of the dialog's box.
+ */
+internal fun isDialogFooterRow(row: String): Boolean {
+    val t = row.trim()
+    if (t.isEmpty()) return false
+    val c = t.trim('│', '┃', '|', '║', ' ').trim()
+    if (QUESTION_FOOTER.containsMatchIn(t) || CODEX_FOOTER.containsMatchIn(t) || VIBE_CARD_FOOTER.containsMatchIn(t) ||
+        MUSE_CARD_FOOTER.matches(c) || STANDALONE_CARD_HINT.matches(c) || Regex("""(⇆|←→)\s*select""").containsMatchIn(t)) return true
+    if (t.first() in "╰└┗╚" && t.last() in "╯┘┛╝") return true
+    // Claude's tab bar ("←  ☐ Backup  ✔ Submit  →") is the dialog's top, not its footer.
+    if (parseTabBar(c) != null) return false
+    return c.split(Regex("""\s*[·│┃|]\s*|\s{2,}""")).count { HINT_SEGMENT.containsMatchIn(it.trim()) } >= 2
+}
+
+/** 2.2.2: a header row that is one agent's exact dialog heading (Codex's "Would you like to run the following command?"), not a sentence that starts like one. */
+internal fun isNamedDialogHeading(row: String): Boolean {
+    val c = row.trim().trim('│', '┃', '|', '║', ' ').trim()
+    return CODEX_COMMAND_HEADING.matches(c) || CODEX_OTHER_APPROVAL.matches(c) || COMMAND_INTRO.matches(c) ||
+        CLAUDE_COMMAND_TITLE.matches(c) || TOOL_PERMISSION.matches(c) || HERMES_COMMAND_HEADING.matches(c) || CODEX_QUESTION_PROGRESS.containsMatchIn(c)
+}
+
+/** 2.2.2: the agent's own running status row ("… 0.1s 16m4s ⇣90.2k [↓][stop]", "esc to interrupt"), drawn above its prompt. */
+internal fun isAgentStatusRow(row: String): Boolean = STATUS_LINE.containsMatchIn(row.trim())
+
+/**
+ * 2.2.2: the header row a dialog opens with when it draws no edge above its question: Claude's and
+ * Codex's "Do you want to …" and "Would you like to …", a command title, Vibe's "Permission for the
+ * … tool", Hermes's "Dangerous Command", Codex's other approvals.
+ */
+internal fun isDialogHeaderRow(row: String): Boolean {
+    val c = row.trim().trim('│', '┃', '|', '║', ' ').trim()
+    return c.startsWith("Do you want to ") || c.startsWith("Would you like to ") || COMMAND_INTRO.matches(c) ||
+        CODEX_QUESTION_PROGRESS.matches(c) || c.startsWith("Question ") && CODEX_QUESTION_PROGRESS.containsMatchIn(c) ||
+        CLAUDE_COMMAND_TITLE.matches(c) || TOOL_PERMISSION.matches(c) || HERMES_COMMAND_HEADING.matches(c) ||
+        CODEX_OTHER_APPROVAL.matches(c) || c.endsWith(" requires approval", ignoreCase = true)
+}
 
 /**
  * Rows read from each Claude pane for its status (2.1.1). A short conversation in Claude Code's

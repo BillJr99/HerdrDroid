@@ -87,6 +87,39 @@ internal fun alertText(p: com.billmongan.herdrdroid.herdr.Prompt): String {
     return if (p.question.contains(cmd)) p.question else "${p.question}\n${cmd.take(400)}"
 }
 
+/**
+ * 2.2.2: the alert's text as the phone shows it, from [alertText]: an approval's heading, then its
+ * command on lines of its own, then its context; Claude's review step as each question with the
+ * answer given under it. Every line goes through [com.billmongan.herdrdroid.ui.QuestionText.alert],
+ * so no focus marker, gutter, "●" or "→" row mark or key hint shows, and the command is kept exactly.
+ */
+internal fun alertBody(p: com.billmongan.herdrdroid.herdr.Prompt): String {
+    val parts = p.parts
+    val command = parts?.command
+    val heading = parts?.heading
+    val lines: List<String> = when {
+        parts != null && heading != null && parts.tabs.any { it.submit && it.current } ->
+            listOf(heading) + parts.details.flatMap { d ->
+                com.billmongan.herdrdroid.ui.QuestionText.reviewAnswer(d)?.let { (q, a) -> listOf(q, "Your answer: $a") } ?: listOf(d)
+            }
+        command != null && heading != null && !command.contains('\n') && command.length <= 400 -> {
+            val context = parts.details.filter { d -> d.filterNot(Char::isWhitespace) != heading.filterNot(Char::isWhitespace) }
+            // 2.2.2 review: every line of context, up to a total length, the cut one ending in "…".
+            var budget = ALERT_CONTEXT_CHARS
+            listOf(heading, command) + context.mapNotNull { d ->
+                if (budget <= 0) null else (if (d.length <= budget) d else d.take(budget).trimEnd() + "…").also { budget -= d.length }
+            }
+        }
+        else -> listOf(alertText(p))
+    }
+    // Each piece cleaned on its own, so a heading and the line under it never run together.
+    val code = command?.lines().orEmpty()
+    return lines.map { com.billmongan.herdrdroid.ui.QuestionText.alert(it, code) }.filter { it.isNotEmpty() }.joinToString("\n")
+}
+
+/** How much context an approval's alert carries under its command (2.2.2). */
+internal const val ALERT_CONTEXT_CHARS = 600
+
 /** How many action buttons Android shows on a notification. */
 internal const val MAX_ALERT_BUTTONS = 3
 
@@ -124,8 +157,10 @@ internal fun alertPlan(prompt: com.billmongan.herdrdroid.herdr.Prompt, terminalR
     val merged = com.billmongan.herdrdroid.herdr.typedChatPair(prompt.choices)?.first
     val answers = com.billmongan.herdrdroid.herdr.shownChoices(prompt.choices).map { c ->
         if (c == merged && reply) return@map AlertButton(com.billmongan.herdrdroid.herdr.TYPED_ANSWER_LABEL, choice = c, typed = true)
-        val title = if (c == escChoice && !c.label.contains("esc", ignoreCase = true)) "${c.label.take(18)} (Esc)" else
-            (if (c == merged) c.label else com.billmongan.herdrdroid.herdr.shownChoiceLabel(prompt.choices, c)).take(24)
+        // 2.2.2: the button reads the label as the card shows it (no marker, gutter or hint); its answer keeps c.label.
+        val display = com.billmongan.herdrdroid.ui.QuestionText.label(if (c == merged) c.label else com.billmongan.herdrdroid.herdr.shownChoiceLabel(prompt.choices, c), c.keys)
+        val title = if (c == escChoice && !c.label.contains("esc", ignoreCase = true)) "${com.billmongan.herdrdroid.ui.QuestionText.label(c.label, c.keys).take(18).trimEnd()} (Esc)" else
+            display.take(24).trimEnd()
         AlertButton(title, choice = c)
     } + listOfNotNull(
         AlertButton(if (prompt.openCodeCustom != null) "Type answer" else "Reply", reply = true).takeIf {
@@ -139,7 +174,7 @@ internal fun alertPlan(prompt: com.billmongan.herdrdroid.herdr.Prompt, terminalR
     val escSlot = esc ?: answers.firstOrNull { escChoice != null && it.choice == escChoice }
     val rest = answers.filter { it !== escSlot }
     val shown = rest.take(MAX_ALERT_BUTTONS - (if (escSlot != null) 1 else 0))
-    return AlertPlan(shown + listOfNotNull(escSlot), rest.drop(shown.size).map { if (it.reply || it.typed) "Type your own answer" else com.billmongan.herdrdroid.herdr.shownChoiceLabel(prompt.choices, it.choice!!) })
+    return AlertPlan(shown + listOfNotNull(escSlot), rest.drop(shown.size).map { if (it.reply || it.typed) "Type your own answer" else com.billmongan.herdrdroid.ui.QuestionText.label(com.billmongan.herdrdroid.herdr.shownChoiceLabel(prompt.choices, it.choice!!), it.choice.keys) })
 }
 
 /**
@@ -305,7 +340,9 @@ object Notify {
      * (2.1.2), from [prompt] when given, else from [choices].
      */
     fun needsYou(ctx: Context, serverId: String, serverLabel: String, paneId: String, agent: String, question: String, choices: List<Choice>, agentKind: String? = null, terminalReview: Boolean = false, reply: Boolean = true,
-        prompt: com.billmongan.herdrdroid.herdr.Prompt? = null) {
+        prompt: com.billmongan.herdrdroid.herdr.Prompt? = null,
+        /** 2.2.2: this replaces the neutral alert for the same question (same id), so it doesn't sound again. */
+        quietUpdate: Boolean = false) {
         if (!allowed(ctx)) return
         // Past the fingerprint window (1.3.1): the alert still comes, without the question or the
         // answer buttons; opening it asks for the fingerprint first.
@@ -324,7 +361,8 @@ object Notify {
         val card = prompt?.takeIf { it.question == question } ?: com.billmongan.herdrdroid.herdr.Prompt(question, choices)
         val plan = alertPlan(card, terminalReview, reply)
         // The options with no button of their own (2.1.2): named here, chosen on the question card the alert opens.
-        val asked = if (card === prompt) alertText(card) else question
+        // 2.2.2: the text as the card reads it (no markers, gutters or hints; wrapped lines joined).
+        val asked = (if (card === prompt) alertBody(card) else com.billmongan.herdrdroid.ui.QuestionText.alert(question)).ifEmpty { question }
         val text = if (plan.inApp.isEmpty()) asked
             else "$asked\n\nMore in HerdrDroid (tap to open the question): " + plan.inApp.joinToString(" · ") { it.take(40) }
         val b = NotificationCompat.Builder(ctx, ATTENTION)
@@ -334,6 +372,8 @@ object Notify {
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setContentIntent(openIntent(ctx, serverId, paneId))
             .setAutoCancel(true)
+            .setOnlyAlertOnce(quietUpdate)
+            .setSilent(quietUpdate)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
         if (plan.buttons.isEmpty()) {
             runCatching { NotificationManagerCompat.from(ctx).notify(id(serverId, paneId), b.build()) }
@@ -452,6 +492,12 @@ object Notify {
             .build()
         runCatching { NotificationManagerCompat.from(ctx).notify(("usage|$serverId|$agentKey|$label").hashCode(), n) }
     }
+
+    /** Whether this pane's alert is still showing (2.2.2): not tapped (it cancels itself) or dismissed. */
+    fun isShowing(ctx: Context, serverId: String, paneId: String): Boolean = runCatching {
+        val m = ctx.getSystemService(android.app.NotificationManager::class.java) ?: return false
+        m.activeNotifications.any { it.id == id(serverId, paneId) }
+    }.getOrDefault(false)
 
     fun clear(ctx: Context, serverId: String, paneId: String) {
         NotificationManagerCompat.from(ctx).cancel(id(serverId, paneId))

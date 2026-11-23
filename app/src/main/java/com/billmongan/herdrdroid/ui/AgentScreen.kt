@@ -175,7 +175,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     var pickerMenu by remember { mutableStateOf<Prompt?>(null) }
     /** 2.2.0: which picker is being read ("model" or "session"), and the mode, thinking and sessions dialogs. */
     var pickerWhat by remember { mutableStateOf("model") }
-    var choosingMode by remember { mutableStateOf(false) }
+    var choosingMode by remember { mutableStateOf<String?>(null) }
     var choosingThinking by remember { mutableStateOf(false) }
     var choosingSession by remember { mutableStateOf(false) }
     /** Find in chat: what to look for, and which match is showing. */
@@ -209,7 +209,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 if (vm.transcriptState == TranscriptMode.ON && streamFailures < 3) {
                     if (vm.followTranscript(paneId)) { streamFailures = 0; continue } else streamFailures++
                 }
-                if (vm.transcriptState != TranscriptMode.OFF || tick % 10 == 0) vm.readTranscript(paneId)
+                // 2.2.2: and at once while the view waits for this visit's answer (an agent that started mid-visit).
+                if (vm.transcriptState != TranscriptMode.OFF || tick % 10 == 0 || !vm.screenViewReady(paneId)) vm.readTranscript(paneId)
             }
             tick++
             kotlinx.coroutines.delay(1_500)
@@ -281,9 +282,11 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     val waitingForHermes = vm.waitingForHermesComposer(paneId)
     val parsedPrompt: Prompt? = if (typingAnswer || usageOverlay != null) null
         else if (vm.paneReadProblem != null) (if (status == Status.NEEDS_YOU) Prompt("This agent is waiting for you.", emptyList()).forCard() else null)
-        else if (pane != null && vm.requiresLivePiQuestion(pane)) vm.currentPiQuestion(pane)?.forCard()
-        else detectPrompt(screenText, status == Status.NEEDS_YOU, pane?.agent, vm.versionOf(paneId))
-            ?.takeIf { !it.codexQuestion || shownTarget != null }?.forCard()
+        // 2.2.2: a question card shows once the reads confirmed it (a complete dialog, read the same
+        // twice), parsed exactly as the read path parses it (pi's live question included); until then a
+        // neutral card with no options or keys, never chat text as the question.
+        else vm.questionCardFor(paneId, vm.cardParse(paneId, screenText)
+            ?.takeIf { !it.codexQuestion || shownTarget != null }, pane?.agentName ?: "The agent")
     // An agent's error on screen (1.4.2): shown as a banner when there is no question.
     // Not from the last screen while the latest read failed (1.4.2, from review).
     // 2.2.0: as its own card, with OpenCode's failed turn read whole; acknowledged ones are hidden.
@@ -298,7 +301,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     val prompt: Prompt? = com.billmongan.herdrdroid.herdr.withNeedsYouCard(status, parsedPrompt,
         suppressed = typingAnswer || usageBlocksInput || backgroundDrawer || agentError != null, agent = pane?.agentName ?: "The agent")
     // The question a parser read; the unread-question card leaves the chat's open questions in place.
-    val questionCard: Prompt? = prompt?.takeUnless { it.unreadQuestion }
+    val questionCard: Prompt? = prompt?.takeUnless { it.unreadQuestion || it.readingQuestion }
     fun send() {
         if (usageBlocksInput || backgroundDrawer || (openingPreview != null && prompt != null)) return
         val draft = answerDraft
@@ -388,7 +391,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             // The transcript already shows prose and attachments. The parsed question has no
             // transcript tool-call ID, so a running tool's plan or diff may belong to another turn.
             // The screen the card was read from, for its layout only (2.1.1); never while a read failed.
-            val cardScreen = screenText.takeIf { vm.paneReadProblem == null }
+            // 2.2.2: none for the card that is still reading its question, so no screen text shows in it.
+            val cardScreen = screenText.takeIf { vm.paneReadProblem == null && !p.readingQuestion }
             // 2.2.0: a question pill moves Claude's dialog to that question (QuestionPills), never answers.
             PromptQuestion(p, agent = pane?.agentName ?: "The agent", screen = cardScreen,
                 onStep = if (shownTarget != null && openingPreview == null &&
@@ -584,15 +588,30 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     // The permission mode (plan, accept edits, auto). 2.2.0: where the agent has a verified
                     // way to switch (PaneControls.modes), a menu of named modes, each switch confirmed from
                     // the footer; elsewhere the mode is only shown.
-                    com.billmongan.herdrdroid.herdr.agentMode(pane?.agent, liveScreenText)?.takeIf { !live }?.let { mode ->
-                        val spec = com.billmongan.herdrdroid.herdr.PaneControls.modes(pane?.agent)
-                        val label = spec?.options?.firstOrNull { it.name == mode }?.label
-                            ?: if (mode == "bypass") "bypass (approves every tool)" else mode
+                    // 2.2.2: every mode menu the agent has (Copilot also has Approvals), shown where its
+                    // current setting reads off the screen or every switch sets it outright (Codex).
+                    val menus = com.billmongan.herdrdroid.herdr.PaneControls.modeMenus(pane?.agent)
+                    if (!live && menus.isEmpty()) com.billmongan.herdrdroid.herdr.agentMode(pane?.agent, liveScreenText)?.let { mode ->
                         DropdownMenuItem(
-                            text = { Text("Mode: $label" + if (spec != null) "…" else "") },
-                            enabled = spec != null,
-                            onClick = { menu = false; choosingMode = true },
+                            text = { Text("Mode: " + if (mode == "bypass") "bypass (approves every tool)" else mode) },
+                            enabled = false, onClick = {},
                         )
+                    }
+                    if (!live) menus.forEach { spec ->
+                        val mode = spec.read(liveScreenText)
+                        if (mode != null || spec.absolute) {
+                            // 2.2.2 (from review): a mode that approves every tool keeps its warning on the item.
+                            val option = spec.options.firstOrNull { it.name == mode }
+                            val label = when {
+                                option == null -> if (mode == "bypass") "bypass (approves every tool)" else mode
+                                option.approvesAll -> option.label
+                                else -> option.label.substringBefore(" (")
+                            }
+                            DropdownMenuItem(
+                                text = { Text(spec.title + (label?.let { ": $it" } ?: "") + "…") },
+                                onClick = { menu = false; choosingMode = spec.title },
+                            )
+                        }
                     }
                 }
             }
@@ -981,9 +1000,9 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         )
     }
 
-    if (choosingMode && pane != null) com.billmongan.herdrdroid.herdr.PaneControls.modes(pane.agent)?.let { spec ->
-        ModeDialog(pane.agentName, spec, com.billmongan.herdrdroid.herdr.agentMode(pane.agent, liveScreenText),
-            idle = status == Status.IDLE || status == Status.DONE, onPick = { vm.switchMode(paneId, it) }, onDismiss = { choosingMode = false })
+    if (choosingMode != null && pane != null) com.billmongan.herdrdroid.herdr.PaneControls.modeMenus(pane.agent).firstOrNull { it.title == choosingMode }?.let { spec ->
+        ModeDialog(pane.agentName, spec, spec.read(liveScreenText),
+            idle = status == Status.IDLE || status == Status.DONE, onPick = { vm.switchMode(paneId, it, spec.title) }, onDismiss = { choosingMode = null })
     }
     if (choosingThinking && pane != null) com.billmongan.herdrdroid.herdr.PaneControls.thinking(pane.agent)?.let { spec ->
         ThinkingDialog(pane.agentName, spec, spec.shown(liveScreenText) ?: vm.efforts[paneId],
@@ -1333,7 +1352,7 @@ private fun QuestionSteps(parts: com.billmongan.herdrdroid.herdr.QuestionParts,
                         .then(if (tap != null) Modifier.clip(RoundedCornerShape(50)).clickable(
                             onClickLabel = if (t.submit) "Go to the review step" else "Go to this question",
                             role = androidx.compose.ui.semantics.Role.Button) { tap(i, t) } else Modifier)) {
-                    Text((if (t.done) "✓ " else "") + t.title, color = ink, fontSize = 12.5.sp,
+                    Text((if (t.done) "✓ " else "") + QuestionText.title(t.title), color = ink, fontSize = 12.5.sp,
                         fontWeight = if (t.current) FontWeight.Bold else FontWeight.Medium, maxLines = 1,
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp))
                 }
@@ -1451,6 +1470,8 @@ internal fun PromptCard(
                     p.openCodeForm -> "Answer this OpenCode question in Terminal: it asks more than one question or takes more than one answer, which the app can't send for you."
                     // 2.1.4: the pane needs you, but its question couldn't be read from the screen.
                     p.unreadQuestion -> "The app couldn't read this question from the screen. Open the terminal to see it and answer it there."
+                    // 2.2.2: the dialog is still drawing, or hasn't read the same twice yet; its answers come next.
+                    p.readingQuestion -> "Its answers show here once the question has finished drawing on the screen."
                     else -> "This preview is incomplete. Open the terminal to review the full command before answering."
                 },
                     color = Palette.Muted, fontSize = 12.5.sp)
@@ -1526,12 +1547,14 @@ internal fun PromptCard(
                     val body: @Composable () -> Unit = {
                         Column(Modifier.fillMaxWidth()) {
                             // A key hint ("(esc)") or tail reads quieter; the label's text is unchanged (2.1.1).
-                            Text(optionLabel(com.billmongan.herdrdroid.herdr.shownChoiceLabel(allRows, c), if (first) Palette.OnBlue.copy(alpha = 0.8f) else Palette.Muted),
+                            Text(optionLabel(com.billmongan.herdrdroid.herdr.shownChoiceLabel(allRows, c), if (first) Palette.OnBlue.copy(alpha = 0.8f) else Palette.Muted, c.keys),
                                 fontSize = 15.sp, fontWeight = FontWeight.SemiBold, lineHeight = 20.sp,
-                                color = if (first) Palette.OnBlue else Palette.Ink)
+                                color = if (first) Palette.OnBlue else Palette.Ink,
+                                // 2.2.2: the highlighted row is the card's own blue button; tagged for the UI tests.
+                                modifier = Modifier.testTag(if (first) "choice-label-focused" else "choice-label"))
                             optionNotes[c.keys]?.let { note ->
-                                Text(note, fontSize = 13.sp, lineHeight = 18.sp,
-                                    color = if (first) Palette.OnBlue.copy(alpha = 0.9f) else Palette.Muted)
+                                // 2.2.2: the description under its label, smaller and quieter, one paragraph.
+                                OptionNote(note, if (first) Palette.OnBlue.copy(alpha = 0.9f) else Palette.Muted)
                             }
                             Text(what, fontSize = 12.sp, color = if (first) Palette.OnBlue.copy(alpha = 0.8f) else Palette.Muted)
                             // Standing permission (1.4.0): say so before it is tapped.
