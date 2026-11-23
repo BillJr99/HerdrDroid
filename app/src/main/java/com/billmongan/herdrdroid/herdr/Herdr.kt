@@ -149,6 +149,9 @@ class Herdr internal constructor(
     constructor(ssh: HerdrSsh, herdrPath: String, backend: Backend = Backend.TUI, hcPath: String? = null) :
         this(ssh, herdrPath, backend, hcPath, null)
 
+    /** 2.2.6: the connection this client runs on, so a failure can be matched to it. */
+    internal val transport: HerdrSsh get() = ssh
+
     internal interface Commands {
         val connection: Any?
         suspend fun bulk(command: String): com.billmongan.herdrdroid.ssh.ExecResult

@@ -65,6 +65,10 @@ object LinkDiag {
     fun fallbackLine(serverId: String?, reason: String, mss: Int, afterMs: Long?): String =
         "server=${serverTag(serverId)} fallback=small-packets reason=$reason mss=$mss" + (afterMs?.let { " after_ms=$it" } ?: "")
 
+    /** 2.2.6: a trigger that is not lossy Wi-Fi ([why]: network-change or background); the fallback is dropped for this sign-in. */
+    fun fallbackSkippedLine(serverId: String?, why: String, trigger: String): String =
+        "server=${serverTag(serverId)} fallback=skipped reason=$why trigger=$trigger"
+
     fun fallback(serverId: String?, reason: String, mss: Int, afterMs: Long?) =
         DiagLog.log("link", fallbackLine(serverId, reason, mss, afterMs))
 }

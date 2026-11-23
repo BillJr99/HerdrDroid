@@ -610,7 +610,8 @@ fun EditServerScreen(vm: AppViewModel, existing: Server?, prefillHost: String? =
                         backend = backend,
                         // Kept off for a WebSocket server, where it can't apply.
                         smallPackets = smallPackets && !viaWs,
-                        mss = com.billmongan.herdrdroid.ssh.SmallPackets.clamp(mssNum ?: base.mss),
+                        // Only a valid value typed with the switch on replaces the saved one (pre-review L2).
+                        mss = if (smallPackets && !viaWs && mssOk) mssNum!! else base.mss,
                         keyKind = keyKind,
                         keyCipher = if (keyKind == "imported") keyCipher else null,
                         keyPassCipher = if (keyKind == "imported") keyPassCipher else null,
