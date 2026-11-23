@@ -27,7 +27,9 @@ class PlaceholderCaptureTest {
         val all = captures.entries.map { it.key to it.value } + ("opencode" to screen("opencode/live-2026-11-20-college/empty.ansi"))
         for ((agent, s) in all) {
             assertNull(agent, composerDraftOf(s, agent))
-            val line = inputLineOf(s, agent)
+            // 2.2.2: a blank Oh My Pi or Copilot box may hold typed spaces (no cursor is drawn), so a normal
+            // send holds on it; a menu write takes it as empty and clears it with Ctrl+U first.
+            val line = inputLineOf(s, agent, menuWrite = AgentComposers.clearKey(agent) != null)
             assertTrue("$agent reads as typing: $line", line == null || line == "")
         }
     }

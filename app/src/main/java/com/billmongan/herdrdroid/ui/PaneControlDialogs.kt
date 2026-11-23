@@ -57,20 +57,19 @@ fun ModeDialog(agentName: String, spec: PaneControls.ModeSpec, current: String?,
     val can = PaneControls.canSwitch(spec, current)
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Mode for $agentName") },
+        title = { Text("${spec.title} for $agentName") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 val now = spec.options.firstOrNull { it.name == current }?.label ?: current ?: "not shown"
                 Text("Now: $now", color = Palette.Muted, fontSize = 13.sp)
-                if (!idle) Text("$agentName is busy. The mode can be changed once it's idle.", color = Palette.OrangeInk, fontSize = 14.sp)
-                if (!can && current != null) Text("The app doesn't switch away from this mode; change it at the computer.", color = Palette.OrangeInk, fontSize = 14.sp)
+                if (!idle) Text("$agentName is busy. The ${spec.title.lowercase()} can be changed once it's idle.", color = Palette.OrangeInk, fontSize = 14.sp)
+                if (!can && current != null) Text("The app doesn't switch away from this setting; change it at the computer.", color = Palette.OrangeInk, fontSize = 14.sp)
                 PaneControls.reachable(spec, current).forEach { o ->
                     ControlRow(o.label, if (o.approvesAll) "Asks you first" else null, o.name == current, idle && can) {
                         if (o.approvesAll) confirming = o else { onDismiss(); onPick(o.name) }
                     }
                 }
-                Text("The app presses ${keyName(spec.key)} until the footer shows the mode you picked, and goes back to where it started if it can't get there.",
-                    color = Palette.Muted, fontSize = 12.5.sp)
+                Text(spec.how, color = Palette.Muted, fontSize = 12.5.sp)
             }
         },
         confirmButton = {},
@@ -86,8 +85,6 @@ fun ModeDialog(agentName: String, spec: PaneControls.ModeSpec, current: String?,
         )
     }
 }
-
-private fun keyName(key: String) = when (key) { "shift+tab" -> "Shift+Tab"; else -> key }
 
 /** 2.2.0: the thinking level, set with the agent's own command and confirmed from its screen. */
 @OptIn(ExperimentalLayoutApi::class)

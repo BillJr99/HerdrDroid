@@ -33,9 +33,7 @@ class SessionControls220Test {
         }
         assertEquals("/chat new", SessionControls.forAgent("kiro")!!.newCommand)
         assertEquals("/sessions", SessionControls.forAgent("opencode-college")!!.picker)
-        assertNull(SessionControls.forAgent("agy"))
-        // No input line the app can check before typing (see PaneControls220Test): no Sessions menu.
-        for (a in listOf("pi", "omp", "copilot")) assertNull(a, SessionControls.forAgent(a))
+        // 2.2.2: Antigravity, pi, Oh My Pi and Copilot have Sessions now (see PaneControls222Test).
         assertNull(SessionControls.forAgent("gemini"))
     }
 
