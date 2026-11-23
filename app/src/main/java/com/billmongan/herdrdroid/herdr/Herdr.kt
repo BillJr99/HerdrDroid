@@ -793,10 +793,9 @@ class Herdr internal constructor(
         val safe = name.replace(Regex("[^A-Za-z0-9._-]"), "_").trim('_').take(80).ifBlank { "file" }
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
         val rel = ".herdrdroid/inbox/$stamp-$safe"
-        val r = ssh.execInput(
-            "mkdir -p \"\$HOME/.herdrdroid/inbox\" && cat > \"\$HOME\"/${shq(rel)} && printf %s \"\$HOME\"/${shq(rel)}",
-            bytes, timeoutSeconds = 120,
-        )
+        val command = "mkdir -p \"\$HOME/.herdrdroid/inbox\" && cat > \"\$HOME\"/${shq(rel)} && printf %s \"\$HOME\"/${shq(rel)}"
+        // 2.2.7: the test seam takes it too, so a pane read's attachment can be checked in a fake.
+        val r = commands?.let { c -> c.input(command, bytes, c.connection ?: Any()) } ?: ssh.execInput(command, bytes, timeoutSeconds = 120)
         if (r.exit != 0) throw HerdrError(r.err.trim().ifBlank { "The upload failed (exit ${r.exit})." }, r.exit)
         return r.out.trim()
     }
