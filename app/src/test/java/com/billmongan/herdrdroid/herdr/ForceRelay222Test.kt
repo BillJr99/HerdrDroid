@@ -13,13 +13,17 @@ class ForceRelay222Test {
     private class Host(var pane: Pane) : PromptRelayPort {
         val connection: Any = Any()
         var viewport = "❯ "
+        /** Screens the next viewport reads return, in turn, before [viewport]. */
+        val next = ArrayDeque<String>()
+        var reads = 0
+        var error: Exception? = null
         var work = true
         val writes = mutableListOf<String>()
         override val connectionIdentity get() = connection
         override suspend fun pane(id: String, connection: Any) = pane.takeIf { it.id == id && this.connection === connection }
         override suspend fun hasWork(pane: Pane, connection: Any) = work
-        override suspend fun viewport(id: String, connection: Any) = viewport
-        override suspend fun send(pane: Pane, text: String, connection: Any) { writes += text }
+        override suspend fun viewport(id: String, connection: Any): String { reads++; return next.removeFirstOrNull() ?: viewport }
+        override suspend fun send(pane: Pane, text: String, connection: Any) { error?.let { throw it }; writes += text }
     }
 
     private val working = """
@@ -48,11 +52,41 @@ class ForceRelay222Test {
         assertEquals(listOf("hello"), host.writes)
     }
 
-    @Test fun aForcedSendSkipsBackgroundWorkForAnyAgent() {
-        val host = Host(pane("hermes", Status.IDLE).copy(backgroundBusy = true))
-        assertEquals(RelayResult.REFUSED to RelayRefusal.BACKGROUND, send(host, force = false, idleLane = true))
-        assertEquals(RelayResult.SENT to null, send(host, force = true))
-        assertEquals(1, host.writes.size)
+    /** Force is for Claude Code only: for any other agent a forced send is an ordinary one. */
+    @Test fun aForcedSendToAnotherAgentIsAnOrdinarySend() {
+        val hermes = Host(pane("hermes", Status.IDLE).copy(backgroundBusy = true))
+        assertEquals(RelayResult.REFUSED to RelayRefusal.BACKGROUND, send(hermes, force = true, idleLane = true))
+        val opencode = Host(pane("opencode", Status.WORKING))
+        assertEquals(RelayResult.REFUSED to RelayRefusal.WORKING, send(opencode, force = true, idleLane = true))
+        assertTrue(hermes.writes.isEmpty() && opencode.writes.isEmpty())
+    }
+
+    /** A dialog that opens after the first screen read is caught by the read right before the write. */
+    @Test fun aForcedSendReadsTheScreenAgainRightBeforeTyping() {
+        val question = """
+            Do you want to proceed?
+            ❯ 1. Yes
+              2. No
+
+            Esc to cancel
+        """.trimIndent()
+        val host = Host(pane("claude")).apply { viewport = question; next.addLast(working) }
+        assertEquals(RelayResult.REFUSED to RelayRefusal.QUESTION, send(host, force = true))
+        assertEquals(2, host.reads)
+        assertTrue(host.writes.isEmpty())
+        // Both reads clean: typed once.
+        val clean = Host(pane("claude")).apply { viewport = working }
+        assertEquals(RelayResult.SENT to null, send(clean, force = true))
+        assertEquals(2, clean.reads)
+        assertEquals(1, clean.writes.size)
+    }
+
+    /** herdr's agent_blocked comes before any input is sent: a transient QUESTION, not "could not confirm". */
+    @Test fun herdrsAgentBlockedIsAQuestionRefusal() {
+        val host = Host(pane("claude")).apply { viewport = working; error = HerdrError("error: agent_blocked", 1) }
+        assertEquals(RelayResult.REFUSED to RelayRefusal.QUESTION, send(host, force = true))
+        host.error = HerdrError("connection reset", 1)
+        assertEquals(RelayResult.UNCERTAIN to null, send(host, force = true))
     }
 
     @Test fun aForcedSendStillHonoursEveryOtherCheck() {
@@ -79,7 +113,7 @@ class ForceRelay222Test {
         host.pane = pane("claude", Status.NEEDS_YOU)
         assertEquals("herdr says it is waiting on you", RelayRefusal.QUESTION, send(host, force = true).second)
         host.pane = pane("claude", scroll = 3)
-        assertEquals("scrolled back hides the input line", RelayRefusal.NO_INPUT, send(Host(host.pane), force = true).second)
+        assertEquals("scrolled back hides the input line", RelayRefusal.SCROLLED, send(Host(host.pane), force = true).second)
         assertTrue(host.writes.isEmpty())
     }
 }

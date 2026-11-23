@@ -38,8 +38,14 @@ import com.billmongan.herdrdroid.AppViewModel.CrossServerState
 @Composable
 internal fun CrossServerPanel(vm: AppViewModel, paneId: String) {
     val cards = vm.crossServerCardsFor(paneId)
-    // 2.2.2: the proposal Force Send was tapped on, bound then; its dialog asks before anything is forced.
-    var forcing by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<Pair<AppViewModel.CrossServerApproval, AppViewModel.Session>?>(null) }
+    // 2.2.2: the proposal Force Send was tapped on, bound then (its id, code and destination) and
+    // kept per pane; its dialog asks before anything is forced.
+    var forcing by androidx.compose.runtime.remember(paneId) { androidx.compose.runtime.mutableStateOf<Pair<AppViewModel.CrossServerApproval, AppViewModel.Session>?>(null) }
+    // Only while that card is still pending here with Force Send offered; otherwise the dialog goes.
+    val forcingLive = forcing?.takeIf { (a, _) ->
+        cards.firstOrNull { it.id == a.id }?.let { it.code == a.code && vm.crossServerForceOffered(it) } == true
+    }
+    androidx.compose.runtime.LaunchedEffect(forcing, forcingLive) { if (forcing != null && forcingLive == null) forcing = null }
     if (cards.isEmpty()) return
     Column(Modifier.fillMaxWidth().heightIn(max = crossServerPanelMax()).verticalScroll(rememberScrollState())) {
         cards.forEach { card ->
@@ -60,15 +66,15 @@ internal fun CrossServerPanel(vm: AppViewModel, paneId: String) {
             )
         }
     }
-    forcing?.let { (approval, to) ->
+    forcingLive?.let { (approval, to) ->
         CrossServerForceDialog(
             agent = sessionName(to.pane), server = to.server.label,
             onSend = { forcing = null; vm.forceCrossServer(approval) },
             onCancel = { forcing = null },
         )
     }
-    // One dialog at a time, for the newest proposal; the others wait on their cards.
-    vm.crossServerDialogFor(paneId)?.let { card ->
+    // One dialog at a time, for the newest proposal; the others wait on their cards. Never on top of Force Send's.
+    if (forcingLive == null) vm.crossServerDialogFor(paneId)?.let { card ->
         androidx.compose.runtime.key(card.id) {
             // Bound once, when this proposal's dialog opens: Yes approves only this id, code and destination.
             val approval = androidx.compose.runtime.remember { vm.crossServerApprovalOf(card) }
@@ -150,6 +156,10 @@ internal fun CrossServerApprovalDialog(
     )
 }
 
+/** 2.2.2: Force Send is offered for Claude Code only, which queues typed text during a turn. */
+internal fun forceDialogText(agent: String, server: String) =
+    "$agent on $server is busy. Send anyway? It will be typed in while it works, and Claude will take the message after its current step."
+
 /**
  * 2.2.2: asks before Force Send types a message into a busy agent. Only Send anyway forces; Cancel,
  * Back or a tap outside leaves the proposal pending on its card with Retry, Force Send and Cancel.
@@ -160,7 +170,7 @@ internal fun CrossServerForceDialog(agent: String, server: String, onSend: () ->
         onDismissRequest = onCancel,
         modifier = Modifier.semantics { contentDescription = "Force send cross-server message" },
         title = { Text("Force send?") },
-        text = { Text("$agent on $server is busy. Send anyway? It will be typed in while it works.", color = Palette.Ink) },
+        text = { Text(forceDialogText(agent, server), color = Palette.Ink) },
         confirmButton = { TextButton(onClick = onSend) { Text("Send anyway") } },
         dismissButton = { TextButton(onClick = onCancel) { Text("Cancel") } },
     )

@@ -295,7 +295,8 @@ class Herdr internal constructor(
     internal fun relayPort(script: ByteArray): PromptRelayPort = object : PromptRelayPort {
         override val owner get() = this@Herdr
         override val connectionIdentity get() = this@Herdr.connectionIdentity
-        override suspend fun pane(id: String, connection: Any) = cardPane(id, connection)
+        // 2.2.2: a scrolled-back pane comes back with its offset, so the relay can say so (SCROLLED) instead of "not reachable".
+        override suspend fun pane(id: String, connection: Any) = relayPane(id, connection)
         override suspend fun viewport(id: String, connection: Any) =
             runNow(cmd("pane", "read", id, "--source", "visible", "--format", "ansi"), 5, connection)
         override suspend fun hasWork(pane: Pane, connection: Any): Boolean {
@@ -323,6 +324,15 @@ class Herdr internal constructor(
         if (core) return corePanes(runNow(hcCmd("ls", "--json"), 5, connection)).singleOrNull { it.id == id }
         val p = JSONObject(runNow(cmd("pane", "get", id), 5, connection)).getJSONObject("result").getJSONObject("pane")
         return tuiPane(p).takeIf { it.id == id && p.optJSONObject("scroll")?.opt("offset_from_bottom") == 0 }
+    }
+
+    /** [cardPane], but a scrolled-back pane is returned with its offset rather than as null (2.2.2: the relay refuses it as SCROLLED). */
+    internal suspend fun relayPane(id: String, connection: Any): Pane? {
+        if (core) return cardPane(id, connection)
+        val p = JSONObject(runNow(cmd("pane", "get", id), 5, connection)).getJSONObject("result").getJSONObject("pane")
+        val pane = tuiPane(p).takeIf { it.id == id } ?: return null
+        val offset = p.optJSONObject("scroll")?.opt("offset_from_bottom")
+        return if (offset == 0) pane else pane.copy(scrollOffset = (offset as? Number)?.toInt()?.takeIf { it != 0 } ?: -1)
     }
 
     /** Only the live viewport, with no fallback into old scrollback. */

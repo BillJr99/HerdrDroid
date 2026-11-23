@@ -68,7 +68,11 @@ internal enum class RelayRefusal(val why: String, val transient: Boolean) {
     IN_FLIGHT("another message to that pane is being sent", true),
     UNREACHABLE("that agent is not reachable now (its server is not connected, or the pane is gone)", true),
     REPLACED("a different session is now in that pane", false),
-    NOT_IDLE("it is not idle at the bottom of its screen (working, waiting on you, or scrolled back)", true),
+    NOT_IDLE("it is not idle (herdr can't say it is idle or done)", true),
+    /** 2.2.2: herdr says working, or the footer shows "esc to interrupt". The only reason Force Send may pass, and only for Claude Code. */
+    WORKING("it is working on a turn", true),
+    /** 2.2.2: the pane is scrolled back at the computer, so its input box can't be checked. */
+    SCROLLED("it is scrolled back at the computer, so its input box can't be checked", true),
     BACKGROUND("it is running background work that typing could interrupt, or that work could not be checked", true),
     USAGE("a usage panel is open in it", true),
     QUESTION("a question or dialog is open in it", true),
@@ -88,6 +92,16 @@ internal enum class RelayRefusal(val why: String, val transient: Boolean) {
  * background work, where typing could interrupt it.
  */
 internal fun takesInputDuringBackgroundWork(agent: String?): Boolean = agent.equals("claude", true)
+
+/**
+ * 2.2.2: agents a cross-server message may be forced to while they work: those that queue text
+ * typed during a turn and take it after the current step. Claude Code only, the same agents as
+ * [takesInputDuringBackgroundWork]. For any other agent a forced send is an ordinary one.
+ */
+internal fun takesForcedInput(agent: String?): Boolean = takesInputDuringBackgroundWork(agent)
+
+/** 2.2.2: herdr's agent prompt refuses an agent it calls blocked "with agent_blocked before any input is sent" (its --help). */
+internal fun refusedBeforeInput(e: Exception): Boolean = e is HerdrError && "agent_blocked" in e.message.orEmpty()
 
 /**
  * A watched pane, after the app's work sweep ([withBusy]), that a relay may write to: idle or done
@@ -142,6 +156,8 @@ internal class PromptRelay(
         refused: (RelayRefusal) -> Unit = {}, force: Boolean = false, allowed: () -> Boolean,
     ): RelayResult {
         val key = target.server to target.pane.id
+        // Force only ever applies to an agent that queues typed input (Claude Code); for any other it is an ordinary send.
+        val force = force && takesForcedInput(target.pane.agent)
         val lane = if (force) laneClear ?: clearToSend else clearToSend
         fun invalid(): RelayRefusal? = when {
             !allowed() -> RelayRefusal.STOPPED
@@ -162,21 +178,41 @@ internal class PromptRelay(
         try {
             val port = target.port
             // 2.2.1: background work alone does not hold an agent that takes input meanwhile.
-            val waitsForBackground = !force && !takesInputDuringBackgroundWork(target.pane.agent)
-            var notIdle: RelayRefusal = RelayRefusal.NOT_IDLE
+            val waitsForBackground = !takesInputDuringBackgroundWork(target.pane.agent)
+            var notIdle: RelayRefusal = RelayRefusal.UNREACHABLE
             suspend fun idlePane(): Pane? {
                 val p = port.pane(target.pane.id, target.connection)
+                // 2.2.2: each reason on its own, so only a working agent is ever offered Force Send.
                 notIdle = when {
-                    p == null -> RelayRefusal.NOT_IDLE
+                    p == null -> RelayRefusal.UNREACHABLE
                     !sameOccupant(target.pane, p) -> RelayRefusal.REPLACED
                     // Scrolled back hides the input line, so even a forced send waits for the bottom.
-                    p.scrollOffset != 0 -> if (force) RelayRefusal.NO_INPUT else RelayRefusal.NOT_IDLE
-                    // A forced send still never goes to an agent waiting on you.
-                    force && p.status == Status.NEEDS_YOU -> RelayRefusal.QUESTION
-                    !force && p.status !in setOf(Status.IDLE, Status.DONE) -> RelayRefusal.NOT_IDLE
-                    p.backgroundBusy && waitsForBackground -> RelayRefusal.BACKGROUND
-                    else -> return p
-                }
+                    p.scrollOffset != 0 -> RelayRefusal.SCROLLED
+                    // Never to an agent waiting on you, forced or not.
+                    p.status == Status.NEEDS_YOU -> RelayRefusal.QUESTION
+                    p.status == Status.WORKING -> if (force) null else RelayRefusal.WORKING
+                    p.status !in setOf(Status.IDLE, Status.DONE) -> RelayRefusal.NOT_IDLE
+                    else -> null
+                } ?: if (p!!.backgroundBusy && waitsForBackground) RelayRefusal.BACKGROUND else return p
+                return null
+            }
+            /** Every screen check; a forced send runs them twice, the second time right before typing. */
+            fun screenRefusal(viewport: String, agent: String?): RelayRefusal? {
+                if (dismissibleUsageFrame(agent, viewport) != null ||
+                    (agent in setOf("grok", "agy") && usageDialogHint(agent, viewport)) ||
+                    // 2.2.1: any informational panel, even one only partly identified, is never typed into.
+                    infoPanelOn(agent, viewport) != null)
+                    return RelayRefusal.USAGE
+                if (detectPrompt(forPhone(viewport), false, agent) != null) return RelayRefusal.QUESTION
+                // 2.2.2: a working agent can raise a dialog mid-turn; a forced send also checks the dialog footers.
+                if (force && (showsQuestionDialog(stripAnsi(viewport)) || claudePermissionFooterAtBottom(viewport))) return RelayRefusal.QUESTION
+                // 2.2.1: the screen says a turn is running ("esc to interrupt" under the box), whatever herdr says.
+                if (!force && composerFooterSaysWorking(viewport)) return RelayRefusal.WORKING
+                val line = inputLineOf(viewport, agent)
+                // A draft of several rows whose first row is empty is a draft too.
+                val draft = composerDraftOf(viewport, agent) != null
+                if (!line.isNullOrEmpty() || draft) return RelayRefusal.DRAFT
+                if (line == null) return RelayRefusal.NO_INPUT
                 return null
             }
             invalid()?.let { return refuse(it) }
@@ -186,23 +222,18 @@ internal class PromptRelay(
             invalid()?.let { return refuse(it) }
             val viewport = port.viewport(fresh.id, target.connection)
             invalid()?.let { return refuse(it) }
-            if (dismissibleUsageFrame(fresh.agent, viewport) != null ||
-                (fresh.agent in setOf("grok", "agy") && usageDialogHint(fresh.agent, viewport)) ||
-                // 2.2.1: any informational panel, even one only partly identified, is never typed into.
-                infoPanelOn(fresh.agent, viewport) != null)
-                return refuse(RelayRefusal.USAGE)
-            if (detectPrompt(forPhone(viewport), false, fresh.agent) != null) return refuse(RelayRefusal.QUESTION)
-            // 2.2.1: the screen says a turn is running ("esc to interrupt" under the box), whatever herdr says.
-            if (!force && composerFooterSaysWorking(viewport)) return refuse(RelayRefusal.NOT_IDLE)
-            val line = inputLineOf(viewport, fresh.agent)
-            // A draft of several rows whose first row is empty is a draft too.
-            val draft = composerDraftOf(viewport, fresh.agent) != null
-            if (!line.isNullOrEmpty() || draft) return refuse(RelayRefusal.DRAFT)
-            if (line == null) return refuse(RelayRefusal.NO_INPUT)
+            screenRefusal(viewport, fresh.agent)?.let { return refuse(it) }
             // This recheck narrows, but does not eliminate, the server-side read/write race.
             val ready = idlePane() ?: return refuse(notIdle)
             invalid()?.let { return refuse(it) }
-            if (force) port.sendForced(ready, text, target.connection, permit) else port.send(ready, text, target.connection, permit)
+            if (force) {
+                // 2.2.2: a working agent can open a question or approval after the first read, so a
+                // forced send reads the screen again right before typing and repeats every check.
+                val again = port.viewport(ready.id, target.connection)
+                invalid()?.let { return refuse(it) }
+                screenRefusal(again, ready.agent)?.let { return refuse(it) }
+                port.sendForced(ready, text, target.connection, permit)
+            } else port.send(ready, text, target.connection, permit)
             return RelayResult.SENT
         } catch (c: CancellationException) {
             // Cancelled after the write started: it may have arrived, so it is reported and never
@@ -213,7 +244,9 @@ internal class PromptRelay(
             return refuse(RelayRefusal.STOPPED)
         } catch (_: ConnectionChanged) {
             return if (permit.submitted) RelayResult.UNCERTAIN else refuse(RelayRefusal.LINK)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            // 2.2.2: herdr's agent_blocked is decided before any input is sent, so nothing was typed.
+            if (refusedBeforeInput(e)) return refuse(RelayRefusal.QUESTION)
             return if (permit.submitted) RelayResult.UNCERTAIN else refuse(RelayRefusal.FAILED)
         } finally {
             gate.finish(key, permit)
