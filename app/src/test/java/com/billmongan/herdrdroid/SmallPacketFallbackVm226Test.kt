@@ -47,14 +47,22 @@ class SmallPacketFallbackVm226Test {
         val gate = CompletableDeferred<ExecResult>()
         override val connection: Any? = Any()
         override suspend fun bulk(command: String): ExecResult = gate.await()
-        /** Send-lane commands seen; with [dropAfterStart] set, each one reaches the computer and then the link goes. */
+        /** Writes seen; with [dropAfterStart] set, each one fails: after its exec (true) or before it (false). */
         val sends = mutableListOf<String>()
         var dropAfterStart: Boolean? = null
+        /** When set, the guard read before a send waits on it. */
+        var readGate: CompletableDeferred<Unit>? = null
         override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult {
-            val drop = dropAfterStart ?: return ExecResult(1, "", "fixture")
+            val ctx = kotlin.coroutines.coroutineContext
+            if (ctx[com.billmongan.herdrdroid.ssh.WriteCommand] == null) {
+                // A read (the send's guard read of the screen): it never marks the action as sent.
+                readGate?.await()
+                return if ("'--source'" in command) ExecResult(0, "❯ ", "") else ExecResult(1, "", "fixture")
+            }
             sends += command
-            // As HerdrSsh does just before exec: from here the command may have reached the computer.
-            if (drop) kotlin.coroutines.coroutineContext[com.billmongan.herdrdroid.ssh.SendTrace]?.started = true
+            val drop = dropAfterStart ?: return ExecResult(0, "", "")
+            // As HerdrSsh does just before a write's exec: from here it may have reached the computer.
+            if (drop) ctx[com.billmongan.herdrdroid.ssh.SendTrace]?.started = true
             throw LinkDown(java.io.IOException("reset mid-command"))
         }
     }
@@ -219,6 +227,52 @@ class SmallPacketFallbackVm226Test {
         idle(200)
         assertEquals(1, ep.sends.size)
         assertEquals("queued to go once the link is back", 1, vm.queuedCount)
+    }
+
+    private val claude = com.billmongan.herdrdroid.herdr.Pane("w1:p1", "w1:t1", "w1", "claude", com.billmongan.herdrdroid.herdr.Status.IDLE, "", "/fixture", scrollOffset = 0, terminalId = "t1")
+
+    private fun sendTo(ep: Endpoint) {
+        open(ep, a)
+        state("panes", listOf(claude))
+        vm.sendMessage(claude, "HD226_MESSAGE")
+    }
+
+    /** Grok's re-review: the guard read succeeds, then the link goes before the write's exec: queued once, not undelivered. */
+    @Test fun aGuardReadThenADropBeforeTheWriteIsQueued() {
+        val ep = Endpoint(a)
+        ep.dropAfterStart = false
+        sendTo(ep)
+        idle(200)
+        assertEquals(1, ep.sends.size)
+        assertEquals(1, vm.queuedCount)
+        assertFalse(vm.pendingSends.single().undelivered)
+    }
+
+    @Test fun aGuardReadThenADropAfterTheWriteIsUndeliveredNotQueued() {
+        val ep = Endpoint(a)
+        ep.dropAfterStart = true
+        sendTo(ep)
+        idle(200)
+        assertEquals(1, ep.sends.size)
+        assertEquals(0, vm.queuedCount)
+        assertTrue(vm.pendingSends.single().undelivered)
+    }
+
+    /** The fallback's reconnect waits through the gap between the guard read and the write. */
+    @Test fun theFallbackReconnectWaitsThroughTheGuardReadToWriteGap() {
+        val ep = Endpoint(a)
+        ep.readGate = CompletableDeferred()
+        sendTo(ep)
+        idle(100)
+        assertTrue("the action holds the send lane from its guard read", ep.ssh.sendsRunning > 0)
+        vm.reconnectForFallback(ep.client)
+        idle(500)
+        assertEquals(Link.CONNECTED, vm.link)
+        ep.readGate!!.complete(Unit)
+        idle(500)
+        assertEquals(listOf(1), listOf(ep.sends.size))
+        assertEquals(0, ep.ssh.sendsRunning)
+        assertEquals(Link.RECONNECTING, vm.link)
     }
 
     private fun field(name: String) = AppViewModel::class.java.getDeclaredField(name).apply { isAccessible = true }

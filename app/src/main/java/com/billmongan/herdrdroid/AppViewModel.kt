@@ -1558,6 +1558,10 @@ class AppViewModel internal constructor(
         }
         // 2.2.6 (Grok's review): notes whether any command of this action reached the computer.
         val trace = com.billmongan.herdrdroid.ssh.SendTrace()
+        // The whole action counts as a send in flight, from its guard reads through its write, so
+        // the fallback's reconnect can't reset the connection in between (Grok's re-review).
+        val lane = h.transport
+        lane.beginSend()
         try { kotlinx.coroutines.withContext(trace) {
             val key = q.dispatchKey
             if (key == null) q.run(h)
@@ -1593,6 +1597,8 @@ class AppViewModel internal constructor(
             error = "${q.label}: ${e.message}"
         } catch (e: Exception) {
             error = "${q.label}: ${friendly(e)}"
+        } finally {
+            lane.endSend()
         }
     }
 
