@@ -378,6 +378,9 @@ fun EditServerScreen(vm: AppViewModel, existing: Server?, prefillHost: String? =
     var wsUrl by remember { mutableStateOf(existing?.wsUrl ?: "wss://") }
     var pinned by remember { mutableStateOf(existing?.fingerprint ?: "") }
     var backend by remember { mutableStateOf(existing?.backend) }
+    // 2.2.6: small packets (a smaller TCP MSS) for a lossy Wi-Fi path; direct SSH only.
+    var smallPackets by remember { mutableStateOf(existing?.smallPackets ?: false) }
+    var mssText by remember { mutableStateOf((existing?.mss ?: com.billmongan.herdrdroid.ssh.SmallPackets.DEFAULT).toString()) }
     // 1.2.7: a new server starts with port 22 and the command "herdr" (both required; before, they
     // started empty and Save stayed grey with nothing saying why).
     var port by remember { mutableStateOf(existing?.port?.toString() ?: "22") }
@@ -420,11 +423,13 @@ fun EditServerScreen(vm: AppViewModel, existing: Server?, prefillHost: String? =
     val keyReady = keyKind == "keystore" || (keyKind == "imported" && keyCipher != null)
     val wsOk = wsUrl.trim().let { (it.startsWith("wss://", true) || it.startsWith("ws://", true)) && it.substringAfter("://").isNotBlank() }
     val pinOk = pinned.isBlank() || normalizeFingerprint(pinned) != null
+    val mssNum = mssText.toIntOrNull()
+    val mssOk = mssNum != null && mssNum in com.billmongan.herdrdroid.ssh.SmallPackets.MIN..com.billmongan.herdrdroid.ssh.SmallPackets.MAX
     val valid = if (viaWs) {
         wsOk && user.isNotBlank() && herdrPath.isNotBlank() && useKey && keyReady && pinOk
     } else {
         host.isNotBlank() && user.isNotBlank() && portNum != null && portNum in 1..65535 &&
-            herdrPath.isNotBlank() && (!useKey || keyReady)
+            herdrPath.isNotBlank() && (!useKey || keyReady) && (!smallPackets || mssOk)
     }
 
     Column(
@@ -496,6 +501,24 @@ fun EditServerScreen(vm: AppViewModel, existing: Server?, prefillHost: String? =
             supportingText = { Text("The command that runs herdr on that computer, such as herdr or ~/.local/bin/herdr") },
             modifier = Modifier.fillMaxWidth(),
         )
+
+        if (!viaWs) {
+            SwitchRow(
+                "Small packets (for lossy Wi-Fi)",
+                "Asks this computer to send smaller packets. Try it if signing in works but lists or chats stall on Wi-Fi.",
+                smallPackets,
+            ) { smallPackets = it }
+            if (smallPackets) OutlinedTextField(
+                mssText, { mssText = it.filter(Char::isDigit).take(4) }, label = { Text("Packet size (MSS, bytes)") }, singleLine = true,
+                isError = !mssOk,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                supportingText = {
+                    Text("From ${com.billmongan.herdrdroid.ssh.SmallPackets.MIN} to ${com.billmongan.herdrdroid.ssh.SmallPackets.MAX}; " +
+                        "${com.billmongan.herdrdroid.ssh.SmallPackets.DEFAULT} suits most networks.")
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
 
         Text("Signing in", fontWeight = FontWeight.SemiBold, fontSize = 17.sp, color = Palette.Ink, modifier = Modifier.padding(top = 6.dp))
         if (viaWs) {
@@ -585,6 +608,10 @@ fun EditServerScreen(vm: AppViewModel, existing: Server?, prefillHost: String? =
                         useKey = if (viaWs) true else useKey,
                         wsUrl = if (viaWs) url else null,
                         backend = backend,
+                        // Kept off for a WebSocket server, where it can't apply.
+                        smallPackets = smallPackets && !viaWs,
+                        // Only a valid value typed with the switch on replaces the saved one (pre-review L2).
+                        mss = if (smallPackets && !viaWs && mssOk) mssNum!! else base.mss,
                         keyKind = keyKind,
                         keyCipher = if (keyKind == "imported") keyCipher else null,
                         keyPassCipher = if (keyKind == "imported") keyPassCipher else null,

@@ -44,4 +44,31 @@ object LinkDiag {
     /** A link state change, its reason (a short fixed word) and how long the previous state lasted. */
     fun transition(serverId: String?, from: String, to: String, reason: String, afterMs: Long?) =
         DiagLog.log("link", "server=${serverTag(serverId)} link=${from.lowercase()}->${to.lowercase()} reason=$reason" + (afterMs?.let { " after_ms=$it" } ?: ""))
+
+    /**
+     * 2.2.6: what one direct TCP connection did with small packets: the MSS asked for, whether the
+     * socket option was set (and by which route, or the error's class), and the MSS the kernel
+     * settled on after connecting when it could be read.
+     */
+    fun mssLine(serverId: String?, r: com.billmongan.herdrdroid.ssh.MssReport): String = buildString {
+        append("server=").append(serverTag(serverId))
+        append(" mss requested=").append(r.requested)
+        append(" set=").append(if (r.applied) "ok" else "failed")
+        r.route?.let { append(" route=").append(it) }
+        r.error?.let { append(" error=").append(it) }
+        append(" effective=").append(r.effective ?: "unknown")
+    }
+
+    fun mss(serverId: String?, r: com.billmongan.herdrdroid.ssh.MssReport) = DiagLog.log("link", mssLine(serverId, r))
+
+    /** 2.2.6: the automatic small-packets fallback fired, why (a fixed word), and how long after sign-in. */
+    fun fallbackLine(serverId: String?, reason: String, mss: Int, afterMs: Long?): String =
+        "server=${serverTag(serverId)} fallback=small-packets reason=$reason mss=$mss" + (afterMs?.let { " after_ms=$it" } ?: "")
+
+    /** 2.2.6: a trigger that is not lossy Wi-Fi ([why]: network-change or background); the fallback is dropped for this sign-in. */
+    fun fallbackSkippedLine(serverId: String?, why: String, trigger: String): String =
+        "server=${serverTag(serverId)} fallback=skipped reason=$why trigger=$trigger"
+
+    fun fallback(serverId: String?, reason: String, mss: Int, afterMs: Long?) =
+        DiagLog.log("link", fallbackLine(serverId, reason, mss, afterMs))
 }
