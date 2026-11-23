@@ -2168,7 +2168,7 @@ fun showsQuestionDialog(text: String): Boolean =
     text.lines().filter { it.isNotBlank() }.takeLast(6).any { QUESTION_FOOTER.containsMatchIn(it) }
 
 /** One hint of a dialog's footer: a key, then what it does ("Esc to cancel", "Tab:next option", "1/3:select"). */
-private val HINT_SEGMENT = Regex("""^(?:esc|enter|tab|space|return|↵|(?:shift|ctrl|alt|cmd)[+-]\S+|[↑↓←→/]+(?:/?jk)?|\d+/\d+)(?:\s|:|$)""", RegexOption.IGNORE_CASE)
+private val HINT_SEGMENT = Regex("""^(?:esc|enter|tab|space|return|↵|(?:shift|ctrl|alt|cmd)[+-]\S+|[↑↓←→/]+(?:/?jk)?|\d+/\d+)(?:\s+|:)\S""", RegexOption.IGNORE_CASE)
 
 /**
  * 2.2.2: a question dialog's own footer or hint row, read from its structure rather than one
@@ -2183,6 +2183,8 @@ internal fun isDialogFooterRow(row: String): Boolean {
     if (QUESTION_FOOTER.containsMatchIn(t) || CODEX_FOOTER.containsMatchIn(t) || VIBE_CARD_FOOTER.containsMatchIn(t) ||
         MUSE_CARD_FOOTER.matches(c) || STANDALONE_CARD_HINT.matches(c) || Regex("""(⇆|←→)\s*select""").containsMatchIn(t)) return true
     if (t.first() in "╰└┗╚" && t.last() in "╯┘┛╝") return true
+    // Claude's tab bar ("←  ☐ Backup  ✔ Submit  →") is the dialog's top, not its footer.
+    if (parseTabBar(c) != null) return false
     return c.split(Regex("""\s*[·│┃|]\s*|\s{2,}""")).count { HINT_SEGMENT.containsMatchIn(it.trim()) } >= 2
 }
 
