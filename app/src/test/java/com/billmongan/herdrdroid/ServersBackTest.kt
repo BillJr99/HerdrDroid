@@ -97,6 +97,28 @@ class ServersBackTest {
         assertEquals(Screen.Tabs, vm.serversBack)
     }
 
+    // 2.2.5, Bill: Back from Servers left the app. The machine menu's "All servers…" disconnected,
+    // so the list became the main screen and Back had nowhere to go but out of the app.
+    @Test fun allServersFromTheMachineMenuKeepsTheServerAndBackReturnsToTheMainScreen() {
+        connected()
+        vm.screen = Screen.Tabs
+        vm.showAllServers()
+        assertEquals(Screen.Servers, vm.screen)
+        assertEquals(server, vm.current)
+        assertEquals(Screen.Tabs, vm.serversBack)
+        assertTrue(vm.leaveServers())
+        assertEquals(Screen.Tabs, vm.screen)
+        assertEquals(listOf(codex), vm.panes)
+    }
+
+    @Test fun allServersFromAnAgentReturnsToThatAgent() {
+        connected()
+        vm.screen = Screen.Agent(codex.id)
+        vm.showAllServers()
+        assertTrue(vm.leaveServers())
+        assertEquals(Screen.Agent(codex.id), vm.screen)
+    }
+
     @Test fun withNoServerOpenTheListIsTheMainScreenAndBackLeavesTheApp() {
         assertEquals(Screen.Servers, vm.screen)
         assertNull(vm.serversBack)

@@ -467,6 +467,13 @@ class AppViewModel internal constructor(
             }
         }
 
+    /**
+     * The machine menu's "All servers…" (2.2.5, Bill: Back from the list left the app). It used to
+     * disconnect, which made the list the app's main screen, so Back closed the app. It now opens
+     * the list over the open server, like the drawer's "Servers…": Back returns to this screen.
+     */
+    fun showAllServers() = openServers()
+
     /** Back on the server list. False when there is nowhere to go in the app (Back leaves it). */
     fun leaveServers(): Boolean {
         val to = serversBack ?: return false

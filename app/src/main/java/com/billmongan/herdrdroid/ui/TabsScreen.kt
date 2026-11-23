@@ -133,7 +133,8 @@ fun TabsScreen(vm: AppViewModel) {
                                     onClick = { machines = false; vm.switchServer(s) },
                                 )
                             }
-                            DropdownMenuItem(text = { Text("All servers…") }, onClick = { machines = false; vm.disconnect() })
+                            // 2.2.5: the list opens over this server, so Back returns here instead of leaving the app.
+                            DropdownMenuItem(text = { Text("All servers…") }, onClick = { machines = false; vm.showAllServers() })
                         }
                     }
                     LinkLabel(vm, " · ${panes.size} tabs · v${com.billmongan.herdrdroid.BuildConfig.VERSION_NAME}")
