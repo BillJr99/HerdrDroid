@@ -1157,6 +1157,12 @@ data class Prompt(
      * a neutral card with no options and no keys, only Show terminal (see [readingQuestionCard]).
      */
     internal val readingQuestion: Boolean = false,
+    /**
+     * 2.2.4: Claude's permission dialog is taller than the screen: its top rule and title scrolled off,
+     * and its command runs from the screen's top row ([claudeFramedDialog]). The card says the command
+     * is partly off screen, and the dialog's top is the screen's top ([dialogRead]).
+     */
+    internal val topOffScreen: Boolean = false,
 ) {
     /**
      * Never an empty card (1.4.2): a prompt with no choices always has something to show, the
@@ -1264,6 +1270,105 @@ private fun claudeDescriptionAbove(t: String, next: QLine?): Boolean {
     if (SHELL_SIGN.containsMatchIn(t)) return false
     val n = next.text.trim()
     return n.isNotEmpty() && (SHELL_SIGN.containsMatchIn(n) || n.first().isLowerCase())
+}
+
+/** Claude Code 2.1.329+'s dashed rules around a permission dialog's command, at the screen's left edge. */
+private val CLAUDE_DASHED_RULE = Regex("""^ ?╌{20,}\s*$""")
+/** The plain rule Claude draws above a permission dialog, at the screen's left edge. */
+private val CLAUDE_DIALOG_TOP_RULE = Regex("""^─{20,}\s*$""")
+/** A row in the dialog's "│" gutter: the command's rows, and a hook's reason (2.2.4). */
+private val CLAUDE_GUTTER_ROW = Regex("""^ {0,2}│(?: (.*))?$""")
+/** What the card says when a tall dialog's top has scrolled off the screen (2.2.4). */
+internal const val CLAUDE_TOP_OFF_NOTE = "The top of this command is off screen. Show terminal to see all of it."
+/** The same, when the whole command shows but the dialog's title and description scrolled off. */
+internal const val CLAUDE_TITLE_OFF_NOTE = "The top of this dialog is off screen. Show terminal to see all of it."
+
+/** A Claude permission dialog read by its frame: its lines for [questionParts], and whether its top scrolled off. */
+internal class ClaudeFramed(val lines: List<QLine>, val topOffScreen: Boolean)
+
+/**
+ * 2.2.4 (Bill: "herdrDroid failed to render that yes no question"): Claude Code 2.1.330's permission
+ * dialog read by its structure, however tall its command is. From the options up: "Do you want to
+ * …?" (a row or two), the explanation (a rule's or a hook's reason, in the "│" gutter or not), a
+ * dashed rule, the command's rows, all in the "│" gutter, a dashed rule, the description and the
+ * title, and the plain rule on top. The generic walk read at most 20 rows above the options once it
+ * had the question, so a tall command lost its title and description, and it took each "│" row after
+ * the first as text or as a "$ " command of its own. Here every gutter row is one line of the command,
+ * in order, its indentation kept; a row that filled the frame and goes on in the next row is one line.
+ * A dialog taller than the screen, whose command runs from the screen's top row with no dashed rule
+ * above it, reads with [CLAUDE_TOP_OFF_NOTE] and [ClaudeFramed.topOffScreen]. Anything else (no
+ * dashed rules, a row outside the gutter among the command rows, more than a title and a description
+ * above the command, chat above the dialog with no rule between) is not this layout: null, and the
+ * generic walk reads it as before.
+ */
+internal fun claudeFramedDialog(raw: List<String>, at: Int): ClaudeFramed? {
+    var i = at - 1
+    while (i >= 0 && raw[i].isBlank()) i--
+    // The question: "Do you want to proceed?", right above the options (it may wrap over two rows).
+    val header = (i downTo maxOf(0, i - 1)).firstOrNull { raw[it].trim().startsWith("Do you want to ") && raw[it].length - raw[it].trimStart().length <= 2 }
+        ?: return null
+    if ((header..i).any { raw[it].isBlank() || CLAUDE_GUTTER_ROW.matches(raw[it]) }) return null
+    val question = (header..i).map { raw[it].trim() }
+    // The explanation, up to the dashed rule under the command.
+    var k = header - 1
+    while (k >= 0 && !CLAUDE_DASHED_RULE.matches(raw[k])) {
+        if (CLAUDE_DIALOG_TOP_RULE.matches(raw[k]) || header - k > 30) return null
+        k--
+    }
+    if (k < 0) return null
+    val below = k
+    val explanation = (below + 1 until header).map { raw[it] }
+    // The command's rows: each in the gutter, up to the dashed rule over the command or the screen's top.
+    var j = below - 1
+    while (j >= 0 && !CLAUDE_DASHED_RULE.matches(raw[j])) {
+        if (!CLAUDE_GUTTER_ROW.matches(raw[j])) return null
+        j--
+    }
+    val commandRows = (j + 1 until below).map { raw[it] }
+    if (commandRows.none { CLAUDE_GUTTER_ROW.find(it)?.groupValues?.get(1).orEmpty().isNotBlank() }) return null
+    // Over the command: the title and the description, under the plain rule (or the screen's top).
+    var titleRows = emptyList<String>()
+    var topOff = j < 0
+    if (j >= 0) {
+        var t = j - 1
+        while (t >= 0 && !CLAUDE_DIALOG_TOP_RULE.matches(raw[t])) {
+            if (raw[t].isBlank() || CLAUDE_GUTTER_ROW.matches(raw[t]) || CLAUDE_DASHED_RULE.matches(raw[t]) || j - t > 3) return null
+            t--
+        }
+        titleRows = (t + 1 until j).map { raw[it].trim() }
+        if (t < 0) topOff = true
+        else {
+            // A full dialog names its tool on its first row.
+            val title = titleRows.firstOrNull() ?: return null
+            if (!CLAUDE_COMMAND_TITLE.matches(title) && !CLAUDE_REQUEST_SOURCE.containsMatchIn(title) && !COMMAND_INTRO.matches(title)) return null
+        }
+    }
+    // The command, one line per row; a row that fills the frame wraps into the next.
+    val width = raw.maxOf { it.trimEnd().length }
+    val command = mutableListOf<String>()
+    var wrapped = false
+    for (r in commandRows) {
+        val body = CLAUDE_GUTTER_ROW.find(r)?.groupValues?.get(1).orEmpty().trimEnd()
+        if (wrapped && command.isNotEmpty()) command[command.size - 1] = command.last() + body else command += body
+        wrapped = r.trimEnd().length >= width - 1
+    }
+    val out = mutableListOf<QLine>()
+    if (topOff) out += QLine(if (j < 0) CLAUDE_TOP_OFF_NOTE else CLAUDE_TITLE_OFF_NOTE)
+    titleRows.forEach { out += QLine(it) }
+    command.filter { it.isNotBlank() }.forEach { out += QLine(it, cmd = true, row = true) }
+    // The explanation as text: a paragraph per run of rows in or out of the gutter, or between blank rows.
+    var gap = true
+    var inGutter: Boolean? = null
+    for (r in explanation) {
+        if (r.isBlank()) { gap = true; continue }
+        val g = CLAUDE_GUTTER_ROW.find(r)
+        val text = (g?.groupValues?.get(1) ?: r).trim()
+        if (text.isEmpty()) { gap = true; continue }
+        out += QLine(text, gapBefore = gap || (inGutter != null && inGutter != (g != null)))
+        gap = false; inGutter = g != null
+    }
+    question.forEachIndexed { n, q -> out += QLine(q, gapBefore = n == 0) }
+    return ClaudeFramed(out, topOff)
 }
 
 /** Vibe's "Permission for the file_system.bash tool (…)": the command is the next line. */
@@ -3284,6 +3389,7 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
     // Grok's command rows ("│ git …·", "┆ …"), read whatever frame its box has (2.1.4): Grok's
     // screen, or any screen with a row in Grok's "┆" gutter.
     val grokRows = agent.equals("grok", true) || raw.any { r -> GrokMeta.commandRow(r, null)?.cont == true }
+    var topOff = false
     val above = run.firstOrNull()?.let {
         val at = firstOption
         if (at <= 0) null else {
@@ -3302,6 +3408,9 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
                 }
                 return@let got.takeIf { it.isNotEmpty() }
             }
+            // 2.2.4: Claude's permission dialog, read by its frame however tall its command is.
+            val framed = if (grokRows) null else claudeFramedDialog(raw, at)
+            if (framed != null) { topOff = framed.topOffScreen; return@let framed.lines }
             var i = at - 1
             // Blank lines inside a card are crossed (Antigravity puts one between "Requesting
             // permission for:", the command, and "Run this command?"), up to two of them; a rule, the
@@ -3507,7 +3616,7 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
         val shortcuts = agent?.lowercase() in setOf("codex", "muse") ||
             lines.takeLast(4).any { CODEX_FOOTER.containsMatchIn(it) || MUSE_CARD_FOOTER.containsMatchIn(it) }
         return Prompt(question ?: "Choose an option", numbered, selected, escRejects = vibeCard, parts = parts, multi = multi,
-            shortcuts = shortcuts, approvalIdentity = approvalIdentity, claudeCheckboxAction = checkboxAction)
+            shortcuts = shortcuts, approvalIdentity = approvalIdentity, claudeCheckboxAction = checkboxAction, topOffScreen = topOff)
     }
 
     val yn = Regex("""[(\[]\s*[yY](?:es)?\s*/\s*[nN]o?\s*[)\]]""")

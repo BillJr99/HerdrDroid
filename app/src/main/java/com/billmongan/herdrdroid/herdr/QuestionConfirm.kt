@@ -154,7 +154,9 @@ internal fun dialogRead(rows: List<String>, p: Prompt, agent: String?, version: 
     val edges = (first - 1 downTo maxOf(0, first - TOP_WITHIN)).filter { topEdge(rows[it], width) }.take(EDGES_TRIED)
         // The title row over an edge (Kiro's tool), but not over a header row, which may be the chat's own prose.
         .flatMap { e -> listOfNotNull(e, (e - 1 downTo maxOf(0, e - 2)).firstOrNull { rows[it].isNotBlank() }
-            ?.takeIf { !topEdge(rows[it], width) && !isDialogHeaderRow(rows[e]) }) }
+            ?.takeIf { !topEdge(rows[it], width) && !isDialogHeaderRow(rows[e]) }) } +
+        // 2.2.4: a Claude dialog taller than the screen, read from its frame: its top is the screen's top row.
+        listOfNotNull(0.takeIf { p.topOffScreen && first > 0 })
     for (top in edges) {
         if ((top + 1 until first).any { ECHO_ROW.containsMatchIn(rows[it]) || NUMBERED_ECHO_ROW.containsMatchIn(rows[it]) }) break
         // A header row that only starts like one ("Do you want to …") opens a dialog only with the dialog
