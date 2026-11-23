@@ -71,7 +71,8 @@ class ServersBackTest {
         vm.screen = Screen.Settings(Screen.Servers)
         vm.screen = Screen.Servers
         assertTrue(vm.leaveServers())
-        assertEquals(Screen.Tabs, vm.screen)
+        // 2.2.7: the pane list is not the chat; Back lands on the main screen.
+        assertEquals(Screen.Home, vm.screen)
     }
 
     @Test fun serversShownWithoutAnOriginGoBackToTheMainScreen() {
@@ -80,12 +81,12 @@ class ServersBackTest {
         vm.screen = Screen.Tabs
         // Shown directly (a locked server picked in the drawer, say): back to this server's main screen.
         vm.screen = Screen.Servers
-        assertEquals(Screen.Tabs, vm.serversBack)
+        assertEquals(Screen.Home, vm.serversBack)
         // A remembered agent that has since closed is not returned to either.
         vm.screen = Screen.Agent("w9:p9")
         vm.openServers()
         state("panes", listOf(codex))
-        assertEquals(Screen.Tabs, vm.serversBack)
+        assertEquals(Screen.Home, vm.serversBack)
     }
 
     @Test fun anOriginIsForgottenOnceTheUserGoesElsewhere() {
@@ -94,7 +95,7 @@ class ServersBackTest {
         vm.openServers()
         vm.screen = Screen.Usage
         vm.screen = Screen.Servers
-        assertEquals(Screen.Tabs, vm.serversBack)
+        assertEquals(Screen.Home, vm.serversBack)
     }
 
     // 2.2.5, Bill: Back from Servers left the app. The machine menu's "All servers…" disconnected,
@@ -105,9 +106,9 @@ class ServersBackTest {
         vm.showAllServers()
         assertEquals(Screen.Servers, vm.screen)
         assertEquals(server, vm.current)
-        assertEquals(Screen.Tabs, vm.serversBack)
+        assertEquals(Screen.Home, vm.serversBack)
         assertTrue(vm.leaveServers())
-        assertEquals(Screen.Tabs, vm.screen)
+        assertEquals(Screen.Home, vm.screen)
         assertEquals(listOf(codex), vm.panes)
     }
 
@@ -119,11 +120,19 @@ class ServersBackTest {
         assertEquals(Screen.Agent(codex.id), vm.screen)
     }
 
-    @Test fun withNoServerOpenTheListIsTheMainScreenAndBackLeavesTheApp() {
+    // 2.2.7, Bill: with no server open Back left the app; it now goes to the main screen.
+    @Test fun withNoServerOpenBackGoesToTheMainScreenNotOutOfTheApp() {
         assertEquals(Screen.Servers, vm.screen)
-        assertNull(vm.serversBack)
-        assertFalse(vm.leaveServers())
-        assertEquals(Screen.Servers, vm.screen)
+        assertEquals(Screen.Home, vm.serversBack)
+        assertTrue(vm.leaveServers())
+        assertEquals(Screen.Home, vm.screen)
+    }
+
+    @Test fun withAServerOpenAndNoOriginBackGoesToItsLastAgent() {
+        connected()
+        vm.openPane(codex.id)
+        vm.screen = Screen.Servers
+        assertEquals(Screen.Agent(codex.id), vm.serversBack)
     }
 
     private fun field(owner: Any, name: String) = owner.javaClass.getDeclaredField(name).apply { isAccessible = true }
