@@ -148,9 +148,14 @@ internal class QuestionConfirm {
     private val last = HashMap<String, Any>()
     private val runs = HashMap<String, Int>()
     private val confirmed = HashMap<String, Any>()
+    private val seen = HashSet<String>()
+
+    /** Whether any read of [key] has been offered. */
+    fun seen(key: String): Boolean = key in seen
 
     /** True when [read]'s card may show: confirmed now, or a card that needs no confirming. */
     fun offer(key: String, read: QuestionRead?): Boolean {
+        seen += key
         if (read == null || !needsConfirmation(read.prompt)) { forget(key); return read != null }
         if (read.refused) { forget(key); return false }
         val rows = read.region?.map { r -> r.filterNot { it in MOVING_MARKS }.replace(Regex("""\s+"""), " ").trim() }
