@@ -978,6 +978,9 @@ class SuccessiveCardAnswerTest {
         speak("confirm answer")
         drainUntil { !vm.answerInFlight("p1") }
         assertTrue(sent.isEmpty())
+        // 2.2.2: voice sends only once Chat has confirmed the changed card (two matching reads, the
+        // open pane's own read cadence); the refused confirm above read it only once.
+        readSelectedPane(); readSelectedPane()
         speak("answer option three")
         completeSpeech()
         speak("confirm answer")
