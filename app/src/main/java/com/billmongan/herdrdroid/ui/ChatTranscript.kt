@@ -449,17 +449,21 @@ private fun QuestionContent(q: QuestionItem, size: Float) {
             q.parts.forEach { p ->
                 // 2.2.2: shown as the card shows it (QuestionText); the record itself is unchanged.
                 p.title?.takeIf { q.parts.size >= 2 }?.let { Text(QuestionText.title(it), color = Palette.Muted, fontSize = (size * 0.95f).sp, fontWeight = FontWeight.SemiBold) }
-                if (p.question.isNotBlank()) Text(withInlineCode(QuestionText.prose(p.question)), color = Palette.Ink, fontSize = (size * 1.08f).sp, fontWeight = FontWeight.SemiBold,
+                // 2.2.2 review: the layout is worked out once per saved part, not on every recomposition.
+                val question = remember(p) { QuestionText.prose(p.question) }
+                val details = remember(p) {
+                    p.details.filter { QuestionText.prose(it).let { t -> t.isNotEmpty() && t != question } }.flatMap(CardFormat::detail)
+                }
+                val cmd = remember(p) { p.command?.let { BoxCopy.cleanBlock(it.lines()).joinToString("\n") } }
+                if (p.question.isNotBlank()) Text(withInlineCode(question), color = Palette.Ink, fontSize = (size * 1.08f).sp, fontWeight = FontWeight.SemiBold,
                     lineHeight = (size * 1.08f * 1.4f).sp)
                 // 2.2.2: each saved line laid out as the card lays it out (a path or an edit in monospace).
-                p.details.filter { QuestionText.prose(it).let { t -> t.isNotEmpty() && t != QuestionText.prose(p.question) } }
-                    .flatMap(CardFormat::detail).forEach { b ->
+                details.forEach { b ->
                         if (b is CardBlock.Prose) Text(withInlineCode(b.text), color = Palette.Ink, fontSize = (size * 1.0f).sp, lineHeight = (size * 1.4f).sp)
                         else CardBlockView(b, first = false)
                     }
-                p.command?.let { raw ->
+                cmd?.let { cmd ->
                     // 2.2.2: without terminal glyphs, shown and copied the same.
-                    val cmd = BoxCopy.cleanBlock(raw.lines()).joinToString("\n")
                     // 2.2.0: long-press the command to copy it.
                     val copy = rememberCopier()
                     DisableSelection {

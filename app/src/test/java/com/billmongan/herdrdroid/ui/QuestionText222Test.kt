@@ -26,7 +26,11 @@ class QuestionText222Test {
     @Test fun aFocusMarkerAtTheStartOfARowGoesWhateverItsGlyph() {
         for (m in listOf("❯", "›", "▶", "➤", "⟩", "→", "▸")) assertEquals("Leave it", QuestionText.label("$m Leave it"))
         assertEquals("2. No", QuestionText.line("> 2. No"))
-        assertEquals("No", QuestionText.label("> No"))
+        assertEquals("No", QuestionText.label("> 2. No", "2"))
+        // A ">" that is the label's own meaning stays (2.2.2 review).
+        assertEquals("> 100 MB", QuestionText.label("> 100 MB"))
+        assertEquals("> No", QuestionText.label("> No"))
+        assertEquals("→Next", QuestionText.label("→Next"))
     }
 
     @Test fun aGreaterThanSignThatIsContentStays() {
@@ -47,8 +51,11 @@ class QuestionText222Test {
         assertEquals("Title", QuestionText.line("╭─ Title ─────╮"))
         assertEquals("", QuestionText.line("──────────────"))
         assertEquals("", QuestionText.line("╰──────────────╯"))
-        // A bar inside the text is content.
+        // A bar inside the text is content, and so is a pipe at a wrap edge (2.2.2 review).
         assertEquals("cat a | grep b", QuestionText.line("cat a | grep b"))
+        assertEquals("Pipes it: cat app.log |", QuestionText.line("Pipes it: cat app.log |"))
+        assertEquals("Pipes it: cat app.log | grep ERROR", QuestionText.text("Pipes it: cat app.log |\ngrep ERROR"))
+        assertEquals("one\n\ntwo", QuestionText.text("| one |\n\n| two |"))
     }
 
     @Test fun ansiRemnantsAndControlCharactersGo() {
@@ -64,6 +71,13 @@ class QuestionText222Test {
         assertEquals("Pick one", QuestionText.line("Pick one (Enter to select)"))
         assertEquals("", QuestionText.line("Enter to select · Tab/Arrow keys to navigate · Esc to cancel"))
         assertEquals("No, and tell Claude what to do differently (esc)", QuestionText.label("No, and tell Claude what to do differently (esc)"))
+        assertEquals("Pick one", QuestionText.line("Pick one  Enter to select"))
+        // Words that only look like a hint stay (2.2.2 review).
+        for (s in listOf("Re-enter to confirm", "Pick the nearest data center to send", "If it hangs, use ctrl+c to stop it",
+                "Keeps the dialog open; press Enter to confirm")) {
+            assertEquals(s, QuestionText.line(s))
+            assertEquals(s, QuestionText.label(s))
+        }
     }
 
     @Test fun repeatedSpacesCollapse() {
@@ -186,7 +200,7 @@ class QuestionText222Test {
     @Test fun aFencedBlockKeepsItsIndentationAndCharacters() {
         val got = layout(QBlock(QKind.HEADING, "Use this config?"),
             QBlock(QKind.TEXT, "Here it is:\n```json\n{\"a\": 1,\n  \"b\": \"x -> y | z\"}\n```\nthen continue."))
-        assertEquals(CardBlock.Code(listOf("{\"a\": 1,", "  \"b\": \"x -> y | z\"}")), got[2])
+        assertEquals(CardBlock.Code(listOf("{\"a\": 1,", "  \"b\": \"x -> y | z\"}"), exact = true), got[2])
         assertEquals(CardBlock.Prose("then continue."), got[3])
     }
 
@@ -204,16 +218,69 @@ class QuestionText222Test {
 
     @Test fun proseThatOnlyLooksLikeCodeStaysProse() {
         for (s in listOf("Keep a > b as it is.", "Here is the plan:", "make sure it runs.", "git is where docs/notes live.",
-                "Run the tests first.", "cd into the folder and look", "The value -> next step is fine")) {
+                "Run the tests first.", "cd into the folder and look", "The value -> next step is fine",
+                // The 2.2.2 review's examples: a program's name and a path are not shell syntax.
+                "make the same change in app/src/test so the", "find the config under ~/.config and", "go to Settings/Advanced and",
+                "sort by date/time", "git is where the history lives, see docs/git.md", "Next: find the logs under /var/log and send them")) {
             assertTrue(s, !QuestionText.isCodeLine(s))
             assertEquals(s, listOf(QuestionText.Segment(s, false)), QuestionText.segments(s))
         }
     }
 
+    @Test fun aSoftWrappedCommandStaysOneWholeCommand() {
+        for ((rows, whole) in listOf(
+            listOf("git -C /home/u/repo reset --hard", "origin/main") to "git -C /home/u/repo reset --hard origin/main",
+            listOf("npm test -- --watch=false", "--coverage") to "npm test -- --watch=false --coverage",
+            listOf("rm -rf build/", "dist/") to "rm -rf build/ dist/",
+            listOf("git log --oneline", "  | head -5") to "git log --oneline | head -5",
+        )) {
+            val got = QuestionText.segments((listOf("Reset it with:") + rows + "Then I report.").joinToString("\n"))
+            assertEquals(rows.toString(), listOf(QuestionText.Segment("Reset it with:", false), QuestionText.Segment(whole, true),
+                QuestionText.Segment("Then I report.", false)), got)
+        }
+        // After a "\" the next row is its own row, as the shell reads it.
+        assertEquals(QuestionText.Segment("git log --oneline \\\n  | head -5", true),
+            QuestionText.segments("Run:\ngit log --oneline \\\n  | head -5")[1])
+        // On the screen too: the box holds the whole command.
+        val screen = "│ Reset it with:\n│ git -C /home/u/repo reset --hard\n│ origin/main"
+        val got = layout(QBlock(QKind.HEADING, "Go?"), QBlock(QKind.TEXT, "Reset it with: git -C /home/u/repo reset --hard origin/main"), screen = screen)
+        assertEquals(CardBlock.Code(listOf("git -C /home/u/repo reset --hard origin/main"), wrap = true), got.last())
+    }
+
+    @Test fun aRowInsideASentenceIsNeverCode() {
+        val text = "Should I also\nmake the same change in app/src/test --dry-run so the\ntests match?"
+        assertTrue(QuestionText.segments(text).none { it.code })
+    }
+
+    @Test fun fencesOnOneRowAndOpenFences() {
+        assertEquals(listOf(QuestionText.Segment("Then:", false), QuestionText.Segment("npm run build", true, fenced = true),
+            QuestionText.Segment("and report.", false)), QuestionText.segments("Then:\n```npm run build```\nand report."))
+        assertEquals(QuestionText.Segment("npm ci\nnpm test", true, fenced = true), QuestionText.segments("Do this:\n```\nnpm ci\nnpm test").last())
+    }
+
+    @Test fun codeIsByteExact() {
+        assertEquals(QuestionText.Segment("sed 's/ [m]//' f.txt", true), QuestionText.segments("Run:\nsed 's/ [m]//' f.txt")[1])
+        assertEquals("printf '[1m'", QuestionText.segments("printf '[1m'").single().text)
+        // A fenced table keeps its bars.
+        assertEquals(QuestionText.Segment("| a | b |\n| 1 | 2 |", true, fenced = true), QuestionText.segments("Table:\n```\n| a | b |\n| 1 | 2 |\n```")[1])
+    }
+
+    @Test fun reflowKeepsLinesThatWereNotWrapped() {
+        assertEquals(listOf("Reason: clean the cache", "Do you want to proceed?"), QuestionText.reflow(listOf("Reason: clean the cache", "Do you want to proceed?")))
+        assertEquals("- one\n- two", QuestionText.note("- one\n- two"))
+    }
+
+    @Test fun anApprovalAlertKeepsAllItsContextUpToItsBudget() {
+        val parts = QuestionParts(emptyList(), listOf(QBlock(QKind.HEADING, "Run it?"), QBlock(QKind.COMMAND, "git push --force"),
+            QBlock(QKind.TEXT, "First note."), QBlock(QKind.TEXT, "Second note."), QBlock(QKind.TEXT, "This overwrites main.")))
+        val p = Prompt("Run it?", listOf(Choice("Yes", "1", false)), parts = parts)
+        assertEquals("Run it?\ngit push --force\nFirst note.\nSecond note.\nThis overwrites main.", alertBody(p))
+    }
+
     @Test fun aCommandInAChoiceDescriptionIsItsOwnBlock() {
         val note = QuestionText.note("I run this once:\ngit -C /work/repo fetch --prune\nthen report back.")
         val blocks = CardFormat.noteBlocks(note)
-        assertEquals(listOf(CardBlock.Prose("I run this once:"), CardBlock.Code(listOf("git -C /work/repo fetch --prune"), wrap = true),
+        assertEquals(listOf(CardBlock.Prose("I run this once:"), CardBlock.Code(listOf("git -C /work/repo fetch --prune"), wrap = true, exact = true),
             CardBlock.Prose("then report back.")), blocks)
     }
 
