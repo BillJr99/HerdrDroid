@@ -32,7 +32,7 @@ class PaneReadVm227Test {
     private val source = Endpoint("Source", "p1", "claude")
     private val target = Endpoint("Destination", "p3", "codex")
     private val code = "K7P3QX"
-    private val request = "HDREAD1 $code\nHDSRV Destination\nHDPANE codex\nHDWHY check codex\nHDEND $code\n"
+    private val request = "⏺ Sure, asking the phone.\n\n" + listOf("HDREAD1 $code", "HDSRV Destination", "HDPANE codex", "HDWHY check codex", "HDEND $code").joinToString("\n") { "  $it" } + "\n"
     private lateinit var fleet: Fleet
 
     init {
@@ -71,41 +71,79 @@ class PaneReadVm227Test {
         }
     }
 
+    private fun now() = vm.paneReads.cardsFor(source.server.id, "p1").single()
+
+    private fun approve(card: PaneReadRequests.Card<AppViewModel.CardTarget>) =
+        assertTrue(vm.paneReads.approve(checkNotNull(vm.paneReads.approvalOf(card))))
+
+    /** Moves the main looper's clock on, as the send's 2.5-second retries wait on it. */
+    private fun advance(seconds: Long) {
+        repeat(seconds.toInt() * 2) {
+            shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(500))
+            Thread.sleep(5)
+        }
+    }
+
     @Test fun approvalReadsOnceKeepsItOnThePhoneAndSendsOneAttachment() = runBlocking {
         vm.changeAgentMessaging(true)
         val card = card()
         assertTrue("nothing before approval", target.reads.isEmpty() && source.prompts.isEmpty() && source.uploads.isEmpty())
-        assertTrue(vm.paneReads.approve(checkNotNull(vm.paneReads.approvalOf(card))))
-        settle { source.prompts.isNotEmpty() && vm.paneReadDelivery(vm.paneReads.cardsFor(source.server.id, "p1").single())?.startsWith("Sent") == true }
-        val now = vm.paneReads.cardsFor(source.server.id, "p1").single()
-        assertEquals(PaneReadState.SAVED, now.state)
+        approve(card)
+        settle { now().delivery != null }
+        assertEquals(PaneReadState.SAVED, now().state)
         assertEquals(1, target.reads.size)
-        // The capture is on the phone and went as an attachment; the message names it and holds none of its text.
         val kept = vm.paneReadStore.list().single()
         assertTrue(kept.body.contains("codex screen row two"))
         assertEquals(1, source.uploads.size)
         assertTrue(String(source.uploads.single(), Charsets.UTF_8).contains("codex screen row two"))
         val prompt = source.prompts.single()
         assertTrue(prompt, prompt.contains("Pane read: Destination/codex, 2 lines (approved) /home/fixture/.herdrdroid/inbox/"))
-        assertFalse(prompt.contains("codex screen row"))
-        assertEquals("Sent to Claude with the capture attached.", vm.paneReadDelivery(now))
-        // Single use: no second read or send.
-        assertFalse(vm.paneReads.approve(checkNotNull(PaneReadRequests.Approval(card.id, code))))
+        assertFalse("the capture is never typed", prompt.contains("codex screen row"))
+        assertEquals("Sent to Claude with the capture attached.", now().delivery)
+        assertTrue("the target was checked fresh before the read", target.gets > 0)
+        assertFalse(vm.paneReads.approve(PaneReadRequests.Approval(card.id, code)))
         vm.readPane("p1")
         settle { false }
         assertEquals(1, target.reads.size)
         assertEquals(1, source.prompts.size)
     }
 
-    @Test fun aDraftInTheRequestingPaneQueuesTheAttachmentAndTypesNothing() = runBlocking {
+    @Test fun aDraftInTheRequestingPaneHoldsTheAttachmentThenItGoesOnce() = runBlocking {
         vm.changeAgentMessaging(true)
         val card = card()
         source.recent = "Sure, asking the phone.\n$request\n❯ half typed by Bill"
-        assertTrue(vm.paneReads.approve(checkNotNull(vm.paneReads.approvalOf(card))))
-        settle { vm.paneReadDelivery(vm.paneReads.cardsFor(source.server.id, "p1").single())?.startsWith("Queued") == true }
-        val note = vm.paneReadDelivery(vm.paneReads.cardsFor(source.server.id, "p1").single())
-        assertTrue(note, note!!.startsWith("Queued for Claude"))
+        approve(card)
+        settle { now().delivering }
+        advance(1)
         assertTrue("never typed over the draft", source.prompts.isEmpty())
+        assertEquals(1, vm.paneReadStore.list().size)
+        source.recent = "Sure, asking the phone.\n$request\n❯ "
+        repeat(10) { if (now().delivery == null) advance(3) }
+        assertEquals("Sent to Claude with the capture attached.", now().delivery)
+        assertEquals(1, source.prompts.size)
+    }
+
+    @Test fun aPaneThatStaysBusyGetsNothingAndKeepsThePhoneCopy() = runBlocking {
+        vm.changeAgentMessaging(true)
+        val card = card()
+        source.recent = "Sure, asking the phone.\n$request\n❯ half typed by Bill"
+        approve(card)
+        repeat(20) { if (now().delivery == null) advance(3) }
+        assertTrue(now().delivery!!, now().delivery!!.startsWith("Not sent to the agent: the pane stayed busy"))
+        assertTrue(source.prompts.isEmpty())
+        assertEquals(1, vm.paneReadStore.list().size)
+    }
+
+    @Test fun turningCrossServerOffWhileTheSendWaitsStopsIt() = runBlocking {
+        vm.changeAgentMessaging(true)
+        val card = card()
+        source.recent = "Sure, asking the phone.\n$request\n❯ half typed by Bill"
+        approve(card)
+        settle { now().delivering }
+        vm.changeAgentMessaging(false)
+        source.recent = "Sure, asking the phone.\n$request\n❯ "
+        advance(30)
+        assertTrue(source.prompts.isEmpty())
         assertEquals(1, vm.paneReadStore.list().size)
     }
 
@@ -124,6 +162,7 @@ class PaneReadVm227Test {
         var recent = "❯ "
         var visible = "❯ "
         val reads = mutableListOf<String>()
+        @Volatile var gets = 0
         val prompts = mutableListOf<String>()
         val uploads = mutableListOf<ByteArray>()
         val pane get() = Pane(id, "tab-$id", "w1", agent, Status.IDLE, "", "/fixture", tabLabel = agent, scrollOffset = 0, terminalId = "t-$id")
@@ -136,7 +175,7 @@ class PaneReadVm227Test {
             return ok("""{"ok":true,"busy":{"$id":0}}""")
         }
         override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult = when {
-            command.endsWith("'pane' 'get' '$id'") -> ok("""{"result":{"pane":{"pane_id":"$id","workspace_id":"w1","tab_id":"tab-$id","agent":"$agent","agent_status":"idle","cwd":"/fixture","terminal_id":"t-$id","scroll":{"offset_from_bottom":0}}}}""")
+            command.endsWith("'pane' 'get' '$id'") -> { gets++; ok("""{"result":{"pane":{"pane_id":"$id","workspace_id":"w1","tab_id":"tab-$id","agent":"$agent","agent_status":"idle","cwd":"/fixture","terminal_id":"t-$id","scroll":{"offset_from_bottom":0}}}}""") }
             "'--source' 'recent'" in command -> ok(recent)
             "'--source' 'visible'" in command -> { reads += command; ok(visible) }
             "'agent' 'prompt' '$id'" in command -> { prompts += command; ok("") }
