@@ -1152,6 +1152,11 @@ data class Prompt(
      * says so and offers Show terminal; it sends nothing (see [withNeedsYouCard]).
      */
     internal val unreadQuestion: Boolean = false,
+    /**
+     * 2.2.2: the question is on screen but not yet confirmed (a complete dialog, read the same twice):
+     * a neutral card with no options and no keys, only Show terminal (see [readingQuestionCard]).
+     */
+    internal val readingQuestion: Boolean = false,
 ) {
     /**
      * Never an empty card (1.4.2): a prompt with no choices always has something to show, the
@@ -1191,7 +1196,7 @@ internal fun unreadQuestionCard(agent: String): Prompt = Prompt(
 
 /** Dispatch identity, unlike history deduplication, must not discard punctuation or command text. */
 internal fun cardAnswerStillFits(shown: Prompt, fresh: Prompt?): Boolean =
-    !shown.terminalReview && fresh != null && !fresh.terminalReview &&
+    !shown.terminalReview && !shown.readingQuestion && fresh != null && !fresh.terminalReview && !fresh.readingQuestion &&
         shown.forCard().region != listOf(UNREAD_SCREEN) &&
         shown.copy(selected = null).forCard() == fresh.copy(selected = null).forCard()
 
@@ -2177,6 +2182,50 @@ private val VIBE_CARD_FOOTER = Regex("""↑↓/jk navigate.*(Esc reject|Enter se
 
 fun showsQuestionDialog(text: String): Boolean =
     text.lines().filter { it.isNotBlank() }.takeLast(6).any { QUESTION_FOOTER.containsMatchIn(it) }
+
+/** One hint of a dialog's footer: a key, then what it does ("Esc to cancel", "Tab:next option", "1/3:select"). */
+private val HINT_SEGMENT = Regex("""^(?:esc|enter|tab|space|return|↵|(?:shift|ctrl|alt|cmd)[+-]\S+|[↑↓←→/]+(?:/?jk)?|\d+/\d+)(?:\s+|:)\S""", RegexOption.IGNORE_CASE)
+
+/**
+ * 2.2.2: a question dialog's own footer or hint row, read from its structure rather than one
+ * harness's words: Claude's and Kiro's hint rows, Codex's "Press enter to confirm or esc to cancel",
+ * Grok's "1/3:select │ Tab:next option", Vibe's and Muse's footers, a button row's "⇆ select", any
+ * row of two or more key hints, or the bottom edge of the dialog's box.
+ */
+internal fun isDialogFooterRow(row: String): Boolean {
+    val t = row.trim()
+    if (t.isEmpty()) return false
+    val c = t.trim('│', '┃', '|', '║', ' ').trim()
+    if (QUESTION_FOOTER.containsMatchIn(t) || CODEX_FOOTER.containsMatchIn(t) || VIBE_CARD_FOOTER.containsMatchIn(t) ||
+        MUSE_CARD_FOOTER.matches(c) || STANDALONE_CARD_HINT.matches(c) || Regex("""(⇆|←→)\s*select""").containsMatchIn(t)) return true
+    if (t.first() in "╰└┗╚" && t.last() in "╯┘┛╝") return true
+    // Claude's tab bar ("←  ☐ Backup  ✔ Submit  →") is the dialog's top, not its footer.
+    if (parseTabBar(c) != null) return false
+    return c.split(Regex("""\s*[·│┃|]\s*|\s{2,}""")).count { HINT_SEGMENT.containsMatchIn(it.trim()) } >= 2
+}
+
+/** 2.2.2: a header row that is one agent's exact dialog heading (Codex's "Would you like to run the following command?"), not a sentence that starts like one. */
+internal fun isNamedDialogHeading(row: String): Boolean {
+    val c = row.trim().trim('│', '┃', '|', '║', ' ').trim()
+    return CODEX_COMMAND_HEADING.matches(c) || CODEX_OTHER_APPROVAL.matches(c) || COMMAND_INTRO.matches(c) ||
+        CLAUDE_COMMAND_TITLE.matches(c) || TOOL_PERMISSION.matches(c) || HERMES_COMMAND_HEADING.matches(c) || CODEX_QUESTION_PROGRESS.containsMatchIn(c)
+}
+
+/** 2.2.2: the agent's own running status row ("… 0.1s 16m4s ⇣90.2k [↓][stop]", "esc to interrupt"), drawn above its prompt. */
+internal fun isAgentStatusRow(row: String): Boolean = STATUS_LINE.containsMatchIn(row.trim())
+
+/**
+ * 2.2.2: the header row a dialog opens with when it draws no edge above its question: Claude's and
+ * Codex's "Do you want to …" and "Would you like to …", a command title, Vibe's "Permission for the
+ * … tool", Hermes's "Dangerous Command", Codex's other approvals.
+ */
+internal fun isDialogHeaderRow(row: String): Boolean {
+    val c = row.trim().trim('│', '┃', '|', '║', ' ').trim()
+    return c.startsWith("Do you want to ") || c.startsWith("Would you like to ") || COMMAND_INTRO.matches(c) ||
+        CODEX_QUESTION_PROGRESS.matches(c) || c.startsWith("Question ") && CODEX_QUESTION_PROGRESS.containsMatchIn(c) ||
+        CLAUDE_COMMAND_TITLE.matches(c) || TOOL_PERMISSION.matches(c) || HERMES_COMMAND_HEADING.matches(c) ||
+        CODEX_OTHER_APPROVAL.matches(c) || c.endsWith(" requires approval", ignoreCase = true)
+}
 
 /**
  * Rows read from each Claude pane for its status (2.1.1). A short conversation in Claude Code's

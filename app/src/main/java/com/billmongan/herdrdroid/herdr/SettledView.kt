@@ -74,11 +74,22 @@ internal fun urgentRead(needsYou: Boolean, working: Boolean, question: Boolean, 
  * Whether the screen view (the terminal parsed into a chat) may stand in for an agent's chat log
  * (2.2.0). An agent with a log reader shows its log; while that log has not answered yet for this
  * visit, the screen view would show for a moment and then be replaced, so it waits. It shows when
- * the agent has no reader, the reader said there is no log, or [gaveUp] (the log never answered
- * within a bounded number of settled screen reads).
+ * the agent has no reader, the reader answered this visit (with the chat, or saying there is no
+ * log), or [gaveUp] (the reader failed to run [TRANSCRIPT_READER_FAILURES] times this visit, or one
+ * read of it ran through [TRANSCRIPT_SLOW_READS] settled screen reads). Reopening the pane whose log
+ * already answered in this app run counts as answered.
+ *
+ * 2.2.2 (Bill: "a similar little rendering blip when I change panes where it kind of renders whatever
+ * is in the terminal before snapping to the proper chat"): a log that answered in an earlier visit no
+ * longer counts, and settled screen reads no longer end the wait (six of them came before a slow log
+ * answered, and the terminal view showed, then the chat). Meanwhile the pane's cached chat shows, or
+ * "Loading the chat…"; question, approval, error and draft cards still show at once.
  */
 internal fun screenViewAllowed(hasReader: Boolean, transcriptAnswered: Boolean, gaveUp: Boolean): Boolean =
     !hasReader || transcriptAnswered || gaveUp
 
-/** How many settled screen reads a visit waits for its chat log before showing the screen view instead. */
-internal const val TRANSCRIPT_WAIT_READS = 6
+/** How many times this visit the chat log reader may fail to run before the screen view shows instead (2.2.2). */
+internal const val TRANSCRIPT_READER_FAILURES = 3
+
+/** How many settled screen reads a running chat log read may take before the screen view shows instead (2.2.2). */
+internal const val TRANSCRIPT_SLOW_READS = 8

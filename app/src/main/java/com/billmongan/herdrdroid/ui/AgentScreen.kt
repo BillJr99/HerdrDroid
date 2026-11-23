@@ -209,7 +209,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 if (vm.transcriptState == TranscriptMode.ON && streamFailures < 3) {
                     if (vm.followTranscript(paneId)) { streamFailures = 0; continue } else streamFailures++
                 }
-                if (vm.transcriptState != TranscriptMode.OFF || tick % 10 == 0) vm.readTranscript(paneId)
+                // 2.2.2: and at once while the view waits for this visit's answer (an agent that started mid-visit).
+                if (vm.transcriptState != TranscriptMode.OFF || tick % 10 == 0 || !vm.screenViewReady(paneId)) vm.readTranscript(paneId)
             }
             tick++
             kotlinx.coroutines.delay(1_500)
@@ -281,9 +282,11 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     val waitingForHermes = vm.waitingForHermesComposer(paneId)
     val parsedPrompt: Prompt? = if (typingAnswer || usageOverlay != null) null
         else if (vm.paneReadProblem != null) (if (status == Status.NEEDS_YOU) Prompt("This agent is waiting for you.", emptyList()).forCard() else null)
-        else if (pane != null && vm.requiresLivePiQuestion(pane)) vm.currentPiQuestion(pane)?.forCard()
-        else detectPrompt(screenText, status == Status.NEEDS_YOU, pane?.agent, vm.versionOf(paneId))
-            ?.takeIf { !it.codexQuestion || shownTarget != null }?.forCard()
+        // 2.2.2: a question card shows once the reads confirmed it (a complete dialog, read the same
+        // twice), parsed exactly as the read path parses it (pi's live question included); until then a
+        // neutral card with no options or keys, never chat text as the question.
+        else vm.questionCardFor(paneId, vm.cardParse(paneId, screenText)
+            ?.takeIf { !it.codexQuestion || shownTarget != null }, pane?.agentName ?: "The agent")
     // An agent's error on screen (1.4.2): shown as a banner when there is no question.
     // Not from the last screen while the latest read failed (1.4.2, from review).
     // 2.2.0: as its own card, with OpenCode's failed turn read whole; acknowledged ones are hidden.
@@ -298,7 +301,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     val prompt: Prompt? = com.billmongan.herdrdroid.herdr.withNeedsYouCard(status, parsedPrompt,
         suppressed = typingAnswer || usageBlocksInput || backgroundDrawer || agentError != null, agent = pane?.agentName ?: "The agent")
     // The question a parser read; the unread-question card leaves the chat's open questions in place.
-    val questionCard: Prompt? = prompt?.takeUnless { it.unreadQuestion }
+    val questionCard: Prompt? = prompt?.takeUnless { it.unreadQuestion || it.readingQuestion }
     fun send() {
         if (usageBlocksInput || backgroundDrawer || (openingPreview != null && prompt != null)) return
         val draft = answerDraft
@@ -388,7 +391,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             // The transcript already shows prose and attachments. The parsed question has no
             // transcript tool-call ID, so a running tool's plan or diff may belong to another turn.
             // The screen the card was read from, for its layout only (2.1.1); never while a read failed.
-            val cardScreen = screenText.takeIf { vm.paneReadProblem == null }
+            // 2.2.2: none for the card that is still reading its question, so no screen text shows in it.
+            val cardScreen = screenText.takeIf { vm.paneReadProblem == null && !p.readingQuestion }
             // 2.2.0: a question pill moves Claude's dialog to that question (QuestionPills), never answers.
             PromptQuestion(p, agent = pane?.agentName ?: "The agent", screen = cardScreen,
                 onStep = if (shownTarget != null && openingPreview == null &&
@@ -1451,6 +1455,8 @@ internal fun PromptCard(
                     p.openCodeForm -> "Answer this OpenCode question in Terminal: it asks more than one question or takes more than one answer, which the app can't send for you."
                     // 2.1.4: the pane needs you, but its question couldn't be read from the screen.
                     p.unreadQuestion -> "The app couldn't read this question from the screen. Open the terminal to see it and answer it there."
+                    // 2.2.2: the dialog is still drawing, or hasn't read the same twice yet; its answers come next.
+                    p.readingQuestion -> "Its answers show here once the question has finished drawing on the screen."
                     else -> "This preview is incomplete. Open the terminal to review the full command before answering."
                 },
                     color = Palette.Muted, fontSize = 12.5.sp)
