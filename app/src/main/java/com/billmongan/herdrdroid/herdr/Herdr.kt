@@ -197,6 +197,14 @@ class Herdr internal constructor(
 
     internal val connectionIdentity: Any? get() = if (commands == null) ssh.connectionIdentity else commands.connection
 
+    /**
+     * 2.2.6: a command on the send lane that changes something on the computer (types text, presses
+     * keys, closes a tab). Only these mark the action's [com.billmongan.herdrdroid.ssh.SendTrace] as
+     * started, so a guard read earlier in the same action never makes a send look already sent.
+     */
+    private suspend fun runWrite(command: String, timeoutSeconds: Long = 30, expectedConnection: Any? = null, permit: WritePermit? = null): String =
+        kotlinx.coroutines.withContext(com.billmongan.herdrdroid.ssh.WriteCommand.MARK) { runNow(command, timeoutSeconds, expectedConnection, permit) }
+
     /** A command on the send lane: it doesn't wait behind reads. */
     private suspend fun runNow(command: String, timeoutSeconds: Long = 30, expectedConnection: Any? = null, permit: WritePermit? = null): String {
         // The test seam claims the permit itself, so fakes see the same no-write-after-revoke rule.
@@ -608,12 +616,12 @@ class Herdr internal constructor(
         if (core) {
             // hc send pastes and presses Enter; it refuses a terminal waiting on a question
             // unless forced, and a message sent then is meant as the answer.
-            if (status == Status.NEEDS_YOU) runNow(hcCmd("send", "--force", pane.id, text)) else runNow(hcCmd("send", pane.id, text), expectedConnection = expectedConnection, permit = permit)
+            if (status == Status.NEEDS_YOU) runWrite(hcCmd("send", "--force", pane.id, text)) else runWrite(hcCmd("send", pane.id, text), expectedConnection = expectedConnection, permit = permit)
             return
         }
         if (pane.agent != null && status != Status.NEEDS_YOU) {
             try {
-                runNow(cmd("agent", "prompt", pane.id, text), expectedConnection = expectedConnection, permit = permit)
+                runWrite(cmd("agent", "prompt", pane.id, text), expectedConnection = expectedConnection, permit = permit)
                 return
             } catch (e: HerdrError) {
                 if (!allowTerminalFallback) throw e
@@ -621,8 +629,8 @@ class Herdr internal constructor(
                 lastSendRoute = "agent prompt refused; typed with send-text + enter"
             }
         }
-        runNow(cmd("pane", "send-text", pane.id, text), expectedConnection = expectedConnection)
-        runNow(cmd("pane", "send-keys", pane.id, "enter"), expectedConnection = expectedConnection)
+        runWrite(cmd("pane", "send-text", pane.id, text), expectedConnection = expectedConnection)
+        runWrite(cmd("pane", "send-keys", pane.id, "enter"), expectedConnection = expectedConnection)
     }
 
     /**
@@ -630,25 +638,25 @@ class Herdr internal constructor(
      * (a menu number, a y or n) goes as key presses.
      */
     suspend fun sendText(paneId: String, text: String, expectedConnection: Any? = null): String {
-        if (!core) return runNow(cmd("pane", "send-text", paneId, text), expectedConnection = expectedConnection)
+        if (!core) return runWrite(cmd("pane", "send-text", paneId, text), expectedConnection = expectedConnection)
         val keys = text.map { c -> when (c) { ' ' -> "space"; else -> c.toString() } }
-        return runNow(hcCmd("keys", paneId, *keys.toTypedArray()), expectedConnection = expectedConnection)
+        return runWrite(hcCmd("keys", paneId, *keys.toTypedArray()), expectedConnection = expectedConnection)
     }
 
     /** Types [text] and presses Enter: one paste-and-submit on herdr-core. */
     suspend fun typeAndEnter(paneId: String, text: String, expectedConnection: Any? = null) {
-        if (core) { runNow(hcCmd("send", "--force", paneId, text), expectedConnection = expectedConnection); return }
-        runNow(cmd("pane", "send-text", paneId, text), expectedConnection = expectedConnection)
-        runNow(cmd("pane", "send-keys", paneId, "enter"), expectedConnection = expectedConnection)
+        if (core) { runWrite(hcCmd("send", "--force", paneId, text), expectedConnection = expectedConnection); return }
+        runWrite(cmd("pane", "send-text", paneId, text), expectedConnection = expectedConnection)
+        runWrite(cmd("pane", "send-keys", paneId, "enter"), expectedConnection = expectedConnection)
     }
 
     suspend fun sendKeys(paneId: String, vararg keys: String, expectedConnection: Any? = null) =
-        if (core) runNow(hcCmd("keys", paneId, *keys), expectedConnection = expectedConnection)
-        else runNow(cmd("pane", "send-keys", paneId, *keys), expectedConnection = expectedConnection)
+        if (core) runWrite(hcCmd("keys", paneId, *keys), expectedConnection = expectedConnection)
+        else runWrite(cmd("pane", "send-keys", paneId, *keys), expectedConnection = expectedConnection)
 
     /** Keys that go only while [permit] is open; on herdr-core as `hc keys` (2.2.0: the mode menu works there too). */
     internal suspend fun sendPermittedKeys(paneId: String, keys: List<String>, connection: Any, permit: WritePermit) =
-        runNow(if (core) hcCmd("keys", paneId, *keys.toTypedArray()) else cmd("pane", "send-keys", paneId, *keys.toTypedArray()),
+        runWrite(if (core) hcCmd("keys", paneId, *keys.toTypedArray()) else cmd("pane", "send-keys", paneId, *keys.toTypedArray()),
             expectedConnection = connection, permit = permit)
 
     private fun usageSnapshotCommand(paneId: String, agent: String) =
@@ -701,7 +709,7 @@ class Herdr internal constructor(
         val expected = "${shq(overlay.occupant)} ${shq(digest)}"
         // Repeat the exact compare on the server, rather than sending an unguarded Escape over SSH.
         // Herdr does not expose an atomic compare-and-send; the final local CLI call is still separate.
-        return runNow("${usageSnapshotCommand(paneId, agent)} $expected", timeoutSeconds = 5).trim() == "sent"
+        return runWrite("${usageSnapshotCommand(paneId, agent)} $expected", timeoutSeconds = 5).trim() == "sent"
     }
 
     /**
@@ -712,7 +720,7 @@ class Herdr internal constructor(
         if (core || claudeBtwOverlay(overlay.visible) == null) return false
         val digest = java.security.MessageDigest.getInstance("SHA-256")
             .digest(overlay.visible.toByteArray()).joinToString("") { "%02x".format(it) }
-        return runNow("${usageSnapshotCommand(paneId, "claude")} ${shq(overlay.occupant)} ${shq(digest)} down", timeoutSeconds = 5).trim() == "sent"
+        return runWrite("${usageSnapshotCommand(paneId, "claude")} ${shq(overlay.occupant)} ${shq(digest)} down", timeoutSeconds = 5).trim() == "sent"
     }
 
     /**
@@ -859,11 +867,11 @@ class Herdr internal constructor(
      */
     internal suspend fun closeTabOn(tabId: String, connection: Any) {
         if (core) {
-            runCatching { runNow(hcCmd("kill", tabId), expectedConnection = connection) }
-            runNow(hcCmd("rm", tabId), expectedConnection = connection)
+            runCatching { runWrite(hcCmd("kill", tabId), expectedConnection = connection) }
+            runWrite(hcCmd("rm", tabId), expectedConnection = connection)
             return
         }
-        runNow(cmd("tab", "close", tabId), expectedConnection = connection)
+        runWrite(cmd("tab", "close", tabId), expectedConnection = connection)
     }
 
     /** The live panes over [connection] only. */

@@ -55,6 +55,16 @@ class SendTrace : kotlin.coroutines.AbstractCoroutineContextElement(Key) {
     companion object Key : kotlin.coroutines.CoroutineContext.Key<SendTrace>
 }
 
+/**
+ * Marks a command that writes (types, presses keys, closes a tab). [SendTrace] is set only for
+ * these, never for the reads an action makes first (Grok's re-review).
+ */
+class WriteCommand private constructor() : kotlin.coroutines.AbstractCoroutineContextElement(Key) {
+    companion object Key : kotlin.coroutines.CoroutineContext.Key<WriteCommand> {
+        val MARK = WriteCommand()
+    }
+}
+
 data class ExecResult(val exit: Int, val out: String, val err: String)
 
 /** A command still running when its time was up; its channel was closed (1.3.0). */
@@ -476,8 +486,9 @@ class HerdrSsh(
                     c
                 }
                 connection = opened
-                return runOn(opened, command, input, timeoutSeconds, maxOut, kotlin.coroutines.coroutineContext[com.billmongan.herdrdroid.diag.ReadLabel]?.label,
-                    kotlin.coroutines.coroutineContext[SendTrace])
+                val ctx = kotlin.coroutines.coroutineContext
+                return runOn(opened, command, input, timeoutSeconds, maxOut, ctx[com.billmongan.herdrdroid.diag.ReadLabel]?.label,
+                    if (ctx[WriteCommand] != null) ctx[SendTrace] else null)
             } catch (e: UnconfirmedHostKey) {
                 throw e
             } catch (e: HostKeyChanged) {
