@@ -51,3 +51,12 @@ fun HomeScreen(vm: AppViewModel) {
         }
     }
 }
+
+/**
+ * 2.2.7: Back on a main screen that has nothing to go back to (the wide layout, where the drawer is
+ * always out): handled, so it never closes the app from inside it.
+ */
+@Composable
+internal fun StayInApp(onBack: () -> Unit = {}) {
+    androidx.activity.compose.BackHandler(onBack = onBack)
+}

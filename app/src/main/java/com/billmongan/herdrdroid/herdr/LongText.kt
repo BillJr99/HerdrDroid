@@ -28,6 +28,13 @@ internal object LongText {
         return if (q <= SINGLE_MAX_BYTES && q <= COMMAND_GUARD_BYTES) Plan.Single(text) else Plan.Attachment(text)
     }
 
+    /** The one line an agent gets for text sent as a file. */
+    fun fileLine(r: UploadReceipt) = "Pasted text (${size(r.size)}) attached: ${r.path}"
+
+    /** The size and path in a [fileLine], or null for any other message. */
+    fun parseFileLine(text: String): Pair<String, String>? =
+        Regex("""^Pasted text \(([^)]+)\) attached: (\S+)\s*$""").matchEntire(text.trim())?.let { it.groupValues[1] to it.groupValues[2] }
+
     /** "55.7 KB" style size for the one-line message. */
     fun size(bytes: Long): String = when {
         bytes >= 1024 * 1024 -> "%.1f MB".format(java.util.Locale.US, bytes / 1024.0 / 1024.0)
@@ -49,3 +56,15 @@ internal fun isSlashCommand(text: String): Boolean = Regex("""^/[A-Za-z][A-Za-z0
  */
 internal fun withAttachment(message: String, path: String): String =
     if (message.isBlank()) "Attached file: $path " else message.trimEnd() + " " + path + " "
+
+/**
+ * 2.2.7: the text behind each file sent in place of a long message, by its path on the computer,
+ * so the chat can show "sent as a file" with the original text collapsed. Memory only, a few.
+ */
+internal object SentFiles {
+    private val map = object : LinkedHashMap<String, String>() {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?) = size > 24
+    }
+    @Synchronized fun remember(path: String, text: String) { map[path] = text }
+    @Synchronized fun original(path: String): String? = map[path]
+}
