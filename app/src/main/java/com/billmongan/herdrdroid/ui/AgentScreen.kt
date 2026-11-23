@@ -190,6 +190,17 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     var pinch by remember { mutableFloatStateOf(1f) }
     val liveSize = (textSize * pinch).coerceIn(8f, 24f)
     val isHermes = pane?.agent?.lowercase() == "hermes"
+    // 2.2.7: until the pane is in the server's list its agent is unknown: the title bar says
+    // "Loading…" (no "?" tile, no raw pane id), then after a short wait the pane's last known label.
+    var identityWaitedOut by remember(vm.current?.id, paneId) { mutableStateOf(false) }
+    val paneUnknown = pane == null
+    LaunchedEffect(vm.current?.id, paneId, paneUnknown) {
+        if (paneUnknown && !identityWaitedOut) {
+            kotlinx.coroutines.delay(PANE_IDENTITY_WAIT_MS)
+            identityWaitedOut = true
+        }
+    }
+    val identity = paneIdentity(pane, paneId, identityWaitedOut, if (paneUnknown) vm.paneLabelGuess(paneId) else null)
     var hermesLive by rememberSaveable(paneId) { mutableStateOf(false) }
     val live = isHermes && hermesLive
     val liveNow by rememberUpdatedState(live)
@@ -470,7 +481,12 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             IconButton(onClick = { vm.drawerOpen = true }) {
                 Icon(Icons.Filled.Menu, contentDescription = "All agents", tint = Palette.Ink)
             }
-            AgentTile(pane?.initial ?: "?", status, size = 34)
+            if (identity.known) AgentTile(identity.initial.orEmpty(), status, size = 34)
+            else Box(Modifier.size(34.dp), contentAlignment = Alignment.Center) {
+                if (identity.loading) androidx.compose.material3.CircularProgressIndicator(
+                    Modifier.size(20.dp).semantics { contentDescription = "Loading the pane" },
+                    color = Palette.Muted, strokeWidth = 2.dp)
+            }
             // 2.1.4: three lines (Bill, 2026-11-21): the pane's name, the server in a smaller style,
             // and the model in use smaller still (left off when it is unknown). Tap the name to switch
             // agents (or, on Hermes, for the Hermes menu); tap the model to choose another one.
@@ -481,11 +497,11 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             )
             PaneTitleLines(
                 name = if (isHermes) (if (live) "Hermes · live chat" else "Hermes · this pane") + "  ▾"
-                else pane?.let { sessionName(it) } ?: paneId,
+                else identity.title,
                 server = vm.current?.name,
-                model = headerModelText,
+                model = if (identity.known) headerModelText else null,
                 modifier = Modifier.weight(1f).padding(start = 10.dp),
-                status = if (vm.link == Link.CONNECTED) look(status, pane?.backgroundBusy == true).label else null,
+                status = if (vm.link == Link.CONNECTED && identity.known) look(status, pane?.backgroundBusy == true).label else null,
                 statusInk = look(status).ink,
                 compact = keyboardUp,
                 onName = { if (isHermes) { hermesMenu = true; vm.hermesChat()?.refreshSessions() } else vm.drawerOpen = true },
@@ -525,6 +541,9 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 },
                 statusLine = if (vm.link == Link.CONNECTED) null else ({ LinkLabel(vm, "") }),
             )
+            // 2.2.7: the agent is still unknown after the wait: the terminal is the honest view.
+            if (identity.kind == PaneIdentity.Kind.FALLBACK && !fullTerminal)
+                TextButton(onClick = { hermesLive = false; fullTerminal = true; termFollow = true }) { Text("Show terminal") }
             // Shells and subagents still running under the agent, as one small pill in the header
             // (a row of its own appeared and vanished as they started and finished, moving the chat).
             // 2.1.5: the pill is the only way into the view; the "Running underneath" menu entry is gone
@@ -744,6 +763,10 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     // The terminal view (1.4.8: before, a pane with no good read yet showed the same note as
                     // the card, so Show terminal looked like it did nothing).
                     TerminalView(text, vm.paneReadProblem, liveSize)
+                } else if (identity.loading && vm.paneReadProblem == null) {
+                    // 2.2.7: the agent is not known yet, so neither its chat nor a guessed screen view
+                    // shows; the real view draws once the pane list says which agent this is.
+                    Text(LOADING_TITLE, color = Palette.Muted, fontSize = 15.sp)
                 } else if (!vm.screenViewReady(paneId) && vm.paneReadProblem == null) {
                     // 2.2.0: an agent with a chat log shows that log; the terminal parsed into a chat showed
                     // here for a moment first, then jumped to the chat. The card below still shows at once.

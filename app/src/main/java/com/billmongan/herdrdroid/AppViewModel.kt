@@ -3345,6 +3345,16 @@ class AppViewModel internal constructor(
 
     fun pane(id: String): Pane? = panes.firstOrNull { it.id == id }
 
+    /**
+     * 2.2.7: the label an open pane not yet in [panes] had in an earlier tab list of this server
+     * (the watcher's, or the last list kept for it), for the title bar's fallback; null when none.
+     */
+    internal fun paneLabelGuess(id: String): String? {
+        val sid = current?.id ?: return null
+        val p = (fleetStates[sid]?.panes.orEmpty() + serverPanes[sid].orEmpty()).firstOrNull { it.id == id } ?: return null
+        return if (p.agent != null) com.billmongan.herdrdroid.ui.sessionName(p) else p.tabLabel.trim().ifBlank { null }
+    }
+
     /** The open computer's agent versions (1.4.0): agent kind to version. */
     var agentVersions by mutableStateOf<Map<String, String>>(emptyMap())
         private set
