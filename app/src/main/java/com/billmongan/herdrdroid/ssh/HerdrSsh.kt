@@ -218,19 +218,41 @@ class HerdrSsh(
     /** 2.2.6: the app's server id, only to tag diagnostic lines (hashed by [LinkDiag]). */
     private val diagServerId: String? = null,
     private val mssOps: MssOps = AndroidMssOps,
+    /** 2.2.7: the global "Small packets on VPN (automatic)" setting, read at each connect. */
+    private val vpnAuto: () -> Boolean = { VpnSmallPackets.enabled },
+    /** 2.2.7: the phone's network type at connect ("vpn", "wifi", ...); a seam for tests. */
+    private val networkType: () -> String = { VpnSmallPackets.networkType() },
 ) {
+    /** 2.2.6: the server's own small-packets MSS, or null when its setting is off. */
+    private val serverMss: Int? = smallPacketsMss?.let { SmallPackets.clamp(it) }
+
+    /** 2.2.6: the fallback's MSS for this session ([useSmallPackets]), or null when it has not fired. */
+    @Volatile private var fallbackMss: Int? = null
+
     /**
-     * 2.2.6: the MSS the next connection opens with: the server's setting, or the fallback's for
-     * this session ([useSmallPackets]); null for the normal MSS.
+     * 2.2.7: the MSS a connection made now would use, and why: decided afresh at every connect and
+     * reconnect, so a VPN coming up or dropping mid-session takes effect on the next connection
+     * only (an open socket's MSS is fixed when it connects).
      */
-    @Volatile private var sessionMss: Int? = smallPacketsMss?.let { SmallPackets.clamp(it) }
+    fun mssChoice(): MssChoice = MssChoice.choose(
+        wsUrl != null, serverMss, fallbackMss,
+        runCatching { vpnAuto() }.getOrDefault(false),
+        runCatching { networkType() }.getOrDefault("unknown"),
+    )
 
     /** The MSS a direct TCP connection uses now; always null over a WebSocket. */
-    val activeMss: Int? get() = if (wsUrl != null) null else sessionMss
+    val activeMss: Int? get() = mssChoice().mss
+
+    /** 2.2.7: what the last connection made by this object chose; null before the first. */
+    @Volatile var lastMssChoice: MssChoice? = null
+        private set
+
+    /** 2.2.7: whether setsockopt took the last connection's MSS; null when none was asked for. */
+    @Volatile private var lastMssSet: Boolean? = null
 
     /** 2.2.6 fallback: the next connection (after [reset]) uses [mss], for this object's life only. */
     fun useSmallPackets(mss: Int) {
-        sessionMss = SmallPackets.clamp(mss)
+        fallbackMss = SmallPackets.clamp(mss)
     }
 
     /** 2.2.6 diagnostics: bytes received over this object's direct TCP connections, and when the last one came. */
@@ -260,9 +282,12 @@ class HerdrSsh(
      * the small-packets MSS when on and always times the connect, logs the socket's facts and
      * counts bytes in; null over a WebSocket (SSHJ's default socket to the local bridge).
      */
-    internal fun socketFactoryForNext(): MssSocketFactory? {
+    internal fun socketFactoryForNext(choice: MssChoice = mssChoice()): MssSocketFactory? {
         if (wsUrl != null) return null
-        return MssSocketFactory(activeMss, mssOps, { com.billmongan.herdrdroid.diag.LinkStats.mss(diagServerId, it) }, { ms, f ->
+        return MssSocketFactory(choice.mss, mssOps, {
+            lastMssSet = it.applied
+            com.billmongan.herdrdroid.diag.LinkStats.mss(diagServerId, it)
+        }, { ms, f ->
             lastTcpMs = ms
             com.billmongan.herdrdroid.diag.LinkStats.socket(diagServerId, f)
         }, inbound)
@@ -308,6 +333,9 @@ class HerdrSsh(
             true
         }
         lastTcpMs = null
+        lastMssSet = null
+        val choice = mssChoice()
+        lastMssChoice = choice
         var t0 = System.currentTimeMillis()
         var connectedAt: Long? = null
         try {
@@ -318,8 +346,8 @@ class HerdrSsh(
                 DiagLog.log("ssh", "sshj connecting to ${b.host}:${b.port} (the WebSocket bridge)")
                 c.connect(b.host, b.port)
             } else {
-                socketFactoryForNext()?.let { c.socketFactory = it }
-                DiagLog.log("ssh", "sshj connecting over TCP" + (activeMss?.let { " (small packets, MSS $it)" } ?: ""))
+                socketFactoryForNext(choice)?.let { c.socketFactory = it }
+                DiagLog.log("ssh", "sshj connecting over TCP" + (choice.mss?.let { " (small packets, MSS $it, ${choice.reason})" } ?: ""))
                 c.connect(host, port)
             }
             connectedAt = System.currentTimeMillis()
@@ -355,7 +383,8 @@ class HerdrSsh(
                     newKeysMs = if (hostKeyAt != null && connected != null) connected - hostKeyAt else null,
                     authMs = connected?.let { System.currentTimeMillis() - it },
                 ),
-                negotiated, com.billmongan.herdrdroid.diag.NetworkWatch.type, com.billmongan.herdrdroid.diag.NetworkWatch.changes, KEEPALIVE_SECONDS,
+                negotiated, choice.net, com.billmongan.herdrdroid.diag.NetworkWatch.changes, KEEPALIVE_SECONDS,
+                choice.reason, choice.mss, if (choice.mss == null) null else lastMssSet == true,
             ))
         } catch (e: UserAuthException) {
             DiagLog.log("ssh", "sign-in refused: ${DiagLog.describe(e)}")

@@ -178,6 +178,21 @@ class AppViewModel internal constructor(
         updateNoticeLoop()
     }
 
+    /**
+     * 2.2.7: "Small packets on VPN (automatic)", on by default (also for installs from before
+     * 2.2.7). While on, a direct TCP connect made when the phone's network is a VPN uses small
+     * packets; off restores 2.2.6. It is read at each connect, so it never resets an open link.
+     */
+    var smallPacketsOnVpn by mutableStateOf(prefs.smallPacketsOnVpn.also { com.billmongan.herdrdroid.ssh.VpnSmallPackets.enabled = it })
+        private set
+
+    fun changeSmallPacketsOnVpn(on: Boolean) {
+        smallPacketsOnVpn = on
+        prefs.smallPacketsOnVpn = on
+        com.billmongan.herdrdroid.ssh.VpnSmallPackets.enabled = on
+        com.billmongan.herdrdroid.diag.DiagLog.log("link", "small-packets-on-vpn=${if (on) "on" else "off"}")
+    }
+
     fun changeCrossServerNoticeQuota(percent: Int) {
         val v = com.billmongan.herdrdroid.herdr.CrossServerNotice.clampThreshold(percent)
         crossServerNoticeQuota = v
@@ -273,7 +288,10 @@ class AppViewModel internal constructor(
         val now = smallPacketClock()
         if (!smallPacketFallback.wouldFire(server.id, reason, now)) return false
         // A drop from a network change or from going to the background is not lossy Wi-Fi.
+        // 2.2.7: automatic small packets on a VPN were (or will now be) in effect: nothing to fall back to.
+        val vpnAuto = com.billmongan.herdrdroid.ssh.MssChoice.VPN_AUTO
         val skip = when {
+            s.lastMssChoice?.reason == vpnAuto || s.mssChoice().reason == vpnAuto -> "vpn-auto"
             com.billmongan.herdrdroid.diag.NetworkWatch.changes != smallPacketFallback.armedNetChanges -> "network-change"
             !foreground -> "background"
             else -> null
@@ -840,7 +858,8 @@ class AppViewModel internal constructor(
                 linkProblem = null
                 // 2.2.6: a direct TCP session without small packets may fall back to them once.
                 beginLinkSession(saved.id)
-                smallPacketFallback.arm(saved.id, !sNow.overWebSocket && sNow.activeMss == null, smallPacketClock(),
+                // 2.2.7: not when this connection already used small packets (setting or vpn-auto).
+                smallPacketFallback.arm(saved.id, !sNow.overWebSocket && sNow.activeMss == null && sNow.lastMssChoice?.mss == null, smallPacketClock(),
                     com.billmongan.herdrdroid.diag.NetworkWatch.changes)
                 // A new sign-in is a new session: an offer from an earlier one no longer holds.
                 smallPacketOffer = null

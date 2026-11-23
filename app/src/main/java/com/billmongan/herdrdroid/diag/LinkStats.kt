@@ -156,7 +156,14 @@ object LinkStats {
         val authMs: Long?,
     )
 
-    fun connectLine(serverId: String?, transport: String, t: ConnectTimes, algs: String?, net: String, netChanges: Int, keepAliveSeconds: Int? = null): String = buildString {
+    /**
+     * 2.2.7: [mssReason] (setting, vpn-auto, fallback or none), the MSS asked for ([mss]) and
+     * whether setsockopt took it ([mssSet]: yes, no, or n/a when no MSS was asked for) end the line.
+     */
+    fun connectLine(
+        serverId: String?, transport: String, t: ConnectTimes, algs: String?, net: String, netChanges: Int, keepAliveSeconds: Int? = null,
+        mssReason: String? = null, mss: Int? = null, mssSet: Boolean? = null,
+    ): String = buildString {
         append("server=").append(LinkDiag.serverTag(serverId))
         append(" connect transport=").append(transport)
         fun ms(k: String, v: Long?) { append(' ').append(k).append('=').append(v ?: "none") }
@@ -168,6 +175,11 @@ object LinkStats {
         algs?.let { append(' ').append(it) }
         keepAliveSeconds?.let { append(" keepalive_s=").append(it) }
         append(" net=").append(net).append(" net_changes=").append(netChanges)
+        if (mssReason != null) {
+            append(" mss=").append(mss ?: "none")
+            append(" mss_reason=").append(mssReason)
+            append(" mss_set=").append(when (mssSet) { true -> "yes"; false -> "no"; null -> "n/a" })
+        }
     }
 
     /** The socket after connecting: buffers, options and the MSS asked for and in effect. */
@@ -259,10 +271,32 @@ object NetworkWatch {
         else -> "other"
     }
 
+    /** The ConnectivityManager [start] found (kept as Any so a plain JVM test never loads it). */
+    @Volatile private var manager: Any? = null
+
+    /**
+     * 2.2.7: the default network's type right now, read from its capabilities at the moment of a
+     * connect (the callback above can lag a moment behind a VPN coming up or going down); [type]
+     * when it can't be read (no manager yet, a plain JVM test, or a platform refusal).
+     */
+    fun current(): String {
+        val cm = manager as? android.net.ConnectivityManager ?: return type
+        return runCatching {
+            val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return "none"
+            typeOf(
+                caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN),
+                caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI),
+                caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR),
+                caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET),
+            )
+        }.getOrDefault(type)
+    }
+
     fun start(context: android.content.Context) {
         if (!started.compareAndSet(false, true)) return
         runCatching {
             val cm = context.getSystemService(android.net.ConnectivityManager::class.java) ?: return
+            manager = cm
             cm.registerDefaultNetworkCallback(object : android.net.ConnectivityManager.NetworkCallback() {
                 override fun onCapabilitiesChanged(network: android.net.Network, caps: android.net.NetworkCapabilities) {
                     observe(network, typeOf(

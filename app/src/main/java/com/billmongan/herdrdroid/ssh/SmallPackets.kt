@@ -253,3 +253,42 @@ class SmallPacketFallback(private val windowMs: Long = WINDOW_MS, private val ms
         }
     }
 }
+
+/**
+ * 2.2.7 (Bill: failures over cellular plus a VPN to his home router, where the tunnel lowers the
+ * path MTU and the "too big" replies that PMTU discovery needs are blocked). When the phone's
+ * default network is a VPN at connect time, a direct TCP connection uses small packets without
+ * waiting for the 2.2.6 fallback. [enabled] mirrors the global setting "Small packets on VPN
+ * (automatic)" (on by default); [networkType] is the seam unit tests replace, so they never need a
+ * real ConnectivityManager. The type is a word only ("vpn", "wifi", ...), never a name or address.
+ */
+object VpnSmallPackets {
+    @Volatile var enabled: Boolean = true
+    @Volatile var networkType: () -> String = { com.billmongan.herdrdroid.diag.NetworkWatch.current() }
+}
+
+/**
+ * The MSS one connection opens with and why ([reason] is one of the constants below), plus the
+ * network type seen when it was chosen; for the connect line. Nonsecret: words and numbers only.
+ */
+data class MssChoice(val mss: Int?, val reason: String, val net: String) {
+    companion object {
+        const val SETTING = "setting"
+        const val VPN_AUTO = "vpn-auto"
+        const val FALLBACK = "fallback"
+        const val NONE = "none"
+
+        /**
+         * The rules, in order: a WebSocket never sets an MSS; the server's own small-packets
+         * setting wins (its value, also on a VPN); then this session's 2.2.6 fallback; then, on a
+         * VPN with the automatic setting on, [SmallPackets.DEFAULT]; otherwise the normal MSS.
+         */
+        fun choose(overWebSocket: Boolean, serverMss: Int?, fallbackMss: Int?, vpnAuto: Boolean, net: String): MssChoice = when {
+            overWebSocket -> MssChoice(null, NONE, net)
+            serverMss != null -> MssChoice(SmallPackets.clamp(serverMss), SETTING, net)
+            fallbackMss != null -> MssChoice(SmallPackets.clamp(fallbackMss), FALLBACK, net)
+            vpnAuto && net == "vpn" -> MssChoice(SmallPackets.DEFAULT, VPN_AUTO, net)
+            else -> MssChoice(null, NONE, net)
+        }
+    }
+}

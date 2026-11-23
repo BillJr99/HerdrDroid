@@ -196,6 +196,16 @@ fun SettingsScreen(vm: AppViewModel, back: Screen) {
                     color = Palette.Muted, fontSize = 13.sp,
                 )
             }
+            Section("Connection") {
+                Row(Modifier.fillMaxWidth().clickable { vm.changeSmallPacketsOnVpn(!vm.smallPacketsOnVpn) }, verticalAlignment = Alignment.CenterVertically) {
+                    Text("Small packets on VPN (automatic)", color = Palette.Ink, fontSize = 16.sp, modifier = Modifier.weight(1f))
+                    Switch(checked = vm.smallPacketsOnVpn, onCheckedChange = { vm.changeSmallPacketsOnVpn(it) })
+                }
+                Text(
+                    "When the phone is on a VPN, direct connections use small packets so they fit through the tunnel; takes effect on the next connect.",
+                    color = Palette.Muted, fontSize = 13.sp,
+                )
+            }
             Section("Diagnostics") { Diagnostics() }
             Section("Reading font") {
                 ReadingFont.entries.forEach { f ->
