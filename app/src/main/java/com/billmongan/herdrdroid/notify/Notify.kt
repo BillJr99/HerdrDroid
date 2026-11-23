@@ -337,6 +337,7 @@ object Notify {
             .setContentIntent(openIntent(ctx, serverId, paneId))
             .setAutoCancel(true)
             .setOnlyAlertOnce(quietUpdate)
+            .setSilent(quietUpdate)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
         if (plan.buttons.isEmpty()) {
             runCatching { NotificationManagerCompat.from(ctx).notify(id(serverId, paneId), b.build()) }
@@ -455,6 +456,12 @@ object Notify {
             .build()
         runCatching { NotificationManagerCompat.from(ctx).notify(("usage|$serverId|$agentKey|$label").hashCode(), n) }
     }
+
+    /** Whether this pane's alert is still showing (2.2.2): not tapped (it cancels itself) or dismissed. */
+    fun isShowing(ctx: Context, serverId: String, paneId: String): Boolean = runCatching {
+        val m = ctx.getSystemService(android.app.NotificationManager::class.java) ?: return false
+        m.activeNotifications.any { it.id == id(serverId, paneId) }
+    }.getOrDefault(false)
 
     fun clear(ctx: Context, serverId: String, paneId: String) {
         NotificationManagerCompat.from(ctx).cancel(id(serverId, paneId))

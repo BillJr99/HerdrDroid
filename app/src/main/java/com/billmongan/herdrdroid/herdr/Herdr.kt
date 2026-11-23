@@ -2186,6 +2186,9 @@ internal fun isDialogFooterRow(row: String): Boolean {
     return c.split(Regex("""\s*[·│┃|]\s*|\s{2,}""")).count { HINT_SEGMENT.containsMatchIn(it.trim()) } >= 2
 }
 
+/** 2.2.2: the agent's own running status row ("… 0.1s 16m4s ⇣90.2k [↓][stop]", "esc to interrupt"), drawn above its prompt. */
+internal fun isAgentStatusRow(row: String): Boolean = STATUS_LINE.containsMatchIn(row.trim())
+
 /**
  * 2.2.2: the header row a dialog opens with when it draws no edge above its question: Claude's and
  * Codex's "Do you want to …" and "Would you like to …", a command title, Vibe's "Permission for the
@@ -2194,6 +2197,7 @@ internal fun isDialogFooterRow(row: String): Boolean {
 internal fun isDialogHeaderRow(row: String): Boolean {
     val c = row.trim().trim('│', '┃', '|', '║', ' ').trim()
     return c.startsWith("Do you want to ") || c.startsWith("Would you like to ") || COMMAND_INTRO.matches(c) ||
+        CODEX_QUESTION_PROGRESS.matches(c) || c.startsWith("Question ") && CODEX_QUESTION_PROGRESS.containsMatchIn(c) ||
         CLAUDE_COMMAND_TITLE.matches(c) || TOOL_PERMISSION.matches(c) || HERMES_COMMAND_HEADING.matches(c) ||
         CODEX_OTHER_APPROVAL.matches(c) || c.endsWith(" requires approval", ignoreCase = true)
 }

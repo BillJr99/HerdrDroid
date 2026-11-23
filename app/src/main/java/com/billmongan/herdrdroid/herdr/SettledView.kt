@@ -75,7 +75,9 @@ internal fun urgentRead(needsYou: Boolean, working: Boolean, question: Boolean, 
  * (2.2.0). An agent with a log reader shows its log; while that log has not answered yet for this
  * visit, the screen view would show for a moment and then be replaced, so it waits. It shows when
  * the agent has no reader, the reader answered this visit (with the chat, or saying there is no
- * log), or [gaveUp] (the reader failed to run [TRANSCRIPT_READER_FAILURES] times this visit).
+ * log), or [gaveUp] (the reader failed to run [TRANSCRIPT_READER_FAILURES] times this visit, or one
+ * read of it ran through [TRANSCRIPT_SLOW_READS] settled screen reads). Reopening the pane whose log
+ * already answered in this app run counts as answered.
  *
  * 2.2.2 (Bill: "a similar little rendering blip when I change panes where it kind of renders whatever
  * is in the terminal before snapping to the proper chat"): a log that answered in an earlier visit no
@@ -88,3 +90,6 @@ internal fun screenViewAllowed(hasReader: Boolean, transcriptAnswered: Boolean, 
 
 /** How many times this visit the chat log reader may fail to run before the screen view shows instead (2.2.2). */
 internal const val TRANSCRIPT_READER_FAILURES = 3
+
+/** How many settled screen reads a running chat log read may take before the screen view shows instead (2.2.2). */
+internal const val TRANSCRIPT_SLOW_READS = 8

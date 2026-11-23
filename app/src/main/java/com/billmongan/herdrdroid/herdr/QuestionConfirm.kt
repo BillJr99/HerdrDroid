@@ -13,18 +13,24 @@ package com.billmongan.herdrdroid.herdr
  * ([urgentRead]), so the half-drawn card showed and then corrected itself on a later read.
  *
  * Now a question card's content shows only once it is confirmed:
- * - structure: the question and options come from a complete dialog: its top edge (a rule, a box
- *   corner, a tab bar, a bare frame row) or its header row, its question rows, its options inside
+ * - structure: the question and options come from a complete dialog: its top edge (a rule or a box
+ *   corner the dialog draws, a tab bar, a bare frame row, the agent's own status row) or its header
+ *   row, its question rows, its options inside
  *   that region, and its own footer or hint row under them. Re-reading the screen from that top edge
  *   down must give the same card, so nothing came from rows above it; and no echoed prompt row
  *   ("❯ my message") may sit between the edge and the options;
- * - data: two reads in a row give the same card from the same dialog rows ([QuestionConfirm]),
- *   the pattern [SettleGate] uses. No timer decides.
- * A dialog whose structure can't be shown complete (one an agent draws with no footer, such as
- * Claude's review step, or with no edge above its question) is confirmed by [FALLBACK_READS] reads
- * in a row instead: a half-drawn screen lasts a read or two, so it never gets that far. One sign of
- * the chat is never confirmed: the user's own message, echoed at the left edge ("❯ my message"), as
- * the first option of a menu with no footer under it.
+ * - data: two reads in a row give the same dialog ([QuestionConfirm]): the same question, option
+ *   labels and tab titles, whatever the highlight, the ticks and the notes under options. The
+ *   pattern [SettleGate] uses; no timer decides.
+ * A dialog with a proven top but no footer (Claude's review step draws none) takes [FALLBACK_READS]
+ * reads in a row. A dialog whose top can't be proven (no edge, or a card that changes when read from
+ * its edge down) never shows its question: after [UNREAD_AFTER] reads its card says the app couldn't
+ * read the question, with Show terminal ([unreadQuestionCard]). The user's own message, echoed at the
+ * left edge ("❯ my message") as the first option of a menu with no footer, is never a card.
+ * Once a dialog is confirmed, reads of the same dialog (the same tab titles, or the same question and
+ * options) show at once: moving the highlight, ticking a box, a step or a pill tap never brings the
+ * neutral card back. Complete reads that keep differing (a counter in the dialog) show the newest
+ * after [GIVE_UP_READS].
  * Until then the card is [readingQuestionCard]: no options, no keys, only Show terminal. The
  * needs-you state and the alert are not held; the alert says only that a question is being asked
  * ([alertCard]) and is updated in place once the question is confirmed.
@@ -56,40 +62,56 @@ private fun selfFramed(p: Prompt): Boolean =
     p.hermesClarify || p.openCodeQuestionFrame != null || p.openCodePermission || p.numberKeys || p.museQuota || p == GROK_PRIVACY_PROMPT
 
 /**
- * One read's card: [region], the dialog's rows when its structure is complete (null otherwise), and
- * [refused] when the read shows the chat, not a dialog (see the notes above).
+ * One read's card: [topped] when its top is proven (an edge from which the same card reads, with no
+ * echoed prompt under it), [complete] when its footer shows too, [refused] when the read shows the
+ * chat, not a dialog (see the notes above).
  */
-internal data class QuestionRead(val prompt: Prompt, val region: List<String>?, val refused: Boolean = false) {
-    val complete: Boolean get() = region != null
-}
+internal data class QuestionRead(val prompt: Prompt, val topped: Boolean, val complete: Boolean, val refused: Boolean = false)
 
-/** [p], read from [text], with the rows of its dialog when the dialog is complete (see the notes above). */
-internal fun questionRead(text: String, p: Prompt, agent: String?, version: String?, blocked: Boolean): QuestionRead = when {
-    !needsConfirmation(p) || selfFramed(p) -> QuestionRead(p, emptyList())
-    p.choices.isEmpty() -> QuestionRead(p, p.region)
-    else -> dialogRead(stripAnsi(text).lines().takeLast(80), p, agent, version, blocked)
+/**
+ * [p], read from [text], with what its structure proves (see the notes above). [framed]: a card a
+ * parser already proved from a verified live read (pi's question).
+ */
+internal fun questionRead(text: String, p: Prompt, agent: String?, version: String?, blocked: Boolean, framed: Boolean = false): QuestionRead {
+    if (!needsConfirmation(p) || selfFramed(p) || framed) return QuestionRead(p, topped = true, complete = true)
+    val rows = stripAnsi(text).lines().takeLast(80)
+    return if (p.choices.isEmpty()) regionRead(rows, p) else dialogRead(rows, p, agent, version, blocked)
 }
 
 private fun letters(s: String) = s.filter(Char::isLetterOrDigit).lowercase()
-private val CHECKBOX_PREFIX = Regex("""^\[[ xX✓✔]\]\s+""")
+private val CHECKBOX_PREFIX = Regex("""^\[[ xX✓✔]\]\s+|^[☐☒✔✓☑◉○●◯]\s+""")
 /** A choice's label as it shows on its row: letters and digits only, the start of it. */
 private fun headOf(c: Choice) = letters(c.label.replace(CHECKBOX_PREFIX, "")).take(12)
+private fun indentOf(row: String) = row.length - row.trimStart().length
 
-/** A rule, a box's top corner, a bare frame row, a tab bar or a header row: where a dialog can start. */
-private fun topEdge(row: String): Boolean {
+/**
+ * Where a dialog can start: a rule or a box's top corner drawn at the left of the screen (a dialog's
+ * own frame, not a table in the chat, which has "┬" joints and sits indented in Claude's chat), a
+ * rule across most of a frame, a bare frame row, a tab bar, the agent's own status row, or a short
+ * header row ("Do you want to proceed?").
+ */
+private fun topEdge(row: String, width: Int): Boolean {
     val t = row.trim()
     if (t.isEmpty()) return false
-    // A rule inside a frame ("│ ──────── │").
+    val indent = indentOf(row)
+    // A rule, alone or inside a frame ("│ ──────── │"), wide enough to be the dialog's own.
     val inner = t.trim('│', '┃', '║', ' ')
-    if (inner.length >= 3 && inner.all { it in "─━═╌" }) return true
-    return t.startsWith("───") || t.startsWith("━━━") || t.startsWith("═══") || t.startsWith("╌╌╌") ||
-        Regex("""^[-_]{3,}$""").matches(t) || t.first() in "╭┌┏╔" || t.all { it in "│┃║ " } ||
-        (t.first() in "│┃║" && t.drop(1).trimStart().firstOrNull()?.let { it in "╭┌" } == true) ||
-        parseTabBar(t.trim('│', '┃', '|', ' ')) != null || isDialogHeaderRow(row)
+    if (inner.length >= 3 && inner.all { it in "─━═╌" }) return indent <= 2 && t.length * 10 >= width * 6
+    if (t.first() in "╭┌┏╔") return indent <= 2 && t.none { it in "┬╦┳┼" } && t.length * 10 >= width * 6
+    if (t.all { it in "│┃║ " }) return true
+    if (t.first() in "│┃║" && t.drop(1).trimStart().firstOrNull()?.let { it in "╭┌" } == true) return t.none { it in "┬╦┳" }
+    if (parseTabBar(t.trim('│', '┃', '|', ' ')) != null || isAgentStatusRow(row)) return true
+    return isDialogHeaderRow(row) && indent <= 2 && t.length <= 90
 }
 
-/** The user's own message echoed above the composer, or the composer itself ("❯ text"), not an option row. */
-private val ECHO_ROW = Regex("""^[❯›>]\s+(?!\d{1,2}[.)\s])\S""")
+/**
+ * The user's own message echoed above the composer at the screen's left edge ("❯ text"), not an
+ * option row. Only Claude's "❯" and Codex's "›" at column 0: a dialog's body is indented or framed,
+ * and its "> " lines (a redirection, a quote) are not echoes.
+ */
+private val ECHO_ROW = Regex("""^[❯›]\s+(?!\d{1,2}[.)\s])\S""")
+/** The same, numbered: the user's own numbered message echoed at the left edge ("❯ 1. text"). */
+private val NUMBERED_ECHO_ROW = Regex("""^[❯›]\s+\d{1,2}[.)]\s""")
 
 /** How many rows with text may sit between a dialog's last option and its footer. */
 private const val FOOTER_WITHIN = 8
@@ -97,90 +119,154 @@ private const val FOOTER_WITHIN = 8
 private const val TOP_WITHIN = 60
 private const val EDGES_TRIED = 24
 
-/** Consecutive identical reads that confirm a card whose dialog structure couldn't be shown complete. */
+/** Reads in a row of the same dialog that confirm it when its top is proven but it draws no footer. */
 internal const val FALLBACK_READS = 4
+/** Complete reads that keep differing (a counter in the dialog) before the newest one shows. */
+internal const val GIVE_UP_READS = 6
+/** Reads that never prove a dialog before its card says the app couldn't read the question. */
+internal const val UNREAD_AFTER = 8
+
+private fun widthOf(rows: List<String>) = rows.maxOfOrNull { it.trimEnd().length } ?: 0
 
 /**
- * The rows of [p]'s dialog, its top edge down to its footer, or null when the dialog is not
- * complete on this read: an option row or the footer not drawn yet, no edge or header above the
- * question, a card that changes when read from the edge down (part of it came from above), or the
- * user's echoed message inside the question.
+ * What [p]'s dialog proves on this read: its top (the nearest edge above the options, or the title
+ * row just over it, as Kiro draws its tool, from which the same card reads, with no echoed prompt
+ * between it and the options) and its footer (the dialog's own hint row under its options).
  */
 internal fun dialogRead(rows: List<String>, p: Prompt, agent: String?, version: String?, blocked: Boolean): QuestionRead {
-    val incomplete = QuestionRead(p, null)
+    val unproven = QuestionRead(p, topped = false, complete = false)
     val heads = p.choices.map(::headOf)
-    if (heads.any { it.isEmpty() }) return incomplete
+    if (heads.any { it.isEmpty() }) return unproven
     // Each option's row, from the last one up, each at or above the one after it.
-    var at = rows.indexOfLast { letters(it).contains(heads.last()) }
-    if (at < 0) return incomplete
+    var at = rows.indexOfLast { letters(it).contains(heads.last()) && !isDialogFooterRow(it) }
+    if (at < 0) return unproven
     val last = at
     for (h in heads.dropLast(1).asReversed()) {
         val from = if (p.horizontal) at else at - 1
-        at = (from downTo maxOf(0, at - 12)).firstOrNull { letters(rows[it]).contains(h) } ?: return incomplete
+        at = (from downTo maxOf(0, at - 12)).firstOrNull { letters(rows[it]).contains(h) } ?: return unproven
     }
     val first = at
-    // The dialog's own footer or hint row under its options.
     val footer = (last + (if (p.horizontal) 0 else 1)..rows.lastIndex).filter { rows[it].isNotBlank() }
         .take(FOOTER_WITHIN).firstOrNull { isDialogFooterRow(rows[it]) }
-        // The user's echoed message as a menu with nothing of a dialog under it: the chat, never a card.
-        ?: return QuestionRead(p, null, refused = ECHO_ROW.containsMatchIn(rows[first]))
-    // Its top: the nearest edge above the options (or the title row just over it, as Kiro draws its tool) from which the same card reads.
-    val edges = (first - 1 downTo maxOf(0, first - TOP_WITHIN)).filter { topEdge(rows[it]) }.take(EDGES_TRIED)
-        .flatMap { e -> listOfNotNull(e, (e - 1 downTo maxOf(0, e - 2)).firstOrNull { rows[it].isNotBlank() }?.takeIf { !topEdge(rows[it]) }) }
+    // The user's echoed message (numbered or not) as a menu with nothing of a dialog above or under it: the chat, never a card.
+    val echoed = footer == null && (ECHO_ROW.containsMatchIn(rows[first]) || NUMBERED_ECHO_ROW.containsMatchIn(rows[first]))
+    val width = widthOf(rows)
+    val edges = (first - 1 downTo maxOf(0, first - TOP_WITHIN)).filter { topEdge(rows[it], width) }.take(EDGES_TRIED)
+        .flatMap { e -> listOfNotNull(e, (e - 1 downTo maxOf(0, e - 2)).firstOrNull { rows[it].isNotBlank() }?.takeIf { !topEdge(rows[it], width) }) }
     for (top in edges) {
-        if ((top + 1 until first).any { ECHO_ROW.containsMatchIn(rows[it].trimStart()) }) return incomplete
-        if (detectPrompt(rows.drop(top).joinToString("\n"), blocked, agent, version) == p) return QuestionRead(p, rows.subList(top, footer + 1))
+        if ((top + 1 until first).any { ECHO_ROW.containsMatchIn(rows[it]) || NUMBERED_ECHO_ROW.containsMatchIn(rows[it]) }) break
+        // A header row ("Do you want to …") opens a dialog only with the dialog right under it: a
+        // blank row between it and the options is the chat's paragraph break, not the dialog's.
+        if (isDialogHeaderRow(rows[top]) && parseTabBar(rows[top].trim()) == null && (top + 1 until first).any { rows[it].isBlank() }) continue
+        if (detectPrompt(rows.drop(top).joinToString("\n"), blocked, agent, version)?.forCard() == p)
+            return QuestionRead(p, topped = true, complete = footer != null)
     }
-    return incomplete
+    return unproven.copy(refused = echoed)
 }
+
+/**
+ * The screen-and-keys card's structure (2.2.2): its rows are the bottom of the screen, so the
+ * dialog they show must have a proven top (an edge with no echoed prompt between it and the
+ * bottom) and, to be complete, its footer near the bottom.
+ */
+private fun regionRead(rows: List<String>, p: Prompt): QuestionRead {
+    val text = rows.withIndex().filter { it.value.isNotBlank() }
+    val footer = text.takeLast(FOOTER_WITHIN).lastOrNull { isDialogFooterRow(it.value) }?.index
+    val bottom = footer ?: text.lastOrNull()?.index ?: return QuestionRead(p, topped = false, complete = false)
+    val width = widthOf(rows)
+    val top = (bottom - 1 downTo maxOf(0, bottom - 40)).firstOrNull { topEdge(rows[it], width) }
+        ?: return QuestionRead(p, topped = false, complete = false)
+    if ((top + 1 until bottom).any { ECHO_ROW.containsMatchIn(rows[it]) || NUMBERED_ECHO_ROW.containsMatchIn(rows[it]) }) return QuestionRead(p, topped = false, complete = false)
+    return QuestionRead(p, topped = true, complete = footer != null)
+}
+
+/** A dialog's identity: its question, its options' labels (ticks aside) and its tab titles; the highlight is not part of it. */
+private fun identityOf(p: Prompt): Any = Triple(
+    p.question.trim(),
+    p.choices.map { it.keys to it.label.replace(CHECKBOX_PREFIX, "").trim() } + listOfNotNull(p.claudeCheckboxAction?.label),
+    p.shownParts().tabs.map { it.title } to p.region?.map { r -> r.filterNot { it in MOVING_MARKS }.replace(Regex("""\d+"""), "#").replace(Regex("""\s+"""), " ").trim() },
+)
+
+/** The dialog a card belongs to: a multi-question dialog by its tab titles (its steps change the question), else its identity. */
+private fun familyOf(p: Prompt): Any = p.shownParts().tabs.map { it.title }.takeIf { it.size >= 2 }?.let { "tabs" to it } ?: identityOf(p)
 
 /** Marks that move while you choose (the highlight, a filled radio, the current tab), left out of the comparison. */
 private val MOVING_MARKS = "❯›>▶➤⟩→●◉○◯▸$TAB_CURRENT_MARK"
 
 /**
- * Confirms question cards from consecutive reads, per pane (2.2.2): a card is confirmed when two
- * reads in a row give the same card (the highlight aside) from the same dialog rows, both
- * structurally complete, or [FALLBACK_READS] reads in a row give the same card when its structure
- * couldn't be shown complete. It stays confirmed while reads keep giving it; a changed card, a
- * refused read or no card starts over. Memory only.
+ * What a pane's card shows after a read (2.2.2): [CARD] the read's own card, [READING] the neutral
+ * card, [UNREAD] the card that says the question couldn't be read, [NONE] no card.
+ */
+internal enum class CardShows { CARD, READING, UNREAD, NONE }
+internal data class Verdict(val shows: CardShows, val gaveUp: Boolean = false)
+
+/**
+ * Confirms question cards from consecutive reads, per pane (2.2.2); see the notes at the top of
+ * this file. Memory only.
  */
 internal class QuestionConfirm {
-    private val last = HashMap<String, Any>()
-    private val runs = HashMap<String, Int>()
-    private val confirmed = HashMap<String, Any>()
+    private class State {
+        var lastId: Any? = null
+        var run = 0
+        var family: Any? = null
+        var confirmedId: Any? = null
+        var differing = 0
+        var waiting = 0
+    }
+    private val states = HashMap<String, State>()
     private val seen = HashSet<String>()
 
     /** Whether any read of [key] has been offered. */
     fun seen(key: String): Boolean = key in seen
 
-    /** True when [read]'s card may show: confirmed now, or a card that needs no confirming. */
-    fun offer(key: String, read: QuestionRead?): Boolean {
+    fun decide(key: String, read: QuestionRead?): Verdict {
         seen += key
-        if (read == null || !needsConfirmation(read.prompt)) { forget(key); return read != null }
-        if (read.refused) { forget(key); return false }
-        val rows = read.region?.map { r -> r.filterNot { it in MOVING_MARKS }.replace(Regex("""\s+"""), " ").trim() }
-        val sig = Triple(read.prompt.copy(selected = null), read.complete, rows)
-        if (confirmed[key] == sig) return true
-        confirmed.remove(key)
-        val run = if (last[key] == sig) (runs[key] ?: 1) + 1 else 1
-        last[key] = sig
-        runs[key] = run
-        if (run >= (if (read.complete) 2 else FALLBACK_READS)) { confirmed[key] = sig; return true }
-        return false
+        if (read == null) { forget(key); return Verdict(CardShows.NONE) }
+        val p = read.prompt
+        if (!needsConfirmation(p)) { forget(key); return Verdict(CardShows.CARD) }
+        val s = states.getOrPut(key) { State() }
+        if (!read.refused && read.topped) {
+            val id = identityOf(p)
+            val family = familyOf(p)
+            fun shown(gaveUp: Boolean = false): Verdict {
+                s.family = family; s.confirmedId = id; s.differing = 0; s.waiting = 0
+                return Verdict(CardShows.CARD, gaveUp)
+            }
+            // A confirmed dialog stays up through its own changes: the highlight, ticks, steps.
+            if (family == s.family && (read.complete || id == s.confirmedId)) { s.lastId = id; return shown() }
+            s.run = if (s.lastId == id) s.run + 1 else 1
+            s.lastId = id
+            if (s.run >= (if (read.complete) 2 else FALLBACK_READS)) return shown()
+            if (read.complete && ++s.differing >= GIVE_UP_READS) return shown(gaveUp = true)
+            if (!read.complete) s.differing = 0
+        } else {
+            s.lastId = null; s.run = 0; s.differing = 0
+        }
+        s.family = null; s.confirmedId = null
+        return Verdict(if (++s.waiting >= UNREAD_AFTER) CardShows.UNREAD else CardShows.READING)
     }
 
-    fun forget(key: String) { last.remove(key); runs.remove(key); confirmed.remove(key) }
+    /** True when [read]'s card may show: confirmed now, or a card that needs no confirming. */
+    fun offer(key: String, read: QuestionRead?): Boolean = decide(key, read).shows == CardShows.CARD
+
+    fun forget(key: String) { states.remove(key) }
 }
 
+/** The last read's verdict for a pane, with the card it was made for. */
+internal data class CardDecision(val parsed: Prompt?, val verdict: Verdict)
+
 /**
- * The card the app shows for [parsed] (2.2.2): [parsed] when it needs no confirming or matches the
- * card the reads confirmed for this pane ([confirmed], the highlight aside); otherwise
- * [readingQuestionCard].
+ * The card the app shows for [parsed] (2.2.2): [parsed] when it needs no confirming or the last
+ * read's verdict for exactly this card says it shows; the neutral or the unread card otherwise.
  */
-internal fun shownCard(parsed: Prompt?, confirmed: Prompt?, agent: String): Prompt? = when {
-    parsed == null || !needsConfirmation(parsed) -> parsed
-    confirmed != null && confirmed.copy(selected = null).forCard() == parsed.copy(selected = null).forCard() -> parsed
-    else -> readingQuestionCard(agent)
+internal fun shownCard(parsed: Prompt?, decision: CardDecision?, agent: String): Prompt? {
+    if (parsed == null || !needsConfirmation(parsed)) return parsed
+    val d = decision?.takeIf { it.parsed == parsed } ?: return readingQuestionCard(agent)
+    return when (d.verdict.shows) {
+        CardShows.CARD -> parsed
+        CardShows.UNREAD -> unreadQuestionCard(agent)
+        else -> readingQuestionCard(agent)
+    }
 }
 
 /** The card a needs-you alert is made from (2.2.2): [prompt] once confirmed, else neutral words with no options. */
@@ -189,13 +275,14 @@ internal fun alertCard(prompt: Prompt?, confirmed: Boolean, agent: String): Prom
         Prompt(readingAlertText(agent), emptyList(), terminalReview = true, readingQuestion = true)
     else prompt
 
-/** How many more reads an alert waits for its question to be confirmed, and the pause between them. */
-internal const val ALERT_CONFIRM_READS = 6
+/** How many more reads an alert may take to confirm its question, and the pause between them. */
+internal const val ALERT_CONFIRM_READS = 10
 internal const val ALERT_CONFIRM_PAUSE_MS = 700L
 
 /**
- * Confirms an alert's question from [first], its first read, and up to [maxReads] more from [read]
- * (null stops: the pane stopped waiting or could not be read). The confirmed card and its screen, or null.
+ * Confirms an alert's question from [first], its first read, and up to [maxReads] more from [read]:
+ * null stops (the pane stopped waiting); a blank read or one with no card is skipped. The confirmed
+ * card and its screen, or null.
  */
 internal suspend fun confirmByReads(first: String, firstPrompt: Prompt, agent: String?, version: String?,
                                     maxReads: Int = ALERT_CONFIRM_READS, read: suspend () -> String?): Pair<Prompt, String>? {
@@ -204,10 +291,10 @@ internal suspend fun confirmByReads(first: String, firstPrompt: Prompt, agent: S
     var p: Prompt? = firstPrompt
     var n = 0
     while (true) {
-        val prompt = p ?: return null
-        if (gate.offer("alert", questionRead(text, prompt, agent, version, true))) return prompt to text
-        if (n++ >= maxReads) return null
+        val verdict = gate.decide("alert", p?.let { questionRead(text, it, agent, version, true) })
+        if (verdict.shows == CardShows.CARD && p != null) return p to text
+        if (verdict.shows == CardShows.UNREAD || n++ >= maxReads) return null
         text = read() ?: return null
-        p = detectPrompt(text, true, agent, version)
+        p = if (text.isBlank()) null else detectPrompt(text, true, agent, version)
     }
 }

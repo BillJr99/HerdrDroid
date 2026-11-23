@@ -34,6 +34,7 @@ class QuestionConfirmVm222Test {
     @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = IdleMainLooperRule()
 
     private val full = "Earlier reply line.\n\n────────────────────\n Allow this command?\n\n   ls -la\n\n ❯ 1. Yes\n   2. No\n\n Esc to cancel · Tab to amend"
+    private val gatewayMenu = "Earlier reply line.\n\n────────────────────\n Approve this change?\n ❯ Keep the change\n   Undo it\n────────────────────\n ↑↓ to navigate · enter to select"
     private val halfDrawn = "Earlier reply line.\n\n❯ 1. Quokka first thing\n  2. Quokka second thing\n\n"
 
     private lateinit var f: Fixture
@@ -41,7 +42,7 @@ class QuestionConfirmVm222Test {
     @Before fun setUp() { f = Fixture(); f.install() }
     @After fun tearDown() { f.vm.viewModelScope.cancel() }
 
-    private fun card() = f.vm.questionCardFor("ask", detectPrompt(f.vm.paneText, true, "gemini")?.forCard(), "Gemini")
+    private fun card(pane: String = "ask") = f.vm.questionCardFor(pane, f.vm.cardParse(pane, f.vm.paneText), "Agent")
 
     @Test fun theCardWaitsForTwoMatchingCompleteReads() = runBlocking {
         f.screens["ask"] = halfDrawn
@@ -71,12 +72,45 @@ class QuestionConfirmVm222Test {
         assertTrue(card()!!.readingQuestion)
     }
 
+    @Test fun historyRecordsOnlyAConfirmedQuestion() = runBlocking {
+        f.screens["ask"] = full
+        f.vm.openPane("ask")
+        f.vm.readPane("ask")
+        assertTrue("one read records nothing", f.vm.questionsFor("ask").isEmpty())
+        f.vm.readPane("ask")
+        assertFalse(card()!!.readingQuestion)
+        assertTrue(f.vm.questionsFor("ask").isNotEmpty())
+    }
+
+    /**
+     * The review's case: Hermes waits through its gateway while herdr reports the pane idle. The
+     * screen draws the card with the pane's shown status (needs you), and an unnumbered menu is read
+     * only then; the read path confirms that same card, so it shows instead of "Reading it…" for good.
+     */
+    @Test fun aHermesGatewayWaitConfirmsTheCardTheScreenShows() = runBlocking {
+        f.hermesWaiting()
+        f.screens["hermes"] = gatewayMenu
+        f.vm.openPane("hermes")
+        assertEquals(com.billmongan.herdrdroid.herdr.Status.NEEDS_YOU, f.vm.shownStatus(checkNotNull(f.vm.pane("hermes"))))
+        // herdr's own status reads no card here; the shown status does.
+        assertEquals(null, detectPrompt(gatewayMenu, false, "hermes"))
+        f.vm.readPane("hermes")
+        assertTrue(card("hermes")!!.readingQuestion)
+        f.vm.readPane("hermes")
+        val shown = checkNotNull(card("hermes"))
+        assertFalse("the card must not stay on Reading it", shown.readingQuestion)
+        assertEquals(listOf("Keep the change", "Undo it"), shown.choices.map { it.label })
+    }
+
     private class Fixture : Herdr.Commands {
         val vm = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
         val server = Server(id = "fixture", name = "Fixture", host = "test.invalid", port = 22, user = "fixture", herdrPath = "/fixture/herdr")
         private val ssh = HerdrSsh(server.host, server.port, server.user, Credentials(null, null), null, { null })
         override var connection: Any? = Any()
         val screens = mutableMapOf<String, String>()
+
+        /** Hermes's gateway reports a wait (for no particular stored conversation). */
+        fun hermesWaiting() = state("hermesLiveStates", listOf(com.billmongan.herdrdroid.hermes.HermesLiveState(null, "waiting")))
 
         fun install() {
             field("herdr").set(vm, Herdr(ssh, "/fixture/herdr", Backend.TUI, null, this))
@@ -88,7 +122,7 @@ class QuestionConfirmVm222Test {
 
         override suspend fun bulk(command: String): ExecResult {
             if (!(command.contains("'pane' 'list'") && command.contains("'tab' 'list'"))) return ok("")
-            return ok("""{"result":{"panes":[${pane("ask", "gemini", "blocked", "t1")}]}}
+            return ok("""{"result":{"panes":[${pane("ask", "gemini", "blocked", "t1")},${pane("hermes", "hermes", "idle", "t2")}]}}
                 |@@herdrdroid-tabs@@
                 |{"result":{"tabs":[]}}
             """.trimMargin())
