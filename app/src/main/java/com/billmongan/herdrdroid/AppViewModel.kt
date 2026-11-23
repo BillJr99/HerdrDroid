@@ -3063,11 +3063,11 @@ class AppViewModel internal constructor(
      * already in its input line at the computer, or someone typing there in the last 4 seconds.
      * Null to send. A pane waiting on a question is answered, not typed into, so it is never held.
      */
-    private fun holdReason(paneId: String, screen: String): String? {
+    private fun holdReason(paneId: String, screen: String, menuWrite: Boolean = false): String? {
         // The agent's own hint in an empty line ("Press up to edit queued messages") is not typing (1.4.4).
         val agent = pane(paneId)?.agent
         // A draft of several lines can hide the one-row input line (2.1.0): it is still typing.
-        val now = com.billmongan.herdrdroid.herdr.inputLineOf(screen, agent)
+        val now = com.billmongan.herdrdroid.herdr.inputLineOf(screen, agent, menuWrite)
             ?: return com.billmongan.herdrdroid.herdr.composerDraftOf(screen, agent)?.let { DRAFT_HOLD }
         // The row taken for the input line is the highlighted option of a menu (Kiro's unnumbered
         // approval card, "❯ Yes, single permission"): a question, not text typed at the computer.
@@ -5881,7 +5881,7 @@ class AppViewModel internal constructor(
         if (com.billmongan.herdrdroid.herdr.infoPanelOn(fresh.agent, viewport) != null) return panelHold(current?.id, fresh, viewport)
         com.billmongan.herdrdroid.herdr.PaneControls.writeBlock(fresh.agent, viewport)?.let { return it }
         if (blocksNormalSend(fresh, viewport)) return "a question, dialog or usage panel is open in it"
-        return holdReason(fresh.id, viewport)
+        return holdReason(fresh.id, viewport, menuWrite = true)
     }
 
     /** A menu write that didn't go: said in the pane's chat, nothing sent. */
@@ -6023,7 +6023,7 @@ class AppViewModel internal constructor(
             return menuOpen && escHint
         }
         val firstLook = runCatching { readPaneScreen(t.h, paneId, 60) }.getOrNull() ?: return null
-        if (com.billmongan.herdrdroid.herdr.inputLineOf(firstLook, agent) == "" && !pickerOn(firstLook)) return null
+        if (com.billmongan.herdrdroid.herdr.inputLineOf(firstLook, agent, menuWrite = true) == "" && !pickerOn(firstLook)) return null
         if (!pickerOn(firstLook)) return "something else is on its screen; check the pane"
         val occupant = t.occupant.toString()
         val outcome = com.billmongan.herdrdroid.herdr.closePanelAndVerify(
@@ -6032,7 +6032,7 @@ class AppViewModel internal constructor(
                 val v = readPaneScreen(t.h, paneId, 60)
                 when {
                     pickerOn(v) -> com.billmongan.herdrdroid.herdr.PanelState.Open(com.billmongan.herdrdroid.herdr.UsageOverlay(occupant, v))
-                    com.billmongan.herdrdroid.herdr.inputLineOf(v, agent) == "" -> com.billmongan.herdrdroid.herdr.PanelState.Closed
+                    com.billmongan.herdrdroid.herdr.inputLineOf(v, agent, menuWrite = true) == "" -> com.billmongan.herdrdroid.herdr.PanelState.Closed
                     else -> com.billmongan.herdrdroid.herdr.PanelState.Stop("the screen shows something else")
                 }
             },

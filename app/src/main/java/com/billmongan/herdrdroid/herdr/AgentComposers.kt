@@ -25,6 +25,9 @@ internal object AgentComposers {
      * "Delete to line start") and Copilot 1.0.114's ctrl+u ("delete from cursor to beginning of line").
      * pi draws its cursor, so a blank pi box is judged by it instead.
      */
+    /** What [inputLineOf] reads in a blank Oh My Pi or Copilot box for a normal send: maybe typed spaces, so not empty. */
+    const val UNSURE_BLANK = " "
+
     fun clearKey(agent: String?): String? = when (agent?.lowercase()) { "omp", "copilot" -> "ctrl+u"; else -> null }
 
     private fun rawRows(screen: String): List<String> =
