@@ -79,8 +79,8 @@ class Fleet(
         states = states.filterKeys { it in next && it !in removed }
         servers.forEach { s ->
             if (s.id !in clients && s.fingerprint != null) {
-                val ssh = HerdrSsh(s.host, s.port, s.user, credentials(s), s.fingerprint, keystoreKey, s.wsUrl?.takeIf { s.overWebSocket }, s.smallPacketsMss, s.id,
-                    sessionFallbackMss = sessionMss(s.id))
+                val ssh = HerdrSsh(s.host, s.port, s.user, credentials(s), s.fingerprint, keystoreKey, s.wsUrl?.takeIf { s.overWebSocket }, s.smallPacketsMss, s.id)
+                    .also { c -> c.sessionFallback = { sessionMss(s.id) } }
                 // A server set to herdr-core is watched through hc; Automatic ones through herdr
                 // (a watcher never asks which one).
                 clients[s.id] = ssh to Herdr(ssh, s.herdrPath, if (s.backend == "core") com.billmongan.herdrdroid.herdr.Backend.CORE else com.billmongan.herdrdroid.herdr.Backend.TUI)

@@ -33,9 +33,27 @@ private fun rowsAboveInput(screen: String): List<String> {
     return (if (box >= 0) rows.take(box) else rows).takeLast(HINT_ROWS)
 }
 
-/** True when Claude Code's screen shows a running command it can move to the background with Ctrl+B. */
-internal fun claudeBackgroundHint(screen: String): Boolean =
-    rowsAboveInput(screen).any { CLAUDE_BACKGROUND_HINT.matches(it.trim()) }
+/** A running tool's own status row just above the hint: "⎿  Running… (7s)" or a command line ending "… (7s)". */
+private val RUNNING_ROW = Regex("""Running…|\(\d+(\.\d+)?m?s\)\s*$|\(\d+m \d+s\)\s*$""")
+
+/**
+ * True when Claude Code's screen shows a running command it can move to the background with Ctrl+B:
+ * the hint as Claude draws it under that command (indented, right below the command's running row),
+ * never the same words in the chat's text (pre-review L5).
+ */
+internal fun claudeBackgroundHint(screen: String): Boolean {
+    // All rows above the input box, so the row above a hint at the top of the window is still seen.
+    val all = stripAnsi(screen).lines()
+    val box = all.indexOfLast { it.trimStart().startsWith("❯") }
+    val rows = if (box >= 0) all.take(box) else all
+    for (i in maxOf(0, rows.size - HINT_ROWS) until rows.size) {
+        val r = rows[i]
+        if (!CLAUDE_BACKGROUND_HINT.matches(r.trim()) || !r.startsWith(" ")) continue
+        val above = (i - 1 downTo maxOf(0, i - 2)).map { rows[it] }.firstOrNull { it.isNotBlank() } ?: continue
+        if (RUNNING_ROW.containsMatchIn(above)) return true
+    }
+    return false
+}
 
 /** herdr says working, or the agent's own running status row ("esc to interrupt") is on screen. */
 internal fun agentWorking(status: Status, screen: String): Boolean =

@@ -22,6 +22,15 @@ class DiagCopy227Test {
         assertEquals(rows.takeLast(out.size - 1), out.drop(1))
     }
 
+    /** Pre-review L6: a newest line longer than the cap still copies its end, never just the note. */
+    @Test fun aHugeNewestLineIsNeverAnEmptyCopy() {
+        val text = "old line\n" + "y".repeat(DiagLog.COPY_MAX_CHARS * 2) + "END"
+        val copy = DiagLog.forClipboard(text)
+        assertTrue(copy.length <= DiagLog.COPY_MAX_CHARS)
+        assertTrue(copy.startsWith("(trimmed: only the end of the newest line fits; 1 older lines omitted"))
+        assertTrue(copy.endsWith("END"))
+    }
+
     @Test fun aCopyWithinTheCapIsTheWholeLog() {
         val text = (1..20).joinToString("\n") { "line $it" }
         assertEquals(text, DiagLog.forClipboard(text))

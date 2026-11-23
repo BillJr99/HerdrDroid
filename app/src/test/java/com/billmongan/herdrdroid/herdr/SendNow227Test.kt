@@ -19,6 +19,9 @@ class SendNow227Test {
         assertFalse(claudeBackgroundHint(working.replace("❯", "❯ (ctrl+b to run in background)")))
         // Prose that mentions the key is not the hint row.
         assertFalse(claudeBackgroundHint("Press ctrl+b to run in background if it takes long.\n❯ "))
+        // Nor the hint's own words in the chat, away from a running command (pre-review L5).
+        assertFalse(claudeBackgroundHint("● Here is the hint Claude shows:\n\n  (ctrl+b to run in background)\n\n❯ "))
+        assertFalse(claudeBackgroundHint("(ctrl+b to run in background)\n❯ "))
     }
 
     @Test fun theRouteFollowsStatusScreenAndAgent() {

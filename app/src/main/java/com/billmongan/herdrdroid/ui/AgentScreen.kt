@@ -483,6 +483,26 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         )
     }
 
+    // 2.2.7 (pre-review L8): an attachment's path goes into this pane's message box as it is now,
+    // once the computer has the whole file, even after a Retry from another screen.
+    vm.attachedPath?.takeIf { it.serverId == vm.current?.id && it.paneId == paneId }?.let { a ->
+        LaunchedEffect(a) {
+            editMessage(com.billmongan.herdrdroid.herdr.withAttachment(message, a.path))
+            vm.attachedPathTaken(a)
+        }
+    }
+    // 2.2.7 (pre-review L3): a queued message that may already have reached the agent is sent again only after this.
+    vm.resendConfirm?.takeIf { it.paneId == paneId && it.serverId == vm.current?.id }?.let {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { vm.cancelResend() },
+            modifier = Modifier.semantics { contentDescription = "Send the message again" },
+            title = { Text("Send it again?") },
+            text = { Text("This message may already have reached ${pane?.agentName ?: "the agent"}. Check its chat first; sending again could give it twice.", color = Palette.Ink) },
+            confirmButton = { TextButton(onClick = { vm.confirmResend() }) { Text("Send again") } },
+            dismissButton = { TextButton(onClick = { vm.cancelResend() }) { Text("Cancel") } },
+        )
+    }
+
     Column(Modifier.fillMaxSize().background(Palette.Ground).systemBarsPadding().imePadding()) {
         // ---- Header: the agent, what it's doing, and its model -----------------------------
         // Tap the agent's name to switch to another agent on this server (no swipe: a sideways
@@ -861,9 +881,9 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 ) {
                     idleQueue.forEach { q ->
                         androidx.compose.runtime.key(q.id) {
-                            val canSend = !q.sending && vm.link == Link.CONNECTED && !usageBlocksInput && !waitingForHermes && prompt == null && !typingAnswer && status != Status.NEEDS_YOU
+                            val canSend = !q.inFlight() && vm.link == Link.CONNECTED && !usageBlocksInput && !waitingForHermes && prompt == null && !typingAnswer && status != Status.NEEDS_YOU
                             PendingMessageRow(
-                                title = if (q.sending) "Sending now" else "Queued until idle",
+                                title = if (q.inFlight()) "Sending now" else "Queued until idle",
                                 text = q.text,
                                 note = q.note,
                                 onRemove = { vm.cancelQueued(q) },
@@ -959,7 +979,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 // herdr's agent prompt reaches a working agent, so a message sent now steers it.
                 steerLabel = if (pane?.agent != null && !typingAnswer && prompt == null) "Steer" else null,
                 onQueueWhenIdle = if (!typingAnswer && !usageBlocksInput) ({ vm.enqueue(paneId, normalMessage.trim()); normalMessage = "" }) else null,
-                onAttach = { uri -> vm.attach(uri) { path -> editMessage(com.billmongan.herdrdroid.herdr.withAttachment(message, path)) } },
+                onAttach = { uri -> vm.attach(uri, paneId) },
                 attachBusy = vm.uploading,
                 commands = SlashCommands.forAgent(pane?.agent),
                 // One row: Keys, Snippets and When idle live in the "⋯" menu with attach and dictate.

@@ -48,6 +48,11 @@ object DiagLog {
             if (size + add > budget) break
             kept.addFirst(all[i]); size += add
         }
+        // Pre-review L6: never an empty copy. A newest line longer than the room keeps its end.
+        if (kept.isEmpty()) {
+            val note = "(trimmed: only the end of the newest line fits; ${all.size - 1} older lines omitted; use Save for the full log)\n…"
+            return note + all.last().takeLast(max - note.length)
+        }
         return "(trimmed: oldest ${all.size - kept.size} lines omitted; use Save for the full log)\n" + kept.joinToString("\n")
     }
 

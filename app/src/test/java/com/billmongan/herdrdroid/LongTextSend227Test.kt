@@ -61,7 +61,10 @@ class LongTextSend227Test {
         val prompts = mutableListOf<String>()
         /** Files written to the inbox: the bytes that arrived. */
         val uploads = mutableListOf<ByteArray>()
+        val uploadNames = mutableListOf<String>()
         var corruptUploads = false
+        var noSum = false
+        var diskFull = false
 
         init {
             field("herdr").set(vm, Herdr(ssh, server.herdrPath, Backend.TUI, null, this))
@@ -106,7 +109,11 @@ class LongTextSend227Test {
             assertTrue(command, command.contains(".herdrdroid/inbox") && command.contains("sha256sum"))
             uploads += input
             val sha = if (corruptUploads) "0".repeat(64) else sha256Hex(input)
-            return ok("/home/fixture/.herdrdroid/inbox/pasted-text.txt\n${input.size}\n$sha\n")
+            // A shell banner first, then the marker and the results (pre-review M4).
+            val name = command.substringAfter(".herdrdroid/inbox/").substringBefore("'").removeSuffix(".part")
+            uploadNames += name
+            if (diskFull) return ExecResult(1, "", "cat: write error: No space left on device")
+            return ok("Welcome to fixture\n${com.billmongan.herdrdroid.herdr.UPLOAD_MARKER}\n/home/fixture/.herdrdroid/inbox/$name\n${input.size}\n${if (noSum) "nosum" else sha}\n")
         }
 
         private val pane = """{"pane_id":"p1","workspace_id":"w1","tab_id":"tab","agent":"claude","agent_status":"idle","cwd":"/fixture","terminal_id":"t1","scroll":{"offset_from_bottom":0}}"""
@@ -153,7 +160,7 @@ class LongTextSend227Test {
             assertEquals("path $k, $size: one file", before + 1, uploads.size)
             assertArrayEquals("path $k, $size: the whole text", text.toByteArray(), uploads.last())
             assertEquals(sha256Hex(text.toByteArray()), sha256Hex(uploads.last()))
-            assertTrue(prompts.last(), prompts.last().startsWith("Pasted text (") && prompts.last().endsWith("attached: /home/fixture/.herdrdroid/inbox/pasted-text.txt"))
+            assertTrue(prompts.last(), prompts.last().startsWith("Pasted text (") && prompts.last().contains("attached: /home/fixture/.herdrdroid/inbox/"))
             drainUntil { vm.queued.isEmpty() }
         }
     }
@@ -167,5 +174,45 @@ class LongTextSend227Test {
         assertTrue("no message points at a partial file", prompts.isEmpty())
         assertEquals(text, vm.queued.single().text)
         assertTrue(vm.queued.single().note.orEmpty().contains("couldn't be put on the computer whole"))
+    }
+
+    /** Pre-review H1: two long texts in the same second each get their own file, and each message points at its own. */
+    @Test fun twoLongTextsAtOnceNeverShareAFile() = fixture {
+        val a = paste(30_000).replace("row", "first")
+        val b = paste(30_000).replace("row", "second")
+        vm.sendMessage(pane(), a)
+        vm.sendMessage(pane(), b)
+        drainUntil { prompts.size == 2 }
+        assertEquals(2, uploadNames.toSet().size)
+        val paths = prompts.map { checkNotNull(LongText.parseFileLine(it)).second }
+        assertEquals(2, paths.toSet().size)
+        assertEquals(a, com.billmongan.herdrdroid.herdr.SentFiles.original(paths[0]))
+        assertEquals(b, com.billmongan.herdrdroid.herdr.SentFiles.original(paths[1]))
+    }
+
+    @Test fun withNoChecksumToolTheSizeIsCheckedAndItStillGoes() = fixture {
+        noSum = true
+        vm.sendMessage(pane(), paste(30_000))
+        drainUntil { prompts.size == 1 }
+        assertEquals(1, uploads.size)
+    }
+
+    /** Pre-review M4: a full disk is not retried every few seconds; the text waits for a tap, uncut. */
+    @Test fun aFailedUploadWaitsForATapInsteadOfRetryingForever() = fixture {
+        diskFull = true
+        val text = paste(30_000)
+        vm.sendMessage(pane(), text)
+        drainUntil { vm.queued.isNotEmpty() }
+        val left = vm.queued.single()
+        assertTrue(left.needsTap)
+        assertEquals(text, left.text)
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(15))
+        Thread.sleep(50)
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(15))
+        assertEquals("no retries by itself", 1, uploadNames.size)
+        // A tap tries again, and with room on the disk it goes.
+        diskFull = false
+        vm.sendQueuedNow(vm.queued.single())
+        drainUntil { prompts.size == 1 && vm.queued.isEmpty() }
     }
 }

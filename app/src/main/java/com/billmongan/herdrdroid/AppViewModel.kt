@@ -319,7 +319,7 @@ class AppViewModel internal constructor(
         if (skip != null) {
             // 2.2.7: a network change defers the fallback to the next connect on the new network
             // (armed again from now) rather than dropping it for the sign-in.
-            if (skip == "network-change") rearmAfterNetworkChange() else smallPacketFallback.disarm()
+            if (skip == "network-change") deferToNextSignIn() else smallPacketFallback.disarm()
             com.billmongan.herdrdroid.diag.DiagLog.log("link", com.billmongan.herdrdroid.diag.LinkDiag.fallbackSkippedLine(server.id, skip, reason))
             return false
         }
@@ -341,14 +341,25 @@ class AppViewModel internal constructor(
     private val sessionSmallPackets = java.util.concurrent.ConcurrentHashMap<String, Int>()
     internal fun sessionMssFor(serverId: String): Int? = sessionSmallPackets[serverId]
 
-    /** 2.2.7: the fallback was armed again by a network change, so a failed reconnect on the new network may fire it. */
-    private var armedByNetChange = false
+    /**
+     * 2.2.7: the network changed, so the fallback waits for the next successful sign-in on the new
+     * network and is armed from then (pre-review M5: a connect or sign-in that fails right after a
+     * change says nothing about packet size, and a drop caused by the change itself is not a stall).
+     */
+    private var rearmOnSignIn = false
 
-    private fun rearmAfterNetworkChange() {
+    private fun deferToNextSignIn() {
+        smallPacketFallback.disarm()
+        rearmOnSignIn = true
+    }
+
+    /** A reconnect signed in on the new network: the fallback watches it from now, once. */
+    internal fun rearmAfterSignIn() {
+        if (!rearmOnSignIn) return
+        rearmOnSignIn = false
         val server = current ?: return
         val sh = ssh ?: return
-        armedByNetChange = true
-        smallPacketFallback.arm(server.id, !sh.overWebSocket && sh.activeMss == null, smallPacketClock(),
+        smallPacketFallback.arm(server.id, !sh.overWebSocket && sh.activeMss == null && sh.lastMssChoice?.mss == null, smallPacketClock(),
             com.billmongan.herdrdroid.diag.NetworkWatch.changes)
     }
 
@@ -365,7 +376,7 @@ class AppViewModel internal constructor(
             ssh?.clearSmallPackets()
             com.billmongan.herdrdroid.diag.DiagLog.log("link", "server=${com.billmongan.herdrdroid.diag.LinkDiag.serverTag(current?.id)} small-packets=reset reason=network-change net=$type")
         }
-        rearmAfterNetworkChange()
+        deferToNextSignIn()
         networkRecheck?.cancel()
         if (type == "none") return
         networkRecheck = viewModelScope.launch {
@@ -973,7 +984,6 @@ class AppViewModel internal constructor(
                 // 2.2.6: a direct TCP session without small packets may fall back to them once.
                 beginLinkSession(saved.id)
                 // 2.2.7: not when this connection already used small packets (setting or vpn-auto).
-                armedByNetChange = false
                 smallPacketFallback.arm(saved.id, !sNow.overWebSocket && sNow.activeMss == null && sNow.lastMssChoice?.mss == null, smallPacketClock(),
                     com.billmongan.herdrdroid.diag.NetworkWatch.changes)
                 // A new sign-in is a new session: an offer from an earlier one no longer holds.
@@ -1558,6 +1568,8 @@ class AppViewModel internal constructor(
                     com.billmongan.herdrdroid.diag.DiagLog.log("link", com.billmongan.herdrdroid.diag.LinkStats.reconnectLine(
                         current?.id, attempt, backoff, reconnectReason, "ok", System.currentTimeMillis() - tryAt))
                     linkTo(Link.CONNECTED, "reconnected")
+                    // 2.2.7: signed in again after a network change: the fallback watches this connection.
+                    rearmAfterSignIn()
                     linkProblem = null
                     flushQueue()
                     refreshPanes()
@@ -1575,9 +1587,6 @@ class AppViewModel internal constructor(
                     if (attempt <= 5 || attempt % 10 == 0) com.billmongan.herdrdroid.diag.DiagLog.log("link", com.billmongan.herdrdroid.diag.LinkStats.reconnectLine(
                         current?.id, attempt, backoff, reconnectReason, "failed", System.currentTimeMillis() - tryAt, e))
                     linkProblem = friendly(e)
-                    // 2.2.7: a reconnect that fails right after a network change (once there is a
-                    // network again) falls back to small packets for the next try, as a drop would.
-                    if (armedByNetChange && com.billmongan.herdrdroid.diag.NetworkWatch.type != "none" && e is LinkDown) maybeSmallPacketFallback(e, ssh)
                     if (System.currentTimeMillis() - downSince > 15_000) linkTo(Link.OFFLINE, "down-over-15s:${com.billmongan.herdrdroid.diag.LinkDiag.errorClass(e)}")
                 }
                 // A second at a time, so coming back to the front ends a long background wait at once
@@ -3385,7 +3394,24 @@ class AppViewModel internal constructor(
      * Copies a file picked in the message box to ~/.herdrdroid/inbox on the computer, then hands
      * its path to [done] so the message can point the agent at it.
      */
+    /** 2.2.7: a file the computer has, waiting to go into [paneId]'s message box on [serverId] (pre-review L8). */
+    data class AttachedPath(val serverId: String, val paneId: String, val path: String)
+    var attachedPath by mutableStateOf<AttachedPath?>(null)
+        private set
+    fun attachedPathTaken(a: AttachedPath) { if (attachedPath == a) attachedPath = null }
+
+    /** The chat's attach: the path goes into [paneId]'s message box when the file is there (see [attachedPath]). */
+    fun attach(uri: Uri, paneId: String) {
+        val serverId = current?.id ?: return
+        attachFile(uri, { attach(uri, paneId) }) { path -> attachedPath = AttachedPath(serverId, paneId, path) }
+    }
+
+    /** Hermes's chat and a share into the app: [done] gets the path once the file is there. */
     fun attach(uri: Uri, done: (String) -> Unit) {
+        attachFile(uri, { attach(uri, done) }, done)
+    }
+
+    private fun attachFile(uri: Uri, retry: () -> Unit, done: (String) -> Unit) {
         if (uploading) return
         val app = getApplication<Application>()
         uploading = true
@@ -3404,12 +3430,13 @@ class AppViewModel internal constructor(
                 if (bytes.size > 50 * 1024 * 1024) throw IllegalArgumentException("That file is over 50 MB.")
                 // 2.2.7: the message points at the file only once the computer has all of it.
                 val receipt = h.uploadVerified(name, bytes)
-                notice = "Attached $name (${com.billmongan.herdrdroid.herdr.LongText.size(receipt.size)}), checked on the computer."
+                notice = "Attached $name (${com.billmongan.herdrdroid.herdr.LongText.size(receipt.size)}), " +
+                    (if (receipt.sha256.isEmpty()) "its size checked on the computer (it has no checksum tool)." else "checked on the computer.")
                 done(receipt.path)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                attachFailure = AttachFailure(uri, name, com.billmongan.herdrdroid.diag.DiagLog.describe(e), done)
+                attachFailure = AttachFailure(name, com.billmongan.herdrdroid.diag.DiagLog.describe(e), retry)
             } finally {
                 uploading = false
             }
@@ -3417,13 +3444,13 @@ class AppViewModel internal constructor(
     }
 
     /** 2.2.7: an attachment that didn't arrive whole: shown with Retry; nothing points at it. */
-    data class AttachFailure(val uri: Uri, val name: String, val why: String, internal val done: (String) -> Unit)
+    data class AttachFailure(val name: String, val why: String, internal val retry: () -> Unit)
     var attachFailure by mutableStateOf<AttachFailure?>(null)
 
     fun retryAttach() {
         val f = attachFailure ?: return
         attachFailure = null
-        attach(f.uri, f.done)
+        f.retry()
     }
 
     // ---- Attachments ----------------------------------------------------------------------------
@@ -3645,8 +3672,10 @@ class AppViewModel internal constructor(
             } catch (e: Exception) {
                 val why = com.billmongan.herdrdroid.diag.DiagLog.describe(e)
                 if (failed != null) failed(why, false) else {
+                    // Pre-review M4: it waits for a tap (Send now), never retried by itself every few seconds.
                     enqueue(pane.id, text)
-                    queued.lastOrNull()?.let { q -> updateQueued(q.id) { it.copy(note = "Not sent yet: the pasted text couldn't be put on the computer whole ($why).") } }
+                    queued.lastOrNull()?.let { q -> updateQueued(q.id) { it.copy(needsTap = true,
+                        note = "Not sent yet: the pasted text couldn't be put on the computer whole ($why). Long-press for Send now to try again.") } }
                 }
                 return@act
             }
@@ -3705,7 +3734,8 @@ class AppViewModel internal constructor(
                     else -> holdReason(pane.id, screenNow)
                 }
                 if (why != null && failed != null) {
-                    com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${pane.id}: send now not sent, $why; still queued")
+                    // Pre-review L7: the reason only, never screen text quoted in it.
+                    com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${pane.id}: send now not sent, ${why.replace(Regex("\\(\".*?\"\\)"), "").trim()}; still queued")
                     pendingSends = pendingSends.filterNot { it.id == pendingId }
                     failed(why, false)
                     return@act
@@ -6093,8 +6123,9 @@ class AppViewModel internal constructor(
                     if (current != null || pendingBackendChoice != null || pendingHostKey != null) return@launch
                     com.billmongan.herdrdroid.diag.DiagLog.log("start", "${s.label} didn't answer at startup; trying the next server")
                 }
-                // No server answered: only now the server screen, with the last error on it.
-                screen = Screen.Servers
+                // No server answered: only now the server screen, with the last error on it; unless
+                // Back already took the user to the main screen (pre-review L9), which stays.
+                if (screen != Screen.Home) screen = Screen.Servers
             } finally {
                 starting = false
                 startingOn = null
@@ -6111,7 +6142,21 @@ class AppViewModel internal constructor(
                             /** 2.2.7: a Send now write failed after it may have reached the computer: never sent again by itself. */
                             val mayHaveSent: Boolean = false,
                             /** 2.2.7: why Send now didn't send it, shown on its row. */
-                            val note: String? = null)
+                            val note: String? = null,
+                            /** 2.2.7: the Send now attempt that owns the row while [sending] (pre-review M2). */
+                            internal val sendToken: Long = 0L,
+                            /** 2.2.7: when [sending] began; a row stuck sending past [SENDING_STALE_MS] is free again (pre-review L1). */
+                            internal val sendingSince: Long = 0L,
+                            /** 2.2.7: a send of it failed; it waits for a tap (Send now, Send immediately) instead of the idle loop (pre-review M4). */
+                            val needsTap: Boolean = false) {
+        /** Being sent now; false once [SENDING_STALE_MS] pass, when the attempt was dropped without a word. */
+        fun inFlight(now: Long = System.currentTimeMillis()): Boolean = sending && now - sendingSince < SENDING_STALE_MS
+
+        companion object {
+            /** 2.2.7: how long a Send now row may show "Sending now" before it counts as dropped (an upload may take two minutes). */
+            const val SENDING_STALE_MS = 5 * 60_000L
+        }
+    }
 
     var queued by mutableStateOf<List<QueuedPrompt>>(emptyList())
         private set
@@ -6214,8 +6259,8 @@ class AppViewModel internal constructor(
                 if (link != Link.CONNECTED) continue
                 for (q in queued.toList()) {
                     if (q !in queued || q.serverId != current?.id) continue
-                    // 2.2.7: never behind a Send now in flight, nor after one that may have gone in.
-                    if (q.sending || q.mayHaveSent) continue
+                    // 2.2.7: never behind a Send now in flight, after one that may have gone in, or one that failed.
+                    if (q.inFlight() || q.mayHaveSent || q.needsTap) continue
                     val p = pane(q.paneId)
                     if (p == null) continue
                     if (q.hermesTarget?.sameCardOccupant(p) == false) continue
@@ -6235,7 +6280,8 @@ class AppViewModel internal constructor(
     fun sendQueuedImmediately(row: QueuedPrompt) {
         // 2.2.7: by id (a row's copy may be older than its note), and never while Send now is sending it.
         val q = queued.firstOrNull { it.id == row.id } ?: return
-        if (q.sending || q.serverId != current?.id) return
+        if (q.inFlight() || q.serverId != current?.id) return
+        if (q.mayHaveSent) { resendConfirm = q; return }
         val target = pane(q.paneId) ?: return
         if (q.hermesTarget?.sameCardOccupant(target) == false) {
             flash("Not sent: the Hermes pane changed. Cancel the queued message to remove it.")
@@ -6278,7 +6324,10 @@ class AppViewModel internal constructor(
      */
     fun sendQueuedNow(q: QueuedPrompt) {
         val item = queuedById(q.id) ?: return
-        if (item.sending || item.serverId != current?.id) return
+        if (item.inFlight() || item.serverId != current?.id) return
+        // Pre-review L3: a message that may already have reached the agent is sent again only after a confirmation.
+        if (item.mayHaveSent && resendConfirm?.id != item.id) { resendConfirm = item; return }
+        if (item.mayHaveSent) { resendConfirm = null; updateQueued(item.id) { it.copy(mayHaveSent = false) } }
         val target = pane(item.paneId) ?: run { flash("Not sent: that pane isn't open on the computer just now."); return }
         if (item.hermesTarget?.sameCardOccupant(target) == false) {
             flash("Not sent: the Hermes pane changed. Cancel the queued message to remove it.")
@@ -6308,7 +6357,7 @@ class AppViewModel internal constructor(
     fun confirmSendNow() {
         val item = sendNowConfirm?.let { queuedById(it.id) }
         sendNowConfirm = null
-        if (item == null || item.sending || item.serverId != current?.id) return
+        if (item == null || item.inFlight() || item.serverId != current?.id) return
         val target = pane(item.paneId) ?: return
         if (link != Link.CONNECTED || hasPendingQuestion(target)) { flash("Reconnect or answer the pending question before sending."); return }
         dispatchQueued(item, target)
@@ -6316,9 +6365,25 @@ class AppViewModel internal constructor(
 
     fun cancelSendNow() { sendNowConfirm = null }
 
+    /** 2.2.7 (pre-review L3): the queued message that may already have reached the agent, waiting on "Send it again?". */
+    var resendConfirm by mutableStateOf<QueuedPrompt?>(null)
+        private set
+
+    /** "Send again" on that question: Send now, once more, with every guard. */
+    fun confirmResend() {
+        val item = resendConfirm?.let { queuedById(it.id) } ?: run { resendConfirm = null; return }
+        sendQueuedNow(item)
+    }
+
+    fun cancelResend() { resendConfirm = null }
+
     /** Sends [item] once through [sendMessage] with all its guards; it leaves the queue only when delivered. */
-    private fun dispatchQueued(item: QueuedPrompt, target: Pane) {
-        updateQueued(item.id) { it.copy(sending = true, note = null) }
+    private fun dispatchQueued(item: QueuedPrompt, target: Pane, token: Long? = null) {
+        // Pre-review M1 and M2: only a row still queued (not removed meanwhile), and, inside a Send
+        // now attempt, only that attempt's own row (a replay or a second tap never sends it again).
+        val now = queuedById(item.id) ?: return
+        if (token != null && now.sendToken != token) return
+        updateQueued(item.id) { it.copy(sending = true, sendingSince = System.currentTimeMillis(), needsTap = false, note = null) }
         sendMessage(target, item.text,
             delivered = {
                 queued = queued.filterNot { it.id == item.id }
@@ -6326,8 +6391,9 @@ class AppViewModel internal constructor(
             },
             failed = { why, started ->
                 updateQueued(item.id) {
-                    it.copy(sending = false, mayHaveSent = it.mayHaveSent || started,
-                        note = if (started) "The link dropped while it was being sent, so it may have gone in. Check the agent before sending it again."
+                    // Pre-review L10: a refused write is said as it is, not as a dropped link.
+                    it.copy(sending = false, mayHaveSent = it.mayHaveSent || started, needsTap = true,
+                        note = if (started) "It may have reached the agent ($why). Check the agent before sending it again."
                         else "Not sent: $why. Still queued.")
                 }
             })
@@ -6343,9 +6409,14 @@ class AppViewModel internal constructor(
      * command moved to the background) or the agent idle before the message is sent, once.
      */
     private fun backgroundThenSend(item: QueuedPrompt, target: Pane) {
-        updateQueued(item.id) { it.copy(sending = true, note = "Moving the running task to the background…") }
-        fun fail(why: String) = updateQueued(item.id) { it.copy(sending = false, note = "Not sent: $why. Still queued.") }
+        // Pre-review M2: one attempt per tap, by its token. A replay of this action after a reconnect,
+        // or a removed row, finds a different token (or none) and does nothing.
+        val token = System.nanoTime()
+        updateQueued(item.id) { it.copy(sending = true, sendingSince = System.currentTimeMillis(), sendToken = token, note = "Moving the running task to the background…") }
+        fun mine() = queuedById(item.id)?.let { it.sending && it.sendToken == token } == true
+        fun fail(why: String) = updateQueued(item.id) { if (it.sendToken == token) it.copy(sending = false, sendToken = 0L, note = "Not sent: $why. Still queued.") else it }
         act(target.id, "Couldn't move the task to the background", input = true) { h ->
+            if (!mine()) return@act
             try {
                 val lines = sendReadLines(target.agent)
                 suspend fun fresh(): String? = runCatching { h.readStyled(target.id, lines) }.getOrNull()?.takeIf { it.isNotBlank() }
@@ -6355,9 +6426,10 @@ class AppViewModel internal constructor(
                 holdReason(target.id, before)?.let { return@act fail(it) }
                 if (!com.billmongan.herdrdroid.herdr.claudeBackgroundHint(before)) {
                     // The command finished, or went to the background on its own, since the chat's read.
-                    updateQueued(item.id) { it.copy(sending = false, note = null) }
-                    if (com.billmongan.herdrdroid.herdr.agentWorking(now.status, before)) sendNowConfirm = queuedById(item.id)
-                    else dispatchQueued(item, now)
+                    if (com.billmongan.herdrdroid.herdr.agentWorking(now.status, before)) {
+                        updateQueued(item.id) { it.copy(sending = false, sendToken = 0L, note = null) }
+                        sendNowConfirm = queuedById(item.id)
+                    } else dispatchQueued(item, now, token)
                     return@act
                 }
                 h.sendKeys(target.id, com.billmongan.herdrdroid.herdr.Backgrounding.KEY)
@@ -6374,13 +6446,16 @@ class AppViewModel internal constructor(
                     }
                 }
                 if (!moved) return@act fail("the task didn't show as moved to the background after Ctrl+B")
+                if (!mine()) return@act // removed while the check ran (pre-review M1)
                 com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${target.id}: send now saw the task in the background; sending")
-                dispatchQueued(item, pane(target.id) ?: now)
+                dispatchQueued(item, pane(target.id) ?: now, token)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                // Never rethrown (pre-review M2): a replay could press Ctrl+B and send again. The row
+                // stays queued for the normal path, and a lost link is handled as one.
                 fail(com.billmongan.herdrdroid.diag.DiagLog.describe(e))
-                throw e
+                if (e is LinkDown && herdr === h) linkLost(e)
             }
         }
     }

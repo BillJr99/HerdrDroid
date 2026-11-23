@@ -794,23 +794,45 @@ class Herdr internal constructor(
     suspend fun uploadVerified(name: String, bytes: ByteArray): UploadReceipt {
         val safe = name.replace(Regex("[^A-Za-z0-9._-]"), "_").trim('_').take(80).ifBlank { "file" }
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
-        val rel = ".herdrdroid/inbox/$stamp-$safe"
         val want = sha256Hex(bytes)
+        // Pre-review H1: unique per upload (two long texts in the same second used one name, so the
+        // first message pointed at the second text): the content's hash and a random part.
+        val unique = want.take(8) + "-" + java.util.UUID.randomUUID().toString().take(8)
+        val rel = ".herdrdroid/inbox/$stamp-$unique-$safe"
         val f = "\"\$HOME\"/${shq(rel)}"
-        val command = "mkdir -p \"\$HOME/.herdrdroid/inbox\" && cat > $f && printf '%s\\n' $f && wc -c < $f && " +
-            "{ sha256sum $f 2>/dev/null || shasum -a 256 $f; } | cut -d' ' -f1"
+        val t = "\"\$HOME\"/${shq("$rel.part")}"
+        // Written to a temporary name, then moved into place without replacing anything (mv -n); a
+        // name already taken fails. The results follow a marker line, so a shell banner is skipped.
+        // With no checksum tool there, only the size is checked, and said so.
+        val command = "mkdir -p \"\$HOME/.herdrdroid/inbox\" && cat > $t && { [ ! -e $f ] && mv -n $t $f && [ ! -e $t ]; } && " +
+            "printf '%s\\n' $UPLOAD_MARKER $f && wc -c < $f && " +
+            "{ sha256sum $f 2>/dev/null || shasum -a 256 $f 2>/dev/null || echo nosum; } | cut -d' ' -f1"
         var last: String? = null
         for (attempt in 1..2) {
             val r = commands?.let { it.input(command, bytes, it.connection ?: Any()) } ?: ssh.execInput(command, bytes, timeoutSeconds = 120)
-            if (r.exit != 0) throw HerdrError(r.err.trim().ifBlank { "The upload failed (exit ${r.exit})." }, r.exit)
-            val out = r.out.trim().lines().map { it.trim() }
-            val path = out.getOrNull(0).orEmpty()
-            val size = out.getOrNull(1)?.toLongOrNull()
-            val hash = out.getOrNull(2)?.lowercase()
-            val ok = path.isNotEmpty() && size == bytes.size.toLong() && hash == want
-            com.billmongan.herdrdroid.diag.DiagLog.log("send", "upload $stamp-$safe bytes=${bytes.size} try=$attempt verify=${if (ok) "ok" else "mismatch"} remote_bytes=${size ?: "unknown"}")
-            if (ok) return UploadReceipt(path, bytes.size.toLong(), want)
+            if (r.exit != 0) {
+                val err = r.err.trim().lines().lastOrNull { it.isNotBlank() }.orEmpty()
+                // Pre-review M4: a full disk or a refused folder will not get better by trying again.
+                val permanent = Regex("No space|Permission denied|Read-only file system|Disk quota", RegexOption.IGNORE_CASE).containsMatchIn(err)
+                com.billmongan.herdrdroid.diag.DiagLog.log("send", "upload bytes=${bytes.size} try=$attempt result=failed exit=${r.exit} permanent=$permanent")
+                throw UploadFailed(err.ifBlank { "the upload failed (exit ${r.exit})" }, permanent)
+            }
+            val out = r.out.lines().map { it.trim() }
+            val at = out.lastIndexOf(UPLOAD_MARKER)
+            val path = out.getOrNull(at + 1).orEmpty()
+            val size = out.getOrNull(at + 2)?.toLongOrNull()
+            val hash = out.getOrNull(at + 3)?.lowercase()
+            val noSum = hash == "nosum"
+            val ok = at >= 0 && path.isNotEmpty() && size == bytes.size.toLong() && (noSum || hash == want)
+            // Pre-review L7: no file name in the log, only the size and the result.
+            com.billmongan.herdrdroid.diag.DiagLog.log("send", "upload bytes=${bytes.size} try=$attempt verify=${if (!ok) "mismatch" else if (noSum) "size-only" else "ok"} remote_bytes=${size ?: "unknown"}")
+            if (ok) return UploadReceipt(path, bytes.size.toLong(), if (noSum) "" else want)
             last = if (size != bytes.size.toLong()) "the computer has ${size ?: "unknown"} of ${bytes.size} bytes" else "its checksum didn't match"
+            // The mismatched copy is set aside (never deleted) so the next try writes a fresh one.
+            runCatching {
+                val keep = "mv -f $f \"\$HOME\"/${shq("$rel.failed")} 2>/dev/null; true"
+                commands?.let { it.immediate(keep, 10, null) } ?: ssh.exec(keep)
+            }
         }
         throw UploadMismatch(last ?: "it couldn't be checked")
     }
@@ -3958,11 +3980,17 @@ fun withBusy(list: List<Pane>, busy: Map<String, Int>): List<Pane> = list.map { 
     if ((p.status == Status.IDLE || p.status == Status.DONE || p.status == Status.UNKNOWN) && (busy[p.id] ?: 0) > 0) p.copy(status = Status.WORKING, backgroundBusy = true) else p
 }
 
-/** 2.2.7: a file the computer has, checked: its path there, size and SHA-256 (hex). */
+/** 2.2.7: a file the computer has, checked: its path there, size and SHA-256 (hex; empty when only the size could be checked). */
 data class UploadReceipt(val path: String, val size: Long, val sha256: String)
 
 /** 2.2.7: the file on the computer didn't match what the phone sent, after one retry. */
 class UploadMismatch(why: String) : Exception("The file didn't arrive whole ($why).")
+
+/** 2.2.7: the upload itself failed; [permanent] when trying again won't help (a full disk, a refused folder). */
+class UploadFailed(why: String, val permanent: Boolean) : Exception(why)
+
+/** 2.2.7: the line before an upload's results, so text a shell prints at login is skipped. */
+internal const val UPLOAD_MARKER = "@@herdrdroid-upload@@"
 
 internal fun sha256Hex(bytes: ByteArray): String =
     java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }

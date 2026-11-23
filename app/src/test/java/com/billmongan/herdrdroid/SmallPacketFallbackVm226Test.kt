@@ -136,10 +136,9 @@ class SmallPacketFallbackVm226Test {
         NetworkWatch.observe(Any(), "fixture-net-${System.nanoTime()}")
         assertFalse(vm.maybeSmallPacketFallback(LinkDown(java.io.IOException("handoff")), ssh))
         assertTrue(DiagLog.text().contains("fallback=skipped reason=network-change trigger=link-drop"))
-        // 2.2.7: a network change defers the fallback to the new network instead of dropping it:
-        // the next drop there falls back.
-        assertTrue("deferred to the new network", vm.maybeSmallPacketFallback(LinkDown(java.io.IOException("again")), ssh))
-        assertEquals(1200, ssh.activeMss)
+        // 2.2.7: deferred to the next sign-in on the new network, not fired on this one.
+        assertFalse("not before signing in again", vm.maybeSmallPacketFallback(LinkDown(java.io.IOException("again")), ssh))
+        assertNull(ssh.activeMss)
 
         val other = HerdrSsh(a.host, a.port, a.user, Credentials(null, null), null, { null })
         signedIn(other)
