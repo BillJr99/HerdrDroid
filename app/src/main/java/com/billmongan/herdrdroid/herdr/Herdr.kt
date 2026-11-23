@@ -2188,6 +2188,13 @@ internal fun isDialogFooterRow(row: String): Boolean {
     return c.split(Regex("""\s*[·│┃|]\s*|\s{2,}""")).count { HINT_SEGMENT.containsMatchIn(it.trim()) } >= 2
 }
 
+/** 2.2.2: a header row that is one agent's exact dialog heading (Codex's "Would you like to run the following command?"), not a sentence that starts like one. */
+internal fun isNamedDialogHeading(row: String): Boolean {
+    val c = row.trim().trim('│', '┃', '|', '║', ' ').trim()
+    return CODEX_COMMAND_HEADING.matches(c) || CODEX_OTHER_APPROVAL.matches(c) || COMMAND_INTRO.matches(c) ||
+        CLAUDE_COMMAND_TITLE.matches(c) || TOOL_PERMISSION.matches(c) || HERMES_COMMAND_HEADING.matches(c) || CODEX_QUESTION_PROGRESS.containsMatchIn(c)
+}
+
 /** 2.2.2: the agent's own running status row ("… 0.1s 16m4s ⇣90.2k [↓][stop]", "esc to interrupt"), drawn above its prompt. */
 internal fun isAgentStatusRow(row: String): Boolean = STATUS_LINE.containsMatchIn(row.trim())
 
