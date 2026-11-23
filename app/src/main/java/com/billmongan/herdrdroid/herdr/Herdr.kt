@@ -1276,9 +1276,7 @@ internal fun unreadQuestionCard(agent: String): Prompt = Prompt(
 internal fun cardAnswerStillFits(shown: Prompt, fresh: Prompt?): Boolean =
     !shown.terminalReview && !shown.readingQuestion && fresh != null && !fresh.terminalReview && !fresh.readingQuestion &&
         shown.forCard().region != listOf(UNREAD_SCREEN) &&
-        (shown.copy(selected = null).forCard() == fresh.copy(selected = null).forCard() ||
-            // 2.2.7: a card built from the whole of a tall dialog, and a live read that shows only its bottom.
-            tallDialogFits(shown, fresh))
+        shown.copy(selected = null).forCard() == fresh.copy(selected = null).forCard()
 
 /** One step of Claude's multi-question dialog ("☐ Close 537", "☒ Stop hook", "✔ Submit"). */
 data class QTab(val title: String, val done: Boolean, val current: Boolean, val submit: Boolean = false)

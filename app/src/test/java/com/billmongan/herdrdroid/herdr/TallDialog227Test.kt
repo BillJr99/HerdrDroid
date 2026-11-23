@@ -43,13 +43,14 @@ class TallDialog227Test {
     @Test fun theHistoryGivesTheWholeCommandAndNoNote() {
         val (text, asked) = complete(200 to good)
         assertEquals(listOf(200), asked)
-        assertTrue("starts at the dialog's top rule, no chat", text.lines().first() == rule)
+        assertEquals("marked as rebuilt", TALL_DIALOG_MARK, text.lines()[0])
+        assertEquals("then the dialog's top rule, no chat", rule, text.lines()[1])
         assertTrue(text.lines().size > 80)
         val p = checkNotNull(detectPrompt(text, true, "claude"))
         assertFalse(p.topOffScreen)
         val parts = p.shownParts()
         assertFalse(parts.details.any { it == CLAUDE_TOP_OFF_NOTE || it == CLAUDE_TITLE_OFF_NOTE })
-        assertTrue(parts.details.contains("Bash command · from the general-purpose agent"))
+        assertTrue(parts.details.toString(), parts.details.any { it.contains("Bash command") })
         val command = checkNotNull(parts.command).lines()
         assertEquals("cd /home/user/scratch && python3 - <<'EOF'", command.first())
         assertEquals("# filler row 45", command[46])
@@ -59,11 +60,30 @@ class TallDialog227Test {
         // The visible screen's card is its bottom, so an answer checked against the live screen still fits.
         val live = checkNotNull(detectPrompt(scrolled, true, "claude"))
         assertTrue(tallDialogFits(p, live))
-        assertTrue(cardAnswerStillFits(p, live))
+        // The answer path checks the whole dialog, rebuilt again; the visible tail alone is not enough.
+        assertFalse(cardAnswerStillFits(p, live))
+        assertTrue(cardAnswerStillFits(p, checkNotNull(detectPrompt(complete(200 to good).first, true, "claude"))))
         // And the confirmation finds the dialog's top (its top rule, more than 60 rows above the options).
         val read = questionRead(text, p, "claude", null, true)
         assertTrue(read.topped)
         assertTrue(read.complete)
+    }
+
+    @Test fun aScreenWhoseTopRowContinuesAWrappedLineIsRebuiltToo() {
+        val width = scrolled.lines().maxOf { it.trimEnd().length }
+        val long = " │ " + "x".repeat(width - 3)
+        val wrapped = history(chat + rule + title + description + dashed + hidden + long)
+        val (text, _) = complete(200 to wrapped)
+        assertEquals(TALL_DIALOG_MARK, text.lines()[0])
+        val command = checkNotNull(checkNotNull(detectPrompt(text, true, "claude")).shownParts().command)
+        assertTrue(command, command.contains("x".repeat(width - 3) + "$ nproc"))
+    }
+
+    @Test fun anOrdinaryReadStartingOnARuleIsNotTakenForARebuiltDialog() {
+        val rows = listOf(rule) + (1..120).map { "chat row $it" }
+        assertEquals(80, claudeDialogWindow(rows, "claude").size)
+        assertEquals(80, claudeDialogWindow(listOf(TALL_DIALOG_MARK, rule, " │ not a title") + rows, "claude").size)
+        assertEquals(124, claudeDialogWindow(listOf(TALL_DIALOG_MARK, rule, " Bash command") + rows, "claude").size)
     }
 
     @Test fun aLiveScreenWithAnotherCommandDoesNotFit() {

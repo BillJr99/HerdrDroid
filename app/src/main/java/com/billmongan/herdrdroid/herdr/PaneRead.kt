@@ -10,6 +10,9 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.launch
 
 /**
@@ -52,27 +55,59 @@ private fun sha(s: String): String =
 private fun cleanField(s: String, max: Int): String? =
     s.trim().takeIf { it.length <= max && it.none { c -> Character.isISOControl(c) } }
 
+/** A frame found in an agent's reply, with the row that shows it is the agent's reply ([evidence]). */
+internal data class PaneReadFound(val frame: PaneReadFrame, val evidence: String)
+
+/** The first row of an agent's reply: Claude's "⏺ " and "● ", Codex's "• ". */
+private val REPLY_HEAD = Regex("""^[⏺●•] \S""")
+/** A tool call's row, whose output follows it: "⏺ Bash(cat notes.txt)", "• Ran cat notes.txt". */
+private val TOOL_HEAD = Regex("""^[⏺●•] (?:[A-Za-z][\w.-]*\(|(?:Ran|Explored|Edited|Read|Searched|Called|Updated|Added|Deleted|Waited|Running)\b)""")
+/** Rows of tool output, a box, or a quote: a frame among them is not the agent's own. */
+private val NOT_REPLY_ROW = Regex("""^\s*[⎿└│┃╭╰>]""")
+
 /**
- * Every well-formed read frame in recent pane output, at most one per code. A malformed frame is
- * skipped without hiding the ones around it; a code in two frames that ask different things yields
- * nothing. A line count above [PaneReadLimits.MAX_LINES] is capped to it.
+ * Every well-formed read frame in recent pane output that the agent wrote in its own reply, at most
+ * one per code. 2.2.7 review: a frame is accepted only where the agent's reply shows it: its rows all
+ * at one indentation of at most 4 spaces, with no box, quote or tool-output mark, under (or on) the
+ * first row of a reply ("⏺ ", "● ", "• ") that is not a tool call, with no tool output between. A
+ * frame in tool output (a cat'ed file, a fetched page), in your own message or a relayed message
+ * (echoed with "❯" or ">"), or in a box is skipped. A malformed frame is skipped without hiding the
+ * ones around it; a code in two frames that ask different things yields nothing. A line count above
+ * [PaneReadLimits.MAX_LINES] is capped to it.
  */
-internal fun paneReadFrames(output: String): List<PaneReadFrame> {
-    val lines = output.takeLast(65_536).lineSequence().map(::frameLine).toList()
-    val found = mutableListOf<PaneReadFrame>()
+internal fun paneReadFinds(output: String): List<PaneReadFound> {
+    val rows = output.takeLast(65_536).lines().map { it.replace("\r", "").trimEnd() }
+    val found = mutableListOf<PaneReadFound>()
     val conflicted = mutableSetOf<String>()
     var i = 0
-    while (i < lines.size) {
-        if (!lines[i].startsWith("HDREAD1 ")) { i++; continue }
-        val parsed = parseReadFrame(lines, i, lines[i].removePrefix("HDREAD1 ").trim())
+    while (i < rows.size) {
+        val row = rows[i]
+        val marked = row.length > 2 && row[0] in "⏺●•" && row[1] == ' ' && row.substring(2).startsWith("HDREAD1 ")
+        val indent = if (marked) 2 else row.length - row.trimStart(' ').length
+        if (!(marked || (indent <= 4 && row.substring(indent).startsWith("HDREAD1 ")))) { i++; continue }
+        val head = if (marked) row else (i - 1 downTo 0).firstOrNull { rows[it].isNotEmpty() && rows[it][0] != ' ' }?.let { rows[it] }
+        val headAt = if (marked) i else (i - 1 downTo 0).firstOrNull { rows[it].isNotEmpty() && rows[it][0] != ' ' } ?: -1
+        val ownReply = head != null && REPLY_HEAD.containsMatchIn(head) && !TOOL_HEAD.containsMatchIn(head) &&
+            (headAt + 1 until i).none { NOT_REPLY_ROW.containsMatchIn(rows[it]) }
+        if (!ownReply) { i++; continue }
+        // Every row of the frame at the same indentation, nothing else on it.
+        val body = (i until minOf(rows.size, i + 6)).map { k ->
+            val r = rows[k]
+            if (k == i) r.substring(indent) else if (r.length >= indent && r.take(indent).isBlank() && (indent == r.length || r[indent] != ' ')) r.substring(indent) else ""
+        }
+        val parsed = parseReadFrame(body, 0, body[0].removePrefix("HDREAD1 ").trim())
         if (parsed == null) { i++; continue }
         val (frame, next) = parsed
-        val same = found.firstOrNull { it.code == frame.code }
-        if (same == null) found += frame else if (same != frame) conflicted += frame.code
-        i = next
+        val same = found.firstOrNull { it.frame.code == frame.code }
+        if (same == null) found += PaneReadFound(frame, checkNotNull(head).trim().take(120))
+        else if (same.frame != frame) conflicted += frame.code
+        i += next
     }
-    return found.filter { it.code !in conflicted }
+    return found.filter { it.frame.code !in conflicted }
 }
+
+/** The frames alone, as [paneReadFinds] accepts them. */
+internal fun paneReadFrames(output: String): List<PaneReadFrame> = paneReadFinds(output).map { it.frame }
 
 private fun parseReadFrame(lines: List<String>, start: Int, code: String): Pair<PaneReadFrame, Int>? {
     if (!CrossServerCode.valid(code)) return null
@@ -112,6 +147,7 @@ internal enum class PaneReadRefusal(val why: String, val retry: Boolean) {
     EXPIRED("the request expired 10 minutes after it appeared", false),
     SOURCE_CHANGED("this chat's pane is no longer open as it was when the request came", true),
     EXISTS("a capture with that name is already on the phone; nothing was overwritten", false),
+    PANE_CHANGED("that pane now holds a different tab, agent or session than HerdrDroid last saw there", false),
     READ_FAILED("the pane couldn't be read", false),
     SAVE_FAILED("the capture couldn't be saved on the phone", false),
 }
@@ -209,19 +245,10 @@ internal object PaneCaptures {
     /** The message to the requesting agent; the attachment's path follows it. Never the capture's text. */
     fun message(c: PaneCapture): String = "Pane read: ${c.server}/${c.pane}, ${c.lines} lines (approved)"
 
-    /** The card's line about the attachment send, from the send's live state. */
-    fun deliveryNote(
-        paneName: String = "this pane", delivered: Boolean = false, pending: Boolean = false, waiting: Boolean = false,
-        awaitingLink: Boolean = false, undelivered: Boolean = false, held: String? = null, unavailable: String? = null,
-    ): String = when {
-        unavailable != null -> "Not sent to the agent: $unavailable. The capture stays on this phone in Pane reads."
-        delivered -> "Sent to $paneName with the capture attached."
-        undelivered -> "Not sent to the agent" + (held?.let { ": $it" } ?: "") + ". The capture stays on this phone in Pane reads."
-        waiting -> "Queued for $paneName" + (held?.let { " ($it)" } ?: "") + "; it goes when the pane is free."
-        awaitingLink -> "Queued for $paneName until the connection is back."
-        pending -> "Sending to $paneName with the capture attached…"
-        else -> "Not sent to the agent. The capture stays on this phone in Pane reads."
-    }
+    /** The card's line about the attachment send. */
+    fun deliveryNote(paneName: String, delivered: Boolean, why: String?): String =
+        if (delivered) "Sent to $paneName with the capture attached."
+        else "Not sent to the agent: ${why ?: "it could not be sent"}. The capture stays on this phone in Pane reads."
 
     fun iso(at: Long): String = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
         .apply { timeZone = TimeZone.getTimeZone("UTC") }.format(Date(at))
@@ -231,49 +258,65 @@ internal object PaneCaptures {
  * The captures on the phone, in the app's private storage (like the diagnostic log, never on a
  * computer): one text file each, newest first, at most [keep]. A file is never overwritten.
  */
-internal class PaneReadStore(private val dir: File, private val keep: Int = PaneReadLimits.KEEP) {
+internal class PaneReadStore(
+    private val dir: File,
+    private val keep: Int = PaneReadLimits.KEEP,
+    /** The share sheet's copies (cacheDir/shared), cleared with the captures. */
+    private val shared: File? = null,
+) {
     var version by mutableStateOf(0)
         private set
 
-    /** Saves [c] as a new file; false when one with that name is already there or it can't be written. Prunes to [keep]. */
+    /** Saves [c] as a new file; false when one with that name is already there or it can't be written (nothing is left behind). Prunes to [keep]. */
     fun save(c: PaneCapture): Boolean {
         if (!dir.isDirectory && !dir.mkdirs()) return false
         val f = File(dir, c.name)
-        val ok = runCatching { f.createNewFile() && run { f.writeText(c.text, Charsets.UTF_8); true } }.getOrDefault(false)
-        if (ok) prune()
+        val created = runCatching { f.createNewFile() }.getOrDefault(false)
+        if (!created) return false
+        val ok = runCatching { f.writeText(c.text, Charsets.UTF_8); true }.getOrDefault(false)
+        if (!ok) f.delete()
+        else prune()
         version++
         return ok
     }
 
     fun exists(name: String) = File(dir, name).exists()
 
+    /** The captures that parse, newest first; an unreadable or empty file is not one. */
     fun list(): List<PaneCapture> = files().mapNotNull { f -> runCatching { PaneCaptures.parse(f.name, f.readText(Charsets.UTF_8)) }.getOrNull() }
 
     fun get(name: String): PaneCapture? = list().firstOrNull { it.name == name }
 
-    /** Clear on Pane reads: every capture goes. */
+    /** Clear on Pane reads: every capture goes, and so do the share sheet's copies. */
     fun clear() {
-        files().forEach { it.delete() }
+        dir.listFiles().orEmpty().forEach { it.delete() }
+        shared?.listFiles()?.forEach { it.delete() }
         version++
     }
 
     private fun files(): List<File> = dir.listFiles { f -> f.isFile && f.name.endsWith(".txt") }.orEmpty()
         .sortedWith(compareByDescending<File> { it.name })
 
+    /** Only files that hold a capture count toward [keep]; anything else is removed. */
     private fun prune() {
-        files().drop(keep).forEach { it.delete() }
+        val all = files()
+        val good = all.filter { f -> runCatching { PaneCaptures.parse(f.name, f.readText(Charsets.UTF_8)) != null }.getOrDefault(false) }
+        (all - good.toSet()).forEach { it.delete() }
+        good.drop(keep).forEach { it.delete() }
     }
 
     companion object {
-        /** Sorts by time, then code: "20261123-120000-K7P3QX.txt". */
-        fun nameFor(at: Long, code: String): String =
-            SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }.format(Date(at)) + "-$code.txt"
+        /** Sorts by time, then code, with the requesting pane so two panes' codes never collide: "20261123-120000-K7P3QX-w1_p1.txt". */
+        fun nameFor(at: Long, code: String, requesterPane: String = ""): String =
+            SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }.format(Date(at)) + "-$code" +
+                requesterPane.replace(Regex("[^A-Za-z0-9_-]"), "_").take(40).let { if (it.isEmpty()) "" else "-$it" } + ".txt"
     }
 }
 
 /**
  * The read requests seen in open chats, as cards, and what Yes does. The view model supplies the
- * live state through [Port]; [S] is its handle for the requesting pane.
+ * live state through [Port]; [S] is its handle for the requesting pane (its own server's client,
+ * connection and occupant, never "the server open now").
  */
 internal class PaneReadRequests<S>(
     private val port: Port<S>,
@@ -285,18 +328,21 @@ internal class PaneReadRequests<S>(
     interface Port<S> {
         /** Cross-server messaging is on, the app is in front and unlocked. */
         fun enabled(): Boolean
-        /** The requesting pane is still open as it was. */
+        /** The requesting pane is still open as it was, on its own server, client, connection and occupant. */
         fun sourceCurrent(source: S): Boolean
         fun servers(): List<PaneReadServer>
+        /** The target pane as its server lists it now (a fresh read, not the watcher's cache); null when it is gone or can't be read. */
+        suspend fun livePane(server: PaneReadServer, pane: Pane): Pane?
         /** The target's screen: the visible screen when [lines] is null, else its bottom [lines] rows. */
         suspend fun read(server: PaneReadServer, pane: Pane, lines: Int?): String
         /**
-         * Sends the requesting agent [message] with [capture] attached, through the guarded send
-         * path (held and retried while the pane is busy, never over a draft, question or panel).
-         * Null once the send has started; otherwise why the attachment can't go (the capture stays on the phone).
+         * Sends the requesting agent [message] with [capture] attached, on [source]'s own client
+         * and pane, through the guarded send (never over a draft, question or panel), checking
+         * [allowed] right before the upload and right before the send. Null once sent; otherwise
+         * why it was not (the capture stays on the phone). It gives up rather than wait for minutes.
          */
-        suspend fun deliver(source: S, capture: PaneCapture, message: String): String?
-        /** A nonsecret [relay] line: codes, ids and counts, never pane text. */
+        suspend fun deliver(source: S, capture: PaneCapture, message: String, allowed: () -> Boolean): String?
+        /** A nonsecret [relay] line: codes and resolved ids and counts, never pane text or names the agent wrote. */
         fun log(message: String)
     }
 
@@ -308,15 +354,17 @@ internal class PaneReadRequests<S>(
         val sourceName: String,
         val frame: PaneReadFrame,
         val deadline: Long,
+        /** The reply row the frame was found under, as the screen shows it. */
+        val evidence: String = "",
         val state: PaneReadState = PaneReadState.PENDING,
         val refusal: PaneReadRefusal? = null,
         val note: String? = null,
         /** The capture's name on the phone, once saved. */
         val saved: String? = null,
-        /** True once its attachment send to the requesting pane started (the view model reports its progress). */
+        /** True while its attachment send to the requesting pane runs. */
         val delivering: Boolean = false,
-        /** Why the attachment could not go, when it couldn't. */
-        val undeliverable: String? = null,
+        /** The attachment's outcome, once it is known. */
+        val delivery: String? = null,
     )
 
     /** What a dialog was opened for: one request by id and code. */
@@ -324,64 +372,58 @@ internal class PaneReadRequests<S>(
 
     var cards by mutableStateOf<List<Card<S>>>(emptyList())
         private set
-    private var deferred by mutableStateOf<Set<String>>(emptySet())
+    private val jobs = mutableMapOf<String, Job>()
 
     private fun keyOf(server: String, pane: String, code: String) = "read|$server|$pane|$code"
 
     /** Called with each good read of the open pane. */
     fun noteFrames(source: S, server: String, pane: String, sourceName: String, recent: String) {
-        val frames = paneReadFrames(recent)
-        if (frames.isEmpty()) return
+        val finds = paneReadFinds(recent)
+        if (finds.isEmpty()) return
         val now = clock()
         if (!port.enabled()) {
-            // Refused on the card, with nothing recorded: the same frame can ask again once it is turned on.
-            for (f in frames) {
-                val id = keyOf(server, pane, f.code) + "|off"
-                if (cards.any { it.id == id }) continue
-                cards = cards + Card(id, source, server, pane, sourceName, f, now, PaneReadState.REFUSED, PaneReadRefusal.OFF,
-                    "Not read: ${PaneReadRefusal.OFF.why}.")
+            // Refused on the card. The first sighting is recorded, so turning the setting on later never gives an old frame a fresh 10 minutes.
+            for ((f, evidence) in finds) {
+                val id = keyOf(server, pane, f.code)
+                ledger.admit(id, now)
+                ledger.admit("$id#${f.fingerprint}", now)
+                if (cards.any { it.id == "$id|off" }) continue
+                cards = cards + Card("$id|off", source, server, pane, sourceName, f, now, evidence, PaneReadState.REFUSED,
+                    PaneReadRefusal.OFF, "Not read: ${PaneReadRefusal.OFF.why}.")
                 port.log("$pane: pane read ${f.code} refused: OFF")
             }
             return
         }
         cards = cards.filterNot { it.sourceServer == server && it.sourcePane == pane && it.id.endsWith("|off") }
-        for (f in frames) {
+        for ((f, evidence) in finds) {
             val id = keyOf(server, pane, f.code)
             val asked = "$id#${f.fingerprint}"
             val known = cards.firstOrNull { it.id == id }
             if (known != null) {
-                if (known.frame != f && cards.none { it.id == asked }) reused(asked, source, server, pane, sourceName, f, now)
+                if (known.frame != f && cards.none { it.id == asked }) reused(asked, source, server, pane, sourceName, f, evidence, now)
                 continue
             }
-            if (ledger.seen(id) && !ledger.seen(asked)) { reused(asked, source, server, pane, sourceName, f, now); continue }
+            if (ledger.seen(id) && !ledger.seen(asked)) { reused(asked, source, server, pane, sourceName, f, evidence, now); continue }
             val deadline = ledger.admit(id, now) ?: continue
             ledger.admit(asked, now)
-            cards = cards + Card(id, source, server, pane, sourceName, f, deadline)
-            port.log("$pane: pane read ${f.code} asked for ${f.pane} on ${f.server}, ${f.lines ?: "visible"} lines")
+            cards = cards + Card(id, source, server, pane, sourceName, f, deadline, evidence)
+            port.log("$pane: pane read ${f.code} asked, ${f.lines ?: "visible"} lines")
         }
     }
 
-    private fun reused(id: String, source: S, server: String, pane: String, name: String, f: PaneReadFrame, now: Long) {
+    private fun reused(id: String, source: S, server: String, pane: String, name: String, f: PaneReadFrame, evidence: String, now: Long) {
         ledger.spend(id, now)
-        cards = cards + Card(id, source, server, pane, name, f, now, PaneReadState.REFUSED, PaneReadRefusal.REUSED,
+        cards = cards + Card(id, source, server, pane, name, f, now, evidence, PaneReadState.REFUSED, PaneReadRefusal.REUSED,
             "Not read: ${PaneReadRefusal.REUSED.why}. Ask the agent for a new request.")
         port.log("$pane: pane read ${f.code} refused: REUSED")
     }
 
     fun cardsFor(server: String, pane: String) = cards.filter { it.sourceServer == server && it.sourcePane == pane }
 
+    /** The approval a Yes/No dialog may be opened with: a pending request, within its 10 minutes, its pane open. */
     fun approvalOf(card: Card<S>): Approval? = cards.firstOrNull { it.id == card.id }
-        ?.takeIf { it.state == PaneReadState.PENDING && it.frame.code == card.frame.code }?.let { Approval(it.id, it.frame.code) }
-
-    /** The newest pending request in this chat not put aside, while its pane is open and within its 10 minutes. */
-    fun dialogFor(server: String, pane: String): Card<S>? {
-        val now = clock()
-        return cardsFor(server, pane).lastOrNull {
-            it.state == PaneReadState.PENDING && it.id !in deferred && now < it.deadline && port.sourceCurrent(it.source)
-        }
-    }
-
-    fun defer(card: Card<S>) { deferred = deferred + card.id }
+        ?.takeIf { it.state == PaneReadState.PENDING && it.frame.code == card.frame.code && clock() < it.deadline }
+        ?.let { Approval(it.id, it.frame.code) }
 
     /** Pending requests past their 10 minutes are Expired; their codes are spent. */
     fun expire() {
@@ -404,14 +446,16 @@ internal class PaneReadRequests<S>(
     }
 
     fun close(card: Card<S>) {
-        if (cards.firstOrNull { it.id == card.id }?.state in setOf(PaneReadState.PENDING, PaneReadState.READING)) return
+        val live = cards.firstOrNull { it.id == card.id } ?: return
+        if (live.state in setOf(PaneReadState.PENDING, PaneReadState.READING) || live.delivering) return
         cards = cards.filter { it.id != card.id }
     }
 
-    /** Background, lock, a lost link or the setting turned off: every card goes. */
+    /** Background, lock, a lost link or the setting turned off: every card goes, and any read, upload or send under way is stopped. */
     fun clear() {
+        jobs.values.forEach { it.cancel() }
+        jobs.clear()
         cards = emptyList()
-        deferred = emptySet()
     }
 
     private fun update(id: String, change: (Card<S>) -> Card<S>) {
@@ -419,9 +463,9 @@ internal class PaneReadRequests<S>(
     }
 
     /**
-     * Yes on the dialog, or Read on the card. False, with nothing read, when the request is gone,
-     * finished, expired, has another code, the setting is off or its pane is no longer open. True
-     * when the read started; the code is spent first, so a request reads at most once.
+     * Yes on the dialog. False, with nothing read, when the request is gone, finished, expired, has
+     * another code, the setting is off or its pane is no longer open. True when the read started;
+     * the code is spent first, so a request reads at most once.
      */
     fun approve(approval: Approval): Boolean {
         expire()
@@ -431,12 +475,17 @@ internal class PaneReadRequests<S>(
         ledger.spend(card.id, clock())
         update(card.id) { it.copy(state = PaneReadState.READING, note = "Reading…") }
         port.log("${card.sourcePane}: pane read ${card.frame.code} approved")
-        scope.launch { perform(card) }
+        val job = scope.launch(start = CoroutineStart.LAZY) {
+            try { perform(card) } finally { jobs.remove(card.id) }
+        }
+        jobs[card.id] = job
+        job.start()
         return true
     }
 
     private suspend fun perform(card: Card<S>) {
         val f = card.frame
+        fun open() = port.enabled() && port.sourceCurrent(card.source)
         fun refuse(why: PaneReadRefusal) {
             port.log("${card.sourcePane}: pane read ${f.code} refused: ${why.name}")
             val pending = why.retry && cards.any { it.id == card.id }
@@ -446,7 +495,6 @@ internal class PaneReadRequests<S>(
                     note = "Not read: ${why.why}. Retry before the request expires.")
                 else it.copy(state = PaneReadState.REFUSED, refusal = why, note = "Not read: ${why.why}.")
             }
-            if (pending) deferred = deferred + card.id
         }
         if (!port.enabled()) return refuse(PaneReadRefusal.OFF)
         if (!port.sourceCurrent(card.source)) return refuse(PaneReadRefusal.SOURCE_CHANGED)
@@ -457,14 +505,22 @@ internal class PaneReadRequests<S>(
         }
         if (server.own) return refuse(PaneReadRefusal.SAME_SERVER)
         if (!server.connected) return refuse(PaneReadRefusal.NOT_CONNECTED)
-        val pane = when (val m = matchPane(server.panes, f.pane)) {
+        val cached = when (val m = matchPane(server.panes, f.pane)) {
             is PaneMatch.Found -> m.pane
             PaneMatch.Ambiguous -> return refuse(PaneReadRefusal.AMBIGUOUS_PANE)
             PaneMatch.None -> return refuse(PaneReadRefusal.UNKNOWN_PANE)
         }
+        // A fresh read of that pane on its server: the same tab and agent as the name matched, or nothing is read.
+        val live = try { port.livePane(server, cached) } catch (c: kotlinx.coroutines.CancellationException) { throw c } catch (_: Exception) { null }
+            ?: return refuse(PaneReadRefusal.UNKNOWN_PANE)
+        if (live.id != cached.id || live.tabId != cached.tabId || live.agent != cached.agent ||
+            (hasStableOccupant(cached) && hasStableOccupant(live) && !sameOccupant(cached, live))) return refuse(PaneReadRefusal.PANE_CHANGED)
+        // herdr's pane get carries no tab label; the name the request matched stays.
+        val pane = live.copy(tabLabel = live.tabLabel.ifBlank { cached.tabLabel })
         val at = clock()
-        val name = PaneReadStore.nameFor(at, f.code)
+        val name = PaneReadStore.nameFor(at, f.code, card.sourcePane)
         if (store.exists(name)) return refuse(PaneReadRefusal.EXISTS)
+        if (!open()) return refuse(PaneReadRefusal.SOURCE_CHANGED)
         val screen = try {
             port.read(server, pane, f.lines)
         } catch (c: kotlinx.coroutines.CancellationException) {
@@ -481,23 +537,22 @@ internal class PaneReadRequests<S>(
         if (!store.save(capture)) return refuse(if (store.exists(name)) PaneReadRefusal.EXISTS else PaneReadRefusal.SAVE_FAILED)
         port.log("${card.sourcePane}: pane read ${f.code} saved on the phone: ${server.id}/${pane.id}, $count lines")
         update(card.id) {
-            it.copy(state = PaneReadState.SAVED, saved = name,
-                note = "Read $count lines of ${capture.pane} on ${server.label}. Kept on this phone in Pane reads.")
+            it.copy(state = PaneReadState.SAVED, saved = name, delivering = true,
+                note = "Read $count lines of ${capture.pane} on ${server.label}. Kept on this phone in Pane reads. Sending it to the agent…")
         }
         // The one approval covers the delivery; it is attempted once, never again for this code.
+        val job = currentCoroutineContext()[Job]
         val why = try {
-            port.deliver(card.source, capture, PaneCaptures.message(capture))
+            port.deliver(card.source, capture, PaneCaptures.message(capture)) { job?.isActive != false && open() }
         } catch (c: kotlinx.coroutines.CancellationException) {
             throw c
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             "the attachment couldn't be copied to this chat's server"
         }
-        if (why == null) {
-            port.log("${card.sourcePane}: pane read ${f.code} attachment send started")
-            update(card.id) { it.copy(delivering = true) }
-        } else {
-            port.log("${card.sourcePane}: pane read ${f.code} not delivered")
-            update(card.id) { it.copy(undeliverable = why) }
+        port.log("${card.sourcePane}: pane read ${f.code} " + if (why == null) "attachment sent" else "attachment not sent")
+        update(card.id) {
+            it.copy(delivering = false, delivery = PaneCaptures.deliveryNote(card.sourceName.substringBefore(" on "), why == null, why),
+                note = "Read $count lines of ${capture.pane} on ${server.label}. Kept on this phone in Pane reads.")
         }
     }
 }

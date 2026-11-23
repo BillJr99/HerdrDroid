@@ -16,19 +16,31 @@ internal val TALL_DIALOG_READS = listOf(200, 400)
 internal const val TALL_DIALOG_MAX_LINES = 400
 
 /**
- * The rows a Claude dialog parser looks at: the last 80, or (2.2.7) the whole of a dialog read
- * back from history, which starts at its top rule, up to [TALL_DIALOG_MAX_LINES].
+ * The first row of a dialog rebuilt from history (a word joiner alone, which draws as nothing): the
+ * text is marked as rebuilt, so no ordinary read (one that happens to start on the input box's own
+ * rule) is ever taken for one (2.2.7 review).
+ */
+internal const val TALL_DIALOG_MARK = "\u2060"
+
+/** A rebuilt dialog: the mark, then the dialog's top rule, then its title row. */
+internal fun isRebuiltDialog(rows: List<String>): Boolean =
+    rows.size >= 3 && rows[0] == TALL_DIALOG_MARK && CLAUDE_DIALOG_TOP_RULE.matches(rows[1]) &&
+        rows[2].isNotBlank() && !rows[2].trimStart().startsWith("│")
+
+/**
+ * The rows a Claude dialog parser looks at: the last 80, or (2.2.7) the whole of a dialog rebuilt
+ * from history ([isRebuiltDialog]), up to [TALL_DIALOG_MAX_LINES].
  */
 internal fun claudeDialogWindow(rows: List<String>, agent: String?): List<String> =
-    if (agent.equals("claude", true) && rows.size > 80 && CLAUDE_DIALOG_TOP_RULE.matches(rows.first())) rows.takeLast(TALL_DIALOG_MAX_LINES)
+    if (agent.equals("claude", true) && rows.size > 80 && isRebuiltDialog(rows)) rows.takeLast(TALL_DIALOG_MAX_LINES + 1)
     else rows.takeLast(80)
 
 private fun screenRows(s: String) = stripAnsi(s).lines().map { it.replace("\r", "").trimEnd() }.dropLastWhile { it.isBlank() }
 
 /**
  * [screen] (a read whose Claude dialog has its top off) completed from [history] (a deeper recent
- * read of the same pane): the dialog from its top rule to the bottom of the screen, or null when the
- * history does not prove it.
+ * read of the same pane): [TALL_DIALOG_MARK], then the dialog from its top rule to the bottom of the
+ * screen, or null when the history does not prove it.
  */
 internal fun extendFramedDialog(screen: String, history: String, blocked: Boolean, version: String?): String? {
     val base = detectPrompt(screen, blocked, "claude", version)?.takeIf { it.topOffScreen && it.choices.isNotEmpty() } ?: return null
@@ -43,7 +55,7 @@ internal fun extendFramedDialog(screen: String, history: String, blocked: Boolea
     if (k >= 2 && d.subList(start - k, start) == b.subList(0, k)) return null
     // The nearest top rule above the screen; the parser then proves every row from it down.
     val top = (start - 1 downTo 0).firstOrNull { CLAUDE_DIALOG_TOP_RULE.matches(d[it]) } ?: return null
-    val candidate = d.drop(top).joinToString("\n")
+    val candidate = (listOf(TALL_DIALOG_MARK) + d.drop(top)).joinToString("\n")
     val whole = detectPrompt(candidate, blocked, "claude", version) ?: return null
     if (whole.topOffScreen || !tallDialogFits(whole, base)) return null
     return candidate
@@ -77,9 +89,17 @@ internal fun tallDialogFits(shown: Prompt, fresh: Prompt): Boolean {
     val b = fresh.shownParts()
     val whole = a.command ?: return false
     val seen = b.command ?: return false
-    if (whole != seen && !whole.endsWith("\n$seen")) return false
-    fun under(p: QuestionParts) = p.blocks.dropWhile { it.kind != QKind.COMMAND }.drop(1)
-    if (under(a) != under(b) || a.tabs != b.tabs) return false
+    // Row by row the screen is the history's bottom; a top row that continues a wrapped line reads as
+    // a line of its own on the screen alone, so the command is compared without its line breaks.
+    if (!whole.replace("\n", "").endsWith(seen.replace("\n", ""))) return false
+    if (a.heading != b.heading || a.tabs != b.tabs) return false
+    // The screen's text (without its note) in the same order in the whole dialog, which adds at most its title and description.
+    val shownText = a.details
+    val seenText = b.details.filter { it != CLAUDE_TOP_OFF_NOTE && it != CLAUDE_TITLE_OFF_NOTE }
+    if (shownText.size - seenText.size !in 0..3) return false
+    var at = 0
+    for (t in shownText) if (at < seenText.size && t == seenText[at]) at++
+    if (at != seenText.size) return false
     fun bare(p: Prompt) = p.copy(selected = null, question = "", parts = null, topOffScreen = false).forCard()
     return bare(shown) == bare(fresh)
 }

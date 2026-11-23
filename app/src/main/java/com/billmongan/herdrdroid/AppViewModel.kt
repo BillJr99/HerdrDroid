@@ -4272,8 +4272,12 @@ class AppViewModel internal constructor(
 
     /** The captures, in the app's private storage only. */
     internal val paneReadStore by lazy {
-        com.billmongan.herdrdroid.herdr.PaneReadStore(java.io.File(getApplication<Application>().filesDir, "pane-reads"))
+        val app = getApplication<Application>()
+        com.billmongan.herdrdroid.herdr.PaneReadStore(java.io.File(app.filesDir, "pane-reads"), shared = java.io.File(app.cacheDir, "shared"))
     }
+
+    /** Tries of a pane read's attachment send to a busy pane, 2.5 s apart. */
+    private val PANE_READ_SEND_TRIES = 8
 
     /** Another server's client, as the relay would reach it; null for this chat's own server, or when it is not connected. */
     private fun paneReadClient(serverId: String): Herdr? {
@@ -4283,10 +4287,6 @@ class AppViewModel internal constructor(
         if (watched.error != null || watched.server != saved || (!foreground && saved.overWebSocket)) return null
         return fleet?.herdr(serverId)?.takeIf { it.connectionIdentity != null }
     }
-
-    /** Each capture's attachment send: its server, pane and text, and whether herdr took it. */
-    private data class PaneReadSend(val server: String, val pane: String, val paneName: String, val text: String, val delivered: Boolean = false)
-    private var paneReadSends by mutableStateOf<Map<String, PaneReadSend>>(emptyMap())
 
     private val paneReadPort = object : com.billmongan.herdrdroid.herdr.PaneReadRequests.Port<CardTarget> {
         override fun enabled() = agentMessagingEnabled && agentMessagingForeground && !locked
@@ -4299,25 +4299,65 @@ class AppViewModel internal constructor(
                 panes = fleetStates[s.id]?.panes.orEmpty(),
             )
         } }
+        override suspend fun livePane(server: com.billmongan.herdrdroid.herdr.PaneReadServer, pane: Pane): Pane? {
+            val h = paneReadClient(server.id) ?: return null
+            return h.relayPane(pane.id, h.connectionIdentity ?: return null)
+        }
         override suspend fun read(server: com.billmongan.herdrdroid.herdr.PaneReadServer, pane: Pane, lines: Int?): String {
             val h = paneReadClient(server.id) ?: throw HerdrError("not connected", 0)
             return if (lines == null) h.readVisible(pane.id, preserveGlyphs = true) else h.read(pane.id, lines, preserveGlyphs = true)
         }
-        override suspend fun deliver(source: CardTarget, capture: com.billmongan.herdrdroid.herdr.PaneCapture, message: String): String? {
-            val h = herdr ?: return "this chat's server is not connected"
-            if (source.client !== h || h.connectionIdentity !== source.connection || link != Link.CONNECTED || current?.id != source.server)
-                return "this chat's server connection changed"
-            val now = pane(source.pane.id)?.takeIf { sameOccupant(it, source.pane) } ?: return "a different session is now in this chat's pane"
-            // The message box's own attachment path: the file goes to ~/.herdrdroid/inbox there, its path in the message.
-            val path = h.upload(capture.name, capture.text.toByteArray(Charsets.UTF_8))
-            val text = "$message $path"
-            paneReadSends = paneReadSends + (capture.name to PaneReadSend(source.server, now.id, com.billmongan.herdrdroid.ui.sessionName(now), text))
-            sendMessage(now, text) {
-                paneReadSends[capture.name]?.let { paneReadSends = paneReadSends + (capture.name to it.copy(delivered = true)) }
-            }
-            return null
-        }
+        override suspend fun deliver(
+            source: CardTarget, capture: com.billmongan.herdrdroid.herdr.PaneCapture, message: String, allowed: () -> Boolean,
+        ): String? = deliverPaneRead(source, capture, message, allowed)
         override fun log(message: String) = com.billmongan.herdrdroid.diag.DiagLog.log("relay", message)
+    }
+
+    /**
+     * 2.2.7 review: the attachment goes on the requesting server's own client and pane ([source]),
+     * never "the server open now". [allowed] (the setting, foreground, unlock, the chat still open
+     * as it was) and the client's connection are checked right before the upload and right before
+     * each try of the send. The send is the guarded one (no draft, question, panel or queued message
+     * there); a busy pane is tried a few times over about 20 seconds, then it gives up.
+     */
+    private suspend fun deliverPaneRead(
+        source: CardTarget, capture: com.billmongan.herdrdroid.herdr.PaneCapture, message: String, allowed: () -> Boolean,
+    ): String? {
+        val h = source.client
+        fun ok() = allowed() && h.connectionIdentity === source.connection && promptLaneClear(source.server, source.pane.id)
+        if (!ok()) return "this chat changed before the attachment went"
+        // The message box's own attachment path: the file goes to ~/.herdrdroid/inbox there, its path in the message.
+        val path = h.upload(capture.name, capture.text.toByteArray(Charsets.UTF_8))
+        val text = "$message $path"
+        val port = object : com.billmongan.herdrdroid.herdr.LocalPromptSend.Port {
+            override suspend fun pane(id: String) =
+                quietly(allowBackground = true) { if (it === h) it.cardPane(id, source.connection) else null }
+            override suspend fun viewport(id: String) =
+                quietly(allowBackground = true) { if (it === h) it.readStyled(id, sendReadLines(source.pane.agent)) else null }
+            override fun blocked(fresh: Pane, viewport: String): Boolean {
+                if ((fresh.backgroundBusy && !takesInputDuringBackgroundWork(fresh.agent)) || blocksNormalSend(fresh, viewport)) return true
+                if (com.billmongan.herdrdroid.herdr.composerFooterSaysWorking(viewport)) return true
+                val line = com.billmongan.herdrdroid.herdr.inputLineOf(viewport, fresh.agent)
+                if (line != "" || com.billmongan.herdrdroid.herdr.composerDraftOf(viewport, fresh.agent) != null) return true
+                return holdReason(fresh.id, viewport) != null
+            }
+            override suspend fun send(fresh: Pane, text: String, permit: com.billmongan.herdrdroid.herdr.WritePermit) =
+                h.sendPermitted(fresh, text, source.connection, permit)
+        }
+        repeat(PANE_READ_SEND_TRIES) { n ->
+            if (n > 0) delay(2_500)
+            if (!ok()) return "this chat changed before the message went (the file is in ~/.herdrdroid/inbox there)"
+            val result = localPromptSend.send(source.server, com.billmongan.herdrdroid.herdr.Occupant.of(source.pane), text, ::ok, port)
+            (result.failure as? LinkDown)?.let { if (herdr === h) linkLost(it) }
+            when (result.outcome) {
+                com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.SENT -> return null
+                com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.REFUSED -> {}
+                com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.UNCERTAIN -> return "HerdrDroid couldn't confirm it went; check the chat"
+                com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.NO_IDENTITY -> return "this server doesn't report which session is in the pane"
+                com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.CONNECTION_CHANGED -> return "the connection changed"
+            }
+        }
+        return "the pane stayed busy (a draft, question, panel or turn was in the way)"
     }
 
     internal val paneReads by lazy {
@@ -4332,16 +4372,6 @@ class AppViewModel internal constructor(
             !sameOccupant(now.pane, owner.pane) || now.pane.scrollOffset != 0 || !hasStableOccupant(now.pane)) return
         val label = current?.let { com.billmongan.herdrdroid.store.agentServerLabel(it, servers) }.orEmpty()
         paneReads.noteFrames(owner, owner.server, owner.pane.id, "${com.billmongan.herdrdroid.ui.sessionName(owner.pane)} on $label", recent)
-    }
-
-    /** What the card says about a capture's attachment send, live. */
-    internal fun paneReadDelivery(card: com.billmongan.herdrdroid.herdr.PaneReadRequests.Card<CardTarget>): String? {
-        card.undeliverable?.let { return com.billmongan.herdrdroid.herdr.PaneCaptures.deliveryNote(unavailable = it) }
-        val send = card.saved?.let { paneReadSends[it] } ?: return null
-        val p = pendingSends.firstOrNull { it.isFor(send.server, send.pane) && it.text == send.text }
-        return com.billmongan.herdrdroid.herdr.PaneCaptures.deliveryNote(
-            paneName = send.paneName, delivered = send.delivered, pending = p != null, waiting = p?.waiting == true,
-            awaitingLink = p?.awaitingLink == true, undelivered = p?.undelivered == true, held = p?.held)
     }
 
     // ---- 2.1.4: telling agents about cross-server messaging ------------------------------------
@@ -4654,7 +4684,17 @@ class AppViewModel internal constructor(
         val live = if (pane.agent == "pi" && h.backend == Backend.TUI &&
             (pane.status == Status.WORKING || currentPane.status == Status.WORKING)) activePiQuestion(text, versionOf(pane.id))
         else detectPrompt(text, currentPane.status == Status.NEEDS_YOU, currentPane.agent, versionOf(pane.id))
-        return live?.takeIf { cardAnswerStillFits(shown, it) }
+        // 2.2.7: a card built from the whole of a tall dialog is checked against the whole dialog,
+        // rebuilt again from a fresh read of the history; when that can't be proven, nothing is sent.
+        val whole = if (live != null && live.topOffScreen && !shown.topOffScreen && currentPane.agent.equals("claude", true) &&
+            com.billmongan.herdrdroid.herdr.tallDialogFits(shown, live)) {
+            val rebuilt = com.billmongan.herdrdroid.herdr.completeTallDialog(text, currentPane.status == Status.NEEDS_YOU, versionOf(pane.id)) { n ->
+                if (isCurrent(h)) h.read(pane.id, n, preserveGlyphs = true) else null
+            }
+            if (!isCurrent(h)) return null
+            detectPrompt(rebuilt, currentPane.status == Status.NEEDS_YOU, currentPane.agent, versionOf(pane.id))
+        } else live
+        return whole?.takeIf { cardAnswerStillFits(shown, it) }
     }
 
     internal fun answerCardKey(target: CardTarget?, prompt: Prompt, key: String, label: String) {

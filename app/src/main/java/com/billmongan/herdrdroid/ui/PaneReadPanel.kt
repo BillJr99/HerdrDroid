@@ -37,15 +37,16 @@ import com.billmongan.herdrdroid.herdr.PaneReadState
 
 /**
  * 2.2.7: the pane read requests in one pane's chat (see herdr/PaneRead.kt). Each card shows who
- * asks, which server and pane, how many lines and why; the newest pending one also opens a Yes/No
- * dialog. Yes reads once, keeps the capture on this phone and sends the requesting agent a short
- * message with it attached.
+ * asks, which server and pane, how many lines and why, and the reply row the request was found
+ * under. Nothing opens by itself: Read on the card opens the Yes/No dialog. Yes reads once, keeps
+ * the capture on this phone and sends the requesting agent a short message with it attached.
  */
 @Composable
 internal fun PaneReadPanel(vm: AppViewModel, paneId: String) {
     val server = vm.current?.id ?: return
     val cards = vm.paneReads.cardsFor(server, paneId)
     var opened by remember(paneId) { mutableStateOf<PaneCapture?>(null) }
+    var asking by remember(paneId) { mutableStateOf<String?>(null) }
     // Pending requests expire on the card, 10 minutes after they appeared.
     LaunchedEffect(paneId, cards.any { it.state == PaneReadState.PENDING }) {
         while (cards.any { it.state == PaneReadState.PENDING }) {
@@ -59,9 +60,9 @@ internal fun PaneReadPanel(vm: AppViewModel, paneId: String) {
             val approval = vm.paneReads.approvalOf(card)
             PaneReadCardView(
                 requester = card.sourceName, frame = card.frame, state = card.state,
-                note = card.note, delivery = vm.paneReadDelivery(card),
+                note = card.note, delivery = card.delivery, evidence = card.evidence,
                 retry = card.state == PaneReadState.PENDING && card.refusal != null,
-                onRead = approval?.let { a -> { vm.paneReads.approve(a); Unit } },
+                onRead = approval?.let { { asking = card.id } },
                 onCancel = { vm.paneReads.cancel(card) },
                 onClose = { vm.paneReads.close(card) },
                 onOpen = card.saved?.let { name -> { opened = vm.paneReadStore.get(name) } },
@@ -69,14 +70,16 @@ internal fun PaneReadPanel(vm: AppViewModel, paneId: String) {
         }
     }
     opened?.let { c -> PaneCaptureDialog(c, onClose = { opened = null }) }
-    if (opened == null) vm.paneReads.dialogFor(server, paneId)?.let { card ->
+    // Opened only from the card's Read; bound to that request's id and code when it opens.
+    if (opened == null) cards.firstOrNull { it.id == asking }?.let { card ->
         key(card.id) {
             val approval = remember { vm.paneReads.approvalOf(card) }
-            if (approval != null) PaneReadApprovalDialog(
+            if (approval == null) LaunchedEffect(Unit) { asking = null }
+            else PaneReadApprovalDialog(
                 requester = card.sourceName, frame = card.frame,
-                onYes = { vm.paneReads.approve(approval) },
-                onNo = { vm.paneReads.cancel(card) },
-                onLater = { vm.paneReads.defer(card) },
+                onYes = { asking = null; vm.paneReads.approve(approval) },
+                onNo = { asking = null; vm.paneReads.cancel(card) },
+                onLater = { asking = null },
             )
         }
     }
@@ -117,6 +120,8 @@ internal fun PaneReadCardView(
     note: String?,
     delivery: String?,
     retry: Boolean,
+    /** The reply row the frame was found under. */
+    evidence: String = "",
     /** Null when the request can't be read now. */
     onRead: (() -> Unit)?,
     onCancel: () -> Unit,
@@ -132,6 +137,9 @@ internal fun PaneReadCardView(
         Text("From: $requester", color = Palette.Ink)
         Text("Read: ${paneReadTarget(frame)}, ${paneReadLines(frame)}", color = Palette.Ink)
         if (frame.reason.isNotBlank()) Text("Reason: ${frame.reason}", color = Palette.Ink)
+        if (evidence.isNotBlank()) Text("Found in the agent's reply under: $evidence", color = Palette.Muted, fontSize = 12.sp,
+            fontFamily = FontFamily.Monospace)
+        Text("Untrusted text from the pane: check that you asked this agent for it.", color = Palette.Muted, fontSize = 12.sp)
         Text("Request ${frame.code}", fontFamily = FontFamily.Monospace, color = Palette.Muted, fontSize = 12.sp)
         note?.let { Text(it, color = Palette.Ink, fontSize = 13.sp) }
         delivery?.let { Text(it, color = Palette.Ink, fontSize = 13.sp) }
