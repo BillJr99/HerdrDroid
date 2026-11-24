@@ -203,6 +203,21 @@ class AppViewModel internal constructor(
         com.billmongan.herdrdroid.diag.DiagLog.log("link", "small-packets-on-cellular=${if (on) "on" else "off"}")
     }
 
+    /**
+     * 2.2.7 (Bill: "maybe it should be a setting to send small packets [on] Wi-Fi as well"):
+     * "Small packets on Wi-Fi (automatic)", off by default; read at each connect like the others.
+     * A VPN over Wi-Fi follows the VPN setting.
+     */
+    var smallPacketsOnWifi by mutableStateOf(prefs.smallPacketsOnWifi.also { com.billmongan.herdrdroid.ssh.VpnSmallPackets.wifiEnabled = it })
+        private set
+
+    fun changeSmallPacketsOnWifi(on: Boolean) {
+        smallPacketsOnWifi = on
+        prefs.smallPacketsOnWifi = on
+        com.billmongan.herdrdroid.ssh.VpnSmallPackets.wifiEnabled = on
+        com.billmongan.herdrdroid.diag.DiagLog.log("link", "small-packets-on-wifi=${if (on) "on" else "off"}")
+    }
+
     fun changeSmallPacketsOnVpn(on: Boolean) {
         smallPacketsOnVpn = on
         prefs.smallPacketsOnVpn = on
@@ -309,7 +324,7 @@ class AppViewModel internal constructor(
         val now = smallPacketClock()
         if (!smallPacketFallback.wouldFire(server.id, reason, now)) return false
         // A drop from a network change or from going to the background is not lossy Wi-Fi.
-        // 2.2.7: automatic small packets (VPN or cellular) were, or will now be, in effect: nothing to fall back to.
+        // 2.2.7: automatic small packets (VPN, cellular or Wi-Fi) were, or will now be, in effect: nothing to fall back to.
         val auto = com.billmongan.herdrdroid.ssh.MssChoice.AUTOMATIC
         val skip = when {
             s.lastMssChoice?.reason?.takeIf { it in auto } != null -> s.lastMssChoice!!.reason

@@ -81,6 +81,38 @@ class VpnSmallPackets227Test {
         assertEquals(MssChoice.NONE, cell("vpn", false, vpnOn = false, cellOn = true).mssChoice().reason)
     }
 
+    private fun wifi(net: String, vpnOn: Boolean, wifiOn: Boolean, serverMss: Int? = null, ws: String? = null) =
+        HerdrSsh("127.0.0.1", 22, "u", Credentials(null, null), null, { null }, ws, serverMss, "fixture", FakeOps(),
+            { vpnOn }, { net }, cellularAuto = { false }, overCellular = { false }, wifiAuto = { wifiOn })
+
+    /** 2.2.7 (Bill: "maybe it should be a setting to send small packets [on] Wi-Fi as well"). */
+    @Test fun wifiAtConnectFollowsTheWifiSetting() {
+        assertEquals(MssChoice(1200, MssChoice.WIFI_AUTO, "wifi"), wifi("wifi", vpnOn = false, wifiOn = true).mssChoice())
+        assertEquals(1200, wifi("wifi", vpnOn = false, wifiOn = true).socketFactoryForNext()!!.mss)
+        assertEquals(MssChoice(null, MssChoice.NONE, "wifi"), wifi("wifi", vpnOn = false, wifiOn = false).mssChoice())
+        assertTrue(MssChoice.WIFI_AUTO in MssChoice.AUTOMATIC)
+        // The server's own setting still wins, with its value; the session fallback is unchanged.
+        assertEquals(MssChoice(900, MssChoice.SETTING, "wifi"), wifi("wifi", vpnOn = false, wifiOn = true, serverMss = 900).mssChoice())
+        val fb = wifi("wifi", vpnOn = false, wifiOn = false).also { it.useSmallPackets(1100) }
+        assertEquals(MssChoice(1100, MssChoice.FALLBACK, "wifi"), fb.mssChoice())
+        // Other networks are not Wi-Fi.
+        for (net in listOf("cellular", "ethernet", "other", "none", "unknown")) assertEquals(net, MssChoice.NONE, wifi(net, vpnOn = false, wifiOn = true).mssChoice().reason)
+    }
+
+    @Test fun aVpnOverWifiFollowsTheVpnSettingOnly() {
+        // A VPN over Wi-Fi reads as "vpn" (the VPN transport comes first), so the Wi-Fi setting never applies to it.
+        assertEquals(MssChoice.NONE, wifi("vpn", vpnOn = false, wifiOn = true).mssChoice().reason)
+        assertEquals(MssChoice(1200, MssChoice.VPN_AUTO, "vpn"), wifi("vpn", vpnOn = true, wifiOn = false).mssChoice())
+        assertEquals(MssChoice.VPN_AUTO, wifi("vpn", vpnOn = true, wifiOn = true).mssChoice().reason)
+        assertEquals("vpn", com.billmongan.herdrdroid.diag.NetworkWatch.typeOf(vpn = true, wifi = true, cellular = false, ethernet = false))
+    }
+
+    @Test fun wifiLeavesAWebSocketAlone() {
+        val ws = wifi("wifi", vpnOn = true, wifiOn = true, ws = "wss://bridge.invalid/ssh")
+        assertEquals(MssChoice(null, MssChoice.NONE, "wifi"), ws.mssChoice())
+        assertNull(ws.socketFactoryForNext())
+    }
+
     @Test fun cellularLeavesAWebSocketAlone() {
         val ws = cell("cellular", true, vpnOn = true, cellOn = true, ws = "wss://bridge.invalid/ssh")
         assertNull(ws.activeMss)

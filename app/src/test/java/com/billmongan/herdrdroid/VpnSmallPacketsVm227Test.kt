@@ -39,6 +39,51 @@ class VpnSmallPacketsVm227Test {
         shadowOf(Looper.getMainLooper()).idle()
         VpnSmallPackets.enabled = false
         VpnSmallPackets.cellularEnabled = false
+        VpnSmallPackets.wifiEnabled = false
+    }
+
+    /** 2.2.7: "Small packets on Wi-Fi (automatic)" is off unless turned on, persists, and drives each connect on Wi-Fi. */
+    @Test fun theWifiSettingIsOffByDefaultPersistsAndNeverTouchesAVpn() {
+        val vm = newVm()
+        assertFalse(vm.smallPacketsOnWifi)
+        assertFalse(AppPrefs(app).smallPacketsOnWifi)
+        assertFalse(VpnSmallPackets.wifiEnabled)
+        val wifi = HerdrSsh("127.0.0.1", 22, "u", Credentials(null, null), null, { null }, networkType = { "wifi" }, overCellular = { false })
+        val vpnOverWifi = HerdrSsh("127.0.0.1", 22, "u", Credentials(null, null), null, { null }, networkType = { "vpn" }, overCellular = { false })
+        assertNull(wifi.activeMss)
+        DiagLog.clear()
+        vm.changeSmallPacketsOnWifi(true)
+        assertTrue(DiagLog.text().contains("small-packets-on-wifi=on"))
+        assertTrue(AppPrefs(app).smallPacketsOnWifi)
+        assertEquals(MssChoice(1200, MssChoice.WIFI_AUTO, "wifi"), wifi.mssChoice())
+        assertNull("a VPN over Wi-Fi follows the VPN setting", vpnOverWifi.activeMss)
+        vm.changeSmallPacketsOnVpn(true)
+        assertEquals(MssChoice.VPN_AUTO, vpnOverWifi.mssChoice().reason)
+        // The server's own setting wins; a WebSocket never sets one.
+        assertEquals(MssChoice(1000, MssChoice.SETTING, "wifi"),
+            HerdrSsh("127.0.0.1", 22, "u", Credentials(null, null), null, { null }, null, 1000, networkType = { "wifi" }).mssChoice())
+        assertNull(HerdrSsh("unused", 0, "u", Credentials(null, null), null, { null }, "wss://bridge.invalid/ssh", networkType = { "wifi" }).activeMss)
+
+        VpnSmallPackets.wifiEnabled = false // as if the process restarted
+        assertTrue("restored from the saved setting", newVm().smallPacketsOnWifi)
+        assertTrue(VpnSmallPackets.wifiEnabled)
+        vm.changeSmallPacketsOnWifi(false)
+        vm.changeSmallPacketsOnVpn(false)
+        assertFalse(newVm().smallPacketsOnWifi)
+        assertNull(wifi.activeMss)
+    }
+
+    @Test fun theFallbackNeverFiresWhenWifiAutoWasInEffect() {
+        val vm = newVm()
+        vm.changeSmallPacketsOnWifi(true)
+        DiagLog.clear()
+        val ssh = HerdrSsh(a.host, a.port, a.user, Credentials(null, null), null, { null }, networkType = { "wifi" }, overCellular = { false })
+        signedIn(vm, ssh)
+        vm.smallPacketFallback.arm(a.id, true, now, NetworkWatch.changes)
+        now += 5_000
+        assertFalse(vm.maybeSmallPacketFallback(LinkDown(java.io.IOException("stall")), ssh))
+        assertTrue(DiagLog.text().contains("fallback=skipped reason=wifi-auto trigger=link-drop"))
+        assertNull(vm.smallPacketOffer)
     }
 
     /** 2.2.7 (Bill, after testing): both automatic settings are off unless turned on, also for existing installs. */
