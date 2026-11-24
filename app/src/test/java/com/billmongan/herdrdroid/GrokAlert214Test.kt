@@ -37,12 +37,12 @@ class GrokAlert214Test {
     private fun card(text: String) = checkNotNull(detectPrompt(text, true, "grok"))
 
     private val title = "Confirm the back arrow click line"
-    private val command = "git -C /home/bill/Documents/repos/HerdrDroid show " +
+    private val command = "git -C /home/user/Documents/repos/HerdrDroid show " +
         "507e0344560ef35cbd6f843ff81c4aa499376ca7:app/src/main/java/com/billmongan/herdrdroid/ui/ServersScreen.kt | " +
         """awk 'NR>=114 && NR<=120 {printf "%d:%s\n", NR, ${'$'}0}'"""
 
     /** The question 2.1.3 read from this screen: the first row, then the "┆" rows, marks and all. */
-    private val question213 = "git -C /home/bill/Documents/repos/HerdrDroid show· " +
+    private val question213 = "git -C /home/user/Documents/repos/HerdrDroid show· " +
         "┆ 507e0344560ef35cbd6f843ff81c4aa499376ca7:app/src/main/java/com/billmongan/herdrdroid/ui/ServersScreen.kt |· " +
         """┆ awk 'NR>=114 && NR<=120 {printf "%d:%s\n", NR, ${'$'}0}'"""
 
@@ -50,7 +50,7 @@ class GrokAlert214Test {
         assertEquals("$title\n$command", alertText(card(light)))
         // A command of several lines keeps them.
         val rows = light.replace("show·", "show").replace("ServersScreen.kt |·", "ServersScreen.kt |")
-        assertEquals(listOf(title, "git -C /home/bill/Documents/repos/HerdrDroid show",
+        assertEquals(listOf(title, "git -C /home/user/Documents/repos/HerdrDroid show",
             "507e0344560ef35cbd6f843ff81c4aa499376ca7:app/src/main/java/com/billmongan/herdrdroid/ui/ServersScreen.kt |",
             """awk 'NR>=114 && NR<=120 {printf "%d:%s\n", NR, ${'$'}0}'"""), alertText(card(rows)).lines())
     }

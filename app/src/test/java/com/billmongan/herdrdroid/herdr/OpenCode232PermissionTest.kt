@@ -104,7 +104,7 @@ class OpenCode232PermissionTest {
     }
 
     @Test fun theEmptyComposerIsStillNoCard() {
-        val empty = javaClass.getResource("/screens/opencode/live-2026-11-20-college/empty.ansi")!!.readText()
+        val empty = javaClass.getResource("/screens/opencode/live-2026-11-20-second/empty.ansi")!!.readText()
         assertNull(detectPrompt(empty, blocked = false, agent = "opencode-college"))
     }
 }

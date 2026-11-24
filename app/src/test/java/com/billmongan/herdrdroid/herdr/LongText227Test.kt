@@ -48,7 +48,7 @@ class LongText227Test {
         assertTrue(isSlashCommand("/model"))
         assertTrue(isSlashCommand("/usage now"))
         assertTrue(isSlashCommand("  /btw what?"))
-        assertFalse(isSlashCommand("/home/bill/.herdrdroid/inbox/20261123-175448-log.txt"))
+        assertFalse(isSlashCommand("/home/user/.herdrdroid/inbox/20261123-175448-log.txt"))
         assertFalse(isSlashCommand("/ "))
         assertFalse(isSlashCommand("look at /tmp/x"))
         val p = "/home/fixture/.herdrdroid/inbox/20261123-175448-log.txt"

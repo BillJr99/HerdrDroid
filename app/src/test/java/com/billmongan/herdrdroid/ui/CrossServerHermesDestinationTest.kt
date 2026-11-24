@@ -89,7 +89,7 @@ class CrossServerHermesDestinationTest {
         assertEquals("hermes", hermes.agent)
         assertEquals("hermes", hermes.tabLabel)
         assertEquals(Status.IDLE, hermes.status)
-        assertEquals("/home/bill/agents/hermes", hermes.cwd)
+        assertEquals("/home/user/agents/hermes", hermes.cwd)
         assertTrue(checkNotNull(hermes.sessionId).startsWith("local-"))
         assertTrue(hasStableOccupant(hermes))
     }
@@ -290,8 +290,8 @@ class CrossServerHermesDestinationTest {
         }
 
         companion object {
-            const val HERMES = """{"agent":"hermes","agent_session":{"agent":"hermes","kind":"id","source":"herdr:hermes","value":"local-0a90b0f4004e689564430e279fe241242bfcd4c6ec8b3d6403e31424e3e98b0f"},"agent_status":"idle","cwd":"/home/bill","focused":false,"foreground_cwd":"/home/bill/agents/hermes","pane_id":"w2:p9","revision":1,"scroll":{"max_offset_from_bottom":151,"offset_from_bottom":0,"viewport_rows":47},"tab_id":"w2:t6","terminal_id":"term_6603a9992f0f05","terminal_title":"bill@laptop2: ~","terminal_title_stripped":"bill@laptop2: ~","workspace_id":"w2"}"""
-            const val CLAUDE = """{"agent":"claude","agent_session":{"agent":"claude","kind":"id","source":"herdr:claude","value":"9989db43-2c5c-42c9-b31c-eab9c4663226"},"agent_status":"working","cwd":"/home/bill","focused":false,"foreground_cwd":"/home/bill/agents/claude","pane_id":"w2:p5","revision":2,"scroll":{"max_offset_from_bottom":0,"offset_from_bottom":0,"viewport_rows":47},"tab_id":"w2:t2","terminal_id":"term_6603a9992d9361","terminal_title":"Laptop2","terminal_title_stripped":"Laptop2","workspace_id":"w2"}"""
+            const val HERMES = """{"agent":"hermes","agent_session":{"agent":"hermes","kind":"id","source":"herdr:hermes","value":"local-0a90b0f4004e689564430e279fe241242bfcd4c6ec8b3d6403e31424e3e98b0f"},"agent_status":"idle","cwd":"/home/user","focused":false,"foreground_cwd":"/home/user/agents/hermes","pane_id":"w2:p9","revision":1,"scroll":{"max_offset_from_bottom":151,"offset_from_bottom":0,"viewport_rows":47},"tab_id":"w2:t6","terminal_id":"term_6603a9992f0f05","terminal_title":"bill@laptop2: ~","terminal_title_stripped":"bill@laptop2: ~","workspace_id":"w2"}"""
+            const val CLAUDE = """{"agent":"claude","agent_session":{"agent":"claude","kind":"id","source":"herdr:claude","value":"9989db43-2c5c-42c9-b31c-eab9c4663226"},"agent_status":"working","cwd":"/home/user","focused":false,"foreground_cwd":"/home/user/agents/claude","pane_id":"w2:p5","revision":2,"scroll":{"max_offset_from_bottom":0,"offset_from_bottom":0,"viewport_rows":47},"tab_id":"w2:t2","terminal_id":"term_6603a9992d9361","terminal_title":"Laptop2","terminal_title_stripped":"Laptop2","workspace_id":"w2"}"""
         }
     }
 

@@ -24,7 +24,7 @@ class PlaceholderCaptureTest {
     )
 
     @Test fun `no empty box captured live is a draft or typing`() {
-        val all = captures.entries.map { it.key to it.value } + ("opencode" to screen("opencode/live-2026-11-20-college/empty.ansi"))
+        val all = captures.entries.map { it.key to it.value } + ("opencode" to screen("opencode/live-2026-11-20-second/empty.ansi"))
         for ((agent, s) in all) {
             assertNull(agent, composerDraftOf(s, agent))
             // 2.2.2: a blank Oh My Pi or Copilot box may hold typed spaces (no cursor is drawn), so a normal
