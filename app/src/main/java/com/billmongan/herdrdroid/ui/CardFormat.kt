@@ -28,8 +28,9 @@ sealed interface CardBlock {
     /** A bulleted or numbered list. */
     data class Items(val items: List<CardItem>) : CardBlock
     /**
-     * A command, script, path or diff in monospace. [diff] colours its +/- lines; [wrap] is for one
-     * line (a long path or command wraps instead of scrolling sideways).
+     * A command, script, path or diff in monospace. [diff] colours its +/- lines; [wrap] marks one
+     * line (a path or command). 2.2.8: no code block wraps or folds on the card any more; each keeps
+     * its lines and indentation and scrolls sideways ([CardCode]).
      */
     data class Code(val lines: List<String>, val diff: Boolean = false, val wrap: Boolean = false,
         /** 2.2.2: a fenced block the agent wrote: shown and copied exactly, with no terminal glyph rules applied. */
