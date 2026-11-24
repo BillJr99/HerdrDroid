@@ -11,7 +11,7 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class CrossServerNoticeTest {
     @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = IdleMainLooperRule()
-    private val others = listOf("Hermes on laptop2", "OpenCode · opencode-ursinus on laptop2", "Claude on laptop2")
+    private val others = listOf("Hermes on laptop2", "OpenCode · opencode-college on laptop2", "Claude on laptop2")
 
     /** Grok's RC review 4: a server with no name is "server N" to agents, never its account, host or port. */
     @Test fun agentFacingServerLabelsCarryNoAccountHostOrPort() {
@@ -43,7 +43,7 @@ class CrossServerNoticeTest {
         assertFalse(text.contains("one-time code"))
         assertTrue(text.contains("at most 1024 UTF-8 bytes"))
         assertTrue(text.contains("do not send it yourself"))
-        assertTrue(text.contains("Agents on other servers: Claude on laptop2, Hermes on laptop2, OpenCode · opencode-ursinus on laptop2."))
+        assertTrue(text.contains("Agents on other servers: Claude on laptop2, Hermes on laptop2, OpenCode · opencode-college on laptop2."))
         // 2.2.0: the user approves with Yes or No on the phone; nobody types the code back.
         assertTrue(text.endsWith("delivered only if the user taps Yes on the phone; you will not see that answer."))
         assertTrue(text.contains("with a Yes/No question"))
