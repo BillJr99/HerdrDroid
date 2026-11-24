@@ -67,4 +67,13 @@ class QuestionFormat228Test {
         assertTrue(blocks.contains(CardBlock.Labelled("Reason", "outside workspace")))
         assertEquals(4, p.choices.size)
     }
+
+    @Test fun claudeQuestionTallerThanThirtyRowsKeepsItsTabAndAllItsText() {
+        assertWholeQuestion("claude/derived-2.2.8-format/long-code-question.txt")
+        assertWholeQuestion("claude/derived-2.2.8-format/long-indented-question.txt")
+        val (p, blocks, s) = card("claude/derived-2.2.8-format/long-code-question.txt")
+        // The tab's title is not text of the question.
+        assertFalse(text(blocks).contains("Build loop"))
+        assertEquals("Replace the loop with the Python call above and keep the make line.", CardFormat.optionNotes(s, p.choices)["2"])
+    }
 }
