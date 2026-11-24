@@ -105,7 +105,7 @@ class ManualAnswerDispatchTest {
 
     @Test fun occupiedPaneShowsFailureForAnOrdinaryCardTapWithoutQueueing() {
         val vm = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
-        val server = Server(id = "test", name = "Test", host = "unused.invalid", port = -1, user = "test", herdrPath = "herdr")
+        val server = Server(id = "test", name = "Test", host = "127.0.0.1", port = -1, user = "test", herdrPath = "herdr")
         // Install an unopened client to reach the busy-lane branch without a connection attempt.
         val ssh = HerdrSsh(server.host, server.port, server.user, Credentials(null, null), null, { null })
         field("herdr").set(vm, Herdr(ssh, server.herdrPath))

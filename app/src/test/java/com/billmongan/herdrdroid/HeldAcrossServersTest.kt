@@ -35,8 +35,8 @@ import org.robolectric.Shadows.shadowOf
 class HeldAcrossServersTest {
     @get:Rule val idleMainLooper = IdleMainLooperRule()
     private val vm = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
-    private val a = Server(id = "fixture-a", name = "FixtureA", host = "a.invalid", port = 22, user = "fixa", herdrPath = "/fixture/herdr")
-    private val b = Server(id = "fixture-b", name = "FixtureB", host = "b.invalid", port = 22, user = "fixb", herdrPath = "/fixture/herdr")
+    private val a = Server(id = "fixture-a", name = "FixtureA", host = "127.0.0.1", port = 1, user = "fixa", herdrPath = "/fixture/herdr")
+    private val b = Server(id = "fixture-b", name = "FixtureB", host = "127.0.0.1", port = 2, user = "fixb", herdrPath = "/fixture/herdr")
     private val drafted = "● Done.\n\n" + "─".repeat(60) + "\n❯ a draft at the computer\n" + "─".repeat(60) + "\n  ? for shortcuts"
     private val empty = "● Done.\n\n" + "─".repeat(60) + "\n❯ \n" + "─".repeat(60) + "\n  ? for shortcuts"
 
@@ -156,7 +156,7 @@ class HeldAcrossServersTest {
     private fun wait(steps: Int) = repeat(steps) { shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(3)); Thread.sleep(5) }
 
     private class Previews(private val out: String) : Herdr.Commands {
-        val client = Herdr(HerdrSsh("fake.invalid", 22, "fake", Credentials(null, null), null, { null }), "/fixture/herdr", Backend.TUI, null, this)
+        val client = Herdr(HerdrSsh("127.0.0.1", 3, "fake", Credentials(null, null), null, { null }), "/fixture/herdr", Backend.TUI, null, this)
         override val connection: Any? = Any()
         override suspend fun bulk(command: String): ExecResult = ExecResult(0, out, "")
         override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult = error("not expected: $command")
@@ -164,7 +164,7 @@ class HeldAcrossServersTest {
 
     /** One Claude pane w1:p1 on a fake herdr: reads give [screen]; writes are recorded. */
     private class Fake(@Volatile var screen: String) : Herdr.Commands {
-        val ssh = HerdrSsh("fake.invalid", 22, "fake", Credentials(null, null), null, { null })
+        val ssh = HerdrSsh("127.0.0.1", 3, "fake", Credentials(null, null), null, { null })
         val client = Herdr(ssh, "/fixture/herdr", Backend.TUI, null, this)
         override var connection: Any? = Any()
         val pane = Pane("w1:p1", "w1:t1", "w1", "claude", Status.IDLE, "Codex · 1", "/fixture", scrollOffset = 0, terminalId = "t1")

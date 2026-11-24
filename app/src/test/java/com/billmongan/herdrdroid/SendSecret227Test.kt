@@ -82,12 +82,12 @@ class SendSecret227Test {
 
     private fun setUp(commands: Computer): AppViewModel {
         val vm = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
-        val server = Server(id = "secret-fixture", name = "Fixture", host = "unused.invalid", port = 22, user = "u", herdrPath = "herdr")
+        val server = Server(id = "secret-fixture", name = "Fixture", host = "127.0.0.1", port = 1, user = "u", herdrPath = "herdr")
         fun field(name: String) = AppViewModel::class.java.getDeclaredField(name).apply { isAccessible = true }
         @Suppress("UNCHECKED_CAST")
         fun <T> state(name: String) = field("$name\$delegate").get(vm) as MutableState<T>
         rule.runOnUiThread {
-            field("herdr").set(vm, Herdr(HerdrSsh("unused.invalid", 22, "u", Credentials(null, null), null, { null }), "herdr", Backend.TUI, null, commands))
+            field("herdr").set(vm, Herdr(HerdrSsh("127.0.0.1", 1, "u", Credentials(null, null), null, { null }), "herdr", Backend.TUI, null, commands))
             state<Server?>("current").value = server
             state<Link>("link").value = Link.CONNECTED
             state<List<Pane>>("panes").value = listOf(

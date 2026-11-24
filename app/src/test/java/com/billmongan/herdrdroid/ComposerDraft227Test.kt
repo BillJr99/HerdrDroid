@@ -41,8 +41,8 @@ class ComposerDraft227Test {
 
     private val app = ApplicationProvider.getApplicationContext<Application>()
     private val vms = mutableListOf<AppViewModel>()
-    private val a = Server(id = "draft-a", name = "A", host = "a.invalid", port = 22, user = "u", herdrPath = "herdr")
-    private val b = Server(id = "draft-b", name = "B", host = "b.invalid", port = 22, user = "u", herdrPath = "herdr")
+    private val a = Server(id = "draft-a", name = "A", host = "127.0.0.1", port = 1, user = "u", herdrPath = "herdr")
+    private val b = Server(id = "draft-b", name = "B", host = "127.0.0.1", port = 2, user = "u", herdrPath = "herdr")
 
     @Before fun plainSeal() {
         // The Android Keystore is not in Robolectric: seal as is, to test the keeping, not the sealing.
@@ -74,7 +74,7 @@ class ComposerDraft227Test {
     private fun newVm(commands: Quiet = Quiet()): AppViewModel = rule.runOnUiThread {
         AppViewModel(app).also { vm ->
             vms += vm
-            field(vm, "herdr").set(vm, Herdr(HerdrSsh("a.invalid", 22, "u", Credentials(null, null), null, { null }), "herdr", Backend.TUI, null, commands))
+            field(vm, "herdr").set(vm, Herdr(HerdrSsh("127.0.0.1", 1, "u", Credentials(null, null), null, { null }), "herdr", Backend.TUI, null, commands))
             state(vm, "current", a)
             state(vm, "link", Link.CONNECTED)
             state(vm, "panes", listOf(Pane("p1", "tab", "w1", "claude", Status.IDLE, "", "/fixture", terminalId = "t1"),

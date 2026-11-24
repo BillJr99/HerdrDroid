@@ -66,7 +66,7 @@ class PaneScreenExportTest {
                 return ExecResult(0, if ("'--format' 'ansi'" in command) ansi else plain, "")
             }
         }
-        val ssh = HerdrSsh("fake.invalid", 22, "fake", Credentials(null, null), null, { null })
+        val ssh = HerdrSsh("127.0.0.1", 1, "fake", Credentials(null, null), null, { null })
         val h = Herdr(ssh, "/fixture/herdr", Backend.TUI, null, fake)
         val (p, a) = h.exportScreens("w1:p1")
         assertEquals(plain, p)

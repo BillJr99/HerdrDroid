@@ -29,7 +29,7 @@ class VpnSmallPacketsVm227Test {
     @get:Rule val idleMainLooper = IdleMainLooperRule()
     private val app = ApplicationProvider.getApplicationContext<Application>()
     private val vms = mutableListOf<AppViewModel>()
-    private val a = Server(id = "fixture-vpn-a", name = "FixtureA", host = "a.invalid", port = 22, user = "u", herdrPath = "herdr")
+    private val a = Server(id = "fixture-vpn-a", name = "FixtureA", host = "127.0.0.1", port = 1, user = "u", herdrPath = "herdr")
     private var now = 10_000L
 
     private fun newVm() = AppViewModel(app).also { vms += it }

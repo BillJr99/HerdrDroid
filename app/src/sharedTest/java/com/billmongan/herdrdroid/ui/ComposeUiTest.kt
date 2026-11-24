@@ -427,7 +427,7 @@ class ComposeUiTest {
         @Suppress("UNCHECKED_CAST")
         (AppViewModel::class.java.getDeclaredField("current\$delegate").apply { isAccessible = true }.get(vm)
             as androidx.compose.runtime.MutableState<Any?>).value =
-            com.billmongan.herdrdroid.store.Server(id = "offline", name = "Offline", host = "offline.invalid", port = 22, user = "u", herdrPath = "herdr")
+            com.billmongan.herdrdroid.store.Server(id = "offline", name = "Offline", host = "127.0.0.1", port = 1, user = "u", herdrPath = "herdr")
         rule.setContent {
             androidx.compose.foundation.layout.Column {
                 vm.removableSendsFor(target.id).forEach { pending ->

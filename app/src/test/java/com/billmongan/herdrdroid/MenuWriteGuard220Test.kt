@@ -34,7 +34,7 @@ import org.robolectric.Shadows.shadowOf
 class MenuWriteGuard220Test {
     @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = IdleMainLooperRule()
     private val vm = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
-    private val server = Server(id = "fixture-m", name = "FixtureM", host = "m.invalid", port = 22, user = "fixm", herdrPath = "/fixture/herdr")
+    private val server = Server(id = "fixture-m", name = "FixtureM", host = "127.0.0.1", port = 1, user = "fixm", herdrPath = "/fixture/herdr")
 
     @After fun close() {
         vm.viewModelScope.cancel()
@@ -138,7 +138,7 @@ class MenuWriteGuard220Test {
 
     /** One idle agent pane on a fake herdr; every read gives [screen]; each key press moves to the next of [afterKeys]. */
     private class Fake(agent: String, @Volatile var screen: String, core: Boolean = false) : Herdr.Commands {
-        val ssh = HerdrSsh("fake.invalid", 22, "fake", Credentials(null, null), null, { null })
+        val ssh = HerdrSsh("127.0.0.1", 2, "fake", Credentials(null, null), null, { null })
         val client = Herdr(ssh, "/fixture/herdr", if (core) Backend.CORE else Backend.TUI, if (core) "/fixture/hc" else null, this)
         override var connection: Any? = Any()
         private val paneJson = """{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1","agent":"$agent","agent_status":"idle","cwd":"/fixture","terminal_id":"t1","scroll":{"offset_from_bottom":0}}"""

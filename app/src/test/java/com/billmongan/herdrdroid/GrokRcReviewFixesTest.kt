@@ -43,8 +43,8 @@ import org.robolectric.Shadows.shadowOf
 class GrokRcReviewFixesTest {
     @get:Rule val idleMainLooper = IdleMainLooperRule()
     private val vm = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
-    private val a = Server(id = "fixture-a", name = "FixtureA", host = "a.invalid", port = 22, user = "fixa", herdrPath = "/fixture/herdr")
-    private val b = Server(id = "fixture-b", name = "FixtureB", host = "b.invalid", port = 22, user = "fixb", herdrPath = "/fixture/herdr")
+    private val a = Server(id = "fixture-a", name = "FixtureA", host = "127.0.0.1", port = 1, user = "fixa", herdrPath = "/fixture/herdr")
+    private val b = Server(id = "fixture-b", name = "FixtureB", host = "127.0.0.1", port = 2, user = "fixb", herdrPath = "/fixture/herdr")
     private val sessionsList = checkNotNull(javaClass.getResource("/screens/claude/captured-2.1.329/background-awaiting-input.txt")).readText()
     private val emptyClaude = "● Done.\n\n" + "─".repeat(60) + "\n❯ \n" + "─".repeat(60) + "\n  ? for shortcuts"
 
@@ -223,7 +223,7 @@ class GrokRcReviewFixesTest {
 
     /** One Claude pane on a fake herdr: reads give the last N lines of [screen]; writes are recorded. */
     private class Fake(@Volatile var screen: String, status: String = "idle", scroll: Int = 0) : Herdr.Commands {
-        val ssh = HerdrSsh("fake.invalid", 22, "fake", Credentials(null, null), null, { null })
+        val ssh = HerdrSsh("127.0.0.1", 3, "fake", Credentials(null, null), null, { null })
         val client = Herdr(ssh, "/fixture/herdr", Backend.TUI, null, this)
         override var connection: Any? = Any()
         val pane = Pane("w1:p1", "w1:t1", "w1", "claude",

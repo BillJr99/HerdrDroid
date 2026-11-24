@@ -6,7 +6,7 @@ import org.junit.Test
 
 /** 2.2.6: the per-server "Small packets" setting is saved, bounded and ignored over a WebSocket. */
 class SmallPacketsSetting226Test {
-    private val base = Server(id = "s1", name = "Fixture", host = "fixture.invalid", port = 22, user = "u", herdrPath = "herdr")
+    private val base = Server(id = "s1", name = "Fixture", host = "127.0.0.1", port = 1, user = "u", herdrPath = "herdr")
 
     @Test fun offWith1200ByDefault() {
         assertFalse(base.smallPackets)
