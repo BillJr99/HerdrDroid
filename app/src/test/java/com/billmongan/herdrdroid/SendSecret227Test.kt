@@ -68,6 +68,7 @@ class SendSecret227Test {
         override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult {
             if (command.contains("send-") || command.contains("'agent' 'prompt'")) writes += command
             if (command.endsWith("'pane' 'get' 'p1'")) return ExecResult(0, """{"result":{"pane":${pane("p1", "claude")}}}""", "")
+            if (command.endsWith("'pane' 'get' 'p2'")) return ExecResult(0, """{"result":{"pane":${pane("p2", "codex")}}}""", "")
             // An idle input line, so the screen is read as ready (an empty read keeps a loading state up).
             if (command.contains("'pane' 'read'")) return ExecResult(0, "──\n❯ \n──", "")
             return ExecResult(0, "", "")
