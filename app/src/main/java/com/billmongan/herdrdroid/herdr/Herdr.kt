@@ -459,6 +459,14 @@ class Herdr internal constructor(
     private fun screenText(text: String, preserveGlyphs: Boolean) = if (preserveGlyphs) stripAnsi(text) else forPhone(text)
 
     /**
+     * 2.2.7, Export pane screen: the visible screen exactly as herdr returns it, plain and then
+     * ANSI, unchanged by the app. herdr-core has one plain read, given for both.
+     */
+    internal suspend fun exportScreens(paneId: String): Pair<String, String> =
+        if (core) runNow(hcCmd("read", paneId, "--lines", "80"), timeoutSeconds = 5).let { it to it }
+        else runNow(visibleSnapshot(paneId, ansi = false), timeoutSeconds = 5) to runNow(visibleSnapshot(paneId, ansi = true), timeoutSeconds = 5)
+
+    /**
      * The notification's strict read (2.1.2) with its styles kept: the same [read] (the bottom
      * [lines] rows, no card-recovery fallback), as ANSI, so an OpenCode permission's highlighted
      * button can be seen before a key goes in. herdr-core gives plain text, where no button counts
@@ -1384,16 +1392,19 @@ private fun claudeDescriptionAbove(t: String, next: QLine?): Boolean {
 /** Claude Code 2.1.329+'s dashed rules around a permission dialog's command, at the screen's left edge. */
 private val CLAUDE_DASHED_RULE = Regex("""^ ?╌{20,}\s*$""")
 /** The plain rule Claude draws above a permission dialog, at the screen's left edge. */
-private val CLAUDE_DIALOG_TOP_RULE = Regex("""^─{20,}\s*$""")
+internal val CLAUDE_DIALOG_TOP_RULE = Regex("""^─{20,}\s*$""")
 /** A row in the dialog's "│" gutter: the command's rows, and a hook's reason (2.2.4). */
 private val CLAUDE_GUTTER_ROW = Regex("""^ {0,2}│(?: (.*))?$""")
-/** What the card says when a tall dialog's top has scrolled off the screen (2.2.4). */
-internal const val CLAUDE_TOP_OFF_NOTE = "The top of this command is off screen. Show terminal to see all of it."
+/**
+ * What the card says when a tall dialog's top has scrolled off the screen (2.2.4) and, since 2.2.7,
+ * the pane's history read back to [TALL_DIALOG_MAX_LINES] lines still does not reach it ([completeTallDialog]).
+ */
+internal const val CLAUDE_TOP_OFF_NOTE = "Part of this command is above what the app can read; Show terminal to see it."
 /** The same, when the whole command shows but the dialog's title and description scrolled off. */
-internal const val CLAUDE_TITLE_OFF_NOTE = "The top of this dialog is off screen. Show terminal to see all of it."
+internal const val CLAUDE_TITLE_OFF_NOTE = "Part of this dialog is above what the app can read; Show terminal to see it."
 
 /** A Claude permission dialog read by its frame: its lines for [questionParts], and whether its top scrolled off. */
-internal class ClaudeFramed(val lines: List<QLine>, val topOffScreen: Boolean)
+internal class ClaudeFramed(val lines: List<QLine>, val topOffScreen: Boolean, /** 2.2.7: the top rule's row, or -1 when off the read. */ val top: Int = -1)
 
 /**
  * 2.2.4 (Bill: "herdrDroid failed to render that yes no question"): Claude Code 2.1.330's permission
@@ -1438,6 +1449,7 @@ internal fun claudeFramedDialog(raw: List<String>, at: Int): ClaudeFramed? {
     // Over the command: the title and the description, under the plain rule (or the screen's top).
     var titleRows = emptyList<String>()
     var topOff = j < 0
+    var topRow = -1
     if (j >= 0) {
         var t = j - 1
         while (t >= 0 && !CLAUDE_DIALOG_TOP_RULE.matches(raw[t])) {
@@ -1447,6 +1459,7 @@ internal fun claudeFramedDialog(raw: List<String>, at: Int): ClaudeFramed? {
         titleRows = (t + 1 until j).map { raw[it].trim() }
         if (t < 0) topOff = true
         else {
+            topRow = t
             // A full dialog names its tool on its first row.
             val title = titleRows.firstOrNull() ?: return null
             if (!CLAUDE_COMMAND_TITLE.matches(title) && !CLAUDE_REQUEST_SOURCE.containsMatchIn(title) && !COMMAND_INTRO.matches(title)) return null
@@ -1474,7 +1487,7 @@ internal fun claudeFramedDialog(raw: List<String>, at: Int): ClaudeFramed? {
         gap = false
     }
     question.forEachIndexed { n, q -> out += QLine(q, gapBefore = n == 0) }
-    return ClaudeFramed(out, topOff)
+    return ClaudeFramed(out, topOff, topRow)
 }
 
 /** Vibe's "Permission for the file_system.bash tool (…)": the command is the next line. */
@@ -3407,7 +3420,7 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
     @Suppress("NAME_SHADOWING") val blocked = blocked || showsQuestionDialog(text) ||
         (agent.equals("claude", true) && claudePermissionFooterAtBottom(text)) ||
         (rules.extraFooter?.let { f -> text.lines().takeLast(6).any { f.containsMatchIn(it) } } == true)
-    var raw = text.lines().takeLast(80)
+    var raw = claudeDialogWindow(text.lines(), agent)
     var pastDialog = false
     if (agent.equals("codex", true)) {
         val footer = raw.indexOfLast { CODEX_FOOTER.matches(it.trim()) }
