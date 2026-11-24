@@ -209,7 +209,23 @@ v=${v%.}
 identity
 b=$?
 [ "$b" -eq 4 ] && exit 4
-seen=$(printf '%s' "$v" | awk '{ gsub(/\([0-9][0-9]?[0-9]?[0-9]?s\)/, "(Ns)"); print }' 2>/dev/null | sha)
+# Only the agent's own timer line (cardTimerLine in Herdr.kt): its last (Ns), nothing else.
+T='
+{
+  t = $0
+  gsub(/\033\[[0-9;?]*[ -\/]*[@-~]/, "", t)
+  t = tolower(t)
+  sub(/^[ \t\r\v\f]+/, "", t)
+  sub(/[ \t\r\v\f]+$/, "", t)
+  if (t ~ /^(type [0-9\/]+, or )?↑\/↓ to select, enter to confirm \([0-9][0-9]?[0-9]?[0-9]?s\)$/ && match($0, /.*\([0-9][0-9]?[0-9]?[0-9]?s\)/)) {
+    head = substr($0, 1, RLENGTH)
+    sub(/\([0-9][0-9]?[0-9]?[0-9]?s\)$/, "(Ns)", head)
+    $0 = head substr($0, RLENGTH + 1)
+  }
+  print
+}
+'
+seen=$(printf '%s' "$v" | awk "$T" 2>/dev/null | sha)
 hex64 "$seen" || exit 4
 [ "$a" -eq 0 ] && [ "$b" -eq 0 ] && [ "$before" = "$id" ] && [ "$id" = "$occupant" ] && [ "$seen" = "$screen" ] && exit 0
 exit 3

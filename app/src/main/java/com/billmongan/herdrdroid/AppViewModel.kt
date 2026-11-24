@@ -2855,7 +2855,7 @@ class AppViewModel internal constructor(
 
     private val readers = setOf("claude", "codex", "pi", "omp", "grok", "opencode", "hermes", "copilot", "vibe", "kiro", "muse")
 
-    fun hasTranscriptReader(paneId: String) = pane(paneId)?.agent?.lowercase() in readers
+    fun hasTranscriptReader(paneId: String) = com.billmongan.herdrdroid.herdr.ruleAgent(pane(paneId)?.agent) in readers
 
     fun resetTranscript(paneId: String) {
         if (transcriptPane == paneId) return
@@ -3500,11 +3500,26 @@ class AppViewModel internal constructor(
     // secret lives only in the dialog and the one send; never queued for a lost link, never in a
     // draft, a log or the clipboard. Only its path goes into the chosen pane's message box.
 
-    /** The open pane's path to insert at the caret, once ([secretInsertTaken]). */
-    data class SecretInsert(val serverId: String, val paneId: String, val path: String, val id: Long)
+    /**
+     * The open pane's path to insert at the caret, once ([secretInsertTaken]). 2.2.7 (Codex's
+     * review): with the connection and the pane's occupant the save was checked on, so the message
+     * box takes it only while both are still the ones on screen ([secretInsertFor]).
+     */
+    data class SecretInsert(val serverId: String, val paneId: String, val path: String, val id: Long,
+        val connection: Any? = null, val pane: Pane? = null)
     var secretInsert by mutableStateOf<SecretInsert?>(null)
         private set
     fun secretInsertTaken(id: Long) { if (secretInsert?.id == id) secretInsert = null }
+
+    /** The path for [paneId]'s message box (its id to [secretInsertTaken]), only on the same server, connection and occupant. */
+    fun secretInsertFor(paneId: String): Pair<Long, String>? {
+        val s = secretInsert ?: return null
+        if (s.serverId != current?.id || s.paneId != paneId) return null
+        if (s.connection != null && herdr?.connectionIdentity !== s.connection) return null
+        val now = pane(paneId) ?: return null
+        if (s.pane != null && !com.billmongan.herdrdroid.herdr.sameOccupant(s.pane, now)) return null
+        return s.id to s.path
+    }
     var secretBusy by mutableStateOf(false)
         private set
     /** A secret saved for another pane: the notice offers to open it. */
@@ -3516,15 +3531,17 @@ class AppViewModel internal constructor(
         else -> fleetStates[serverId]?.takeIf { st -> st.error == null && st.server == servers.firstOrNull { it.id == serverId } }?.panes
     }
 
-    private fun secretTarget(s: Server, p: Pane) =
-        com.billmongan.herdrdroid.herdr.SecretTarget(s.id, p.id, s.label, com.billmongan.herdrdroid.ui.sessionName(p), p)
+    /** 2.2.7 (Codex's review): with the connection current when the dialog listed it. */
+    private fun secretTarget(s: Server, p: Pane, connection: Any?) =
+        com.billmongan.herdrdroid.herdr.SecretTarget(s.id, p.id, s.label, com.billmongan.herdrdroid.ui.sessionName(p), p, connection)
 
     /** Every pane a secret can go to: the open server's first, then each other connected server's. */
     fun secretTargets(): List<com.billmongan.herdrdroid.herdr.SecretTarget> {
         val cur = current ?: return emptyList()
-        val here = if (link == Link.CONNECTED) panes.map { secretTarget(cur, it) } else emptyList()
-        val others = servers.filter { it.id != cur.id && fleet?.herdr(it.id) != null }
-            .flatMap { s -> secretPanes(s.id).orEmpty().map { secretTarget(s, it) } }
+        val conn = herdr?.connectionIdentity
+        val here = if (link == Link.CONNECTED && conn != null) panes.map { secretTarget(cur, it, conn) } else emptyList()
+        val others = servers.filter { it.id != cur.id && fleet?.herdr(it.id)?.connectionIdentity != null }
+            .flatMap { s -> val c = fleet?.herdr(s.id)?.connectionIdentity; secretPanes(s.id).orEmpty().map { secretTarget(s, it, c) } }
         return here + others
     }
 
@@ -3538,13 +3555,13 @@ class AppViewModel internal constructor(
             } ?: return null
             val connection = h.connectionIdentity ?: return null
             return com.billmongan.herdrdroid.herdr.SecretSender.Bound(
-                h.secretRunOn(connection), { id -> h.relayPane(id, connection) }, h::beginSecretSend, h::endSecretSend,
+                h.secretRunOn(connection), { id -> h.relayPane(id, connection) }, h::beginSecretSend, h::endSecretSend, connection,
             )
         }
         override fun isOpen(t: com.billmongan.herdrdroid.herdr.SecretTarget) =
             t.serverId == current?.id && (screen as? Screen.Agent)?.paneId == t.paneId
         override fun insertLive(t: com.billmongan.herdrdroid.herdr.SecretTarget, path: String) {
-            secretInsert = SecretInsert(t.serverId, t.paneId, path, System.nanoTime())
+            secretInsert = SecretInsert(t.serverId, t.paneId, path, System.nanoTime(), t.connection, t.pane)
         }
         override fun appendDraft(t: com.billmongan.herdrdroid.herdr.SecretTarget, path: String) {
             val key = draftKey(t.serverId, t.paneId)
@@ -3677,7 +3694,7 @@ class AppViewModel internal constructor(
         private set
 
     /** The version of the agent in [paneId], when known. */
-    fun versionOf(paneId: String): String? = pane(paneId)?.agent?.lowercase()?.let { agentVersions[it] }
+    fun versionOf(paneId: String): String? = com.billmongan.herdrdroid.herdr.ruleAgent(pane(paneId)?.agent)?.let { agentVersions[it] }
 
     /** A short message the screens show once (1.4.0: the debug bundle was copied). */
     var notice by mutableStateOf<String?>(null)

@@ -117,7 +117,10 @@ internal class VoiceControls(
 
         when (command) {
             is VoiceCommand.Switch -> {
-                val matchingServers = voiceServersNamed(vm.servers, command.server ?: command.name)
+                // A bare name is a server only by its own name, or loosely when no pane has that name.
+                val matchingServers = if (command.server != null) voiceServersNamed(vm.servers, command.server)
+                    else voiceServersNamed(vm.servers, command.name, loose = false)
+                        .ifEmpty { if (matchingPanes(command).isEmpty()) voiceServersNamed(vm.servers, command.name) else emptyList() }
                 val onServer = matchingServers.singleOrNull()
                 if (command.server == null && onServer != null) {
                     if (server?.id != onServer.id) vm.switchTo(onServer.id, null, voice = true)

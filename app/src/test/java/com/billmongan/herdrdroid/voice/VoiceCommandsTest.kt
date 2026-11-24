@@ -35,6 +35,17 @@ class VoiceCommandsTest {
             2, voiceServersNamed(listOf(server("node1"), server("node2")), "node").size)
     }
 
+    /** Grok's review: the loose rules never take a phrase that may be a pane's name, nor guess between servers. */
+    @Test fun theLooseRulesAreOnlyALastResortAndNeverAGuess() {
+        val cloud = server("cloud")
+        assertEquals("a bare name is a server only by its own name", emptyList<Server>(), voiceServersNamed(listOf(cloud), "claude", loose = false))
+        assertEquals(listOf(cloud), voiceServersNamed(listOf(cloud), "Cloud", loose = false))
+        assertEquals("two servers with the same consonants: no guess", emptyList<Server>(),
+            voiceServersNamed(listOf(server("labx2"), server("lobx2")), "lub x two"))
+        assertEquals("fewer than three consonants: too little to go on", emptyList<Server>(), voiceServersNamed(listOf(server("pac")), "pic"))
+        assertEquals("a vowel slip with enough to go on", listOf(server("minibox2")), voiceServersNamed(listOf(server("minibox2")), "many box"))
+    }
+
     @Test fun routesSpokenNamesAndNumbers() {
         assertEquals(VoiceCommand.Switch("codex", "lab box two"), parseVoiceCommand("Switch to Codex on lab box two."))
         assertEquals("labbox2", voiceName("lab box two"))

@@ -196,6 +196,36 @@ class CardSendCheck227Test {
         }
     }
 
+    /**
+     * Codex's review: only the agent's own timer line may tick. The same "(12s)" in the command being
+     * approved, or in a line that only looks like the hint, is part of the question in all three digests.
+     */
+    @Test fun onlyTheTimerLineMayTickInAllThreeDigests() {
+        val shown = "\u001b[1m⚠ Dangerous Command\u001b[0m\n  \$ sleep (12s) && deploy\n│ ↑/↓ to select, Enter to confirm (12s) │\n" +
+            "❯ 1. Allow once\n  2. Deny\n\u001b[2m  ↑/↓ to select, Enter to confirm (57s)\u001b[0m\n⚠ ❯\n"
+        val ticked = shown.replace("confirm (57s)\u001b", "confirm (56s)\u001b")
+        val changed = shown.replace("sleep (12s)", "sleep (13s)")
+        val lookalike = shown.replace("confirm (12s) │", "confirm (13s) │")
+        assertEquals(cardScreenDigest(shown), cardScreenDigest(ticked))
+        assertEquals(cardScreenDigest(shown), cardScreenDigest(shown.replace("(57s)", "(5s)")))
+        assertNotEquals(cardScreenDigest(shown), cardScreenDigest(changed))
+        assertNotEquals(cardScreenDigest(shown), cardScreenDigest(lookalike))
+        assertNotEquals("text before the hint makes it not the hint", cardScreenDigest("echo (5s) ↑/↓ to select, Enter to confirm (12s)"),
+            cardScreenDigest("echo (6s) ↑/↓ to select, Enter to confirm (12s)"))
+        val g = guard(getJson, shown)
+        bothChecks { mode ->
+            assertEquals("$mode: the timer ticks", 0, runReal(g, getJson, ticked, mode = mode).exit)
+            for (other in listOf(changed, lookalike)) {
+                val r = runReal(g, getJson, other, mode = mode)
+                assertEquals("$mode", CARD_CHANGED_EXIT, r.exit)
+                assertEquals("", r.sent)
+            }
+        }
+        // Hermes's confirm hint ticks the same way.
+        val confirm = "Run /reset?\n  1. Yes\n  2. No\ntype 1/2, or ↑/↓ to select, Enter to confirm (30s)"
+        bothChecks { mode -> assertEquals("$mode", 0, runReal(guard(getJson, confirm), getJson, confirm.replace("(30s)", "(29s)"), mode = mode).exit) }
+    }
+
     /** Where python3 is missing, the one command falls over to the shell check: still checked, and said so. */
     @Test fun withoutPython3TheCommandFallsOverToTheShellCheck() {
         assumeTrue("runs where /usr/bin/python3 is missing", !File("/usr/bin/python3").canExecute())

@@ -65,7 +65,7 @@ data class SlashCommand(val name: String, val about: String)
 
 /** The commands each agent's own program answers; Hermes's chat lists its live catalog instead. */
 object SlashCommands {
-    fun forAgent(agent: String?): List<SlashCommand> = when (agent?.lowercase()) {
+    fun forAgent(agent: String?): List<SlashCommand> = when (com.billmongan.herdrdroid.herdr.ruleAgent(agent)) {
         "claude" -> listOf(
             "/compact" to "Summarize the conversation to free context", "/clear" to "Start a fresh conversation",
             "/model" to "Choose the model", "/context" to "Show context use", "/cost" to "Show this session's cost",
@@ -450,7 +450,7 @@ object ModelPresets {
     }
 
     /** The command that opens the agent's own model picker. */
-    fun pickerCommand(agent: String?): String = when (agent?.lowercase()) {
+    fun pickerCommand(agent: String?): String = when (com.billmongan.herdrdroid.herdr.ruleAgent(agent)) {
         "opencode" -> "/models"
         else -> "/model"
     }
