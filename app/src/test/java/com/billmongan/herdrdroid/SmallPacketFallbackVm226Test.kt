@@ -31,8 +31,11 @@ import java.time.Duration
 class SmallPacketFallbackVm226Test {
     @get:Rule val idleMainLooper = IdleMainLooperRule()
     private val vm = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
-    private val a = Server(id = "fixture-mss-a", name = "FixtureA", host = "a.invalid", port = 22, user = "u", herdrPath = "herdr")
-    private val b = Server(id = "fixture-mss-b", name = "FixtureB", host = "b.invalid", port = 22, user = "u", herdrPath = "herdr")
+    // Loopback port 1 refuses at once: a reconnect these tests start fails in milliseconds instead
+    // of waiting on a DNS lookup for an .invalid name, which on a slow resolver outlived the test
+    // and disturbed the next Compose class (2.2.7, GitHub CI).
+    private val a = Server(id = "fixture-mss-a", name = "FixtureA", host = "127.0.0.1", port = 1, user = "u", herdrPath = "herdr")
+    private val b = Server(id = "fixture-mss-b", name = "FixtureB", host = "127.0.0.1", port = 1, user = "u", herdrPath = "herdr")
     private var now = 10_000L
 
     @After fun close() {
@@ -288,6 +291,19 @@ class SmallPacketFallbackVm226Test {
             .apply { isAccessible = true }.invoke(vm, e, reason)
     }
 
+    /**
+     * These tests check what linkLost decides, not the reconnect it starts: a real one would dial
+     * the fixture's unreachable host from an IO thread that outlives the test, and its late
+     * continuations and failure landed on the shared main looper during the next Compose class
+     * (CrossServerHermesDestinationTest lost its card on GitHub's runner). An active placeholder
+     * job keeps startReconnect from launching one; it is cancelled at the end.
+     */
+    private fun withoutRealReconnect(block: () -> Unit) {
+        val placeholder = kotlinx.coroutines.Job()
+        field("reconnectJob").set(vm, placeholder)
+        try { block() } finally { placeholder.cancel() }
+    }
+
     /** Away for [awayMs], then back: the app resets the old socket and reconnects (onForeground). */
     private fun resumeAfter(awayMs: Long) {
         vm.onBackground()
@@ -300,7 +316,7 @@ class SmallPacketFallbackVm226Test {
      * on purpose. That reconnect is not a drop: no small packets, no notice, the fallback still
      * armed, so a real drop afterwards falls back once.
      */
-    @Test fun aResumeReconnectIsNotADropButARealDropAfterItStillFallsBackOnce() {
+    @Test fun aResumeReconnectIsNotADropButARealDropAfterItStillFallsBackOnce() = withoutRealReconnect {
         for (away in listOf(9_000L, 10 * 60_000L)) {
             DiagLog.clear()
             val e = Endpoint(a)
@@ -323,11 +339,12 @@ class SmallPacketFallbackVm226Test {
             assertNull("once per session", vm.smallPacketOffer)
             vm.disconnect()
             idle()
+            field("reconnectJob").set(vm, kotlinx.coroutines.Job())
         }
     }
 
     /** The same for the other deliberate reconnect: a send queued while the link still looked up. */
-    @Test fun aReconnectTheAppChoseNeverFallsBack() {
+    @Test fun aReconnectTheAppChoseNeverFallsBack() = withoutRealReconnect {
         val e = Endpoint(a)
         vm.saveServer(a)
         open(e, a)
