@@ -2349,7 +2349,13 @@ private val REFUSAL_LABEL = Regex("""^\W*(no|deny|reject|cancel|never|quit|don'?
 fun grantsStandingPermission(label: String): Boolean = label.replace('\u2019', '\'').let { ALWAYS_LABEL.containsMatchIn(it) && !REFUSAL_LABEL.containsMatchIn(it) }
 
 /** A choice that means "I'll type my own answer" ("Type something.", "Other", "Something else"), 1.4.0. */
-private val OTHER_LABEL = Regex("""^(type something\.?|other\b.*|something else.*|chat about this|type your own.*|enter (a |your )?custom.*)$""", RegexOption.IGNORE_CASE)
+/** 2.2.8: Oh My Pi's tool approval footer, and the card's typed answer that denies the tool and steers. */
+internal val OMP_APPROVAL_FOOTER = Regex("""↑/↓ choose · ⏎ select\b.*⎋ deny""")
+private val OMP_APPROVAL_INNER = ThreadLocal<Boolean>()
+const val OMP_STEER = "omp:steer"
+const val OMP_STEER_LABEL = "Type to deny and steer"
+
+private val OTHER_LABEL = Regex("""^(type to deny and steer|type something\.?|other\b.*|something else.*|chat about this|type your own.*|enter (a |your )?custom.*)$""", RegexOption.IGNORE_CASE)
 // A checkbox before it ("[ ] Type something.", 1.4.9 from Grok's review) is not part of the words.
 fun isTypedAnswerChoice(label: String): Boolean = OTHER_LABEL.matches(label.trim().replace(Regex("""^(\[[ xX✓✔]\]|[☐☑☒◻◼□■])\s+"""), ""))
 
@@ -3475,6 +3481,22 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     if (agent.equals("muse", true)) detectMuseQuotaDialog(text)?.let { return it }
     // 2.2.7 (Bill: "show the whole question"): Oh My Pi's and pi's boxed multi-question Ask dialog.
     if (agent?.lowercase() in setOf("omp", "pi")) OmpAsk.prompt(plain)?.let { return it }
+    // 2.2.8 (Bill: "OMP popped up another question it won't let me answer"): Oh My Pi's tool approval
+    // box ("Allow tool: bash", "↑/↓ choose · ⏎ select · … · ⎋ deny · … · type to deny and steer") waits
+    // for you whatever herdr reports (it runs the tool, so herdr may call it working, and the spinner
+    // under the box read as the agent going on). Its card also takes a typed answer that denies and
+    // steers, as the box's own hint offers.
+    if (agent?.lowercase() in setOf("omp", "pi") && OMP_APPROVAL_INNER.get() != true &&
+        plain.lines().takeLast(14).any { OMP_APPROVAL_FOOTER.containsMatchIn(it) }) {
+        OMP_APPROVAL_INNER.set(true)
+        try {
+            val p = detectPrompt(text, true, agent, version) ?: return null
+            val steer = plain.lines().takeLast(14).any { it.contains("type to deny and steer") }
+            return if (steer && p.choices.isNotEmpty() && !p.terminalReview) p.copy(choices = p.choices + Choice(OMP_STEER_LABEL, OMP_STEER, false)) else p
+        } finally {
+            OMP_APPROVAL_INNER.set(false)
+        }
+    }
     if (isOpenCode(agent)) {
         if (openCodeBackgroundDrawer(agent, plain) || openCodeComposerMode(plain.lines().takeLast(20)) >= 0) return null
         detectOpenCodeQuestion(plain)?.let { return it }
@@ -4271,8 +4293,21 @@ private fun asciiFold(s: String) = buildString(s.length) { for (c in s) append(i
 /** A digest no screen has: a screen with a NUL byte never matches. */
 private val CARD_NO_MATCH = "0".repeat(64)
 
+/**
+ * 2.2.8 (Bill: "OMP popped up another question it won't let me answer"): two rows Oh My Pi redraws every
+ * second while its approval box waits, neither part of the question: its status row (a spinner and a
+ * running time: "⠙ 4m > ⬢ <model> > 📁 <folder> ▶────"), which stands for itself as one fixed row, and a
+ * tool box's bottom edge with its running time ("╰─── elapsed 3m46s ───╯"), whose time is left out.
+ * [CARD_SEND_CHECK] and card-check.sh apply exactly these rules.
+ */
+private val CARD_OMP_STATUS = Regex("""^[^ ]+ ([^ ]+ )?> .* > 📁 [^ ]+ ▶─.*$""")
+private val CARD_ELAPSED_ROW = Regex("""^╰─+ elapsed [0-9hms.]+ ─+╯$""")
+private val CARD_ELAPSED = Regex("""elapsed [0-9hms.]+""")
+
 internal fun cardTimerLine(line: String): String {
     val shown = asciiFold(CARD_CSI.replace(line, "")).trim { it == ' ' || it == '\t' || it == '\r' || it == '\u000B' || it == '\u000C' }
+    if (CARD_OMP_STATUS.matches(shown)) return "<status>"
+    if (CARD_ELAPSED_ROW.matches(shown)) return CARD_ELAPSED.replaceFirst(line, "elapsed N")
     return if (CARD_TIMER_LINE.matches(shown)) CARD_TIMER.replaceFirst(line, "$1(Ns)") else line
 }
 
@@ -4319,8 +4354,15 @@ internal val CARD_SEND_CHECK = """
         return hashlib.sha256(b''.join(v(x) for x in f)).hexdigest()
     # Only the agent's own timer line (cardTimerLine in Herdr.kt): its last (Ns), nothing else.
     TIMER_LINE = re.compile(b'^(type [0-9/]+, or )?' + '\u2191/\u2193'.encode('utf-8') + rb' to select, enter to confirm[ \t\r\x0b\x0c]*\([0-9]+s\)$')
+    OMP_STATUS = re.compile(rb'^[^ ]+ ([^ ]+ )?> .* > ' + '\U0001f4c1'.encode('utf-8') + rb' [^ ]+ ' + '\u25b6\u2500'.encode('utf-8') + rb'.*$')
+    ELAPSED_ROW = re.compile('\u2570'.encode('utf-8') + b'(?:' + '\u2500'.encode('utf-8') + rb')+ elapsed [0-9hms.]+ (?:' +
+                             '\u2500'.encode('utf-8') + b')+' + '\u256f'.encode('utf-8') + b'$')
     def timer(line):
         shown = re.sub(rb'\x1b\[[0-9;?]*[ -/]*[@-~]', b'', line).lower().strip(b' \t\r\x0b\x0c')
+        if OMP_STATUS.match(shown):
+            return b'<status>'
+        if ELAPSED_ROW.match(shown):
+            return re.sub(rb'elapsed [0-9hms.]+', b'elapsed N', line, count=1)
         return re.sub(rb'(?s)^(.*)\([0-9]+s\)', rb'\1(Ns)', line, count=1) if TIMER_LINE.match(shown) else line
     try:
         before = identity()

@@ -1,0 +1,5 @@
+Synthesized for 2.2.8 from two plain captures of Oh My Pi's tool approval box ("Allow tool: bash") as it drew
+them: the tool box above it with its running "elapsed" time, the title chip row, the box with its Command (and
+Reason) row, the options, the rule and footer, and the status row under it with its spinner and running time.
+Layout, glyphs and styles as captured; every command, path, name and label replaced with neutral text.
+approval-three: Approve, Approve bash for this session, Deny. approval-reason-two: a Reason row, Approve and Deny.

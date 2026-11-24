@@ -135,7 +135,8 @@ private fun widthOf(rows: List<String>) = rows.maxOfOrNull { it.trimEnd().length
  */
 internal fun dialogRead(rows: List<String>, p: Prompt, agent: String?, version: String?, blocked: Boolean): QuestionRead {
     val unproven = QuestionRead(p, topped = false, complete = false)
-    val heads = p.choices.map(::headOf)
+    // 2.2.8: the card's own "Type to deny and steer" is not a row of the dialog; its hint row is.
+    val heads = p.choices.filter { it.keys != OMP_STEER }.map(::headOf)
     if (heads.any { it.isEmpty() }) return unproven
     // Each option's row, from the last one up, each at or above the one after it.
     var at = rows.indexOfLast { letters(it).contains(heads.last()) && !isDialogFooterRow(it) }

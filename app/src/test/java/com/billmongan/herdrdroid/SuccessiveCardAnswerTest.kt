@@ -302,6 +302,43 @@ class SuccessiveCardAnswerTest {
         assertTrue(guardedVisibleReads > 0)
     }
 
+    /** 2.2.8: Oh My Pi's approval box answered from the card while herdr calls it working: Deny, and a typed steer. */
+    @Test fun ompApprovalBoxAnswersWhileHerdrSaysWorking() {
+        val box = checkNotNull(javaClass.getResource("/screens/omp/synthetic-2.2.8-approval/approval-three.ansi")).readText()
+        fixture("omp", box) {
+            status(Status.WORKING)
+            readSelectedPane()
+            val card = checkNotNull(detectPrompt(vm.paneText, false, "omp")).forCard()
+            answer(card, checkNotNull(vm.cardTarget("p1")), index = card.choices.indexOfFirst { it.label == "Deny" })
+            assertEquals(listOf("down down enter"), sent)
+        }
+        fixture("omp", box) {
+            status(Status.WORKING)
+            readSelectedPane()
+            val card = checkNotNull(detectPrompt(vm.paneText, false, "omp")).forCard()
+            val steer = card.choices.single { it.keys == com.billmongan.herdrdroid.herdr.OMP_STEER }
+            vm.answerTyped(checkNotNull(vm.cardTarget("p1")), card, steer, "use the cached copy instead") {}
+            drainWithTime { !vm.answerInFlight("p1") }
+            assertEquals(listOf("text:use the cached copy instead", "enter"), sent)
+        }
+    }
+
+    /**
+     * 2.2.8 (Bill: "I can't send a message while a question card is open ... let me send it from the app
+     * at least"): a message sent while Oh My Pi's approval box is open waits in the app's queue; nothing is
+     * typed into the box (where typing would deny the tool and steer).
+     */
+    @Test fun aMessageWhileTheApprovalIsOpenWaitsAndTypesNothing() =
+        fixture("omp", checkNotNull(javaClass.getResource("/screens/omp/synthetic-2.2.8-approval/approval-three.ansi")).readText()) {
+            status(Status.WORKING)
+            readSelectedPane()
+            assertTrue(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+            vm.enqueue("p1", "also check the cache")
+            repeat(3) { shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(4)); Thread.sleep(5) }
+            assertTrue("nothing typed into the box", sent.isEmpty())
+            assertEquals(listOf("also check the cache"), vm.queued.filter { it.paneId == "p1" }.map { it.text })
+        }
+
     /** 2.2.7: the questions can always be left: Esc from the card. */
     @Test fun ompAskCanBeCancelled() = fixture("omp", ompScreen("ask-open-first.ansi")) {
         readSelectedPane()
