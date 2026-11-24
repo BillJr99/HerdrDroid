@@ -1,0 +1,31 @@
+ Ask me before you change the build script
+╭─ Ask · 0 of 1 answered ──────────────────────────────────────────────────────────────────────────────╮
+│ The release build fails on its second step, after the cache is restored. This is the part of         │
+│ scripts/build.sh that runs there:                                                                    │
+│                                                                                                      │
+│     for f in src/*.py; do                                                                            │
+│         python3 -m py_compile "$f" || exit 1                                                         │
+│     done                                                                                             │
+│     make -C build test JOBS=4                                                                        │
+│                                                                                                      │
+│ The same check could run as one call instead:                                                        │
+│                                                                                                      │
+│     import compileall, sys                                                                           │
+│     ok = compileall.compile_dir("src", quiet=1)                                                      │
+│     if not ok:                                                                                       │
+│         sys.exit(1)                                                                                  │
+│                                                                                                      │
+│ Each file is compiled on its own today, so one bad file stops the loop before the tests run. The     │
+│ single call reports every bad file at once.                                                          │
+│                                                                                                      │
+│ 1. Should I keep the loop as it is, or replace it with one compileall call?                          │
+│ ❯ ◉ Keep the loop                                                                                    │
+│   ○ Use compileall                                                                                   │
+│   ○ Other:  type your own                                                                            │
+│                                                                                                      │
+│   Submit                                                                                             │
+│                                                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────╯
+  ⎋ Asking about the build loop
+ ❓ 1m > ⦸ sample-model > 📁 ~/work/demo ▶─────────────────66%───╎──────┃──────128K─
+╰─

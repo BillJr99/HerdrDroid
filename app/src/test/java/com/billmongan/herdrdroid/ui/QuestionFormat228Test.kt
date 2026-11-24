@@ -87,4 +87,11 @@ class QuestionFormat228Test {
         assertWholeQuestion("grok/derived-2.2.8-format/long-code-question.txt")
         assertWholeQuestion("grok/derived-2.2.8-format/long-indented-question.txt")
     }
+
+    @Test fun ompAndPiAskLeadKeepsItsCodeBlocks() {
+        for (path in listOf("omp/derived-2.2.8-format/long-code-question.txt", "omp/derived-2.2.8-format/long-indented-question.txt",
+                "pi/derived-2.2.8-format/long-code-question.txt")) {
+            assertWholeQuestion(path, heading = "1. $q")
+        }
+    }
 }
