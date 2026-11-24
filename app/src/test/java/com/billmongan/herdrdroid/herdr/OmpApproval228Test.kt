@@ -53,6 +53,42 @@ class OmpApproval228Test {
         }
     }
 
+    /** A row added to the box right under its Command row, as a command over several rows draws one. */
+    private fun withBoxRow(s: String, row: String): String = s.lines().flatMap { l ->
+        if (stripAnsi(l).contains("Command: ")) listOf(l, "\u001b[0m\u001b[38;2;42;48;56m│\u001b[0m $row\u001b[0m                    \u001b[38;2;42;48;56m│\u001b[0m") else listOf(l)
+    }.joinToString("\n")
+
+    private val statusLike = "⠋ 9m > ⬢ m > 📁 ~/a ▶────"
+    private val statusLikeChanged = "⠋ 9m > ⬢ m > 📁 ~/b ▶────"
+
+    /**
+     * 2.2.8 (Codex's review 1): the running rows are left out only where Oh My Pi draws them. A row inside
+     * the approval box counts as it is, whatever it looks like; so does a status-shaped row anywhere but
+     * right under the box, and with no approval box on the screen no row is left out.
+     */
+    @Test fun onlyTheRowsAroundTheBoxAreLeftOut() {
+        for (name in listOf(three, two)) {
+            val s = screen(name)
+            val inBox = withBoxRow(s, statusLike)
+            assertNotEquals("$name: the fixture adds a row", s, inBox)
+            assertNotEquals("$name: a status-shaped command row counts", cardScreenDigest(inBox), cardScreenDigest(withBoxRow(s, statusLikeChanged)))
+            assertNotEquals("$name: an elapsed edge in the box counts",
+                cardScreenDigest(withBoxRow(s, "╰─── elapsed 3s ───╯")), cardScreenDigest(withBoxRow(s, "╰─── elapsed 4s ───╯")))
+            // The real status row (right under the box) still ticks freely beside the added row.
+            assertEquals(name, cardScreenDigest(inBox), cardScreenDigest(inBox.replace("⠙ 4m", "⠹ 5m").replace("⠴ 7m", "⠦ 8m")))
+            // A status-shaped row above the box is part of the transcript, not the footer.
+            val above = "$statusLike\n$s"
+            assertNotEquals("$name: above the box", cardScreenDigest(above), cardScreenDigest("$statusLikeChanged\n$s"))
+            // No approval box (its top edge gone): nothing is left out, the footer included.
+            val noBox = s.replace("Allow tool:", "Allowed tool:")
+            assertNotEquals("$name: no box", cardScreenDigest(noBox), cardScreenDigest(noBox.replace("⠙ 4m", "⠹ 5m").replace("⠴ 7m", "⠦ 8m")))
+            assertNotEquals("$name: no box, elapsed", cardScreenDigest(noBox),
+                cardScreenDigest(noBox.replace("elapsed 3m46s", "elapsed 3m52s").replace("elapsed 51.0s", "elapsed 57.5s")))
+        }
+        // Without the box the rows are exactly Hermes's rule: a bare status row is itself.
+        assertEquals(listOf(statusLike), cardScreenRows(listOf(statusLike)))
+    }
+
     private val getJson = """{"result":{"pane":{"pane_id":"p1","tab_id":"t1","workspace_id":"w1","agent":"omp","agent_status":"working","cwd":"/w","terminal_id":"term-1","scroll":{"offset_from_bottom":0}}}}"""
 
     private fun runCheck(python: Boolean, guardScreen: String, live: String): Int {
@@ -86,6 +122,15 @@ class OmpApproval228Test {
                 val ticked = s.replace("⠙ 4m", "⠹ 5m").replace("⠴ 7m", "⠦ 8m").replace("elapsed 3m46s", "elapsed 3m52s").replace("elapsed 51.0s", "elapsed 57.5s")
                 assertEquals("$name python=$python tick", 0, runCheck(python, s, ticked))
                 assertEquals("$name python=$python command", CARD_CHANGED_EXIT, runCheck(python, s, s.replace("Command: ", "Command: echo hi; ")))
+                // Codex's review 1: the checks on the computer keep every row of the box too.
+                val inBox = withBoxRow(s, statusLike)
+                assertEquals("$name python=$python box row", CARD_CHANGED_EXIT, runCheck(python, inBox, withBoxRow(s, statusLikeChanged)))
+                assertEquals("$name python=$python box elapsed", CARD_CHANGED_EXIT,
+                    runCheck(python, withBoxRow(s, "╰─── elapsed 3s ───╯"), withBoxRow(s, "╰─── elapsed 4s ───╯")))
+                assertEquals("$name python=$python box row, ticking", 0, runCheck(python, inBox, inBox.replace("⠙ 4m", "⠹ 5m").replace("⠴ 7m", "⠦ 8m")))
+                assertEquals("$name python=$python above", CARD_CHANGED_EXIT, runCheck(python, "$statusLike\n$s", "$statusLikeChanged\n$s"))
+                val noBox = s.replace("Allow tool:", "Allowed tool:")
+                assertEquals("$name python=$python no box", CARD_CHANGED_EXIT, runCheck(python, noBox, noBox.replace("⠙ 4m", "⠹ 5m").replace("⠴ 7m", "⠦ 8m")))
             }
         }
     }

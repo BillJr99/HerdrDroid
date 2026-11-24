@@ -232,22 +232,38 @@ b=$?
 [ "$b" -eq 4 ] && exit 4
 # A NUL in the screen never matches (cardScreenDigest; the Python check exits 3 too).
 nul "$v" && exit 3
-# Only the agent's own timer line (cardTimerLine in Herdr.kt): its last (Ns), nothing else.
+# Hermes's countdown (cardTimerLine in Herdr.kt), and Oh My Pi's two running rows only around its
+# approval box (cardScreenRows): every row of the box counts as it is.
 T='
-{
-  t = $0
+function shown(x,   t) {
+  t = x
   gsub(/\033\[[0-9;?]*[ -\/]*[@-~]/, "", t)
   t = tolower(t)
   sub(/^[ \t\r\v\f]+/, "", t)
   sub(/[ \t\r\v\f]+$/, "", t)
-  if (t ~ /^[^ ]+ ([^ ]+ )?> .* > 📁 [^ ]+ ▶─/) { print "<status>"; next }
-  if (t ~ /^╰(─)+ elapsed [0-9hms.]+ (─)+╯$/) { sub(/elapsed [0-9hms.]+/, "elapsed N"); print; next }
-  if (t ~ /^(type [0-9\/]+, or )?↑\/↓ to select, enter to confirm[ \t\r\v\f]*\([0-9]+s\)$/ && match($0, /.*\([0-9]+s\)/)) {
-    head = substr($0, 1, RLENGTH)
+  return t
+}
+function timer(x, t,   head) {
+  if (t ~ /^(type [0-9\/]+, or )?↑\/↓ to select, enter to confirm[ \t\r\v\f]*\([0-9]+s\)$/ && match(x, /.*\([0-9]+s\)/)) {
+    head = substr(x, 1, RLENGTH)
     sub(/\([0-9]+s\)$/, "(Ns)", head)
-    $0 = head substr($0, RLENGTH + 1)
+    x = head substr(x, RLENGTH + 1)
   }
-  print
+  return x
+}
+{ raw[NR] = $0; row[NR] = shown($0); if (row[NR] ~ /^╭─ allow tool: .*╮$/) top = NR }
+END {
+  bottom = 0
+  if (top) for (i = top + 1; i <= NR; i++) if (row[i] ~ /^╰(─)+╯$/) { bottom = i; break }
+  for (i = 1; i <= NR; i++) {
+    x = raw[i]
+    if (!bottom) x = timer(x, row[i])
+    else if (i >= top && i <= bottom) x = x
+    else if (i < top && row[i] ~ /^╰(─)+ elapsed [0-9hms.]+ (─)+╯$/) sub(/elapsed [0-9hms.]+/, "elapsed N", x)
+    else if (i == bottom + 1 && row[i] ~ /^[^ ]+ ([^ ]+ )?> .* > 📁 [^ ]+ ▶─/) x = "<status>"
+    else x = timer(x, row[i])
+    print x
+  }
 }
 '
 seen=$(awk "$T" "$v" 2>/dev/null | sha)
