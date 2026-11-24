@@ -3877,14 +3877,10 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
             val got = mutableListOf<QLine>()
             // Claude's multi-question dialog: everything from its tab bar down to the options is the
             // question, including the review step's "● Close 537" / "→ Close it" rows (1.2.9).
-            val barAt = (at - 1 downTo maxOf(0, at - 30)).firstOrNull { parseTabBar(clean(raw[it])) != null }
+            // 2.2.8: however tall the question is (it was 30 rows), and its fenced code kept row by row.
+            val barAt = (at - 1 downTo maxOf(0, at - TALL_QUESTION_ROWS)).firstOrNull { parseTabBar(clean(raw[it])) != null }
             if (barAt != null) {
-                var gapNext = false
-                for (k in barAt until at) {
-                    val c = clean(raw[k])
-                    if (raw[k].isBlank() || c.isEmpty()) { gapNext = true; continue }
-                    got += QLine(c, gapBefore = gapNext); gapNext = false
-                }
+                got += dialogQuestionLines(raw.subList(barAt, at), clean)
                 return@let got.takeIf { it.isNotEmpty() }
             }
             // 2.2.4: Claude's permission dialog, read by its frame however tall its command is.
