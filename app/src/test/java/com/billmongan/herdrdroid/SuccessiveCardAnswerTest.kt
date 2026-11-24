@@ -285,6 +285,23 @@ class SuccessiveCardAnswerTest {
         assertTrue(sent.isEmpty())
     }
 
+    /**
+     * 2.2.8 (Bill: "it said it couldn't read it although it looked like a fairly standard question"): when
+     * the recent read can't prove the dialog, the live screen is read, and its proven dialog is the card.
+     */
+    @Test fun anUnprovenRecentReadFallsBackToTheLiveScreen() = fixture("claude",
+        checkNotNull(javaClass.getResource("/screens/claude/synthetic-2.2.8-multiq/four-tabs-first.ansi")).readText()) {
+        val live = frame
+        val plain = com.billmongan.herdrdroid.herdr.stripAnsi(live).replace("\r", "").lines()
+        recentResult = ExecResult(0, (listOf("❯ a stray echoed message") + plain.dropWhile { !it.startsWith("❯ 1.") }).joinToString("\n"), "")
+        repeat(3) { readSelectedPane() }
+        val p = checkNotNull(vm.questionCardFor("p1", vm.cardParse("p1", vm.paneText), "Claude"))
+        assertEquals("Which step should run first in the sample build?", p.shownParts().heading)
+        assertFalse("the live screen, not the stray row", vm.paneText.contains("stray echoed"))
+        assertTrue(p.choices.isNotEmpty())
+        assertTrue(guardedVisibleReads > 0)
+    }
+
     /** 2.2.7: the questions can always be left: Esc from the card. */
     @Test fun ompAskCanBeCancelled() = fixture("omp", ompScreen("ask-open-first.ansi")) {
         readSelectedPane()

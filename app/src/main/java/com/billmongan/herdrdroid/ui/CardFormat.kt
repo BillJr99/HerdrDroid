@@ -362,7 +362,8 @@ object CardFormat {
      */
     fun optionNotes(screen: String?, choices: List<Choice>): Map<String, String> {
         if (screen.isNullOrBlank() || choices.isEmpty()) return emptyMap()
-        val raw = screen.lines()
+        // 2.2.8: a styled read, or one whose rows end in "\r" (herdr's ANSI reads), reads the same.
+        val raw = com.billmongan.herdrdroid.herdr.stripAnsi(screen).replace("\r", "").lines()
         val rows = raw.indices.mapNotNull { i ->
             OPTION_ROW.find(raw[i])?.let { m -> Triple(i, m.groupValues[1].ifEmpty { m.groupValues[2] }, m.groups[3]!!.range.first) }
         }
