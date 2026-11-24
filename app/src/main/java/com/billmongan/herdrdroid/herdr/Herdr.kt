@@ -1457,9 +1457,84 @@ data class QLine(val text: String, val cmd: Boolean = false, val gapBefore: Bool
                   * command block, so a multi-line command keeps its lines. [wraps]: Grok wrapped it
                   * ("·" at the end of the row); [cont]: it carries on the row above ("┆" gutter).
                   */
-                 val row: Boolean = false, val cont: Boolean = false, val wraps: Boolean = false)
+                 val row: Boolean = false, val cont: Boolean = false, val wraps: Boolean = false,
+                 /**
+                  * 2.2.8 (Bill: "make sure all the question text is visible and well formatted
+                  * especially code"): a row of a fenced block the agent wrote ("```bash" … "```"),
+                  * the fences too, kept as it is: its own line, its indentation, a blank row as "".
+                  */
+                 val fence: Boolean = false,
+                 /** 2.2.8: the column the row's text starts at, inside the dialog's frame, when known (-1 if not). */
+                 val indent: Int = -1)
+
+/** 2.2.8: how far up a question is read once it holds a code block or runs on inside its frame. */
+internal const val TALL_QUESTION_ROWS = 200
+
+/** 2.2.8: a row that opens or closes a fenced code block ("```", "```bash"). */
+internal fun isFenceRow(t: String): Boolean = t.trimStart().startsWith("```")
+
+/**
+ * 2.2.8: a dialog row's text and the column it starts at, without the dialog's frame ("│ ",
+ * "┃  ", a right-hand "│"): what a code block's indentation is measured from. (-1, "") for a
+ * row with nothing but frame.
+ */
+internal fun rowBody(row: String): Pair<Int, String> {
+    var r = row.trimEnd()
+    if (r.endsWith("│") || r.endsWith("┃")) r = r.dropLast(1).trimEnd()
+    val col = r.indexOfFirst { it != ' ' && it != '│' && it != '┃' }
+    return if (col < 0) -1 to "" else col to r.substring(col)
+}
+
+/**
+ * 2.2.8: each fenced block in [lines] with its rows' indentation given back, relative to the
+ * block's opening fence (or its least indented row when the opening fence is not in [lines]).
+ */
+internal fun withFenceIndent(lines: List<QLine>): List<QLine> {
+    val out = lines.toMutableList()
+    var i = 0
+    while (i < out.size) {
+        if (!out[i].fence) { i++; continue }
+        var j = i
+        while (j + 1 < out.size && out[j + 1].fence && !out[j + 1].gapBefore) j++
+        val known = (i..j).filter { out[it].text.isNotEmpty() && out[it].indent >= 0 }
+        val base = known.firstOrNull { isFenceRow(out[it].text) }?.let { out[it].indent } ?: known.minOfOrNull { out[it].indent } ?: 0
+        for (k in i..j) {
+            val q = out[k]
+            if (q.text.isNotEmpty() && q.indent > base && !isFenceRow(q.text)) out[k] = q.copy(text = " ".repeat(q.indent - base) + q.text)
+        }
+        i = j + 1
+    }
+    return out
+}
+
+/**
+ * 2.2.8: a dialog's question rows as [QLine]s, top to bottom: a fenced block row by row with its
+ * indentation and blank rows kept, every other row through [clean], a blank row a paragraph break.
+ */
+internal fun dialogQuestionLines(rows: List<String>, clean: (String) -> String): List<QLine> {
+    val got = mutableListOf<QLine>()
+    var gap = false
+    var inFence = false
+    for (r in rows) {
+        val (col, body) = rowBody(r)
+        val fenceRow = isFenceRow(body)
+        if (inFence || fenceRow) {
+            got += QLine(body.trimEnd(), gapBefore = gap && !inFence, fence = true, indent = col)
+            gap = false
+            if (fenceRow) inFence = !inFence
+            continue
+        }
+        val c = clean(r)
+        if (r.isBlank() || c.isEmpty()) { if (got.isNotEmpty()) gap = true; continue }
+        got += QLine(c, gapBefore = gap, indent = col)
+        gap = false
+    }
+    return withFenceIndent(got)
+}
 
 private val TAB_ITEM = Regex("""([☐☒✔✓☑])\s*([^☐☒✔✓☑←→]+)""")
+/** 2.2.8: a command that opens a heredoc at its end ("python3 -B - <<'PY'", "cat <<EOF"): the terminator in group 2. */
+private val HEREDOC_OPEN = Regex("""^\S.*<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1\s*$""")
 /** "Reason: …", "Environment: local", "Read: /path": a labelled line of context, never the heading. */
 private val LABEL_LINE = Regex("""^[A-Z][A-Za-z ]{0,24}:\s""")
 /** A piece of a path that ends in a file extension: "culus.json", "8.json". */
@@ -1674,10 +1749,55 @@ private fun firstQuestionEnd(s: String): Int {
  * Terminal-wrapped lines join into one paragraph; a blank line, a "Label: " line or a line ending
  * in "?" starts a new one. No marker or box characters are kept.
  */
+/** 2.2.8: a row of prose: five or more words, ending a sentence or a lead-in. */
+private val SENTENCE_ROW = Regex("""^\S+(?:\s+\S+){4,}[.?!:]$""")
+/** 2.2.8: an approval's own question ("Run this command?", "Would you like to run the following command?", "Allow …?"). */
+private val APPROVAL_ASK = Regex("""^(?:Run this command\?|Would you like to run\b|Allow\b.*\?$|.*\brequires approval$)""", RegexOption.IGNORE_CASE)
+/** 2.2.8: a list item's first row ("- x", "• x", "1. x"), never the start of an indented code block. */
+private val LIST_ROW = Regex("""^(?:[-*•·◦]|\d{1,3}[.)])\s+\S""")
+
+/**
+ * 2.2.8 (Bill: "make sure all the question text is visible and well formatted especially code"):
+ * rows indented four or more columns past the question's margin right after a blank row (code a
+ * terminal drew as Markdown, without its fences) as a fenced block of their own, their relative
+ * indentation kept. The margin is where the question's sentences start; rows of unknown column,
+ * commands, list items and approval dialogs (whose command is indented under its title) are left
+ * as they are.
+ */
+private fun indentedRunsAsFences(lines: List<QLine>): List<QLine> {
+    // Claude's tab row sits left of its question's gutter: never the margin.
+    val known = lines.filter { !it.fence && !it.row && it.indent >= 0 && it.text.isNotBlank() && parseTabBar(it.text) == null }
+    if (known.size < 3) return lines
+    // An approval's command rows are indented under its title: they read as its command, as before.
+    if (lines.any { l -> l.cmd || l.text.trim().let { t -> t.startsWith("$ ") || t.startsWith("Do you want to ") ||
+            COMMAND_INTRO.matches(t) || CLAUDE_COMMAND_TITLE.matches(t) || CLAUDE_REQUEST_SOURCE.containsMatchIn(t) ||
+            TOOL_PERMISSION.matches(t) || APPROVAL_ASK.containsMatchIn(t) } }) return lines
+    // The margin: where the question's sentences start (several words ending in . ? ! or :).
+    val base = known.filter { SENTENCE_ROW.containsMatchIn(it.text.trim()) }.minOfOrNull { it.indent } ?: known.minOf { it.indent }
+    // Four columns in, as Markdown indents code; a detail indented by two ("  Host: …") stays text.
+    fun deep(q: QLine) = !q.fence && !q.row && !q.cmd && q.indent >= base + 4 && q.text.isNotBlank()
+    val out = mutableListOf<QLine>()
+    var i = 0
+    while (i < lines.size) {
+        val l = lines[i]
+        if (i > 0 && deep(l) && l.gapBefore && !LIST_ROW.containsMatchIn(l.text.trim())) {
+            var j = i
+            while (j + 1 < lines.size && deep(lines[j + 1])) j++
+            val col = (i..j).minOf { lines[it].indent }
+            out += QLine("```", gapBefore = true, fence = true, indent = col)
+            for (k in i..j) { val q = lines[k]; out += q.copy(text = " ".repeat(q.indent - col) + q.text.trim(), gapBefore = false, fence = true) }
+            out += QLine("```", fence = true, indent = col)
+            i = j + 1; continue
+        }
+        out += l; i++
+    }
+    return out
+}
+
 fun questionParts(lines: List<QLine>): QuestionParts {
     var tabs = emptyList<QTab>()
     val body = mutableListOf<QLine>()
-    for (l in lines) {
+    for (l in indentedRunsAsFences(lines)) {
         val bar = if (tabs.isEmpty()) parseTabBar(l.text) else null
         if (bar != null) {
             tabs = bar.first
@@ -1685,13 +1805,39 @@ fun questionParts(lines: List<QLine>): QuestionParts {
         } else body += l
     }
     /** [inPlace]: a path or address block that stays with its label among the context (1.4.2). */
-    class Para(var text: String, val cmd: Boolean, val inPlace: Boolean = false, val rows: Boolean = false)
+    class Para(var text: String, val cmd: Boolean, val inPlace: Boolean = false, val rows: Boolean = false,
+        /** 2.2.8: a fenced block, or a heredoc's body: its lines joined by newlines, never by spaces. */
+        val verbatim: Boolean = false)
     val paras = mutableListOf<Para>()
     var cmdNext = false
     // The current command block began with "$ ": its "│ ..." lines are the rest of it (1.4.8, from Grok's
     // review: Muse draws a script's lines under "$ python3 - <<'PY'" that way).
     var dollarBlock = false
+    // 2.2.8: an open heredoc ("python3 - <<'PY'"): its terminator and the opener's column.
+    var heredoc: String? = null
+    var heredocCol = -1
     for ((idx, l) in body.withIndex()) {
+        // 2.2.8: a fenced block the agent wrote, row by row as on the screen, in its place among the text.
+        if (l.fence) {
+            val last = paras.lastOrNull()
+            if (last != null && last.verbatim && !last.cmd && !l.gapBefore) last.text += "\n" + l.text.trimEnd()
+            else paras += Para(l.text.trimEnd(), false, verbatim = true)
+            cmdNext = false; dollarBlock = false; heredoc = null
+            continue
+        }
+        // 2.2.8: a heredoc's body, line by line with its indentation, up to its terminator (Hermes's
+        // "python3 -B - <<'PY'" over the script), instead of one line of words.
+        if (heredoc != null) {
+            val last = paras.last()
+            val t = l.text.trim()
+            if (l.gapBefore || t.isEmpty()) heredoc = null
+            else {
+                val pad = if (l.indent > heredocCol && heredocCol >= 0) " ".repeat(l.indent - heredocCol) else ""
+                last.text += "\n" + pad + t
+                if (t == heredoc) heredoc = null
+                continue
+            }
+        }
         // A Grok command row (2.1.4, Bill: "parse them nicely maybe as newlines"): a line of its own
         // in the command block, its indentation and every character kept, a ")" or "}" row too.
         if (l.row) {
@@ -1741,6 +1887,14 @@ fun questionParts(lines: List<QLine>): QuestionParts {
         dollarBlock = dollar != null || goesOn
         if (dollar != null) t = dollar.groupValues[1].trim()
         val last = paras.lastOrNull()
+        // 2.2.8: a line that opens a heredoc, not after "$ " (that block reads as before): the command,
+        // and its body on the lines under it.
+        val here = if (dollar == null && !goesOn && !l.cmd && l.indent >= 0) HEREDOC_OPEN.find(t) else null
+        if (here != null) {
+            paras += Para(t, true, verbatim = true)
+            heredoc = here.groupValues[2]; heredocCol = l.indent
+            continue
+        }
         if (isCmd) {
             if (last != null && last.cmd && !l.gapBefore && dollar == null) last.text += " " + t else paras += Para(t, true)
             continue
@@ -1758,12 +1912,12 @@ fun questionParts(lines: List<QLine>): QuestionParts {
         // over "Allow access to this file?"); a wrapped label line goes on in lower case.
         val afterLabel = last != null && LABEL_LINE.containsMatchIn(last.text) && t.first().isUpperCase()
         val bullet = l.text.trim().first() in "●•◆"
-        if (last == null || last.cmd || l.gapBefore || afterLabel || bullet || dialogQuestion || LABEL_LINE.containsMatchIn(t) || last.text.endsWith("?") || last.text.endsWith(":"))
+        if (last == null || last.cmd || last.verbatim || l.gapBefore || afterLabel || bullet || dialogQuestion || LABEL_LINE.containsMatchIn(t) || last.text.endsWith("?") || last.text.endsWith(":"))
             paras += Para(t, false)
         else last.text += " " + t
         if (TOOL_PERMISSION.matches(paras.last().text)) cmdNext = true
     }
-    val texts = paras.withIndex().filter { !it.value.cmd }
+    val texts = paras.withIndex().filter { !it.value.cmd && !it.value.verbatim }
     val pick = texts.firstOrNull { !LABEL_LINE.containsMatchIn(it.value.text) && firstQuestionEnd(it.value.text) > 0 }
         ?: texts.firstOrNull { !LABEL_LINE.containsMatchIn(it.value.text) } ?: texts.firstOrNull()
     // The heading first (with the explanation that followed it on the same paragraph), then the
