@@ -3070,6 +3070,19 @@ private val AGENT_CRASHES = listOf(
 /** A shell's prompt: "tester@host:~/work$", "user@devbox2:~ %" (a bare "$" is too easily something else). */
 private val SHELL_PROMPT = Regex("""^[\w.-]+@[\w.-]+(:\S*)?\s?[$#%]\s*$""")
 
+/**
+ * 2.2.7: the keys that interrupt a turn, per agent, as each program's own screen names them: Esc
+ * for most ("esc to interrupt": Claude Code, Codex, Copilot "Esc to stop", Antigravity, Vibe, pi,
+ * Oh My Pi, Muse Code); Esc twice for OpenCode (one Esc only arms "esc again to interrupt");
+ * Ctrl+C where Esc means something else or nothing (Grok's footer: "Ctrl+c:cancel ·
+ * Esc:scrollback"; Kiro; Hermes). Sent once, in one command.
+ */
+internal fun stopKeys(agent: String?): List<String> = when (ruleAgent(agent)) {
+    "hermes", "grok", "kiro", "kiro-cli" -> listOf("ctrl+c")
+    "opencode" -> listOf("esc", "esc")
+    else -> listOf("esc")
+}
+
 /** OpenCode by its own name, or a named launch of it ("opencode-<name>", such as one with its own config). */
 internal fun isOpenCode(agent: String?): Boolean = agent?.lowercase()?.let { it == "opencode" || it.startsWith("opencode-") } == true
 
