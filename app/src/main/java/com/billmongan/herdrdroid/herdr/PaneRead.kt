@@ -22,7 +22,7 @@ import kotlinx.coroutines.launch
  * chat, as it renders a cross-server message (HDMSG2):
  *
  *     HDREAD1 K7P3QX
- *     HDSRV laptop
+ *     HDSRV labbox
  *     HDPANE codex
  *     HDLINES 80                      (optional: 1 to 200; default the visible screen)
  *     HDWHY see why codex stopped     (optional: a short reason)

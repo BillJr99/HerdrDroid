@@ -63,7 +63,7 @@ class OpenCodeAlert212Test {
     // ---- status promotion ---------------------------------------------------------------------
 
     @Test fun aPermissionOnScreenIsNeedsYouWhileHerdrSaysDoneOrIdle() {
-        for (agent in listOf("opencode", "opencode-college")) for (herdrSays in listOf(Status.DONE, Status.IDLE)) {
+        for (agent in listOf("opencode", "opencode-work")) for (herdrSays in listOf(Status.DONE, Status.IDLE)) {
             val p = pane(agent, herdrSays)
             assertEquals(listOf(p), screenAskable(listOf(p)))
             val marked = markScreenNeedsYou(listOf(p), mapOf(p.id to tail(frame))).single()

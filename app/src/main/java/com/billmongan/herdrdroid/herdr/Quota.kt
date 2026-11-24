@@ -559,7 +559,7 @@ fun prettyClaudeModel(id: String): String {
 fun footerModel(agent: String?, screen: String): String? {
     val lines = screen.lines().map { it.trimEnd() }.filter { it.isNotBlank() }.takeLast(12)
     fun lastMatch(r: Regex) = lines.asReversed().firstNotNullOfOrNull { r.find(it)?.groupValues?.get(1)?.trim() }
-    val found = when (agent?.lowercase()) {
+    val found = when (ruleAgent(agent)) {
         // "GPT-6.1-Sol default · ~/agents/codex"
         "codex" -> lastMatch(Regex("""^\s*(\S[^·]*?)\s+·\s+~"""))
             ?.replace(Regex("""\s+(default|minimal|low|medium|high|xhigh)$"""), " · $1")
@@ -576,7 +576,7 @@ fun footerModel(agent: String?, screen: String): String? {
         "copilot" -> lines.lastOrNull { it.contains("/ commands") }
             ?.let { Regex("""\s{3,}(\S.*?)\s*$""").find(it)?.groupValues?.get(1) }
         // OpenCode appends the provider and configuration after the selected model.
-        "opencode", "opencode-college" -> lastMatch(Regex("""^\s*[┃│]\s+[^·│]+?\s+·\s+([^│]+?)\s*$"""))
+        "opencode" -> lastMatch(Regex("""^\s*[┃│]\s+[^·│]+?\s+·\s+([^│]+?)\s*$"""))
             ?.substringBefore(" (default)")?.trim()?.take(48)
         // " π > ⬢ llmproxy/flagship > 📁 ~/agents/omp ▶───41%───"
         "omp" -> lastMatch(Regex("""⬢\s+(\S+)"""))

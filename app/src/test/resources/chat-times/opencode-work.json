@@ -1,9 +1,9 @@
 {
- "about": "Synthetic opencode-college reader output (2.1.4 chat times): the shape its reader in transcript.py emits; no real text.",
- "agent": "opencode-college",
+ "about": "Synthetic opencode-work reader output (2.1.4 chat times): the shape its reader in transcript.py emits; no real text.",
+ "agent": "opencode-work",
  "bulk": {
   "ok": true,
-  "src": "opencode-college",
+  "src": "opencode-work",
   "cur": {
    "db": "/home/user/.local/share/opencode/opencode.db",
    "sid": "ses_2",
@@ -122,7 +122,7 @@
  },
  "live": {
   "ok": true,
-  "src": "opencode-college",
+  "src": "opencode-work",
   "cur": {
    "db": "/home/user/.local/share/opencode/opencode.db",
    "sid": "ses_2",

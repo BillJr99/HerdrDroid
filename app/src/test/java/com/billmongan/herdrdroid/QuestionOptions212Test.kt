@@ -53,7 +53,7 @@ class QuestionOptions212Test {
     // ---- OpenCode 2.3.2's question dialog -----------------------------------------------------
 
     @Test fun theOpenCode232QuestionIsARealCard() {
-        for (agent in listOf("opencode", "opencode-college")) {
+        for (agent in listOf("opencode", "opencode-work")) {
             val p = card(question, agent, blocked = false)
             assertFalse(p.terminalReview)
             assertFalse(p.openCodeForm)

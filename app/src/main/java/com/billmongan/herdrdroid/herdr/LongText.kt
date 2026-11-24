@@ -2,7 +2,7 @@ package com.billmongan.herdrdroid.herdr
 
 /**
  * 2.2.7 (Bill: "make sure larger pastes become file attachments automatically at the appropriate
- * size so we never actually truncate anything. do this transparently"). Measured on laptop2:
+ * size so we never actually truncate anything. do this transparently"). Measured on a Linux server:
  * `herdr pane send-text` delivers 125 KB intact; the ceiling is Linux's per-argument limit
  * (MAX_ARG_STRLEN, 128 KiB) on the SSH command, which holds the shell-quoted text (a ' becomes
  * four characters). So a message whose quoted form is up to [SINGLE_MAX_BYTES] goes as one
@@ -45,7 +45,7 @@ internal object LongText {
 
 /**
  * 2.2.7: a slash command typed for the agent ("/model", "/usage now"), not text that only starts
- * with a slash. An attachment's path ("/home/bill/.herdrdroid/inbox/…") sent on its own switched the
+ * with a slash. An attachment's path ("/home/user/.herdrdroid/inbox/…") sent on its own switched the
  * chat to the terminal view, and Claude Code took it for an unknown command.
  */
 internal fun isSlashCommand(text: String): Boolean = Regex("""^/[A-Za-z][A-Za-z0-9_:.-]*(\s|$)""").containsMatchIn(text.trimStart())

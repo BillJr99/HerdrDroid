@@ -2555,7 +2555,7 @@ class AppViewModel internal constructor(
             piLiveQuestion = livePrompt?.takeIf { verifyPi && paneTextTarget != null }
             openCodeComposerTarget = paneTextTarget?.takeIf { useLive && verifyOpenCode && openCodeEmptyComposer(text) }
             hermesUsageRead = verifiedUsage
-            if (agent in setOf("opencode", "opencode-college", "kiro", "kiro-cli")) {
+            if (isOpenCode(agent) || agent in setOf("kiro", "kiro-cli")) {
                 footerModel(agent, text)?.takeIf { models[paneId] != it }?.let {
                     models = models + (paneId to it)
                     current?.id?.let { sid -> modelCache[sid] = models }

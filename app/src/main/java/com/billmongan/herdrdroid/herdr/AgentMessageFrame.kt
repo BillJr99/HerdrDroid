@@ -12,7 +12,7 @@ import org.json.JSONObject
  * renders this frame in its chat:
  *
  *     HDMSG2 K7P3QX
- *     HDTO Hermes on laptop2
+ *     HDTO Hermes on labbox2
  *     HD> <standard padded Base64 of the message, chunks of at most 40 characters>
  *     HDEND K7P3QX
  *

@@ -68,7 +68,7 @@ class PaneTitleBarUiTest {
     }
 
     @Test fun narrowWidthTruncatesEachLineToOneLine() {
-        val longName = "opencode-college · a very long session name that cannot fit"
+        val longName = "opencode-work · a very long session name that cannot fit"
         val longServer = "laptop2.home.example.lan, the agent server in the closet"
         val longModel = "gemini-pro-orchestrator-neon · extra long model descriptor text"
         rule.setContent {

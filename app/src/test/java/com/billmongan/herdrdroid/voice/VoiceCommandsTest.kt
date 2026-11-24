@@ -6,21 +6,39 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class VoiceCommandsTest {
-    @Test fun settingsSayLaptopAndTheOldServerAliasStillWorks() {
-        assertEquals(listOf("Switch to Codex on Laptop", "Switch to Laptop", "Send a message to Codex on Laptop"),
-            voiceCommandHelp.filter { it.contains("laptop", ignoreCase = true) })
-        val saved = Server(id = "test", name = "laptop2", host = "laptop2", port = 22, user = "test", herdrPath = "herdr")
-        for (phrase in listOf("Switch to Laptop", "Switch to Laptop Two", "which too many pc")) {
+    private fun server(name: String, id: String = name) = Server(id = id, name = name, host = "127.0.0.1", port = 1, user = "test", herdrPath = "herdr")
+
+    @Test fun settingsShowTheExamplesAndTheyMatchAServerWithANumber() {
+        assertEquals(listOf("Switch to Codex on Lab Box", "Switch to Lab Box", "Send a message to Codex on Lab Box"),
+            voiceCommandHelp.filter { it.contains("lab box", ignoreCase = true) })
+        val saved = server("labbox2")
+        // The number left off, said as a word, or misheard as "lob box": the one server it can mean.
+        for (phrase in listOf("Switch to Lab Box", "Switch to Lab Box Two", "which too lob box", "which to lab box to")) {
             val command = parseVoiceCommand(phrase) as VoiceCommand.Switch
-            assertEquals(listOf(saved), voiceServersNamed(listOf(saved), command.name))
+            assertEquals(phrase, listOf(saved), voiceServersNamed(listOf(saved), command.name))
         }
-        val exact = saved.copy(id = "other", name = "Laptop", host = "laptop")
-        assertEquals(listOf(exact), voiceServersNamed(listOf(saved, exact), "Laptop"))
+        val exact = server("Lab Box", id = "other")
+        assertEquals("a server named exactly that wins", listOf(exact), voiceServersNamed(listOf(saved, exact), "Lab Box"))
+    }
+
+    /** No server name is built in: any saved name matches by the same rule, number words as digits. */
+    @Test fun anySavedServerNameMatchesItsSpokenForm() {
+        val servers = listOf(server("buildbox3"), server("lab-box-2"), server("Edge Node 12"), server("devbox"))
+        assertEquals(listOf(servers[0]), voiceServersNamed(servers, "build box three"))
+        assertEquals(listOf(servers[1]), voiceServersNamed(servers, "lab box two"))
+        assertEquals(listOf(servers[1]), voiceServersNamed(servers, "Lab Box too"))
+        assertEquals(listOf(servers[2]), voiceServersNamed(servers, "edge node twelve"))
+        assertEquals(listOf(servers[3]), voiceServersNamed(servers, "dev box"))
+        assertEquals(emptyList<Server>(), voiceServersNamed(servers, "build box four"))
+        assertEquals(emptyList<Server>(), voiceServersNamed(servers, "printer"))
+        assertEquals("two servers with the number left off: both, for the caller to ask",
+            2, voiceServersNamed(listOf(server("node1"), server("node2")), "node").size)
     }
 
     @Test fun routesSpokenNamesAndNumbers() {
-        assertEquals(VoiceCommand.Switch("codex", "laptop two"), parseVoiceCommand("Switch to Codex on laptop two."))
-        assertEquals("laptop2", voiceName("laptop two"))
+        assertEquals(VoiceCommand.Switch("codex", "lab box two"), parseVoiceCommand("Switch to Codex on lab box two."))
+        assertEquals("labbox2", voiceName("lab box two"))
+        assertEquals("buildbox3", voiceName("Build Box Three"))
         assertEquals(VoiceCommand.Choose(1), parseVoiceCommand("Choose option two"))
         assertEquals(VoiceCommand.Choose(9), parseVoiceCommand("Option 10"))
         assertEquals(VoiceCommand.Choose(0), parseVoiceCommand("Answer option one"))
@@ -39,18 +57,19 @@ class VoiceCommandsTest {
         }
     }
     @Test fun recognizesNamedMessageAndPreservesDictatedCaseAndPunctuation() {
-        assertEquals("Message(pane=Switch(name=codex, server=laptop two))", parseVoiceCommand("Send a message to Codex on Laptop Two.").toString())
+        assertEquals("Message(pane=Switch(name=codex, server=lab box two))", parseVoiceCommand("Send a message to Codex on Lab Box Two.").toString())
         assertEquals("Dictate(text=Check README, then stop.)", parseVoiceCommand("Dictate: Check README, then stop.").toString())
         assertEquals("Repeat", parseVoiceCommand("Repeat that").toString())
         assertEquals("ConfirmMessage", parseVoiceCommand("Confirm message").toString())
         assertNull(parseVoiceCommand("Send a message to codex on"))
     }
     @Test fun normalizesObservedOfflineSwitchTranscriptions() {
-        val command = parseVoiceCommand("which to codex on laptop to") as VoiceCommand.Switch
+        val saved = listOf(server("labbox2"))
+        val command = parseVoiceCommand("which to codex on lab box to") as VoiceCommand.Switch
         assertEquals("codex", command.name)
-        assertEquals("laptop2", voiceName(command.server!!))
-        val host = parseVoiceCommand("which too many pc to") as VoiceCommand.Switch
-        assertEquals("laptop2", voiceName(host.name))
+        assertEquals(saved, voiceServersNamed(saved, command.server!!))
+        val host = parseVoiceCommand("which too lob box to") as VoiceCommand.Switch
+        assertEquals(saved, voiceServersNamed(saved, host.name))
         assertNull(parseVoiceCommand("[unk] confirm message"))
         assertNull(parseVoiceCommand("confirm"))
     }
