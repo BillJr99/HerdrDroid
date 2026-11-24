@@ -6,7 +6,7 @@ package com.billmongan.herdrdroid.herdr
  * composer at the bottom of its screen, the part prompt_toolkit redraws on every frame.
  *
  * Read from Hermes's classic CLI (hermes_cli/cli_tui_mixin.py and cli_modern_layout.py, checkout
- * caafe5389a on minipc2). In the default modern layout the bottom of the screen is, top to bottom:
+ * caafe5389a on the computer). In the default modern layout the bottom of the screen is, top to bottom:
  *
  *     ── ⠹ Working… · 14s ─────────────── session title ─   the composer's top rule
  *     ☤ ❯ type to redirect this turn · Tab queues it for after   the input row(s)
@@ -20,7 +20,7 @@ package com.billmongan.herdrdroid.herdr
  * or a secret, "⚙" during connection setup. The footer's key hints end in "ctrl+c stop" only while
  * the agent runs. The classic layout puts the status bar above the top rule instead of under the
  * bottom rule. herdr's own agent status for Hermes can say done or idle through a whole turn and
- * through an approval (minipc2, 2026-11-23), so these rows decide instead.
+ * through an approval (2026-11-23), so these rows decide instead.
  *
  * Only the full chrome is read (a terminal 64 columns or wider). Under 64 columns Hermes drops the
  * bottom rule and the prompt glyph, and then this finds nothing and herdr's status stands.

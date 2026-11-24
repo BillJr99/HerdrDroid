@@ -1852,7 +1852,7 @@ private const val MAX_DRAFT_ROWS = 30
 private val DRAFT_BOX_RULE = Regex("""^([\s ]*)([╭╰├└┌]?[─━═]{20,}[╮╯┤┘┐]?)[\s ]*$""")
 /**
  * The rule above Claude Code's input box with the session's title in it (2.1.1, Claude Code
- * 2.1.329: "──── … ──── MiniPC2 ─" after /rename or a named session). Only the rule that opens the
+ * 2.1.329: "──── … ──── Laptop2 ─" after /rename or a named session). Only the rule that opens the
  * box may carry a title; the rule that closes it is a plain [DRAFT_BOX_RULE].
  */
 private val DRAFT_TITLED_RULE = Regex("""^([\s\u00A0]*)([╭├┌]?[─━═]{20,} [^─━═\s][^─━═]{0,60}? [─━═]{1,4}[╮┤┐]?)[\s\u00A0]*$""")
@@ -3023,7 +3023,7 @@ internal fun openCodeEmptyComposer(screen: String): Boolean {
 
 /**
  * OpenCode's box with nothing typed in it inside a session (2.1.5, Bill: "herdrdroid couldn't send
- * Ursinus OpenCode the cross server info 5 times"). There OpenCode shows no placeholder: the box is
+ * the other OpenCode the cross server info 5 times"). There OpenCode shows no placeholder: the box is
  * its top padding row, its one text row and a gap row, all a bare "┃", over the "Build · <model>"
  * row. The rows are cut at the width of the box's "╹▀▀▀" bottom edge, so OpenCode's sidebar beside
  * it is not read as typing. Typed text fills the text row, and a draft of line feeds makes the box

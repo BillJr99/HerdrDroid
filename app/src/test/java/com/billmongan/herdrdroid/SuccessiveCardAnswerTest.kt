@@ -281,7 +281,7 @@ class SuccessiveCardAnswerTest {
     }
 
     // 2.1.5 (Bill: "hermes thinks there is a question right now but there is not and so it is
-    // stuck"): the live minipc2 screen, idle after a cross-server notice, while another stored
+    // stuck"): the live laptop2 screen, idle after a cross-server notice, while another stored
     // conversation (a Telegram turn on an open approval) waits on the gateway.
     @Test fun idleHermesPaneIsNotHeldByAnotherConversationsGatewayWait() = fixture("hermes", idleNoticeScreen) {
         status(Status.IDLE, sessionId = "pane-stored-session")
@@ -1382,7 +1382,7 @@ class SuccessiveCardAnswerTest {
             API calls: 2
             Current context: 1,024 / 100,000 (1%)
         """.trimIndent()
-        /** The live minipc2 Hermes screen, idle after a cross-server notice (2.1.5), with its styles. */
+        /** The live laptop2 Hermes screen, idle after a cross-server notice (2.1.5), with its styles. */
         val idleNoticeScreen = checkNotNull(SuccessiveCardAnswerTest::class.java.getResource(
             "/screens/hermes/live-2026-11-22-idle-notice/visible.ansi")).readText().replace("\r", "").trimEnd()
         const val hermesComposer = "──────────\n❯\n──────────\n☤ fixture · 1K/100K"

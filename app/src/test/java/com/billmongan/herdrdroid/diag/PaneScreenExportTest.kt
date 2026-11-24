@@ -24,10 +24,10 @@ class PaneScreenExportTest {
 
     @Test fun theBundleHoldsBothScreensTheAgentStatusAndTheDetectedPrompt() {
         val prompt = Prompt("Do you want to proceed?", listOf(Choice("Yes", "1", false), Choice("No", "2", false)), selected = "1")
-        val e = PaneScreenExports.build("2.2.7", "minipc2", "w1:p1", pane, "2.1.330", plain, ansi, prompt, at)
+        val e = PaneScreenExports.build("2.2.7", "laptop2", "w1:p1", pane, "2.1.330", plain, ansi, prompt, at)
         val t = e.text
         assertTrue(t.startsWith("HerdrDroid 2.2.7 pane screen export"))
-        assertTrue(t.contains("server: minipc2"))
+        assertTrue(t.contains("server: laptop2"))
         assertTrue(t.contains("pane: w1:p1 (tab claude-2)"))
         assertTrue(t.contains("agent: claude (Claude), version 2.1.330"))
         assertTrue(t.contains("status: NEEDS_YOU"))
@@ -45,7 +45,7 @@ class PaneScreenExportTest {
     }
 
     @Test fun noPromptSaysNone() {
-        val e = PaneScreenExports.build("2.2.7", "minipc2", "w1:p9", null, null, "$ ", "$ ", null, at)
+        val e = PaneScreenExports.build("2.2.7", "laptop2", "w1:p9", null, null, "$ ", "$ ", null, at)
         assertTrue(e.text.contains("detected prompt: none"))
         assertTrue(e.text.contains("agent: none (?), version unknown"))
         assertFalse(e.text.contains("question:"))

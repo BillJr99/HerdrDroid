@@ -159,9 +159,9 @@ class ComposeUiTest {
     @Test fun crossServerForceDialogAsksBeforeSending() {
         val answers = mutableListOf<String>()
         rule.setContent {
-            CrossServerForceDialog("CLAUDE2", "minipc", onSend = { answers += "send" }, onCancel = { answers += "cancel" })
+            CrossServerForceDialog("CLAUDE2", "laptop", onSend = { answers += "send" }, onCancel = { answers += "cancel" })
         }
-        rule.onNodeWithText("CLAUDE2 on minipc is busy. Send anyway? It will be typed in while it works, and Claude will take the message after its current step.").assertIsDisplayed()
+        rule.onNodeWithText("CLAUDE2 on laptop is busy. Send anyway? It will be typed in while it works, and Claude will take the message after its current step.").assertIsDisplayed()
         rule.onNodeWithText("Cancel").performClick()
         rule.onNodeWithText("Send anyway").performClick()
         rule.runOnIdle { assertEquals(listOf("cancel", "send"), answers) }

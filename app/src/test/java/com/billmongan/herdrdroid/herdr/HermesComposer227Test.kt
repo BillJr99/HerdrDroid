@@ -10,7 +10,7 @@ import org.junit.Test
 /**
  * 2.2.7 (Bill, 2026-11-23: "Hermes pane failed to render a question and also doesn't show the Blue
  * Dot and busy when the agent is actually working instead it shows under idle"). herdr called the
- * minipc2 Hermes pane done through a whole turn and through its approval, and Hermes's modern
+ * laptop2 Hermes pane done through a whole turn and through its approval, and Hermes's modern
  * layout puts its composer rules, session title and footer under the approval panel, where the
  * parsers took them for newer output. Screens: screens/hermes/live-2026-11-23-turn (the capture,
  * private text replaced) and screens/hermes/derived-2.2.7 (from Hermes's own program text).

@@ -27,10 +27,10 @@ class PaneReadTest {
     @get:Rule val tmp = TemporaryFolder()
 
     private val code = "K7P3QX"
-    private fun bare(code: String = this.code, server: String = "minipc", pane: String = "codex", extra: String = "") =
+    private fun bare(code: String = this.code, server: String = "laptop", pane: String = "codex", extra: String = "") =
         "HDREAD1 $code\nHDSRV $server\nHDPANE $pane\n${extra}HDEND $code"
     /** As Claude Code draws a reply: its first row marked "⏺ ", the fenced frame indented two spaces. */
-    private fun frame(code: String = this.code, server: String = "minipc", pane: String = "codex", extra: String = "") =
+    private fun frame(code: String = this.code, server: String = "laptop", pane: String = "codex", extra: String = "") =
         "⏺ Asking the phone to read it.\n\n" + bare(code, server, pane, extra).lines().joinToString("\n") { "  $it" } + "\n"
 
     private val codex = Pane("w2:p3", "w2:t3", "w2", "codex", Status.IDLE, "", "/x", tabLabel = "codex", scrollOffset = 0, terminalId = "t3")
@@ -53,8 +53,8 @@ class PaneReadTest {
         override fun enabled() = enabled
         override fun sourceCurrent(source: String) = current
         override fun servers() = listOf(
-            PaneReadServer("s1", listOf("minipc2"), "minipc2", own = true, connected = true, panes = emptyList()),
-            PaneReadServer("s2", listOf("minipc"), "minipc", own = false, connected = connected, panes = panes),
+            PaneReadServer("s1", listOf("laptop2"), "laptop2", own = true, connected = true, panes = emptyList()),
+            PaneReadServer("s2", listOf("laptop"), "laptop", own = false, connected = connected, panes = panes),
         )
         override suspend fun livePane(server: PaneReadServer, pane: Pane) = live(pane)
         override suspend fun read(server: PaneReadServer, pane: Pane, lines: Int?): String { reads += pane.id to lines; return screen }
@@ -75,7 +75,7 @@ class PaneReadTest {
     private val store by lazy { PaneReadStore(tmp.newFolder("reads"), shared = shared) }
     private val reads by lazy { PaneReadRequests(port, ledger, store, CoroutineScope(Dispatchers.Unconfined)) { now } }
 
-    private fun note(text: String = frame()) = reads.noteFrames("src", "s1", "w1:p1", "Claude on minipc2", text)
+    private fun note(text: String = frame()) = reads.noteFrames("src", "s1", "w1:p1", "Claude on laptop2", text)
     private fun only() = reads.cardsFor("s1", "w1:p1").single()
     private fun yes(card: PaneReadRequests.Card<String> = only()) = reads.approve(checkNotNull(reads.approvalOf(card)))
 
@@ -83,9 +83,9 @@ class PaneReadTest {
 
     @Test fun aFrameInTheAgentsReplyParsesWithItsOptionalLinesAndReason() {
         val found = paneReadFinds("chat above\n" + frame(extra = "HDLINES 80\nHDWHY see why it stopped\n") + "below").single()
-        assertEquals(PaneReadFrame(code, "minipc", "codex", 80, "see why it stopped"), found.frame)
+        assertEquals(PaneReadFrame(code, "laptop", "codex", 80, "see why it stopped"), found.frame)
         assertEquals("⏺ Asking the phone to read it.", found.evidence)
-        assertEquals(PaneReadFrame(code, "minipc", "codex", null, ""), paneReadFrames(frame()).single())
+        assertEquals(PaneReadFrame(code, "laptop", "codex", null, ""), paneReadFrames(frame()).single())
         // On the reply's own first row too, and under Codex's "• ".
         assertEquals(1, paneReadFrames("⏺ " + bare().lines().joinToString("\n") { it }.replace("\n", "\n  ")).size)
         assertEquals(1, paneReadFrames("• Here it is.\n" + bare().lines().joinToString("\n") { "  $it" }).size)
@@ -134,7 +134,7 @@ class PaneReadTest {
         assertFalse(reads.approve(approval))
         note()
         PaneReadRequests(port, ledger, store, CoroutineScope(Dispatchers.Unconfined)) { now }.let {
-            it.noteFrames("src", "s1", "w1:p1", "Claude on minipc2", frame())
+            it.noteFrames("src", "s1", "w1:p1", "Claude on laptop2", frame())
             assertTrue(it.cards.isEmpty())
         }
         assertEquals(1, port.reads.size)
@@ -146,10 +146,10 @@ class PaneReadTest {
         note(frame(extra = "HDWHY private reason\n"))
         yes()
         val (capture, message) = port.deliveries.single()
-        assertEquals("Pane read: minipc/codex, 2 lines (approved)", message)
+        assertEquals("Pane read: laptop/codex, 2 lines (approved)", message)
         assertFalse(message.contains("SCREEN TEXT"))
         assertEquals("SECRET-LOOKING SCREEN TEXT\nsecond row", capture.body)
-        assertTrue(port.logs.none { "SCREEN" in it || "codex" in it || "minipc" in it || "private" in it })
+        assertTrue(port.logs.none { "SCREEN" in it || "codex" in it || "laptop" in it || "private" in it })
         assertTrue(port.logs.any { "saved on the phone: s2/w2:p3, 2 lines" in it })
     }
 
@@ -183,7 +183,7 @@ class PaneReadTest {
         assertEquals(1_790_000_000_000L + CrossServerCode.LIFETIME_MS, only().deadline)
         // Turned on after them: no card at all.
         val later = PaneReadRequests(port, ledger, store, CoroutineScope(Dispatchers.Unconfined)) { now + CrossServerCode.LIFETIME_MS }
-        later.noteFrames("src", "s1", "w1:p1", "Claude on minipc2", frame())
+        later.noteFrames("src", "s1", "w1:p1", "Claude on laptop2", frame())
         assertTrue(later.cards.isEmpty())
     }
 
@@ -240,7 +240,7 @@ class PaneReadTest {
     @Test fun anAmbiguousPaneAndTheOwnServerAreRefusedForGood() {
         port.panes = listOf(codex, codex.copy(id = "w2:p9"))
         assertEquals(PaneReadRefusal.AMBIGUOUS_PANE, approveRefused().refusal)
-        note(frame(code = "AAAAAA", server = "minipc2"))
+        note(frame(code = "AAAAAA", server = "laptop2"))
         yes(reads.cardsFor("s1", "w1:p1").last())
         assertEquals(PaneReadRefusal.SAME_SERVER, reads.cardsFor("s1", "w1:p1").last().refusal)
         note(frame(code = "BBBBBB", pane = "w2:p9"))
@@ -299,13 +299,13 @@ class PaneReadTest {
         assertEquals(c.name, only().saved)
         assertTrue(c.name, c.name.endsWith("-$code-w1_p1.txt"))
         assertEquals("line 2\nline 3", c.body)
-        assertTrue(c.text.startsWith("HerdrDroid pane read $code\nserver: minipc\npane: codex (w2:p3)\ntime: "))
-        assertTrue(c.text.contains("\nlines: 2\nrequested by: Claude on minipc2\nrequester: s1 w1:p1\nreason: check it\n----\nline 2"))
+        assertTrue(c.text.startsWith("HerdrDroid pane read $code\nserver: laptop\npane: codex (w2:p3)\ntime: "))
+        assertTrue(c.text.contains("\nlines: 2\nrequested by: Claude on laptop2\nrequester: s1 w1:p1\nreason: check it\n----\nline 2"))
         assertEquals(listOf("w2:p3" to 2), port.reads)
     }
 
-    private fun capture(i: Int, pane: String = "w1:p1") = PaneCapture(PaneReadStore.nameFor(now + i * 1000L, "AAAAAA", pane), "AAAAAA", "minipc",
-        "codex", "w2:p3", "t", 1, "Claude on minipc2", "s1", pane, "", "row $i")
+    private fun capture(i: Int, pane: String = "w1:p1") = PaneCapture(PaneReadStore.nameFor(now + i * 1000L, "AAAAAA", pane), "AAAAAA", "laptop",
+        "codex", "w2:p3", "t", 1, "Claude on laptop2", "s1", pane, "", "row $i")
 
     @Test fun theStoreNeverOverwritesKeepsTheLastTwentyAndClearsTheSharedCopies() {
         assertTrue(store.save(capture(0)))

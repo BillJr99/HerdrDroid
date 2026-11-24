@@ -2,4 +2,4 @@ card: options
 blocked: true
 heading: List HerdrDroid source files and confirm commit
 options: Yes, and don't ask again for anything (always-approve mode) | Yes, proceed | No, reject (type to add feedback) | Never allow: find /home/user/src/app -type
-source: captured live from Grok's pane on minipc2, 2026-11-14, by bill-pane-send (reply section; the review clone's path replaced with /home/user/src/app)
+source: captured live from Grok's pane on laptop2, 2026-11-14, by bill-pane-send (reply section; the review clone's path replaced with /home/user/src/app)

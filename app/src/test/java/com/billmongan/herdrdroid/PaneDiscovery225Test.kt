@@ -30,7 +30,7 @@ import org.junit.runner.RunWith
 import org.robolectric.Shadows.shadowOf
 
 /**
- * 2.2.5, Bill (via Hermes): MiniPC2 signed in, herdr 0.9.5 there listed 13 panes, and the app
+ * 2.2.5, Bill (via Hermes): Laptop2 signed in, herdr 0.9.5 there listed 13 panes, and the app
  * showed none. The fixtures are herdr 0.9.5's real `pane list` and `tab list` output from that
  * computer with every path, title, session id and label replaced.
  */

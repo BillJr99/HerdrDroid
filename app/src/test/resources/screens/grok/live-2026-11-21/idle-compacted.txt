@@ -2,7 +2,7 @@
   ~/agents/grok                                                                                            148k / 256k │ [Dashboard]
 
 
-     ❯ From claude (Herdr on minipc2; tab: claude). Card: herdrdroid-2.1.2-acceptance-findings. Follow-up to your NO-GO   10:02 AM
+     ❯ From claude (Herdr on laptop2; tab: claude). Card: herdrdroid-2.1.2-acceptance-findings. Follow-up to your NO-GO   10:02 AM
        on 2821e28 (/home/user/Documents/workspace/outputs/herdrdroid-2.1.2/grok-rc-review.md).
         …
 

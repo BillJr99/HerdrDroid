@@ -9,7 +9,7 @@ import java.net.SocketAddress
 import javax.net.SocketFactory
 
 /**
- * 2.2.6 (Bill: MiniPC2 signed in over the LAN, then large replies stalled; pings from the server
+ * 2.2.6 (Bill: his computer signed in over the LAN, then large replies stalled; pings from the server
  * to the phone lost every packet of 1200 bytes or more). "Small packets" makes the phone advertise
  * a smaller TCP maximum segment size (MSS) in its SYN, so the server sends replies in segments
  * that fit through the lossy Wi-Fi path. Nothing changes on the server.

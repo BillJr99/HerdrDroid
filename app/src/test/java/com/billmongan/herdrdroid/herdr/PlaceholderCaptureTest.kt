@@ -8,7 +8,7 @@ import org.junit.Test
 
 /**
  * 2.1.1 (Bill, 2026-11-20: "don't see the grey suggestion template text as active text"): every
- * agent pane on minipc2 read with its styles while its input box was empty. None of them is a draft,
+ * agent pane on laptop2 read with its styles while its input box was empty. None of them is a draft,
  * and none reads as typing; the same boxes with text typed in them are drafts.
  */
 class PlaceholderCaptureTest {
@@ -24,7 +24,7 @@ class PlaceholderCaptureTest {
     )
 
     @Test fun `no empty box captured live is a draft or typing`() {
-        val all = captures.entries.map { it.key to it.value } + ("opencode" to screen("opencode/live-2026-11-20-ursinus/empty.ansi"))
+        val all = captures.entries.map { it.key to it.value } + ("opencode" to screen("opencode/live-2026-11-20-second/empty.ansi"))
         for ((agent, s) in all) {
             assertNull(agent, composerDraftOf(s, agent))
             // 2.2.2: a blank Oh My Pi or Copilot box may hold typed spaces (no cursor is drawn), so a normal

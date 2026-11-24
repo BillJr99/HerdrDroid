@@ -74,7 +74,7 @@ class ChatClock214Test {
         assertTrue(text.contains("I am checking the build now."))
         assertTrue(text.contains("The build passed."))
         assertTrue(text.contains("A note from an older turn, drawn with its date."))
-        assertTrue(text.any { it == "From claude (Herdr on minipc2; tab: claude). Check the build before midnight." })
+        assertTrue(text.any { it == "From claude (Herdr on laptop2; tab: claude). Check the build before midnight." })
         text.forEach { assertFalse(it, Regex("""\d{1,2}:\d{2}""").containsMatchIn(it)) }
         // And the 12-hour form, which Reflow already cut, is still cut.
         Reflow.parse(live, grok = true).filterIsInstance<Seg.Para>().forEach { assertFalse(it.text, it.text.endsWith(" PM")) }
@@ -88,7 +88,7 @@ class ChatClock214Test {
 
     @Test fun theScreensTimesGoToTheirMessagesAcrossMidnight() {
         val items = listOf(
-            UserItem("g1", "From claude (Herdr on minipc2; tab: claude). Check the build before midnight."),
+            UserItem("g1", "From claude (Herdr on laptop2; tab: claude). Check the build before midnight."),
             ThinkItem("g2", "Checking.", null),
             TextItem("g3", "I am checking the build now."),
             TextItem("g4", "The **build** passed."),

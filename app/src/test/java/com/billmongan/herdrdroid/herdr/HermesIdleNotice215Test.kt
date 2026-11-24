@@ -6,7 +6,7 @@ import org.junit.Test
 
 /**
  * 2.1.5 (Bill: "hermes thinks there is a question right now but there is not and so it is stuck"):
- * the live minipc2 Hermes screen, idle after a HerdrDroid cross-server notice and an "ok", with
+ * the live laptop2 Hermes screen, idle after a HerdrDroid cross-server notice and an "ok", with
  * Hermes's styled example prompt in an empty composer. No parser may read a question from it,
  * styled or plain, visible rows or the longer recent read with its "Previous Conversation" box.
  */

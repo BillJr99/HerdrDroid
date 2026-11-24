@@ -27,13 +27,13 @@ class GrokCommandRows214Test {
     private val all by lazy { listOf("light" to light, "heavy" to heavy, "bare" to bare) }
 
     private val title = "Confirm the back arrow click line"
-    private val command = "git -C /home/bill/Documents/repos/HerdrDroid show " +
+    private val command = "git -C /home/user/Documents/repos/HerdrDroid show " +
         "507e0344560ef35cbd6f843ff81c4aa499376ca7:app/src/main/java/com/billmongan/herdrdroid/ui/ServersScreen.kt | " +
         """awk 'NR>=114 && NR<=120 {printf "%d:%s\n", NR, ${'$'}0}'"""
 
     /** What 2.1.3 showed Bill: the card's heading and command copied together. */
     private val before213 = "┆ 507e0344560ef35cbd6f843ff81c4aa499376ca7:app/src/main/java/com/billmongan/herdrdroid/ui/ServersScreen.kt |· " +
-        """┆ awk 'NR>=114 && NR<=120 {printf "%d:%s\n", NR, ${'$'}0}'git -C /home/bill/Documents/repos/HerdrDroid show·"""
+        """┆ awk 'NR>=114 && NR<=120 {printf "%d:%s\n", NR, ${'$'}0}'git -C /home/user/Documents/repos/HerdrDroid show·"""
 
     private val marks = Regex("""[┆┊╎╏│┃]|·(?:\s|$)""")
 
