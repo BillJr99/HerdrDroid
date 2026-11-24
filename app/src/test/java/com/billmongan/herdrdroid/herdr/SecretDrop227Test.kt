@@ -6,6 +6,8 @@ import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
 
+private fun plain(id: String) = Pane(id, "tab-$id", "w1", "claude", Status.IDLE, "", "/fixture", terminalId = "t-$id")
+
 /** 2.2.7 Send a secret: the remote command, its receipt, the log, and where the path goes. */
 class SecretDrop227Test {
     private val secretText = "ya29.not-a-real-token-ZZQQ"
@@ -28,7 +30,7 @@ class SecretDrop227Test {
     }
 
     @Test fun theCommandIsPrivateAndCarriesNoSecret() {
-        val c = SecretDrop.command(SecretDrop.fileName("google oauth", text = true, stamp = "20261123-120000", rand = "abcd1234"))
+        val c = SecretDrop.command(SecretDrop.fileName("google oauth", text = true, stamp = "20261123-120000", rand = "abcd1234"), 26)
         assertTrue(c.startsWith("umask 077; "))
         assertTrue(c.contains("chmod 700 \"\$HOME\"/'.herdrdroid/secrets'"))
         assertTrue(c.contains("chmod 600 \"\$HOME\"/'.herdrdroid/secrets'/'20261123-120000-abcd1234-google_oauth.txt'"))
@@ -37,8 +39,8 @@ class SecretDrop227Test {
         assertTrue("refuses a linked folder", c.contains("[ -L \"\$HOME\"/'.herdrdroid/secrets' ]"))
         assertTrue("reads back both modes", c.contains("stat -c %a") && c.contains("stat -f %Lp"))
         assertFalse("not the attach inbox", c.contains("inbox"))
-        assertThrows(IllegalArgumentException::class.java) { SecretDrop.command("../x") }
-        assertThrows(IllegalArgumentException::class.java) { SecretDrop.command(".hidden") }
+        assertThrows(IllegalArgumentException::class.java) { SecretDrop.command("../x", 1) }
+        assertThrows(IllegalArgumentException::class.java) { SecretDrop.command(".hidden", 1) }
     }
 
     @Test fun namesComeFromTheLabelNeverTheSecret() {
@@ -117,8 +119,18 @@ class SecretDrop227Test {
     private class Port(val open: SecretTarget?, val listed: MutableSet<SecretTarget>, val runners: Map<String, SecretDrop.Run>) : SecretSender.Port {
         val live = mutableListOf<Pair<SecretTarget, String>>()
         val drafts = mutableListOf<Pair<SecretTarget, String>>()
+        /** What a fresh read of a pane returns; by default the pane as listed (or a plain pane with its id). */
+        var fresh: (String) -> Pane? = { id -> listed.firstOrNull { it.paneId == id }?.let { it.pane ?: plain(id) } }
+        val reads = mutableListOf<String>()
+        var inFlight = 0
+        val inFlightAtWrite = mutableListOf<Int>()
         override fun present(t: SecretTarget) = t in listed
-        override fun runner(serverId: String) = runners[serverId]
+        override fun bind(serverId: String) = runners[serverId]?.let { r ->
+            SecretSender.Bound(
+                SecretDrop.Run { c, stdin -> if (stdin != null) inFlightAtWrite += inFlight; r.run(c, stdin) },
+                { id -> reads += id; fresh(id) }, { inFlight++ }, { inFlight-- },
+            )
+        }
         override fun isOpen(t: SecretTarget) = t == open
         override fun insertLive(t: SecretTarget, path: String) { live += t to path }
         override fun appendDraft(t: SecretTarget, path: String) { drafts += t to path }
@@ -179,5 +191,87 @@ class SecretDrop227Test {
         assertTrue(o.why.contains("Nothing went into the message"))
         assertFalse(o.why.contains(secretText))
         assertTrue(port.live.isEmpty() && port.drafts.isEmpty())
+    }
+
+    // ---- 2.2.7, Codex's review: one connection, one occupant, never a partial file ------------
+
+    private val claudePane = Pane("p1", "tab-p1", "w1", "claude", Status.IDLE, "", "/fixture", terminalId = "t-p1", sessionId = "sess-A")
+    private val bound = SecretTarget("s1", "p1", "Mini", "Claude", claudePane)
+
+    @Test fun anOccupantReplacedBeforeTheSaveGetsNothingSaved() = runBlocking {
+        val pc = Computer()
+        val port = Port(bound, mutableSetOf(bound), mapOf("s1" to pc))
+        port.fresh = { claudePane.copy(sessionId = "sess-B") }
+        val bytes = secretText.toByteArray()
+        val o = SecretSender(port).send(bound, null, true, bytes)
+        assertTrue(o.toString(), o is SecretOutcome.Refused && o.why.contains("nothing was saved"))
+        assertTrue("never uploaded", pc.writes.isEmpty())
+        assertTrue(port.live.isEmpty() && port.drafts.isEmpty())
+        assertTrue(bytes.all { it == 0.toByte() })
+    }
+
+    @Test fun anOccupantReplacedDuringTheSaveGetsNoPath() = runBlocking {
+        val pc = Computer()
+        val port = Port(bound, mutableSetOf(bound), mapOf("s1" to pc))
+        port.fresh = { if (pc.writes.isEmpty()) claudePane else claudePane.copy(agent = "codex", sessionId = "sess-C") }
+        val o = SecretSender(port).send(bound, null, true, secretText.toByteArray()) as SecretOutcome.Saved
+        assertFalse(o.live || o.draft)
+        assertTrue("no path in any message box", port.live.isEmpty() && port.drafts.isEmpty())
+        assertEquals("read before and after the save", listOf("p1", "p1"), port.reads)
+        assertTrue(secretNotice(o).endsWith("Claude closed or changed, so it went into no message."))
+    }
+
+    @Test fun aPaneThatCantBeReadBackGetsNoPath() = runBlocking {
+        val pc = Computer()
+        val port = Port(bound, mutableSetOf(bound), mapOf("s1" to pc))
+        port.fresh = { if (pc.writes.isEmpty()) claudePane else throw IllegalStateException("The SSH connection changed.") }
+        val o = SecretSender(port).send(bound, null, true, secretText.toByteArray()) as SecretOutcome.Saved
+        assertFalse(o.live || o.draft)
+        assertTrue(port.live.isEmpty() && port.drafts.isEmpty())
+    }
+
+    @Test fun aReplacedConnectionRefusesTheSave() = runBlocking {
+        val changed = SecretDrop.Run { _, _ -> throw com.billmongan.herdrdroid.ssh.ConnectionChanged() }
+        val port = Port(bound, mutableSetOf(bound), mapOf("s1" to changed))
+        val o = SecretSender(port).send(bound, null, true, secretText.toByteArray())
+        assertTrue(o.toString(), o is SecretOutcome.Refused && o.why.contains("connection to Mini changed, so nothing was saved"))
+        assertTrue(port.live.isEmpty() && port.drafts.isEmpty())
+        assertEquals(0, port.inFlight)
+    }
+
+    @Test fun theSaveCountsAsASendInFlight() = runBlocking {
+        val pc = Computer()
+        val port = Port(bound, mutableSetOf(bound), mapOf("s1" to pc))
+        val o = SecretSender(port).send(bound, null, true, secretText.toByteArray())
+        assertTrue(o is SecretOutcome.Saved && o.live)
+        assertEquals("the upload ran while counted", listOf(1), port.inFlightAtWrite)
+        assertEquals("released after", 0, port.inFlight)
+    }
+
+    /** The real command in a real shell: an upload cut short never gets the final name. */
+    @Test fun aCutShortUploadLeavesOnlyThePartFile() {
+        val sh = listOf("/bin/sh", "/usr/bin/sh").map { java.io.File(it) }.firstOrNull { it.canExecute() }
+        org.junit.Assume.assumeTrue("needs a POSIX shell", sh != null)
+        val home = java.nio.file.Files.createTempDirectory("hd227-secret").toFile()
+        try {
+            fun run(name: String, declared: Int, stdin: ByteArray): Int {
+                val p = ProcessBuilder(sh!!.path, "-c", SecretDrop.command(name, declared)).redirectErrorStream(true)
+                p.environment()["HOME"] = home.path
+                val proc = p.start()
+                proc.outputStream.use { it.write(stdin) }
+                proc.inputStream.readBytes()
+                return proc.waitFor()
+            }
+            val dir = java.io.File(home, SecretDrop.DIR)
+            val bytes = secretText.toByteArray()
+            assertEquals(5, run("cut.txt", bytes.size, bytes.copyOf(bytes.size / 2)))
+            assertFalse("no file at the final name", java.io.File(dir, "cut.txt").exists())
+            assertTrue("the partial copy stays under .part", java.io.File(dir, "cut.txt.part").exists())
+            assertEquals(0, run("whole.txt", bytes.size, bytes))
+            assertArrayEquals(bytes, java.io.File(dir, "whole.txt").readBytes())
+            assertFalse(java.io.File(dir, "whole.txt.part").exists())
+        } finally {
+            home.deleteRecursively()
+        }
     }
 }

@@ -453,9 +453,14 @@ class AppViewModel internal constructor(
      * but only once nothing is being sent on its send lane (pre-review M2), so a message or key
      * press in flight is never cut off. A send that outlives [FALLBACK_SEND_WAIT_MS] has passed its
      * own timeout and is treated as abandoned. Nothing happens if [h] is no longer the open server.
+     * 2.2.7 (Codex's review): nor once the socket that stalled was replaced (a newer one in the same
+     * client already uses small packets) or the phone's network changed while it waited (that
+     * ends the session's small packets), so a newer connection is never cut for an older stall.
      */
     internal fun reconnectForFallback(h: Herdr) {
         val s = h.transport
+        val stalled = s.connectionIdentity
+        val net = com.billmongan.herdrdroid.diag.NetworkWatch.changes
         viewModelScope.launch {
             val start = System.currentTimeMillis()
             var waited = false
@@ -467,6 +472,16 @@ class AppViewModel internal constructor(
                 "server=${com.billmongan.herdrdroid.diag.LinkDiag.serverTag(current?.id)} fallback-reconnect waited_for_send=" +
                     (if (s.sendsRunning > 0) "abandoned" else "done") + " ms=${System.currentTimeMillis() - start}")
             if (herdr !== h) return@launch
+            val skip = when {
+                s.connectionIdentity !== stalled -> "connection-replaced"
+                com.billmongan.herdrdroid.diag.NetworkWatch.changes != net -> "network-change"
+                else -> null
+            }
+            if (skip != null) {
+                com.billmongan.herdrdroid.diag.DiagLog.log("link",
+                    "server=${com.billmongan.herdrdroid.diag.LinkDiag.serverTag(current?.id)} fallback-reconnect skipped reason=$skip")
+                return@launch
+            }
             linkLost(null, "small-packets-fallback")
         }
     }
@@ -3502,7 +3517,7 @@ class AppViewModel internal constructor(
     }
 
     private fun secretTarget(s: Server, p: Pane) =
-        com.billmongan.herdrdroid.herdr.SecretTarget(s.id, p.id, s.label, com.billmongan.herdrdroid.ui.sessionName(p))
+        com.billmongan.herdrdroid.herdr.SecretTarget(s.id, p.id, s.label, com.billmongan.herdrdroid.ui.sessionName(p), p)
 
     /** Every pane a secret can go to: the open server's first, then each other connected server's. */
     fun secretTargets(): List<com.billmongan.herdrdroid.herdr.SecretTarget> {
@@ -3514,11 +3529,17 @@ class AppViewModel internal constructor(
     }
 
     internal val secretSender = com.billmongan.herdrdroid.herdr.SecretSender(object : com.billmongan.herdrdroid.herdr.SecretSender.Port {
-        override fun present(t: com.billmongan.herdrdroid.herdr.SecretTarget) = secretPanes(t.serverId)?.any { it.id == t.paneId } == true
-        override fun runner(serverId: String) = when {
-            locked -> null
-            serverId == current?.id -> herdr?.takeIf { link == Link.CONNECTED }?.secretRun
-            else -> fleet?.herdr(serverId)?.takeIf { secretPanes(serverId) != null }?.secretRun
+        override fun present(t: com.billmongan.herdrdroid.herdr.SecretTarget) = secretPanes(t.serverId)?.any { t.matches(it) } == true
+        override fun bind(serverId: String): com.billmongan.herdrdroid.herdr.SecretSender.Bound? {
+            val h = when {
+                locked -> null
+                serverId == current?.id -> herdr?.takeIf { link == Link.CONNECTED }
+                else -> fleet?.herdr(serverId)?.takeIf { secretPanes(serverId) != null }
+            } ?: return null
+            val connection = h.connectionIdentity ?: return null
+            return com.billmongan.herdrdroid.herdr.SecretSender.Bound(
+                h.secretRunOn(connection), { id -> h.relayPane(id, connection) }, h::beginSecretSend, h::endSecretSend,
+            )
         }
         override fun isOpen(t: com.billmongan.herdrdroid.herdr.SecretTarget) =
             t.serverId == current?.id && (screen as? Screen.Agent)?.paneId == t.paneId
