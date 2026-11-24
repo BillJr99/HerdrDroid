@@ -3480,6 +3480,103 @@ class AppViewModel internal constructor(
         f.retry()
     }
 
+    // ---- 2.2.7: Send a secret ([com.billmongan.herdrdroid.herdr.SecretDrop]) -------------------
+    // A separate path from the attach above (Bill: "I still like the regular file upload"). The
+    // secret lives only in the dialog and the one send; never queued for a lost link, never in a
+    // draft, a log or the clipboard. Only its path goes into the chosen pane's message box.
+
+    /** The open pane's path to insert at the caret, once ([secretInsertTaken]). */
+    data class SecretInsert(val serverId: String, val paneId: String, val path: String, val id: Long)
+    var secretInsert by mutableStateOf<SecretInsert?>(null)
+        private set
+    fun secretInsertTaken(id: Long) { if (secretInsert?.id == id) secretInsert = null }
+    var secretBusy by mutableStateOf(false)
+        private set
+    /** A secret saved for another pane: the notice offers to open it. */
+    data class SecretSavedElsewhere(val serverId: String, val paneId: String, val text: String)
+    var secretElsewhere by mutableStateOf<SecretSavedElsewhere?>(null)
+
+    private fun secretPanes(serverId: String): List<Pane>? = when {
+        serverId == current?.id -> panes
+        else -> fleetStates[serverId]?.takeIf { st -> st.error == null && st.server == servers.firstOrNull { it.id == serverId } }?.panes
+    }
+
+    private fun secretTarget(s: Server, p: Pane) =
+        com.billmongan.herdrdroid.herdr.SecretTarget(s.id, p.id, s.label, com.billmongan.herdrdroid.ui.sessionName(p))
+
+    /** Every pane a secret can go to: the open server's first, then each other connected server's. */
+    fun secretTargets(): List<com.billmongan.herdrdroid.herdr.SecretTarget> {
+        val cur = current ?: return emptyList()
+        val here = if (link == Link.CONNECTED) panes.map { secretTarget(cur, it) } else emptyList()
+        val others = servers.filter { it.id != cur.id && fleet?.herdr(it.id) != null }
+            .flatMap { s -> secretPanes(s.id).orEmpty().map { secretTarget(s, it) } }
+        return here + others
+    }
+
+    internal val secretSender = com.billmongan.herdrdroid.herdr.SecretSender(object : com.billmongan.herdrdroid.herdr.SecretSender.Port {
+        override fun present(t: com.billmongan.herdrdroid.herdr.SecretTarget) = secretPanes(t.serverId)?.any { it.id == t.paneId } == true
+        override fun runner(serverId: String) = when {
+            locked -> null
+            serverId == current?.id -> herdr?.takeIf { link == Link.CONNECTED }?.secretRun
+            else -> fleet?.herdr(serverId)?.takeIf { secretPanes(serverId) != null }?.secretRun
+        }
+        override fun isOpen(t: com.billmongan.herdrdroid.herdr.SecretTarget) =
+            t.serverId == current?.id && (screen as? Screen.Agent)?.paneId == t.paneId
+        override fun insertLive(t: com.billmongan.herdrdroid.herdr.SecretTarget, path: String) {
+            secretInsert = SecretInsert(t.serverId, t.paneId, path, System.nanoTime())
+        }
+        override fun appendDraft(t: com.billmongan.herdrdroid.herdr.SecretTarget, path: String) {
+            val key = draftKey(t.serverId, t.paneId)
+            composerDrafts[key] = com.billmongan.herdrdroid.herdr.SecretDrop.appendTo(composerDrafts[key].orEmpty(), path)
+            saveDrafts()
+        }
+    })
+
+    private fun finishSecret(o: com.billmongan.herdrdroid.herdr.SecretOutcome) {
+        val text = com.billmongan.herdrdroid.herdr.secretNotice(o)
+        if (o is com.billmongan.herdrdroid.herdr.SecretOutcome.Saved && o.draft) secretElsewhere = SecretSavedElsewhere(o.target.serverId, o.target.paneId, text)
+        else notice = text
+    }
+
+    /** Typed text: [bytes] are zeroed once sent or refused. */
+    fun sendSecret(target: com.billmongan.herdrdroid.herdr.SecretTarget, label: String?, bytes: ByteArray) {
+        if (secretBusy) { bytes.fill(0); return }
+        secretBusy = true
+        viewModelScope.launch {
+            try { finishSecret(secretSender.send(target, label, true, bytes)) } finally { secretBusy = false }
+        }
+    }
+
+    /** A picked file: read here (up to the limit), sent, and zeroed; named by [label] or its own name. */
+    fun sendSecretFile(target: com.billmongan.herdrdroid.herdr.SecretTarget, label: String?, uri: Uri) {
+        if (secretBusy) return
+        secretBusy = true
+        val app = getApplication<Application>()
+        viewModelScope.launch {
+            try {
+                val read = withContext(Dispatchers.IO) {
+                    runCatching {
+                        val n = app.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                            if (c.moveToFirst()) c.getString(0) else null
+                        }
+                        val max = com.billmongan.herdrdroid.herdr.SecretDrop.MAX_BYTES
+                        val b = app.contentResolver.openInputStream(uri)?.use { input ->
+                            val buf = java.io.ByteArrayOutputStream()
+                            val chunk = ByteArray(16 * 1024)
+                            var total = 0
+                            while (total <= max) { val k = input.read(chunk); if (k < 0) break; buf.write(chunk, 0, k); total += k }
+                            chunk.fill(0)
+                            buf.toByteArray().also { buf.reset() }
+                        } ?: ByteArray(0)
+                        n to b
+                    }
+                }
+                val (name, bytes) = read.getOrElse { finishSecret(com.billmongan.herdrdroid.herdr.SecretOutcome.Refused("Couldn't read that file, so nothing was saved.")); return@launch }
+                finishSecret(secretSender.send(target, label?.takeIf { it.isNotBlank() } ?: name, false, bytes))
+            } finally { secretBusy = false }
+        }
+    }
+
     // ---- Attachments ----------------------------------------------------------------------------
 
     /** Recently fetched attachments, up to 32 MB, so scrolling back doesn't fetch them again. */
