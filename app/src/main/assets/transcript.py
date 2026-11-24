@@ -2148,7 +2148,7 @@ def main():
             done({"ok": False, "why": "%s: %s" % (type(e).__name__, str(e)[:200])})
     if len(sys.argv) > 3 and sys.argv[1] == "__sessions__":
         try:
-            done({"ok": True, "sessions": list_sessions(sys.argv[2].lower(), sys.argv[3].rstrip("/") or "/")})
+            done({"ok": True, "sessions": list_sessions(reader_kind(sys.argv[2]), sys.argv[3].rstrip("/") or "/")})
         except Exception as e:
             done({"ok": False, "why": "%s: %s" % (type(e).__name__, str(e)[:200])})
     # Follow mode: the same read, repeated about three times a second for a while, printing one

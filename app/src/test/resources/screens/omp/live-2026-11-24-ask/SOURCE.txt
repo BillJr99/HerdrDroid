@@ -1,0 +1,4 @@
+Synthesized for 2.2.7 from a plain-text capture of Oh My Pi's multi-question Ask dialog (layout,
+glyphs and spacing as captured; styles added; every name, path and number replaced with neutral
+ones). ask-open-other: question 3 open, highlight on "Other". ask-open-first: the same with the
+highlight on the first option and 4 of 5 answered. ask-submit: every question answered, highlight on Submit.

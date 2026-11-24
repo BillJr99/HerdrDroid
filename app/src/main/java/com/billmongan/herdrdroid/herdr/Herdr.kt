@@ -1371,6 +1371,8 @@ data class Prompt(
      * is partly off screen, and the dialog's top is the screen's top ([dialogRead]).
      */
     internal val topOffScreen: Boolean = false,
+    /** 2.2.7: Oh My Pi's or pi's multi-question Ask dialog, as [OmpAsk] read it. */
+    internal val ompAsk: OmpAsk.State? = null,
 ) {
     /**
      * Never an empty card (1.4.2): a prompt with no choices always has something to show, the
@@ -3442,6 +3444,8 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     }
     // Before the styles are stripped: they are the only mark of Muse's highlighted option (2.1.0).
     if (agent.equals("muse", true)) detectMuseQuotaDialog(text)?.let { return it }
+    // 2.2.7 (Bill: "show the whole question"): Oh My Pi's and pi's boxed multi-question Ask dialog.
+    if (agent?.lowercase() in setOf("omp", "pi")) OmpAsk.prompt(plain)?.let { return it }
     if (isOpenCode(agent)) {
         if (openCodeBackgroundDrawer(agent, plain) || openCodeComposerMode(plain.lines().takeLast(20)) >= 0) return null
         detectOpenCodeQuestion(plain)?.let { return it }
@@ -4229,11 +4233,14 @@ internal fun cardOccupantDigest(p: JSONObject): String {
  * The same "(12s)" anywhere else, a command's text included, is part of the question.
  * [CARD_SEND_CHECK] and card-check.sh apply exactly this rule.
  */
-private val CARD_TIMER_LINE = Regex("""^(type [0-9/]+, or )?↑/↓ to select, enter to confirm \([0-9]{1,4}s\)$""")
-private val CARD_TIMER = Regex("""^(.*)\([0-9]{1,4}s\)""", RegexOption.DOT_MATCHES_ALL)
+private val CARD_TIMER_LINE = Regex("""^(type [0-9/]+, or )?↑/↓ to select, enter to confirm[ \t\r\u000B\u000C]*\([0-9]+s\)$""")
+private val CARD_TIMER = Regex("""^(.*)\([0-9]+s\)""", RegexOption.DOT_MATCHES_ALL)
 private val CARD_CSI = Regex("\u001B\\[[0-9;?]*[ -/]*[@-~]")
 
 private fun asciiFold(s: String) = buildString(s.length) { for (c in s) append(if (c in 'A'..'Z') c + 32 else c) }
+
+/** A digest no screen has: a screen with a NUL byte never matches. */
+private val CARD_NO_MATCH = "0".repeat(64)
 
 internal fun cardTimerLine(line: String): String {
     val shown = asciiFold(CARD_CSI.replace(line, "")).trim { it == ' ' || it == '\t' || it == '\r' || it == '\u000B' || it == '\u000C' }
@@ -4246,6 +4253,8 @@ internal fun cardTimerLine(line: String): String {
  * computer, so it never matches: the check fails closed (exit 3), never open.
  */
 internal fun cardScreenDigest(raw: String): String {
+    // A NUL is refused by both checks on the computer (a shell can't hold one): never a match here either.
+    if ('\u0000' in raw) return CARD_NO_MATCH
     // Every line ends in a newline (the last one too), as a line-by-line awk prints it.
     val t = raw.split("\n").joinToString("\n") { cardTimerLine(it) }.let { if (it.isNotEmpty() && !it.endsWith("\n")) it + "\n" else it }
     return sha256Hex(t.toByteArray(Charsets.UTF_8))
@@ -4280,14 +4289,16 @@ internal val CARD_SEND_CHECK = """
         f += [s.get(k) for k in ('kind', 'agent', 'value')]
         return hashlib.sha256(b''.join(v(x) for x in f)).hexdigest()
     # Only the agent's own timer line (cardTimerLine in Herdr.kt): its last (Ns), nothing else.
-    TIMER_LINE = re.compile(b'^(type [0-9/]+, or )?' + '\u2191/\u2193'.encode('utf-8') + rb' to select, enter to confirm \([0-9]{1,4}s\)$')
+    TIMER_LINE = re.compile(b'^(type [0-9/]+, or )?' + '\u2191/\u2193'.encode('utf-8') + rb' to select, enter to confirm[ \t\r\x0b\x0c]*\([0-9]+s\)$')
     def timer(line):
         shown = re.sub(rb'\x1b\[[0-9;?]*[ -/]*[@-~]', b'', line).lower().strip(b' \t\r\x0b\x0c')
-        return re.sub(rb'(?s)^(.*)\([0-9]{1,4}s\)', rb'\1(Ns)', line, count=1) if TIMER_LINE.match(shown) else line
+        return re.sub(rb'(?s)^(.*)\([0-9]+s\)', rb'\1(Ns)', line, count=1) if TIMER_LINE.match(shown) else line
     try:
         before = identity()
         visible = call('read', pane, '--source', 'visible', '--format', 'ansi')
         after = identity()
+        if b'\x00' in visible:
+            sys.exit(3)  # a NUL never matches (the shell check can't hold one); as cardScreenDigest
         visible = b'\n'.join(timer(line) for line in visible.split(b'\n'))
         if visible and not visible.endswith(b'\n'):
             visible += b'\n'

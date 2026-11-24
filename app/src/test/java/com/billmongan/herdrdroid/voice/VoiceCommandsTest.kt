@@ -43,6 +43,8 @@ class VoiceCommandsTest {
         assertEquals("two servers with the same consonants: no guess", emptyList<Server>(),
             voiceServersNamed(listOf(server("labx2"), server("lobx2")), "lub x two"))
         assertEquals("fewer than three consonants: too little to go on", emptyList<Server>(), voiceServersNamed(listOf(server("pac")), "pic"))
+        assertEquals("a leading vowel is not a consonant", emptyList<Server>(), voiceServersNamed(listOf(server("atom")), "atam"))
+        assertEquals(listOf(server("atoms")), voiceServersNamed(listOf(server("atoms")), "atams"))
         assertEquals("a vowel slip with enough to go on", listOf(server("minibox2")), voiceServersNamed(listOf(server("minibox2")), "many box"))
     }
 
