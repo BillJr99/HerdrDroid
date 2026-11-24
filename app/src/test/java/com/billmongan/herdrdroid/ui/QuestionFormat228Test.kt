@@ -76,4 +76,10 @@ class QuestionFormat228Test {
         assertFalse(text(blocks).contains("Build loop"))
         assertEquals("Replace the loop with the Python call above and keep the make line.", CardFormat.optionNotes(s, p.choices)["2"])
     }
+
+    @Test fun codexQuestionShowsAllOfItsTextAndStaysTerminalOnly() {
+        val (p, _, _) = card("codex/derived-2.2.8-format/long-code-question.txt")
+        assertTrue(p.terminalReview && p.codexQuestion && p.choices.isEmpty())
+        assertWholeQuestion("codex/derived-2.2.8-format/long-code-question.txt")
+    }
 }

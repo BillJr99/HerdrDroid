@@ -3737,8 +3737,14 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
                     .takeWhile { it.isNotBlank() && !CODEX_QUESTION_OPTION.matches(it) }
                     .joinToString(" ").ifBlank { "Codex has a question" }
             }
+            // 2.2.8 (Bill: "make sure all the question text is visible"): the card shows the whole
+            // question, every paragraph and code block up to its options, not only its first paragraph.
+            val parts = if (confirmation || head < 0 || footer < 0) null else {
+                val end = (head + 1 until footer).firstOrNull { CODEX_QUESTION_OPTION.matches(rows[it].trim()) } ?: footer
+                dialogQuestionLines(rows.subList(head + 1, end)) { it.trim() }.takeIf { it.isNotEmpty() }?.let(::questionParts)
+            }
             // Enter can move focus, advance a step or submit, depending on the native overlay.
-            return Prompt(question, emptyList(), terminalReview = true, codexQuestion = true)
+            return Prompt(question, emptyList(), terminalReview = true, codexQuestion = true, parts = parts)
         }
     }
     val openCode = isOpenCode(agent)
