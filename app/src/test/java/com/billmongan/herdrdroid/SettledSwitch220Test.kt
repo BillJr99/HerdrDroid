@@ -44,7 +44,7 @@ class SettledSwitch220Test {
         f.install()
     }
 
-    @After fun tearDown() { f.vm.viewModelScope.cancel() }
+    @After fun tearDown() { f.vm.clearForTest() }
 
     @Test fun aMidRedrawFirstReadIsHeldUntilTwoReadsMatch() = runBlocking {
         f.vm.openPane("plain")

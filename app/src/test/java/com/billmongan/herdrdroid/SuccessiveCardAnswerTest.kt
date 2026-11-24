@@ -1362,7 +1362,7 @@ class SuccessiveCardAnswerTest {
         try {
             f.test()
         } finally {
-            f.vm.viewModelScope.cancel()
+            f.vm.clearForTest()
             // Finish queued Compose snapshot dispatch before Robolectric resets the shared looper.
             shadowOf(Looper.getMainLooper()).idle()
         }

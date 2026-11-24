@@ -37,7 +37,7 @@ class MenuWriteGuard220Test {
     private val server = Server(id = "fixture-m", name = "FixtureM", host = "127.0.0.1", port = 1, user = "fixm", herdrPath = "/fixture/herdr")
 
     @After fun close() {
-        vm.viewModelScope.cancel()
+        vm.clearForTest()
         shadowOf(Looper.getMainLooper()).idle()
     }
 

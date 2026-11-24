@@ -53,7 +53,7 @@ class PaneReadVm227Test {
 
     @After fun close() {
         vm.paneReadStore.clear()
-        vm.viewModelScope.cancel()
+        vm.clearForTest()
         shadowOf(Looper.getMainLooper()).idle()
     }
 

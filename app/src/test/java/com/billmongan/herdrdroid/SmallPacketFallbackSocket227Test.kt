@@ -43,7 +43,7 @@ class SmallPacketFallbackSocket227Test {
 
     @After fun close() {
         setChanges(netBefore)
-        vm.viewModelScope.cancel()
+        vm.clearForTest()
         shadowOf(Looper.getMainLooper()).idle()
     }
 

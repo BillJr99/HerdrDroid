@@ -11,14 +11,13 @@ import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.lifecycle.viewModelScope
-import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.billmongan.herdrdroid.clearForTest
 import com.billmongan.herdrdroid.AppViewModel
 import com.billmongan.herdrdroid.Screen
 import com.billmongan.herdrdroid.herdr.Pane
 import com.billmongan.herdrdroid.herdr.Status
 import com.billmongan.herdrdroid.store.Server
-import kotlinx.coroutines.cancel
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -42,7 +41,7 @@ class ServersBackUiTest {
     private val codex = Pane("w1:p1", "w1:t1", "w1", "codex", Status.IDLE, "Codex · 1", "/fixture", scrollOffset = 0, terminalId = "t1")
 
     @After fun close() {
-        rule.runOnUiThread { vm.viewModelScope.cancel() }
+        rule.runOnUiThread { vm.clearForTest() }
     }
 
     private fun openFromAgent() = rule.runOnUiThread {

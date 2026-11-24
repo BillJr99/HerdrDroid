@@ -25,18 +25,21 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 
-/** 2.2.7 Send a secret's dialog on its own: the screen is secured while it is open, the box is masked. */
+/**
+ * 2.2.7 Send a secret's dialog on its own: the screen is secured while it is open, the box is masked.
+ *
+ * 2.2.8: run at a narrow width. Under Robolectric a Compose dialog with a full-width text field
+ * never goes idle at widths of about 340dp and up (robolectric/robolectric#8460), which hung this
+ * test; at 320dp it idles and every assertion below still runs.
+ */
 @RunWith(AndroidJUnit4::class)
-@Config(qualifiers = "w420dp-h1000dp")
+@Config(qualifiers = "w320dp-h1000dp")
 class SendSecretDialog227Test {
     @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = IdleMainLooperRule()
     @get:Rule val rule = createComposeRule()
     private val here = SecretTarget("s1", "p1", "Mini", "Claude")
     private val there = SecretTarget("s2", "p9", "Lab", "Hermes")
 
-    // Known gap (2.2.7): Robolectric never goes idle with this dialog's text fields shown (lanes
-    // hd227s12b-s17); kept for when that is fixed. The phone check covers it meanwhile.
-    @org.junit.Ignore("Robolectric never idles with this dialog's text fields; checked on the phone")
     @Test fun theScreenIsSecureWhileOpenAndTheChosenTargetGetsTheBytes() {
         var act: Activity? = null
         var open by mutableStateOf(true)

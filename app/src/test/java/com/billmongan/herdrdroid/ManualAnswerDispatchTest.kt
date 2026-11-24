@@ -29,7 +29,7 @@ import org.robolectric.Shadows.shadowOf
 
 @RunWith(AndroidJUnit4::class)
 class ManualAnswerDispatchTest {
-    @get:Rule val idleMainLooper = IdleMainLooperRule()
+    @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = IdleMainLooperRule()
     @Test fun dispatchChecksLiveCardWithoutWaitingForBulkAndRefusesChangedApproval() = runBlocking {
         val fixture = System.getenv("HD_CARD_FIXTURE_DIR")?.let(::File)
         assumeTrue("no isolated approval SSH fixture", fixture != null)
@@ -98,7 +98,7 @@ class ManualAnswerDispatchTest {
                 bulk.await()
             }
         } finally {
-            vm.viewModelScope.cancel()
+            vm.clearForTest()
             ssh.close()
         }
     }
@@ -134,7 +134,7 @@ class ManualAnswerDispatchTest {
             assertFalse(vm.answerInFlight(paneId))
             dispatch.tryAcquire(key)!!.invoke()
         } finally {
-            vm.viewModelScope.cancel()
+            vm.clearForTest()
         }
     }
 

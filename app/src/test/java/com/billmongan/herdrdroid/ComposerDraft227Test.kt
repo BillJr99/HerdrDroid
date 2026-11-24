@@ -50,7 +50,7 @@ class ComposerDraft227Test {
         DraftSeal.open = { it }
     }
 
-    @After fun close() { vms.forEach { v -> rule.runOnUiThread { v.viewModelScope.cancel() } } }
+    @After fun close() { vms.forEach { v -> rule.runOnUiThread { v.clearForTest() } } }
 
     private class Quiet(var refuse: Boolean = false) : Herdr.Commands {
         override val connection: Any? = Any()
@@ -77,6 +77,8 @@ class ComposerDraft227Test {
             field(vm, "herdr").set(vm, Herdr(HerdrSsh("127.0.0.1", 1, "u", Credentials(null, null), null, { null }), "herdr", Backend.TUI, null, commands))
             state(vm, "current", a)
             state(vm, "link", Link.CONNECTED)
+            // The screen's own reads can go past the fake and mark the link lost: never a real reconnect.
+            vm.holdReconnectForTest()
             state(vm, "panes", listOf(Pane("p1", "tab", "w1", "claude", Status.IDLE, "", "/fixture", terminalId = "t1"),
                 Pane("p2", "tab2", "w1", "codex", Status.IDLE, "", "/fixture", terminalId = "t2")))
         }

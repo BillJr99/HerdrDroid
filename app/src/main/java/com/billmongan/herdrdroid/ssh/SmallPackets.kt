@@ -267,7 +267,7 @@ class SmallPacketFallback(private val windowMs: Long = WINDOW_MS, private val ms
  * path MTU and the "too big" replies that PMTU discovery needs are blocked). When the phone's
  * default network is a VPN at connect time, a direct TCP connection uses small packets without
  * waiting for the 2.2.6 fallback. [enabled] mirrors the global setting "Small packets on VPN
- * (automatic)" (on by default); [networkType] is the seam unit tests replace, so they never need a
+ * (automatic)" (off by default); [networkType] is the seam unit tests replace, so they never need a
  * real ConnectivityManager. The type is a word only ("vpn", "wifi", ...), never a name or address.
  */
 object VpnSmallPackets {

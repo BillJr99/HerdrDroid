@@ -1,6 +1,7 @@
 package com.billmongan.herdrdroid.ui
 
 import com.billmongan.herdrdroid.OUTERMOST_RULE
+import com.billmongan.herdrdroid.clearForTest
 import com.billmongan.herdrdroid.IdleMainLooperRule
 import com.billmongan.herdrdroid.*
 
@@ -85,7 +86,7 @@ class CrossServerNoticeDeliveryTest {
     private fun watch() = state(fleet, "states", mapOf(laptop2.server.id to FleetState(laptop2.server, laptop2.panes(), null, 0)))
 
     @After fun close() {
-        rule.runOnUiThread { vm.viewModelScope.cancel() }
+        rule.runOnUiThread { vm.clearForTest() }
         shadowOf(Looper.getMainLooper()).idle()
     }
 
@@ -292,7 +293,7 @@ class CrossServerNoticeDeliveryTest {
         val restarted = AppViewModel(app)
         assertEquals(80, restarted.crossServerNoticeQuota)
         assertFalse(restarted.crossServerNotice)
-        restarted.viewModelScope.cancel()
+        restarted.clearForTest()
     }
 
     @Test fun whatWasSentIsNotSentAgainAfterARestart() {
@@ -312,7 +313,7 @@ class CrossServerNoticeDeliveryTest {
         field(restarted, "fleet").set(restarted, fleet)
         runBlocking { restarted.noticeTick() }
         assertEquals(3, laptop.writes.size + laptop2.writes.size)
-        restarted.viewModelScope.cancel()
+        restarted.clearForTest()
     }
 
     @Test fun settingsControls() {
