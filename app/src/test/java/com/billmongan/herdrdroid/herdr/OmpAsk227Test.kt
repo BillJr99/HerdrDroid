@@ -61,4 +61,19 @@ class OmpAsk227Test {
         assertNull(OmpAsk.parse(stripAnsi(cut)))
         assertNull("another agent's screen", OmpAsk.prompt("❯ 1. Yes\n  2. No"))
     }
+
+    /** Codex's re-review: Submit is bound to the answers the card showed; a changed answer is another dialog state. */
+    @Test fun theStateHoldsEveryAnswer() {
+        val p = checkNotNull(detectPrompt(screen("ask-submit.ansi"), true, "omp")).ompAsk!!
+        assertEquals(listOf("Leave it to the rev…", "Keep them SAFE-TO-M…", "Other: look at the…",
+            "Leave as CHECK-FIRST", "KEEP, it is still i…"), p.answers)
+        val changed = checkNotNull(detectPrompt(screen("ask-submit.ansi").replace("✓ Other: look at the…", "✓ Other: delete it al…"), true, "omp")).ompAsk!!
+        assertEquals(p.questions, changed.questions)
+        assertFalse(OmpAsk.sameAnswers(p.answers, changed.answers))
+        assertTrue("a shortened answer is the same answer", OmpAsk.sameAnswers(listOf("Leave as CHECK-FIRST"), listOf("Leave as CHECK-F…")))
+        assertFalse(OmpAsk.sameAnswers(listOf("Leave as CHECK-FIRST"), listOf("List the 7 commit…")))
+        val open = checkNotNull(detectPrompt(screen("ask-open-other.ansi"), true, "omp")).ompAsk!!
+        assertEquals("the open question's selection counts", "Leave as CHECK-FIRST", open.answers[2])
+        assertNotNull("pi while working reads the Ask dialog too", activePiQuestion(screen("ask-open-other.ansi"), null))
+    }
 }

@@ -17,6 +17,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -53,6 +54,7 @@ fun SendSecretDialog(vm: AppViewModel, paneId: String, onDismiss: () -> Unit) {
     SendSecretDialog(
         targets = targets,
         initial = targets.firstOrNull { it.serverId == vm.current?.id && it.paneId == paneId } ?: targets.firstOrNull(),
+        busy = vm.secretBusy,
         onSendText = { t, label, bytes -> vm.sendSecret(t, label, bytes) },
         onSendFile = { t, label, uri -> vm.sendSecretFile(t, label, uri) },
         onDismiss = onDismiss,
@@ -69,9 +71,12 @@ fun SendSecretDialog(vm: AppViewModel, paneId: String, onDismiss: () -> Unit) {
 fun SendSecretDialog(
     targets: List<SecretTarget>,
     initial: SecretTarget?,
-    onSendText: (SecretTarget, String?, ByteArray) -> Unit,
-    onSendFile: (SecretTarget, String?, Uri) -> Unit,
+    /** True when the secret was taken; false keeps the dialog open with what was typed. */
+    onSendText: (SecretTarget, String?, ByteArray) -> Boolean,
+    onSendFile: (SecretTarget, String?, Uri) -> Boolean,
     onDismiss: () -> Unit,
+    /** Another secret is still being saved: Save waits, and the dialog says why (nothing is dropped). */
+    busy: Boolean = false,
 ) {
     var asFile by remember { mutableStateOf(false) }
     var secret by remember { mutableStateOf("") }
@@ -147,6 +152,7 @@ fun SendSecretDialog(
                     keyboardOptions = KeyboardOptions(autoCorrectEnabled = false),
                     modifier = Modifier.fillMaxWidth(),
                 )
+                if (busy) Text(SECRET_BUSY_TEXT, color = MaterialTheme.colorScheme.error)
                 // The pane list opens in place, inside this secure dialog, not as a separate popup window.
                 TextButton(onClick = { choosing = !choosing }, enabled = targets.size > 1) {
                     Text("For: " + (target?.let { "${it.paneLabel} on ${it.serverLabel}" } ?: "no pane is open") + if (targets.size > 1) (if (choosing) "  ▴" else "  ▾") else "")
@@ -161,23 +167,23 @@ fun SendSecretDialog(
         confirmButton = {
             val t = target
             TextButton(
-                enabled = t != null && (if (asFile) file != null else secret.isNotEmpty()),
+                enabled = t != null && !busy && (if (asFile) file != null else secret.isNotEmpty()),
                 onClick = {
                     if (t == null) return@TextButton
                     val l = label.trim().ifBlank { null }
-                    if (asFile) file?.let { onSendFile(t, l, it.first) }
-                    else {
-                        val bytes = secret.toByteArray(Charsets.UTF_8)
-                        secret = ""
-                        onSendText(t, l, bytes)
-                    }
-                    onDismiss()
+                    val taken = if (asFile) file?.let { onSendFile(t, l, it.first) } == true
+                    else onSendText(t, l, secret.toByteArray(Charsets.UTF_8)).also { if (it) secret = "" }
+                    if (taken) onDismiss()
                 },
-            ) { Text("Save on server") }
+            ) { Text(if (busy) SECRET_BUSY_BUTTON else "Save on server") }
         },
         dismissButton = { TextButton(onClick = close) { Text("Cancel") } },
     )
 }
+
+/** 2.2.7: shown while another secret is still being saved; Save waits, nothing is dropped. */
+const val SECRET_BUSY_TEXT = "Another secret is still being saved. Save becomes available when it is done; what you typed stays here."
+const val SECRET_BUSY_BUTTON = "Waiting for the last secret"
 
 private fun Context.activity(): Activity? {
     var c: Context? = this

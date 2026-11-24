@@ -2739,6 +2739,8 @@ private val PI_SELECT_FOOTER = Regex("""↑↓\s+navigate\s+enter select\s+escap
 
 /** Pi's native select footer must still be at the bottom; a footer in old output is not a card. */
 internal fun activePiQuestion(text: String, version: String?): Prompt? {
+    // 2.2.7 (Grok's review): pi's Ask dialog is a live question too, whatever its footer.
+    OmpAsk.prompt(stripAnsi(text))?.let { return it }
     val footer = text.lines().lastOrNull { !isChrome(it) }?.trim() ?: return null
     if (!PI_SELECT_FOOTER.matches(footer)) return null
     return detectPrompt(text, blocked = false, agent = "pi", version = version)?.takeIf { it.choices.isNotEmpty() }

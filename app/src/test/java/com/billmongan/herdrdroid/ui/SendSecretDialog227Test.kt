@@ -43,7 +43,7 @@ class SendSecretDialog227Test {
         var sent: Triple<SecretTarget, String?, ByteArray>? = null
         rule.setContent {
             act = LocalContext.current as? Activity
-            if (open) SendSecretDialog(listOf(here, there), here, { t, l, b -> sent = Triple(t, l, b.copyOf()) }, { _, _, _ -> }, { open = false })
+            if (open) SendSecretDialog(listOf(here, there), here, { t, l, b -> sent = Triple(t, l, b.copyOf()); true }, { _, _, _ -> true }, { open = false })
         }
         fun secure() = act!!.window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE != 0
         rule.runOnIdle { assertTrue("secured while open", secure()) }

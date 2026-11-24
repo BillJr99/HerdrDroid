@@ -190,25 +190,35 @@ END {
 
 # herdr's replies are kept as files, byte for byte: a shell variable can't hold a NUL (bash drops
 # it), so one is looked for in the file itself and refused, as the Python check and the app do.
-# They go in ~/.herdrdroid/check (0700), one pair per pane, overwritten by each check and emptied
-# when it ends, so nothing is ever deleted and nothing of the screen stays behind.
+# They go in ~/.herdrdroid/check: a real folder (never a link), the user's own, with no group or
+# other access. Each check makes its own two files there with mktemp (created new, 0600, never
+# through a link, never shared with another check, even on the same pane) and removes exactly those
+# two when it ends.
 umask 077
 [ -n "$HOME" ] || exit 4
 [ -L "$HOME/.herdrdroid" ] || [ -L "$HOME/.herdrdroid/check" ] && exit 4
 dir=$HOME/.herdrdroid/check
-mkdir -p "$dir" 2>/dev/null && chmod 700 "$dir" 2>/dev/null || exit 4
-base=$dir/$(printf '%s' "$pane" | tr -c 'A-Za-z0-9._-' '_')
-trap ': > "$base.j"; : > "$base.v"' EXIT
+mkdir -p "$dir" 2>/dev/null || exit 4
+[ -d "$dir" ] && [ ! -L "$dir" ] || exit 4
+set -- $(ls -ldn "$dir" 2>/dev/null)
+[ "$3" = "$(id -u)" ] || exit 4
+chmod 700 "$dir" 2>/dev/null || exit 4
+set -- $(ls -ldn "$dir" 2>/dev/null)
+[ "$3" = "$(id -u)" ] || exit 4
+case $1 in d???------*) ;; *) exit 4 ;; esac
+j=$(mktemp "$dir/j.XXXXXXXX" 2>/dev/null) || exit 4
+v=$(mktemp "$dir/v.XXXXXXXX" 2>/dev/null) || { rm -f "$j"; exit 4; }
+trap 'rm -f "$j" "$v"' EXIT
 nul() { ! tr -d '\000' < "$1" | cmp -s - "$1"; }
 
 # Sets id to the occupant digest and returns 0, or returns 3 (no occupant) or 4.
 identity() {
-  "$herdr" pane get "$pane" > "$base.j" 2>/dev/null || return 4
-  nul "$base.j" && return 4
-  MODE=status WANT=$pane awk "$J" "$base.j" 2>/dev/null
+  "$herdr" pane get "$pane" > "$j" 2>/dev/null || return 4
+  nul "$j" && return 4
+  MODE=status WANT=$pane awk "$J" "$j" 2>/dev/null
   st=$?
   [ "$st" -eq 0 ] || { [ "$st" -eq 3 ] && return 3; return 4; }
-  id=$(MODE=ser awk "$J" "$base.j" 2>/dev/null | sha)
+  id=$(MODE=ser awk "$J" "$j" 2>/dev/null | sha)
   hex64 "$id" || return 4
   return 0
 }
@@ -217,12 +227,12 @@ identity
 a=$?
 [ "$a" -eq 4 ] && exit 4
 before=$id
-"$herdr" pane read "$pane" --source visible --format ansi > "$base.v" 2>/dev/null || exit 4
+"$herdr" pane read "$pane" --source visible --format ansi > "$v" 2>/dev/null || exit 4
 identity
 b=$?
 [ "$b" -eq 4 ] && exit 4
 # A NUL in the screen never matches (cardScreenDigest; the Python check exits 3 too).
-nul "$base.v" && exit 3
+nul "$v" && exit 3
 # Only the agent's own timer line (cardTimerLine in Herdr.kt): its last (Ns), nothing else.
 T='
 {
@@ -239,7 +249,7 @@ T='
   print
 }
 '
-seen=$(awk "$T" "$base.v" 2>/dev/null | sha)
+seen=$(awk "$T" "$v" 2>/dev/null | sha)
 hex64 "$seen" || exit 4
 [ "$a" -eq 0 ] && [ "$b" -eq 0 ] && [ "$before" = "$id" ] && [ "$id" = "$occupant" ] && [ "$seen" = "$screen" ] && exit 0
 exit 3

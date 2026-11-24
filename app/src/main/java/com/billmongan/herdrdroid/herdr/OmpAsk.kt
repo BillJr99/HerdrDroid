@@ -12,7 +12,9 @@ package com.billmongan.herdrdroid.herdr
  */
 object OmpAsk {
     /** What identifies the dialog across reads, and where its highlight is. */
-    data class State(val questions: List<String>, val answered: Int, val total: Int, val onSubmit: Boolean) {
+    data class State(val questions: List<String>, val answered: Int, val total: Int, val onSubmit: Boolean,
+        /** Each question's chosen answer as the dialog shows it (a typed Other with its text); Submit is bound to these. */
+        val answers: List<String?> = emptyList()) {
         val allAnswered: Boolean get() = total > 0 && answered >= total
     }
 
@@ -20,6 +22,16 @@ object OmpAsk {
         val chosen: String?, val expanded: Boolean, val cursor: Int?)
 
     data class Dialog(val lead: List<String>, val questions: List<Question>, val answered: Int, val total: Int, val onSubmit: Boolean)
+
+    /**
+     * The same answers in two reads: each question's choice equal, or the same where the dialog
+     * shortened one of them ("Leave as CHECK-F…" for the open question's "Leave as CHECK-FIRST").
+     */
+    fun sameAnswers(a: List<String?>, b: List<String?>): Boolean = a.size == b.size && a.indices.all { i ->
+        val x = a[i]; val y = b[i]
+        fun fits(short: String, full: String) = short.endsWith("…") && full.startsWith(short.removeSuffix("…").trimEnd())
+        x == y || (x != null && y != null && (fits(x, y) || fits(y, x)))
+    }
 
     /** The card's action that moves the highlight to Submit, checking each step, and presses Enter there. */
     const val SUBMIT = "omp-ask:submit"
@@ -115,7 +127,8 @@ object OmpAsk {
         val d = parse(plain) ?: return null
         // The open question, when the highlight is on one of its options (only then can its keys be worked out).
         val current = d.questions.firstOrNull { it.expanded && it.cursor != null }
-        val state = State(d.questions.map { "${it.number}. ${it.text}" }, d.answered, d.total, d.onSubmit)
+        val state = State(d.questions.map { "${it.number}. ${it.text}" }, d.answered, d.total, d.onSubmit,
+            d.questions.map { it.chosen })
         val tabs = d.questions.map { QTab(it.text, it.answered, current == it && !d.onSubmit) } +
             QTab("Submit", false, d.onSubmit, submit = true)
         val others = d.questions.filter { it != current }.map { q ->

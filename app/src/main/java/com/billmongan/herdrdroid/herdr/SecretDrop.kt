@@ -78,6 +78,36 @@ object SecretDrop {
         )
     }
 
+    /**
+     * 2.2.7 (omp's audit): reads a picked file's bytes, up to one past [max], into buffers this owns,
+     * and zeroes every one of them (the read chunk, each outgrown buffer, the last) before
+     * returning; only the returned exact-size copy is left, and the sender zeroes that after the
+     * send. [seen] gets each internal buffer, for the test that checks they were zeroed.
+     */
+    fun readBounded(input: java.io.InputStream, max: Int, seen: (ByteArray) -> Unit = {}): ByteArray {
+        val chunk = ByteArray(16 * 1024).also(seen)
+        var buf = ByteArray(minOf(64 * 1024, max + 1)).also(seen)
+        var n = 0
+        try {
+            while (n <= max) {
+                val k = input.read(chunk)
+                if (k < 0) break
+                if (n + k > buf.size) {
+                    val bigger = ByteArray(maxOf(buf.size * 2, n + k)).also(seen)
+                    System.arraycopy(buf, 0, bigger, 0, n)
+                    buf.fill(0)
+                    buf = bigger
+                }
+                System.arraycopy(chunk, 0, buf, n, k)
+                n += k
+            }
+            return buf.copyOf(n)
+        } finally {
+            chunk.fill(0)
+            buf.fill(0)
+        }
+    }
+
     /** The command's runner: [stdin] is the secret for the write, null for setting a bad copy aside. */
     fun interface Run {
         suspend fun run(command: String, stdin: ByteArray?): com.billmongan.herdrdroid.ssh.ExecResult
