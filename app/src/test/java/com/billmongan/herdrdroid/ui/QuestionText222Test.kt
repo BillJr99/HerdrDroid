@@ -354,7 +354,7 @@ class QuestionText222Test {
     @Test fun grokAndClaudeBoxedCommandsShowWithNoGlyphsAndTheirPipes() {
         for (path in listOf("grok/live-2026-11-21b/heavy-box.txt", "grok/live-2026-11-21b/light-box.txt", "grok/live-2026-11-21b/no-box.txt")) {
             val code = codeOf(path, "grok").single()
-            assertEquals(path, listOf("git -C /home/bill/Documents/repos/HerdrDroid show 507e0344560ef35cbd6f843ff81c4aa499376ca7:app/src/main/java/com/billmongan/herdrdroid/ui/ServersScreen.kt | awk 'NR>=114 && NR<=120 {printf \"%d:%s\\n\", NR, \$0}'"), code.lines)
+            assertEquals(path, listOf("git -C /home/user/Documents/repos/HerdrDroid show 507e0344560ef35cbd6f843ff81c4aa499376ca7:app/src/main/java/com/billmongan/herdrdroid/ui/ServersScreen.kt | awk 'NR>=114 && NR<=120 {printf \"%d:%s\\n\", NR, \$0}'"), code.lines)
         }
         val claude = codeOf("claude/captured-2.1.329-hook/hook-main.txt", "claude").single()
         assertEquals(listOf("gh api repos/O/R/actions/runs/1/artifacts -q '.artifacts[] | {name, size_in_bytes}'"), claude.lines)

@@ -108,7 +108,7 @@ class PaneQuestionContextTest {
     }
 
     @Test fun openCodeApprovalShowsCommandAndOnlyOneTimeOrRejectControls() = withPane(
-        agent = "opencode-college", frame = "opencode/derived-1.4.9/0701-permission-prompt-all-tools.txt",
+        agent = "opencode-work", frame = "opencode/derived-1.4.9/0701-permission-prompt-all-tools.txt",
         items = listOf(reply), checkedTarget = true,
     ) {
         rule.onNodeWithText("npm install --prefix", substring = true).performScrollTo().assertIsDisplayed()
@@ -151,7 +151,7 @@ class PaneQuestionContextTest {
     @Test fun hermesGatewayStillShowsItsOwnApproval() {
         val vm = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
         // Seed conversation state without starting a gateway session or sending an answer.
-        val ssh = HerdrSsh("fixture.invalid", 22, "fixture", Credentials(null, null), null, { null })
+        val ssh = HerdrSsh("127.0.0.1", 1, "fixture", Credentials(null, null), null, { null })
         val chat = HermesChat(ssh, vm.viewModelScope)
         try {
             rule.runOnUiThread {
@@ -206,7 +206,7 @@ class PaneQuestionContextTest {
                 state<String>(vm, "paneText").value = text
                 if (checkedTarget) {
                     // Render-only fixture. SuccessiveCardAnswerTest exercises target validation and dispatch.
-                    val client = Herdr(HerdrSsh("fixture.invalid", 22, "fixture", Credentials(null, null), null, { null }), "/fixture/herdr")
+                    val client = Herdr(HerdrSsh("127.0.0.1", 1, "fixture", Credentials(null, null), null, { null }), "/fixture/herdr")
                     state<AppViewModel.CardTarget?>(vm, "paneTextTarget").value =
                         AppViewModel.CardTarget(client, Any(), "fixture", 0, pane)
                 }

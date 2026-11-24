@@ -1,0 +1,20 @@
+────────────────────────────────────────
+❯ Please check that the calendar connection works. (No private values included.)
+────────────────────────────────────────
+╭──────────────────────────────────────────────────────────────╮
+│ Confirm action                                               │
+│                                                              │
+│ Reloading MCP servers rebuilds the tool set for this         │
+│ session.                                                     │
+│                                                              │
+│ ❯ [1] Approve Once  -  reload now                            │
+│   [2] Always Approve  -  reload now and silence this prompt  │
+│   [3] Cancel  -  leave MCP tools unchanged                   │
+│                                                              │
+│ Type 1/2/3 or use ↑/↓ then Enter. ESC/Ctrl+C cancels.        │
+╰──────────────────────────────────────────────────────────────╯
+  type 1/2/3, or ↑/↓ to select, Enter to confirm  (41s)
+────────────────────────────────────────────────────────────────────────────────────────────────────────── Check the calendar setup ─
+⚠ ❯
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☤ gpt-6.2-sol · ~188K/500K · [████░░░░░░] ~38% · ◎ 89.7% · ◷ 4.3s · ↑ 21 t/s · 1.0d · ⏲ 1m · ~/agents/hermes

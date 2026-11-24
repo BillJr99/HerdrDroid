@@ -241,14 +241,14 @@ class ComposeUiTest {
         val sends = mutableListOf<String>()
         var sent = 0
         rule.setContent {
-            PromptRelayDialog("Codex on Laptop", checking = false, available = true, onDismiss = {},
+            PromptRelayDialog("Codex on Lab Box", checking = false, available = true, onDismiss = {},
                 onSend = { text ->
                     sends += text
                     if (sends.size == 1) com.billmongan.herdrdroid.herdr.RelayResult.REFUSED
                     else com.billmongan.herdrdroid.herdr.RelayResult.SENT
                 }, onSent = { sent++ })
         }
-        rule.onNodeWithText("Send prompt to Codex on Laptop").assertIsDisplayed()
+        rule.onNodeWithText("Send prompt to Codex on Lab Box").assertIsDisplayed()
         rule.onNodeWithText("Send prompt").assertIsNotEnabled()
         rule.onNode(hasSetTextAction()).performTextInput("Check the build")
         rule.runOnIdle { assertTrue(sends.isEmpty()) }
@@ -427,7 +427,7 @@ class ComposeUiTest {
         @Suppress("UNCHECKED_CAST")
         (AppViewModel::class.java.getDeclaredField("current\$delegate").apply { isAccessible = true }.get(vm)
             as androidx.compose.runtime.MutableState<Any?>).value =
-            com.billmongan.herdrdroid.store.Server(id = "offline", name = "Offline", host = "offline.invalid", port = 22, user = "u", herdrPath = "herdr")
+            com.billmongan.herdrdroid.store.Server(id = "offline", name = "Offline", host = "127.0.0.1", port = 1, user = "u", herdrPath = "herdr")
         rule.setContent {
             androidx.compose.foundation.layout.Column {
                 vm.removableSendsFor(target.id).forEach { pending ->
@@ -706,7 +706,7 @@ class ComposeUiTest {
             "  ┃   Allow once   Always allow   Reject     ctrl+f fullscreen  ⇆ select  enter confirm",
             "  ┃",
         ).joinToString("\n")
-        val p = checkNotNull(com.billmongan.herdrdroid.herdr.detectPrompt(frame, blocked = false, agent = "opencode-college")).forCard()
+        val p = checkNotNull(com.billmongan.herdrdroid.herdr.detectPrompt(frame, blocked = false, agent = "opencode-work")).forCard()
         rule.setContent { PromptCard(p, agent = "OpenCode", onChoice = {}, onKey = {}, onTypeAnswer = {}) }
         rule.onNodeWithText("Allow once").assertExists()
         rule.onNodeWithText("Reject").assertExists()

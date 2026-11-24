@@ -31,6 +31,38 @@ object DiagLog {
 
     fun text(): String = synchronized(lines) { lines.joinToString("\n") }
 
+    /**
+     * 2.2.7 (Bill pasted a copy that stopped mid-line): what Copy puts on the clipboard. At most
+     * [COPY_MAX_CHARS] characters, of the NEWEST whole lines; when lines are left out it starts
+     * with a note saying how many of the oldest were omitted. Save always writes the whole log.
+     */
+    fun forClipboard(text: String = text(), max: Int = COPY_MAX_CHARS): String {
+        if (text.length <= max) return text
+        val all = text.split("\n")
+        val kept = ArrayDeque<String>()
+        var size = 0
+        // Room for the note, then whole lines from the newest back.
+        val budget = max - 80
+        for (i in all.indices.reversed()) {
+            val add = all[i].length + 1
+            if (size + add > budget) break
+            kept.addFirst(all[i]); size += add
+        }
+        // Pre-review L6: never an empty copy. A newest line longer than the room keeps its end.
+        if (kept.isEmpty()) {
+            val note = "(trimmed: only the end of the newest line fits; ${all.size - 1} older lines omitted; use Save for the full log)\n…"
+            return note + all.last().takeLast(max - note.length)
+        }
+        return "(trimmed: oldest ${all.size - kept.size} lines omitted; use Save for the full log)\n" + kept.joinToString("\n")
+    }
+
+    /**
+     * 2.2.7: a clipboard copy larger than this is trimmed to its newest lines (Save has no limit).
+     * Bill's two pastes of a 55,710-character log both ended at character 19,888, so the paste
+     * target held about 20,000; a copy stays under that and keeps the newest lines.
+     */
+    const val COPY_MAX_CHARS = 18_000
+
     fun size(): Int = synchronized(lines) { lines.size }
 
     fun clear() = synchronized(lines) { lines.clear(); version++ }

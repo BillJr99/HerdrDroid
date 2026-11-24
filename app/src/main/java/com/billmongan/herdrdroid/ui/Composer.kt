@@ -65,7 +65,7 @@ data class SlashCommand(val name: String, val about: String)
 
 /** The commands each agent's own program answers; Hermes's chat lists its live catalog instead. */
 object SlashCommands {
-    fun forAgent(agent: String?): List<SlashCommand> = when (agent?.lowercase()) {
+    fun forAgent(agent: String?): List<SlashCommand> = when (com.billmongan.herdrdroid.herdr.ruleAgent(agent)) {
         "claude" -> listOf(
             "/compact" to "Summarize the conversation to free context", "/clear" to "Start a fresh conversation",
             "/model" to "Choose the model", "/context" to "Show context use", "/cost" to "Show this session's cost",
@@ -160,7 +160,25 @@ fun ChatComposer(
      */
     compact: Boolean = false,
     menuItems: List<Pair<String, () -> Unit>> = emptyList(),
+    /**
+     * 2.2.7 Send a secret: the id of text waiting to go in at the caret once. [takeInsert] is asked
+     * for it at the moment it goes in, and gives the text (taking it) only if its target still holds.
+     */
+    insert: Long? = null,
+    takeInsert: (Long) -> String? = { null },
 ) {
+    // The box keeps its caret (2.2.7, for [insert]); text set from outside puts the caret at its end.
+    var held by remember { mutableStateOf(androidx.compose.ui.text.input.TextFieldValue(value, androidx.compose.ui.text.TextRange(value.length))) }
+    val boxValue = if (held.text == value) held
+    else androidx.compose.ui.text.input.TextFieldValue(value, androidx.compose.ui.text.TextRange(value.length))
+    androidx.compose.runtime.LaunchedEffect(insert) {
+        val id = insert ?: return@LaunchedEffect
+        // Checked again here, when it goes in, not only when the screen was drawn (Codex's review).
+        val path = takeInsert(id) ?: return@LaunchedEffect
+        val (text, caret) = com.billmongan.herdrdroid.herdr.SecretDrop.insertAt(boxValue.text, boxValue.selection.max, path)
+        held = androidx.compose.ui.text.input.TextFieldValue(text, androidx.compose.ui.text.TextRange(caret))
+        onValueChange(text)
+    }
     var showCommands by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     var sendOptions by remember { mutableStateOf(false) }
@@ -250,8 +268,8 @@ fun ChatComposer(
     }
     val field: @Composable (Modifier, Int) -> Unit = { m, lines ->
         TextField(
-            value = value,
-            onValueChange = onValueChange,
+            value = boxValue,
+            onValueChange = { v -> held = v; if (v.text != value) onValueChange(v.text) },
             placeholder = { Text(placeholder, color = Palette.Muted, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) },
             textStyle = TextStyle(fontFamily = Fonts.Sans, fontSize = 16.sp, color = Palette.Ink, lineHeight = 22.sp),
             maxLines = lines,
@@ -436,7 +454,7 @@ object ModelPresets {
     }
 
     /** The command that opens the agent's own model picker. */
-    fun pickerCommand(agent: String?): String = when (agent?.lowercase()) {
+    fun pickerCommand(agent: String?): String = when (com.billmongan.herdrdroid.herdr.ruleAgent(agent)) {
         "opencode" -> "/models"
         else -> "/model"
     }

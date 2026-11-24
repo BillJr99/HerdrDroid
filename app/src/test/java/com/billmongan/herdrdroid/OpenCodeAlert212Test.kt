@@ -51,7 +51,7 @@ import org.robolectric.Shadows.shadowOf
 class OpenCodeAlert212Test {
     @get:Rule val idleMainLooper = IdleMainLooperRule()
     private val vm = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
-    private val server = Server(id = "fixture-e", name = "FixtureE", host = "e.invalid", port = 22, user = "fixe", herdrPath = "/fixture/herdr")
+    private val server = Server(id = "fixture-e", name = "FixtureE", host = "127.0.0.1", port = 1, user = "fixe", herdrPath = "/fixture/herdr")
     private val frame = res("/screens/opencode/live-2026-11-21/permission-shell-2.3.2.txt")
     private val composer = res("/screens/opencode/live-2026-11-20-composer/empty.ansi")
 
@@ -63,7 +63,7 @@ class OpenCodeAlert212Test {
     // ---- status promotion ---------------------------------------------------------------------
 
     @Test fun aPermissionOnScreenIsNeedsYouWhileHerdrSaysDoneOrIdle() {
-        for (agent in listOf("opencode", "opencode-college")) for (herdrSays in listOf(Status.DONE, Status.IDLE)) {
+        for (agent in listOf("opencode", "opencode-work")) for (herdrSays in listOf(Status.DONE, Status.IDLE)) {
             val p = pane(agent, herdrSays)
             assertEquals(listOf(p), screenAskable(listOf(p)))
             val marked = markScreenNeedsYou(listOf(p), mapOf(p.id to tail(frame))).single()
@@ -364,7 +364,7 @@ class OpenCodeAlert212Test {
 
     /** One OpenCode pane (and optionally a Claude pane) on a fake herdr; reads give the last N lines of [screen]. */
     private class Fake(@Volatile var screen: String, status: String, withClaude: Boolean = false, core: Boolean = false) : Herdr.Commands {
-        val ssh = HerdrSsh("fake.invalid", 22, "fake", Credentials(null, null), null, { null })
+        val ssh = HerdrSsh("127.0.0.1", 2, "fake", Credentials(null, null), null, { null })
         val client = Herdr(ssh, "/fixture/herdr", if (core) Backend.CORE else Backend.TUI, if (core) "/fixture/hc" else null, this)
         override var connection: Any? = Any()
         private val paneJson = """{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1","agent":"opencode","agent_status":"$status","screen_detection_skipped":true,"cwd":"/fixture","terminal_id":"t1","scroll":{"offset_from_bottom":0}}"""

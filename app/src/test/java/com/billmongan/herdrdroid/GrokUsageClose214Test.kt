@@ -32,7 +32,7 @@ import org.robolectric.Shadows.shadowOf
 class GrokUsageClose214Test {
     @get:Rule val idleMainLooper = IdleMainLooperRule()
     private val vm = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
-    private val server = Server(id = "fixture-g", name = "FixtureG", host = "g.invalid", port = 22, user = "fixg", herdrPath = "/fixture/herdr")
+    private val server = Server(id = "fixture-g", name = "FixtureG", host = "127.0.0.1", port = 1, user = "fixg", herdrPath = "/fixture/herdr")
     private val dialog = checkNotNull(javaClass.getResource("/screens/grok/reconstructed-1.0.92/usage-dialog.txt")).readText()
     private val idle = checkNotNull(javaClass.getResource("/screens/grok/live-2026-11-21/idle-compacted.txt")).readText()
     private val draft = idle.replace("│ ❯" + " ".repeat(126) + "│", "│ ❯ half-typed draft" + " ".repeat(108) + "│")
@@ -206,7 +206,7 @@ class GrokUsageClose214Test {
 
     /** One Grok pane on a fake herdr. The guarded usage snapshot is answered as the server script would. */
     private class Fake(@Volatile var screen: String, status: String = "idle") : Herdr.Commands {
-        val ssh = HerdrSsh("fake.invalid", 22, "fake", Credentials(null, null), null, { null })
+        val ssh = HerdrSsh("127.0.0.1", 2, "fake", Credentials(null, null), null, { null })
         val client = Herdr(ssh, "/fixture/herdr", Backend.TUI, null, this)
         override var connection: Any? = Any()
         val pane = Pane("w1:p1", "w1:t1", "w1", "grok",

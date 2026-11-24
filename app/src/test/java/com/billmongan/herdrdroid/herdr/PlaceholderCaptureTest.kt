@@ -16,7 +16,7 @@ class PlaceholderCaptureTest {
     private fun screen(path: String) = checkNotNull(javaClass.getResource("/screens/$path")).readText()
     private fun live(agent: String) = screen("$agent/live-2026-11-20-composer/empty.ansi")
 
-    /** Herdr's agent name for each capture (opencode-college is herdr's "opencode"). */
+    /** Herdr's agent name for each capture (opencode-work is herdr's "opencode"). */
     private val captures = mapOf(
         "claude" to live("claude"), "codex" to live("codex"), "agy" to live("agy"), "grok" to live("grok"),
         "hermes" to live("hermes"), "copilot" to live("copilot"), "pi" to live("pi"), "omp" to live("omp"),
@@ -24,7 +24,7 @@ class PlaceholderCaptureTest {
     )
 
     @Test fun `no empty box captured live is a draft or typing`() {
-        val all = captures.entries.map { it.key to it.value } + ("opencode" to screen("opencode/live-2026-11-20-college/empty.ansi"))
+        val all = captures.entries.map { it.key to it.value } + ("opencode" to screen("opencode/live-2026-11-20-second/empty.ansi"))
         for ((agent, s) in all) {
             assertNull(agent, composerDraftOf(s, agent))
             // 2.2.2: a blank Oh My Pi or Copilot box may hold typed spaces (no cursor is drawn), so a normal

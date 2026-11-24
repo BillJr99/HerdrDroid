@@ -89,7 +89,7 @@ class CrossServerHermesDestinationTest {
         assertEquals("hermes", hermes.agent)
         assertEquals("hermes", hermes.tabLabel)
         assertEquals(Status.IDLE, hermes.status)
-        assertEquals("/home/bill/agents/hermes", hermes.cwd)
+        assertEquals("/home/user/agents/hermes", hermes.cwd)
         assertTrue(checkNotNull(hermes.sessionId).startsWith("local-"))
         assertTrue(hasStableOccupant(hermes))
     }
@@ -104,7 +104,7 @@ class CrossServerHermesDestinationTest {
         // A working agent is still reachable by name; only sending waits for it to be idle.
         val names = vm.crossServerReachable(card).map { vm.agentFacingName(it) }
         assertTrue(names.toString(), "Hermes on laptop2" in names && "Claude on laptop2" in names)
-        assertTrue(names.none { it.contains("laptop.invalid") || it.contains(":22") })
+        assertTrue(names.none { it.contains("127.0.0.1") || it.contains(":1") || it.contains(":2") })
         assertTrue(source.writes.isEmpty() && laptop2.writes.isEmpty())
     }
 
@@ -115,7 +115,7 @@ class CrossServerHermesDestinationTest {
         val card = frame("Hermes on server 2")
         assertEquals("w2:p9", checkNotNull(card.choice).pane.id)
         for (name in vm.crossServerReachable(card).map { vm.agentFacingName(it) }) {
-            assertFalse(name, name.contains("fixture") || name.contains(".invalid") || name.contains(":22") || name.contains("@"))
+            assertFalse(name, name.contains("fixture") || name.contains("127.0.0.1") || name.contains(":2") || name.contains("@"))
         }
     }
 
@@ -125,7 +125,7 @@ class CrossServerHermesDestinationTest {
         vm.changeAgentMessaging(true)
         runBlocking { frame("Somebody") }
         rule.setContent { CrossServerPanel(vm, "p1") }
-        rule.onNodeWithText("Hermes on fixture@laptop2.invalid · laptop2.invalid:22 · w2:p9").performScrollTo().assertIsDisplayed()
+        rule.onNodeWithText("Hermes on fixture@127.0.0.1 · 127.0.0.1:2 · w2:p9").performScrollTo().assertIsDisplayed()
         assertTrue(laptop2.writes.isEmpty())
     }
 
@@ -198,7 +198,16 @@ class CrossServerHermesDestinationTest {
         vm.changeAgentMessaging(true)
         val long = (1..14).joinToString("\n") { "Line $it of a longer cross-server message for Hermes." }
         runBlocking { frame("Hermes on laptop2", long) }
-        rule.runOnUiThread { vm.deferCrossServerDialog(vm.crossServerCardsFor("p1").single()) }
+        rule.runOnUiThread {
+            vm.deferCrossServerDialog(vm.crossServerCardsFor("p1").single())
+            // AgentScreen's own loops (the work list every 5 s, the chat log, the pane list and the
+            // previews) read over SSH itself, past the fixture's herdr commands, so they dial the
+            // fixture host. That failure is a lost link, which rightly clears the cross-server cards;
+            // with an .invalid host this only passed while the name lookup was still pending (2.2.7,
+            // GitHub CI). The layout under test needs no reads, so the screen opens with the app's
+            // polls paused (its in-front flag off); cross-server messaging stays on, so the card stays.
+            state(vm, "foreground", false)
+        }
         rule.setContent { AgentScreen(vm, "p1", readScreen = { }) }
         rule.onNodeWithContentDescription("Cross-server message card").assertExists()
         val window = rule.onRoot().fetchSemanticsNode().boundsInRoot
@@ -212,9 +221,9 @@ class CrossServerHermesDestinationTest {
         runBlocking { frame("Somebody") }
         rule.setContent { CrossServerPanel(vm, "p1") }
         rule.onNodeWithText("Choose a destination:").performScrollTo().assertIsDisplayed()
-        rule.onNodeWithText("Claude on laptop2 · laptop2.invalid:22 · w2:p5").performScrollTo().assertIsDisplayed()
+        rule.onNodeWithText("Claude on laptop2 · 127.0.0.1:2 · w2:p5").performScrollTo().assertIsDisplayed()
         rule.onNodeWithContentDescription("Approve cross-server message").assertDoesNotExist()
-        rule.onNodeWithText("Hermes on laptop2 · laptop2.invalid:22 · w2:p9").performScrollTo().performClick()
+        rule.onNodeWithText("Hermes on laptop2 · 127.0.0.1:2 · w2:p9").performScrollTo().performClick()
         // The pick shows on the card and opens the Yes/No dialog for it; nothing is sent yet.
         rule.onAllNodesWithText("To: Hermes on laptop2").assertCountEquals(2)
         rule.onNodeWithContentDescription("Approve cross-server message").assertIsDisplayed()
@@ -240,7 +249,7 @@ class CrossServerHermesDestinationTest {
 
     /** Claude on the server the phone has open: the source of the proposal. */
     private class Source : Herdr.Commands {
-        val server = Server(id = "laptop", name = "laptop", host = "laptop.invalid", port = 22, user = "fixture", herdrPath = "/fixture/herdr")
+        val server = Server(id = "laptop", name = "laptop", host = "127.0.0.1", port = 1, user = "fixture", herdrPath = "/fixture/herdr")
         val ssh = HerdrSsh(server.host, server.port, server.user, Credentials(null, null), null, { null })
         val client = Herdr(ssh, server.herdrPath, Backend.TUI, null, this)
         override var connection: Any? = Any()
@@ -261,7 +270,7 @@ class CrossServerHermesDestinationTest {
 
     /** laptop2, watched by Fleet, with the rows `herdr pane list` and `herdr tab list` give there. */
     private class Laptop2 : Herdr.Commands {
-        val server = Server(id = "laptop2", name = "laptop2", host = "laptop2.invalid", port = 22, user = "fixture", herdrPath = "/fixture/herdr")
+        val server = Server(id = "laptop2", name = "laptop2", host = "127.0.0.1", port = 2, user = "fixture", herdrPath = "/fixture/herdr")
         val ssh = HerdrSsh(server.host, server.port, server.user, Credentials(null, null), null, { null })
         val client = Herdr(ssh, server.herdrPath, Backend.TUI, null, this)
         override var connection: Any? = Any()
@@ -281,8 +290,8 @@ class CrossServerHermesDestinationTest {
         }
 
         companion object {
-            const val HERMES = """{"agent":"hermes","agent_session":{"agent":"hermes","kind":"id","source":"herdr:hermes","value":"local-0a90b0f4004e689564430e279fe241242bfcd4c6ec8b3d6403e31424e3e98b0f"},"agent_status":"idle","cwd":"/home/bill","focused":false,"foreground_cwd":"/home/bill/agents/hermes","pane_id":"w2:p9","revision":1,"scroll":{"max_offset_from_bottom":151,"offset_from_bottom":0,"viewport_rows":47},"tab_id":"w2:t6","terminal_id":"term_6603a9992f0f05","terminal_title":"bill@laptop2: ~","terminal_title_stripped":"bill@laptop2: ~","workspace_id":"w2"}"""
-            const val CLAUDE = """{"agent":"claude","agent_session":{"agent":"claude","kind":"id","source":"herdr:claude","value":"9989db43-2c5c-42c9-b31c-eab9c4663226"},"agent_status":"working","cwd":"/home/bill","focused":false,"foreground_cwd":"/home/bill/agents/claude","pane_id":"w2:p5","revision":2,"scroll":{"max_offset_from_bottom":0,"offset_from_bottom":0,"viewport_rows":47},"tab_id":"w2:t2","terminal_id":"term_6603a9992d9361","terminal_title":"Laptop2","terminal_title_stripped":"Laptop2","workspace_id":"w2"}"""
+            const val HERMES = """{"agent":"hermes","agent_session":{"agent":"hermes","kind":"id","source":"herdr:hermes","value":"local-0a90b0f4004e689564430e279fe241242bfcd4c6ec8b3d6403e31424e3e98b0f"},"agent_status":"idle","cwd":"/home/user","focused":false,"foreground_cwd":"/home/user/agents/hermes","pane_id":"w2:p9","revision":1,"scroll":{"max_offset_from_bottom":151,"offset_from_bottom":0,"viewport_rows":47},"tab_id":"w2:t6","terminal_id":"term_6603a9992f0f05","terminal_title":"bill@laptop2: ~","terminal_title_stripped":"bill@laptop2: ~","workspace_id":"w2"}"""
+            const val CLAUDE = """{"agent":"claude","agent_session":{"agent":"claude","kind":"id","source":"herdr:claude","value":"9989db43-2c5c-42c9-b31c-eab9c4663226"},"agent_status":"working","cwd":"/home/user","focused":false,"foreground_cwd":"/home/user/agents/claude","pane_id":"w2:p5","revision":2,"scroll":{"max_offset_from_bottom":0,"offset_from_bottom":0,"viewport_rows":47},"tab_id":"w2:t2","terminal_id":"term_6603a9992d9361","terminal_title":"Laptop2","terminal_title_stripped":"Laptop2","workspace_id":"w2"}"""
         }
     }
 

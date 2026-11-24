@@ -50,7 +50,8 @@ data class Pane(
     val sendStatus: Status get() = screenNeedsYouFrom ?: status
 
     val agentName: String
-        get() = when (agent?.lowercase()) {
+        // 2.2.7: a named launch of OpenCode is OpenCode, with its name kept so two can be told apart.
+        get() = if (isOpenCode(agent) && agent!!.lowercase() != "opencode") "OpenCode (${agent.substringAfter('-')})" else when (agent?.lowercase()) {
             null, "" -> title.ifBlank { "Shell" }
             "claude" -> "Claude"
             "codex" -> "Codex"
@@ -378,6 +379,8 @@ class Herdr internal constructor(
         // 2.2.2: Force Send's prompt to a working agent, still herdr's agent prompt (it reaches a working agent), never --force.
         override suspend fun sendForced(pane: Pane, text: String, connection: Any, permit: WritePermit) =
             sendMessage(pane, text, allowTerminalFallback = false, expectedConnection = connection, permit = permit, busyOk = true)
+        // 2.2.7: a message too long to type, as a checked file in this computer's inbox.
+        override suspend fun upload(name: String, bytes: ByteArray, connection: Any) = uploadVerified(name, bytes)
     }
 
     /** No tab list, status enrichment, bulk lock, or reconnect during a card tap. */
@@ -385,6 +388,78 @@ class Herdr internal constructor(
         if (core) return corePanes(runNow(hcCmd("ls", "--json"), 5, connection)).singleOrNull { it.id == id }
         val p = JSONObject(runNow(cmd("pane", "get", id), 5, connection)).getJSONObject("result").getJSONObject("pane")
         return tuiPane(p).takeIf { it.id == id && p.optJSONObject("scroll")?.opt("offset_from_bottom") == 0 }
+    }
+
+    /**
+     * 2.2.7 (Bill, "check right before send"): [cardPane] with its occupant digest
+     * ([cardOccupantDigest], from the same `pane get` reply [CARD_SEND_CHECK] reads on the
+     * computer). herdr-core has no such reply: the digest is null there.
+     */
+    internal suspend fun cardPaneGuarded(id: String, connection: Any): Pair<Pane, String?>? {
+        if (core) return cardPane(id, connection)?.let { it to null }
+        val p = JSONObject(runNow(cmd("pane", "get", id), 5, connection)).getJSONObject("result").getJSONObject("pane")
+        val pane = tuiPane(p).takeIf { it.id == id && p.optJSONObject("scroll")?.opt("offset_from_bottom") == 0 } ?: return null
+        return pane to cardOccupantDigest(p)
+    }
+
+    /**
+     * 2.2.7 (Bill, "check right before send"): a card's answer, sent by one command on the computer
+     * that first reads the pane again ([CARD_SEND_CHECK]) and types only when its occupant and
+     * screen still match [guard]. [CardChanged] when they don't, [CardCheckFailed] when the check
+     * itself failed (nothing was typed either way). Without a guard (herdr-core), the input goes
+     * as before, bound only to [connection].
+     */
+    internal suspend fun sendCardInput(
+        paneId: String, input: CardInput, guard: CardGuard?, connection: Any, permit: WritePermit? = null,
+        /** 2.2.7: this computer has no python3 (found earlier this session): the shell check only. */
+        shellOnly: Boolean = false,
+        /** 2.2.7: python3 was missing, so this answer was checked by the shell version. */
+        onShellFallback: () -> Unit = {},
+    ) {
+        if (guard == null || core) {
+            when (input) {
+                is CardInput.Keys -> if (permit != null) sendPermittedKeys(paneId, input.keys, connection, permit)
+                    else sendKeys(paneId, *input.keys.toTypedArray(), expectedConnection = connection)
+                is CardInput.Text -> {
+                    require(permit == null)
+                    if (input.enter) typeAndEnter(paneId, input.text, connection) else sendText(paneId, input.text, connection)
+                }
+            }
+            return
+        }
+        // One write, the permit claimed once: the failover to the shell check happens inside it,
+        // on the computer, so a voice answer's single-use permit is never needed twice.
+        val r = kotlinx.coroutines.withContext(com.billmongan.herdrdroid.ssh.WriteCommand.MARK) {
+            commands?.let { permit.admit(); it.immediate(cardSendCommand(paneId, input, guard, shellOnly), 30, connection) }
+                ?: ssh.execNow(cardSendCommand(paneId, input, guard, shellOnly), 30, connection, permit)
+        }
+        if (!shellOnly && r.out.lines().any { it.trim() == SHELL_CHECK_MARK }) onShellFallback()
+        when (r.exit) {
+            0 -> return
+            CARD_CHANGED_EXIT -> throw CardChanged()
+            CARD_CHECK_FAILED_EXIT, 126, 127 -> throw CardCheckFailed()
+            else -> throw HerdrError((r.err.ifBlank { r.out }).trim().lines().lastOrNull { it.isNotBlank() } ?: "exit ${r.exit}", r.exit)
+        }
+    }
+
+    /**
+     * The one command [sendCardInput] runs: the check ([CARD_SEND_CHECK]; where python3 is missing
+     * or can't run, exit 127 or 126, [SHELL_CHECK_MARK] and then [CARD_SEND_CHECK_SH] in the same
+     * command), then, only when it passed, the same send-keys or send-text as before.
+     * [shellOnly]: the shell check alone.
+     */
+    internal fun cardSendCommand(paneId: String, input: CardInput, guard: CardGuard, shellOnly: Boolean = false): String {
+        val args = "$herdr ${shq(paneId)} ${shq(guard.occupant)} ${shq(guard.screen)}"
+        val shell = "sh -c ${shq(CARD_SEND_CHECK_SH)} herdrdroid-check $args"
+        val check = if (shellOnly) "( $shell )"
+            else "( $PY -c ${shq(CARD_SEND_CHECK)} $args; st=\$?; " +
+                "if [ \"\$st\" -eq 126 ] || [ \"\$st\" -eq 127 ]; then echo $SHELL_CHECK_MARK; $shell; else exit \"\$st\"; fi )"
+        val send = when (input) {
+            is CardInput.Keys -> cmd("pane", "send-keys", paneId, *input.keys.toTypedArray())
+            is CardInput.Text -> cmd("pane", "send-text", paneId, input.text) +
+                (if (input.enter) " && " + cmd("pane", "send-keys", paneId, "enter") else "")
+        }
+        return "$check && $send"
     }
 
     /** [cardPane], but a scrolled-back pane is returned with its offset rather than as null (2.2.2: the relay refuses it as SCROLLED). */
@@ -455,6 +530,14 @@ class Herdr internal constructor(
         )
 
     private fun screenText(text: String, preserveGlyphs: Boolean) = if (preserveGlyphs) stripAnsi(text) else forPhone(text)
+
+    /**
+     * 2.2.7, Export pane screen: the visible screen exactly as herdr returns it, plain and then
+     * ANSI, unchanged by the app. herdr-core has one plain read, given for both.
+     */
+    internal suspend fun exportScreens(paneId: String): Pair<String, String> =
+        if (core) runNow(hcCmd("read", paneId, "--lines", "80"), timeoutSeconds = 5).let { it to it }
+        else runNow(visibleSnapshot(paneId, ansi = false), timeoutSeconds = 5) to runNow(visibleSnapshot(paneId, ansi = true), timeoutSeconds = 5)
 
     /**
      * The notification's strict read (2.1.2) with its styles kept: the same [read] (the bottom
@@ -613,15 +696,22 @@ class Herdr internal constructor(
             pane.agent != null && status != Status.NEEDS_YOU -> "herdr agent prompt"
             else -> "herdr pane send-text + enter"
         }
+        // 2.2.7 (Bill: "make sure herdrdroid can tell omp about the cross server session"): Oh My Pi
+        // and Copilot draw no cursor, so a blank box may hold typed spaces; their own delete-to-line-start
+        // key (Ctrl+U, a no-op on an empty line) goes first, in the same command, so the prompt never
+        // follows stray spaces and the send no longer waits for a box it can't prove empty.
+        val clear = AgentComposers.clearKey(pane.agent)?.takeIf { status != Status.NEEDS_YOU }
         if (core) {
             // hc send pastes and presses Enter; it refuses a terminal waiting on a question
             // unless forced, and a message sent then is meant as the answer.
-            if (status == Status.NEEDS_YOU) runWrite(hcCmd("send", "--force", pane.id, text)) else runWrite(hcCmd("send", pane.id, text), expectedConnection = expectedConnection, permit = permit)
+            if (status == Status.NEEDS_YOU) runWrite(hcCmd("send", "--force", pane.id, text))
+            else runWrite((clear?.let { hcCmd("keys", pane.id, it) + " && " } ?: "") + hcCmd("send", pane.id, text), expectedConnection = expectedConnection, permit = permit)
             return
         }
         if (pane.agent != null && status != Status.NEEDS_YOU) {
             try {
-                runWrite(cmd("agent", "prompt", pane.id, text), expectedConnection = expectedConnection, permit = permit)
+                runWrite((clear?.let { cmd("pane", "send-keys", pane.id, it) + " && " } ?: "") + cmd("agent", "prompt", pane.id, text),
+                    expectedConnection = expectedConnection, permit = permit)
                 return
             } catch (e: HerdrError) {
                 if (!allowTerminalFallback) throw e
@@ -781,17 +871,77 @@ class Herdr internal constructor(
      * Copies a file from the phone to ~/.herdrdroid/inbox on the computer and returns its full
      * path there, so a message can point the agent at it.
      */
-    suspend fun upload(name: String, bytes: ByteArray): String {
+    suspend fun upload(name: String, bytes: ByteArray): String = uploadVerified(name, bytes).path
+
+    /**
+     * 2.2.7 (Bill: "I'm not sure if that attached file actually got to you"): [upload] with a
+     * receipt. The same command that writes the file reads back its size and SHA-256 on the
+     * computer; a mismatch is written again once, then refused ([UploadMismatch]), so a message
+     * never points at a missing or partial file. Logged with the inbox file name, size and result only.
+     */
+    suspend fun uploadVerified(name: String, bytes: ByteArray): UploadReceipt {
         val safe = name.replace(Regex("[^A-Za-z0-9._-]"), "_").trim('_').take(80).ifBlank { "file" }
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
-        val rel = ".herdrdroid/inbox/$stamp-$safe"
-        val r = ssh.execInput(
-            "mkdir -p \"\$HOME/.herdrdroid/inbox\" && cat > \"\$HOME\"/${shq(rel)} && printf %s \"\$HOME\"/${shq(rel)}",
-            bytes, timeoutSeconds = 120,
-        )
-        if (r.exit != 0) throw HerdrError(r.err.trim().ifBlank { "The upload failed (exit ${r.exit})." }, r.exit)
-        return r.out.trim()
+        val want = sha256Hex(bytes)
+        // Pre-review H1: unique per upload (two long texts in the same second used one name, so the
+        // first message pointed at the second text): the content's hash and a random part.
+        val unique = want.take(8) + "-" + java.util.UUID.randomUUID().toString().take(8)
+        val rel = ".herdrdroid/inbox/$stamp-$unique-$safe"
+        val f = "\"\$HOME\"/${shq(rel)}"
+        val command = inboxUploadCommand(rel, bytes.size)
+        var last: String? = null
+        // 2.2.7 (Codex's review): bound to the connection it started on (a replacement refuses it)
+        // and counted as a send, so the small-packets fallback waits for it instead of cutting it.
+        val pinned = connectionIdentity
+        ssh.beginSend()
+        try {
+            for (attempt in 1..2) {
+                val r = commands?.let { it.input(command, bytes, pinned ?: it.connection ?: Any()) }
+                    ?: ssh.execInput(command, bytes, timeoutSeconds = 120, expectedConnection = pinned)
+                if (r.exit != 0) {
+                    val err = r.err.trim().lines().lastOrNull { it.isNotBlank() }.orEmpty()
+                    // Pre-review M4: a full disk or a refused folder will not get better by trying again.
+                    val permanent = Regex("No space|Permission denied|Read-only file system|Disk quota", RegexOption.IGNORE_CASE).containsMatchIn(err)
+                    com.billmongan.herdrdroid.diag.DiagLog.log("send", "upload bytes=${bytes.size} try=$attempt result=failed exit=${r.exit} permanent=$permanent")
+                    throw UploadFailed(err.ifBlank { "the upload failed (exit ${r.exit})" }, permanent)
+                }
+                val out = r.out.lines().map { it.trim() }
+                val at = out.lastIndexOf(UPLOAD_MARKER)
+                val path = out.getOrNull(at + 1).orEmpty()
+                val size = out.getOrNull(at + 2)?.toLongOrNull()
+                val hash = out.getOrNull(at + 3)?.lowercase()
+                val noSum = hash == "nosum"
+                val ok = at >= 0 && path.isNotEmpty() && size == bytes.size.toLong() && (noSum || hash == want)
+                // Pre-review L7: no file name in the log, only the size and the result.
+                com.billmongan.herdrdroid.diag.DiagLog.log("send", "upload bytes=${bytes.size} try=$attempt verify=${if (!ok) "mismatch" else if (noSum) "size-only" else "ok"} remote_bytes=${size ?: "unknown"}")
+                if (ok) return UploadReceipt(path, bytes.size.toLong(), if (noSum) "" else want)
+                last = if (size != bytes.size.toLong()) "the computer has ${size ?: "unknown"} of ${bytes.size} bytes" else "its checksum didn't match"
+                // The mismatched copy is set aside (never deleted) so the next try writes a fresh one.
+                runCatching {
+                    val keep = "mv -f $f \"\$HOME\"/${shq("$rel.failed")} 2>/dev/null; true"
+                    commands?.let { it.immediate(keep, 10, pinned) } ?: ssh.execNow(keep, 10, pinned)
+                }
+            }
+        } finally {
+            ssh.endSend()
+        }
+        throw UploadMismatch(last ?: "it couldn't be checked")
     }
+
+    /**
+     * 2.2.7 Send a secret: this computer's runner for [SecretDrop] (the secret only on stdin), bound
+     * to [connection] (Codex's review): a command never opens or uses a replacement connection
+     * ([com.billmongan.herdrdroid.ssh.ConnectionChanged] instead), and the save counts as a send.
+     */
+    internal fun secretRunOn(connection: Any) = SecretDrop.Run { command, stdin ->
+        if (stdin != null) commands?.let { it.input(command, stdin, connection) }
+            ?: ssh.execInput(command, stdin, timeoutSeconds = 120, expectedConnection = connection)
+        else commands?.let { it.immediate(command, 10, connection) } ?: ssh.execNow(command, 10, connection)
+    }
+
+    /** 2.2.7 Send a secret: the send lane's count on this client's connection, for the whole send. */
+    internal fun beginSecretSend() = ssh.beginSend()
+    internal fun endSecretSend() = ssh.endSend()
 
     /** Automatic usage collection must never write to a pane. No inline-command fallback. */
     internal suspend fun readQuota(paneIds: List<String>, profile: QuotaProfile): List<QuotaItem>? {
@@ -1228,6 +1378,8 @@ data class Prompt(
      * is partly off screen, and the dialog's top is the screen's top ([dialogRead]).
      */
     internal val topOffScreen: Boolean = false,
+    /** 2.2.7: Oh My Pi's or pi's multi-question Ask dialog, as [OmpAsk] read it. */
+    internal val ompAsk: OmpAsk.State? = null,
 ) {
     /**
      * Never an empty card (1.4.2): a prompt with no choices always has something to show, the
@@ -1340,16 +1492,19 @@ private fun claudeDescriptionAbove(t: String, next: QLine?): Boolean {
 /** Claude Code 2.1.329+'s dashed rules around a permission dialog's command, at the screen's left edge. */
 private val CLAUDE_DASHED_RULE = Regex("""^ ?╌{20,}\s*$""")
 /** The plain rule Claude draws above a permission dialog, at the screen's left edge. */
-private val CLAUDE_DIALOG_TOP_RULE = Regex("""^─{20,}\s*$""")
+internal val CLAUDE_DIALOG_TOP_RULE = Regex("""^─{20,}\s*$""")
 /** A row in the dialog's "│" gutter: the command's rows, and a hook's reason (2.2.4). */
 private val CLAUDE_GUTTER_ROW = Regex("""^ {0,2}│(?: (.*))?$""")
-/** What the card says when a tall dialog's top has scrolled off the screen (2.2.4). */
-internal const val CLAUDE_TOP_OFF_NOTE = "The top of this command is off screen. Show terminal to see all of it."
+/**
+ * What the card says when a tall dialog's top has scrolled off the screen (2.2.4) and, since 2.2.7,
+ * the pane's history read back to [TALL_DIALOG_MAX_LINES] lines still does not reach it ([completeTallDialog]).
+ */
+internal const val CLAUDE_TOP_OFF_NOTE = "Part of this command is above what the app can read; Show terminal to see it."
 /** The same, when the whole command shows but the dialog's title and description scrolled off. */
-internal const val CLAUDE_TITLE_OFF_NOTE = "The top of this dialog is off screen. Show terminal to see all of it."
+internal const val CLAUDE_TITLE_OFF_NOTE = "Part of this dialog is above what the app can read; Show terminal to see it."
 
 /** A Claude permission dialog read by its frame: its lines for [questionParts], and whether its top scrolled off. */
-internal class ClaudeFramed(val lines: List<QLine>, val topOffScreen: Boolean)
+internal class ClaudeFramed(val lines: List<QLine>, val topOffScreen: Boolean, /** 2.2.7: the top rule's row, or -1 when off the read. */ val top: Int = -1)
 
 /**
  * 2.2.4 (Bill: "herdrDroid failed to render that yes no question"): Claude Code 2.1.330's permission
@@ -1394,6 +1549,7 @@ internal fun claudeFramedDialog(raw: List<String>, at: Int): ClaudeFramed? {
     // Over the command: the title and the description, under the plain rule (or the screen's top).
     var titleRows = emptyList<String>()
     var topOff = j < 0
+    var topRow = -1
     if (j >= 0) {
         var t = j - 1
         while (t >= 0 && !CLAUDE_DIALOG_TOP_RULE.matches(raw[t])) {
@@ -1403,6 +1559,7 @@ internal fun claudeFramedDialog(raw: List<String>, at: Int): ClaudeFramed? {
         titleRows = (t + 1 until j).map { raw[it].trim() }
         if (t < 0) topOff = true
         else {
+            topRow = t
             // A full dialog names its tool on its first row.
             val title = titleRows.firstOrNull() ?: return null
             if (!CLAUDE_COMMAND_TITLE.matches(title) && !CLAUDE_REQUEST_SOURCE.containsMatchIn(title) && !COMMAND_INTRO.matches(title)) return null
@@ -1430,7 +1587,7 @@ internal fun claudeFramedDialog(raw: List<String>, at: Int): ClaudeFramed? {
         gap = false
     }
     question.forEachIndexed { n, q -> out += QLine(q, gapBefore = n == 0) }
-    return ClaudeFramed(out, topOff)
+    return ClaudeFramed(out, topOff, topRow)
 }
 
 /** Vibe's "Permission for the file_system.bash tool (…)": the command is the next line. */
@@ -2466,6 +2623,8 @@ internal fun parseWake(out: String): Herdr.Wake? {
 internal fun screenWakeRegex(agent: String?): String? = when {
     agent == "claude" -> """(?im)Enter to select.*(?:navigate|Esc to cancel)|↑/↓ to navigate|Tab/Arrow keys to navigate|\d{1,3} awaiting input\s*$"""
     isOpenCode(agent) -> """(?m)(?:⇆|←→)\s+select\s+enter\s+confirm|enter\s+(?:submit|confirm|toggle)\s+esc\s+dismiss|Permission required"""
+    // 2.2.7: Hermes's approval, confirm and clarify hints, drawn only while that prompt is open.
+    agent == "hermes" -> """(?m)^\s*(?:type [0-9/]+, or )?↑/↓ to select, Enter to (?:confirm|lock)"""
     else -> null
 }
 
@@ -2483,7 +2642,9 @@ internal fun screenWatchPanes(list: List<Pane>, herdrStates: Map<String, Status>
  */
 internal fun screenAskable(list: List<Pane>): List<Pane> = list.filter {
     (it.agent == "claude" && it.status != Status.NEEDS_YOU) ||
-        (isOpenCode(it.agent) && it.status in setOf(Status.DONE, Status.IDLE))
+        (isOpenCode(it.agent) && it.status in setOf(Status.DONE, Status.IDLE)) ||
+        // 2.2.7: herdr can call Hermes done or idle through a whole turn and through an approval.
+        (it.agent == "hermes" && it.status != Status.NEEDS_YOU)
 }
 
 /**
@@ -2505,6 +2666,7 @@ internal fun markScreenNeedsYou(list: List<Pane>, tails: Map<String, String>): L
             return@map p
         }
         val tail = tails[p.id]?.takeIf { p.id in askable }
+        if (p.agent == "hermes") return@map if (tail == null) p else markHermesScreen(p, tail)
         val why = when {
             tail == null -> null
             p.agent == "claude" -> claudeNeedsYouReason(tail)
@@ -2522,6 +2684,29 @@ internal fun markScreenNeedsYou(list: List<Pane>, tails: Map<String, String>): L
                 p.copy(status = Status.NEEDS_YOU)
             }
         }
+    }
+}
+
+/**
+ * 2.2.7: a Hermes pane by its own composer ([hermesComposer]), re-read with every list read so
+ * neither mark outlasts the screen that showed it. A prompt owning its input (an approval, a
+ * confirm, a clarify question, a password) shows it as needing you for the list, the drawer and
+ * the alert, with herdr's status kept for the send route as for OpenCode ([Pane.screenNeedsYouFrom]).
+ * The live spinner on its composer's top rule, the "☤" state icon or the footer's "ctrl+c stop"
+ * shows a running turn as working, so messages wait as they do for any working agent.
+ */
+internal fun markHermesScreen(p: Pane, tail: String): Pane {
+    val composer = hermesComposer(tail) ?: return p
+    return when {
+        composer.waiting -> {
+            com.billmongan.herdrdroid.diag.DiagLog.log("prompt", "${p.id}: Hermes shows a prompt (${composer.icon}) while herdr says ${p.status.name.lowercase()}; showing it as needs you, sends unchanged")
+            p.copy(status = Status.NEEDS_YOU, screenNeedsYouFrom = p.status)
+        }
+        composer.busy && p.status != Status.WORKING -> {
+            com.billmongan.herdrdroid.diag.DiagLog.log("prompt", "${p.id}: Hermes shows a running turn while herdr says ${p.status.name.lowercase()}; showing it as working")
+            p.copy(status = Status.WORKING)
+        }
+        else -> p
     }
 }
 
@@ -2561,6 +2746,8 @@ private val PI_SELECT_FOOTER = Regex("""↑↓\s+navigate\s+enter select\s+escap
 
 /** Pi's native select footer must still be at the bottom; a footer in old output is not a card. */
 internal fun activePiQuestion(text: String, version: String?): Prompt? {
+    // 2.2.7 (Grok's review): pi's Ask dialog is a live question too, whatever its footer.
+    OmpAsk.prompt(stripAnsi(text))?.let { return it }
     val footer = text.lines().lastOrNull { !isChrome(it) }?.trim() ?: return null
     if (!PI_SELECT_FOOTER.matches(footer)) return null
     return detectPrompt(text, blocked = false, agent = "pi", version = version)?.takeIf { it.choices.isNotEmpty() }
@@ -2890,7 +3077,24 @@ private val AGENT_CRASHES = listOf(
 /** A shell's prompt: "tester@host:~/work$", "user@devbox2:~ %" (a bare "$" is too easily something else). */
 private val SHELL_PROMPT = Regex("""^[\w.-]+@[\w.-]+(:\S*)?\s?[$#%]\s*$""")
 
-internal fun isOpenCode(agent: String?): Boolean = agent?.lowercase() in setOf("opencode", "opencode-college")
+/**
+ * 2.2.7: the keys that interrupt a turn, per agent, as each program's own screen names them: Esc
+ * for most ("esc to interrupt": Claude Code, Codex, Copilot "Esc to stop", Antigravity, Vibe, pi,
+ * Oh My Pi, Muse Code); Esc twice for OpenCode (one Esc only arms "esc again to interrupt");
+ * Ctrl+C where Esc means something else or nothing (Grok's footer: "Ctrl+c:cancel ·
+ * Esc:scrollback"; Kiro; Hermes). Sent once, in one command.
+ */
+internal fun stopKeys(agent: String?): List<String> = when (ruleAgent(agent)) {
+    "hermes", "grok", "kiro", "kiro-cli" -> listOf("ctrl+c")
+    "opencode" -> listOf("esc", "esc")
+    else -> listOf("esc")
+}
+
+/** OpenCode by its own name, or a named launch of it ("opencode-<name>", such as one with its own config). */
+internal fun isOpenCode(agent: String?): Boolean = agent?.lowercase()?.let { it == "opencode" || it.startsWith("opencode-") } == true
+
+/** The name the per-agent rules (panels, model footer, sessions) key on: "opencode" for any [isOpenCode] agent. */
+internal fun ruleAgent(agent: String?): String? = if (isOpenCode(agent)) "opencode" else agent?.lowercase()
 
 private val OPENCODE_DRAWER_TABS = Regex("""\bSubagents\b.*\bShell\b.*\bTerminals\b""", RegexOption.IGNORE_CASE)
 private val OPENCODE_DRAWER_FOOTER = Regex("""\besc\b.*\bshow inactive\s+ctrl\+a\s+tabs\b""", RegexOption.IGNORE_CASE)
@@ -2932,7 +3136,7 @@ internal fun openCodeEmptyComposer(screen: String): Boolean {
 
 /**
  * OpenCode's box with nothing typed in it inside a session (2.1.5, Bill: "herdrdroid couldn't send
- * College OpenCode the cross server info 5 times"). There OpenCode shows no placeholder: the box is
+ * the other OpenCode the cross server info 5 times"). There OpenCode shows no placeholder: the box is
  * its top padding row, its one text row and a gap row, all a bare "┃", over the "Build · <model>"
  * row. The rows are cut at the width of the box's "╹▀▀▀" bottom edge, so OpenCode's sidebar beside
  * it is not read as typing. Typed text fills the text row, and a draft of line feeds makes the box
@@ -3230,6 +3434,28 @@ private fun detectHermesCommandPreview(text: String): Prompt? {
     return terminalCommandReview(body.subList(1, hidden).dropWhile { it.isBlank() }.joinToString("\n"))
 }
 
+/** Hermes's slash-command confirm hint, under its panel as the approval hint is (2.2.7). */
+private val HERMES_CONFIRM_HINT =
+    Regex("""^type [0-9/]+, or ↑/↓ to select, Enter to confirm(?:\s*\(\d+s\))?$""", RegexOption.IGNORE_CASE)
+
+/**
+ * 2.2.7: Hermes's live approval or confirm panel, its box rows only, when the panel's hint row is
+ * right under it and only the empty "⚠ ❯" input row follows ([hermesWaitingScreen] has already cut
+ * the modern layout's rules and footer). The generic parser reads the box as it reads the panel
+ * alone (screens/hermes/derived-1.4.9), so the tool rows above and the hint below change nothing.
+ */
+private fun hermesLiveApprovalBox(text: String): String? {
+    val lines = text.lines().takeLast(80)
+    val footer = lines.indexOfLast { HERMES_APPROVAL_FOOTER.matches(it.trim()) || HERMES_CONFIRM_HINT.matches(it.trim()) }
+    if (footer < 0) return null
+    val tail = lines.drop(footer + 1).filter { it.isNotBlank() }
+    if (tail.size != 1 || !HERMES_EMPTY_INPUT.matches(tail.single().trim())) return null
+    val bottom = (footer - 1 downTo 0).firstOrNull { lines[it].isNotBlank() } ?: return null
+    if (!lines[bottom].trimStart().startsWith("╰")) return null
+    val top = (bottom - 1 downTo 0).firstOrNull { lines[it].trimStart().startsWith("╭") } ?: return null
+    return lines.subList(top, bottom + 1).joinToString("\n")
+}
+
 fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version: String? = null): Prompt? {
     val plain = stripAnsi(text)
     if (agent.equals("hermes", true)) hermesUsageEnd(plain)?.let { end ->
@@ -3240,6 +3466,8 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     }
     // Before the styles are stripped: they are the only mark of Muse's highlighted option (2.1.0).
     if (agent.equals("muse", true)) detectMuseQuotaDialog(text)?.let { return it }
+    // 2.2.7 (Bill: "show the whole question"): Oh My Pi's and pi's boxed multi-question Ask dialog.
+    if (agent?.lowercase() in setOf("omp", "pi")) OmpAsk.prompt(plain)?.let { return it }
     if (isOpenCode(agent)) {
         if (openCodeBackgroundDrawer(agent, plain) || openCodeComposerMode(plain.lines().takeLast(20)) >= 0) return null
         detectOpenCodeQuestion(plain)?.let { return it }
@@ -3335,6 +3563,9 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
         detectOpenCodeWebSearch(text)?.let { return it }
     }
     if (agent.equals("hermes", true)) {
+        // 2.2.7: the modern layout's rules, session title and footer under a live prompt are chrome,
+        // and the "⚠ ❯" input row says Hermes waits whatever herdr reports (HermesComposer.kt).
+        hermesWaitingScreen(text)?.let { return detectPlainPrompt(it, true, agent, version) }
         hermesClarifyFrame(text)?.let { frame ->
             return frame.card ?: detectPlainPrompt(frame.remainder, false, agent, version)
         }
@@ -3356,6 +3587,9 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
                 terminalCommandReview(null)
             } else null
         }
+        hermesLiveApprovalBox(text)?.let { box ->
+            detectPlainPrompt(box, true, agent, version)?.takeIf { it.choices.isNotEmpty() }?.let { return it }
+        }
     }
     val rules = ParserRules.forAgent(agent, version)
     // A question dialog on screen means the agent waits, whatever herdr reported.
@@ -3363,7 +3597,7 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
     @Suppress("NAME_SHADOWING") val blocked = blocked || showsQuestionDialog(text) ||
         (agent.equals("claude", true) && claudePermissionFooterAtBottom(text)) ||
         (rules.extraFooter?.let { f -> text.lines().takeLast(6).any { f.containsMatchIn(it) } } == true)
-    var raw = text.lines().takeLast(80)
+    var raw = claudeDialogWindow(text.lines(), agent)
     var pastDialog = false
     if (agent.equals("codex", true)) {
         val footer = raw.indexOfLast { CODEX_FOOTER.matches(it.trim()) }
@@ -3838,7 +4072,7 @@ object Backgrounding {
     // Muse Code 1.4.20's /help: "ctrl + b to send to background" (1.4.5).
     private val agents = setOf("claude", "opencode", "grok", "agy", "muse")
     const val KEY = "ctrl+b"
-    fun supported(agent: String?): Boolean = agent?.lowercase() in agents
+    fun supported(agent: String?): Boolean = ruleAgent(agent) in agents
 }
 
 /** The program that runs an agent kind, where it differs from the kind's name. */
@@ -3935,3 +4169,169 @@ fun parseDetect(line: String): Detected {
 fun withBusy(list: List<Pane>, busy: Map<String, Int>): List<Pane> = list.map { p ->
     if ((p.status == Status.IDLE || p.status == Status.DONE || p.status == Status.UNKNOWN) && (busy[p.id] ?: 0) > 0) p.copy(status = Status.WORKING, backgroundBusy = true) else p
 }
+
+/** 2.2.7: a file the computer has, checked: its path there, size and SHA-256 (hex; empty when only the size could be checked). */
+data class UploadReceipt(val path: String, val size: Long, val sha256: String)
+
+/** 2.2.7: the file on the computer didn't match what the phone sent, after one retry. */
+class UploadMismatch(why: String) : Exception("The file didn't arrive whole ($why).")
+
+/** 2.2.7: the upload itself failed; [permanent] when trying again won't help (a full disk, a refused folder). */
+class UploadFailed(why: String, val permanent: Boolean) : Exception(why)
+
+/**
+ * 2.2.7: the remote command for one inbox upload of [size] bytes to [rel] (under the home folder).
+ */
+internal fun inboxUploadCommand(rel: String, size: Int): String {
+    val f = "\"\$HOME\"/${shq(rel)}"
+    val t = "\"\$HOME\"/${shq("$rel.part")}"
+    // Written to a temporary name, then moved into place without replacing anything (mv -n); a
+    // name already taken fails. The results follow a marker line, so a shell banner is skipped.
+    // With no checksum tool there, only the size is checked, and said so.
+    // 2.2.7 (Codex's review): moved into place only once it holds every byte, so a link cut
+    // mid-upload (cat then sees an early end and exits 0) leaves only the ".part" file.
+    return "mkdir -p \"\$HOME/.herdrdroid/inbox\" && cat > $t && " +
+        "{ [ \$(wc -c < $t) -eq $size ] || { echo 'Only part of the file arrived, so it was not saved.' >&2; exit 5; }; } && { [ ! -e $f ] && mv -n $t $f && [ ! -e $t ]; } && " +
+        "printf '%s\\n' $UPLOAD_MARKER $f && wc -c < $f && " +
+        "{ sha256sum $f 2>/dev/null || shasum -a 256 $f 2>/dev/null || echo nosum; } | cut -d' ' -f1"
+}
+
+/** 2.2.7 (Bill, "check right before send"): what a card's answer types. */
+internal sealed class CardInput {
+    data class Keys(val keys: List<String>) : CardInput()
+    data class Text(val text: String, val enter: Boolean) : CardInput()
+}
+
+/** The pane's occupant digest and its screen digest, as the card's last read saw them (hex SHA-256). */
+internal data class CardGuard(val occupant: String, val screen: String)
+
+/** Nothing was typed: the card's pane, or its screen, changed after the card's last read. */
+internal class CardChanged : Exception("The question changed; not sent.")
+/** Nothing was typed: the check on the computer couldn't run or couldn't read the pane. */
+internal class CardCheckFailed : Exception("Not sent. The check on the computer failed.")
+
+internal const val CARD_CHANGED_EXIT = 3
+/** Printed by the card check command when python3 was missing and the shell check ran instead. */
+internal const val SHELL_CHECK_MARK = "@@herdrdroid-shell-check@@"
+
+/** 2.2.7: [CARD_SEND_CHECK] in POSIX sh and awk, for a computer without python3 (resources/herdrdroid/card-check.sh). */
+internal val CARD_SEND_CHECK_SH: String by lazy {
+    checkNotNull(Herdr::class.java.getResourceAsStream("/herdrdroid/card-check.sh")) { "card-check.sh is missing" }
+        .use { it.readBytes().toString(Charsets.UTF_8) }
+}
+internal const val CARD_CHECK_FAILED_EXIT = 4
+
+private val CARD_OCCUPANT_FIELDS = listOf("pane_id", "tab_id", "workspace_id", "agent", "foreground_cwd", "cwd", "terminal_id")
+private val CARD_SESSION_FIELDS = listOf("kind", "agent", "value")
+
+/**
+ * The occupant digest of one `herdr pane get` pane: the fields [Occupant.of] is built from, raw
+ * (pane, tab, workspace, agent, folders, terminal and the agent session), the same way
+ * [CARD_SEND_CHECK] computes it on the computer.
+ */
+internal fun cardOccupantDigest(p: JSONObject): String {
+    val out = java.io.ByteArrayOutputStream()
+    // Each field framed by its UTF-8 length ("<bytes>:<value>\n"); "-\n" for a field that is
+    // missing, null or not a string or whole number. No separator a value could contain.
+    fun put(x: Any?) {
+        val b = when (x) {
+            is String -> x.toByteArray(Charsets.UTF_8)
+            is Int, is Long, is java.math.BigInteger -> x.toString().toByteArray(Charsets.US_ASCII)
+            else -> null
+        }
+        if (b == null) out.write("-\n".toByteArray()) else { out.write("${b.size}:".toByteArray()); out.write(b); out.write('\n'.code) }
+    }
+    val session = p.optJSONObject("agent_session")
+    CARD_OCCUPANT_FIELDS.forEach { put(p.opt(it)) }
+    CARD_SESSION_FIELDS.forEach { put(session?.opt(it)) }
+    return sha256Hex(out.toByteArray())
+}
+
+/**
+ * 2.2.7 (Codex's review): a running countdown changes nothing about the question, but only the
+ * agent's own timer: the last "(Ns)" of a line that is, once its CSI styles are dropped, its
+ * ASCII case folded and its ends trimmed, Hermes's approval or confirm hint and nothing else
+ * ("↑/↓ to select, Enter to confirm (57s)", "type 1/2, or ↑/↓ to select, Enter to confirm (57s)").
+ * The same "(12s)" anywhere else, a command's text included, is part of the question.
+ * [CARD_SEND_CHECK] and card-check.sh apply exactly this rule.
+ */
+private val CARD_TIMER_LINE = Regex("""^(type [0-9/]+, or )?↑/↓ to select, enter to confirm[ \t\r\u000B\u000C]*\([0-9]+s\)$""")
+private val CARD_TIMER = Regex("""^(.*)\([0-9]+s\)""", RegexOption.DOT_MATCHES_ALL)
+private val CARD_CSI = Regex("\u001B\\[[0-9;?]*[ -/]*[@-~]")
+
+private fun asciiFold(s: String) = buildString(s.length) { for (c in s) append(if (c in 'A'..'Z') c + 32 else c) }
+
+/** A digest no screen has: a screen with a NUL byte never matches. */
+private val CARD_NO_MATCH = "0".repeat(64)
+
+internal fun cardTimerLine(line: String): String {
+    val shown = asciiFold(CARD_CSI.replace(line, "")).trim { it == ' ' || it == '\t' || it == '\r' || it == '\u000B' || it == '\u000C' }
+    return if (CARD_TIMER_LINE.matches(shown)) CARD_TIMER.replaceFirst(line, "$1(Ns)") else line
+}
+
+/**
+ * The screen digest of a card's raw `pane read --source visible --format ansi`, as [CARD_SEND_CHECK]
+ * computes it. A screen that is not UTF-8, or holds a NUL, reads differently here and on the
+ * computer, so it never matches: the check fails closed (exit 3), never open.
+ */
+internal fun cardScreenDigest(raw: String): String {
+    // A NUL is refused by both checks on the computer (a shell can't hold one): never a match here either.
+    if ('\u0000' in raw) return CARD_NO_MATCH
+    // Every line ends in a newline (the last one too), as a line-by-line awk prints it.
+    val t = raw.split("\n").joinToString("\n") { cardTimerLine(it) }.let { if (it.isNotEmpty() && !it.endsWith("\n")) it + "\n" else it }
+    return sha256Hex(t.toByteArray(Charsets.UTF_8))
+}
+
+/**
+ * 2.2.7 (Bill, "check right before send"): run on the computer just before a card's keys, in the
+ * same command. Reads the pane's occupant, its visible screen and its occupant again; exits 0 only
+ * when both occupant reads and the screen match the digests the card was checked against, 3 when
+ * anything changed, 4 when it couldn't read. Takes no prompt text: only the pane id and two digests.
+ */
+internal val CARD_SEND_CHECK = """
+    import hashlib, json, re, subprocess, sys
+    herdr, pane, occupant, screen = sys.argv[1:5]
+    def call(*args):
+        return subprocess.check_output([herdr, 'pane', *args])
+    def v(x):
+        if isinstance(x, str):
+            b = x.encode('utf-8')
+        elif type(x) is int:
+            b = str(x).encode('ascii')
+        else:
+            return b'-\n'
+        return str(len(b)).encode('ascii') + b':' + b + b'\n'
+    def identity():
+        p = json.loads(call('get', pane))['result']['pane']
+        if p.get('pane_id') != pane or (p.get('scroll') or {}).get('offset_from_bottom') != 0:
+            return None
+        s = p.get('agent_session')
+        s = s if isinstance(s, dict) else {}
+        f = [p.get(k) for k in ('pane_id', 'tab_id', 'workspace_id', 'agent', 'foreground_cwd', 'cwd', 'terminal_id')]
+        f += [s.get(k) for k in ('kind', 'agent', 'value')]
+        return hashlib.sha256(b''.join(v(x) for x in f)).hexdigest()
+    # Only the agent's own timer line (cardTimerLine in Herdr.kt): its last (Ns), nothing else.
+    TIMER_LINE = re.compile(b'^(type [0-9/]+, or )?' + '\u2191/\u2193'.encode('utf-8') + rb' to select, enter to confirm[ \t\r\x0b\x0c]*\([0-9]+s\)$')
+    def timer(line):
+        shown = re.sub(rb'\x1b\[[0-9;?]*[ -/]*[@-~]', b'', line).lower().strip(b' \t\r\x0b\x0c')
+        return re.sub(rb'(?s)^(.*)\([0-9]+s\)', rb'\1(Ns)', line, count=1) if TIMER_LINE.match(shown) else line
+    try:
+        before = identity()
+        visible = call('read', pane, '--source', 'visible', '--format', 'ansi')
+        after = identity()
+        if b'\x00' in visible:
+            sys.exit(3)  # a NUL never matches (the shell check can't hold one); as cardScreenDigest
+        visible = b'\n'.join(timer(line) for line in visible.split(b'\n'))
+        if visible and not visible.endswith(b'\n'):
+            visible += b'\n'
+        seen = hashlib.sha256(visible).hexdigest()
+    except Exception:
+        sys.exit(4)
+    sys.exit(0 if before == after == occupant and seen == screen else 3)
+""".trimIndent()
+
+/** 2.2.7: the line before an upload's results, so text a shell prints at login is skipped. */
+internal const val UPLOAD_MARKER = "@@herdrdroid-upload@@"
+
+internal fun sha256Hex(bytes: ByteArray): String =
+    java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }

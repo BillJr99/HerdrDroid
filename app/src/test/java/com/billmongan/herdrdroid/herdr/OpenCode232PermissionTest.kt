@@ -21,14 +21,14 @@ class OpenCode232PermissionTest {
         t.replace("   $label", "   \u001B[${if (label == focus) 44 else 49}m$label\u001B[0m")
     }
 
-    private fun card(text: String, agent: String = "opencode-college"): Prompt {
+    private fun card(text: String, agent: String = "opencode-work"): Prompt {
         val p = detectPrompt(text, blocked = false, agent = agent)
         assertNotNull("no card for:\n$text", p)
         return p!!
     }
 
     @Test fun theShellPermissionIsAnActionableCardWhileHerdrSaysDone() {
-        for (agent in listOf("opencode", "opencode-college")) {
+        for (agent in listOf("opencode", "opencode-work")) {
             val p = card(frame, agent)
             assertFalse(p.terminalReview)
             assertTrue(p.openCodePermission)
@@ -104,7 +104,7 @@ class OpenCode232PermissionTest {
     }
 
     @Test fun theEmptyComposerIsStillNoCard() {
-        val empty = javaClass.getResource("/screens/opencode/live-2026-11-20-college/empty.ansi")!!.readText()
-        assertNull(detectPrompt(empty, blocked = false, agent = "opencode-college"))
+        val empty = javaClass.getResource("/screens/opencode/live-2026-11-20-second/empty.ansi")!!.readText()
+        assertNull(detectPrompt(empty, blocked = false, agent = "opencode-work"))
     }
 }

@@ -198,13 +198,17 @@ class MainActivity : FragmentActivity() {
                 BoxWithConstraints(Modifier.fillMaxSize().background(Palette.Ground)) {
                 val wide = maxWidth >= 840.dp
                 val s0 = vm.screen
-                if (wide && s0 is Screen.Agent) {
+                if (wide && (s0 is Screen.Agent || s0 == Screen.Home)) {
                     // Wide: the drawer stays out beside the agent.
+                    // 2.2.7: Back on the wide main screen (agent or Home) stays in the app: the drawer is
+                    // already out here, so there is nothing to open or close, and the app never closes from it.
+                    com.billmongan.herdrdroid.ui.StayInApp()
                     Row(Modifier.fillMaxSize()) {
                         com.billmongan.herdrdroid.ui.SessionDrawer(vm)
                         VerticalDivider(color = Palette.Line)
                         Box(Modifier.weight(1f).fillMaxHeight()) {
-                            androidx.compose.runtime.key(vm.chatServerId, s0.paneId) { AgentScreen(vm, s0.paneId) }
+                            if (s0 is Screen.Agent) androidx.compose.runtime.key(vm.chatServerId, s0.paneId) { AgentScreen(vm, s0.paneId) }
+                            else com.billmongan.herdrdroid.ui.HomeScreen(vm)
                         }
                     }
                 } else if (wide && s0 == Screen.Tabs) {
@@ -224,6 +228,8 @@ class MainActivity : FragmentActivity() {
                     }
                 } else if (vm.starting && vm.screen == Screen.Servers) {
                     // Startup is still finding a server that answers: not the server screen yet.
+                    // 2.2.7: Back goes to the main screen (startup carries on), never out of the app.
+                    BackHandler { vm.screen = Screen.Home }
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         androidx.compose.foundation.layout.Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             androidx.compose.material3.CircularProgressIndicator(color = Palette.Blue)
@@ -241,7 +247,7 @@ class MainActivity : FragmentActivity() {
                         BackHandler { vm.disconnect() }
                         TabsScreen(vm)
                     }
-                    is Screen.Agent -> {
+                    is Screen.Agent, Screen.Home -> {
                         // The drawer is the way around: Back closes it, or opens it.
                         val drawer = androidx.compose.material3.rememberDrawerState(androidx.compose.material3.DrawerValue.Closed)
                         LaunchedEffect(vm.drawerOpen) { if (vm.drawerOpen) drawer.open() else drawer.close() }
@@ -262,7 +268,9 @@ class MainActivity : FragmentActivity() {
                         ) {
                             // Keyed by server (2.1.1): the same pane id on another server is another chat, so
                             // its composer text (saved per pane id) never carries over.
-                            androidx.compose.runtime.key(vm.chatServerId) { AgentScreen(vm, s.paneId) }
+                            if (s is Screen.Agent) androidx.compose.runtime.key(vm.chatServerId) { AgentScreen(vm, s.paneId) }
+                            // 2.2.7: the main screen with no agent open, the drawer still there.
+                            else com.billmongan.herdrdroid.ui.HomeScreen(vm)
                         }
                     }
                     Screen.Usage -> {

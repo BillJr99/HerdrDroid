@@ -44,17 +44,17 @@ class PromptRelayTest {
     }
 
     @Test fun `documented voice send reaches the remote fixture only after readback and confirm`() = runBlocking {
-        val example = "Send a message to Codex on Laptop"
+        val example = "Send a message to Codex on Lab Box"
         assertTrue(example in voiceCommandHelp)
         val command = parseVoiceCommand(example) as VoiceCommand.Message
         assertEquals("codex", command.pane.name)
-        assertEquals(voiceName("Laptop"), voiceName(checkNotNull(command.pane.server)))
+        assertEquals(voiceName("Lab Box"), voiceName(checkNotNull(command.pane.server)))
         val target = checkNotNull(relay.bind("remote", pane))
         val draft = VoiceMessageDraft<PromptRelay.Target> { 0L }
-        draft.begin(target, "Codex on Laptop")
+        draft.begin(target, "Codex on Lab Box")
         val dictate = parseVoiceCommand("Dictate Check the build") as VoiceCommand.Dictate
         val preview = checkNotNull(draft.dictate(draft.activeTarget(relay::isCurrent), dictate.text))
-        assertEquals("Codex on Laptop", preview.label)
+        assertEquals("Codex on Lab Box", preview.label)
         assertEquals("Check the build", preview.text)
         assertTrue(remote.writes.isEmpty())
         draft.onReadBack(preview)

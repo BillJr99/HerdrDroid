@@ -42,7 +42,7 @@ class OpenCodeSessionComposer215Test {
     }
 
     @Test fun `the home screen box with its placeholder still reads as empty`() {
-        val home = checkNotNull(javaClass.getResource("/screens/opencode/live-2026-11-20-college/empty.ansi")).readText()
+        val home = checkNotNull(javaClass.getResource("/screens/opencode/live-2026-11-20-second/empty.ansi")).readText()
         assertEquals("", inputLineOf(home, "opencode"))
         // The same words in normal type could be typed: only the grey placeholder is empty.
         assertNotEquals("", inputLineOf(stripAnsi(home), "opencode"))

@@ -44,7 +44,7 @@ import org.robolectric.Shadows.shadowOf
 class TypedChatMerge214Test {
     @get:Rule val idleMainLooper = IdleMainLooperRule()
     private val vm = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
-    private val server = Server(id = "fixture-m", name = "FixtureM", host = "m.invalid", port = 22, user = "fixm", herdrPath = "/fixture/herdr")
+    private val server = Server(id = "fixture-m", name = "FixtureM", host = "127.0.0.1", port = 1, user = "fixm", herdrPath = "/fixture/herdr")
     private val single = checkNotNull(javaClass.getResource("/screens/claude/captured-2.1.329/single-question.txt")).readText()
     private val omp = checkNotNull(javaClass.getResource("/screens/omp/derived-1.4.9/0602-ask-dialog-questions-tabs-multi-select.txt")).readText()
 
@@ -168,7 +168,7 @@ class TypedChatMerge214Test {
 
     /** One Claude pane waiting on [screen]'s question; Down moves its highlight. */
     private inner class Fake(@Volatile var screen: String) : Herdr.Commands {
-        val ssh = HerdrSsh("fake.invalid", 22, "fake", Credentials(null, null), null, { null })
+        val ssh = HerdrSsh("127.0.0.1", 2, "fake", Credentials(null, null), null, { null })
         val client = Herdr(ssh, "/fixture/herdr", Backend.TUI, null, this)
         override var connection: Any? = Any()
         val pane = Pane("w1:p1", "w1:t1", "w1", "claude", Status.NEEDS_YOU, "", "/fixture", scrollOffset = 0, terminalId = "t1")

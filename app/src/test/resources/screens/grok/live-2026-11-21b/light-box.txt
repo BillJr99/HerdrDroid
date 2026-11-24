@@ -9,7 +9,7 @@
   ╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
   │  ›  Confirm the back arrow click line                                                                                           │
   │                                                                                                                                 │
-  │  │ git -C /home/bill/Documents/repos/HerdrDroid show·                                                                           │
+  │  │ git -C /home/user/Documents/repos/HerdrDroid show·                                                                           │
   │  ┆ 507e0344560ef35cbd6f843ff81c4aa499376ca7:app/src/main/java/com/billmongan/herdrdroid/ui/ServersScreen.kt |·                  │
   │  ┆ awk 'NR>=114 && NR<=120 {printf "%d:%s\n", NR, $0}'                                                                          │
   │  ← → narrow scope                                                                                                               │
@@ -17,7 +17,7 @@
   │  1 (○) Yes, and don't ask again for anything (always-approve mode)                                                              │
   │  2 (●) Yes, proceed                                                                                                             │
   │  3 (○) No, reject (type to add feedback)                                                                                        │
-  │  4 (○) Never allow: git -C /home/bill/Documents/repos/HerdrDroid show                                                           │
+  │  4 (○) Never allow: git -C /home/user/Documents/repos/HerdrDroid show                                                           │
   │                                                                                                                                 │
   ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 

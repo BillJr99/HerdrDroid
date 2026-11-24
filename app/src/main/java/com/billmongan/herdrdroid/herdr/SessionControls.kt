@@ -50,7 +50,7 @@ object SessionControls {
     /** Hermes's /resume takes a list number too, so an all-digit id would pick by position: never typed (2.2.2, from review). */
     internal fun hermesId(ref: String): String? = safe(ref)?.takeIf { id -> !id.all(Char::isDigit) }
 
-    fun forAgent(agent: String?): Spec? = when (agent?.lowercase()) {
+    fun forAgent(agent: String?): Spec? = when (ruleAgent(agent)) {
         // Claude Code 2.1.329: /clear (aliases reset, new) starts a new session; /resume [session ID or
         // search term]. Its SessionStart hook reports both to herdr (sources clear and resume).
         "claude" -> Spec("claude", "/clear", resumeById = "/resume", idOf = { idOfLog(it.ref) }, picker = "/resume")
@@ -58,7 +58,7 @@ object SessionControls {
         "codex" -> Spec("codex", "/new", picker = "/resume")
         // OpenCode 2.3.2: /new goes to its home page, and the new session exists (and herdr's TUI plugin
         // reports it) only when the first message is sent; /sessions opens its picker.
-        "opencode", "opencode-college" -> Spec("opencode", "/new", picker = "/sessions", herdrAtOnce = false)
+        "opencode" -> Spec("opencode", "/new", picker = "/sessions", herdrAtOnce = false)
         // 2.2.2: pi, Oh My Pi and Copilot are back, now that the app finds their empty input boxes by
         // shape (AgentComposers). pi 1.6.0: /new, and /resume opens its picker (it takes no id in the
         // session; --session does, at launch).

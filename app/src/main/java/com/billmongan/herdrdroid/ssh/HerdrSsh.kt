@@ -218,20 +218,73 @@ class HerdrSsh(
     /** 2.2.6: the app's server id, only to tag diagnostic lines (hashed by [LinkDiag]). */
     private val diagServerId: String? = null,
     private val mssOps: MssOps = AndroidMssOps,
-) {
+    /** 2.2.7: the global "Small packets on VPN (automatic)" setting, read at each connect. */
+    private val vpnAuto: () -> Boolean = { VpnSmallPackets.enabled },
+    /** 2.2.7: the phone's network type at connect ("vpn", "wifi", ...); a seam for tests. */
+    private val networkType: () -> String = { VpnSmallPackets.networkType() },
     /**
-     * 2.2.6: the MSS the next connection opens with: the server's setting, or the fallback's for
-     * this session ([useSmallPackets]); null for the normal MSS.
+     * 2.2.7: this server's session already fell back to small packets (the app's per-session
+     * choice), so this connection (a reconnect, the watcher, a status check) starts with them too.
      */
-    @Volatile private var sessionMss: Int? = smallPacketsMss?.let { SmallPackets.clamp(it) }
+    sessionFallbackMss: Int? = null,
+    /** 2.2.7: the global "Small packets on cellular (automatic)" setting, read at each connect. */
+    private val cellularAuto: () -> Boolean = { VpnSmallPackets.cellularEnabled },
+    /** 2.2.7: whether the network runs over cellular at connect (also under a VPN); a seam for tests. */
+    private val overCellular: () -> Boolean = { VpnSmallPackets.cellular() },
+    /** 2.2.7: the global "Small packets on Wi-Fi (automatic)" setting, read at each connect. */
+    private val wifiAuto: () -> Boolean = { VpnSmallPackets.wifiEnabled },
+) {
+    /** 2.2.6: the server's own small-packets MSS, or null when its setting is off. */
+    private val serverMss: Int? = smallPacketsMss?.let { SmallPackets.clamp(it) }
+
+    /** 2.2.6: the fallback's MSS for this session ([useSmallPackets]), or null when it has not fired. */
+    @Volatile private var fallbackMss: Int? = sessionFallbackMss?.let { SmallPackets.clamp(it) }
+
+    /**
+     * 2.2.7 (pre-review L4): the session's current choice, asked at each connect, for a connection
+     * that outlives it (the watcher): a fallback made later is picked up, and one that ended is dropped.
+     */
+    @Volatile var sessionFallback: (() -> Int?)? = null
+
+    /**
+     * 2.2.7: the MSS a connection made now would use, and why: decided afresh at every connect and
+     * reconnect, so a VPN coming up or dropping mid-session takes effect on the next connection
+     * only (an open socket's MSS is fixed when it connects).
+     */
+    fun mssChoice(): MssChoice = MssChoice.choose(
+        wsUrl != null, serverMss, fallbackMss ?: sessionFallback?.let { f -> runCatching { f() }.getOrNull() },
+        runCatching { vpnAuto() }.getOrDefault(false),
+        runCatching { networkType() }.getOrDefault("unknown"),
+        runCatching { cellularAuto() }.getOrDefault(false),
+        runCatching { overCellular() }.getOrDefault(false),
+        runCatching { wifiAuto() }.getOrDefault(false),
+    )
 
     /** The MSS a direct TCP connection uses now; always null over a WebSocket. */
-    val activeMss: Int? get() = if (wsUrl != null) null else sessionMss
+    val activeMss: Int? get() = mssChoice().mss
+
+    /** 2.2.7: what the last connection made by this object chose; null before the first. */
+    @Volatile var lastMssChoice: MssChoice? = null
+        private set
+
+    /** 2.2.7: whether setsockopt took the last connection's MSS; null when none was asked for. */
+    @Volatile private var lastMssSet: Boolean? = null
 
     /** 2.2.6 fallback: the next connection (after [reset]) uses [mss], for this object's life only. */
     fun useSmallPackets(mss: Int) {
-        sessionMss = SmallPackets.clamp(mss)
+        fallbackMss = SmallPackets.clamp(mss)
     }
+
+    /** 2.2.7: the network changed, so the session's fallback ends: the next connection starts with normal packets. */
+    fun clearSmallPackets() {
+        fallbackMss = null
+    }
+
+    /**
+     * 2.2.7: told (on the reading thread) when a read here has had no first byte for
+     * [SmallPacketFallback.FIRST_BYTE_STALL_MS]; the app's session uses it to fall back early.
+     */
+    @Volatile var firstByteStallListener: (() -> Unit)? = null
 
     /** 2.2.6 diagnostics: bytes received over this object's direct TCP connections, and when the last one came. */
     val inbound = InboundCounter()
@@ -260,9 +313,12 @@ class HerdrSsh(
      * the small-packets MSS when on and always times the connect, logs the socket's facts and
      * counts bytes in; null over a WebSocket (SSHJ's default socket to the local bridge).
      */
-    internal fun socketFactoryForNext(): MssSocketFactory? {
+    internal fun socketFactoryForNext(choice: MssChoice = mssChoice()): MssSocketFactory? {
         if (wsUrl != null) return null
-        return MssSocketFactory(activeMss, mssOps, { com.billmongan.herdrdroid.diag.LinkStats.mss(diagServerId, it) }, { ms, f ->
+        return MssSocketFactory(choice.mss, mssOps, {
+            lastMssSet = it.applied
+            com.billmongan.herdrdroid.diag.LinkStats.mss(diagServerId, it)
+        }, { ms, f ->
             lastTcpMs = ms
             com.billmongan.herdrdroid.diag.LinkStats.socket(diagServerId, f)
         }, inbound)
@@ -308,6 +364,9 @@ class HerdrSsh(
             true
         }
         lastTcpMs = null
+        lastMssSet = null
+        val choice = mssChoice()
+        lastMssChoice = choice
         var t0 = System.currentTimeMillis()
         var connectedAt: Long? = null
         try {
@@ -318,8 +377,8 @@ class HerdrSsh(
                 DiagLog.log("ssh", "sshj connecting to ${b.host}:${b.port} (the WebSocket bridge)")
                 c.connect(b.host, b.port)
             } else {
-                socketFactoryForNext()?.let { c.socketFactory = it }
-                DiagLog.log("ssh", "sshj connecting over TCP" + (activeMss?.let { " (small packets, MSS $it)" } ?: ""))
+                socketFactoryForNext(choice)?.let { c.socketFactory = it }
+                DiagLog.log("ssh", "sshj connecting over TCP" + (choice.mss?.let { " (small packets, MSS $it, ${choice.reason})" } ?: ""))
                 c.connect(host, port)
             }
             connectedAt = System.currentTimeMillis()
@@ -355,7 +414,8 @@ class HerdrSsh(
                     newKeysMs = if (hostKeyAt != null && connected != null) connected - hostKeyAt else null,
                     authMs = connected?.let { System.currentTimeMillis() - it },
                 ),
-                negotiated, com.billmongan.herdrdroid.diag.NetworkWatch.type, com.billmongan.herdrdroid.diag.NetworkWatch.changes, KEEPALIVE_SECONDS,
+                negotiated, choice.net, com.billmongan.herdrdroid.diag.NetworkWatch.changes, KEEPALIVE_SECONDS,
+                choice.reason, choice.mss, if (choice.mss == null) null else lastMssSet == true,
             ))
         } catch (e: UserAuthException) {
             DiagLog.log("ssh", "sign-in refused: ${DiagLog.describe(e)}")
@@ -414,7 +474,7 @@ class HerdrSsh(
         var exit: Int? = null
         var timedOut = false
         try {
-            return runMetered(c, command, input, timeoutSeconds, maxOut, meter, trace).also { exit = it.first }
+            return runMetered(c, command, input, timeoutSeconds, maxOut, meter, trace, label).also { exit = it.first }
         } catch (e: CommandTimeout) {
             timedOut = true
             stalls.incrementAndGet()
@@ -424,7 +484,7 @@ class HerdrSsh(
         }
     }
 
-    private fun runMetered(c: SSHClient, command: String, input: ByteArray?, timeoutSeconds: Long, maxOut: Int, meter: com.billmongan.herdrdroid.diag.ReadMeter, trace: SendTrace?): Triple<Int, ByteArray, ByteArray> {
+    private fun runMetered(c: SSHClient, command: String, input: ByteArray?, timeoutSeconds: Long, maxOut: Int, meter: com.billmongan.herdrdroid.diag.ReadMeter, trace: SendTrace?, label: String? = null): Triple<Int, ByteArray, ByteArray> {
         val session = c.startSession()
         meter.channelOpen()
         // A failure from exec itself may come after the computer accepted the command (1.3.2,
@@ -439,9 +499,15 @@ class HerdrSsh(
             val err = Capped(MAX_ERR, meter)
             val t1 = kotlin.concurrent.thread(isDaemon = true, name = "ssh-out") { out.drain(cmd.inputStream) }
             val t2 = kotlin.concurrent.thread(isDaemon = true, name = "ssh-err") { err.drain(cmd.errorStream) }
-            val deadline = System.currentTimeMillis() + timeoutSeconds * 1000
+            val began = System.currentTimeMillis()
+            val deadline = began + timeoutSeconds * 1000
+            // 2.2.7: the pane list and chat log reads (never a write, nor a search, git or sessions
+            // script that may rightly stay quiet) with no first byte for a while tell the session.
+            val watch = firstByteStallListener?.takeIf { trace == null && label in FIRST_BYTE_WATCHED }
+                ?.let { l -> FirstByteWatch(SmallPacketFallback.FIRST_BYTE_STALL_MS, began, l) }
             while ((t1.isAlive || t2.isAlive) && System.currentTimeMillis() < deadline && !out.over) {
                 t1.join(100); if (!t1.isAlive) t2.join(100)
+                watch?.tick(System.currentTimeMillis(), meter.bytes())
             }
             if (out.over || t1.isAlive || t2.isAlive) {
                 runCatching { session.close() }
@@ -669,3 +735,6 @@ internal fun <T : Any> requireCurrentConnection(expected: Any, current: T?): T {
     if (current == null || current !== expected) throw ConnectionChanged()
     return current
 }
+
+/** 2.2.7: the labelled reads the no-first-byte fallback watches (the reads Bill's stall was on). */
+internal val FIRST_BYTE_WATCHED = setOf("list-read", "log-read")

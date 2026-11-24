@@ -59,7 +59,7 @@ class OpenCodeError220Test {
     }
 
     @Test fun `a blocked OpenCode pane with its box and no dialog is shown idle, keeping herdr's status for sends`() {
-        val home = res("/screens/opencode/live-2026-11-20-college/empty.ansi")
+        val home = res("/screens/opencode/live-2026-11-20-second/empty.ansi")
         for (s in screens + home) {
             assertTrue(openCodeStaleBlocked(s))
             val marked = markScreenNeedsYou(listOf(pane(Status.NEEDS_YOU)), mapOf("w1:p1" to s)).single()
