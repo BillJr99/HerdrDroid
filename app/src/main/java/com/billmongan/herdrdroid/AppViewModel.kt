@@ -3377,7 +3377,9 @@ class AppViewModel internal constructor(
                            val awaitingLink: Boolean = false,
                            internal val hermesTarget: Pane? = null,
                            /** The server the pane is on (2.1.1): pane ids repeat across servers. */
-                           val serverId: String? = null) {
+                           val serverId: String? = null,
+                           /** 2.2.8: a message queued behind a question, for its pane's occupant only (see [BoundSend]). */
+                           internal val bound: BoundSend? = null) {
         val removable: Boolean get() = waiting || awaitingLink || undelivered
 
         /** This send is for [paneId] on [server], never a pane with the same id on another server. */
@@ -3400,11 +3402,12 @@ class AppViewModel internal constructor(
             flash("Not sent: that pane isn't open on the computer just now.")
             return
         }
+        if (p.bound != null && !p.bound.occupant.sameCardOccupant(target)) { dismissPending(id); occupantMovedDuringSend(p.bound); return }
         if (p.hermesTarget?.sameCardOccupant(target) == false || hasPendingQuestion(target) || waitingForHermesComposer(target.id)) return
         val then = heldThen[id] ?: {}
         dismissPending(id)
         // A deliberate force send bypasses the input-line guard.
-        sendMessage(target, p.text, force = true, delivered = then)
+        sendMessage(target, p.text, force = true, delivered = then, bound = p.bound)
     }
 
     /** For each held send, what to do once it is delivered (see [forceSendPending]). */
@@ -3903,20 +3906,44 @@ class AppViewModel internal constructor(
      * is handed back with whether it may have reached the computer ([com.billmongan.herdrdroid.ssh.SendTrace]);
      * either way its pending row is removed, so the queued message is the one place it shows.
      */
-    fun sendMessage(pane: Pane, text: String, force: Boolean = false, failed: ((String, Boolean) -> Unit)? = null, delivered: () -> Unit = {}) {
+    fun sendMessage(pane: Pane, text: String, force: Boolean = false, failed: ((String, Boolean) -> Unit)? = null,
+                    bound: BoundSend? = null, delivered: () -> Unit = {}) {
+        // 2.2.8: a bound message whose pane has another occupant already is never sent (see [BoundSend]).
+        if (bound != null && !bound.occupant.sameCardOccupant(pane)) { occupantMovedDuringSend(bound); return }
         // 2.2.7: never truncated. Text too long for one message goes as a checked .txt file.
         when (com.billmongan.herdrdroid.herdr.LongText.plan(text)) {
-            is com.billmongan.herdrdroid.herdr.LongText.Plan.Single -> sendOne(pane, text, force, failed, delivered)
-            is com.billmongan.herdrdroid.herdr.LongText.Plan.Attachment -> sendAsFile(pane, text, force, failed, delivered)
+            is com.billmongan.herdrdroid.herdr.LongText.Plan.Single -> sendOne(pane, text, force, failed, bound, delivered)
+            is com.billmongan.herdrdroid.herdr.LongText.Plan.Attachment -> sendAsFile(pane, text, force, failed, delivered, bound)
         }
     }
+
+    /**
+     * 2.2.8 (Codex's re-review): a message queued behind a question carries its pane's occupant all the
+     * way to the write, through both the short and the long (uploaded file) path and a held retry; it is
+     * checked again right before the keys or text go out. [text] is what you typed, for the message box;
+     * [queuedId] its queue row, if it still has one.
+     */
+    data class BoundSend(internal val occupant: Pane, val text: String, val queuedId: Long? = null)
+
+    /** A bound message found another occupant in its pane: back into the message box, with the note; never sent. */
+    private fun occupantMovedDuringSend(bound: BoundSend) {
+        val paneId = bound.occupant.id
+        bound.queuedId?.let { id -> queued = queued.filterNot { it.id == id } }
+        val draft = composerDraft(paneId)
+        if (!draft.contains(bound.text)) setComposerDraft(paneId, if (draft.isBlank()) bound.text else draft.trimEnd() + "\n" + bound.text)
+        com.billmongan.herdrdroid.diag.DiagLog.log("send", "to $paneId: the pane's occupant changed before the write; nothing sent, back to the draft")
+        flash(QUEUED_OCCUPANT_CHANGED)
+    }
+
+    private fun boundMoved(bound: BoundSend?, paneId: String): Boolean =
+        bound != null && pane(paneId)?.let { bound.occupant.sameCardOccupant(it) } != true
 
     /**
      * 2.2.7: text too long for one message goes as a .txt file in the computer's inbox, checked by
      * size and SHA-256, then one short message points at it. If the file can't be put there whole,
      * the text waits in the queue, never cut.
      */
-    private fun sendAsFile(pane: Pane, text: String, force: Boolean, failed: ((String, Boolean) -> Unit)?, delivered: () -> Unit) {
+    private fun sendAsFile(pane: Pane, text: String, force: Boolean, failed: ((String, Boolean) -> Unit)?, delivered: () -> Unit, bound: BoundSend? = null) {
         val bytes = text.toByteArray(Charsets.UTF_8)
         com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${pane.id}: long text, ${bytes.size} bytes as a file")
         act(pane.id, "Couldn't attach the pasted text", input = true) { h ->
@@ -3929,18 +3956,21 @@ class AppViewModel internal constructor(
                 if (failed != null) failed(why, false) else {
                     // Pre-review M4: it waits for a tap (Send now), never retried by itself every few seconds.
                     enqueue(pane.id, text)
-                    queued.lastOrNull()?.let { q -> updateQueued(q.id) { it.copy(needsTap = true,
+                    queued.lastOrNull()?.let { q -> updateQueued(q.id) { if (bound != null) it.copy(occupant = bound.occupant) else it }; updateQueued(q.id) { it.copy(needsTap = true,
                         note = "Not sent yet: the pasted text couldn't be put on the computer whole ($why). Long-press for Send now to try again.") } }
                 }
                 return@act
             }
             com.billmongan.herdrdroid.herdr.SentFiles.remember(receipt.path, text)
             val line = com.billmongan.herdrdroid.herdr.LongText.fileLine(receipt)
-            sendOne(pane(pane.id) ?: pane, line, force, failed, delivered)
+            // 2.2.8: the upload can take a while; the file's line goes only to the occupant it was for.
+            if (boundMoved(bound, pane.id)) { occupantMovedDuringSend(checkNotNull(bound)); return@act }
+            sendOne(pane(pane.id) ?: pane, line, force, failed, bound, delivered)
         }
     }
 
-    private fun sendOne(pane: Pane, text: String, force: Boolean = false, failed: ((String, Boolean) -> Unit)? = null, delivered: () -> Unit = {}) {
+    private fun sendOne(pane: Pane, text: String, force: Boolean = false, failed: ((String, Boolean) -> Unit)? = null,
+                        bound: BoundSend? = null, delivered: () -> Unit = {}) {
         val serverId = current?.id
         markSent(serverId, pane.id, text)
         lastSentAt = System.currentTimeMillis()
@@ -3950,6 +3980,7 @@ class AppViewModel internal constructor(
             if (transcriptPane == pane.id) sameTextCount(text) else 0,
             hermesTarget = pane.takeIf { it.agent == "hermes" },
             serverId = serverId,
+            bound = bound,
         )
         com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${pane.id} (${pane.agent ?: "shell"}, ${pane.status}): ${text.length} chars; link ${link}, ${if (herdr == null) "no client" else "client ready"}")
         act(pane.id, "Couldn't send", pendingId) { h ->
@@ -4029,6 +4060,14 @@ class AppViewModel internal constructor(
                     saveOpenedUsage(openedUsage.filterNot { it.server == o.server && it.pane == o.pane } + o)
                 }
             } else null
+            // 2.2.8: the last check before the write (nothing suspends from here to it): a bound message goes
+            // only to its own occupant.
+            if (boundMoved(bound, pane.id) || bound != null && openCodeRead?.pane?.let { bound.occupant.sameCardOccupant(it) } == false) {
+                pendingSends = pendingSends.filterNot { it.id == pendingId }
+                if (usageRecord != null) saveOpenedUsage(openedUsage.filterNot { it === usageRecord })
+                occupantMovedDuringSend(checkNotNull(bound))
+                return@act
+            }
             try {
                 val checked = openCodeRead
                 h.sendMessage(checked?.pane ?: pane, text, expectedConnection = checked?.connection)
@@ -4137,6 +4176,7 @@ class AppViewModel internal constructor(
                     pendingSends.none { it.id == p.id && it.waiting } -> "no longer waiting (cancelled, or the agent's log has it)"
                     current?.id != server -> "the computer changed"
                     p.hermesTarget?.let { original -> pane(p.paneId)?.let { !original.sameCardOccupant(it) } } == true -> "the pane changed"
+                    p.bound != null && boundMoved(p.bound, p.paneId) && pane(p.paneId) != null -> "the pane changed"
                     closing() -> "its tab is being closed"
                     missing >= 3 -> "the pane closed"
                     else -> null
@@ -4169,6 +4209,8 @@ class AppViewModel internal constructor(
                             // Its tab may have been closed during the read.
                             closing() -> "its tab is being closed"
                             after == null -> "the pane isn't listed just now"
+                            // 2.2.8: a bound message waits here until the cancel check sees the change.
+                            p.bound != null && !p.bound.occupant.sameCardOccupant(after) -> "the pane changed"
                             // 2.1.4: a usage dialog the app left open is closed first; one open
                             // otherwise is never typed into.
                             usageLeftOpen(p.paneId) -> { closeAppUsage(p.paneId, "a held send was waiting"); USAGE_HOLD }
@@ -4186,6 +4228,9 @@ class AppViewModel internal constructor(
                 val h = herdr ?: throw IllegalStateException("not connected")
                 val pn = pane(p.paneId) ?: throw IllegalStateException("the pane closed")
                 val checked = openCodeRead
+                // 2.2.8: checked by the retry's own check; this is the write's last look, with nothing in between.
+                if (p.bound != null && (!p.bound.occupant.sameCardOccupant(pn) || checked?.pane?.let { p.bound.occupant.sameCardOccupant(it) } == false))
+                    throw BoundOccupantChanged()
                 h.sendMessage(checked?.pane ?: pn, p.text, expectedConnection = checked?.connection)
                 log("delivered to herdr (${h.lastSendRoute})")
             },
@@ -4213,7 +4258,11 @@ class AppViewModel internal constructor(
                 pendingSends = pendingSends.map { if (it.id == p.id) it.copy(waiting = false, undelivered = true, held = outcome.why) else it }
                 noteSendProblem(server, p.paneId, "Not sent to $agentName: ${outcome.why}, for 2 minutes. Tap Resend to send it anyway.")
             }
-            is com.billmongan.herdrdroid.herdr.HeldOutcome.Failed -> {
+            is com.billmongan.herdrdroid.herdr.HeldOutcome.Failed -> if (p.bound != null && outcome.error is BoundOccupantChanged) {
+                pendingSends = pendingSends.filterNot { it.id == p.id }
+                heldThen.remove(p.id)
+                occupantMovedDuringSend(p.bound)
+            } else {
                 val why = "sending failed (${com.billmongan.herdrdroid.diag.DiagLog.describe(outcome.error)})"
                 pendingSends = pendingSends.map { if (it.id == p.id) it.copy(waiting = false, undelivered = true, held = why) else it }
                 noteSendProblem(server, p.paneId, "Not sent to $agentName: $why. Tap Resend to try again.")
@@ -4225,6 +4274,12 @@ class AppViewModel internal constructor(
                 // own server, with nothing reported on the other, and [resumeHeldSends] takes it up again
                 // when that server is open. It was never typed, so it is never shown as sent.
                 outcome.why == "the computer changed" -> log("kept held for when its server is open again")
+                // 2.2.8: a bound message whose pane has another occupant goes back to the message box.
+                p.bound != null && outcome.why == "the pane changed" -> {
+                    pendingSends = pendingSends.filterNot { it.id == p.id }
+                    heldThen.remove(p.id)
+                    occupantMovedDuringSend(p.bound)
+                }
                 // The pane closed: reported in its own chat, and kept as not sent (from Grok's review).
                 else -> {
                     pendingSends = pendingSends.map { if (it.id == p.id) it.copy(waiting = false, undelivered = true, held = outcome.why) else it }
@@ -6683,6 +6738,9 @@ class AppViewModel internal constructor(
                              * question; it goes only to that occupant (see [occupantChanged]).
                              */
                             internal val occupant: Pane? = null) {
+        /** 2.2.8: what a bound row's send carries to the write (see [BoundSend]); null for an unbound row. */
+        internal fun bound(): BoundSend? = occupant?.let { BoundSend(it, text, id) }
+
         /** Being sent now; false once [SENDING_STALE_MS] pass, when the attempt was dropped without a word. */
         fun inFlight(now: Long = System.currentTimeMillis()): Boolean = sending && now - sendingSince < SENDING_STALE_MS
 
@@ -6827,7 +6885,7 @@ class AppViewModel internal constructor(
                         p.status == Status.NEEDS_YOU && (currentHermesUsage(p)?.composerReady == true || p.openCodeStaleBlock)
                     if (ready && !hasPendingQuestion(p) && !waitingForHermesComposer(p.id)) {
                         queued = queued - q
-                        sendMessage(p, q.text)
+                        sendMessage(p, q.text, bound = q.bound())
                     }
                 }
             }
@@ -6855,7 +6913,7 @@ class AppViewModel internal constructor(
             return
         }
         queued = queued.filterNot { it.id == q.id }
-        sendMessage(target, q.text)
+        sendMessage(target, q.text, bound = q.bound())
     }
 
     fun cancelQueued(q: QueuedPrompt) {
@@ -6945,7 +7003,7 @@ class AppViewModel internal constructor(
         if (token != null && now.sendToken != token) return
         if (occupantChanged(now, target)) return
         updateQueued(item.id) { it.copy(sending = true, sendingSince = System.currentTimeMillis(), needsTap = false, note = null) }
-        sendMessage(target, item.text,
+        sendMessage(target, item.text, bound = item.bound(),
             delivered = {
                 queued = queued.filterNot { it.id == item.id }
                 com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${target.id}: send now delivered; removed from the queue")
@@ -7909,3 +7967,6 @@ internal fun shellCheckToast(serverLabel: String) = "python3 isn't on $serverLab
 
 /** 2.2.8: the note when a message queued behind a question finds another occupant in the pane. */
 internal const val QUEUED_OCCUPANT_CHANGED = "Not sent: another agent or session is in that pane now. Your message is back in the message box."
+
+/** 2.2.8: a held bound message's last look before the write found another occupant; nothing was typed. */
+internal class BoundOccupantChanged : Exception("the pane changed")

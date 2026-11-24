@@ -65,6 +65,9 @@ class LongTextSend227Test {
         var corruptUploads = false
         var noSum = false
         var diskFull = false
+        var terminal = "t1"
+        /** 2.2.8: runs while an upload is on its way, before its results come back. */
+        var duringUpload: (() -> Unit)? = null
 
         init {
             field("herdr").set(vm, Herdr(ssh, server.herdrPath, Backend.TUI, null, this))
@@ -108,6 +111,7 @@ class LongTextSend227Test {
         override suspend fun input(command: String, input: ByteArray, expectedConnection: Any): ExecResult {
             assertTrue(command, command.contains(".herdrdroid/inbox") && command.contains("sha256sum"))
             uploads += input
+            duringUpload?.invoke()
             val sha = if (corruptUploads) "0".repeat(64) else sha256Hex(input)
             // A shell banner first, then the marker and the results (pre-review M4).
             val name = command.substringAfter(".herdrdroid/inbox/").substringBefore("'").removeSuffix(".part")
@@ -116,11 +120,48 @@ class LongTextSend227Test {
             return ok("Welcome to fixture\n${com.billmongan.herdrdroid.herdr.UPLOAD_MARKER}\n/home/fixture/.herdrdroid/inbox/$name\n${input.size}\n${if (noSum) "nosum" else sha}\n")
         }
 
-        private val pane = """{"pane_id":"p1","workspace_id":"w1","tab_id":"tab","agent":"claude","agent_status":"idle","cwd":"/fixture","terminal_id":"t1","scroll":{"offset_from_bottom":0}}"""
+        private val pane get() = """{"pane_id":"p1","workspace_id":"w1","tab_id":"tab","agent":"claude","agent_status":"idle","cwd":"/fixture","terminal_id":"$terminal","scroll":{"offset_from_bottom":0}}"""
         private fun ok(out: String) = ExecResult(0, out, "")
         fun field(name: String) = AppViewModel::class.java.getDeclaredField(name).apply { isAccessible = true }
         @Suppress("UNCHECKED_CAST")
         fun state(name: String, value: Any?) { (field("$name\$delegate").get(vm) as MutableState<Any?>).value = value }
+    }
+
+    /**
+     * 2.2.8 (Codex's re-review): a long message queued behind a question carries its occupant through the
+     * upload. Another session takes the pane while the file is on its way: nothing is typed to it, and
+     * the text is back in the message box with the note.
+     */
+    @Test fun aBoundLongMessageNeverReachesAReplacementDuringItsUpload() = fixture {
+        val text = paste(55_710)
+        vm.enqueue("p1", text, behindQuestion = true)
+        duringUpload = {
+            terminal = "replacement"
+            state("panes", listOf(Pane("p1", "tab", "w1", "claude", Status.IDLE, "", "/fixture", terminalId = "replacement")))
+        }
+        vm.sendQueuedImmediately(vm.queued.single())
+        var noted = false
+        drainUntil {
+            if (vm.notice == QUEUED_OCCUPANT_CHANGED) noted = true
+            uploads.isNotEmpty() && vm.composerDraft("p1") == text
+        }
+        repeat(20) { shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(200)); Thread.sleep(2)
+            if (vm.notice == QUEUED_OCCUPANT_CHANGED) noted = true }
+        assertTrue("no message to the replacement", prompts.isEmpty())
+        assertTrue(vm.queued.isEmpty())
+        assertTrue(vm.pendingSends.isEmpty())
+        assertEquals(text, vm.composerDraft("p1"))
+        assertTrue("the note says so", noted)
+    }
+
+    /** The same message with the occupant unchanged goes as before: one file, one message. */
+    @Test fun aBoundLongMessageGoesToItsOwnOccupant() = fixture {
+        val text = paste(55_710)
+        vm.enqueue("p1", text, behindQuestion = true)
+        vm.sendQueuedImmediately(vm.queued.single())
+        drainUntil { prompts.size == 1 }
+        assertEquals(1, uploads.size)
+        assertTrue(prompts.single().startsWith("Pasted text ("))
     }
 
     @Test fun aPasteUnder20KbArrivesWholeAsOneMessage() = fixture {

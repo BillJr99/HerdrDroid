@@ -57,6 +57,8 @@ class SendNowVm227Test {
         var dropAtCtrlB = false
         var statusNow = Status.WORKING
         var terminal = "t1"
+        /** 2.2.8: runs as a screen read is answered (once), for a change while the send reads the pane. */
+        var duringRead: (() -> Unit)? = null
 
         init {
             field("herdr").set(vm, Herdr(ssh, server.herdrPath, Backend.TUI, null, this))
@@ -108,7 +110,7 @@ class SendNowVm227Test {
 
         override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult = when {
             command.endsWith("'pane' 'get' 'p1'") -> ok("""{"result":{"pane":$pane}}""")
-            command.contains("'pane' 'read' 'p1'") -> ok(frame)
+            command.contains("'pane' 'read' 'p1'") -> { duringRead?.also { duringRead = null }?.invoke(); ok(frame) }
             command.contains("'agent' 'prompt' 'p1' ") -> {
                 if (failSends) ExecResult(1, "", "fixture refused") else {
                     writes += "prompt:" + command.substringAfter("'p1' ").removeSurrounding("'")
@@ -188,6 +190,28 @@ class SendNowVm227Test {
         // A message queued with no question open is not bound (as before 2.2.8).
         vm.enqueue("p1", "unbound")
         assertNull(vm.queued.single { it.text == "unbound" }.occupant)
+    }
+
+    /**
+     * 2.2.8 (Codex's re-review): the occupant is checked again at the write itself. Another session takes
+     * the pane while the send reads its screen: nothing is typed, and the text is back in the box.
+     */
+    @Test fun aBoundMessageIsCheckedAgainRightBeforeTheWrite() = fixture("claude", working.replace("esc to interrupt", "")) {
+        status(Status.IDLE)
+        shown()
+        vm.enqueue("p1", "only for the first session", behindQuestion = true)
+        duringRead = { terminal = "replacement"; status(Status.IDLE) }
+        vm.sendQueuedImmediately(vm.queued.single())
+        var noted = false
+        repeat(40) {
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100)); Thread.sleep(2)
+            if (vm.notice == QUEUED_OCCUPANT_CHANGED) noted = true
+        }
+        assertTrue("nothing typed to the replacement", writes.isEmpty())
+        assertTrue(vm.queued.isEmpty())
+        assertTrue(vm.pendingSends.isEmpty())
+        assertEquals("only for the first session", vm.composerDraft("p1"))
+        assertTrue(noted)
     }
 
     @Test fun theFixtureScreensAreCleanWorkingClaudeScreens() {
