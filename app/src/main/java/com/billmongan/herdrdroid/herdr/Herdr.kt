@@ -3833,6 +3833,8 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
         // 2.2.7: the modern layout's rules, session title and footer under a live prompt are chrome,
         // and the "⚠ ❯" input row says Hermes waits whatever herdr reports (HermesComposer.kt).
         hermesWaitingScreen(text)?.let { return detectPlainPrompt(it, true, agent, version) }
+        // 2.2.8: the classic CLI's clarify panel (HermesClarify.kt), proven by its hint and input rows.
+        hermesClassicClarify(text)?.let { return it }
         hermesClarifyFrame(text)?.let { frame ->
             return frame.card ?: detectPlainPrompt(frame.remainder, false, agent, version)
         }
@@ -4569,7 +4571,12 @@ internal fun cardOccupantDigest(p: JSONObject): String {
  * The same "(12s)" anywhere else, a command's text included, is part of the question.
  * [CARD_SEND_CHECK] and card-check.sh apply exactly this rule.
  */
-private val CARD_TIMER_LINE = Regex("""^(type [0-9/]+, or )?↑/↓ to select, enter to confirm[ \t\r\u000B\u000C]*\([0-9]+s\)$""")
+private val CARD_TIMER_LINE = Regex("""^(?:(type [0-9/]+, or )?↑/↓ to select, enter to confirm|↑/↓ to select, enter to lock, tab next question|type your answer and press enter)[ \t\r\u000B\u000C]*\([0-9]+s\)$""")
+/** Hermes's hint row under a live prompt, with or without its countdown (a clarify with no deadline has none). */
+private val CARD_HERMES_HINT = Regex("""^(?:(type [0-9/]+, or )?↑/↓ to select, enter to confirm|↑/↓ to select, enter to lock, tab next question|type your answer and press enter)(?:[ \t\r\u000B\u000C]*\([0-9]+s\))?$""")
+private val CARD_HERMES_RULE = Regex("""^──.*─$""")
+private val CARD_HERMES_INPUT = Regex("""^(?:⚠|\?|✎|🔐|🔑|⚙)\uFE0F?[ \t]*[❯›](?:[ \t].*)?$""")
+private val CARD_HERMES_BOTTOM = Regex("""^─+$""")
 private val CARD_TIMER = Regex("""^(.*)\([0-9]+s\)""", RegexOption.DOT_MATCHES_ALL)
 private val CARD_CSI = Regex("\u001B\\[[0-9;?]*[ -/]*[@-~]")
 
@@ -4642,12 +4649,34 @@ internal fun ompApprovalRegion(shown: List<String>): OmpRegion? {
     return OmpRegion(top, bottom, elapsed)
 }
 
-/** The screen's rows as the digest takes them: [cardTimerLine] on each, and Oh My Pi's two running rows. */
+/**
+ * 2.2.8 (Bill: "Hermes will ask a question occasionally that does not render in chat"): the two rows of
+ * Hermes's modern composer that it redraws every second while a prompt waits, neither part of the
+ * question: the composer's top rule (a spinner frame and the turn's running time on its left) and the
+ * footer under it (the model, context gauge and timers). Only when they are proven to be the composer
+ * under a live prompt: the last row on the screen with text is the footer, right under the composer's
+ * bottom rule, right under a waiting input row ("⚠ ❯", "? ❯", "✎ ❯ …"), right under the top rule, right
+ * under Hermes's hint row ([CARD_HERMES_HINT]). Each stands for itself as one fixed row; the hint, the
+ * input row and every row of the prompt above count as they are. Returns the two indices, or null.
+ * [CARD_SEND_CHECK] and card-check.sh apply exactly this rule.
+ */
+private fun hermesComposerRows(shown: List<String>): Pair<Int, Int>? {
+    val footer = shown.indexOfLast { it.isNotEmpty() }
+    if (footer < 4) return null
+    val ok = CARD_HERMES_BOTTOM.matches(shown[footer - 1]) && CARD_HERMES_INPUT.matches(shown[footer - 2]) &&
+        CARD_HERMES_RULE.matches(shown[footer - 3]) && CARD_HERMES_HINT.matches(shown[footer - 4])
+    return if (ok) (footer - 3) to footer else null
+}
+
+/** The screen's rows as the digest takes them: [cardTimerLine] on each, Oh My Pi's two running rows and Hermes's composer rows. */
 internal fun cardScreenRows(lines: List<String>): List<String> {
     val shown = lines.map { cardShown(it) }
     val r = ompApprovalRegion(shown)
+    val hermes = hermesComposerRows(shown)
     return lines.mapIndexed { i, line ->
         when {
+            i == hermes?.first -> "<hermes-rule>"
+            i == hermes?.second -> "<hermes-footer>"
             r == null -> cardTimerLine(line)
             i in r.top..r.bottom -> line
             i == r.elapsed -> CARD_ELAPSED.replaceFirst(line, "elapsed N")
@@ -4701,7 +4730,17 @@ internal val CARD_SEND_CHECK = """
         f += [s.get(k) for k in ('kind', 'agent', 'value')]
         return hashlib.sha256(b''.join(v(x) for x in f)).hexdigest()
     # Only the agent's own timer line (cardTimerLine in Herdr.kt): its last (Ns), nothing else.
-    TIMER_LINE = re.compile(b'^(type [0-9/]+, or )?' + '\u2191/\u2193'.encode('utf-8') + rb' to select, enter to confirm[ \t\r\x0b\x0c]*\([0-9]+s\)$')
+    ARROWS = '\u2191/\u2193'.encode('utf-8')
+    HINTS = (b'(?:(type [0-9/]+, or )?' + ARROWS + b' to select, enter to confirm|' + ARROWS +
+             b' to select, enter to lock, tab next question|type your answer and press enter)')
+    TIMER_LINE = re.compile(b'^' + HINTS + rb'[ \t\r\x0b\x0c]*\([0-9]+s\)$')
+    # Hermes's composer under a live prompt (hermesComposerRows in Herdr.kt): its top rule and footer only.
+    HERMES_HINT = re.compile(b'^' + HINTS + rb'(?:[ \t\r\x0b\x0c]*\([0-9]+s\))?$')
+    RULE = '\u2500'.encode('utf-8')
+    HERMES_RULE = re.compile(b'^' + RULE + RULE + b'.*' + RULE + b'$')
+    HERMES_INPUT = re.compile(b'^(?:' + b'|'.join(re.escape(c.encode('utf-8')) for c in ('\u26a0', '?', '\u270e', '\U0001f510', '\U0001f511', '\u2699')) +
+                              b')(?:' + '\ufe0f'.encode('utf-8') + b')?[ \t]*(?:' + '\u276f'.encode('utf-8') + b'|' + '\u203a'.encode('utf-8') + b')(?:[ \t].*)?$')
+    HERMES_BOTTOM = re.compile(b'^(?:' + RULE + b')+$')
     OMP_STATUS = re.compile(rb'^[^ ]+ ([^ ]+ )?> .* > ' + '\U0001f4c1'.encode('utf-8') + rb' [^ ]+ ' + '\u25b6\u2500'.encode('utf-8') + rb'.*$')
     ELAPSED_ROW = re.compile('\u2570'.encode('utf-8') + b'(?:' + '\u2500'.encode('utf-8') + rb')+ elapsed [0-9hms.]+ (?:' +
                              '\u2500'.encode('utf-8') + b')+' + '\u256f'.encode('utf-8') + b'$')
@@ -4748,9 +4787,16 @@ internal val CARD_SEND_CHECK = """
     def rows(lines):
         t = [shown(line) for line in lines]
         r = region(t)
+        f = max((i for i, x in enumerate(t) if x), default=-1)
+        hermes = (f - 3, f) if f >= 4 and HERMES_BOTTOM.match(t[f - 1]) and HERMES_INPUT.match(t[f - 2]) and \
+            HERMES_RULE.match(t[f - 3]) and HERMES_HINT.match(t[f - 4]) else (-1, -1)
         out = []
         for i, line in enumerate(lines):
-            if r is None:
+            if i == hermes[0]:
+                out.append(b'<hermes-rule>')
+            elif i == hermes[1]:
+                out.append(b'<hermes-footer>')
+            elif r is None:
                 out.append(timer(line, t[i]))
             elif r[0] <= i <= r[1]:
                 out.append(line)

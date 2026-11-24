@@ -74,3 +74,98 @@ internal fun hermesClarifyFrame(plain: String): HermesClarifyFrame? {
     return HermesClarifyFrame(card = Prompt(question, choices, selected = focus.groupValues[2],
         numberKeys = true, hermesClarify = true))
 }
+
+/*
+ * 2.2.8 (Bill, 2026-11-24: "Hermes will ask a question occasionally that does not render in chat for
+ * you, so please fix that"): the clarify panel of Hermes's classic CLI, the one its pane runs. Read
+ * from hermes_cli/cli_tui_mixin.py (_get_clarify_display_fragments, _tui_hint_text,
+ * _tui_make_clarify_number_handler), cli_modal_mixin.py (_clarify_callback, _clarify_batch_lock) and
+ * locales/en.yaml. The parser above reads the Ink TUI's "ask N questions" frame only; the classic
+ * panel has no such head, so its question fell through to the generic menu parser, which never
+ * proved the frame (its hint row and "? ❯" input row under the box read as newer chat).
+ *
+ *     ╭─ Hermes needs your input ────────╮
+ *     │ 2 questions                      │    header: how many questions
+ *     │ ✓ Which branch?                  │    answered (its answer on the row under it)
+ *     │     main                         │
+ *     │ ▸ Run the tests first?           │    the active question (· marks one still to come)
+ *     │   ❯ 1. Yes                       │    its choices: a digit locks one at once
+ *     │     2. No                        │
+ *     │     3. Other (type your answer)  │    a digit here opens typing in the composer
+ *     ╰──────────────────────────────────╯
+ *       ↑/↓ to select, Enter to lock, Tab next question  (88s)    hint row, countdown optional
+ *     ? ❯                                                          input row ("✎ ❯" while typing)
+ *
+ * Only single-select choices are answered from the card, by their digit, as the Ink card is. A
+ * question with no choices, the "Other" text box, multi-select checkboxes (digits only toggle them)
+ * or a panel the parser can't prove whole (clipped, wrapped choices out of order) make a card that
+ * shows the question and leaves the answer to Terminal: in those states a digit would be typed into
+ * the composer or toggle a box rather than answer.
+ */
+private val CLASSIC_CHOICE_HINT = Regex("""^↑/↓ to select, Enter to lock, Tab next question(?:\s+\([0-9]+s\))?$""")
+private val CLASSIC_TYPING_HINT = Regex("""^type your answer and press Enter(?:\s+\([0-9]+s\))?$""")
+private val CLASSIC_INPUT = Regex("""^[?✎]\s*[❯›](?:\s.*)?$""")
+private val CLASSIC_TOP = Regex("""^╭─ (.+ needs your input) ─+╮$""")
+private val CLASSIC_HEADER = Regex("""^([1-9][0-9]*) questions?$""")
+private val CLASSIC_MARKER = Regex("""^([✓▸·]) (\S.*)$""")
+private val CLASSIC_CHOICE = Regex("""^  ([❯ ]) (\[[ x]\] )?([0-9])\. (\S.*)$""")
+private const val CLASSIC_OTHER = "Other (type your answer)"
+private const val CLASSIC_OTHER_TYPING = "Other (type below)"
+private const val CLASSIC_GUIDANCE = "Type your answer in the prompt below, then press Enter."
+
+/**
+ * Hermes's classic clarify panel at the bottom of [plain] (the screen already cut at the composer by
+ * [hermesWaitingScreen], so only its input row is under the hint), or null when it isn't there.
+ */
+internal fun hermesClassicClarify(plain: String): Prompt? {
+    val lines = plain.lines().takeLast(80).map { it.trimEnd() }
+    val input = lines.indexOfLast { it.isNotBlank() }
+    if (input < 2 || !CLASSIC_INPUT.matches(lines[input].trim())) return null
+    val hint = (input - 1 downTo 0).firstOrNull { lines[it].isNotBlank() } ?: return null
+    val hintRow = lines[hint].trim()
+    val typing = CLASSIC_TYPING_HINT.matches(hintRow)
+    if (!typing && !CLASSIC_CHOICE_HINT.matches(hintRow)) return null
+    val bottom = (hint - 1 downTo 0).firstOrNull { lines[it].isNotBlank() } ?: return null
+    if (!lines[bottom].trim().let { it.startsWith("╰") && it.endsWith("╯") && it.drop(1).dropLast(1).all { c -> c == '─' } }) return null
+    val top = (bottom - 1 downTo 0).firstOrNull { lines[it].trimStart().startsWith("╭") } ?: return null
+    if (!CLASSIC_TOP.matches(lines[top].trim())) return null
+    val framed = lines.subList(top + 1, bottom).map { it.trim() }
+    if (framed.any { !it.startsWith("│") || !it.endsWith("│") }) return null
+    // "│ " + text + padding + " │": the text keeps its own indent.
+    val body = framed.map { it.removePrefix("│").removeSuffix("│").removePrefix(" ").trimEnd() }
+    val count = body.firstOrNull()?.let(CLASSIC_HEADER::matchEntire)?.groupValues?.get(1)?.toIntOrNull() ?: return null
+
+    data class Q(val marker: String, val text: MutableList<String>, val rows: MutableList<String> = mutableListOf())
+    val questions = mutableListOf<Q>()
+    for (row in body.drop(1)) {
+        val m = CLASSIC_MARKER.matchEntire(row)
+        when {
+            m != null -> questions += Q(m.groupValues[1], mutableListOf(m.groupValues[2]))
+            questions.isEmpty() -> return terminalClarify(null)
+            // A wrapped question row ("  rest of it"), before any choice row.
+            questions.last().rows.isEmpty() && row.startsWith("  ") && !row.startsWith("   ") && !CLASSIC_CHOICE.matches(row) &&
+                row.trim() != CLASSIC_GUIDANCE ->
+                questions.last().text += row.trim()
+            else -> questions.last().rows += row
+        }
+    }
+    val active = questions.singleOrNull { it.marker == "▸" }
+    val question = active?.text?.joinToString(" ")
+    // A clipped panel (the body scrolled to keep the choices in view) can't prove which question is live.
+    if (active == null || questions.size != count || question.isNullOrBlank()) return terminalClarify(question)
+    if (typing || active.rows.isEmpty()) return terminalClarify(question)
+
+    // The choices: a strict run 1, 2, 3 … ending in Other, each on one row (a wrapped one refuses).
+    val options = active.rows.map { CLASSIC_CHOICE.matchEntire(it) ?: return terminalClarify(question) }
+    if (options.size !in 2..10 || options.withIndex().any { (i, m) -> m.groupValues[3] != "${(i + 1) % 10}" }) return terminalClarify(question)
+    if (options.any { it.groupValues[2].isNotEmpty() }) return terminalClarify(question) // multi-select checkboxes
+    if (options.last().groupValues[4] != CLASSIC_OTHER || options.dropLast(1).any { it.groupValues[4] in setOf(CLASSIC_OTHER, CLASSIC_OTHER_TYPING) }) {
+        return terminalClarify(question)
+    }
+    val focus = options.singleOrNull { it.groupValues[1] == "❯" } ?: return terminalClarify(question)
+    val choices = options.dropLast(1).map { Choice(it.groupValues[4], it.groupValues[3], pressEnter = false) }
+    return Prompt(question, choices, selected = focus.groupValues[3], numberKeys = true, hermesClarify = true)
+}
+
+private fun terminalClarify(question: String?) = Prompt(question ?: "Hermes needs your input", emptyList(),
+    region = listOf("Open Terminal to answer this Hermes question."), terminalReview = true, hermesClarify = true)

@@ -1,0 +1,20 @@
+────────────────────────────────────────
+❯ Please tidy the demo workspace and tell me what changed.
+────────────────────────────────────────
+
+📚 Skill demo-workspace  0.3s
+🔎 Grep TODO|FIXME  0.2s
+💻 $ ls -la /home/user/demo  0.1s
+
+╭─ Hermes needs your input ──────────────────────╮
+│ 1 question                                     │
+│ ▸ Which branch should the demo build use?      │
+│     1. main                                    │
+│     2. release/demo                            │
+│   ❯ 3. Other (type below)                      │
+╰────────────────────────────────────────────────╯
+  type your answer and press Enter  (80s)
+── ⠹ Working… · 1m 2s ───────────────────────────────────────────────────────────────────────────────────── Tidy the demo workspace ─
+✎ ❯ type your answer here and press Enter
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☤ demo-model · ~42K/500K · [█░░░░░░░░░] ~8% · ◎ 12.0% · ◷ 3.1s · ↑ 20 t/s · 1.0d · ⏲ 1m · ~/demo
