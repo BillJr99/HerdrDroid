@@ -54,4 +54,11 @@ class OpenCodeNames227Test {
         assertEquals("OpenCode (work)", pane("opencode-work").agentName)
         assertEquals("/model", com.billmongan.herdrdroid.ui.ModelPresets.pickerCommand("claude"))
     }
+
+    @Test fun stopKeysPerAgent() {
+        assertEquals(listOf("esc", "esc"), stopKeys("opencode-lab2"))
+        assertEquals(listOf("ctrl+c"), stopKeys("Grok"))
+        assertEquals(listOf("esc"), stopKeys("claude"))
+        assertEquals(listOf("esc"), stopKeys(null))
+    }
 }

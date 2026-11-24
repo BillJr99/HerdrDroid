@@ -3423,13 +3423,49 @@ class AppViewModel internal constructor(
             .map { it.text to it.at }
     }
 
-    /** The Stop button: the key each agent's own program uses to interrupt a turn. */
+    /**
+     * The Stop button: the keys each agent's own program uses to interrupt a turn
+     * ([com.billmongan.herdrdroid.herdr.stopKeys]), sent once, at once.
+     *
+     * 2.2.7 (Bill: "the stop button in chat view doesn't work"): Stop no longer goes the way of a
+     * message or a key from the key row (the pane's send queue). It waited there behind any other
+     * input to the pane, and while the link was down it was kept and sent after the reconnect,
+     * when it could interrupt a later turn. Now it goes on the connection that is up when you tap
+     * it, to the same occupant (agent, tab, terminal, session; a scrolled-back pane is fine), or
+     * not at all, with a note saying why. It is never held for the screen: no card check, no
+     * input-line check.
+     */
     fun stopPane(pane: Pane) {
-        val key = when (pane.agent?.lowercase()) {
-            "hermes" -> "ctrl+c"
-            else -> "esc"
+        val h = herdr
+        val connection = h?.connectionIdentity
+        if (h == null || connection == null || link != Link.CONNECTED || locked) {
+            flash("Not stopped: ${pane.agentName} isn't connected just now.")
+            return
         }
-        sendKeys(pane.id, key)
+        val keys = com.billmongan.herdrdroid.herdr.stopKeys(pane.agent)
+        viewModelScope.launch {
+            try {
+                val live = h.relayPane(pane.id, connection)
+                // The occupant, not the folder: a working agent's foreground folder moves as it runs commands.
+                if (live == null || live.id != pane.id || live.agent != pane.agent || live.tabId != pane.tabId ||
+                    live.terminalId != pane.terminalId || live.sessionId != pane.sessionId) {
+                    flash("Not stopped: that pane holds something else now.")
+                    return@launch
+                }
+                h.sendKeys(pane.id, *keys.toTypedArray(), expectedConnection = connection)
+                com.billmongan.herdrdroid.diag.DiagLog.log("send", "${pane.id}: stop (${keys.joinToString(" ")})")
+                if (herdr === h) readPane(pane.id)
+            } catch (c: CancellationException) {
+                throw c
+            } catch (e: com.billmongan.herdrdroid.ssh.ConnectionChanged) {
+                flash("Not stopped: the connection changed. Tap Stop again.")
+            } catch (e: LinkDown) {
+                flash("Stop may not have reached ${pane.agentName}: the link dropped.")
+                if (herdr === h) linkLost(e)
+            } catch (e: Exception) {
+                flash("Couldn't stop ${pane.agentName}: ${friendly(e)}")
+            }
+        }
     }
 
     /**

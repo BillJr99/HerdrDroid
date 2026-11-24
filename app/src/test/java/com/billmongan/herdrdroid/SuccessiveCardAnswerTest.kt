@@ -225,6 +225,54 @@ class SuccessiveCardAnswerTest {
         assertEquals("the digit and the text each went through the check", 2, pythonChecks + shellChecks)
     }
 
+    /** 2.2.7 (Bill: "the stop button in chat view doesn't work"): each agent's own interrupt, once. */
+    @Test fun stopSendsEachAgentsInterruptOnce() {
+        val want = mapOf(
+            "claude" to "esc", "codex" to "esc", "copilot" to "esc", "agy" to "esc", "vibe" to "esc", "pi" to "esc",
+            "omp" to "esc", "muse" to "esc", "opencode" to "esc esc", "opencode-work" to "esc esc",
+            "grok" to "ctrl+c", "kiro" to "ctrl+c", "hermes" to "ctrl+c",
+        )
+        for ((agent, keys) in want) fixture(agent, "working on it") {
+            status(Status.WORKING)
+            vm.stopPane(checkNotNull(vm.pane("p1")))
+            drainUntil { sent.isNotEmpty() }
+            assertEquals(agent, listOf(keys), sent)
+        }
+    }
+
+    /**
+     * The regression: Stop went through the pane's send queue, so it waited behind other input to the
+     * pane and, with the link down, was kept and sent after the reconnect. Now it goes at once, past a
+     * held lane and past a screen that changed, and is never kept for later.
+     */
+    @Test fun stopGoesAtOnceAndIsNeverKeptForLater() = fixture("claude", "working on it") {
+        status(Status.WORKING)
+        val lanes = AppViewModel::class.java.getDeclaredField("paneDispatch").apply { isAccessible = true }.get(vm)
+            as com.billmongan.herdrdroid.herdr.PaneDispatch
+        val held = checkNotNull(lanes.tryAcquire("fixture" to "p1"))
+        try {
+            frame = "a different screen"
+            vm.stopPane(checkNotNull(vm.pane("p1")))
+            drainUntil { sent.isNotEmpty() }
+            assertEquals("past a busy lane and a changed screen", listOf("esc"), sent)
+        } finally { held() }
+        sent.clear()
+        val field = AppViewModel::class.java.getDeclaredField("link\$delegate").apply { isAccessible = true }
+        @Suppress("UNCHECKED_CAST") (field.get(vm) as androidx.compose.runtime.MutableState<Link>).value = Link.RECONNECTING
+        vm.stopPane(checkNotNull(vm.pane("p1")))
+        shadowOf(Looper.getMainLooper()).idle()
+        assertTrue(vm.notice.orEmpty(), vm.notice.orEmpty().startsWith("Not stopped"))
+        (field.get(vm) as androidx.compose.runtime.MutableState<Link>).value = Link.CONNECTED
+        shadowOf(Looper.getMainLooper()).idle()
+        assertTrue("not sent after the reconnect either", sent.isEmpty())
+        // Another session in the pane: nothing.
+        val pane = checkNotNull(vm.pane("p1"))
+        terminal = "replacement"
+        vm.stopPane(pane)
+        drainUntil { vm.notice.orEmpty().contains("something else") }
+        assertTrue(sent.isEmpty())
+    }
+
     /** 2.2.7: the questions can always be left: Esc from the card. */
     @Test fun ompAskCanBeCancelled() = fixture("omp", ompScreen("ask-open-first.ansi")) {
         readSelectedPane()
