@@ -4505,10 +4505,11 @@ private val CARD_NO_MATCH = "0".repeat(64)
  * second while its approval box waits, neither part of the question: its status row (a spinner and a
  * running time: "⠙ 4m > ⬢ <model> > 📁 <folder> ▶────"), which stands for itself as one fixed row, and a
  * tool box's bottom edge with its running time ("╰─── elapsed 3m46s ───╯"), whose time is left out.
- * 2.2.8 (Codex's review): only where Oh My Pi draws them, around its approval box ("╭─ Allow tool: … ╮"
- * down to its "╰───╯"): the status row only as the row right under the box, an elapsed edge only above
- * the box's top. Every row of the box itself counts as it is, so a command row that looks like a status
- * row is still part of the question; with no approval box on the screen neither rule applies.
+ * 2.2.8 (Codex's reviews): only where Oh My Pi draws them, around one approval box proven by
+ * [ompApprovalRegion]: the status row only as the row right under the box, and an elapsed edge only as
+ * the bottom of the tool box just above it. Every row of the box itself counts as it is, so a command
+ * row that looks like a status row is still part of the question. With no approval box, or one that
+ * isn't proven (two box tops, a row inside it that isn't the box's, no bottom edge), no row is left out.
  * [CARD_SEND_CHECK] and card-check.sh apply exactly these rules.
  */
 private val CARD_OMP_STATUS = Regex("""^[^ ]+ ([^ ]+ )?> .* > 📁 [^ ]+ ▶─.*$""", RegexOption.DOT_MATCHES_ALL)
@@ -4525,17 +4526,54 @@ private fun cardShown(line: String): String =
 internal fun cardTimerLine(line: String): String =
     if (CARD_TIMER_LINE.matches(cardShown(line))) CARD_TIMER.replaceFirst(line, "$1(Ns)") else line
 
+/**
+ * 2.2.8 (Codex's re-review): the one approval box the digest may look around, or null when it isn't
+ * proven. [shown] rows as [cardShown] gives them. The box: exactly one "╭─ allow tool: … ╮" top on the
+ * screen, then only the box's own rows ("│…", "├…") down to its "╰───╯" bottom, the only such edge
+ * under the top. The elapsed edge
+ * (-1 for none): the nearest "╰─ elapsed … ─╯" within the three rows above the top, with no other box
+ * edge between, and only as the bottom of a tool box ("╭…", then only "│…" rows). The same rule in
+ * [CARD_SEND_CHECK] and card-check.sh.
+ */
+internal data class OmpRegion(val top: Int, val bottom: Int, val elapsed: Int)
+
+internal fun ompApprovalRegion(shown: List<String>): OmpRegion? {
+    val tops = shown.indices.filter { CARD_OMP_BOX_TOP.matches(shown[it]) }
+    if (tops.size != 1) return null
+    val top = tops.single()
+    var bottom = -1
+    for (i in top + 1 until shown.size) {
+        val t = shown[i]
+        if (CARD_BOX_BOTTOM.matches(t)) { bottom = i; break }
+        if (!t.startsWith("│") && !t.startsWith("├")) return null
+    }
+    if (bottom < 0) return null
+    // A second bottom-shaped edge anywhere under the top: which one closes the box isn't proven.
+    if ((bottom + 1 until shown.size).any { CARD_BOX_BOTTOM.matches(shown[it]) }) return null
+    var elapsed = -1
+    for (i in top - 1 downTo maxOf(0, top - 3)) {
+        val t = shown[i]
+        if (CARD_ELAPSED_ROW.matches(t)) { elapsed = i; break }
+        if (t.startsWith("╭") || t.startsWith("╰") || t.startsWith("│") || t.startsWith("├")) break
+    }
+    if (elapsed >= 0) {
+        var j = elapsed - 1
+        while (j >= 0 && shown[j].startsWith("│")) j--
+        if (j < 0 || !shown[j].startsWith("╭")) elapsed = -1
+    }
+    return OmpRegion(top, bottom, elapsed)
+}
+
 /** The screen's rows as the digest takes them: [cardTimerLine] on each, and Oh My Pi's two running rows. */
 internal fun cardScreenRows(lines: List<String>): List<String> {
     val shown = lines.map { cardShown(it) }
-    val top = shown.indexOfLast { CARD_OMP_BOX_TOP.matches(it) }
-    val bottom = if (top < 0) -1 else (top + 1 until shown.size).firstOrNull { CARD_BOX_BOTTOM.matches(shown[it]) } ?: -1
+    val r = ompApprovalRegion(shown)
     return lines.mapIndexed { i, line ->
         when {
-            bottom < 0 -> cardTimerLine(line)
-            i in top..bottom -> line
-            i < top && CARD_ELAPSED_ROW.matches(shown[i]) -> CARD_ELAPSED.replaceFirst(line, "elapsed N")
-            i == bottom + 1 && CARD_OMP_STATUS.matches(shown[i]) -> "<status>"
+            r == null -> cardTimerLine(line)
+            i in r.top..r.bottom -> line
+            i == r.elapsed -> CARD_ELAPSED.replaceFirst(line, "elapsed N")
+            i == r.bottom + 1 && CARD_OMP_STATUS.matches(shown[i]) -> "<status>"
             else -> cardTimerLine(line)
         }
     }
@@ -4594,19 +4632,51 @@ internal val CARD_SEND_CHECK = """
         return re.sub(rb'\x1b\[[0-9;?]*[ -/]*[@-~]', b'', line).lower().strip(b' \t\r\x0b\x0c')
     def timer(line, t):
         return re.sub(rb'(?s)^(.*)\([0-9]+s\)', rb'\1(Ns)', line, count=1) if TIMER_LINE.match(t) else line
+    V = '\u2502'.encode('utf-8')
+    T = '\u251c'.encode('utf-8')
+    TL = '\u256d'.encode('utf-8')
+    BL = '\u2570'.encode('utf-8')
+    def region(t):
+        # The one proven approval box (ompApprovalRegion in Herdr.kt), or None.
+        tops = [i for i, x in enumerate(t) if BOX_TOP.match(x)]
+        if len(tops) != 1:
+            return None
+        top = tops[0]
+        bottom = -1
+        for i in range(top + 1, len(t)):
+            if BOX_BOTTOM.match(t[i]):
+                bottom = i
+                break
+            if not (t[i].startswith(V) or t[i].startswith(T)):
+                return None
+        if bottom < 0 or any(BOX_BOTTOM.match(x) for x in t[bottom + 1:]):
+            return None
+        elapsed = -1
+        for i in range(top - 1, max(0, top - 3) - 1, -1):
+            if ELAPSED_ROW.match(t[i]):
+                elapsed = i
+                break
+            if t[i].startswith((TL, BL, V, T)):
+                break
+        if elapsed >= 0:
+            j = elapsed - 1
+            while j >= 0 and t[j].startswith(V):
+                j -= 1
+            if j < 0 or not t[j].startswith(TL):
+                elapsed = -1
+        return top, bottom, elapsed
     def rows(lines):
         t = [shown(line) for line in lines]
-        top = max((i for i, x in enumerate(t) if BOX_TOP.match(x)), default=-1)
-        bottom = next((i for i in range(top + 1, len(t)) if BOX_BOTTOM.match(t[i])), -1) if top >= 0 else -1
+        r = region(t)
         out = []
         for i, line in enumerate(lines):
-            if bottom < 0:
+            if r is None:
                 out.append(timer(line, t[i]))
-            elif top <= i <= bottom:
+            elif r[0] <= i <= r[1]:
                 out.append(line)
-            elif i < top and ELAPSED_ROW.match(t[i]):
+            elif i == r[2]:
                 out.append(re.sub(rb'elapsed [0-9hms.]+', b'elapsed N', line, count=1))
-            elif i == bottom + 1 and OMP_STATUS.match(t[i]):
+            elif i == r[1] + 1 and OMP_STATUS.match(t[i]):
                 out.append(b'<status>')
             else:
                 out.append(timer(line, t[i]))

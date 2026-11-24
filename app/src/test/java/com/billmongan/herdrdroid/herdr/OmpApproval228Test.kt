@@ -89,6 +89,51 @@ class OmpApproval228Test {
         assertEquals(listOf(statusLike), cardScreenRows(listOf(statusLike)))
     }
 
+    private fun tick(s: String) = s.replace("⠙ 4m", "⠹ 5m").replace("⠴ 7m", "⠦ 8m")
+        .replace("elapsed 3m46s", "elapsed 3m52s").replace("elapsed 51.0s", "elapsed 57.5s")
+
+    /** A row put in as it is (no box gutter) right under the box's Command row, or right above its top. */
+    private fun withRawRow(s: String, row: String, aboveTop: Boolean = false): String = s.lines().flatMap { l ->
+        val p = stripAnsi(l)
+        when {
+            aboveTop && p.contains("Allow tool:") -> listOf(row, l)
+            !aboveTop && p.contains("Command: ") -> listOf(l, row)
+            else -> listOf(l)
+        }
+    }.joinToString("\n")
+
+    private val oldToolBox = "╭─── Older step ───╮\n│ ls │\n╰─── elapsed 9s ───╯\n\n"
+
+    /**
+     * Codex's re-review: screens where the approval box isn't proven, or rows outside it look like its
+     * running rows. Each pair differs only in a row that is not the proven box's own running row, so the
+     * digests must differ.
+     */
+    private fun ambiguous(s: String): List<Pair<String, Pair<String, String>>> = listOf(
+        // Two approval boxes: neither is proven, nothing is left out.
+        "two boxes" to ("$s\n$s" to tick("$s\n$s")),
+        // A second bottom-shaped edge under the box.
+        "edge after" to ("$s\n╰──────╯" to tick("$s\n╰──────╯")),
+        // A bottom-shaped edge inside the box, with no gutter.
+        "edge inside" to (withRawRow(s, "╰──────╯") to tick(withRawRow(s, "╰──────╯"))),
+        // An older tool box's elapsed edge, far above the box: it counts as it is.
+        "older elapsed" to ("$oldToolBox$s" to "${oldToolBox.replace("9s", "10s")}$s"),
+        // An elapsed-shaped edge right above the box with no tool box over it: it counts, and so does the real one.
+        "lone elapsed" to (withRawRow(s, "╰─── elapsed 3s ───╯", aboveTop = true) to withRawRow(s, "╰─── elapsed 4s ───╯", aboveTop = true)),
+    )
+
+    @Test fun anUnprovenBoxOrLookAlikeRowsLeaveNothingOut() {
+        for (name in listOf(three, two)) {
+            val s = screen(name)
+            assertEquals("$name: the proven box still ticks freely", cardScreenDigest(s), cardScreenDigest(tick(s)))
+            assertEquals("$name: and an older tool box above it is no problem", cardScreenDigest("$oldToolBox$s"), cardScreenDigest(tick("$oldToolBox$s")))
+            for ((case, pair) in ambiguous(s)) {
+                assertNotEquals("$name: $case: the fixture changes", pair.first, pair.second)
+                assertNotEquals("$name: $case", cardScreenDigest(pair.first), cardScreenDigest(pair.second))
+            }
+        }
+    }
+
     private val getJson = """{"result":{"pane":{"pane_id":"p1","tab_id":"t1","workspace_id":"w1","agent":"omp","agent_status":"working","cwd":"/w","terminal_id":"term-1","scroll":{"offset_from_bottom":0}}}}"""
 
     private fun runCheck(python: Boolean, guardScreen: String, live: String): Int {
@@ -122,6 +167,9 @@ class OmpApproval228Test {
                 val ticked = s.replace("⠙ 4m", "⠹ 5m").replace("⠴ 7m", "⠦ 8m").replace("elapsed 3m46s", "elapsed 3m52s").replace("elapsed 51.0s", "elapsed 57.5s")
                 assertEquals("$name python=$python tick", 0, runCheck(python, s, ticked))
                 assertEquals("$name python=$python command", CARD_CHANGED_EXIT, runCheck(python, s, s.replace("Command: ", "Command: echo hi; ")))
+                // Codex's re-review: an unproven box or look-alike rows leave nothing out on the computer either.
+                for ((case, pair) in ambiguous(s)) assertEquals("$name python=$python $case", CARD_CHANGED_EXIT, runCheck(python, pair.first, pair.second))
+                assertEquals("$name python=$python older tool box", 0, runCheck(python, "$oldToolBox$s", tick("$oldToolBox$s")))
                 // Codex's review 1: the checks on the computer keep every row of the box too.
                 val inBox = withBoxRow(s, statusLike)
                 assertEquals("$name python=$python box row", CARD_CHANGED_EXIT, runCheck(python, inBox, withBoxRow(s, statusLikeChanged)))
