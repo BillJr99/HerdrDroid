@@ -240,6 +240,8 @@ T='
   t = tolower(t)
   sub(/^[ \t\r\v\f]+/, "", t)
   sub(/[ \t\r\v\f]+$/, "", t)
+  if (t ~ /^[^ ]+ ([^ ]+ )?> .* > 📁 [^ ]+ ▶─/) { print "<status>"; next }
+  if (t ~ /^╰(─)+ elapsed [0-9hms.]+ (─)+╯$/) { sub(/elapsed [0-9hms.]+/, "elapsed N"); print; next }
   if (t ~ /^(type [0-9\/]+, or )?↑\/↓ to select, enter to confirm[ \t\r\v\f]*\([0-9]+s\)$/ && match($0, /.*\([0-9]+s\)/)) {
     head = substr($0, 1, RLENGTH)
     sub(/\([0-9]+s\)$/, "(Ns)", head)

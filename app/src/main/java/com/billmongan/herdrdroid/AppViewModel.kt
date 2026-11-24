@@ -5521,6 +5521,9 @@ class AppViewModel internal constructor(
         }
     }
 
+    /** 2.2.8: [flash] for the screens (a short note that goes by itself). */
+    fun flashNote(text: String) = flash(text)
+
     /** A short note on the screen that goes by itself after 5 seconds (1.4.3). */
     private fun flash(text: String) {
         notice = text
@@ -5585,7 +5588,9 @@ class AppViewModel internal constructor(
         answerCardInput(target, prompt, text, delivered, onGuard = { guard = it }) { h, t, fresh ->
             val id = t.pane.id
             var live = fresh
-            if (choice != null) {
+            // 2.2.8: Oh My Pi's "type to deny and steer": the text goes straight into its approval box.
+            if (choice?.keys == com.billmongan.herdrdroid.herdr.OMP_STEER && choice !in fresh.choices) return@answerCardInput false
+            if (choice != null && choice.keys != com.billmongan.herdrdroid.herdr.OMP_STEER) {
                 if (choice !in fresh.choices) return@answerCardInput false
                 val move = moveKeys(fresh, choice) ?: return@answerCardInput false
                 if (move.isNotEmpty()) {

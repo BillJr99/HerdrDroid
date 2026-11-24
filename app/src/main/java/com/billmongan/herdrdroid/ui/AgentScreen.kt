@@ -323,7 +323,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     // The question a parser read; the unread-question card leaves the chat's open questions in place.
     val questionCard: Prompt? = prompt?.takeUnless { it.unreadQuestion || it.readingQuestion }
     fun send() {
-        if (usageBlocksInput || backgroundDrawer || (openingPreview != null && prompt != null)) return
+        if (usageBlocksInput || backgroundDrawer) return
         val draft = answerDraft
         // 2.2.0: cross-server proposals are approved with Yes/No on the phone, never by typing here.
         if (draft != null) {
@@ -337,9 +337,13 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         }
         if (normalMessage.isNotBlank() && pane != null) {
             val text = normalMessage.trim()
-            if (waitingForHermes || prompt != null || vm.hasPendingQuestion(pane)) {
+            // A question or approval is open: typing into the pane would land in the dialog (Oh My Pi's
+            // "type to deny and steer", Claude's own answer field), so the message waits in the app's
+            // queue and goes once the question is answered or gone; the note says so.
+            if (waitingForHermes || prompt != null || openingPreview != null || vm.hasPendingQuestion(pane)) {
                 vm.enqueue(paneId, text)
                 vm.clearComposerDraft(paneId)
+                vm.flashNote(QUEUED_FOR_QUESTION)
                 return
             }
             // 2.2.7: out of the box now; its draft ends once delivered, and comes back if it never was.
@@ -983,8 +987,11 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 else if (waitingForHermes) "Send when Hermes is ready"
                 else if (prompt != null || status == Status.NEEDS_YOU) "Send after answer"
                 else "Message ${pane?.agentName ?: "this tab"}",
+                // 2.2.8 (Bill: "I can't send a message while a question card is open ... let me send it
+                // from the app at least"): Send stays on while a question is open; the message waits in
+                // the app's queue (see [send]) and goes once the question is answered or gone.
                 canSend = message.isNotBlank() && pane != null && !usageBlocksInput && !backgroundDrawer &&
-                    (openingPreview == null || prompt == null) && !(typingAnswer && vm.answerInFlight(paneId)),
+                    !(typingAnswer && vm.answerInFlight(paneId)),
                 onSend = ::send,
                 working = status == Status.WORKING,
                 onStop = pane?.let { p -> { vm.stopPane(p) } },
@@ -2069,3 +2076,6 @@ internal class ComposerDraftBox(private val vm: AppViewModel, private val paneId
     operator fun getValue(thisRef: Any?, property: kotlin.reflect.KProperty<*>): String = vm.composerDraft(paneId)
     operator fun setValue(thisRef: Any?, property: kotlin.reflect.KProperty<*>, value: String) = vm.setComposerDraft(paneId, value)
 }
+
+/** 2.2.8: the note when a message waits for an open question (never typed into the dialog). */
+const val QUEUED_FOR_QUESTION = "The agent is waiting on a question. Your message is queued here and goes once the question is answered or gone."
