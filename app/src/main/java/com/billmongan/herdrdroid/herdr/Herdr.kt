@@ -389,6 +389,59 @@ class Herdr internal constructor(
         return tuiPane(p).takeIf { it.id == id && p.optJSONObject("scroll")?.opt("offset_from_bottom") == 0 }
     }
 
+    /**
+     * 2.2.7 (Bill, "check right before send"): [cardPane] with its occupant digest
+     * ([cardOccupantDigest], from the same `pane get` reply [CARD_SEND_CHECK] reads on the
+     * computer). herdr-core has no such reply: the digest is null there.
+     */
+    internal suspend fun cardPaneGuarded(id: String, connection: Any): Pair<Pane, String?>? {
+        if (core) return cardPane(id, connection)?.let { it to null }
+        val p = JSONObject(runNow(cmd("pane", "get", id), 5, connection)).getJSONObject("result").getJSONObject("pane")
+        val pane = tuiPane(p).takeIf { it.id == id && p.optJSONObject("scroll")?.opt("offset_from_bottom") == 0 } ?: return null
+        return pane to cardOccupantDigest(p)
+    }
+
+    /**
+     * 2.2.7 (Bill, "check right before send"): a card's answer, sent by one command on the computer
+     * that first reads the pane again ([CARD_SEND_CHECK]) and types only when its occupant and
+     * screen still match [guard]. [CardChanged] when they don't, [CardCheckFailed] when the check
+     * itself failed (nothing was typed either way). Without a guard (herdr-core), the input goes
+     * as before, bound only to [connection].
+     */
+    internal suspend fun sendCardInput(paneId: String, input: CardInput, guard: CardGuard?, connection: Any, permit: WritePermit? = null) {
+        if (guard == null || core) {
+            when (input) {
+                is CardInput.Keys -> if (permit != null) sendPermittedKeys(paneId, input.keys, connection, permit)
+                    else sendKeys(paneId, *input.keys.toTypedArray(), expectedConnection = connection)
+                is CardInput.Text -> {
+                    require(permit == null)
+                    if (input.enter) typeAndEnter(paneId, input.text, connection) else sendText(paneId, input.text, connection)
+                }
+            }
+            return
+        }
+        try {
+            runWrite(cardSendCommand(paneId, input, guard), expectedConnection = connection, permit = permit)
+        } catch (e: HerdrError) {
+            when (e.exit) {
+                CARD_CHANGED_EXIT -> throw CardChanged()
+                CARD_CHECK_FAILED_EXIT, 126, 127 -> throw CardCheckFailed()
+                else -> throw e
+            }
+        }
+    }
+
+    /** The one command [sendCardInput] runs: [CARD_SEND_CHECK], then (only when it passed) the same send-keys or send-text as before. */
+    internal fun cardSendCommand(paneId: String, input: CardInput, guard: CardGuard): String {
+        val check = "$PY -c ${shq(CARD_SEND_CHECK)} $herdr ${shq(paneId)} ${shq(guard.occupant)} ${shq(guard.screen)}"
+        val send = when (input) {
+            is CardInput.Keys -> cmd("pane", "send-keys", paneId, *input.keys.toTypedArray())
+            is CardInput.Text -> cmd("pane", "send-text", paneId, input.text) +
+                (if (input.enter) " && " + cmd("pane", "send-keys", paneId, "enter") else "")
+        }
+        return "$check && $send"
+    }
+
     /** [cardPane], but a scrolled-back pane is returned with its offset rather than as null (2.2.2: the relay refuses it as SCROLLED). */
     internal suspend fun relayPane(id: String, connection: Any): Pane? {
         if (core) return cardPane(id, connection)
@@ -808,39 +861,42 @@ class Herdr internal constructor(
         val unique = want.take(8) + "-" + java.util.UUID.randomUUID().toString().take(8)
         val rel = ".herdrdroid/inbox/$stamp-$unique-$safe"
         val f = "\"\$HOME\"/${shq(rel)}"
-        val t = "\"\$HOME\"/${shq("$rel.part")}"
-        // Written to a temporary name, then moved into place without replacing anything (mv -n); a
-        // name already taken fails. The results follow a marker line, so a shell banner is skipped.
-        // With no checksum tool there, only the size is checked, and said so.
-        val command = "mkdir -p \"\$HOME/.herdrdroid/inbox\" && cat > $t && { [ ! -e $f ] && mv -n $t $f && [ ! -e $t ]; } && " +
-            "printf '%s\\n' $UPLOAD_MARKER $f && wc -c < $f && " +
-            "{ sha256sum $f 2>/dev/null || shasum -a 256 $f 2>/dev/null || echo nosum; } | cut -d' ' -f1"
+        val command = inboxUploadCommand(rel, bytes.size)
         var last: String? = null
-        for (attempt in 1..2) {
-            val r = commands?.let { it.input(command, bytes, it.connection ?: Any()) } ?: ssh.execInput(command, bytes, timeoutSeconds = 120)
-            if (r.exit != 0) {
-                val err = r.err.trim().lines().lastOrNull { it.isNotBlank() }.orEmpty()
-                // Pre-review M4: a full disk or a refused folder will not get better by trying again.
-                val permanent = Regex("No space|Permission denied|Read-only file system|Disk quota", RegexOption.IGNORE_CASE).containsMatchIn(err)
-                com.billmongan.herdrdroid.diag.DiagLog.log("send", "upload bytes=${bytes.size} try=$attempt result=failed exit=${r.exit} permanent=$permanent")
-                throw UploadFailed(err.ifBlank { "the upload failed (exit ${r.exit})" }, permanent)
+        // 2.2.7 (Codex's review): bound to the connection it started on (a replacement refuses it)
+        // and counted as a send, so the small-packets fallback waits for it instead of cutting it.
+        val pinned = connectionIdentity
+        ssh.beginSend()
+        try {
+            for (attempt in 1..2) {
+                val r = commands?.let { it.input(command, bytes, pinned ?: it.connection ?: Any()) }
+                    ?: ssh.execInput(command, bytes, timeoutSeconds = 120, expectedConnection = pinned)
+                if (r.exit != 0) {
+                    val err = r.err.trim().lines().lastOrNull { it.isNotBlank() }.orEmpty()
+                    // Pre-review M4: a full disk or a refused folder will not get better by trying again.
+                    val permanent = Regex("No space|Permission denied|Read-only file system|Disk quota", RegexOption.IGNORE_CASE).containsMatchIn(err)
+                    com.billmongan.herdrdroid.diag.DiagLog.log("send", "upload bytes=${bytes.size} try=$attempt result=failed exit=${r.exit} permanent=$permanent")
+                    throw UploadFailed(err.ifBlank { "the upload failed (exit ${r.exit})" }, permanent)
+                }
+                val out = r.out.lines().map { it.trim() }
+                val at = out.lastIndexOf(UPLOAD_MARKER)
+                val path = out.getOrNull(at + 1).orEmpty()
+                val size = out.getOrNull(at + 2)?.toLongOrNull()
+                val hash = out.getOrNull(at + 3)?.lowercase()
+                val noSum = hash == "nosum"
+                val ok = at >= 0 && path.isNotEmpty() && size == bytes.size.toLong() && (noSum || hash == want)
+                // Pre-review L7: no file name in the log, only the size and the result.
+                com.billmongan.herdrdroid.diag.DiagLog.log("send", "upload bytes=${bytes.size} try=$attempt verify=${if (!ok) "mismatch" else if (noSum) "size-only" else "ok"} remote_bytes=${size ?: "unknown"}")
+                if (ok) return UploadReceipt(path, bytes.size.toLong(), if (noSum) "" else want)
+                last = if (size != bytes.size.toLong()) "the computer has ${size ?: "unknown"} of ${bytes.size} bytes" else "its checksum didn't match"
+                // The mismatched copy is set aside (never deleted) so the next try writes a fresh one.
+                runCatching {
+                    val keep = "mv -f $f \"\$HOME\"/${shq("$rel.failed")} 2>/dev/null; true"
+                    commands?.let { it.immediate(keep, 10, pinned) } ?: ssh.execNow(keep, 10, pinned)
+                }
             }
-            val out = r.out.lines().map { it.trim() }
-            val at = out.lastIndexOf(UPLOAD_MARKER)
-            val path = out.getOrNull(at + 1).orEmpty()
-            val size = out.getOrNull(at + 2)?.toLongOrNull()
-            val hash = out.getOrNull(at + 3)?.lowercase()
-            val noSum = hash == "nosum"
-            val ok = at >= 0 && path.isNotEmpty() && size == bytes.size.toLong() && (noSum || hash == want)
-            // Pre-review L7: no file name in the log, only the size and the result.
-            com.billmongan.herdrdroid.diag.DiagLog.log("send", "upload bytes=${bytes.size} try=$attempt verify=${if (!ok) "mismatch" else if (noSum) "size-only" else "ok"} remote_bytes=${size ?: "unknown"}")
-            if (ok) return UploadReceipt(path, bytes.size.toLong(), if (noSum) "" else want)
-            last = if (size != bytes.size.toLong()) "the computer has ${size ?: "unknown"} of ${bytes.size} bytes" else "its checksum didn't match"
-            // The mismatched copy is set aside (never deleted) so the next try writes a fresh one.
-            runCatching {
-                val keep = "mv -f $f \"\$HOME\"/${shq("$rel.failed")} 2>/dev/null; true"
-                commands?.let { it.immediate(keep, 10, null) } ?: ssh.exec(keep)
-            }
+        } finally {
+            ssh.endSend()
         }
         throw UploadMismatch(last ?: "it couldn't be checked")
     }
@@ -4072,6 +4128,100 @@ class UploadMismatch(why: String) : Exception("The file didn't arrive whole ($wh
 
 /** 2.2.7: the upload itself failed; [permanent] when trying again won't help (a full disk, a refused folder). */
 class UploadFailed(why: String, val permanent: Boolean) : Exception(why)
+
+/**
+ * 2.2.7: the remote command for one inbox upload of [size] bytes to [rel] (under the home folder).
+ */
+internal fun inboxUploadCommand(rel: String, size: Int): String {
+    val f = "\"\$HOME\"/${shq(rel)}"
+    val t = "\"\$HOME\"/${shq("$rel.part")}"
+    // Written to a temporary name, then moved into place without replacing anything (mv -n); a
+    // name already taken fails. The results follow a marker line, so a shell banner is skipped.
+    // With no checksum tool there, only the size is checked, and said so.
+    // 2.2.7 (Codex's review): moved into place only once it holds every byte, so a link cut
+    // mid-upload (cat then sees an early end and exits 0) leaves only the ".part" file.
+    return "mkdir -p \"\$HOME/.herdrdroid/inbox\" && cat > $t && " +
+        "{ [ \$(wc -c < $t) -eq $size ] || { echo 'Only part of the file arrived, so it was not saved.' >&2; exit 5; }; } && { [ ! -e $f ] && mv -n $t $f && [ ! -e $t ]; } && " +
+        "printf '%s\\n' $UPLOAD_MARKER $f && wc -c < $f && " +
+        "{ sha256sum $f 2>/dev/null || shasum -a 256 $f 2>/dev/null || echo nosum; } | cut -d' ' -f1"
+}
+
+/** 2.2.7 (Bill, "check right before send"): what a card's answer types. */
+internal sealed class CardInput {
+    data class Keys(val keys: List<String>) : CardInput()
+    data class Text(val text: String, val enter: Boolean) : CardInput()
+}
+
+/** The pane's occupant digest and its screen digest, as the card's last read saw them (hex SHA-256). */
+internal data class CardGuard(val occupant: String, val screen: String)
+
+/** Nothing was typed: the card's pane, or its screen, changed after the card's last read. */
+internal class CardChanged : Exception("The question changed; not sent.")
+/** Nothing was typed: the check on the computer couldn't run or couldn't read the pane. */
+internal class CardCheckFailed : Exception("Not sent. The check on the computer failed.")
+
+internal const val CARD_CHANGED_EXIT = 3
+internal const val CARD_CHECK_FAILED_EXIT = 4
+
+/** Neither side's value for a field that is missing, null or not a string or whole number. */
+private const val NO_VALUE = "\u0001"
+private val CARD_OCCUPANT_FIELDS = listOf("pane_id", "tab_id", "workspace_id", "agent", "foreground_cwd", "cwd", "terminal_id")
+private val CARD_SESSION_FIELDS = listOf("kind", "agent", "value")
+
+/**
+ * The occupant digest of one `herdr pane get` pane: the fields [Occupant.of] is built from, raw
+ * (pane, tab, workspace, agent, folders, terminal and the agent session), the same way
+ * [CARD_SEND_CHECK] computes it on the computer.
+ */
+internal fun cardOccupantDigest(p: JSONObject): String {
+    fun v(x: Any?): String = when (x) { is String -> x; is Int, is Long -> x.toString(); else -> NO_VALUE }
+    val session = p.optJSONObject("agent_session")
+    val fields = CARD_OCCUPANT_FIELDS.map { v(p.opt(it)) } + CARD_SESSION_FIELDS.map { v(session?.opt(it)) }
+    return sha256Hex(fields.joinToString("\u0000").toByteArray(Charsets.UTF_8))
+}
+
+/** A running countdown ("Enter to confirm (57s)") changes nothing about the question. */
+private val CARD_COUNTDOWN = Regex("""\(\d{1,4}s\)""")
+
+/** The screen digest of a card's raw `pane read --source visible --format ansi`, as [CARD_SEND_CHECK] computes it. */
+internal fun cardScreenDigest(raw: String): String =
+    sha256Hex(CARD_COUNTDOWN.replace(raw, "(Ns)").toByteArray(Charsets.UTF_8))
+
+/**
+ * 2.2.7 (Bill, "check right before send"): run on the computer just before a card's keys, in the
+ * same command. Reads the pane's occupant, its visible screen and its occupant again; exits 0 only
+ * when both occupant reads and the screen match the digests the card was checked against, 3 when
+ * anything changed, 4 when it couldn't read. Takes no prompt text: only the pane id and two digests.
+ */
+internal val CARD_SEND_CHECK = """
+    import hashlib, json, re, subprocess, sys
+    herdr, pane, occupant, screen = sys.argv[1:5]
+    def call(*args):
+        return subprocess.check_output([herdr, 'pane', *args])
+    def v(x):
+        if isinstance(x, str):
+            return x
+        if type(x) is int:
+            return str(x)
+        return '\x01'
+    def identity():
+        p = json.loads(call('get', pane))['result']['pane']
+        if p.get('pane_id') != pane or (p.get('scroll') or {}).get('offset_from_bottom') != 0:
+            return None
+        s = p.get('agent_session')
+        s = s if isinstance(s, dict) else {}
+        f = [p.get(k) for k in ('pane_id', 'tab_id', 'workspace_id', 'agent', 'foreground_cwd', 'cwd', 'terminal_id')]
+        f += [s.get(k) for k in ('kind', 'agent', 'value')]
+        return hashlib.sha256('\x00'.join(v(x) for x in f).encode('utf-8')).hexdigest()
+    try:
+        before = identity()
+        visible = call('read', pane, '--source', 'visible', '--format', 'ansi')
+        after = identity()
+        seen = hashlib.sha256(re.sub(rb'\(\d{1,4}s\)', b'(Ns)', visible)).hexdigest()
+    except Exception:
+        sys.exit(4)
+    sys.exit(0 if before == after == occupant and seen == screen else 3)
+""".trimIndent()
 
 /** 2.2.7: the line before an upload's results, so text a shell prints at login is skipped. */
 internal const val UPLOAD_MARKER = "@@herdrdroid-upload@@"

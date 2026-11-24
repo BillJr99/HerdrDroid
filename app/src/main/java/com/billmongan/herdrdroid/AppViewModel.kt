@@ -5046,18 +5046,28 @@ class AppViewModel internal constructor(
             it.pane.sameCardOccupant(pane)
     } == true
 
-    private suspend fun CardTarget.freshAnswer(h: Herdr, shown: Prompt): Prompt? {
+    private suspend fun CardTarget.freshAnswer(h: Herdr, shown: Prompt): Prompt? = freshAnswerGuarded(h, shown)?.first
+
+    /**
+     * [freshAnswer] with the guard its keys are sent under (2.2.7, Bill: "check right before
+     * send"): the occupant and screen digests of the very reads the card was checked against.
+     * The guard is null on herdr-core, which has no such reads.
+     */
+    private suspend fun CardTarget.freshAnswerGuarded(h: Herdr, shown: Prompt): Pair<Prompt, com.billmongan.herdrdroid.herdr.CardGuard?>? {
         if (shown.terminalReview || !isCurrent(h)) return null
         val guardedChoice = shown.hermesClarify || shown.openCodeQuestionFrame != null
         if (guardedChoice && (!foreground || h.backend != Backend.TUI || pane.scrollOffset != 0 ||
                 !com.billmongan.herdrdroid.herdr.hasStableOccupant(pane))) return null
-        val currentPane = h.cardPane(pane.id, connection) ?: return null
+        val (currentPane, occupant) = h.cardPaneGuarded(pane.id, connection) ?: return null
         if (!isCurrent(h) || !pane.sameCardOccupant(currentPane)) return null
-        // Last remote read before input; not an atomic compare-and-send.
+        // The last read here; the keys then go with a check of this same read on the computer
+        // ([Herdr.sendCardInput]), which types nothing if the pane or its screen changed since.
         if (isOpenCode(pane.agent) && currentPane.scrollOffset != 0) return null
         // Muse's quota warning shows its highlight only in colour (2.1.0): read with styles to find it.
-        val text = (if (isOpenCode(pane.agent) || shown.museQuota) h.readStyledViewport(pane.id, connection)
-            else h.readCardViewport(pane.id, connection)).takeUnless { it.isBlank() } ?: return null
+        val raw = h.readStyledViewport(pane.id, connection)
+        val text = (if (isOpenCode(pane.agent) || shown.museQuota) raw
+            else com.billmongan.herdrdroid.herdr.stripAnsi(raw)).takeUnless { it.isBlank() } ?: return null
+        val guard = occupant?.let { com.billmongan.herdrdroid.herdr.CardGuard(it, com.billmongan.herdrdroid.herdr.cardScreenDigest(raw)) }
         if (!isCurrent(h) || guardedChoice && !foreground) return null
         val live = if (pane.agent == "pi" && h.backend == Backend.TUI &&
             (pane.status == Status.WORKING || currentPane.status == Status.WORKING)) activePiQuestion(text, versionOf(pane.id))
@@ -5072,15 +5082,36 @@ class AppViewModel internal constructor(
             if (!isCurrent(h)) return null
             detectPrompt(rebuilt, currentPane.status == Status.NEEDS_YOU, currentPane.agent, versionOf(pane.id))
         } else live
-        return whole?.takeIf { cardAnswerStillFits(shown, it) }
+        return whole?.takeIf { cardAnswerStillFits(shown, it) }?.let { it to guard }
     }
 
     internal fun answerCardKey(target: CardTarget?, prompt: Prompt, key: String, label: String) {
         // OpenCode's question dialog (2.1.2): Esc dismisses it; no other key goes in from the card.
         if (prompt.openCodeQuestionFrame != null && key != "esc") { flash("Not sent. Refresh the question or open the terminal to answer."); return }
-        answerCardInput(target, prompt, label, guarded = prompt.openCodeQuestionFrame != null) { h, t, _ ->
-            h.sendKeys(t.pane.id, key, expectedConnection = t.connection)
+        var guard: com.billmongan.herdrdroid.herdr.CardGuard? = null
+        answerCardInput(target, prompt, label, guarded = prompt.openCodeQuestionFrame != null, onGuard = { guard = it }) { h, t, fresh ->
+            sendCheckedCardInput(h, t.server, t.pane.id, fresh, com.billmongan.herdrdroid.herdr.CardInput.Keys(listOf(key)), guard, t.connection,
+                remembered = false)
             true
+        }
+    }
+
+    /**
+     * 2.2.7 (Bill, "check right before send"): a card's answer through [Herdr.sendCardInput]. When
+     * the check on the computer typed nothing, the card is no longer held as answered (a new tap on
+     * the same question can go), and the error says so: [answerOnce] reports it and reads the card again.
+     */
+    private suspend fun sendCheckedCardInput(
+        h: Herdr, server: String, paneId: String, fresh: Prompt, input: com.billmongan.herdrdroid.herdr.CardInput,
+        guard: com.billmongan.herdrdroid.herdr.CardGuard?, connection: Any, permit: com.billmongan.herdrdroid.herdr.WritePermit? = null,
+        remembered: Boolean = true,
+    ) {
+        try {
+            h.sendCardInput(paneId, input, guard, connection, permit)
+        } catch (e: Exception) {
+            if (remembered && (e is com.billmongan.herdrdroid.herdr.CardChanged || e is com.billmongan.herdrdroid.herdr.CardCheckFailed) &&
+                answeredCards[server to paneId]?.first == fresh) answeredCards.remove(server to paneId)
+            throw e
         }
     }
 
@@ -5149,13 +5180,17 @@ class AppViewModel internal constructor(
     private fun answerCardInput(target: CardTarget?, shown: Prompt, label: String, delivered: () -> Unit = {},
         /** OpenCode's question dialog (2.1.2): allowed through [freshAnswer]'s guarded checks. */
         guarded: Boolean = false,
+        /** 2.2.7: told the guard of the fresh read, for a [send] that goes through [Herdr.sendCardInput]. */
+        onGuard: (com.billmongan.herdrdroid.herdr.CardGuard?) -> Unit = {},
         send: suspend (Herdr, CardTarget, Prompt) -> Boolean,
     ) {
         val refused = "Not sent. Refresh the question or open the terminal to answer."
         if (target == null || shown.terminalReview || shown.hermesClarify || (shown.openCodeQuestionFrame != null && !guarded)) { flash(refused); return }
         val id = target.pane.id
         answerOnce(id) { h ->
-            val fresh = target.freshAnswer(h, shown)
+            val checked = target.freshAnswerGuarded(h, shown)
+            val fresh = checked?.first
+            onGuard(checked?.second)
             if (fresh == null || !send(h, target, fresh)) { flash(refused); return@answerOnce }
             delivered()
             noteAnswer(id, shown, label, serverId = target.server)
@@ -5192,6 +5227,18 @@ class AppViewModel internal constructor(
                 run(client)
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: com.billmongan.herdrdroid.herdr.CardChanged) {
+                // 2.2.7 (Bill, "check right before send"): nothing was typed; the card is read again.
+                com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: the question changed before the keys; not sent")
+                flash("The question changed; not sent.")
+                feedback?.invoke("The question changed; not sent.")
+                if (herdr === client && link == Link.CONNECTED) readPane(paneId)
+            } catch (e: com.billmongan.herdrdroid.herdr.CardCheckFailed) {
+                com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: the check before the keys failed; not sent")
+                val message = "Not sent. The check on the computer failed. Refresh the question or open the terminal to answer."
+                flash(message)
+                feedback?.invoke(message)
+                if (herdr === client && link == Link.CONNECTED) readPane(paneId)
             } catch (e: Exception) {
                 if (e is LinkDown && herdr === client) linkLost(e)
                 val message = "Could not confirm delivery. Refresh the question before trying again."
@@ -5227,7 +5274,9 @@ class AppViewModel internal constructor(
         com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: tapped \"${choice.label.take(60)}\" (option ${choice.keys}, highlighted ${prompt.selected})")
         answerOnce(paneId, feedback) { h ->
             // Match the displayed card, but calculate its keys from the current highlight.
-            val fresh = target?.freshAnswer(h, prompt)
+            val checked = target?.freshAnswerGuarded(h, prompt)
+            val fresh = checked?.first
+            val guard = checked?.second
             if (target == null || fresh == null || (choice !in fresh.choices && choice != fresh.claudeCheckboxAction)) {
                 report("Not sent. Refresh the question or open the terminal to answer.")
                 readPane(paneId)
@@ -5280,7 +5329,8 @@ class AppViewModel internal constructor(
                 try {
                     if (!voiceAllowed()) { report("No answer was sent."); return@answerOnce }
                     rememberCardAnswer(target.server, paneId, fresh)
-                    h.sendPermittedKeys(paneId, checkNotNull(keys), connection, permit)
+                    sendCheckedCardInput(h, target.server, paneId, fresh,
+                        com.billmongan.herdrdroid.herdr.CardInput.Keys(checkNotNull(keys)), guard, connection, permit)
                 } catch (_: com.billmongan.herdrdroid.herdr.WriteRevoked) {
                     report("Not sent. Voice control stopped or the pane closed.")
                     return@answerOnce
@@ -5289,9 +5339,9 @@ class AppViewModel internal constructor(
                 }
             } else {
                 rememberCardAnswer(target.server, paneId, fresh)
-                if (keys != null) h.sendKeys(paneId, *keys.toTypedArray(), expectedConnection = connection)
-                else if (choice.pressEnter) h.typeAndEnter(paneId, choice.keys, connection)
-                else h.sendText(paneId, choice.keys, connection)
+                sendCheckedCardInput(h, target.server, paneId, fresh,
+                    if (keys != null) com.billmongan.herdrdroid.herdr.CardInput.Keys(keys)
+                    else com.billmongan.herdrdroid.herdr.CardInput.Text(choice.keys, choice.pressEnter), guard, connection)
             }
             val sent = keys?.joinToString(" ") { keyName(it) } ?: choice.keys
             com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: sent $sent")
