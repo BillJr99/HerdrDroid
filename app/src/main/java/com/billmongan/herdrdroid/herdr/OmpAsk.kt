@@ -14,23 +14,32 @@ object OmpAsk {
     /** What identifies the dialog across reads, and where its highlight is. */
     data class State(val questions: List<String>, val answered: Int, val total: Int, val onSubmit: Boolean,
         /** Each question's chosen answer as the dialog shows it (a typed Other with its text); Submit is bound to these. */
-        val answers: List<String?> = emptyList()) {
+        val answers: List<String?> = emptyList(),
+        /** Where each chosen answer sits among its question's options (0-based), when the dialog shows it. */
+        val answerAt: List<Int?> = emptyList()) {
         val allAnswered: Boolean get() = total > 0 && answered >= total
     }
 
     data class Question(val number: Int, val text: String, val answered: Boolean, val options: List<String>,
-        val chosen: String?, val expanded: Boolean, val cursor: Int?)
+        val chosen: String?, val expanded: Boolean, val cursor: Int?, val chosenAt: Int? = null)
 
     data class Dialog(val lead: List<String>, val questions: List<Question>, val answered: Int, val total: Int, val onSubmit: Boolean)
 
     /**
-     * The same answers in two reads: each question's choice equal, or the same where the dialog
-     * shortened one of them ("Leave as CHECK-F…" for the open question's "Leave as CHECK-FIRST").
+     * The same answers in two reads (Grok's review: strictly). Each question's choice must sit at
+     * the same place among its options, and read the same: equal, both shortened the same way, or
+     * one shortened ("Leave as CHECK-F…") from exactly the other's full text. Two different answers
+     * that only share the shortened part's start never match when they sit at different places. A
+     * typed Other that differs only after the point where the dialog cuts it can't be seen on the
+     * screen; the place check is the most the screen can prove there.
      */
-    fun sameAnswers(a: List<String?>, b: List<String?>): Boolean = a.size == b.size && a.indices.all { i ->
-        val x = a[i]; val y = b[i]
-        fun fits(short: String, full: String) = short.endsWith("…") && full.startsWith(short.removeSuffix("…").trimEnd())
-        x == y || (x != null && y != null && (fits(x, y) || fits(y, x)))
+    fun sameAnswers(a: State, b: State): Boolean = a.answers.size == b.answers.size && a.answers.indices.all { i ->
+        val x = a.answers[i]; val y = b.answers[i]
+        val ax = a.answerAt.getOrNull(i); val by = b.answerAt.getOrNull(i)
+        fun fits(short: String, full: String) = short.endsWith("…") && !full.endsWith("…") &&
+            full.startsWith(short.removeSuffix("…").trimEnd())
+        (ax == null || by == null || ax == by) &&
+            (x == y || (x != null && y != null && (fits(x, y) || fits(y, x))))
     }
 
     /** The card's action that moves the highlight to Submit, checking each step, and presses Enter there. */
@@ -45,12 +54,25 @@ object OmpAsk {
 
     private fun clean(s: String) = s.replace(Regex("""\s{2,}"""), " ").trim()
 
+    /**
+     * A row the agent draws under its dialog: the dialog's own "⎋ …" line, the status row (its
+     * "▶───" gauge, or pi's token row "0.0%/128k"), the editor's "╰─" corner, pi's folder row.
+     */
+    private fun statusRow(row: String): Boolean {
+        val t = row.trim()
+        return t.startsWith("⎋") || t.contains("▶─") || Regex("""^╰─*$""").matches(t) ||
+            Regex("""\d+(\.\d+)?%/\d+k""").containsMatchIn(t) || Regex("""^[~/]\S*$""").matches(t)
+    }
+
     fun parse(plain: String): Dialog? {
         val lines = plain.lines()
         val top = lines.indexOfLast { HEADER.matches(it) }
         if (top < 0) return null
         val h = HEADER.matchEntire(lines[top])!!
         val bottom = (top + 1 until lines.size).firstOrNull { lines[it].trimStart().startsWith("╰") } ?: return null
+        // Grok's review: only a live dialog, the bottom-most thing on screen: under it only blank
+        // rows and the agent's own status rows. An old box above newer output is history.
+        if (lines.drop(bottom + 1).any { it.isNotBlank() && !statusRow(it) }) return null
         val rows = lines.subList(top + 1, bottom).map { r ->
             val t = r.trim()
             if (!t.startsWith("│") || !t.endsWith("│") || t.length < 2) return null
@@ -63,11 +85,11 @@ object OmpAsk {
         var submitSeen = false
         // The question being read: its text, and what follows it.
         var num = 0; var text = StringBuilder(); var answered = false
-        var options = mutableListOf<String>(); var chosen: String? = null; var cursor: Int? = null
+        var options = mutableListOf<String>(); var chosen: String? = null; var cursor: Int? = null; var chosenAt: Int? = null
         var radios = false; var folded = false; var open = false
         fun close() {
             if (!open) return
-            questions += Question(num, clean(text.toString()), answered, options.map(::clean), chosen?.let(::clean), radios, cursor)
+            questions += Question(num, clean(text.toString()), answered, options.map(::clean), chosen?.let(::clean), radios, cursor, chosenAt)
             open = false
         }
         for (row in rows) {
@@ -83,7 +105,7 @@ object OmpAsk {
                 close()
                 if (para.isNotEmpty()) { lead += clean(para.toString()); para = StringBuilder() }
                 num = q.groupValues[2].toInt(); text = StringBuilder(q.groupValues[3]); answered = q.groupValues[1].isNotEmpty()
-                options = mutableListOf(); chosen = null; cursor = null; radios = false; folded = false; open = true
+                options = mutableListOf(); chosen = null; cursor = null; chosenAt = null; radios = false; folded = false; open = true
                 continue
             }
             if (!open) {
@@ -95,7 +117,7 @@ object OmpAsk {
             val o = OPTION.matchEntire(t)
             if (o != null && !folded) {
                 if (o.groupValues[1].isNotEmpty()) cursor = options.size
-                if (o.groupValues[2] == "◉") chosen = o.groupValues[3]
+                if (o.groupValues[2] == "◉") { chosen = o.groupValues[3]; chosenAt = options.size }
                 options += o.groupValues[3]
                 radios = true
                 continue
@@ -105,7 +127,7 @@ object OmpAsk {
                 // A folded answered question: its shortened options on one line, the chosen one marked.
                 parts.forEach { p ->
                     val c = p.removePrefix("✓").trim()
-                    if (p.startsWith("✓")) chosen = c
+                    if (p.startsWith("✓")) { chosen = c; chosenAt = options.size }
                     options += c
                 }
                 folded = true
@@ -128,7 +150,7 @@ object OmpAsk {
         // The open question, when the highlight is on one of its options (only then can its keys be worked out).
         val current = d.questions.firstOrNull { it.expanded && it.cursor != null }
         val state = State(d.questions.map { "${it.number}. ${it.text}" }, d.answered, d.total, d.onSubmit,
-            d.questions.map { it.chosen })
+            d.questions.map { it.chosen }, d.questions.map { it.chosenAt })
         val tabs = d.questions.map { QTab(it.text, it.answered, current == it && !d.onSubmit) } +
             QTab("Submit", false, d.onSubmit, submit = true)
         val others = d.questions.filter { it != current }.map { q ->

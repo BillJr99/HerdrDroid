@@ -5195,7 +5195,7 @@ class AppViewModel internal constructor(
         firstGuard: com.billmongan.herdrdroid.herdr.CardGuard?): Boolean {
         val dialog = shown.ompAsk ?: return false
         // 2.2.7 (Codex's review): the same questions with the same answers as at the tap, or nothing is sent.
-        fun same(a: Prompt, b: Prompt) = b.ompAsk?.questions == a.ompAsk?.questions && com.billmongan.herdrdroid.herdr.OmpAsk.sameAnswers(a.ompAsk?.answers.orEmpty(), b.ompAsk?.answers.orEmpty()) &&
+        fun same(a: Prompt, b: Prompt) = b.ompAsk?.questions == a.ompAsk?.questions && a.ompAsk != null && b.ompAsk != null && com.billmongan.herdrdroid.herdr.OmpAsk.sameAnswers(a.ompAsk!!, b.ompAsk!!) &&
             b.ompAsk?.allAnswered == true
         var live = first
         var guard = firstGuard

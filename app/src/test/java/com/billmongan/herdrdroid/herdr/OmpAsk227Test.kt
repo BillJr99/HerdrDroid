@@ -69,11 +69,28 @@ class OmpAsk227Test {
             "Leave as CHECK-FIRST", "KEEP, it is still i…"), p.answers)
         val changed = checkNotNull(detectPrompt(screen("ask-submit.ansi").replace("✓ Other: look at the…", "✓ Other: delete it al…"), true, "omp")).ompAsk!!
         assertEquals(p.questions, changed.questions)
-        assertFalse(OmpAsk.sameAnswers(p.answers, changed.answers))
-        assertTrue("a shortened answer is the same answer", OmpAsk.sameAnswers(listOf("Leave as CHECK-FIRST"), listOf("Leave as CHECK-F…")))
-        assertFalse(OmpAsk.sameAnswers(listOf("Leave as CHECK-FIRST"), listOf("List the 7 commit…")))
+        assertFalse(OmpAsk.sameAnswers(p, changed))
+        fun st(answer: String, at: Int) = OmpAsk.State(listOf("1. q"), 1, 1, false, listOf(answer), listOf(at))
+        assertTrue("a shortened answer is the same answer", OmpAsk.sameAnswers(st("Leave as CHECK-FIRST", 0), st("Leave as CHECK-F…", 0)))
+        assertFalse(OmpAsk.sameAnswers(st("Leave as CHECK-FIRST", 0), st("List the 7 commit…", 1)))
+        // Grok's review: two answers that share the shortened start, at different places, never match.
+        assertFalse(OmpAsk.sameAnswers(st("Look at the logs first", 1), st("Look at the…", 3)))
+        assertTrue(OmpAsk.sameAnswers(st("Other: look at the logs first", 3), st("Other: look at the…", 3)))
+        assertFalse("two shortened forms must be equal", OmpAsk.sameAnswers(st("Look at the…", 3), st("Look at it…", 3)))
+        assertEquals("the place of each answer is kept", listOf(3, 0, 3, 0, 0), p.answerAt)
         val open = checkNotNull(detectPrompt(screen("ask-open-other.ansi"), true, "omp")).ompAsk!!
         assertEquals("the open question's selection counts", "Leave as CHECK-FIRST", open.answers[2])
         assertNotNull("pi while working reads the Ask dialog too", activePiQuestion(screen("ask-open-other.ansi"), null))
+    }
+
+    /** Grok's review: an old Ask box above newer output is history, not a live question (pi while working too). */
+    @Test fun anAskBoxAboveNewerOutputIsNotLive() {
+        val live = screen("ask-open-other.ansi")
+        val bottom = live.lines().indexOfLast { stripAnsi(it).trimStart().startsWith("╰────") }
+        val old = (live.lines().take(bottom + 1) + listOf("", " The answers are in; moving the safe items now.", " Done: 120 items moved.") +
+            live.lines().drop(bottom + 1)).joinToString("\n")
+        assertNull(OmpAsk.prompt(stripAnsi(old)))
+        assertNull(activePiQuestion(old, null))
+        assertNotNull("the live one still reads", OmpAsk.prompt(stripAnsi(live)))
     }
 }
