@@ -348,7 +348,7 @@ class HerdrSsh(
 
     private fun open(): SSHClient {
         client?.let { if (it.isConnected && it.isAuthenticated && bridge?.isOpen != false) return it }
-        client?.runCatching { disconnect() }
+        client?.let { old -> old.runCatching { disconnect() }; SshCounts.closed(diagServerId, old) }
         client = null
         bridge?.close()
         bridge = null
@@ -433,6 +433,9 @@ class HerdrSsh(
         }
         c.connection.keepAlive.keepAliveInterval = KEEPALIVE_SECONDS
         client = c
+        // 2.2.8: every connection the app holds, per server, for the log and the leak tests.
+        SshCounts.opened(diagServerId, c)
+        DiagLog.log("ssh", "connections open to this server: ${SshCounts.openNow(diagServerId)}")
         return c
     }
 
@@ -589,6 +592,7 @@ class HerdrSsh(
         lock.withLock {
             if (client === connection) {
                 connection.runCatching { disconnect() }
+                SshCounts.closed(diagServerId, connection)
                 client = null
             }
         }
@@ -705,7 +709,7 @@ class HerdrSsh(
 
     /** Drops the socket so the next command opens a fresh one, without waiting on a dead connection. */
     fun reset() {
-        client?.runCatching { disconnect() }
+        client?.let { old -> old.runCatching { disconnect() }; SshCounts.closed(diagServerId, old) }
         client = null
         bridge?.close()
         bridge = null
@@ -738,3 +742,30 @@ internal fun <T : Any> requireCurrentConnection(expected: Any, current: T?): T {
 
 /** 2.2.7: the labelled reads the no-first-byte fallback watches (the reads Bill's stall was on). */
 internal val FIRST_BYTE_WATCHED = setOf("list-read", "log-read")
+
+/**
+ * 2.2.8 (Bill: "I'm surprised by how many SSH connections HerdrDroid creates" and "be more robust
+ * about managing and closing stale connections"): the SSH connections the app has open, per server,
+ * with how many it ever opened and how many times a check reused one it already had. A connection
+ * is counted from its sign-in until it is disconnected (replaced, reset, closed or dropped after a
+ * failure). For the diagnostic log and the tests; memory only.
+ */
+internal object SshCounts {
+    private val open = java.util.concurrent.ConcurrentHashMap<String, MutableSet<Any>>()
+    private val opened = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger>()
+    private val reused = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger>()
+    private fun key(server: String?) = server ?: "?"
+
+    fun opened(server: String?, connection: Any) {
+        open.getOrPut(key(server)) { java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap()) } += connection
+        opened.getOrPut(key(server)) { java.util.concurrent.atomic.AtomicInteger() }.incrementAndGet()
+    }
+    fun closed(server: String?, connection: Any) { open[key(server)]?.remove(connection) }
+    fun reused(server: String?) { reused.getOrPut(key(server)) { java.util.concurrent.atomic.AtomicInteger() }.incrementAndGet() }
+    fun openNow(server: String?): Int = open[key(server)]?.size ?: 0
+    fun openedEver(server: String?): Int = opened[key(server)]?.get() ?: 0
+    fun reusedEver(server: String?): Int = reused[key(server)]?.get() ?: 0
+    /** Every server's open count, for the debug bundle. */
+    fun summary(): String = open.entries.joinToString(" ") { (k, v) -> "${com.billmongan.herdrdroid.diag.LinkDiag.serverTag(k)}=${v.size}" }
+    internal fun clear() { open.clear(); opened.clear(); reused.clear() }
+}

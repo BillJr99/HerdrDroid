@@ -1145,7 +1145,15 @@ class AppViewModel internal constructor(
                     return@launch
                 }
                 serverQuotas = serverQuotas + (s.id to prefs.quotas(s.id))
-                val panes: List<Pane>? = if (s.id == current?.id && herdr != null) panes else runCatching {
+                // 2.2.8 (Bill: "I'm surprised by how many SSH connections HerdrDroid creates"): a server the
+                // watcher already holds a live connection to is checked on that one, not on a new one.
+                val watched = if (s.id == current?.id) null else fleet?.herdr(s.id)?.takeIf { it.connectionIdentity != null }
+                val panes: List<Pane>? = if (s.id == current?.id && herdr != null) panes
+                else if (watched != null) runCatching {
+                    com.billmongan.herdrdroid.ssh.SshCounts.reused(s.id)
+                    withBusy(watched.panes(), runCatching { watched.workCounts(watched.panes0Cache, transcriptScript).second }.getOrDefault(emptyMap()))
+                }.getOrNull()
+                else runCatching {
                     val ssh = HerdrSsh(s.host, s.port, s.user, credentialsFor(s, savedPassword(s)), s.fingerprint, SshKeyVault::provider, s.wsUrl?.takeIf { s.overWebSocket }, s.smallPacketsMss, s.id,
                         sessionFallbackMss = sessionMssFor(s.id))
                     try {
@@ -7831,7 +7839,15 @@ class AppViewModel internal constructor(
     }
 
     override fun onCleared() {
+        // 2.2.8 (Bill: "be more robust about managing and closing stale connections"): every
+        // connection the app holds is closed when it goes: the open server's, the one kept from a
+        // moment ago, one still signing in, and the watcher's (whose loop stops too).
         ssh?.close()
+        parked?.ssh?.close()
+        parked = null
+        connectingSsh?.close()
+        fleet?.stop()
+        fleet = null
         super.onCleared()
     }
 }
