@@ -117,4 +117,24 @@ class OmpAsk227Test {
         assertNotNull("pi's folder row over its token row", OmpAsk.prompt(under("~/work/demo", "0.0%/128k (auto)   (local) sample/model")))
         assertNotNull("Oh My Pi's rows", OmpAsk.prompt(under("  ⎋ Asking review decisions", " π > ⬢ sample/model > 📁 ~/work ▶──────45%──╎──┃──128K─", "╰─")))
     }
+
+    /** Grok's review: pi's real token row (with its ↑/↓/R/CH stats first) under a live box. */
+    @Test fun pisRealTokenRowsCountAsStatusRows() {
+        val live = stripAnsi(screen("ask-open-other.ansi"))
+        val bottom = live.lines().indexOfLast { it.trimStart().startsWith("╰────") }
+        fun under(vararg rows: String) = (live.lines().take(bottom + 1) + rows.toList()).joinToString("\n")
+        val real = stripAnsi(checkNotNull(javaClass.getResource("/screens/pi/live-2026-11-22-menus/empty.ansi")).readText()).lines()
+            .first { it.contains("%/128k") }
+        assertNotNull(OmpAsk.prompt(under("~/agents/demo", real)))
+        assertNotNull(OmpAsk.prompt(under("~/agents/demo", "↑1k ↓2k 3.0%/128k (auto)                    (local) sample/model")))
+        assertNotNull(OmpAsk.prompt(under("0.0%/128k (auto)")))
+        assertNull(OmpAsk.prompt(under("~/agents/demo", "↑1k ↓2k and then some text")))
+    }
+
+    /** Grok's review: a shortened answer that is only "…" proves nothing. */
+    @Test fun aBareEllipsisAnswerIsNotVerifiable() {
+        fun st(answer: String, at: Int) = OmpAsk.State(listOf("1. q"), 1, 1, false, listOf(answer), listOf(at))
+        assertFalse(OmpAsk.sameAnswers(st("…", 0), st("Leave as CHECK-FIRST", 0)))
+        assertFalse(st("…", 0).verifiable)
+    }
 }

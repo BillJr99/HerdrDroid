@@ -4826,7 +4826,7 @@ class AppViewModel internal constructor(
         val logged = fromLog && transcriptPane == owner.pane.id && transcriptState == TranscriptMode.ON
         val items = if (logged) transcriptItems else emptyList()
         paneReads.noteFrames(owner, owner.server, owner.pane.id, "${com.billmongan.herdrdroid.ui.sessionName(owner.pane)} on $label", recent, owner.pane.agent,
-            trusted = { f -> !fromLog || (logged && com.billmongan.herdrdroid.herdr.replyHasReadFrame(items, f.code)) })
+            trusted = { f -> !fromLog || (logged && com.billmongan.herdrdroid.herdr.replyHasReadFrame(items, f)) })
     }
 
     // ---- 2.1.4: telling agents about cross-server messaging ------------------------------------
