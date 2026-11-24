@@ -1,0 +1,26 @@
+  ┃  ?  The release build fails on its second step, after the cache is restored. This is the part of
+  ┃  scripts/build.sh that runs there:
+  ┃
+  ┃      for f in src/*.py; do
+  ┃          python3 -m py_compile "$f" || exit 1
+  ┃      done
+  ┃      make -C build test JOBS=4
+  ┃
+  ┃  The same check could run as one call instead:
+  ┃
+  ┃      import compileall, sys
+  ┃      ok = compileall.compile_dir("src", quiet=1)
+  ┃      if not ok:
+  ┃          sys.exit(1)
+  ┃
+  ┃  Each file is compiled on its own today, so one bad file stops the loop before the tests run.
+  ┃  The single call reports every bad file at once.
+  ┃
+  ┃  Should I keep the loop as it is, or replace it with one compileall call?
+  ┃
+  ┃  1 (●) Keep the loop
+  ┃  2 (○) Use compileall
+  ┃  3 (○) Other (type your own answer)
+  ┃
+
+  1/3:answer  │  ←/→:question  │  z:type  │  Shift+X:dismiss  │  Esc:scrollback
