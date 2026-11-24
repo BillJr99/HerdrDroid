@@ -614,7 +614,14 @@ class Herdr internal constructor(
         // The first wait's own status is the script's (1.4.1, from a second review: a trailing
         // "true" made a failed wait look like a timeout). 2.1.4: the waits still running are stopped
         // with their herdr processes, not only their subshells, so none is left behind on the computer.
-        return "pids=; ${body}wait -n 2>/dev/null; rc=\$?; for p in \$pids; do pkill -P \"\$p\" 2>/dev/null; done; kill \$pids 2>/dev/null; exit \$rc"
+        // 2.2.8 (Bill: a closed app's watch still held a `herdr agent wait` on the computer): a watchdog
+        // reads the command's standard input, which only ends when the phone closes the channel (the
+        // app closed, the link dropped, the wait was cancelled); then it stops every wait at once, so
+        // none outlives the phone's interest in it. It is stopped too when the waits end normally.
+        // (A background job's standard input is /dev/null unless it is given one, so it reads a copy, fd 3.)
+        val dog = "( cat <&3 >/dev/null 2>&1; for p in \$pids; do pkill -P \"\$p\" 2>/dev/null; done; kill \$pids 2>/dev/null ) >/dev/null 2>&1 & dog=\$!; "
+        return "exec 3<&0; pids=; ${body}${dog}wait -n 2>/dev/null; rc=\$?; for p in \$pids; do pkill -P \"\$p\" 2>/dev/null; done; kill \$pids 2>/dev/null; " +
+            "pkill -P \"\$dog\" 2>/dev/null; kill \$dog 2>/dev/null; exit \$rc"
     }
 
     /** Each agent's program version here (1.4.0): agent kind to version, for the parsers and the debug bundle. */
