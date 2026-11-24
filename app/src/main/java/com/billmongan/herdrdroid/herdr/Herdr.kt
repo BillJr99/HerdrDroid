@@ -3896,11 +3896,33 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
             // top of a box, or the agent's own activity lines above the card end the question.
             var gaps = 0
             var gap = false
+            // 2.2.8 (Bill: "make sure all the question text is visible and well formatted especially
+            // code"): a long question with code blocks was cut at its third blank line or 20th line.
+            // A fenced block ("```" … "```") is read row by row, its rows and the blank lines around
+            // it never end the question; inside a dialog drawn in a frame (the option rows start with
+            // "│" or "┃": Grok, Copilot, OpenCode, Vibe, Hermes), a blank row of the frame does not
+            // either, and the question ends where the frame does. Everything else ends it as before.
+            val frame = raw[at].indexOfFirst { it != ' ' }.takeIf { it >= 0 && raw[at][it] in "│┃" }?.let { it to raw[at][it] }
+            fun inFrame(r: String) = frame != null && r.length > frame.first && r[frame.first] == frame.second
+            var inFence = false
+            var freeGaps = 0
             // At most 20 lines, or 60 while none of them asks yet (1.4.8: a Muse card with a long command
-            // put its "Would you like to run the following command?" more than 20 lines up).
-            while (i >= 0 && (got.size < 20 || (got.size < 60 && got.none { it.text.trimEnd().endsWith("?") }))) {
+            // put its "Would you like to run the following command?" more than 20 lines up); 2.2.8: up
+            // to TALL_QUESTION_ROWS once the question holds a code block or crossed a blank row of its frame.
+            while (i >= 0 && (got.size < 20 || (got.size < 60 && got.none { it.text.trimEnd().endsWith("?") }) ||
+                    ((freeGaps > 0 || got.any { it.fence }) && got.size < TALL_QUESTION_ROWS))) {
                 val l = raw[i]
                 val c = clean(l)
+                // 2.2.8: past the end of the dialog's frame, once the frame let the question run on.
+                if (frame != null && freeGaps > 0 && l.isNotBlank() && !inFrame(l)) break
+                val (bodyCol, bodyText) = rowBody(l)
+                if (inFence || isFenceRow(bodyText)) {
+                    if (l.trimStart().startsWith("╭") || l.trimStart().startsWith("┌") || l.trim().matches(Regex("""^[─━═]{3,}$"""))) break
+                    got.add(0, QLine(bodyText.trimEnd(), fence = true, indent = bodyCol))
+                    if (isFenceRow(bodyText)) inFence = !inFence
+                    gap = false
+                    i--; continue
+                }
                 // Grok's data-sharing banner can sit right above a card; it is its own question.
                 if (got.isNotEmpty() && GROK_BANNER.containsMatchIn(c)) break
                 // A rule on its own line ("──────") ends the question; clean() would empty it.
@@ -3913,7 +3935,17 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
                     break
                 }
                 if (l.isBlank() || c.isEmpty()) {
-                    if (got.isNotEmpty() && !gap) { gap = true; gaps++; if (gaps > 2) break; got[0] = got[0].copy(gapBefore = true) }
+                    if (got.isNotEmpty() && !gap) {
+                        gap = true
+                        // 2.2.8: next to a code block, or a blank row inside the dialog's frame.
+                        val above = raw.getOrNull(i - 1)?.let(::rowBody)
+                        val byFence = (got[0].fence && isFenceRow(got[0].text)) || above?.second?.let(::isFenceRow) == true
+                        // Code drawn as Markdown, indented past the text next to it, with no fences.
+                        val byIndent = above != null && above.first >= 0 && got[0].indent >= 0 && kotlin.math.abs(got[0].indent - above.first) >= 4
+                        if (byFence || byIndent || inFrame(l)) freeGaps++ else gaps++
+                        if (gaps > 2) break
+                        got[0] = got[0].copy(gapBefore = true)
+                    }
                     i--; continue
                 }
                 if (l.trimStart().startsWith("╭") || l.trimStart().startsWith("┌") || c.matches(Regex("""^[─━═\-_\s]+$"""))) break
@@ -3949,7 +3981,7 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
                 // Grok's question card starts its question with a "?" icon (1.4.9).
                 val row = if (gutter) c.trimStart { it in GROK_GUTTER || it == ' ' }.trimEnd().removeSuffix("·").trimEnd()
                     else if (isCmd && tl.startsWith("┃")) c.trimEnd().removeSuffix("·").trimEnd() else c
-                if (row.any(Char::isLetterOrDigit) && !row.contains("narrow scope")) got.add(0, QLine(row.trimStart('›', '❯', ' ').replace(Regex("""^\?\s+"""), ""), isCmd, bar = !isCmd && tl.startsWith("│")))
+                if (row.any(Char::isLetterOrDigit) && !row.contains("narrow scope")) got.add(0, QLine(row.trimStart('›', '❯', ' ').replace(Regex("""^\?\s+"""), ""), isCmd, bar = !isCmd && tl.startsWith("│"), indent = bodyCol))
                 i--
             }
             // A "┆" row goes on the line above only when that row ends in Grok's "·" wrap mark; else
@@ -3961,7 +3993,7 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
                     joined[joined.size - 1] = prev.copy(text = prev.text.trimEnd() + " " + q.text.trimStart(), wraps = q.wraps)
                 else joined += q
             }
-            joined.takeIf { it.isNotEmpty() }
+            withFenceIndent(joined).takeIf { it.isNotEmpty() }
         }
     }
     // The question's text (notifications, matching) leaves out Claude's tab bar; the app shows it as steps.
