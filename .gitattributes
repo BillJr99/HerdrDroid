@@ -1,0 +1,2 @@
+# Captured terminal screens: trailing spaces and blank rows are part of the layout the parser tests read.
+app/src/test/resources/screens/** -whitespace
