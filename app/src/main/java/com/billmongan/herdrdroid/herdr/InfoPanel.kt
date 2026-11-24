@@ -65,7 +65,6 @@ internal val PANEL_ESC_VERIFIED: Map<String, Set<PanelKind>> = mapOf(
     "agy" to setOf(PanelKind.USAGE, PanelKind.STATUS, PanelKind.HELP),
     // OpenCode: dialogs with an "esc close" / "esc dismiss" header (status, help, shortcuts).
     "opencode" to setOf(PanelKind.STATUS, PanelKind.HELP, PanelKind.SHORTCUTS),
-    "opencode-ursinus" to setOf(PanelKind.STATUS, PanelKind.HELP, PanelKind.SHORTCUTS),
     // Oh My Pi and pi: overlays with "Esc close" / "esc close".
     "omp" to setOf(PanelKind.STATUS, PanelKind.USAGE, PanelKind.SESSION, PanelKind.HELP, PanelKind.SHORTCUTS),
     "pi" to setOf(PanelKind.STATUS, PanelKind.USAGE, PanelKind.SESSION, PanelKind.HELP, PanelKind.SHORTCUTS),
@@ -345,7 +344,7 @@ internal fun infoPanelOn(agent: String?, visible: String): InfoPanel? {
     if (chromeUnder.any { it.trim().endsWith("?") || OPTION_ROW.containsMatchIn(body(it)) }) return maybe("something else is drawn under it")
     if (kind == null) return maybe("its title isn't one HerdrDroid knows")
     if (k == PanelKind.DASHBOARD) return maybe("the dashboard takes more than one Esc to leave")
-    if (k !in PANEL_ESC_VERIFIED[a].orEmpty()) return maybe("HerdrDroid hasn't verified how this agent closes it")
+    if (k !in PANEL_ESC_VERIFIED[ruleAgent(a)].orEmpty()) return maybe("HerdrDroid hasn't verified how this agent closes it")
     return InfoPanel(a, k, known = true, why = null, frame = inside)
 }
 

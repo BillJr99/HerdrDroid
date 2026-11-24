@@ -587,11 +587,11 @@ class SuccessiveCardAnswerTest {
     }
 
     @Test fun openCodeBackgroundDrawerIsNotAQuestionAndDoesNotReceiveChat() =
-        fixture("opencode-ursinus", openCodeDrawer) {
+        fixture("opencode-work", openCodeDrawer) {
             recentResult = ExecResult(0, openCodePermission, "")
             readSelectedPane()
             assertEquals(openCodeDrawer, vm.paneText)
-            assertNull(detectPrompt(vm.paneText, true, "opencode-ursinus"))
+            assertNull(detectPrompt(vm.paneText, true, "opencode-work"))
             assertTrue(vm.questionsFor("p1").isEmpty())
             assertTrue(vm.blocksNormalSend(checkNotNull(vm.pane("p1")).copy(status = Status.WORKING), frame))
             assertTrue(sent.isEmpty())
@@ -639,7 +639,7 @@ class SuccessiveCardAnswerTest {
     }
 
     @Test fun nativeOpenCodeApprovalUsesFreshFocusAndNeverOffersStandingPermission() {
-        for (agent in listOf("opencode", "opencode-ursinus")) fixture(agent, openCodePermission) {
+        for (agent in listOf("opencode", "opencode-work")) fixture(agent, openCodePermission) {
             status(Status.WORKING)
             recentResult = ExecResult(0, "Preparing the next step", "")
             readSelectedPane()
@@ -659,7 +659,7 @@ class SuccessiveCardAnswerTest {
         fun focused(focus: String) = listOf("Allow once", "Always allow", "Reject").fold(v232) { t, label ->
             t.replace("   $label", "   \u001B[${if (label == focus) 44 else 49}m$label\u001B[0m")
         }
-        for (status in listOf(Status.DONE, Status.IDLE)) fixture("opencode-ursinus", v232) {
+        for (status in listOf(Status.DONE, Status.IDLE)) fixture("opencode-work", v232) {
             status(status)
             readSelectedPane()
             val card = displayed()
@@ -692,7 +692,7 @@ class SuccessiveCardAnswerTest {
     }
 
     @Test fun nativeOpenCodeApprovalRefusesUnverifiedFocusChangedCommandDrawerAndOccupant() =
-        fixture("opencode-ursinus", openCodePermission) {
+        fixture("opencode-work", openCodePermission) {
             readSelectedPane()
             val card = displayed()
             val target = checkNotNull(vm.paneTextTarget)
@@ -719,7 +719,7 @@ class SuccessiveCardAnswerTest {
     }
 
     @Test fun nativeOpenCodeQuestionUsesFreshSelection() {
-        for (agent in listOf("opencode", "opencode-ursinus")) fixture(agent, openCodeQuestion) {
+        for (agent in listOf("opencode", "opencode-work")) fixture(agent, openCodeQuestion) {
             status(Status.WORKING)
             recentResult = ExecResult(0, "Preparing a question", "")
             readSelectedPane()
@@ -908,7 +908,7 @@ class SuccessiveCardAnswerTest {
     }
 
     @Test fun nativeOpenCodeColorOnlyQuestionSendsOneDigitFromChat() {
-        for (agent in listOf("opencode", "opencode-ursinus")) fixture(agent, nativeQuestion(1)) {
+        for (agent in listOf("opencode", "opencode-work")) fixture(agent, nativeQuestion(1)) {
             status(Status.WORKING)
             recentResult = ExecResult(0, "Preparing a question", "")
             readSelectedPane()

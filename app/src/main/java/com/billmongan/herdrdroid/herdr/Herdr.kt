@@ -3065,7 +3065,11 @@ private val AGENT_CRASHES = listOf(
 /** A shell's prompt: "tester@host:~/work$", "user@devbox2:~ %" (a bare "$" is too easily something else). */
 private val SHELL_PROMPT = Regex("""^[\w.-]+@[\w.-]+(:\S*)?\s?[$#%]\s*$""")
 
-internal fun isOpenCode(agent: String?): Boolean = agent?.lowercase() in setOf("opencode", "opencode-ursinus")
+/** OpenCode by its own name, or a named launch of it ("opencode-<name>", such as one with its own config). */
+internal fun isOpenCode(agent: String?): Boolean = agent?.lowercase()?.let { it == "opencode" || it.startsWith("opencode-") } == true
+
+/** The name the per-agent rules (panels, model footer, sessions) key on: "opencode" for any [isOpenCode] agent. */
+internal fun ruleAgent(agent: String?): String? = if (isOpenCode(agent)) "opencode" else agent?.lowercase()
 
 private val OPENCODE_DRAWER_TABS = Regex("""\bSubagents\b.*\bShell\b.*\bTerminals\b""", RegexOption.IGNORE_CASE)
 private val OPENCODE_DRAWER_FOOTER = Regex("""\besc\b.*\bshow inactive\s+ctrl\+a\s+tabs\b""", RegexOption.IGNORE_CASE)

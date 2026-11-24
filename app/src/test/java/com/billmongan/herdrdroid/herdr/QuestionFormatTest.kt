@@ -147,7 +147,7 @@ class QuestionFormatTest {
     """.trimIndent()
 
     @Test fun openCodeWebSearchOffersDirectNumberKeysWithoutAHighlight() {
-        val prompt = detectPrompt(webSearch, blocked = true, agent = "opencode-ursinus")!!
+        val prompt = detectPrompt(webSearch, blocked = true, agent = "opencode-work")!!
         assertEquals("Allow OpenCode to search the web for current information?", prompt.question)
         assertEquals(listOf("Allow search via Example", "Choose another provider", "Disable web search"), prompt.choices.map { it.label })
         assertEquals(listOf("1", "2", "3"), prompt.choices.map { it.keys })
@@ -157,7 +157,7 @@ class QuestionFormatTest {
 
     @Test fun oldWebSearchPromptDoesNotBecomeALiveCard() {
         val movedOn = "$webSearch\n┃  Search complete.\n┃  ❯ "
-        assertNull(detectPrompt(movedOn, blocked = true, agent = "opencode-ursinus"))
+        assertNull(detectPrompt(movedOn, blocked = true, agent = "opencode-work"))
     }
 
     @Test fun failedRecentAndEmptyVisibleRecoverWithShortRead() {

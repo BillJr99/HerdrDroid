@@ -32,7 +32,7 @@ class SessionControls220Test {
             assertTrue(a, spec.picker != null)
         }
         assertEquals("/chat new", SessionControls.forAgent("kiro")!!.newCommand)
-        assertEquals("/sessions", SessionControls.forAgent("opencode-ursinus")!!.picker)
+        assertEquals("/sessions", SessionControls.forAgent("opencode-work")!!.picker)
         // 2.2.2: Antigravity, pi, Oh My Pi and Copilot have Sessions now (see PaneControls222Test).
         assertNull(SessionControls.forAgent("gemini"))
     }

@@ -108,7 +108,7 @@ class PaneQuestionContextTest {
     }
 
     @Test fun openCodeApprovalShowsCommandAndOnlyOneTimeOrRejectControls() = withPane(
-        agent = "opencode-ursinus", frame = "opencode/derived-1.4.9/0701-permission-prompt-all-tools.txt",
+        agent = "opencode-work", frame = "opencode/derived-1.4.9/0701-permission-prompt-all-tools.txt",
         items = listOf(reply), checkedTarget = true,
     ) {
         rule.onNodeWithText("npm install --prefix", substring = true).performScrollTo().assertIsDisplayed()

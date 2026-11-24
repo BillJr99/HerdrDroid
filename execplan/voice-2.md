@@ -27,7 +27,7 @@ Add voice parsing and a microphone foreground service in the voice package. Wire
 
 ## Validation and Acceptance
 
-Run testDebugUnitTest in Docker on minipc. Review changes and verify the APK signature against 1.4.11. Use the GitHub release workflow for the APK. On the Pixel, check upgrade, dictation, pane switches, single-tap answers and voice disabled. Then pair Bluetooth while parked, start hands-free with the app visible, lock the phone, and verify wake, command, readout and Stop. The hardware result remains pending until Bill runs that test.
+Run testDebugUnitTest in Docker on the build machine. Review changes and verify the APK signature against 1.4.11. Use the GitHub release workflow for the APK. On the Pixel, check upgrade, dictation, pane switches, single-tap answers and voice disabled. Then pair Bluetooth while parked, start hands-free with the app visible, lock the phone, and verify wake, command, readout and Stop. The hardware result remains pending until Bill runs that test.
 
 ## Recovery and Ownership
 
@@ -35,4 +35,4 @@ Voice is opt-in. Stop the hands-free session from its notification to release th
 
 ## Outcomes & Retrospective
 
-The voice and question build passed the JVM suite and signed APK checks on minipc. A synthetic Vosk probe recognized the wake phrase, a read command and a restricted confirmation phrase. The final Steer menu build, Grok review and Pixel/Volvo validation are pending.
+The voice and question build passed the JVM suite and signed APK checks on the build machine. A synthetic Vosk probe recognized the wake phrase, a read command and a restricted confirmation phrase. The final Steer menu build, Grok review and Pixel/Volvo validation are pending.
