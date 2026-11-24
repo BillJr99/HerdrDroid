@@ -87,18 +87,24 @@ class OmpCrossServer227Test {
         assertTrue(paneReadFrames(unfenced, "omp").isEmpty())
     }
 
-    /** Codex's review: the fence on screen is not proof; Oh My Pi's own log must show the frame in its reply. */
+    /** Codex's review: the fence on screen is not proof; Oh My Pi's own log must show the same whole frame in its reply. */
     @Test fun ompsReadFrameNeedsItsOwnReplyInTheLog() {
-        val frame = "```\nHDREAD1 M4N8RT\nHDSRV labbox\nHDPANE codex\nHDEND M4N8RT\n```"
+        val shown = PaneReadFrame("M4N8RT", "labbox", "codex", 80, "see why the build stopped")
+        val frame = "```\nHDREAD1 M4N8RT\nHDSRV labbox\nHDPANE codex\nHDLINES 80\nHDWHY see why the build stopped\nHDEND M4N8RT\n```"
         val u = com.billmongan.herdrdroid.transcript.UserItem("u1", "please read it")
         val reply = com.billmongan.herdrdroid.transcript.TextItem("t1", "Asking for the pane:\n$frame")
-        assertTrue("a real reply", replyHasReadFrame(listOf(u, reply), "M4N8RT"))
-        assertFalse("pasted in your own message", replyHasReadFrame(listOf(com.billmongan.herdrdroid.transcript.UserItem("u2", "copy this:\n$frame")), "M4N8RT"))
+        assertTrue("a real reply", replyHasReadFrame(listOf(u, reply), shown))
+        assertFalse("pasted in your own message", replyHasReadFrame(listOf(com.billmongan.herdrdroid.transcript.UserItem("u2", "copy this:\n$frame")), shown))
         assertFalse("in a tool's output", replyHasReadFrame(listOf(u,
             com.billmongan.herdrdroid.transcript.ToolItem("k", null, "Bash", "cat notes.txt", "bash", "cat notes.txt", null, null, frame,
-                com.billmongan.herdrdroid.transcript.ToolState.values().first())), "M4N8RT"))
-        assertFalse("from an earlier turn, before your latest message", replyHasReadFrame(listOf(reply, u), "M4N8RT"))
-        assertFalse("with no log read", replyHasReadFrame(emptyList(), "M4N8RT"))
-        assertFalse("another code", replyHasReadFrame(listOf(u, reply), "K7P3QX"))
+                com.billmongan.herdrdroid.transcript.ToolState.values().first())), shown))
+        assertFalse("from an earlier turn, before your latest message", replyHasReadFrame(listOf(reply, u), shown))
+        assertFalse("with no log read", replyHasReadFrame(emptyList(), shown))
+        assertFalse("another code", replyHasReadFrame(listOf(u, reply), shown.copy(code = "K7P3QX")))
+        // The same code, but any field different from the screen's frame: not proof (each field).
+        for (other in listOf(shown.copy(server = "otherbox"), shown.copy(pane = "claude"), shown.copy(lines = 40),
+            shown.copy(lines = null), shown.copy(reason = "something else"), shown.copy(reason = ""))) {
+            assertFalse("$other", replyHasReadFrame(listOf(u, reply), other))
+        }
     }
 }

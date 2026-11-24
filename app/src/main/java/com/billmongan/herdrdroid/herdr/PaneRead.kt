@@ -127,15 +127,15 @@ internal fun paneReadFinds(output: String, agent: String? = null): List<PaneRead
 /** The frames alone, as [paneReadFinds] accepts them. */
 /**
  * 2.2.7 (Codex's review): proof that Oh My Pi or pi wrote a read frame itself, from its own chat
- * log: the frame's first and last lines in the agent's reply text after your latest message. A
- * frame in your message, a tool's output or anywhere else in the log is not proof, and with no log
- * read there is none.
+ * log: the same whole frame (code, server, pane, line count and reason, every field equal to the
+ * one on screen) in the agent's reply text after your latest message. A frame in your message, a
+ * tool's output or anywhere else in the log is not proof, and with no log read there is none.
  */
-internal fun replyHasReadFrame(items: List<com.billmongan.herdrdroid.transcript.Item>, code: String): Boolean {
+internal fun replyHasReadFrame(items: List<com.billmongan.herdrdroid.transcript.Item>, frame: PaneReadFrame): Boolean {
     val lastUser = items.indexOfLast { it is com.billmongan.herdrdroid.transcript.UserItem }
     return items.drop(lastUser + 1).any { item ->
         item is com.billmongan.herdrdroid.transcript.TextItem && item.text.lines().map { it.trim() }.let { l ->
-            l.contains("HDREAD1 $code") && l.contains("HDEND $code")
+            l.indices.any { i -> l[i] == "HDREAD1 ${frame.code}" && parseReadFrame(l, i, frame.code)?.first == frame }
         }
     }
 }

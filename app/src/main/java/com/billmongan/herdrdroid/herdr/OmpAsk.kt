@@ -24,7 +24,7 @@ object OmpAsk {
          * where the dialog cuts it off, unseen). Only then is Submit offered from the card.
          */
         val verifiable: Boolean get() = answers.size == questions.size && answerAt.size == questions.size &&
-            answers.all { it != null && !isTypedAnswerChoice(it) } && answerAt.all { it != null }
+            answers.all { it != null && it.removeSuffix("…").isNotBlank() && !isTypedAnswerChoice(it) } && answerAt.all { it != null }
     }
 
     data class Question(val number: Int, val text: String, val answered: Boolean, val options: List<String>,
@@ -44,7 +44,7 @@ object OmpAsk {
         a.answers.indices.all { i ->
             val x = a.answers[i]!!; val y = b.answers[i]!!
             fun fits(short: String, full: String) = short.endsWith("…") && !full.endsWith("…") &&
-                full.startsWith(short.removeSuffix("…").trimEnd())
+                short.removeSuffix("…").trimEnd().isNotEmpty() && full.startsWith(short.removeSuffix("…").trimEnd())
             a.answerAt[i] == b.answerAt[i] && (x == y || fits(x, y) || fits(y, x))
         }
 
@@ -72,7 +72,8 @@ object OmpAsk {
     private val DIALOG_ROW = Regex("""^⎋ \S.*$""")
     private val OMP_STATUS = Regex("""^\S{1,2}( \S+)? > .* > 📁 \S+ ▶─[─0-9%K╎┃]*$""")
     private val OMP_CORNER = Regex("""^╰─$""")
-    private val PI_TOKENS = Regex("""^\d+(\.\d+)?%/\d+k\b.*$""")
+    // pi's token row, with its optional ↑/↓/R/CH stats first: "↑2.5M ↓94k R10M CH0.0% 36.4%/128k (auto) …".
+    private val PI_TOKENS = Regex("""^(?:(?:↑|↓|R|CH)[0-9.]+[kKMG%]?\s+)*\d+(\.\d+)?%/\d+k\b.*$""")
     private val PI_FOLDER = Regex("""^~?/\S*$""")
 
     private fun onlyStatusRows(rows: List<String>): Boolean {
