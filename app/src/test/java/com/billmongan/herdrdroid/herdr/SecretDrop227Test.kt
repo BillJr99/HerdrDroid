@@ -125,10 +125,12 @@ class SecretDrop227Test {
         var inFlight = 0
         val inFlightAtWrite = mutableListOf<Int>()
         override fun present(t: SecretTarget) = t in listed
+        /** The connection each server is on now. */
+        var connection: Any? = null
         override fun bind(serverId: String) = runners[serverId]?.let { r ->
             SecretSender.Bound(
                 SecretDrop.Run { c, stdin -> if (stdin != null) inFlightAtWrite += inFlight; r.run(c, stdin) },
-                { id -> reads += id; fresh(id) }, { inFlight++ }, { inFlight-- },
+                { id -> reads += id; fresh(id) }, { inFlight++ }, { inFlight-- }, connection,
             )
         }
         override fun isOpen(t: SecretTarget) = t == open
@@ -273,5 +275,22 @@ class SecretDrop227Test {
         } finally {
             home.deleteRecursively()
         }
+    }
+
+    /** Codex's review of 5b66c71: a reconnect between choosing the pane and Send refuses the save. */
+    @Test fun aReconnectSinceThePaneWasChosenRefusesTheSave() = runBlocking {
+        val chosenOn = Any()
+        val target = bound.copy(connection = chosenOn)
+        val pc = Computer()
+        val port = Port(target, mutableSetOf(target), mapOf("s1" to pc))
+        port.connection = Any()
+        val bytes = secretText.toByteArray()
+        val o = SecretSender(port).send(target, null, true, bytes)
+        assertTrue(o.toString(), o is SecretOutcome.Refused && o.why.contains("reconnected after you chose Claude, so nothing was saved"))
+        assertTrue("never uploaded", pc.writes.isEmpty())
+        assertTrue(port.live.isEmpty() && port.drafts.isEmpty())
+        assertTrue(bytes.all { it == 0.toByte() })
+        port.connection = chosenOn
+        assertTrue("the same connection saves", SecretSender(port).send(target, null, true, secretText.toByteArray()) is SecretOutcome.Saved)
     }
 }

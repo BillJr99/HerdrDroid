@@ -1436,6 +1436,12 @@ def live_report(found, hsid):
     return out
 
 
+def reader_kind(agent):
+    """2.2.7: a named launch of OpenCode ("opencode-<name>") reads as OpenCode; its log is found the same way."""
+    a = (agent or "").lower()
+    return "opencode" if a.startswith("opencode-") else a
+
+
 READERS = {"claude": claude, "codex": codex, "pi": pi, "omp": omp, "grok": grok, "copilot": copilot,
            "opencode": opencode, "hermes": hermes, "vibe": vibe, "kiro": kiro, "muse": muse}
 
@@ -1867,6 +1873,7 @@ def open_files_of(pids):
 
 
 def pane_work(pane, agent, cwd, session=""):
+    agent = reader_kind(agent)
     now = time.time()
     procs, pids = pane_procs(pane)
     work = {"ok": True, "active_procs": active_shells(procs, agent), "subagents": [], "tasks": []}
@@ -1941,6 +1948,7 @@ def work_counts(panes):
     busy = {}
     shells = {}
     for pane, agent, cwd, session in panes:
+        agent = reader_kind(agent)
         # The card's count: subagents still running (shells are counted on the agent's own screen).
         # "busy" adds the background tasks and the commands the agent started that still run, for
         # every agent, so an agent herdr calls idle shows as working while any of them is active.
@@ -2149,7 +2157,7 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == "__follow__":
         follow = int(sys.argv[5]) if len(sys.argv) > 5 and sys.argv[5].isdigit() else 120
         sys.argv = [sys.argv[0]] + sys.argv[2:5]
-    agent = (sys.argv[1] if len(sys.argv) > 1 else "").lower()
+    agent = reader_kind(sys.argv[1] if len(sys.argv) > 1 else "")
     cwd = sys.argv[2] if len(sys.argv) > 2 else ""
     try:
         cur = json.loads(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else {}

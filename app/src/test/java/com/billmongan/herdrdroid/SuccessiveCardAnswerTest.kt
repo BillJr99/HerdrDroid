@@ -159,6 +159,14 @@ class SuccessiveCardAnswerTest {
             assertEquals(1, org.robolectric.shadows.ShadowToast.shownToastCount())
         }
 
+    /** 2.2.7 (Grok's review): "Switch to Claude" opens the Claude pane, never a saved server whose name only sounds alike. */
+    @Test fun aBareAgentNameOpensThePaneNotALookAlikeServer() = fixture("claude", "❯ ") {
+        vm.saveServer(Server(id = "fixture-cloud", name = "cloud", host = "127.0.0.1", port = 1, user = "u", herdrPath = "herdr"))
+        speak("Switch to Claude")
+        assertEquals("Opening Claude on Fixture.", spoken)
+        assertEquals("fixture", vm.current?.id)
+    }
+
     /** 2.2.7: the pane's occupant changed after the card's last read: nothing typed. */
     @Test fun anOccupantChangedBeforeTheKeysIsNotSent() =
         fixture("hermes", hermesClarify) {

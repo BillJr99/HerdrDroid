@@ -96,9 +96,12 @@ private fun withNumber(name: String, base: String) = name.length > base.length &
  * The saved servers a spoken [spoken] name means, the first rule that matches any: the same
  * [voiceName]; a last "to"/"too" heard for "two"; the name with only a number left off ("Lab Box"
  * for a server named labbox2); then the same letters but vowels (a recognizer's "lob box" for "lab
- * box"), with or without the number. A spoken name never renames a saved server.
+ * box"), with or without the number, only when it means one server and has at least three
+ * consonants. [loose] false: the first two rules only, for a phrase that may name a pane instead
+ * (Grok's review: "Switch to Claude" must never open a server named "cloud"). A spoken name never
+ * renames a saved server.
  */
-internal fun voiceServersNamed(servers: List<Server>, spoken: String): List<Server> {
+internal fun voiceServersNamed(servers: List<Server>, spoken: String, loose: Boolean = true): List<Server> {
     val name = voiceName(spoken)
     if (name.isEmpty()) return emptyList()
     val two = heardTwo(spoken)
@@ -107,11 +110,9 @@ internal fun voiceServersNamed(servers: List<Server>, spoken: String): List<Serv
         for (rule in rules) named.filter { rule(it.second) }.map { it.first }.takeIf { it.isNotEmpty() }?.let { return it }
         return emptyList()
     }
-    val heard = listOfNotNull(name, two).map(::skeleton)
-    return first(
-        { it == name },
-        { two != null && it == two },
-        { withNumber(it, name) },
-        { s -> heard.any { h -> skeleton(s) == h || withNumber(skeleton(s), h) } },
-    )
+    val strict = first({ it == name }, { two != null && it == two })
+    if (strict.isNotEmpty() || !loose) return strict
+    first({ withNumber(it, name) }).takeIf { it.isNotEmpty() }?.let { return it }
+    val heard = listOfNotNull(name, two).map(::skeleton).filter { h -> h.count { it.isLetter() } >= 3 }
+    return first({ s -> heard.any { h -> skeleton(s) == h || withNumber(skeleton(s), h) } }).takeIf { it.size == 1 }.orEmpty()
 }

@@ -50,7 +50,8 @@ data class Pane(
     val sendStatus: Status get() = screenNeedsYouFrom ?: status
 
     val agentName: String
-        get() = when (agent?.lowercase()) {
+        // 2.2.7: a named launch of OpenCode is OpenCode, with its name kept so two can be told apart.
+        get() = if (isOpenCode(agent) && agent!!.lowercase() != "opencode") "OpenCode (${agent.substringAfter('-')})" else when (agent?.lowercase()) {
             null, "" -> title.ifBlank { "Shell" }
             "claude" -> "Claude"
             "codex" -> "Codex"
@@ -4045,7 +4046,7 @@ object Backgrounding {
     // Muse Code 1.4.20's /help: "ctrl + b to send to background" (1.4.5).
     private val agents = setOf("claude", "opencode", "grok", "agy", "muse")
     const val KEY = "ctrl+b"
-    fun supported(agent: String?): Boolean = agent?.lowercase() in agents
+    fun supported(agent: String?): Boolean = ruleAgent(agent) in agents
 }
 
 /** The program that runs an agent kind, where it differs from the kind's name. */
@@ -4220,13 +4221,33 @@ internal fun cardOccupantDigest(p: JSONObject): String {
     return sha256Hex(out.toByteArray())
 }
 
-/** A running countdown ("Enter to confirm (57s)") changes nothing about the question. */
-private val CARD_COUNTDOWN = Regex("""\(\d{1,4}s\)""")
+/**
+ * 2.2.7 (Codex's review): a running countdown changes nothing about the question, but only the
+ * agent's own timer: the last "(Ns)" of a line that is, once its CSI styles are dropped, its
+ * ASCII case folded and its ends trimmed, Hermes's approval or confirm hint and nothing else
+ * ("↑/↓ to select, Enter to confirm (57s)", "type 1/2, or ↑/↓ to select, Enter to confirm (57s)").
+ * The same "(12s)" anywhere else, a command's text included, is part of the question.
+ * [CARD_SEND_CHECK] and card-check.sh apply exactly this rule.
+ */
+private val CARD_TIMER_LINE = Regex("""^(type [0-9/]+, or )?↑/↓ to select, enter to confirm \([0-9]{1,4}s\)$""")
+private val CARD_TIMER = Regex("""^(.*)\([0-9]{1,4}s\)""", RegexOption.DOT_MATCHES_ALL)
+private val CARD_CSI = Regex("\u001B\\[[0-9;?]*[ -/]*[@-~]")
 
-/** The screen digest of a card's raw `pane read --source visible --format ansi`, as [CARD_SEND_CHECK] computes it. */
+private fun asciiFold(s: String) = buildString(s.length) { for (c in s) append(if (c in 'A'..'Z') c + 32 else c) }
+
+internal fun cardTimerLine(line: String): String {
+    val shown = asciiFold(CARD_CSI.replace(line, "")).trim { it == ' ' || it == '\t' || it == '\r' || it == '\u000B' || it == '\u000C' }
+    return if (CARD_TIMER_LINE.matches(shown)) CARD_TIMER.replaceFirst(line, "$1(Ns)") else line
+}
+
+/**
+ * The screen digest of a card's raw `pane read --source visible --format ansi`, as [CARD_SEND_CHECK]
+ * computes it. A screen that is not UTF-8, or holds a NUL, reads differently here and on the
+ * computer, so it never matches: the check fails closed (exit 3), never open.
+ */
 internal fun cardScreenDigest(raw: String): String {
     // Every line ends in a newline (the last one too), as a line-by-line awk prints it.
-    val t = CARD_COUNTDOWN.replace(raw, "(Ns)").let { if (it.isNotEmpty() && !it.endsWith("\n")) it + "\n" else it }
+    val t = raw.split("\n").joinToString("\n") { cardTimerLine(it) }.let { if (it.isNotEmpty() && !it.endsWith("\n")) it + "\n" else it }
     return sha256Hex(t.toByteArray(Charsets.UTF_8))
 }
 
@@ -4258,11 +4279,16 @@ internal val CARD_SEND_CHECK = """
         f = [p.get(k) for k in ('pane_id', 'tab_id', 'workspace_id', 'agent', 'foreground_cwd', 'cwd', 'terminal_id')]
         f += [s.get(k) for k in ('kind', 'agent', 'value')]
         return hashlib.sha256(b''.join(v(x) for x in f)).hexdigest()
+    # Only the agent's own timer line (cardTimerLine in Herdr.kt): its last (Ns), nothing else.
+    TIMER_LINE = re.compile(b'^(type [0-9/]+, or )?' + '\u2191/\u2193'.encode('utf-8') + rb' to select, enter to confirm \([0-9]{1,4}s\)$')
+    def timer(line):
+        shown = re.sub(rb'\x1b\[[0-9;?]*[ -/]*[@-~]', b'', line).lower().strip(b' \t\r\x0b\x0c')
+        return re.sub(rb'(?s)^(.*)\([0-9]{1,4}s\)', rb'\1(Ns)', line, count=1) if TIMER_LINE.match(shown) else line
     try:
         before = identity()
         visible = call('read', pane, '--source', 'visible', '--format', 'ansi')
         after = identity()
-        visible = re.sub(rb'\(\d{1,4}s\)', b'(Ns)', visible)
+        visible = b'\n'.join(timer(line) for line in visible.split(b'\n'))
         if visible and not visible.endswith(b'\n'):
             visible += b'\n'
         seen = hashlib.sha256(visible).hexdigest()

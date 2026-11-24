@@ -144,7 +144,11 @@ class SecretNotPrivate(val path: String, fileMode: String?, dirMode: String?) :
  * 2.2.7 (Codex's review): [pane] is the pane as the dialog listed it, so the save and the path go
  * only to that occupant (its agent, tab, terminal and session), not to whatever took its id since.
  */
-data class SecretTarget(val serverId: String, val paneId: String, val serverLabel: String, val paneLabel: String, val pane: Pane? = null) {
+data class SecretTarget(
+    val serverId: String, val paneId: String, val serverLabel: String, val paneLabel: String, val pane: Pane? = null,
+    /** 2.2.7 (Codex's review): the SSH connection when the dialog listed it; a reconnect since refuses the save. */
+    val connection: Any? = null,
+) {
     /** [p] is this target's pane with the same occupant (any pane with its id when none was listed). */
     internal fun matches(p: Pane?): Boolean = p != null && p.id == paneId && (pane == null || sameOccupant(pane, p))
 }
@@ -174,6 +178,8 @@ class SecretSender(private val port: Port) {
         val pane: suspend (String) -> Pane?,
         val begin: () -> Unit = {},
         val end: () -> Unit = {},
+        /** The connection this is bound to, compared with [SecretTarget.connection]. */
+        val connection: Any? = null,
     )
 
     interface Port {
@@ -199,6 +205,9 @@ class SecretSender(private val port: Port) {
         try {
             if (!port.present(t)) return SecretOutcome.Refused("${t.paneLabel} is no longer open on ${t.serverLabel}, so nothing was saved.")
             val bound = port.bind(t.serverId) ?: return SecretOutcome.Refused("${t.serverLabel} isn't connected, so nothing was saved.")
+            if (t.connection != null && bound.connection !== t.connection) {
+                return SecretOutcome.Refused("${t.serverLabel} reconnected after you chose ${t.paneLabel}, so nothing was saved. Choose it again.")
+            }
             bound.begin()
             try {
                 if (!stillThere(bound, t) || !port.present(t)) {

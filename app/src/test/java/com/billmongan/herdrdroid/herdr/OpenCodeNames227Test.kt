@@ -40,4 +40,18 @@ class OpenCodeNames227Test {
         }
         assertTrue("the box is one OpenCode closes", plain?.known == true)
     }
+
+    /** Grok's review: the composer, mode menu, background key and display name follow the same rule. */
+    @Test fun aNamedLaunchBehavesLikeOpenCodeEverywhere() {
+        for (n in names.drop(1)) {
+            assertEquals(n, com.billmongan.herdrdroid.ui.SlashCommands.forAgent("opencode"), com.billmongan.herdrdroid.ui.SlashCommands.forAgent(n))
+            assertEquals(n, "/models", com.billmongan.herdrdroid.ui.ModelPresets.pickerCommand(n))
+            assertEquals(n, PaneControls.modes("opencode"), PaneControls.modes(n))
+            assertTrue(n, Backgrounding.supported(n))
+        }
+        fun pane(agent: String) = Pane("p1", "t1", "w1", agent, Status.IDLE, "", "/fixture")
+        assertEquals("OpenCode", pane("opencode").agentName)
+        assertEquals("OpenCode (work)", pane("opencode-work").agentName)
+        assertEquals("/model", com.billmongan.herdrdroid.ui.ModelPresets.pickerCommand("claude"))
+    }
 }
