@@ -171,6 +171,10 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     androidx.compose.runtime.DisposableEffect(paneId) { onDispose { vm.usageViewShown(paneId, false) } }
     var menu by remember { mutableStateOf(false) }
     var choosingModel by remember { mutableStateOf(false) }
+    // 2.2.7: Export pane screen's dialog (PaneScreenExportDialog.kt).
+    var exportingScreen by remember(paneId) { mutableStateOf(false) }
+    // 2.2.7: the pane reads kept on this phone (PaneReadPanel.kt).
+    var showingPaneReads by remember { mutableStateOf(false) }
     var showSnippets by remember { mutableStateOf(false) }
     var hermesMenu by remember { mutableStateOf(false) }
     var closingSession by remember { mutableStateOf(false) }
@@ -626,6 +630,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                             .putExtra(android.content.Intent.EXTRA_TEXT, vm.debugBundle(paneId))
                         runCatching { context.startActivity(android.content.Intent.createChooser(send, "Share debug bundle")) }
                     })
+                    DropdownMenuItem(text = { Text("Export pane screen") }, onClick = { menu = false; exportingScreen = true })
+                    DropdownMenuItem(text = { Text("Pane reads…") }, onClick = { menu = false; showingPaneReads = true })
                     // The agent's own key for moving a running command to the background (Ctrl+B),
                     // offered only for agents where that is what the key does.
                     if (com.billmongan.herdrdroid.herdr.Backgrounding.supported(pane?.agent)) DropdownMenuItem(
@@ -680,6 +686,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         // 2.1.5: cross-server cards from frames the agent rendered in this chat (2.2.0: kept to a
         // share of the window, so the message box below always fits).
         if (!live) CrossServerPanel(vm, paneId)
+        if (!live) PaneReadPanel(vm, paneId)
         // 2.2.0: herdr's session record is behind the terminal; the chat follows the terminal anyway.
         if (!live && vm.herdrOutOfDate(paneId)) HerdrOutOfDate()
         vm.paneControlBusy(paneId)?.let { Text(it, color = Palette.Muted, fontSize = 12.5.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) }
@@ -1004,6 +1011,9 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     opened?.let { t ->
         FullMessage(t, liveSize, vm.readingFont.family, onQuote = { quote(t); opened = null }, onClose = { opened = null })
     }
+
+    if (exportingScreen) PaneScreenExportHost(vm, paneId) { exportingScreen = false }
+    if (showingPaneReads) PaneReadsDialog(vm) { showingPaneReads = false }
 
     if (choosingModel && pane != null) {
         val presets = ModelPresets.forAgent(pane.agent)
