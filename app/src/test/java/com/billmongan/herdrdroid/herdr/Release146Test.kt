@@ -29,7 +29,7 @@ class Release146Test {
         // Bill's 1.4.6 report: any of Codex's suggestions, not only the ones the app knows by name.
         assertEquals("", inputLineOf(boxed(codexRow("Explain this codebase")), "codex"))
         assertEquals("", inputLineOf(boxed(codexRow("Find and fix a bug in @filename")), "codex"))
-        assertEquals("", inputLineOf("$rule\nbill_default · auto · ◔ 2%   ~/agents/kiro\n$kiroHint", "kiro"))
+        assertEquals("", inputLineOf("$rule\nwork_profile · auto · ◔ 2%   ~/agents/kiro\n$kiroHint", "kiro"))
         assertEquals("", inputLineOf(boxed(hermesHint), "hermes"))
         // With no agent known, a faint placeholder is still a placeholder.
         assertEquals("", inputLineOf(boxed(codexRow("Explain this codebase")), null))

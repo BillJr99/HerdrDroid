@@ -51,11 +51,11 @@ class Release144Test {
         // Codex 0.169's empty composer.
         assertEquals("", inputLineOf("  Weekly limit: 82% left\n› Ask Codex to do anything\n  GPT-6.1-Sol default · ~/agents/codex\n  ← for agents · ? for shortcuts", "codex"))
         // Kiro: the hint is the last row, after its status lines.
-        assertEquals("", inputLineOf("▸ Credits: turn 0.18 • session 0.28 | Time: 11s\n$rule\n Trust All Tools active, confirmations are off · /quit to exit\n$rule\nbill_default · auto · ◔ 2%   ~/agents/kiro\n›  ask a question or describe a task ↵", "kiro"))
+        assertEquals("", inputLineOf("▸ Credits: turn 0.18 • session 0.28 | Time: 11s\n$rule\n Trust All Tools active, confirmations are off · /quit to exit\n$rule\nwork_profile · auto · ◔ 2%   ~/agents/kiro\n›  ask a question or describe a task ↵", "kiro"))
         // Hermes's example prompts read like real requests, so they count as typing (from Grok's review).
         assertEquals("Find and fix a failing test", inputLineOf("  Usage: /reasoning\n$rule\n❯ Find and fix a failing test\n$rule\n ☤ gpt-6.1-sol · 295K/500K", "hermes"))
         // Kiro's words without its "↵" are typing.
-        assertEquals("ask a question or describe a task", inputLineOf("$rule\nbill_default · auto\n›  ask a question or describe a task", "kiro"))
+        assertEquals("ask a question or describe a task", inputLineOf("$rule\nwork_profile · auto\n›  ask a question or describe a task", "kiro"))
         assertTrue(isComposerHint("codex", "Ask Codex to do anything"))
         assertFalse(isComposerHint("codex", "Ask Codex to do anything about the tests"))
         assertFalse(isComposerHint("grok", "Ask Codex to do anything"))
