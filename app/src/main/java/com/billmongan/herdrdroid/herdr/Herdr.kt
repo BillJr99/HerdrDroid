@@ -2523,6 +2523,8 @@ internal fun parseWake(out: String): Herdr.Wake? {
 internal fun screenWakeRegex(agent: String?): String? = when {
     agent == "claude" -> """(?im)Enter to select.*(?:navigate|Esc to cancel)|↑/↓ to navigate|Tab/Arrow keys to navigate|\d{1,3} awaiting input\s*$"""
     isOpenCode(agent) -> """(?m)(?:⇆|←→)\s+select\s+enter\s+confirm|enter\s+(?:submit|confirm|toggle)\s+esc\s+dismiss|Permission required"""
+    // 2.2.7: Hermes's approval, confirm and clarify hints, drawn only while that prompt is open.
+    agent == "hermes" -> """(?m)^\s*(?:type [0-9/]+, or )?↑/↓ to select, Enter to (?:confirm|lock)"""
     else -> null
 }
 
@@ -2540,7 +2542,9 @@ internal fun screenWatchPanes(list: List<Pane>, herdrStates: Map<String, Status>
  */
 internal fun screenAskable(list: List<Pane>): List<Pane> = list.filter {
     (it.agent == "claude" && it.status != Status.NEEDS_YOU) ||
-        (isOpenCode(it.agent) && it.status in setOf(Status.DONE, Status.IDLE))
+        (isOpenCode(it.agent) && it.status in setOf(Status.DONE, Status.IDLE)) ||
+        // 2.2.7: herdr can call Hermes done or idle through a whole turn and through an approval.
+        (it.agent == "hermes" && it.status != Status.NEEDS_YOU)
 }
 
 /**
@@ -2562,6 +2566,7 @@ internal fun markScreenNeedsYou(list: List<Pane>, tails: Map<String, String>): L
             return@map p
         }
         val tail = tails[p.id]?.takeIf { p.id in askable }
+        if (p.agent == "hermes") return@map if (tail == null) p else markHermesScreen(p, tail)
         val why = when {
             tail == null -> null
             p.agent == "claude" -> claudeNeedsYouReason(tail)
@@ -2579,6 +2584,29 @@ internal fun markScreenNeedsYou(list: List<Pane>, tails: Map<String, String>): L
                 p.copy(status = Status.NEEDS_YOU)
             }
         }
+    }
+}
+
+/**
+ * 2.2.7: a Hermes pane by its own composer ([hermesComposer]), re-read with every list read so
+ * neither mark outlasts the screen that showed it. A prompt owning its input (an approval, a
+ * confirm, a clarify question, a password) shows it as needing you for the list, the drawer and
+ * the alert, with herdr's status kept for the send route as for OpenCode ([Pane.screenNeedsYouFrom]).
+ * The live spinner on its composer's top rule, the "☤" state icon or the footer's "ctrl+c stop"
+ * shows a running turn as working, so messages wait as they do for any working agent.
+ */
+internal fun markHermesScreen(p: Pane, tail: String): Pane {
+    val composer = hermesComposer(tail) ?: return p
+    return when {
+        composer.waiting -> {
+            com.billmongan.herdrdroid.diag.DiagLog.log("prompt", "${p.id}: Hermes shows a prompt (${composer.icon}) while herdr says ${p.status.name.lowercase()}; showing it as needs you, sends unchanged")
+            p.copy(status = Status.NEEDS_YOU, screenNeedsYouFrom = p.status)
+        }
+        composer.busy && p.status != Status.WORKING -> {
+            com.billmongan.herdrdroid.diag.DiagLog.log("prompt", "${p.id}: Hermes shows a running turn while herdr says ${p.status.name.lowercase()}; showing it as working")
+            p.copy(status = Status.WORKING)
+        }
+        else -> p
     }
 }
 
@@ -3287,6 +3315,28 @@ private fun detectHermesCommandPreview(text: String): Prompt? {
     return terminalCommandReview(body.subList(1, hidden).dropWhile { it.isBlank() }.joinToString("\n"))
 }
 
+/** Hermes's slash-command confirm hint, under its panel as the approval hint is (2.2.7). */
+private val HERMES_CONFIRM_HINT =
+    Regex("""^type [0-9/]+, or ↑/↓ to select, Enter to confirm(?:\s*\(\d+s\))?$""", RegexOption.IGNORE_CASE)
+
+/**
+ * 2.2.7: Hermes's live approval or confirm panel, its box rows only, when the panel's hint row is
+ * right under it and only the empty "⚠ ❯" input row follows ([hermesWaitingScreen] has already cut
+ * the modern layout's rules and footer). The generic parser reads the box as it reads the panel
+ * alone (screens/hermes/derived-1.4.9), so the tool rows above and the hint below change nothing.
+ */
+private fun hermesLiveApprovalBox(text: String): String? {
+    val lines = text.lines().takeLast(80)
+    val footer = lines.indexOfLast { HERMES_APPROVAL_FOOTER.matches(it.trim()) || HERMES_CONFIRM_HINT.matches(it.trim()) }
+    if (footer < 0) return null
+    val tail = lines.drop(footer + 1).filter { it.isNotBlank() }
+    if (tail.size != 1 || !HERMES_EMPTY_INPUT.matches(tail.single().trim())) return null
+    val bottom = (footer - 1 downTo 0).firstOrNull { lines[it].isNotBlank() } ?: return null
+    if (!lines[bottom].trimStart().startsWith("╰")) return null
+    val top = (bottom - 1 downTo 0).firstOrNull { lines[it].trimStart().startsWith("╭") } ?: return null
+    return lines.subList(top, bottom + 1).joinToString("\n")
+}
+
 fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version: String? = null): Prompt? {
     val plain = stripAnsi(text)
     if (agent.equals("hermes", true)) hermesUsageEnd(plain)?.let { end ->
@@ -3392,6 +3442,9 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
         detectOpenCodeWebSearch(text)?.let { return it }
     }
     if (agent.equals("hermes", true)) {
+        // 2.2.7: the modern layout's rules, session title and footer under a live prompt are chrome,
+        // and the "⚠ ❯" input row says Hermes waits whatever herdr reports (HermesComposer.kt).
+        hermesWaitingScreen(text)?.let { return detectPlainPrompt(it, true, agent, version) }
         hermesClarifyFrame(text)?.let { frame ->
             return frame.card ?: detectPlainPrompt(frame.remainder, false, agent, version)
         }
@@ -3412,6 +3465,9 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
             return if (rows.subList(hidden + 1, footer).any { HERMES_SHOW_COMMAND.matches(body(it)) }) {
                 terminalCommandReview(null)
             } else null
+        }
+        hermesLiveApprovalBox(text)?.let { box ->
+            detectPlainPrompt(box, true, agent, version)?.takeIf { it.choices.isNotEmpty() }?.let { return it }
         }
     }
     val rules = ParserRules.forAgent(agent, version)

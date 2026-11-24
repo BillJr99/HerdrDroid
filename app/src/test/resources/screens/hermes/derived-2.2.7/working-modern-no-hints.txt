@@ -1,0 +1,14 @@
+────────────────────────────────────────
+❯ Please check that the calendar connection works. (No private values included.)
+────────────────────────────────────────
+
+📚 Skill demo-workspace  0.3s
+🔎 Grep def cmd_check|--check|calendarList  0.3s
+✗ $ test -f "$HOME/.demo/pending.json" + 5 commands  0.2s [exit 1]
+🔎 Grep def check|REFRESH_FAILED|check_live
+
+
+── ⠼ 💻 python3 check.py · 12s ──────────────────────────────────────────────────────────────────────────── Check the calendar setup ─
+☤ ❯ type to redirect this turn · Tab queues it for after
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☤ gpt-6.2-sol · ~188K/500K · [████░░░░░░] ~38% · ◎ 89.7% · ◷ 4.3s · ↑ 21 t/s · 1.0d · ⏲ 1m · ~/agents/hermes
