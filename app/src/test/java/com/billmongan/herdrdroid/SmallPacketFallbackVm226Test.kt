@@ -282,6 +282,64 @@ class SmallPacketFallbackVm226Test {
         assertEquals(Link.RECONNECTING, vm.link)
     }
 
+    /** The view model's own link-lost path, as its callers reach it. */
+    private fun linkLost(e: Exception?, reason: String?) {
+        AppViewModel::class.java.getDeclaredMethod("linkLost", Exception::class.java, String::class.java)
+            .apply { isAccessible = true }.invoke(vm, e, reason)
+    }
+
+    /** Away for [awayMs], then back: the app resets the old socket and reconnects (onForeground). */
+    private fun resumeAfter(awayMs: Long) {
+        vm.onBackground()
+        field("backgroundAt").setLong(vm, System.currentTimeMillis() - awayMs)
+        vm.onForeground()
+    }
+
+    /**
+     * 2.2.7 (Grok's review of 8fab7a9, MEDIUM): coming back after more than 8 s resets the socket
+     * on purpose. That reconnect is not a drop: no small packets, no notice, the fallback still
+     * armed, so a real drop afterwards falls back once.
+     */
+    @Test fun aResumeReconnectIsNotADropButARealDropAfterItStillFallsBackOnce() {
+        for (away in listOf(9_000L, 10 * 60_000L)) {
+            DiagLog.clear()
+            val e = Endpoint(a)
+            vm.saveServer(a)
+            open(e, a)
+            state("foreground", true)
+            resumeAfter(away)
+            idle()
+            assertNull("away ${away}ms", e.ssh.activeMss)
+            assertNull("away ${away}ms", vm.smallPacketOffer)
+            assertNull(vm.sessionMssFor(a.id))
+            assertFalse(DiagLog.text(), DiagLog.text().contains("fallback="))
+            assertTrue("still armed after the resume", vm.smallPacketFallback.wouldFire(a.id, "link-drop", now))
+
+            linkLost(LinkDown(java.io.IOException("reset by peer")), null)
+            assertEquals(1200, e.ssh.activeMss)
+            assertEquals(a.id, vm.smallPacketOffer)
+            vm.dismissSmallPacketOffer()
+            linkLost(LinkDown(java.io.IOException("again")), null)
+            assertNull("once per session", vm.smallPacketOffer)
+            vm.disconnect()
+            idle()
+        }
+    }
+
+    /** The same for the other deliberate reconnect: a send queued while the link still looked up. */
+    @Test fun aReconnectTheAppChoseNeverFallsBack() {
+        val e = Endpoint(a)
+        vm.saveServer(a)
+        open(e, a)
+        state("foreground", true)
+        linkLost(null, "queued-send")
+        linkLost(null, "resume")
+        idle()
+        assertNull(e.ssh.activeMss)
+        assertNull(vm.smallPacketOffer)
+        assertTrue(vm.smallPacketFallback.wouldFire(a.id, "link-drop", now))
+    }
+
     private fun field(name: String) = AppViewModel::class.java.getDeclaredField(name).apply { isAccessible = true }
 
     @Suppress("UNCHECKED_CAST")
