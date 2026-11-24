@@ -6,11 +6,13 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.DisableSelection
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -32,8 +34,18 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.billmongan.herdrdroid.herdr.QuestionParts
 
-/** Code longer than this shows its first lines and "Show all". */
-internal const val CARD_CODE_LINES = 8
+/**
+ * 2.2.8 (Bill: "make sure all the question text is visible and well formatted especially code"):
+ * the most a question's body takes of the window's height before it scrolls inside the card, so a
+ * long question never pushes its answers off the screen and nothing of it is folded away.
+ */
+internal const val CARD_BODY_MAX_FRACTION = 0.6f
+
+@Composable
+private fun cardBodyMax(): androidx.compose.ui.unit.Dp {
+    val window = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp
+    return (window * CARD_BODY_MAX_FRACTION).coerceAtLeast(160.dp)
+}
 
 /**
  * A question card's body (2.1.1): the question bold and first, paragraphs rewrapped, lists as
@@ -45,7 +57,8 @@ internal fun CardBody(parts: QuestionParts, screen: String?) {
     val blocks = remember(parts, screen) { CardFormat.format(parts, screen) }
     var raw by remember(parts) { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        SelectionContainer {
+        // 2.2.8: the whole question, every line of it; a long one scrolls inside the card.
+        SelectionContainer(Modifier.heightIn(max = cardBodyMax()).verticalScroll(rememberScrollState()).testTag("card-body-scroll")) {
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (raw) parts.blocks.forEach { b ->
                     Text(b.text, fontFamily = Fonts.Mono, fontSize = 13.sp, lineHeight = 18.sp, color = Palette.Ink,
@@ -98,45 +111,36 @@ private fun diffKind(line: String): DiffKind {
     }
 }
 
-/** A command, path or diff: monospace on the code background, sideways scroll, long ones folded. */
+/**
+ * A command, path or diff: monospace on the code background. 2.2.8 (Bill: "make sure all the
+ * question text is visible and well formatted especially code"): every line shows, none folded
+ * away, and no line wraps: each keeps its indentation and the box scrolls sideways, a one-line
+ * command or path as well as a script.
+ */
 @Composable
 internal fun CardCode(b: CardBlock.Code) {
-    var all by remember(b) { mutableStateOf(false) }
-    val long = b.lines.size > CARD_CODE_LINES + 2
-    val shown = if (long && !all) b.lines.take(CARD_CODE_LINES) else b.lines
-    // 2.2.0: long-press the box to copy all of it (every line, folded or not), as it shows. 2.2.2: the
-    // lines are already clean (BoxCopy.cleanBlock in CardFormat), so the copy is exactly what shows.
+    // 2.2.0: long-press the box to copy all of it, as it shows. 2.2.2: the lines are already clean
+    // (BoxCopy.cleanBlock in CardFormat), so the copy is exactly what shows.
     val copy = rememberCopier()
     Surface(shape = RoundedCornerShape(10.dp), color = Palette.Code, border = BorderStroke(1.dp, Palette.Line),
         modifier = Modifier.fillMaxWidth().testTag(if (b.diff) "card-diff" else "card-code")
             .onLongPress("Copy this box") { copy(b.lines.joinToString("\n"), "Copied box") }) {
-        DisableSelection { Column {
-            if (b.wrap) {
-                // One line: a long path or command wraps (at "/" and spaces) instead of running off the side.
-                Text(b.lines.joinToString("\n"), fontFamily = Fonts.Mono, fontSize = 13.5.sp, lineHeight = 19.sp,
-                    color = Palette.Ink, modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp))
-            } else {
-                // One Text, so the script copies as a whole (long-press, 2.2.0); diff lines take their colours.
-                val text = run {
-                    buildAnnotatedString {
-                        shown.forEachIndexed { i, line ->
-                            if (i > 0) append('\n')
-                            when (if (b.diff) diffKind(line) else DiffKind.NONE) {
-                                DiffKind.ADD -> withStyle(SpanStyle(color = Palette.DiffAddInk, background = Palette.DiffAdd)) { append(line) }
-                                DiffKind.DEL -> withStyle(SpanStyle(color = Palette.DiffDelInk, background = Palette.DiffDel)) { append(line) }
-                                DiffKind.HUNK -> withStyle(SpanStyle(color = Palette.Blue)) { append(line) }
-                                DiffKind.NONE -> append(line)
-                            }
-                        }
+        DisableSelection {
+            // One Text, so the script copies as a whole (long-press, 2.2.0); diff lines take their colours.
+            val text = buildAnnotatedString {
+                b.lines.forEachIndexed { i, line ->
+                    if (i > 0) append('\n')
+                    when (if (b.diff) diffKind(line) else DiffKind.NONE) {
+                        DiffKind.ADD -> withStyle(SpanStyle(color = Palette.DiffAddInk, background = Palette.DiffAdd)) { append(line) }
+                        DiffKind.DEL -> withStyle(SpanStyle(color = Palette.DiffDelInk, background = Palette.DiffDel)) { append(line) }
+                        DiffKind.HUNK -> withStyle(SpanStyle(color = Palette.Blue)) { append(line) }
+                        DiffKind.NONE -> append(line)
                     }
                 }
-                Text(text, fontFamily = Fonts.Mono, fontSize = 13.sp, lineHeight = 19.sp, color = Palette.Ink, softWrap = false,
-                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 10.dp))
             }
-            if (long) TextButton(onClick = { all = !all }, modifier = Modifier.testTag("card-code-more")) {
-                Text(if (all) "Show fewer lines" else "Show all ${b.lines.size} lines", fontSize = 12.5.sp)
-            }
-        } }
+            Text(text, fontFamily = Fonts.Mono, fontSize = 13.sp, lineHeight = 19.sp, color = Palette.Ink, softWrap = false,
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 10.dp))
+        }
     }
 }
 

@@ -76,10 +76,8 @@ class LongPressCopy220UiTest {
         val parts = QuestionParts(emptyList(), listOf(QBlock(QKind.HEADING, "Run this?"), QBlock(QKind.COMMAND, script)))
         rule.setContent { CardBody(parts, null) }
         rule.onNodeWithText("echo line1", substring = true).performTouchInput { longClick() }
-        // Every line, the folded ones too.
+        // Every line (2.2.8: none folded away).
         assertEquals(script, clip())
-        // The fold still works with a tap.
-        rule.onNodeWithText("Show all 12 lines").performClick()
         rule.onNodeWithText("echo line12", substring = true).assertExists()
     }
 
