@@ -1,0 +1,4 @@
+card: options
+blocked: true
+options: Yes, run command | Yes, and always allow in this conversation for commands that start with 'for' | Yes, and always allow for commands that start with 'for' (Persist to settings.json) | No, and tell Antigravity what to do differently
+source: Synthesized for 2.2.8 (question-format work) from the harness's own layout as the earlier fixtures in this library show it, or from its program's strings where no capture exists: a long question with paragraphs, a fenced shell block and a fenced Python block, and options with descriptions. Neutral demo text only. Antigravity's approval layout is inferred from its program's strings ("Requesting permission for:", "Reason:", "Run this command?").
