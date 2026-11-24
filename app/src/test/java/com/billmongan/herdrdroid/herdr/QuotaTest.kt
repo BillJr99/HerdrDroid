@@ -256,7 +256,7 @@ GEMINI 4 ARGON
     @Test fun drawerModelsFromOpenCodeAndKiroFooters() {
         assertEquals("llmproxy flagship free",
             footerModel("opencode", "  ┃  Build · llmproxy flagship free (default) llmproxy (local)"))
-        assertEquals("Auto", footerModel("kiro", "bill_default · auto · ◔ 2%        ~/example"))
+        assertEquals("Auto", footerModel("kiro", "work_profile · auto · ◔ 2%        ~/example"))
         assertEquals("Claude Sonnet", footerModel("kiro-cli", "Read Only · Claude Sonnet · ◕ 52%"))
         assertEquals(null, footerModel("opencode", "I used Build · model today"))
     }

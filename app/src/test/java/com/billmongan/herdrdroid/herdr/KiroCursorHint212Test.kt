@@ -23,7 +23,7 @@ class KiroCursorHint212Test {
         val s = withRow(liveRow)
         assertNull(composerDraftOf(s, "kiro"))
         assertEquals("", inputLineOf(s, "kiro"))
-        assertEquals("", inputLineOf("bill_default · auto\n$liveRow", "kiro"))
+        assertEquals("", inputLineOf("work_profile · auto\n$liveRow", "kiro"))
     }
 
     @Test fun `the same words with the cursor after them are a draft`() {
