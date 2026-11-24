@@ -1,0 +1,12 @@
+◇ Calling tools (21s · esc to interrupt)
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Would you like to run the following command?
+  $ for f in src/*.py; do
+  │     python3 -m py_compile "$f" || exit 1
+  │ done
+  │ make -C build test JOBS=4
+⟩ 1. Yes, proceed (y)
+  2. No, and tell Muse Code what to do differently (esc)
+Change approval defaults in /permissions
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  muse-wonder-full-1.0 · max · ~/agents/demo · Launch overrides

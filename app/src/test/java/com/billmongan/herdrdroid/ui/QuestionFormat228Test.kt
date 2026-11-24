@@ -113,4 +113,10 @@ class QuestionFormat228Test {
         assertEquals(listOf(shell), blocks.filterIsInstance<CardBlock.Code>().map { it.lines })
         assertEquals("shell requires approval: for f in src/*.py; do", p.question)
     }
+
+    @Test fun museCommandOnSeveralRowsShowsEveryRow() {
+        val (_, blocks, _) = card("muse/derived-2.2.8-format/long-command-approval.txt", blocked = false)
+        assertEquals(CardBlock.Headline("Would you like to run the following command?"), blocks.first())
+        assertEquals(listOf(shell), blocks.filterIsInstance<CardBlock.Code>().map { it.lines })
+    }
 }
