@@ -48,11 +48,19 @@ class OmpAsk227Test {
     }
 
     @Test fun everyQuestionAnsweredOffersSubmit() {
-        val p = checkNotNull(detectPrompt(screen("ask-submit.ansi"), true, "omp"))
+        // Codex's review: with a typed Other among the answers, Submit stays in the terminal.
+        val typed = checkNotNull(detectPrompt(screen("ask-submit.ansi"), true, "omp"))
+        assertEquals(OmpAsk.TERMINAL_SUBMIT, typed.question)
+        assertEquals(listOf(OmpAsk.CANCEL_LABEL), typed.choices.map { it.label })
+        val chosen = screen("ask-submit.ansi").replace("   Leave as CHECK-F…   List the 7 commit…   The commits are…   ✓ Other: look at the…",
+            "   ✓ Leave as CHECK-F…   List the 7 commit…   The commits are…   Other: look at the…")
+        val p = checkNotNull(detectPrompt(chosen, true, "omp"))
         assertEquals("Submit all answers?", p.question)
         assertEquals(listOf(OmpAsk.SUBMIT_LABEL, OmpAsk.CANCEL_LABEL), p.choices.map { it.label })
+        assertTrue(p.ompAsk!!.verifiable)
+        assertFalse(typed.ompAsk!!.verifiable)
         assertTrue(p.ompAsk!!.onSubmit && p.ompAsk!!.allAnswered)
-        assertTrue(p.shownParts().blocks.any { it.text == "✓ 3. project-x builds (2.1 GiB): 7 local commits are on no remote: Other: look at the…" })
+        assertTrue(typed.shownParts().blocks.any { it.text == "✓ 3. project-x builds (2.1 GiB): 7 local commits are on no remote: Other: look at the…" })
         assertTrue(p.shownParts().tabs.last().current)
     }
 
@@ -75,7 +83,11 @@ class OmpAsk227Test {
         assertFalse(OmpAsk.sameAnswers(st("Leave as CHECK-FIRST", 0), st("List the 7 commit…", 1)))
         // Grok's review: two answers that share the shortened start, at different places, never match.
         assertFalse(OmpAsk.sameAnswers(st("Look at the logs first", 1), st("Look at the…", 3)))
-        assertTrue(OmpAsk.sameAnswers(st("Other: look at the logs first", 3), st("Other: look at the…", 3)))
+        assertFalse("a typed Other can change past the cut: never checked as the same", OmpAsk.sameAnswers(st("Other: look at the logs first", 3), st("Other: look at the…", 3)))
+        assertFalse("a missing answer is never the same", OmpAsk.sameAnswers(
+            OmpAsk.State(listOf("1. q"), 1, 1, false, listOf(null), listOf(0)), OmpAsk.State(listOf("1. q"), 1, 1, false, listOf(null), listOf(0))))
+        assertFalse("a missing place is never a wildcard", OmpAsk.sameAnswers(
+            OmpAsk.State(listOf("1. q"), 1, 1, false, listOf("A"), listOf(null)), OmpAsk.State(listOf("1. q"), 1, 1, false, listOf("A"), listOf(2))))
         assertFalse("two shortened forms must be equal", OmpAsk.sameAnswers(st("Look at the…", 3), st("Look at it…", 3)))
         assertEquals("the place of each answer is kept", listOf(3, 0, 3, 0, 0), p.answerAt)
         val open = checkNotNull(detectPrompt(screen("ask-open-other.ansi"), true, "omp")).ompAsk!!
@@ -92,5 +104,17 @@ class OmpAsk227Test {
         assertNull(OmpAsk.prompt(stripAnsi(old)))
         assertNull(activePiQuestion(old, null))
         assertNotNull("the live one still reads", OmpAsk.prompt(stripAnsi(live)))
+    }
+
+    /** Grok's review: only Oh My Pi's and pi's exact status rows may sit under a live box. */
+    @Test fun onlyTheAgentsOwnStatusRowsMaySitUnderTheBox() {
+        val live = stripAnsi(screen("ask-open-other.ansi"))
+        assertNotNull(OmpAsk.prompt(live))
+        val bottom = live.lines().indexOfLast { it.trimStart().startsWith("╰────") }
+        fun under(vararg rows: String) = (live.lines().take(bottom + 1) + rows.toList()).joinToString("\n")
+        assertNull("a lone path", OmpAsk.prompt(under("~/work/demo")))
+        assertNull("text with a gauge in it", OmpAsk.prompt(under(" note ▶── done")))
+        assertNotNull("pi's folder row over its token row", OmpAsk.prompt(under("~/work/demo", "0.0%/128k (auto)   (local) sample/model")))
+        assertNotNull("Oh My Pi's rows", OmpAsk.prompt(under("  ⎋ Asking review decisions", " π > ⬢ sample/model > 📁 ~/work ▶──────45%──╎──┃──128K─", "╰─")))
     }
 }

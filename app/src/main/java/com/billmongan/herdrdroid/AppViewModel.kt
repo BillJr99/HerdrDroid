@@ -3443,6 +3443,9 @@ class AppViewModel internal constructor(
             return
         }
         val keys = com.billmongan.herdrdroid.herdr.stopKeys(pane.agent)
+        val server = current?.id
+        // Codex's review: checked again right before the keys, after the occupant read suspended.
+        fun stillHere() = !locked && herdr === h && current?.id == server && link == Link.CONNECTED && h.connectionIdentity === connection
         viewModelScope.launch {
             try {
                 val live = h.relayPane(pane.id, connection)
@@ -3450,6 +3453,10 @@ class AppViewModel internal constructor(
                 if (live == null || live.id != pane.id || live.agent != pane.agent || live.tabId != pane.tabId ||
                     live.terminalId != pane.terminalId || live.sessionId != pane.sessionId) {
                     flash("Not stopped: that pane holds something else now.")
+                    return@launch
+                }
+                if (!stillHere()) {
+                    flash("Not stopped: the app locked or the server changed before it went.")
                     return@launch
                 }
                 h.sendKeys(pane.id, *keys.toTypedArray(), expectedConnection = connection)
@@ -4812,7 +4819,14 @@ class AppViewModel internal constructor(
         if (now.client !== owner.client || now.connection !== owner.connection || now.server != owner.server ||
             !sameOccupant(now.pane, owner.pane) || now.pane.scrollOffset != 0 || !hasStableOccupant(now.pane)) return
         val label = current?.let { com.billmongan.herdrdroid.store.agentServerLabel(it, servers) }.orEmpty()
-        paneReads.noteFrames(owner, owner.server, owner.pane.id, "${com.billmongan.herdrdroid.ui.sessionName(owner.pane)} on $label", recent, owner.pane.agent)
+        // Oh My Pi and pi mark no reply on screen: a frame from them counts only when their own chat log
+        // shows it in their reply after your latest message (Codex's review); with no log, never.
+        val agent = owner.pane.agent?.lowercase()
+        val fromLog = agent in setOf("omp", "pi")
+        val logged = fromLog && transcriptPane == owner.pane.id && transcriptState == TranscriptMode.ON
+        val items = if (logged) transcriptItems else emptyList()
+        paneReads.noteFrames(owner, owner.server, owner.pane.id, "${com.billmongan.herdrdroid.ui.sessionName(owner.pane)} on $label", recent, owner.pane.agent,
+            trusted = { f -> !fromLog || (logged && com.billmongan.herdrdroid.herdr.replyHasReadFrame(items, f.code)) })
     }
 
     // ---- 2.1.4: telling agents about cross-server messaging ------------------------------------
@@ -5194,6 +5208,8 @@ class AppViewModel internal constructor(
     private suspend fun submitOmpAsk(h: Herdr, t: CardTarget, shown: Prompt, first: Prompt,
         firstGuard: com.billmongan.herdrdroid.herdr.CardGuard?): Boolean {
         val dialog = shown.ompAsk ?: return false
+        // Codex's review: Submit only answers the app can tell apart on every read (no typed Other, none missing).
+        if (!dialog.verifiable) return false
         // 2.2.7 (Codex's review): the same questions with the same answers as at the tap, or nothing is sent.
         fun same(a: Prompt, b: Prompt) = b.ompAsk?.questions == a.ompAsk?.questions && a.ompAsk != null && b.ompAsk != null && com.billmongan.herdrdroid.herdr.OmpAsk.sameAnswers(a.ompAsk!!, b.ompAsk!!) &&
             b.ompAsk?.allAnswered == true

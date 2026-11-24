@@ -273,6 +273,18 @@ class SuccessiveCardAnswerTest {
         assertTrue(sent.isEmpty())
     }
 
+    /** Codex's review: the app locking (or the server changing) during Stop's pane read stops the keys. */
+    @Test fun stopIsNotSentWhenTheAppLocksDuringItsRead() = fixture("claude", "working on it") {
+        status(Status.WORKING)
+        val lockedField = AppViewModel::class.java.getDeclaredField("locked\$delegate").apply { isAccessible = true }
+        @Suppress("UNCHECKED_CAST")
+        onPaneGet = { (lockedField.get(vm) as androidx.compose.runtime.MutableState<Boolean>).value = true }
+        vm.stopPane(checkNotNull(vm.pane("p1")))
+        drainUntil { vm.notice.orEmpty().startsWith("Not stopped") }
+        assertTrue(vm.notice.orEmpty(), vm.notice.orEmpty().contains("locked"))
+        assertTrue(sent.isEmpty())
+    }
+
     /** 2.2.7: the questions can always be left: Esc from the card. */
     @Test fun ompAskCanBeCancelled() = fixture("omp", ompScreen("ask-open-first.ansi")) {
         readSelectedPane()
@@ -1510,6 +1522,8 @@ class SuccessiveCardAnswerTest {
             """.trimMargin())
         }
 
+        /** Runs as the pane's details are read (`pane get`), for what changes during that read. */
+        var onPaneGet: (() -> Unit)? = null
         /** 2.2.7: answers waiting on the check before the keys; how many the check refused. */
         var cardChecksRefused = 0
         /** Runs as the check on the computer starts: what changed between the card's last read and the keys. */
@@ -1542,7 +1556,7 @@ class SuccessiveCardAnswerTest {
                 return last.copy(out = mark + last.out)
             }
             return when {
-                command.endsWith("'pane' 'get' 'p1'") -> ok("""{"result":{"pane":$pane}}""")
+                command.endsWith("'pane' 'get' 'p1'") -> { onPaneGet?.invoke(); ok("""{"result":{"pane":$pane}}""") }
                 command.contains("'pane' 'read' 'p1' '--source' 'recent'") -> { recentReads++; recentResult ?: ok(ansiFrame()) }
                 command.contains("'pane' 'read' 'p1' '--source' 'visible'") -> {
                     if (expectedConnection == null) discoveryVisibleReads += command.contains("'--lines'")
