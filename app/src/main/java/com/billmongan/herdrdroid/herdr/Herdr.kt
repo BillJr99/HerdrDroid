@@ -4505,17 +4505,40 @@ private val CARD_NO_MATCH = "0".repeat(64)
  * second while its approval box waits, neither part of the question: its status row (a spinner and a
  * running time: "⠙ 4m > ⬢ <model> > 📁 <folder> ▶────"), which stands for itself as one fixed row, and a
  * tool box's bottom edge with its running time ("╰─── elapsed 3m46s ───╯"), whose time is left out.
+ * 2.2.8 (Codex's review): only where Oh My Pi draws them, around its approval box ("╭─ Allow tool: … ╮"
+ * down to its "╰───╯"): the status row only as the row right under the box, an elapsed edge only above
+ * the box's top. Every row of the box itself counts as it is, so a command row that looks like a status
+ * row is still part of the question; with no approval box on the screen neither rule applies.
  * [CARD_SEND_CHECK] and card-check.sh apply exactly these rules.
  */
-private val CARD_OMP_STATUS = Regex("""^[^ ]+ ([^ ]+ )?> .* > 📁 [^ ]+ ▶─.*$""")
+private val CARD_OMP_STATUS = Regex("""^[^ ]+ ([^ ]+ )?> .* > 📁 [^ ]+ ▶─.*$""", RegexOption.DOT_MATCHES_ALL)
 private val CARD_ELAPSED_ROW = Regex("""^╰─+ elapsed [0-9hms.]+ ─+╯$""")
 private val CARD_ELAPSED = Regex("""elapsed [0-9hms.]+""")
+private val CARD_OMP_BOX_TOP = Regex("""^╭─ allow tool: .*╮$""", RegexOption.DOT_MATCHES_ALL)
+private val CARD_BOX_BOTTOM = Regex("""^╰─+╯$""")
 
-internal fun cardTimerLine(line: String): String {
-    val shown = asciiFold(CARD_CSI.replace(line, "")).trim { it == ' ' || it == '\t' || it == '\r' || it == '\u000B' || it == '\u000C' }
-    if (CARD_OMP_STATUS.matches(shown)) return "<status>"
-    if (CARD_ELAPSED_ROW.matches(shown)) return CARD_ELAPSED.replaceFirst(line, "elapsed N")
-    return if (CARD_TIMER_LINE.matches(shown)) CARD_TIMER.replaceFirst(line, "$1(Ns)") else line
+/** A row as the checks match it: CSI styles dropped, ASCII case folded, ends trimmed. */
+private fun cardShown(line: String): String =
+    asciiFold(CARD_CSI.replace(line, "")).trim { it == ' ' || it == '\t' || it == '\r' || it == '\u000B' || it == '\u000C' }
+
+/** Hermes's countdown only (see [CARD_TIMER_LINE]); every other row as it is. */
+internal fun cardTimerLine(line: String): String =
+    if (CARD_TIMER_LINE.matches(cardShown(line))) CARD_TIMER.replaceFirst(line, "$1(Ns)") else line
+
+/** The screen's rows as the digest takes them: [cardTimerLine] on each, and Oh My Pi's two running rows. */
+internal fun cardScreenRows(lines: List<String>): List<String> {
+    val shown = lines.map { cardShown(it) }
+    val top = shown.indexOfLast { CARD_OMP_BOX_TOP.matches(it) }
+    val bottom = if (top < 0) -1 else (top + 1 until shown.size).firstOrNull { CARD_BOX_BOTTOM.matches(shown[it]) } ?: -1
+    return lines.mapIndexed { i, line ->
+        when {
+            bottom < 0 -> cardTimerLine(line)
+            i in top..bottom -> line
+            i < top && CARD_ELAPSED_ROW.matches(shown[i]) -> CARD_ELAPSED.replaceFirst(line, "elapsed N")
+            i == bottom + 1 && CARD_OMP_STATUS.matches(shown[i]) -> "<status>"
+            else -> cardTimerLine(line)
+        }
+    }
 }
 
 /**
@@ -4527,7 +4550,7 @@ internal fun cardScreenDigest(raw: String): String {
     // A NUL is refused by both checks on the computer (a shell can't hold one): never a match here either.
     if ('\u0000' in raw) return CARD_NO_MATCH
     // Every line ends in a newline (the last one too), as a line-by-line awk prints it.
-    val t = raw.split("\n").joinToString("\n") { cardTimerLine(it) }.let { if (it.isNotEmpty() && !it.endsWith("\n")) it + "\n" else it }
+    val t = cardScreenRows(raw.split("\n")).joinToString("\n").let { if (it.isNotEmpty() && !it.endsWith("\n")) it + "\n" else it }
     return sha256Hex(t.toByteArray(Charsets.UTF_8))
 }
 
@@ -4564,20 +4587,37 @@ internal val CARD_SEND_CHECK = """
     OMP_STATUS = re.compile(rb'^[^ ]+ ([^ ]+ )?> .* > ' + '\U0001f4c1'.encode('utf-8') + rb' [^ ]+ ' + '\u25b6\u2500'.encode('utf-8') + rb'.*$')
     ELAPSED_ROW = re.compile('\u2570'.encode('utf-8') + b'(?:' + '\u2500'.encode('utf-8') + rb')+ elapsed [0-9hms.]+ (?:' +
                              '\u2500'.encode('utf-8') + b')+' + '\u256f'.encode('utf-8') + b'$')
-    def timer(line):
-        shown = re.sub(rb'\x1b\[[0-9;?]*[ -/]*[@-~]', b'', line).lower().strip(b' \t\r\x0b\x0c')
-        if OMP_STATUS.match(shown):
-            return b'<status>'
-        if ELAPSED_ROW.match(shown):
-            return re.sub(rb'elapsed [0-9hms.]+', b'elapsed N', line, count=1)
-        return re.sub(rb'(?s)^(.*)\([0-9]+s\)', rb'\1(Ns)', line, count=1) if TIMER_LINE.match(shown) else line
+    # Oh My Pi's approval box (cardScreenRows in Herdr.kt): its rows count as they are.
+    BOX_TOP = re.compile(('\u256d\u2500 allow tool: ').encode('utf-8') + b'.*' + '\u256e'.encode('utf-8') + b'$')
+    BOX_BOTTOM = re.compile('\u2570'.encode('utf-8') + b'(?:' + '\u2500'.encode('utf-8') + b')+' + '\u256f'.encode('utf-8') + b'$')
+    def shown(line):
+        return re.sub(rb'\x1b\[[0-9;?]*[ -/]*[@-~]', b'', line).lower().strip(b' \t\r\x0b\x0c')
+    def timer(line, t):
+        return re.sub(rb'(?s)^(.*)\([0-9]+s\)', rb'\1(Ns)', line, count=1) if TIMER_LINE.match(t) else line
+    def rows(lines):
+        t = [shown(line) for line in lines]
+        top = max((i for i, x in enumerate(t) if BOX_TOP.match(x)), default=-1)
+        bottom = next((i for i in range(top + 1, len(t)) if BOX_BOTTOM.match(t[i])), -1) if top >= 0 else -1
+        out = []
+        for i, line in enumerate(lines):
+            if bottom < 0:
+                out.append(timer(line, t[i]))
+            elif top <= i <= bottom:
+                out.append(line)
+            elif i < top and ELAPSED_ROW.match(t[i]):
+                out.append(re.sub(rb'elapsed [0-9hms.]+', b'elapsed N', line, count=1))
+            elif i == bottom + 1 and OMP_STATUS.match(t[i]):
+                out.append(b'<status>')
+            else:
+                out.append(timer(line, t[i]))
+        return out
     try:
         before = identity()
         visible = call('read', pane, '--source', 'visible', '--format', 'ansi')
         after = identity()
         if b'\x00' in visible:
             sys.exit(3)  # a NUL never matches (the shell check can't hold one); as cardScreenDigest
-        visible = b'\n'.join(timer(line) for line in visible.split(b'\n'))
+        visible = b'\n'.join(rows(visible.split(b'\n')))
         if visible and not visible.endswith(b'\n'):
             visible += b'\n'
         seen = hashlib.sha256(visible).hexdigest()
