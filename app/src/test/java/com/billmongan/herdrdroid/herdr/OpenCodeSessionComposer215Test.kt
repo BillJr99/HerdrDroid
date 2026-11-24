@@ -11,7 +11,7 @@ import org.junit.Test
  * draws no prompt glyph, and inside a session its empty box shows no "Ask anything…" placeholder:
  * only three bare "┃" rows above its "Build · <model>" row. [inputLineOf] read that as "no input
  * line" (null), so the cross-server notice, the voice send and the relay refused every time. The
- * captures are both OpenCode panes on minipc2, idle with an empty box (one with OpenCode's sidebar).
+ * captures are both OpenCode panes on laptop2, idle with an empty box (one with OpenCode's sidebar).
  */
 class OpenCodeSessionComposer215Test {
     private fun screen(name: String) =
@@ -42,7 +42,7 @@ class OpenCodeSessionComposer215Test {
     }
 
     @Test fun `the home screen box with its placeholder still reads as empty`() {
-        val home = checkNotNull(javaClass.getResource("/screens/opencode/live-2026-11-20-ursinus/empty.ansi")).readText()
+        val home = checkNotNull(javaClass.getResource("/screens/opencode/live-2026-11-20-second/empty.ansi")).readText()
         assertEquals("", inputLineOf(home, "opencode"))
         // The same words in normal type could be typed: only the grey placeholder is empty.
         assertNotEquals("", inputLineOf(stripAnsi(home), "opencode"))

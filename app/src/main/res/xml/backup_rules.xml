@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 2.2.7: for Android 11 and older; backup is off (allowBackup="false"), and these stay out regardless. -->
+<full-backup-content>
+    <exclude domain="file" path="pane-reads/" />
+</full-backup-content>

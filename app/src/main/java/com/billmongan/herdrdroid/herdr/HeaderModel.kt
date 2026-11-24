@@ -45,7 +45,7 @@ private val TITLE_MODEL = Regex(
 
 /**
  * A model id inside a terminal title. Agents mostly put the conversation's name there ("Select
- * argon model | codex", "bill@minipc2: ~"), so only a real model id counts.
+ * argon model | codex", "user@labbox2: ~"), so only a real model id counts.
  */
 fun titleModel(title: String): String? {
     val id = TITLE_MODEL.find(title)?.groupValues?.get(1) ?: return null

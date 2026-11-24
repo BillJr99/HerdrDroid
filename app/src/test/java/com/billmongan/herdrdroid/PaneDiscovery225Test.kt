@@ -30,7 +30,7 @@ import org.junit.runner.RunWith
 import org.robolectric.Shadows.shadowOf
 
 /**
- * 2.2.5, Bill (via Hermes): MiniPC2 signed in, herdr 0.9.5 there listed 13 panes, and the app
+ * 2.2.5, Bill (via Hermes): Laptop2 signed in, herdr 0.9.5 there listed 13 panes, and the app
  * showed none. The fixtures are herdr 0.9.5's real `pane list` and `tab list` output from that
  * computer with every path, title, session id and label replaced.
  */
@@ -42,8 +42,8 @@ class PaneDiscovery225Test {
     private val tabList = fixture("tab-list.json")
     private val vm by lazy { AppViewModel(ApplicationProvider.getApplicationContext<Application>()) }
     private var vmMade = false
-    private val a = Server(id = "fixture-a", name = "FixtureA", host = "a.invalid", port = 22, user = "fixa", herdrPath = "herdr")
-    private val b = Server(id = "fixture-b", name = "FixtureB", host = "b.invalid", port = 22, user = "fixb", herdrPath = "herdr")
+    private val a = Server(id = "fixture-a", name = "FixtureA", host = "127.0.0.1", port = 1, user = "fixa", herdrPath = "herdr")
+    private val b = Server(id = "fixture-b", name = "FixtureB", host = "127.0.0.1", port = 2, user = "fixb", herdrPath = "herdr")
 
     @After fun close() {
         if (vmMade) {
@@ -139,7 +139,7 @@ class PaneDiscovery225Test {
         val log = DiagLog.text()
         assertTrue(log, log.contains("stage=list-read result=failed") && log.contains("error=HerdrError exit=2"))
         assertFalse(log.contains("private-output-text"))
-        assertFalse(log.contains("a.invalid"))
+        assertFalse("no host in the log", log.contains("127.0.0.1"))
         assertTrue(log.contains("server=${LinkDiag.serverTag(a.id)}"))
     }
 
@@ -166,7 +166,7 @@ class PaneDiscovery225Test {
 
     private class Fake(private val listReply: () -> String) : Herdr.Commands {
         val commands = java.util.Collections.synchronizedList(mutableListOf<String>())
-        val client = Herdr(HerdrSsh("fake.invalid", 22, "fake", Credentials(null, null), null, { null }), "herdr", Backend.TUI, null, this)
+        val client = Herdr(HerdrSsh("127.0.0.1", 3, "fake", Credentials(null, null), null, { null }), "herdr", Backend.TUI, null, this)
         override val connection: Any? = Any()
         override suspend fun bulk(command: String): ExecResult = answer(command)
         override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult = answer(command)

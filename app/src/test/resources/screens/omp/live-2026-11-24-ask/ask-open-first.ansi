@@ -1,0 +1,31 @@
+ Ask me the review questions
+╭─ Ask · 4 of 5 answered ──────────────────────────────────────────────────────────────────────────────╮
+│ The review is read-only so far: 120 items (3.5 GiB) are SAFE-TO-MOVE, 12 (1.2 GiB) are CHECK-FIRST   │
+│ and 8 (0.9 GiB) are KEEP. Report: outputs/review-report.md. Moves would go into a holding folder     │
+│ only; nothing would be deleted.                                                                      │
+│                                                                                                      │
+│ [32m✓[0m 1. What should I do with the SAFE-TO-MOVE items?                                                   │
+│ [2m   Nothing yet, report…   Move only the large…   Move all 120 to the…   [0m[32m✓ Leave it to the rev…[0m       │
+│                                                                                                      │
+│ ✓ 2. Course-named items (demo-a, demo-b): 40 items, about 1.1 GiB                                    │
+│    ✓ Keep them SAFE-TO-M…   Make all of them CH…                                                     │
+│                                                                                                      │
+│ [1m3. project-x builds (2.1 GiB): 7 local commits are on no remote[0m                                      │
+│ ❯ ◉ Leave as CHECK-FIRST                                                                             │
+│   ○ List the 7 commits and check whether the work landed on a pushed branch under other hashes       │
+│     (read-only)                                                                                      │
+│   ○ The commits are throwaway, so treat them as SAFE-TO-MOVE                                         │
+│   ○ Other:  type your own                                                                            │
+│                                                                                                      │
+│ ✓ 4. lab-clones (11 clones, 2.0 GiB): each has 1 unpushed TODO commit                                │
+│    ✓ Leave as CHECK-FIRST   Check whether the c…   Treat as SAFE-TO-MO…                              │
+│                                                                                                      │
+│ ✓ 5. outputs/sample-cache-v1 (1.3 GiB, modified today)                                               │
+│    ✓ KEEP, it is still i…   Look at it again in…   Hand it to another…                               │
+│                                                                                                      │
+│   Submit                                                                                             │
+│                                                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────╯
+  ⎋ Asking review decisions
+ ❓ 1m > ⦸ sample-model > 📁 ~/work/demo ▶─────────────────66%───╎──────┃──────128K─
+╰─

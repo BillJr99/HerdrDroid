@@ -7,7 +7,7 @@
 [0m[1m[38;5;4m  exact installed Herdr 0.9.5 send mechanism to an isolated inert target, with two named local Herdr instances if feasible and[0m
 [0m[1m[38;5;4m  distinct exact target checks. Prepare a reusable real-transport fixture and note which checks require the APK candidate. Do not[0m
 [0m[1m[38;5;4m  input anything into live panes or connect to real remote hosts, install/configure host software, change repositories, upload,[0m
-[0m[1m[38;5;4m  sign, restart agents, or access secrets. No heavy Gradle/emulator builds because MiniPC2 is swapping. Do not duplicate the mobile[0m
+[0m[1m[38;5;4m  sign, restart agents, or access secrets. No heavy Gradle/emulator builds because Laptop2 is swapping. Do not duplicate the mobile[0m
 [0m[1m[38;5;4m  UI/TDD lane or Grok badge lane; no subdelegation. Put sanitized fixture/receipt under[0m
 [0m[1m[38;5;4m  ~/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance/ and report exact paths. Retain one writer for release refs[0m
 [0m[1m[38;5;4m  (Hermes).[0m
@@ -21,7 +21,7 @@
 [0m[38;5;1m●[0m [0m[1m[38;5;3mRan[0m 2 commands [0m[38;5;7m(+1 · rg "—" /home/user/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance: failed)[0m
 [0m[38;5;1m●[0m [0m[1m[38;5;3mRan[0m [0m[38;5;7m(grep -R "—" /home/user/Documents/workspace/outputs/herdrdroid-2.1.0/agy-native-acceptance)[0m [0m[38;5;7mfailed[0m [0m[38;5;7m(ctrl+o to expand)[0m
 
-  Session context: [0m[38;5;12mHerdr on minipc2; tab: agy; shared rules: ~/agents/AGENTS.md[0m
+  Session context: [0m[38;5;12mHerdr on laptop2; tab: agy; shared rules: ~/agents/AGENTS.md[0m
 
   Completed [0m[38;5;12m[hd210-agy-native-fixtures][0m (disposable end-to-end Herdr 0.9.5 transport verification fixture and acceptance receipt
   for HerdrDroid 2.1.0, without touching live panes, repositories, remote hosts, or heavy Gradle/emulator builds).
@@ -140,11 +140,11 @@
 [0m[38;5;2m●[0m [0m[1m[38;5;3mRan[0m 6 commands [0m[38;5;7m(python3 -c ' from pa... ×5 · python3 -c ' import ...)[0m [0m[38;5;7m(ctrl+o to expand)[0m
 
 [0m[38;5;8m────────────────────────────────────────────────────────────[0m
-[0m[1m[38;5;4m> From claude (Herdr on minipc2; tab: claude), with Bill's approval (he overrode the sender quota hold for this one message): stop[0m
+[0m[1m[38;5;4m> From claude (Herdr on laptop2; tab: claude), with Bill's approval (he overrode the sender quota hold for this one message): stop[0m
 [0m[1m[38;5;4m  the kanban-32748 herdrdroid-2.1.0 app-over-SSH lane now; it is complete. Claude ran the signed 2.0.6 to 2.1.0 upgrade and the app[0m
 [0m[1m[38;5;4m  consent/send plus zero-write negatives in a disposable Docker emulator with loopback SSH; receipt[0m
 [0m[1m[38;5;4m  /home/user/Documents/workspace/outputs/herdrdroid-2.1.0/claude-final-apk-acceptance/DISPOSABLE-RUN-RECEIPT.md. Bill does not want[0m
-[0m[1m[38;5;4m  Java, Gradle or test runs on minipc2: any build or test work must run in a throwaway container on minipc (bill-dockrun). Do not[0m
+[0m[1m[38;5;4m  Java, Gradle or test runs on laptop2: any build or test work must run in a throwaway container on laptop (bill-dockrun). Do not[0m
 [0m[1m[38;5;4m  run more commands for this lane, and do not touch /home/user/Documents/workspace/outputs/kanban-32748/scratch; Claude is moving it[0m
 [0m[1m[38;5;4m  to ~/scratch. Reply with one line acknowledging, then stay idle.[0m
 

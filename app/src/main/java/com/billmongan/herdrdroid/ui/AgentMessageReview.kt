@@ -142,6 +142,8 @@ internal fun CrossServerApprovalDialog(
                 if (waiting > 0) Text(
                     if (waiting == 1) "1 more proposal is waiting on its card." else "$waiting more proposals are waiting on their cards.",
                     color = Palette.Muted, fontSize = 12.sp)
+                // 2.2.7: too long to type, it goes as a checked file; this one approval covers it.
+                crossServerFileNote(text)?.let { Text(it, color = Palette.Ink, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold) }
                 Column(
                     Modifier.fillMaxWidth().heightIn(max = 240.dp).clip(RoundedCornerShape(8.dp)).background(Palette.BlueSoft)
                         .verticalScroll(rememberScrollState()).padding(10.dp)
@@ -252,3 +254,9 @@ internal fun DestinationChoices(destinations: List<String>, enabled: Boolean, on
         }
     }
 }
+
+/** 2.2.7: the approval's note for a message that goes as a file, or null when it is typed in. */
+internal fun crossServerFileNote(text: String): String? =
+    if (com.billmongan.herdrdroid.herdr.LongText.plan(text) is com.billmongan.herdrdroid.herdr.LongText.Plan.Attachment)
+        "${com.billmongan.herdrdroid.herdr.LongText.size(text.toByteArray().size.toLong())}, sent as a file: the agent gets one line pointing at it in that computer's inbox."
+    else null

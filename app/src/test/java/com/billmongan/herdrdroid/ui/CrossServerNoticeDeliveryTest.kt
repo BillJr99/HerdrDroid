@@ -39,8 +39,8 @@ import org.robolectric.Shadows.shadowOf
 
 /**
  * 2.1.4 (Bill: "Herdrdroid should tell the panes about the instructions and other panes and
- * servers when the cross server feature is enabled"). The phone has minipc open, with Claude in p1,
- * and watches minipc2, with Hermes and a reviewer. Every notice goes through the guarded send paths.
+ * servers when the cross server feature is enabled"). The phone has laptop open, with Claude in p1,
+ * and watches laptop2, with Hermes and a reviewer. Every notice goes through the guarded send paths.
  */
 @RunWith(AndroidJUnit4::class)
 class CrossServerNoticeDeliveryTest {
@@ -49,8 +49,8 @@ class CrossServerNoticeDeliveryTest {
 
     private val app = ApplicationProvider.getApplicationContext<Application>()
     private lateinit var vm: AppViewModel
-    private val minipc = Endpoint("minipc", listOf(Row("p1", "w1:t1", "claude", "claude", "s-claude")))
-    private val minipc2 = Endpoint("minipc2", listOf(
+    private val laptop = Endpoint("laptop", listOf(Row("p1", "w1:t1", "claude", "claude", "s-claude")))
+    private val laptop2 = Endpoint("laptop2", listOf(
         Row("w2:p9", "w2:t6", "hermes", "claude", "s-hermes"),
         Row("w2:p5", "w2:t2", "reviewer", "claude", "s-review"),
     ))
@@ -71,18 +71,18 @@ class CrossServerNoticeDeliveryTest {
             vm.noticeTicker = { awaitCancellation() }
             vm.noticeClock = { now }
             vm.onForeground()
-            field(vm, "herdr").set(vm, minipc.client)
-            state(vm, "servers", listOf(minipc.server, minipc2.server))
-            state(vm, "current", minipc.server)
-            state(vm, "panes", minipc.panes())
+            field(vm, "herdr").set(vm, laptop.client)
+            state(vm, "servers", listOf(laptop.server, laptop2.server))
+            state(vm, "current", laptop.server)
+            state(vm, "panes", laptop.panes())
             vm.screen = Screen.Tabs
             watch()
-            field(fleet, "clients").set(fleet, mutableMapOf(minipc2.server.id to (minipc2.ssh to minipc2.client)))
+            field(fleet, "clients").set(fleet, mutableMapOf(laptop2.server.id to (laptop2.ssh to laptop2.client)))
             field(vm, "fleet").set(vm, fleet)
         }
     }
 
-    private fun watch() = state(fleet, "states", mapOf(minipc2.server.id to FleetState(minipc2.server, minipc2.panes(), null, 0)))
+    private fun watch() = state(fleet, "states", mapOf(laptop2.server.id to FleetState(laptop2.server, laptop2.panes(), null, 0)))
 
     @After fun close() {
         rule.runOnUiThread { vm.viewModelScope.cancel() }
@@ -94,43 +94,43 @@ class CrossServerNoticeDeliveryTest {
     @Test fun enablingTellsEveryAgentOnceWithTheAgentsOnOtherServers() {
         vm.changeAgentMessaging(true)
         tick()
-        assertEquals(1, minipc.writes.size)
-        assertTrue(minipc.writes[0], minipc.writes[0].contains("Agents on other servers: Claude · hermes on minipc2, Claude · reviewer on minipc2."))
-        assertEquals(minipc2.writes.toString(), 2, minipc2.writes.size)
-        minipc2.writes.forEach {
-            assertTrue(it, it.contains("Agents on other servers: Claude on minipc."))
-            assertFalse(it, it.contains("hermes on minipc2"))
-            assertFalse(it, it.contains(".invalid") || it.contains(":22"))
+        assertEquals(1, laptop.writes.size)
+        assertTrue(laptop.writes[0], laptop.writes[0].contains("Agents on other servers: Claude · hermes on laptop2, Claude · reviewer on laptop2."))
+        assertEquals(laptop2.writes.toString(), 2, laptop2.writes.size)
+        laptop2.writes.forEach {
+            assertTrue(it, it.contains("Agents on other servers: Claude on laptop."))
+            assertFalse(it, it.contains("hermes on laptop2"))
+            assertFalse(it, it.contains("127.0.0.1") || it.contains(":${laptop.server.port}") || it.contains(":${laptop2.server.port}"))
         }
         tick()
-        assertEquals(1, minipc.writes.size)
-        assertEquals(2, minipc2.writes.size)
+        assertEquals(1, laptop.writes.size)
+        assertEquals(2, laptop2.writes.size)
     }
 
     /** Grok's RC review 4: an unnamed server is "server N" in the notice, with no account, host or port. */
     @Test fun anUnnamedServerIsNamedOnlyByItsPlaceInTheNotice() {
-        val unnamed = minipc2.server.copy(name = "")
-        assertEquals("fixture@minipc2.invalid", unnamed.label)
-        state(vm, "servers", listOf(minipc.server, unnamed))
-        state(fleet, "states", mapOf(unnamed.id to FleetState(unnamed, minipc2.panes(), null, 0)))
+        val unnamed = laptop2.server.copy(name = "")
+        assertEquals("fixture@127.0.0.1", unnamed.label)
+        state(vm, "servers", listOf(laptop.server, unnamed))
+        state(fleet, "states", mapOf(unnamed.id to FleetState(unnamed, laptop2.panes(), null, 0)))
         vm.changeAgentMessaging(true)
         tick()
-        assertEquals(1, minipc.writes.size)
+        assertEquals(1, laptop.writes.size)
         // Only the notice itself: the command around it holds the fixture's herdr path.
-        val told = minipc.writes[0].substringAfter("'agent' 'prompt' 'p1' ")
+        val told = laptop.writes[0].substringAfter("'agent' 'prompt' 'p1' ")
         assertTrue(told, told.contains("Agents on other servers: Claude · hermes on server 2, Claude · reviewer on server 2."))
-        assertFalse(told, told.contains("fixture") || told.contains(".invalid") || told.contains(":22") || told.contains("@"))
+        assertFalse(told, told.contains("fixture") || told.contains("127.0.0.1") || told.contains(":${laptop2.server.port}") || told.contains("@"))
         // The named server is still named.
-        assertEquals(2, minipc2.writes.size)
-        minipc2.writes.forEach { assertTrue(it, it.contains("Agents on other servers: Claude on minipc.")) }
+        assertEquals(2, laptop2.writes.size)
+        laptop2.writes.forEach { assertTrue(it, it.contains("Agents on other servers: Claude on laptop.")) }
     }
 
     @Test fun enablingRunsTheFirstTickAtOnce() {
         vm.noticeLoopAllowed = true
         vm.changeAgentMessaging(true)
         shadowOf(Looper.getMainLooper()).idle()
-        assertEquals(1, minipc.writes.size)
-        assertEquals(2, minipc2.writes.size)
+        assertEquals(1, laptop.writes.size)
+        assertEquals(2, laptop2.writes.size)
     }
 
     @Test fun switchOffSendsNothing() {
@@ -139,60 +139,60 @@ class CrossServerNoticeDeliveryTest {
         tick()
         vm.tellAgentsNow()
         shadowOf(Looper.getMainLooper()).idle()
-        assertTrue(minipc.writes.isEmpty() && minipc2.writes.isEmpty())
+        assertTrue(laptop.writes.isEmpty() && laptop2.writes.isEmpty())
         // Cross-server messaging off: nothing either, whatever the switch says.
         vm.changeCrossServerNotice(true)
         vm.changeAgentMessaging(false)
         tick()
-        assertTrue(minipc.writes.isEmpty() && minipc2.writes.isEmpty())
+        assertTrue(laptop.writes.isEmpty() && laptop2.writes.isEmpty())
     }
 
     @Test fun aReachableSetChangeIsToldButAStatusFlipIsNot() {
         vm.changeAgentMessaging(true)
         tick()
         now += 2 * 3_600_000
-        // Status flips: working and back, for every agent on minipc2.
-        minipc2.status["w2:p9"] = "working"; watch(); tick()
-        minipc2.status["w2:p9"] = "idle"; watch(); tick()
-        assertEquals(1, minipc.writes.size)
-        assertEquals(2, minipc2.writes.size)
-        // A new agent on minipc2: minipc's Claude hears of it; minipc2's agents' list is unchanged.
-        minipc2.rows += Row("w2:p7", "w2:t7", "codex", "claude", "s-new")
+        // Status flips: working and back, for every agent on laptop2.
+        laptop2.status["w2:p9"] = "working"; watch(); tick()
+        laptop2.status["w2:p9"] = "idle"; watch(); tick()
+        assertEquals(1, laptop.writes.size)
+        assertEquals(2, laptop2.writes.size)
+        // A new agent on laptop2: laptop's Claude hears of it; laptop2's agents' list is unchanged.
+        laptop2.rows += Row("w2:p7", "w2:t7", "codex", "claude", "s-new")
         watch(); tick()
-        assertEquals(2, minipc.writes.size)
-        assertTrue(minipc.writes[1].contains("Claude · codex on minipc2"))
-        assertEquals(listOf("w2:p9", "w2:p5", "w2:p7"), minipc2.writes.map { it.substringAfter("'prompt' '").substringBefore("'") })
+        assertEquals(2, laptop.writes.size)
+        assertTrue(laptop.writes[1].contains("Claude · codex on laptop2"))
+        assertEquals(listOf("w2:p9", "w2:p5", "w2:p7"), laptop2.writes.map { it.substringAfter("'prompt' '").substringBefore("'") })
     }
 
     @Test fun aChangeWithinTheHourWaitsAndTellAgentsNowBypassesOnlyThat() {
         vm.changeAgentMessaging(true)
         tick()
-        minipc2.rows += Row("w2:p7", "w2:t7", "codex", "claude", "s-new")
+        laptop2.rows += Row("w2:p7", "w2:t7", "codex", "claude", "s-new")
         watch()
         now += 10 * 60_000
         tick()
-        assertEquals(1, minipc.writes.size)
+        assertEquals(1, laptop.writes.size)
         vm.tellAgentsNow()
         shadowOf(Looper.getMainLooper()).idle()
-        assertEquals(2, minipc.writes.size)
+        assertEquals(2, laptop.writes.size)
         // Already told this session about this set: the tap sends nothing more.
         vm.tellAgentsNow()
         shadowOf(Looper.getMainLooper()).idle()
-        assertEquals(2, minipc.writes.size)
-        assertEquals(3, minipc2.writes.size)
+        assertEquals(2, laptop.writes.size)
+        assertEquals(3, laptop2.writes.size)
     }
 
     @Test fun heldWhileWorkingOrWithADialogThenSent() {
-        minipc2.status["w2:p9"] = "working"
-        minipc2.status["w2:p5"] = "blocked"
+        laptop2.status["w2:p9"] = "working"
+        laptop2.status["w2:p5"] = "blocked"
         watch()
         vm.changeAgentMessaging(true)
         repeat(8) { tick() }
-        assertTrue(minipc2.writes.isEmpty())
-        minipc2.status["w2:p9"] = "idle"
-        minipc2.status["w2:p5"] = "idle"
+        assertTrue(laptop2.writes.isEmpty())
+        laptop2.status["w2:p9"] = "idle"
+        laptop2.status["w2:p5"] = "idle"
         watch(); tick()
-        assertEquals(2, minipc2.writes.size)
+        assertEquals(2, laptop2.writes.size)
     }
 
     private fun shellsScreen(name: String) =
@@ -205,87 +205,87 @@ class CrossServerNoticeDeliveryTest {
      * shells and an empty box, the notice goes once.
      */
     @Test fun theOpenServersClaudeWithShellsIsHeldWhileItsFooterSaysWorkingThenToldOnce() {
-        state(vm, "panes", withBusy(minipc.panes(), mapOf("p1" to 3)))
-        minipc.screen["p1"] = shellsScreen("working-3-shells.ansi")
+        state(vm, "panes", withBusy(laptop.panes(), mapOf("p1" to 3)))
+        laptop.screen["p1"] = shellsScreen("working-3-shells.ansi")
         vm.changeAgentMessaging(true)
         tick()
-        assertTrue(minipc.writes.toString(), minipc.writes.isEmpty())
-        minipc.screen["p1"] = shellsScreen("idle-3-shells-suggestion.ansi")
+        assertTrue(laptop.writes.toString(), laptop.writes.isEmpty())
+        laptop.screen["p1"] = shellsScreen("idle-3-shells-suggestion.ansi")
         // A refused notice is tried again after the notifier's two-minute gap.
         now += 120_001
         tick()
-        assertEquals(1, minipc.writes.size)
+        assertEquals(1, laptop.writes.size)
         tick()
-        assertEquals(1, minipc.writes.size)
+        assertEquals(1, laptop.writes.size)
     }
 
     /** The same on a watched server, through the relay: held while the footer says working, then told once. */
     @Test fun aWatchedClaudeWithShellsIsHeldWhileItsFooterSaysWorkingThenToldOnce() {
-        state(fleet, "states", mapOf(minipc2.server.id to FleetState(minipc2.server,
-            withBusy(minipc2.panes(), mapOf("w2:p9" to 3, "w2:p5" to 0)), null, 0, mapOf("w2:p9" to 3))))
-        minipc2.screen["w2:p9"] = shellsScreen("working-3-shells.ansi")
+        state(fleet, "states", mapOf(laptop2.server.id to FleetState(laptop2.server,
+            withBusy(laptop2.panes(), mapOf("w2:p9" to 3, "w2:p5" to 0)), null, 0, mapOf("w2:p9" to 3))))
+        laptop2.screen["w2:p9"] = shellsScreen("working-3-shells.ansi")
         vm.changeAgentMessaging(true)
         tick()
-        assertEquals("only the reviewer is told", 1, minipc2.writes.size)
-        assertFalse(minipc2.writes.single().contains("'w2:p9'"))
-        minipc2.screen["w2:p9"] = shellsScreen("idle-3-shells.ansi")
+        assertEquals("only the reviewer is told", 1, laptop2.writes.size)
+        assertFalse(laptop2.writes.single().contains("'w2:p9'"))
+        laptop2.screen["w2:p9"] = shellsScreen("idle-3-shells.ansi")
         now += 120_001
         tick()
-        assertEquals(2, minipc2.writes.size)
-        assertTrue(minipc2.writes.last().contains("'w2:p9'"))
+        assertEquals(2, laptop2.writes.size)
+        assertTrue(laptop2.writes.last().contains("'w2:p9'"))
         tick()
-        assertEquals(2, minipc2.writes.size)
+        assertEquals(2, laptop2.writes.size)
     }
 
     @Test fun heldForTheOpenChatsDraft() {
         vm.screen = Screen.Agent("p1")
-        vm.noteVoiceComposerDraft(minipc.server.id, "p1", true)
+        vm.noteVoiceComposerDraft(laptop.server.id, "p1", true)
         vm.changeAgentMessaging(true)
         tick()
-        assertTrue(minipc.writes.isEmpty())
-        assertEquals(2, minipc2.writes.size)
-        vm.noteVoiceComposerDraft(minipc.server.id, "p1", false)
+        assertTrue(laptop.writes.isEmpty())
+        assertEquals(2, laptop2.writes.size)
+        vm.noteVoiceComposerDraft(laptop.server.id, "p1", false)
         tick()
-        assertEquals(1, minipc.writes.size)
+        assertEquals(1, laptop.writes.size)
     }
 
     @Test fun aDraftAtTheComputerIsRetriedThenGivenUpWithAPaneNotice() {
-        minipc2.screen["w2:p9"] = "❯ half typed"
+        laptop2.screen["w2:p9"] = "❯ half typed"
         vm.changeAgentMessaging(true)
         for (i in 1..vm.notifier.maxTries) { tick(); now += 121_000 }
-        assertEquals(listOf("w2:p5"), minipc2.writes.map { it.substringAfter("'prompt' '").substringBefore("'") })
-        val notice = vm.sendNotices.single { it.serverId == "minipc2" && it.paneId == "w2:p9" }
+        assertEquals(listOf("w2:p5"), laptop2.writes.map { it.substringAfter("'prompt' '").substringBefore("'") })
+        val notice = vm.sendNotices.single { it.serverId == "laptop2" && it.paneId == "w2:p9" }
         assertTrue(notice.text.contains("could not tell this agent"))
         now += 5 * 3_600_000
         tick()
-        assertEquals(1, minipc2.writes.size)
+        assertEquals(1, laptop2.writes.size)
     }
 
     @Test fun agentsOverTheQuotaLimitWaitAndUnknownUsageIsSent() {
         fun reading(p: Double) = QuotaReading(now, listOf(QuotaItem("week", p, null)))
-        state(vm, "serverQuotas", mapOf("minipc2" to mapOf("claude" to reading(95.0))))
+        state(vm, "serverQuotas", mapOf("laptop2" to mapOf("claude" to reading(95.0))))
         vm.changeAgentMessaging(true)
         tick()
-        assertTrue(minipc2.writes.isEmpty())
-        // minipc's Claude has no reading: it is not skipped.
-        assertEquals(1, minipc.writes.size)
-        state(vm, "serverQuotas", mapOf("minipc2" to mapOf("claude" to reading(94.0))))
+        assertTrue(laptop2.writes.isEmpty())
+        // laptop's Claude has no reading: it is not skipped.
+        assertEquals(1, laptop.writes.size)
+        state(vm, "serverQuotas", mapOf("laptop2" to mapOf("claude" to reading(94.0))))
         tick()
-        assertEquals(2, minipc2.writes.size)
+        assertEquals(2, laptop2.writes.size)
     }
 
     @Test fun theThresholdIsASettingThatPersists() {
         assertEquals(95, vm.crossServerNoticeQuota)
         fun reading(p: Double) = QuotaReading(now, listOf(QuotaItem("week", p, null)))
-        state(vm, "serverQuotas", mapOf("minipc2" to mapOf("claude" to reading(85.0))))
+        state(vm, "serverQuotas", mapOf("laptop2" to mapOf("claude" to reading(85.0))))
         vm.changeCrossServerNoticeQuota(80)
         vm.changeAgentMessaging(true)
         tick()
-        assertTrue(minipc2.writes.isEmpty())
+        assertTrue(laptop2.writes.isEmpty())
         vm.changeCrossServerNoticeQuota(100)
-        state(vm, "serverQuotas", mapOf("minipc2" to mapOf("claude" to reading(100.0))))
+        state(vm, "serverQuotas", mapOf("laptop2" to mapOf("claude" to reading(100.0))))
         tick()
-        assertEquals(2, minipc2.writes.size)
+        assertEquals(2, laptop2.writes.size)
         vm.changeCrossServerNoticeQuota(80)
         vm.changeCrossServerNotice(false)
         assertEquals(80, AppPrefs(app).crossServerNoticeQuota)
@@ -298,20 +298,20 @@ class CrossServerNoticeDeliveryTest {
     @Test fun whatWasSentIsNotSentAgainAfterARestart() {
         vm.changeAgentMessaging(true)
         tick()
-        assertEquals(3, minipc.writes.size + minipc2.writes.size)
+        assertEquals(3, laptop.writes.size + laptop2.writes.size)
         now += 5 * 3_600_000
         val restarted = AppViewModel(app)
         restarted.noticeLoopAllowed = false
         restarted.noticeTicker = { awaitCancellation() }
         restarted.noticeClock = { now }
         restarted.onForeground()
-        field(restarted, "herdr").set(restarted, minipc.client)
-        state(restarted, "servers", listOf(minipc.server, minipc2.server))
-        state(restarted, "current", minipc.server)
-        state(restarted, "panes", minipc.panes())
+        field(restarted, "herdr").set(restarted, laptop.client)
+        state(restarted, "servers", listOf(laptop.server, laptop2.server))
+        state(restarted, "current", laptop.server)
+        state(restarted, "panes", laptop.panes())
         field(restarted, "fleet").set(restarted, fleet)
         runBlocking { restarted.noticeTick() }
-        assertEquals(3, minipc.writes.size + minipc2.writes.size)
+        assertEquals(3, laptop.writes.size + laptop2.writes.size)
         restarted.viewModelScope.cancel()
     }
 
@@ -324,7 +324,7 @@ class CrossServerNoticeDeliveryTest {
         rule.onNodeWithText("Tell agents about cross-server messaging").assertIsEnabled().assertIsOn()
         rule.onNodeWithText("Tell agents now").assertIsEnabled().performClick()
         rule.waitForIdle()
-        assertEquals(3, minipc.writes.size + minipc2.writes.size)
+        assertEquals(3, laptop.writes.size + laptop2.writes.size)
         rule.onNodeWithText("Skip agents at or above 95% of quota").assertExists()
         rule.onNodeWithText("An agent whose usage is unknown is not skipped", substring = true).assertExists()
         rule.onNodeWithContentDescription("Lower quota limit").performClick()
@@ -344,7 +344,7 @@ class CrossServerNoticeDeliveryTest {
 
     /** A herdr server with claude-style panes: lists, `pane get`, screens, and recorded prompts. */
     private class Endpoint(name: String, initial: List<Row>) : Herdr.Commands {
-        val server = Server(id = name, name = name, host = "$name.invalid", port = 22, user = "fixture", herdrPath = "/fixture/herdr")
+        val server = Server(id = name, name = name, host = "127.0.0.1", port = if (name == "laptop") 1 else 2, user = "fixture", herdrPath = "/fixture/herdr")
         val ssh = HerdrSsh(server.host, server.port, server.user, Credentials(null, null), null, { null })
         val client = Herdr(ssh, server.herdrPath, Backend.TUI, null, this)
         override var connection: Any? = Any()

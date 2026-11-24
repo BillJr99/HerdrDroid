@@ -68,17 +68,17 @@ class HeaderModel214Test {
 
     @Test fun terminalTitleOnlyWhenItHoldsAModelId() {
         assertEquals("gemini-pro-orchestrator-neon", headerModel("agy", null, "", "agy · gemini-pro-orchestrator-neon"))
-        assertEquals("Opus 5.5", headerModel("claude", null, "", "claude-opus-5-5 | MiniPC2"))
+        assertEquals("Opus 5.5", headerModel("claude", null, "", "claude-opus-5-5 | Laptop2"))
         assertEquals("gpt-6.2-sol", titleModel("codex (gpt-6.2-sol)"))
         // Real titles from herdr agent list name the conversation, not the model.
-        for (t in listOf("◑ MiniPC2", "Select argon model | codex", "bill@minipc2: ~", "Grok quota checks, mean review, setup v… - grok",
+        for (t in listOf("◑ Laptop2", "Select argon model | codex", "bill@laptop2: ~", "Grok quota checks, mean review, setup v… - grok",
                 "Run Shell Command and Report - GitHub Copilot", "OC | 95% quota pause rule", "π - pi", "muse", "cs374 tutorial examples")) {
             assertNull(t, titleModel(t))
         }
     }
 
     @Test fun unknownLeavesTheLineOff() {
-        assertNull(headerModel("claude", null, "> hello\n  ⏵⏵ accept edits on", "◑ MiniPC2"))
+        assertNull(headerModel("claude", null, "> hello\n  ⏵⏵ accept edits on", "◑ Laptop2"))
         assertNull(headerModel(null, null))
         assertNull(headerModel("grok", "  "))
     }

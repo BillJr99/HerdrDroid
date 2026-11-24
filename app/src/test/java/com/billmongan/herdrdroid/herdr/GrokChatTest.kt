@@ -76,7 +76,7 @@ class GrokChatTest {
         assertTrue(paras.contains("Verdict: GO. The review is in /home/user/Documents/workspace/outputs/herdrdroid-2.1.1/grok-rc-review-3.md."))
         assertTrue(paras.contains("REVIEW DONE"))
         assertTrue(paras.any { it.startsWith("The re-review H1 is closed. Alert Reply uses strictNotifyRead (AppViewModel.kt:2773), an 80-line read with no 40-line fallback.") })
-        assertTrue(segs.filterIsInstance<Seg.You>().single().text.startsWith("From claude (Herdr on minipc2; tab: claude). HerdrDroid 2.1.1 FINAL"))
+        assertTrue(segs.filterIsInstance<Seg.You>().single().text.startsWith("From claude (Herdr on laptop2; tab: claude). HerdrDroid 2.1.1 FINAL"))
     }
 
     @Test fun ansiReadGivesTheSameChat() {

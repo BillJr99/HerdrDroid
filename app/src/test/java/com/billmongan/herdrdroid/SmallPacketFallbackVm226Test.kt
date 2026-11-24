@@ -31,8 +31,11 @@ import java.time.Duration
 class SmallPacketFallbackVm226Test {
     @get:Rule val idleMainLooper = IdleMainLooperRule()
     private val vm = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
-    private val a = Server(id = "fixture-mss-a", name = "FixtureA", host = "a.invalid", port = 22, user = "u", herdrPath = "herdr")
-    private val b = Server(id = "fixture-mss-b", name = "FixtureB", host = "b.invalid", port = 22, user = "u", herdrPath = "herdr")
+    // Loopback port 1 refuses at once: a reconnect these tests start fails in milliseconds instead
+    // of waiting on a DNS lookup for an .invalid name, which on a slow resolver outlived the test
+    // and disturbed the next Compose class (2.2.7, GitHub CI).
+    private val a = Server(id = "fixture-mss-a", name = "FixtureA", host = "127.0.0.1", port = 1, user = "u", herdrPath = "herdr")
+    private val b = Server(id = "fixture-mss-b", name = "FixtureB", host = "127.0.0.1", port = 1, user = "u", herdrPath = "herdr")
     private var now = 10_000L
 
     @After fun close() {
@@ -105,18 +108,23 @@ class SmallPacketFallbackVm226Test {
         assertEquals(1200, vm.servers.single { it.id == a.id }.smallPacketsMss)
     }
 
-    @Test fun notAfterTheWindowNorForOtherErrorsNorAnotherConnection() {
+    @Test fun notForOtherErrorsNorAnotherConnectionButAtAnyTimeOnce() {
         val ssh = HerdrSsh(a.host, a.port, a.user, Credentials(null, null), null, { null })
         val other = HerdrSsh(a.host, a.port, a.user, Credentials(null, null), null, { null })
         signedIn(ssh)
         assertFalse(vm.maybeSmallPacketFallback(IllegalStateException("parse"), ssh))
         assertFalse("not the open connection", vm.maybeSmallPacketFallback(LinkDown(java.io.IOException("x")), other))
         assertFalse(vm.maybeSmallPacketFallback(LinkDown(java.io.IOException("x")), null))
-        now += 10 * 60_000
-        assertFalse(vm.maybeSmallPacketFallback(LinkDown(java.io.IOException("late")), ssh))
-        assertNull(ssh.activeMss)
         assertNull(other.activeMss)
         assertNull(vm.smallPacketOffer)
+        // 2.2.7 (Bill: "kick in anytime we are disconnected"): no window; a drop much later falls back, once.
+        now += 10 * 60_000
+        assertTrue(vm.maybeSmallPacketFallback(LinkDown(java.io.IOException("late")), ssh))
+        assertEquals(1200, ssh.activeMss)
+        assertNull(other.activeMss)
+        assertEquals(a.id, vm.smallPacketOffer)
+        now += 60 * 60_000
+        assertFalse("once per session", vm.maybeSmallPacketFallback(LinkDown(java.io.IOException("again")), ssh))
     }
 
     @Test fun neverOverAWebSocket() {
@@ -136,14 +144,16 @@ class SmallPacketFallbackVm226Test {
         NetworkWatch.observe(Any(), "fixture-net-${System.nanoTime()}")
         assertFalse(vm.maybeSmallPacketFallback(LinkDown(java.io.IOException("handoff")), ssh))
         assertTrue(DiagLog.text().contains("fallback=skipped reason=network-change trigger=link-drop"))
-        assertFalse("dropped for this sign-in", vm.maybeSmallPacketFallback(LinkDown(java.io.IOException("again")), ssh))
-
-        signedIn(ssh)
-        state("foreground", false)
-        assertFalse(vm.maybeSmallPacketFallback(LinkDown(java.io.IOException("screen off")), ssh))
-        assertTrue(DiagLog.text().contains("fallback=skipped reason=background trigger=link-drop"))
+        // 2.2.7: deferred to the next sign-in on the new network, not fired on this one.
+        assertFalse("not before signing in again", vm.maybeSmallPacketFallback(LinkDown(java.io.IOException("again")), ssh))
         assertNull(ssh.activeMss)
-        assertNull(vm.smallPacketOffer)
+
+        val other = HerdrSsh(a.host, a.port, a.user, Credentials(null, null), null, { null })
+        signedIn(other)
+        state("foreground", false)
+        assertFalse(vm.maybeSmallPacketFallback(LinkDown(java.io.IOException("screen off")), other))
+        assertTrue(DiagLog.text().contains("fallback=skipped reason=background trigger=link-drop"))
+        assertNull(other.activeMss)
     }
 
     @Test fun theOfferEndsWithItsSession() {
@@ -273,6 +283,78 @@ class SmallPacketFallbackVm226Test {
         assertEquals(listOf(1), listOf(ep.sends.size))
         assertEquals(0, ep.ssh.sendsRunning)
         assertEquals(Link.RECONNECTING, vm.link)
+    }
+
+    /** The view model's own link-lost path, as its callers reach it. */
+    private fun linkLost(e: Exception?, reason: String?) {
+        AppViewModel::class.java.getDeclaredMethod("linkLost", Exception::class.java, String::class.java)
+            .apply { isAccessible = true }.invoke(vm, e, reason)
+    }
+
+    /**
+     * These tests check what linkLost decides, not the reconnect it starts: a real one would dial
+     * the fixture's unreachable host from an IO thread that outlives the test, and its late
+     * continuations and failure landed on the shared main looper during the next Compose class
+     * (CrossServerHermesDestinationTest lost its card on GitHub's runner). An active placeholder
+     * job keeps startReconnect from launching one; it is cancelled at the end.
+     */
+    private fun withoutRealReconnect(block: () -> Unit) {
+        val placeholder = kotlinx.coroutines.Job()
+        field("reconnectJob").set(vm, placeholder)
+        try { block() } finally { placeholder.cancel() }
+    }
+
+    /** Away for [awayMs], then back: the app resets the old socket and reconnects (onForeground). */
+    private fun resumeAfter(awayMs: Long) {
+        vm.onBackground()
+        field("backgroundAt").setLong(vm, System.currentTimeMillis() - awayMs)
+        vm.onForeground()
+    }
+
+    /**
+     * 2.2.7 (Grok's review of 8fab7a9, MEDIUM): coming back after more than 8 s resets the socket
+     * on purpose. That reconnect is not a drop: no small packets, no notice, the fallback still
+     * armed, so a real drop afterwards falls back once.
+     */
+    @Test fun aResumeReconnectIsNotADropButARealDropAfterItStillFallsBackOnce() = withoutRealReconnect {
+        for (away in listOf(9_000L, 10 * 60_000L)) {
+            DiagLog.clear()
+            val e = Endpoint(a)
+            vm.saveServer(a)
+            open(e, a)
+            state("foreground", true)
+            resumeAfter(away)
+            idle()
+            assertNull("away ${away}ms", e.ssh.activeMss)
+            assertNull("away ${away}ms", vm.smallPacketOffer)
+            assertNull(vm.sessionMssFor(a.id))
+            assertFalse(DiagLog.text(), DiagLog.text().contains("fallback="))
+            assertTrue("still armed after the resume", vm.smallPacketFallback.wouldFire(a.id, "link-drop", now))
+
+            linkLost(LinkDown(java.io.IOException("reset by peer")), null)
+            assertEquals(1200, e.ssh.activeMss)
+            assertEquals(a.id, vm.smallPacketOffer)
+            vm.dismissSmallPacketOffer()
+            linkLost(LinkDown(java.io.IOException("again")), null)
+            assertNull("once per session", vm.smallPacketOffer)
+            vm.disconnect()
+            idle()
+            field("reconnectJob").set(vm, kotlinx.coroutines.Job())
+        }
+    }
+
+    /** The same for the other deliberate reconnect: a send queued while the link still looked up. */
+    @Test fun aReconnectTheAppChoseNeverFallsBack() = withoutRealReconnect {
+        val e = Endpoint(a)
+        vm.saveServer(a)
+        open(e, a)
+        state("foreground", true)
+        linkLost(null, "queued-send")
+        linkLost(null, "resume")
+        idle()
+        assertNull(e.ssh.activeMss)
+        assertNull(vm.smallPacketOffer)
+        assertTrue(vm.smallPacketFallback.wouldFire(a.id, "link-drop", now))
     }
 
     private fun field(name: String) = AppViewModel::class.java.getDeclaredField(name).apply { isAccessible = true }

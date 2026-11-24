@@ -12,7 +12,7 @@ import org.json.JSONObject
  * renders this frame in its chat:
  *
  *     HDMSG2 K7P3QX
- *     HDTO Hermes on minipc2
+ *     HDTO Hermes on labbox2
  *     HD> <standard padded Base64 of the message, chunks of at most 40 characters>
  *     HDEND K7P3QX
  *
@@ -83,7 +83,7 @@ private fun parseFrame(lines: List<String>, start: Int, code: String): Pair<Cros
 }
 
 /** A terminal line as the agent meant it: some agent UIs indent fenced text, mark the reply's first line, or draw a box around code. */
-private fun frameLine(raw: String): String {
+internal fun frameLine(raw: String): String {
     var line = raw.trim(' ')
     for (mark in listOf("⏺ ", "● ", "│ ", "┃ ")) if (line.startsWith(mark)) line = line.substring(mark.length).trim(' ')
     for (mark in listOf(" │", " ┃")) if (line.endsWith(mark)) line = line.dropLast(mark.length).trim(' ')
@@ -132,6 +132,9 @@ internal class CrossServerCodeLedger(private val load: () -> String, private val
     }
 
     fun spent(key: String): Boolean = entries[key]?.spent == true
+
+    /** 2.2.7: whether [key] was ever recorded (a pane read's code, or the fingerprint of what it asked). */
+    fun seen(key: String): Boolean = key in entries
 
     /**
      * 2.2.1: a code spent for a send that typed nothing (a refusal decided before the write) is

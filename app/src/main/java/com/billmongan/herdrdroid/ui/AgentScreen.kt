@@ -137,7 +137,11 @@ private class CardAnswerDraft(
 @Composable
 internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (String) -> Unit = vm::readPane) {
     val pane = vm.pane(paneId)
-    var normalMessage by rememberSaveable(paneId) { mutableStateOf(vm.takePrefill(paneId) ?: "") }
+    // 2.2.7: the unsent text lives in the view model by server and pane, so it survives leaving
+    // this screen and coming back (Settings, the server list, another pane, a brief app switch).
+    val draftBox = remember(vm, vm.current?.id, paneId) { ComposerDraftBox(vm, paneId) }
+    androidx.compose.runtime.LaunchedEffect(draftBox) { vm.takePrefill(paneId)?.let { vm.setComposerDraft(paneId, it) } }
+    var normalMessage by draftBox
     val draftServer = vm.current?.id
     // Keep answers out of the ordinary (saveable) composer. A restored message must never
     // silently become an unbound answer or be sent as chat after losing its target.
@@ -167,7 +171,12 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     androidx.compose.runtime.DisposableEffect(paneId) { onDispose { vm.usageViewShown(paneId, false) } }
     var menu by remember { mutableStateOf(false) }
     var choosingModel by remember { mutableStateOf(false) }
+    // 2.2.7: Export pane screen's dialog (PaneScreenExportDialog.kt).
+    var exportingScreen by remember(paneId) { mutableStateOf(false) }
+    // 2.2.7: the pane reads kept on this phone (PaneReadPanel.kt).
+    var showingPaneReads by remember { mutableStateOf(false) }
     var showSnippets by remember { mutableStateOf(false) }
+    var showSecret by remember { mutableStateOf(false) }
     var hermesMenu by remember { mutableStateOf(false) }
     var closingSession by remember { mutableStateOf(false) }
     /** The agent's own model menu, read off its screen, while it is open. */
@@ -190,6 +199,17 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     var pinch by remember { mutableFloatStateOf(1f) }
     val liveSize = (textSize * pinch).coerceIn(8f, 24f)
     val isHermes = pane?.agent?.lowercase() == "hermes"
+    // 2.2.7: until the pane is in the server's list its agent is unknown: the title bar says
+    // "Loading…" (no "?" tile, no raw pane id), then after a short wait the pane's last known label.
+    var identityWaitedOut by remember(vm.current?.id, paneId) { mutableStateOf(false) }
+    val paneUnknown = pane == null
+    LaunchedEffect(vm.current?.id, paneId, paneUnknown) {
+        if (paneUnknown && !identityWaitedOut) {
+            kotlinx.coroutines.delay(PANE_IDENTITY_WAIT_MS)
+            identityWaitedOut = true
+        }
+    }
+    val identity = paneIdentity(pane, paneId, identityWaitedOut, if (paneUnknown) vm.paneLabelGuess(paneId) else null)
     var hermesLive by rememberSaveable(paneId) { mutableStateOf(false) }
     val live = isHermes && hermesLive
     val liveNow by rememberUpdatedState(live)
@@ -319,15 +339,16 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             val text = normalMessage.trim()
             if (waitingForHermes || prompt != null || vm.hasPendingQuestion(pane)) {
                 vm.enqueue(paneId, text)
-                normalMessage = ""
+                vm.clearComposerDraft(paneId)
                 return
             }
-            vm.sendMessage(pane, text)
-            normalMessage = ""
+            // 2.2.7: out of the box now; its draft ends once delivered, and comes back if it never was.
+            vm.sendFromComposer(pane, text)
             // A slash command answers on the screen (a menu, a sign-in code), not in the agent's log,
             // so show the screen and the keys to move through it.
             // 2.1.4: not for /btw, whose answer the app reads into the chat and then closes.
-            if (text.startsWith("/") && !live && com.billmongan.herdrdroid.herdr.btwQuestion(pane.agent, text) == null) { fullTerminal = true; commandScreen = text.substringBefore(' ') }
+            // 2.2.7: a slash command only ("/model"), never a path such as an attachment's ("/home/…").
+            if (com.billmongan.herdrdroid.herdr.isSlashCommand(text) && !live && com.billmongan.herdrdroid.herdr.btwQuestion(pane.agent, text) == null) { fullTerminal = true; commandScreen = text.substringBefore(' ') }
         }
     }
     // The terminal (and screen) view follows new output only while you are at the bottom; once you
@@ -458,6 +479,39 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         }
     }
 
+    // 2.2.7: Send now on a queued message to a working Claude Code with no background hint: the
+    // 2.2.2 Force Send question. Only Send anyway sends; Cancel or a tap outside keeps it queued.
+    vm.sendNowConfirm?.takeIf { it.paneId == paneId && it.serverId == vm.current?.id }?.let {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { vm.cancelSendNow() },
+            modifier = Modifier.semantics { contentDescription = "Force send queued message" },
+            title = { Text("Force send?") },
+            text = { Text(forceDialogText(pane?.agentName ?: "Claude", vm.current?.name ?: "this server"), color = Palette.Ink) },
+            confirmButton = { TextButton(onClick = { vm.confirmSendNow() }) { Text("Send anyway") } },
+            dismissButton = { TextButton(onClick = { vm.cancelSendNow() }) { Text("Cancel") } },
+        )
+    }
+
+    // 2.2.7 (pre-review L8): an attachment's path goes into this pane's message box as it is now,
+    // once the computer has the whole file, even after a Retry from another screen.
+    vm.attachedPath?.takeIf { it.serverId == vm.current?.id && it.paneId == paneId }?.let { a ->
+        LaunchedEffect(a) {
+            editMessage(com.billmongan.herdrdroid.herdr.withAttachment(message, a.path))
+            vm.attachedPathTaken(a)
+        }
+    }
+    // 2.2.7 (pre-review L3): a queued message that may already have reached the agent is sent again only after this.
+    vm.resendConfirm?.takeIf { it.paneId == paneId && it.serverId == vm.current?.id }?.let {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { vm.cancelResend() },
+            modifier = Modifier.semantics { contentDescription = "Send the message again" },
+            title = { Text("Send it again?") },
+            text = { Text("This message may already have reached ${pane?.agentName ?: "the agent"}. Check its chat first; sending again could give it twice.", color = Palette.Ink) },
+            confirmButton = { TextButton(onClick = { vm.confirmResend() }) { Text("Send again") } },
+            dismissButton = { TextButton(onClick = { vm.cancelResend() }) { Text("Cancel") } },
+        )
+    }
+
     Column(Modifier.fillMaxSize().background(Palette.Ground).systemBarsPadding().imePadding()) {
         // ---- Header: the agent, what it's doing, and its model -----------------------------
         // Tap the agent's name to switch to another agent on this server (no swipe: a sideways
@@ -470,7 +524,12 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             IconButton(onClick = { vm.drawerOpen = true }) {
                 Icon(Icons.Filled.Menu, contentDescription = "All agents", tint = Palette.Ink)
             }
-            AgentTile(pane?.initial ?: "?", status, size = 34)
+            if (identity.known) AgentTile(identity.initial.orEmpty(), status, size = 34)
+            else Box(Modifier.size(34.dp), contentAlignment = Alignment.Center) {
+                if (identity.loading) androidx.compose.material3.CircularProgressIndicator(
+                    Modifier.size(20.dp).semantics { contentDescription = "Loading the pane" },
+                    color = Palette.Muted, strokeWidth = 2.dp)
+            }
             // 2.1.4: three lines (Bill, 2026-11-21): the pane's name, the server in a smaller style,
             // and the model in use smaller still (left off when it is unknown). Tap the name to switch
             // agents (or, on Hermes, for the Hermes menu); tap the model to choose another one.
@@ -481,11 +540,11 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             )
             PaneTitleLines(
                 name = if (isHermes) (if (live) "Hermes · live chat" else "Hermes · this pane") + "  ▾"
-                else pane?.let { sessionName(it) } ?: paneId,
+                else identity.title,
                 server = vm.current?.name,
-                model = headerModelText,
+                model = if (identity.known) headerModelText else null,
                 modifier = Modifier.weight(1f).padding(start = 10.dp),
-                status = if (vm.link == Link.CONNECTED) look(status, pane?.backgroundBusy == true).label else null,
+                status = if (vm.link == Link.CONNECTED && identity.known) look(status, pane?.backgroundBusy == true).label else null,
                 statusInk = look(status).ink,
                 compact = keyboardUp,
                 onName = { if (isHermes) { hermesMenu = true; vm.hermesChat()?.refreshSessions() } else vm.drawerOpen = true },
@@ -525,6 +584,9 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 },
                 statusLine = if (vm.link == Link.CONNECTED) null else ({ LinkLabel(vm, "") }),
             )
+            // 2.2.7: the agent is still unknown after the wait: the terminal is the honest view.
+            if (identity.kind == PaneIdentity.Kind.FALLBACK && !fullTerminal)
+                TextButton(onClick = { hermesLive = false; fullTerminal = true; termFollow = true }) { Text("Show terminal") }
             // Shells and subagents still running under the agent, as one small pill in the header
             // (a row of its own appeared and vanished as they started and finished, moving the chat).
             // 2.1.5: the pill is the only way into the view; the "Running underneath" menu entry is gone
@@ -569,6 +631,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                             .putExtra(android.content.Intent.EXTRA_TEXT, vm.debugBundle(paneId))
                         runCatching { context.startActivity(android.content.Intent.createChooser(send, "Share debug bundle")) }
                     })
+                    DropdownMenuItem(text = { Text("Export pane screen") }, onClick = { menu = false; exportingScreen = true })
+                    DropdownMenuItem(text = { Text("Pane reads…") }, onClick = { menu = false; showingPaneReads = true })
                     // The agent's own key for moving a running command to the background (Ctrl+B),
                     // offered only for agents where that is what the key does.
                     if (com.billmongan.herdrdroid.herdr.Backgrounding.supported(pane?.agent)) DropdownMenuItem(
@@ -623,6 +687,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         // 2.1.5: cross-server cards from frames the agent rendered in this chat (2.2.0: kept to a
         // share of the window, so the message box below always fits).
         if (!live) CrossServerPanel(vm, paneId)
+        if (!live) PaneReadPanel(vm, paneId)
         // 2.2.0: herdr's session record is behind the terminal; the chat follows the terminal anyway.
         if (!live && vm.herdrOutOfDate(paneId)) HerdrOutOfDate()
         vm.paneControlBusy(paneId)?.let { Text(it, color = Palette.Muted, fontSize = 12.5.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)) }
@@ -744,6 +809,10 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     // The terminal view (1.4.8: before, a pane with no good read yet showed the same note as
                     // the card, so Show terminal looked like it did nothing).
                     TerminalView(text, vm.paneReadProblem, liveSize)
+                } else if (identity.loading && vm.paneReadProblem == null) {
+                    // 2.2.7: the agent is not known yet, so neither its chat nor a guessed screen view
+                    // shows; the real view draws once the pane list says which agent this is.
+                    Text(LOADING_TITLE, color = Palette.Muted, fontSize = 15.sp)
                 } else if (!vm.screenViewReady(paneId) && vm.paneReadProblem == null) {
                     // 2.2.0: an agent with a chat log shows that log; the terminal parsed into a chat showed
                     // here for a moment first, then jumped to the chat. The card below still shows at once.
@@ -823,14 +892,22 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     idleQueue.forEach { q ->
-                        PendingMessageRow(
-                            title = "Queued until idle",
-                            text = q.text,
-                            onRemove = { vm.cancelQueued(q) },
-                            sendLabel = "Send immediately",
-                            onSend = { vm.sendQueuedImmediately(q) },
-                            sendEnabled = vm.link == Link.CONNECTED && !usageBlocksInput && !waitingForHermes && prompt == null && !typingAnswer && status != Status.NEEDS_YOU,
-                        )
+                        androidx.compose.runtime.key(q.id) {
+                            val canSend = !q.inFlight() && vm.link == Link.CONNECTED && !usageBlocksInput && !waitingForHermes && prompt == null && !typingAnswer && status != Status.NEEDS_YOU
+                            PendingMessageRow(
+                                title = if (q.inFlight()) "Sending now" else "Queued until idle",
+                                text = q.text,
+                                note = q.note,
+                                onRemove = { vm.cancelQueued(q) },
+                                sendLabel = "Send immediately",
+                                onSend = { vm.sendQueuedImmediately(q) },
+                                sendEnabled = canSend,
+                                // 2.2.7: long-press for Send now (Ctrl+B first where Claude shows its background hint).
+                                forceSendMenu = true,
+                                menuSendLabel = "Send now",
+                                onMenuSend = { vm.sendQueuedNow(q) },
+                            )
+                        }
                     }
                     unsent.forEach { p ->
                         androidx.compose.runtime.key(p.id) {
@@ -913,8 +990,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 onStop = pane?.let { p -> { vm.stopPane(p) } },
                 // herdr's agent prompt reaches a working agent, so a message sent now steers it.
                 steerLabel = if (pane?.agent != null && !typingAnswer && prompt == null) "Steer" else null,
-                onQueueWhenIdle = if (!typingAnswer && !usageBlocksInput) ({ vm.enqueue(paneId, normalMessage.trim()); normalMessage = "" }) else null,
-                onAttach = { uri -> vm.attach(uri) { path -> editMessage((message.trimEnd() + " " + path).trim() + " ") } },
+                onQueueWhenIdle = if (!typingAnswer && !usageBlocksInput) ({ vm.enqueue(paneId, normalMessage.trim()); vm.clearComposerDraft(paneId) }) else null,
+                onAttach = { uri -> vm.attach(uri, paneId) },
                 attachBusy = vm.uploading,
                 commands = SlashCommands.forAgent(pane?.agent),
                 // One row: Keys, Snippets and When idle live in the "⋯" menu with attach and dictate.
@@ -923,10 +1000,15 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     if (typingAnswer && !vm.answerInFlight(paneId)) add("Discard answer draft" to { answerDraft = null })
                     add((if (vm.showKeys) "Hide keys" else "Show keys") to { vm.setKeysShown(!vm.showKeys) })
                     add("Snippets" to { showSnippets = true })
+                    add(SEND_SECRET_ITEM to { showSecret = true })
                 },
+                insert = vm.secretInsertFor(paneId)?.first,
+                takeInsert = { id -> vm.takeSecretInsert(paneId, id) },
             )
         }
     }
+
+    if (showSecret) SendSecretDialog(vm, paneId) { showSecret = false }
 
     if (showSnippets) {
         SnippetsDialog(vm, onInsert = { t -> editMessage(if (message.isBlank()) t else message.trimEnd() + "\n" + t) }, onDismiss = { showSnippets = false })
@@ -935,6 +1017,9 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     opened?.let { t ->
         FullMessage(t, liveSize, vm.readingFont.family, onQuote = { quote(t); opened = null }, onClose = { opened = null })
     }
+
+    if (exportingScreen) PaneScreenExportHost(vm, paneId) { exportingScreen = false }
+    if (showingPaneReads) PaneReadsDialog(vm) { showingPaneReads = false }
 
     if (choosingModel && pane != null) {
         val presets = ModelPresets.forAgent(pane.agent)
@@ -1171,8 +1256,12 @@ internal fun PendingMessageRow(
     note: String? = null,
     sendEnabled: Boolean = true,
     forceSendMenu: Boolean = false,
+    /** 2.2.7: the long-press menu's send entry and its action (a queued message's Send now). */
+    menuSendLabel: String = "Force send immediately",
+    onMenuSend: (() -> Unit)? = onSend,
 ) {
     var menu by remember { mutableStateOf(false) }
+    val clipboard = LocalClipboardManager.current
     Column(
         Modifier.fillMaxWidth().background(Palette.BlueSoft, RoundedCornerShape(12.dp))
             .padding(start = 12.dp, end = 4.dp),
@@ -1191,10 +1280,11 @@ internal fun PendingMessageRow(
             if (forceSendMenu) {
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                     DropdownMenuItem(
-                        text = { Text("Force send immediately") },
-                        enabled = sendEnabled && onSend != null,
-                        onClick = { menu = false; onSend?.invoke() },
+                        text = { Text(menuSendLabel) },
+                        enabled = sendEnabled && onMenuSend != null,
+                        onClick = { menu = false; onMenuSend?.invoke() },
                     )
+                    DropdownMenuItem(text = { Text("Copy") }, onClick = { menu = false; clipboard.setText(androidx.compose.ui.text.AnnotatedString(text)) })
                     DropdownMenuItem(text = { Text("Remove") }, onClick = { menu = false; onRemove() })
                 }
             }
@@ -1972,4 +2062,10 @@ internal fun runningPill(w: com.billmongan.herdrdroid.herdr.WorkInfo, agent: Str
     }
     val done = w.subagents.count { !it.active } + w.tasks.count { !it.running } + endedProcs
     return if (done > 0) RunningPill("$done done", "Nothing running, $done finished", false) else null
+}
+
+/** 2.2.7: the message box's text as a property backed by the view model's draft for this pane. */
+internal class ComposerDraftBox(private val vm: AppViewModel, private val paneId: String) {
+    operator fun getValue(thisRef: Any?, property: kotlin.reflect.KProperty<*>): String = vm.composerDraft(paneId)
+    operator fun setValue(thisRef: Any?, property: kotlin.reflect.KProperty<*>, value: String) = vm.setComposerDraft(paneId, value)
 }

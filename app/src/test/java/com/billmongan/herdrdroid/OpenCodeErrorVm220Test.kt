@@ -37,7 +37,7 @@ import java.time.Duration
 class OpenCodeErrorVm220Test {
     @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = IdleMainLooperRule()
     private val vm = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
-    private val server = Server(id = "fixture-oe", name = "FixtureOE", host = "oe.invalid", port = 22, user = "fixoe", herdrPath = "/fixture/herdr")
+    private val server = Server(id = "fixture-oe", name = "FixtureOE", host = "127.0.0.1", port = 1, user = "fixoe", herdrPath = "/fixture/herdr")
     private val error = checkNotNull(javaClass.getResource("/screens/opencode/live-2026-11-22-error/error.ansi")).readText()
 
     @After fun close() {
@@ -133,7 +133,7 @@ class OpenCodeErrorVm220Test {
 
     /** One OpenCode pane that herdr calls blocked, on a fake herdr; the screen stays the same after a send. */
     private class Fake(@Volatile var screen: String) : Herdr.Commands {
-        val ssh = HerdrSsh("fake.invalid", 22, "fake", Credentials(null, null), null, { null })
+        val ssh = HerdrSsh("127.0.0.1", 2, "fake", Credentials(null, null), null, { null })
         val client = Herdr(ssh, "/fixture/herdr", Backend.TUI, null, this)
         override var connection: Any? = Any()
         private val paneJson = """{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1","agent":"opencode","agent_status":"blocked","screen_detection_skipped":true,"cwd":"/fixture","terminal_id":"t1","scroll":{"offset_from_bottom":0}}"""

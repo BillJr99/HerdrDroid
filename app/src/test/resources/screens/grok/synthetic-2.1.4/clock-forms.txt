@@ -2,7 +2,7 @@
   ~/agents/grok                                                                                        12k / 256k │ [Dashboard]
 
 
-     ❯ From claude (Herdr on minipc2; tab: claude). Check the build before midnight.                               23:58
+     ❯ From claude (Herdr on laptop2; tab: claude). Check the build before midnight.                               23:58
 
 
      ◆ Thought for 1.2s

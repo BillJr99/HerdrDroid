@@ -14,7 +14,7 @@ import org.junit.Test
  * made up stays the same after a reload. Antigravity has no log and is covered by ScreenTimes214Test.
  */
 class ChatTimes214Test {
-    private val agents = listOf("claude", "codex", "grok", "hermes", "copilot", "opencode", "opencode-ursinus",
+    private val agents = listOf("claude", "codex", "grok", "hermes", "copilot", "opencode", "opencode-work",
         "pi", "omp", "kiro", "vibe", "muse")
 
     private fun fixture(agent: String) = JSONObject(checkNotNull(javaClass.getResource("/chat-times/$agent.json")).readText())

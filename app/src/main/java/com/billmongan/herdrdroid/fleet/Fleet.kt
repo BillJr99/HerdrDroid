@@ -39,6 +39,8 @@ class Fleet(
      * (no /proc, an old python, a slow host) falls back to herdr's own status (1.2.8).
      */
     private val busyOf: (suspend (Herdr) -> Map<String, Int>)? = null,
+    /** 2.2.7: a server whose session fell back to small packets is watched with them too. */
+    private val sessionMss: (String) -> Int? = { null },
 ) {
     var states by mutableStateOf<Map<String, FleetState>>(emptyMap())
         private set
@@ -59,6 +61,9 @@ class Fleet(
     /** Reads every watched server now instead of after the rest of the gap (2.1.4: the drawer opened). */
     fun poke() { pokes.trySend(Unit) }
 
+    /** 2.2.7, for tests: the MSS the watcher's connection to [serverId] would open with now. */
+    internal fun clientMss(serverId: String): Int? = clients[serverId]?.first?.activeMss
+
     /** Starts (or retargets) watching [servers]; the rest are dropped. */
     fun watch(servers: List<Server>) {
         val next = servers.associateBy { it.id }
@@ -75,6 +80,7 @@ class Fleet(
         servers.forEach { s ->
             if (s.id !in clients && s.fingerprint != null) {
                 val ssh = HerdrSsh(s.host, s.port, s.user, credentials(s), s.fingerprint, keystoreKey, s.wsUrl?.takeIf { s.overWebSocket }, s.smallPacketsMss, s.id)
+                    .also { c -> c.sessionFallback = { sessionMss(s.id) } }
                 // A server set to herdr-core is watched through hc; Automatic ones through herdr
                 // (a watcher never asks which one).
                 clients[s.id] = ssh to Herdr(ssh, s.herdrPath, if (s.backend == "core") com.billmongan.herdrdroid.herdr.Backend.CORE else com.billmongan.herdrdroid.herdr.Backend.TUI)

@@ -88,7 +88,7 @@ object PaneControls {
     fun keyLabel(key: String) = when (key) { "shift+tab" -> "Shift+Tab"; else -> key }
 
     /** The mode menu for [agent], or null when it has none. */
-    fun modes(agent: String?): ModeSpec? = when (agent?.lowercase()) {
+    fun modes(agent: String?): ModeSpec? = when (ruleAgent(agent)) {
         // Claude Code: Shift+Tab cycles default, accept edits, plan, and (when turned on) auto and
         // bypass; the footer says "accept edits on", "plan mode on", "auto mode on" or "bypass
         // permissions on", and nothing in the default mode. The app's menu has cycled it since 1.2,

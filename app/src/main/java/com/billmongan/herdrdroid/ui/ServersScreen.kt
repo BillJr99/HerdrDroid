@@ -102,21 +102,18 @@ fun ServersScreen(vm: AppViewModel) {
         go()
     }
 
-    // 2.1.3: with a server open, Back (and the arrow) returns to where the list was opened from.
-    // With none open the list is the main screen, so there is no arrow and Back leaves the app.
-    val back = vm.serversBack
-    androidx.activity.compose.BackHandler(enabled = back != null) { vm.leaveServers() }
+    // 2.1.3: Back (and the arrow) returns to where the list was opened from. 2.2.7: always, with
+    // or without a server open: with no origin it goes to the main screen, never out of the app.
+    androidx.activity.compose.BackHandler { vm.leaveServers() }
 
     Box(Modifier.fillMaxSize().background(Palette.Ground).systemBarsPadding()) {
         Column(Modifier.fillMaxSize()) {
             Row(
-                Modifier.fillMaxWidth().padding(start = if (back != null) 4.dp else 20.dp, end = 8.dp, top = 20.dp, bottom = 12.dp),
+                Modifier.fillMaxWidth().padding(start = 4.dp, end = 8.dp, top = 20.dp, bottom = 12.dp),
                 verticalAlignment = Alignment.Top,
             ) {
-                if (back != null) {
-                    IconButton(onClick = { vm.leaveServers() }, modifier = Modifier.padding(top = 4.dp)) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Palette.Ink)
-                    }
+                IconButton(onClick = { vm.leaveServers() }, modifier = Modifier.padding(top = 4.dp)) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Palette.Ink)
                 }
                 Column(Modifier.weight(1f).padding(top = 8.dp)) {
                     Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -166,7 +163,7 @@ fun ServersScreen(vm: AppViewModel) {
                     ) {
                         Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                             // The server's light: yellow needs you, green up, red unreachable, grey unchecked.
-                            val h = vm.serverHealth[s.id]
+                            val h = vm.healthFor(s.id)
                             val tileStatus = when (h?.health) {
                                 AppViewModel.Health.NEEDS_YOU -> com.billmongan.herdrdroid.herdr.Status.NEEDS_YOU
                                 AppViewModel.Health.UP -> com.billmongan.herdrdroid.herdr.Status.DONE
@@ -186,7 +183,7 @@ fun ServersScreen(vm: AppViewModel) {
                                 Text(s.label, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = Palette.Ink)
                                 // The WebSocket address is not shown in the list (it's a public endpoint).
                                 Text(if (s.overWebSocket) "${s.user} · SSH over WebSocket" else "${s.user}@${s.host}:${s.port}", color = Palette.Muted, fontSize = 13.sp)
-                                vm.serverHealth[s.id]?.let { h ->
+                                vm.healthFor(s.id)?.let { h ->
                                     Text(h.line, color = when (h.health) {
                                         AppViewModel.Health.NEEDS_YOU -> Palette.OrangeInk
                                         AppViewModel.Health.DOWN -> Palette.Red

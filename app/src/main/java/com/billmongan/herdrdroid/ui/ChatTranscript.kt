@@ -496,9 +496,31 @@ private fun QuestionContent(q: QuestionItem, size: Float) {
 fun UserBubble(text: String, size: Float, sending: Boolean = false, onQuote: (String) -> Unit) {
     var menu by remember { mutableStateOf(false) }
     val haptic = LocalHapticFeedback.current
+    // 2.2.7: a long message that went as a file: a small label, and the original text collapsed.
+    val file = remember(text) { com.billmongan.herdrdroid.herdr.LongText.parseFileLine(text) }
+    val original = remember(text) { file?.let { com.billmongan.herdrdroid.herdr.SentFiles.original(it.second) } }
+    var expanded by remember(text) { mutableStateOf(false) }
+    val shown = original ?: text
     Box(Modifier.fillMaxWidth().padding(start = 48.dp), contentAlignment = Alignment.CenterEnd) {
         Box {
-            Text(
+            if (file != null) androidx.compose.foundation.layout.Column(
+                Modifier
+                    .alpha(if (sending) 0.55f else 1f)
+                    .clip(RoundedCornerShape(20.dp, 20.dp, 6.dp, 20.dp))
+                    .background(Palette.Bubble)
+                    .combinedClickable(onClick = { expanded = !expanded }, onLongClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress); menu = true
+                    })
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+            ) {
+                Text("sent as a file (${file.first})", color = Palette.Muted, fontSize = (size * 0.85f).sp)
+                Text(
+                    shown, color = Palette.Ink, fontFamily = Fonts.Sans, fontSize = (size * 1.12f).sp,
+                    lineHeight = (size * 1.12f * 1.45f).sp,
+                    maxLines = if (expanded) Int.MAX_VALUE else 4,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                )
+            } else Text(
                 text,
                 color = Palette.Ink,
                 fontFamily = Fonts.Sans,
@@ -513,7 +535,7 @@ fun UserBubble(text: String, size: Float, sending: Boolean = false, onQuote: (St
                     })
                     .padding(horizontal = 14.dp, vertical = 10.dp),
             )
-            MessageMenu(menu, text, onDismiss = { menu = false }, onQuote = onQuote)
+            MessageMenu(menu, shown, onDismiss = { menu = false }, onQuote = onQuote)
         }
     }
 }

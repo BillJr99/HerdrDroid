@@ -5,7 +5,7 @@ import org.junit.Assert.*
 import org.junit.Test
 
 /** 2.1.5's frame: HDMSG2 <code>, HDTO <destination>, HD> chunks, HDEND <code>. */
-internal fun fixtureMessageFrame(code: String, text: String, to: String = "Hermes on minipc2"): String =
+internal fun fixtureMessageFrame(code: String, text: String, to: String = "Hermes on laptop2"): String =
     "HDMSG2 $code\nHDTO $to\n" + Base64.getEncoder().encodeToString(text.toByteArray()).chunked(40)
         .joinToString("\n") { "HD> $it" } + "\nHDEND $code"
 
@@ -15,7 +15,7 @@ class AgentMessageFrameTest {
 
     @Test fun validFrameGivesCodeDestinationAndExactText() {
         val frame = fixtureMessageFrame(code, text).prependIndent("  ")
-        assertEquals(listOf(CrossServerFrame(code, "Hermes on minipc2", text)),
+        assertEquals(listOf(CrossServerFrame(code, "Hermes on laptop2", text)),
             crossServerFrames("Normal agent output\n$frame\n❯"))
         // Claude Code marks the first line of a reply; a boxed code block draws a gutter.
         val marked = "⏺ " + fixtureMessageFrame(code, text).lines().joinToString("\n") { "│ $it │" }
@@ -33,7 +33,7 @@ class AgentMessageFrameTest {
         val frame = fixtureMessageFrame(code, text)
         for (output in listOf(frame.replace("HDEND $code", "HDEND QQQQQQ"), frame.substringAfter('\n'),
             frame.substringBeforeLast('\n'), frame.replace("HD> ", "HD> !"),
-            frame.replace("HDTO Hermes on minipc2", "HDTO "), frame.lines().filterNot { it.startsWith("HDTO") }.joinToString("\n"),
+            frame.replace("HDTO Hermes on laptop2", "HDTO "), frame.lines().filterNot { it.startsWith("HDTO") }.joinToString("\n"),
             frame.replace("HD> ", "Unexpected line\nHD> "), frame.replace("HDMSG2", "HDMSG1"),
             "HDMSG2 $code\nHDTO x\nHD> /w==\nHDEND $code")) {
             assertTrue(output, crossServerFrames(output).isEmpty())
@@ -43,7 +43,7 @@ class AgentMessageFrameTest {
     @Test fun aBadFrameOrTheNoticeTemplateDoesNotHideAGoodOne() {
         // 2.1.4's parser gave up at the first bad line: the copied instructions' own template,
         // echoed above the agent's reply, hid every real frame.
-        val template = checkNotNull(CrossServerNotice.text(listOf("Hermes on minipc2")))
+        val template = checkNotNull(CrossServerNotice.text(listOf("Hermes on laptop2")))
         val broken = fixtureMessageFrame("QQQQQQ", text).replace("HD> ", "HD> !")
         val good = fixtureMessageFrame(code, "Hello")
         assertEquals(listOf(code), crossServerFrames("$template\n$broken\n$good").map { it.code })

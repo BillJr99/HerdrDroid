@@ -11,21 +11,21 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class CrossServerNoticeTest {
     @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = IdleMainLooperRule()
-    private val others = listOf("Hermes on minipc2", "OpenCode · opencode-ursinus on minipc2", "Claude on minipc2")
+    private val others = listOf("Hermes on laptop2", "OpenCode · opencode-college on laptop2", "Claude on laptop2")
 
     /** Grok's RC review 4: a server with no name is "server N" to agents, never its account, host or port. */
     @Test fun agentFacingServerLabelsCarryNoAccountHostOrPort() {
-        val named = com.billmongan.herdrdroid.store.Server(id = "a", name = "minipc2", host = "10.0.0.19", port = 2222, user = "bill", herdrPath = "herdr")
-        val blank = com.billmongan.herdrdroid.store.Server(id = "b", name = "  ", host = "10.0.0.26", port = 2222, user = "bill", herdrPath = "herdr")
+        val named = com.billmongan.herdrdroid.store.Server(id = "a", name = "laptop2", host = "192.0.2.19", port = 2222, user = "bill", herdrPath = "herdr")
+        val blank = com.billmongan.herdrdroid.store.Server(id = "b", name = "  ", host = "192.0.2.26", port = 2222, user = "bill", herdrPath = "herdr")
         val all = listOf(named, blank)
-        assertEquals("minipc2", com.billmongan.herdrdroid.store.agentServerLabel(named, all))
+        assertEquals("laptop2", com.billmongan.herdrdroid.store.agentServerLabel(named, all))
         assertEquals("server 2", com.billmongan.herdrdroid.store.agentServerLabel(blank, all))
         assertEquals("another server", com.billmongan.herdrdroid.store.agentServerLabel(blank, listOf(named)))
         for (label in all.map { com.billmongan.herdrdroid.store.agentServerLabel(it, all) }) {
             assertFalse(label, label.contains("bill") || label.contains("10.0.0") || label.contains("2222") || label.contains("@"))
         }
         // The phone user's own label is unchanged.
-        assertEquals("bill@10.0.0.26", blank.label)
+        assertEquals("bill@192.0.2.26", blank.label)
     }
 
     @Test fun noticeHasTheNewFrameFormatTheAgentsAndTheConfirmationLine() {
@@ -43,7 +43,7 @@ class CrossServerNoticeTest {
         assertFalse(text.contains("one-time code"))
         assertTrue(text.contains("at most 1024 UTF-8 bytes"))
         assertTrue(text.contains("do not send it yourself"))
-        assertTrue(text.contains("Agents on other servers: Claude on minipc2, Hermes on minipc2, OpenCode · opencode-ursinus on minipc2."))
+        assertTrue(text.contains("Agents on other servers: Claude on laptop2, Hermes on laptop2, OpenCode · opencode-college on laptop2."))
         // 2.2.0: the user approves with Yes or No on the phone; nobody types the code back.
         assertTrue(text.endsWith("delivered only if the user taps Yes on the phone; you will not see that answer."))
         assertTrue(text.contains("with a Yes/No question"))
@@ -94,7 +94,7 @@ class CrossServerNoticeTest {
     private fun notifier() = CrossServerNotifier(NoticeLedger({ stored }, { stored = it }), { now })
     private fun pane(session: String = "s1") = Pane("w2:p9", "t", "w2", "hermes", Status.IDLE, "", "/x", sessionId = session)
     private fun cand(text: String = "A", session: String = "s1", hold: Boolean = false) =
-        CrossServerNotifier.Candidate("minipc2", pane(session), text, hold)
+        CrossServerNotifier.Candidate("laptop2", pane(session), text, hold)
 
     @Test fun oncePerSessionAndReachableSet() {
         val n = notifier()
@@ -124,7 +124,7 @@ class CrossServerNoticeTest {
 
     @Test fun whatWasSentSurvivesARestart() {
         notifier().sent(cand())
-        assertTrue(stored.contains("minipc2|w2:p9"))
+        assertTrue(stored.contains("laptop2|w2:p9"))
         val restarted = notifier()
         assertEquals(CrossServerNotifier.Decision.ALREADY_SENT, restarted.decide(cand(), false))
         assertEquals(CrossServerNotifier.Decision.HOURLY, restarted.decide(cand(text = "B"), false))

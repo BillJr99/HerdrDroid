@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 2.2.7: pane reads and the share sheet's copies never leave the phone by cloud backup or device transfer. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="file" path="pane-reads/" />
+        <exclude domain="root" path="cache/shared/" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="file" path="pane-reads/" />
+        <exclude domain="root" path="cache/shared/" />
+    </device-transfer>
+</data-extraction-rules>

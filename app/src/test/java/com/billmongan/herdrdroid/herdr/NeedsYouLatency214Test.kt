@@ -237,7 +237,7 @@ class NeedsYouLatency214Test {
     class Clock { var t = 1_000_000L }
 
     private class Fake(private val clock: Clock = Clock(), core: Boolean = false) : Herdr.Commands {
-        val ssh = HerdrSsh("fake.invalid", 22, "fake", Credentials(null, null), null, { null })
+        val ssh = HerdrSsh("127.0.0.1", 1, "fake", Credentials(null, null), null, { null })
         val client = Herdr(ssh, "/fixture/herdr", if (core) Backend.CORE else Backend.TUI, if (core) "/fixture/hc" else null, this)
         override var connection: Any? = Any()
         val status = linkedMapOf<String, String>()

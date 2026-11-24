@@ -22,14 +22,15 @@ import kotlinx.coroutines.cancel
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
  * 2.1.3: system Back and the back arrow leave the server list for where it was opened from, and
- * Back on a server's form closes it to the list. With no server open, the list is the main screen:
- * no arrow, and Back is left to the system (it leaves the app).
+ * Back on a server's form closes it to the list. 2.2.7: with no server open, the arrow shows too and
+ * Back goes to the main screen, never out of the app.
  */
 @RunWith(AndroidJUnit4::class)
 class ServersBackUiTest {
@@ -37,7 +38,7 @@ class ServersBackUiTest {
     @get:Rule val rule = createAndroidComposeRule<ComponentActivity>()
 
     private val vm: AppViewModel by lazy { rule.runOnUiThread { AppViewModel(rule.activity.application) } }
-    private val server = Server(id = "hd213-back", name = "BackFixture", host = "back.invalid", port = 22, user = "fix", herdrPath = "/fixture/herdr")
+    private val server = Server(id = "hd213-back", name = "BackFixture", host = "127.0.0.1", port = 1, user = "fix", herdrPath = "/fixture/herdr")
     private val codex = Pane("w1:p1", "w1:t1", "w1", "codex", Status.IDLE, "Codex · 1", "/fixture", scrollOffset = 0, terminalId = "t1")
 
     @After fun close() {
@@ -77,12 +78,18 @@ class ServersBackUiTest {
         rule.runOnIdle { assertEquals(Screen.Servers, vm.screen) }
     }
 
-    @Test fun withNoServerOpenTheListHasNoArrowAndBackIsLeftToTheSystem() {
+    // 2.2.7: with no server open the list has its arrow too, and Back stays in the app.
+    @Test fun withNoServerOpenTheArrowAndBackGoToTheMainScreen() {
         rule.runOnUiThread { vm.screen = Screen.Servers }
         rule.setContent { ServersScreen(vm) }
         rule.onNodeWithText("Pick the computer running your agents.").assertIsDisplayed()
-        rule.onAllNodesWithContentDescription("Back").assertCountEquals(0)
-        rule.runOnIdle { assertFalse(rule.activity.onBackPressedDispatcher.hasEnabledCallbacks()) }
+        rule.onAllNodesWithContentDescription("Back").assertCountEquals(1)
+        rule.runOnIdle { assertTrue(rule.activity.onBackPressedDispatcher.hasEnabledCallbacks()) }
+        pressBack()
+        rule.runOnIdle {
+            assertEquals(Screen.Home, vm.screen)
+            assertFalse(rule.activity.isFinishing)
+        }
     }
 
     @Suppress("UNCHECKED_CAST")

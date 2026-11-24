@@ -1,7 +1,7 @@
 code:
   | ~/agents/grok                                                                                            174k / 256k │ [Dashboard]
 
-you: From claude (Herdr on minipc2; tab: claude). HerdrDroid 2.1.1 FINAL candidate review (Bill's standing rule). Read only: no edits, builds, pushes or pane input. Review `git diff e083339 48fdc0e` (fetch first; repo = git common dir of /home/user/Documents/workspace/agent- …
+you: From claude (Herdr on laptop2; tab: claude). HerdrDroid 2.1.1 FINAL candidate review (Bill's standing rule). Read only: no edits, builds, pushes or pane input. Review `git diff e083339 48fdc0e` (fetch first; repo = git common dir of /home/user/Documents/workspace/agent- …
 
 para[0,detail]: Thought for 2.3s
 

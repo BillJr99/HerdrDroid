@@ -80,11 +80,11 @@ class LinkDiagnostics226Test {
     }
 
     @Test fun anErrorChainIsClassesOnly() {
-        val e = LinkDown(IOException("connect to 10.0.0.19:22 on minipc2.secret.lan", java.net.SocketTimeoutException("wss://bridge.secret/ssh")))
+        val e = LinkDown(IOException("connect to 192.0.2.19:22 on laptop2.secret.lan", java.net.SocketTimeoutException("wss://bridge.secret/ssh")))
         assertEquals("LinkDown<IOException<SocketTimeoutException", errorChain(e))
     }
 
-    private val secrets = listOf("minipc2.secret.lan", "10.0.0.19", "127.0.0.1", "wss://bridge.secret", "BillsHomeWiFi", "aa:bb:cc:dd:ee:ff", "SECRET_CMD", "hunter2", "server-id-raw")
+    private val secrets = listOf("laptop2.secret.lan", "192.0.2.19", "127.0.0.1", "wss://bridge.secret", "BillsHomeWiFi", "aa:bb:cc:dd:ee:ff", "SECRET_CMD", "hunter2", "server-id-raw")
 
     private fun assertClean(lines: List<String>) {
         assertTrue(lines.isNotEmpty())
@@ -92,7 +92,7 @@ class LinkDiagnostics226Test {
     }
 
     @Test fun noNewLineCarriesAHostAddressUrlNetworkNameOrCommand() {
-        val boom = LinkDown(IOException("10.0.0.19 minipc2.secret.lan wss://bridge.secret/ssh SECRET_CMD hunter2"))
+        val boom = LinkDown(IOException("192.0.2.19 laptop2.secret.lan wss://bridge.secret/ssh SECRET_CMD hunter2"))
         val session = LinkStats.Session("server-id-raw", 0, 0).apply { reconnectAttempts = 3; reconnectSuccesses = 1; fallbackUsed = true }
         val lines = listOf(
             LinkStats.connectLine("server-id-raw", "tcp", LinkStats.ConnectTimes(12, 30, 900, 4, 80),
@@ -116,7 +116,7 @@ class LinkDiagnostics226Test {
 
     @Test fun theNetworkLineIsTheTypeAndACounterOnly() {
         DiagLog.clear()
-        val net = object { override fun toString() = "BillsHomeWiFi aa:bb:cc:dd:ee:ff 10.0.0.19" }
+        val net = object { override fun toString() = "BillsHomeWiFi aa:bb:cc:dd:ee:ff 192.0.2.19" }
         NetworkWatch.observe(net, "wifi")
         NetworkWatch.observe(net, "wifi")
         NetworkWatch.observe(Any(), "cellular")

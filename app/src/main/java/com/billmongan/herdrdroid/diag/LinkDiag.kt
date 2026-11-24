@@ -3,7 +3,7 @@ package com.billmongan.herdrdroid.diag
 import java.security.MessageDigest
 
 /**
- * 2.2.5 (Bill: MiniPC2 signed in but showed no panes, and the log could not say which stage
+ * 2.2.5 (Bill: a server signed in but showed no panes, and the log could not say which stage
  * failed or which server a line was about). One line per stage of opening a server and reading
  * its pane list, tagged with an opaque attempt number and an opaque server tag (a short hash of
  * the app's own server id, never a name, host or address).

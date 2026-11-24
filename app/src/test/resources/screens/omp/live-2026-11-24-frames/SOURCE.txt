@@ -1,0 +1,1 @@
+Synthesized for 2.2.7: an Oh My Pi reply with a cross-server message frame and a pane-read frame, each in a plain fenced code block, drawn the way Oh My Pi 19 renders fenced code (the fence lines, the code indented under its one-column message padding). Neutral names only.

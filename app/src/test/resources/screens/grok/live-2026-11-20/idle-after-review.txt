@@ -2,7 +2,7 @@
   ~/agents/grok                                                                                            174k / 256k │ [Dashboard]
 
 
-     ❯ From claude (Herdr on minipc2; tab: claude). HerdrDroid 2.1.1 FINAL candidate review (Bill's standing rule). Read   9:08 PM
+     ❯ From claude (Herdr on laptop2; tab: claude). HerdrDroid 2.1.1 FINAL candidate review (Bill's standing rule). Read   9:08 PM
        only: no edits, builds, pushes or pane input.
        Review `git diff e083339 48fdc0e` (fetch first; repo = git common dir of /home/user/Documents/workspace/agent- …
 

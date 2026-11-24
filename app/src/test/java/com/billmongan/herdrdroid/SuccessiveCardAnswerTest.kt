@@ -109,6 +109,204 @@ class SuccessiveCardAnswerTest {
             assertEquals(listOf("2"), sent)
         }
 
+    /** 2.2.7 (Bill, "check right before send"): the screen changed after the card's last read: nothing typed, and a new tap can go. */
+    @Test fun aScreenChangedBeforeTheKeysIsNotSentAndCanBeAnsweredAgain() =
+        fixture("hermes", hermesClarify) {
+            status(Status.WORKING)
+            recentResult = ExecResult(0, "Preparing a question", "")
+            readSelectedPane()
+            val card = displayed()
+            beforeCheck = { ansiOverride = frame + "\nA new line under the question" }
+            answer(card, checkNotNull(vm.paneTextTarget), index = 1)
+            assertTrue(sent.isEmpty())
+            assertEquals(1, cardChecksRefused)
+            assertEquals("The question changed; not sent.", vm.notice)
+            beforeCheck = null
+            ansiOverride = null
+            readSelectedPane()
+            answer(card, checkNotNull(vm.paneTextTarget), index = 1)
+            assertEquals("not held as already answered", listOf("2"), sent)
+        }
+
+    /**
+     * 2.2.7 (Bill: "silently auto fail over to it with a notification toast"): no python3 on the
+     * computer: the answer is checked by the shell version in the same tap, the toast says so
+     * once, and the next answer goes straight to the shell check with no toast.
+     */
+    @Test fun withoutPython3TheAnswerFallsOverToTheShellCheckWithOneToast() =
+        fixture("hermes", hermesClarify) {
+            pythonMissing = true
+            status(Status.WORKING)
+            recentResult = ExecResult(0, "Preparing a question", "")
+            readSelectedPane()
+            val card = displayed()
+            answer(card, checkNotNull(vm.paneTextTarget), index = 1)
+            assertEquals(listOf("2"), sent)
+            assertEquals(1 to 1, pythonChecks to shellChecks)
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals("python3 isn't on Fixture, so answers are checked with the shell version.",
+                org.robolectric.shadows.ShadowToast.getTextOfLatestToast())
+            assertEquals(1, org.robolectric.shadows.ShadowToast.shownToastCount())
+            // A new question; its answer goes straight to the shell check, and nothing is said again.
+            frame = hermesClarify.replace("Which database", "Which cache")
+            readSelectedPane()
+            val next = displayed()
+            sent.clear()
+            answer(next, checkNotNull(vm.paneTextTarget), index = 0)
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(listOf("1"), sent)
+            assertEquals("no Python check this time", 1 to 2, pythonChecks to shellChecks)
+            assertEquals(1, org.robolectric.shadows.ShadowToast.shownToastCount())
+        }
+
+    /** 2.2.7 (Grok's review): "Switch to Claude" opens the Claude pane, never a saved server whose name only sounds alike. */
+    @Test fun aBareAgentNameOpensThePaneNotALookAlikeServer() = fixture("claude", "❯ ") {
+        vm.saveServer(Server(id = "fixture-cloud", name = "cloud", host = "127.0.0.1", port = 1, user = "u", herdrPath = "herdr"))
+        speak("Switch to Claude")
+        assertEquals("Opening Claude on Fixture.", spoken)
+        assertEquals("fixture", vm.current?.id)
+    }
+
+    private fun ompScreen(name: String) = checkNotNull(javaClass.getResource("/screens/omp/live-2026-11-24-ask/$name")) { name }.readText()
+
+    /**
+     * 2.2.7 (Bill: "not get stuck"): "Other" on Oh My Pi's Ask dialog takes typed text: the highlight
+     * moves there (checked), the text is typed and Enter confirms it, each under the check of the read before it.
+     */
+    @Test fun ompOtherTakesTypedTextThenEnter() = fixture("omp", ompScreen("ask-open-first.ansi")) {
+        readSelectedPane()
+        val card = displayed()
+        val other = card.choices.single { it.label == "Other: type your own" }
+        afterSend = ompScreen("ask-open-first.ansi").replace("❯ ◉ Leave", "  ◉ Leave").replace("  ○ Other", "❯ ○ Other")
+        var delivered = false
+        vm.answerTyped(checkNotNull(vm.paneTextTarget), card, other, "look at the logs first") { delivered = true }
+        drainWithTime { !vm.answerInFlight("p1") }
+        assertEquals(listOf("down down down", "text:look at the logs first", "enter"), sent)
+        assertTrue(delivered)
+        assertEquals("the move and the typed answer each went through the check", 2, shellChecks + pythonChecks)
+    }
+
+    /** 2.2.7: Submit moves the highlight down, one checked step at a time, and presses Enter only on Submit. */
+    @Test fun ompSubmitStepsDownToSubmitThenEnter() = fixture("omp", ompScreen("ask-open-other.ansi")) {
+        readSelectedPane()
+        val card = displayed()
+        val submit = card.choices.single { it.keys == com.billmongan.herdrdroid.herdr.OmpAsk.SUBMIT }
+        // Down folds the open question, its selection kept (shortened), and puts the highlight on Submit.
+        afterSend = ompScreen("ask-submit.ansi").replace("   Leave as CHECK-F…   List the 7 commit…   The commits are…   ✓ Other: look at the…",
+            "   ✓ Leave as CHECK-F…   List the 7 commit…   The commits are…   Other: look at the…")
+        vm.answerChoice("p1", card, submit, target = checkNotNull(vm.paneTextTarget))
+        drainWithTime { !vm.answerInFlight("p1") }
+        assertEquals(listOf("down", "enter"), sent)
+    }
+
+    /** Codex's re-review: an answer that changes while the highlight moves to Submit stops the Submit; Enter never goes. */
+    @Test fun ompSubmitStopsWhenAnAnswerChangesOnTheWay() = fixture("omp", ompScreen("ask-open-other.ansi")) {
+        readSelectedPane()
+        val card = displayed()
+        val submit = card.choices.single { it.keys == com.billmongan.herdrdroid.herdr.OmpAsk.SUBMIT }
+        afterSend = ompScreen("ask-submit.ansi").replace("   Leave as CHECK-F…   List the 7 commit…   The commits are…   ✓ Other: look at the…",
+            "   ✓ Leave as CHECK-F…   List the 7 commit…   The commits are…   Other: look at the…")
+            .replace("✓ Leave as CHECK-FIRST   Check", "Leave as CHECK-FIRST   ✓ Check")
+        vm.answerChoice("p1", card, submit, target = checkNotNull(vm.paneTextTarget))
+        drainWithTime { !vm.answerInFlight("p1") }
+        assertEquals("only the first Down", listOf("down"), sent)
+        assertTrue(vm.notice.orEmpty(), vm.notice.orEmpty().startsWith("Not sent."))
+    }
+
+    /** Grok's re-review: OpenCode's own-answer row: the digit, then the text and Enter, each under the check. */
+    @Test fun openCodeOwnAnswerGoesThroughTheCheck() = fixture("opencode", nativeQuestion(1)) {
+        readSelectedPane()
+        val card = displayed()
+        val digit = checkNotNull(card.openCodeCustom)
+        afterSend = nativeQuestion(1).replace("┃  ↑↓ select  enter submit  esc dismiss", "┃  enter submit  esc close")
+        vm.answerTyped(checkNotNull(vm.paneTextTarget), card, Choice("Type your own answer", digit, false), "MariaDB") {}
+        drainWithTime { !vm.answerInFlight("p1") }
+        assertEquals(listOf(digit, "text:MariaDB", "enter"), sent)
+        assertEquals("the digit and the text each went through the check", 2, pythonChecks + shellChecks)
+    }
+
+    /** 2.2.7 (Bill: "the stop button in chat view doesn't work"): each agent's own interrupt, once. */
+    @Test fun stopSendsEachAgentsInterruptOnce() {
+        val want = mapOf(
+            "claude" to "esc", "codex" to "esc", "copilot" to "esc", "agy" to "esc", "vibe" to "esc", "pi" to "esc",
+            "omp" to "esc", "muse" to "esc", "opencode" to "esc esc", "opencode-work" to "esc esc",
+            "grok" to "ctrl+c", "kiro" to "ctrl+c", "hermes" to "ctrl+c",
+        )
+        for ((agent, keys) in want) fixture(agent, "working on it") {
+            status(Status.WORKING)
+            vm.stopPane(checkNotNull(vm.pane("p1")))
+            drainUntil { sent.isNotEmpty() }
+            assertEquals(agent, listOf(keys), sent)
+        }
+    }
+
+    /**
+     * The regression: Stop went through the pane's send queue, so it waited behind other input to the
+     * pane and, with the link down, was kept and sent after the reconnect. Now it goes at once, past a
+     * held lane and past a screen that changed, and is never kept for later.
+     */
+    @Test fun stopGoesAtOnceAndIsNeverKeptForLater() = fixture("claude", "working on it") {
+        status(Status.WORKING)
+        val lanes = AppViewModel::class.java.getDeclaredField("paneDispatch").apply { isAccessible = true }.get(vm)
+            as com.billmongan.herdrdroid.herdr.PaneDispatch
+        val held = checkNotNull(lanes.tryAcquire("fixture" to "p1"))
+        try {
+            frame = "a different screen"
+            vm.stopPane(checkNotNull(vm.pane("p1")))
+            drainUntil { sent.isNotEmpty() }
+            assertEquals("past a busy lane and a changed screen", listOf("esc"), sent)
+        } finally { held() }
+        sent.clear()
+        val field = AppViewModel::class.java.getDeclaredField("link\$delegate").apply { isAccessible = true }
+        @Suppress("UNCHECKED_CAST") (field.get(vm) as androidx.compose.runtime.MutableState<Link>).value = Link.RECONNECTING
+        vm.stopPane(checkNotNull(vm.pane("p1")))
+        shadowOf(Looper.getMainLooper()).idle()
+        assertTrue(vm.notice.orEmpty(), vm.notice.orEmpty().startsWith("Not stopped"))
+        (field.get(vm) as androidx.compose.runtime.MutableState<Link>).value = Link.CONNECTED
+        shadowOf(Looper.getMainLooper()).idle()
+        assertTrue("not sent after the reconnect either", sent.isEmpty())
+        // Another session in the pane: nothing.
+        val pane = checkNotNull(vm.pane("p1"))
+        terminal = "replacement"
+        vm.stopPane(pane)
+        drainUntil { vm.notice.orEmpty().contains("something else") }
+        assertTrue(sent.isEmpty())
+    }
+
+    /** Codex's review: the app locking (or the server changing) during Stop's pane read stops the keys. */
+    @Test fun stopIsNotSentWhenTheAppLocksDuringItsRead() = fixture("claude", "working on it") {
+        status(Status.WORKING)
+        val lockedField = AppViewModel::class.java.getDeclaredField("locked\$delegate").apply { isAccessible = true }
+        @Suppress("UNCHECKED_CAST")
+        onPaneGet = { (lockedField.get(vm) as androidx.compose.runtime.MutableState<Boolean>).value = true }
+        vm.stopPane(checkNotNull(vm.pane("p1")))
+        drainUntil { vm.notice.orEmpty().startsWith("Not stopped") }
+        assertTrue(vm.notice.orEmpty(), vm.notice.orEmpty().contains("locked"))
+        assertTrue(sent.isEmpty())
+    }
+
+    /** 2.2.7: the questions can always be left: Esc from the card. */
+    @Test fun ompAskCanBeCancelled() = fixture("omp", ompScreen("ask-open-first.ansi")) {
+        readSelectedPane()
+        val card = displayed()
+        answer(card, index = card.choices.indexOfFirst { it.label == com.billmongan.herdrdroid.herdr.OmpAsk.CANCEL_LABEL })
+        assertEquals(listOf("esc"), sent)
+    }
+
+    /** 2.2.7: the pane's occupant changed after the card's last read: nothing typed. */
+    @Test fun anOccupantChangedBeforeTheKeysIsNotSent() =
+        fixture("hermes", hermesClarify) {
+            status(Status.WORKING)
+            recentResult = ExecResult(0, "Preparing a question", "")
+            readSelectedPane()
+            val card = displayed()
+            beforeCheck = { terminal = "replacement" }
+            answer(card, checkNotNull(vm.paneTextTarget), index = 1)
+            assertTrue(sent.isEmpty())
+            assertEquals(1, cardChecksRefused)
+            assertEquals("The question changed; not sent.", vm.notice)
+        }
+
     @Test fun hermesClarifyNeverSendsToChangedOrReplacementViewport() =
         fixture("hermes", hermesClarify) {
             readSelectedPane()
@@ -281,7 +479,7 @@ class SuccessiveCardAnswerTest {
     }
 
     // 2.1.5 (Bill: "hermes thinks there is a question right now but there is not and so it is
-    // stuck"): the live minipc2 screen, idle after a cross-server notice, while another stored
+    // stuck"): the live laptop2 screen, idle after a cross-server notice, while another stored
     // conversation (a Telegram turn on an open approval) waits on the gateway.
     @Test fun idleHermesPaneIsNotHeldByAnotherConversationsGatewayWait() = fixture("hermes", idleNoticeScreen) {
         status(Status.IDLE, sessionId = "pane-stored-session")
@@ -523,11 +721,11 @@ class SuccessiveCardAnswerTest {
     }
 
     @Test fun openCodeBackgroundDrawerIsNotAQuestionAndDoesNotReceiveChat() =
-        fixture("opencode-ursinus", openCodeDrawer) {
+        fixture("opencode-work", openCodeDrawer) {
             recentResult = ExecResult(0, openCodePermission, "")
             readSelectedPane()
             assertEquals(openCodeDrawer, vm.paneText)
-            assertNull(detectPrompt(vm.paneText, true, "opencode-ursinus"))
+            assertNull(detectPrompt(vm.paneText, true, "opencode-work"))
             assertTrue(vm.questionsFor("p1").isEmpty())
             assertTrue(vm.blocksNormalSend(checkNotNull(vm.pane("p1")).copy(status = Status.WORKING), frame))
             assertTrue(sent.isEmpty())
@@ -575,7 +773,7 @@ class SuccessiveCardAnswerTest {
     }
 
     @Test fun nativeOpenCodeApprovalUsesFreshFocusAndNeverOffersStandingPermission() {
-        for (agent in listOf("opencode", "opencode-ursinus")) fixture(agent, openCodePermission) {
+        for (agent in listOf("opencode", "opencode-work")) fixture(agent, openCodePermission) {
             status(Status.WORKING)
             recentResult = ExecResult(0, "Preparing the next step", "")
             readSelectedPane()
@@ -595,7 +793,7 @@ class SuccessiveCardAnswerTest {
         fun focused(focus: String) = listOf("Allow once", "Always allow", "Reject").fold(v232) { t, label ->
             t.replace("   $label", "   \u001B[${if (label == focus) 44 else 49}m$label\u001B[0m")
         }
-        for (status in listOf(Status.DONE, Status.IDLE)) fixture("opencode-ursinus", v232) {
+        for (status in listOf(Status.DONE, Status.IDLE)) fixture("opencode-work", v232) {
             status(status)
             readSelectedPane()
             val card = displayed()
@@ -628,7 +826,7 @@ class SuccessiveCardAnswerTest {
     }
 
     @Test fun nativeOpenCodeApprovalRefusesUnverifiedFocusChangedCommandDrawerAndOccupant() =
-        fixture("opencode-ursinus", openCodePermission) {
+        fixture("opencode-work", openCodePermission) {
             readSelectedPane()
             val card = displayed()
             val target = checkNotNull(vm.paneTextTarget)
@@ -655,7 +853,7 @@ class SuccessiveCardAnswerTest {
     }
 
     @Test fun nativeOpenCodeQuestionUsesFreshSelection() {
-        for (agent in listOf("opencode", "opencode-ursinus")) fixture(agent, openCodeQuestion) {
+        for (agent in listOf("opencode", "opencode-work")) fixture(agent, openCodeQuestion) {
             status(Status.WORKING)
             recentResult = ExecResult(0, "Preparing a question", "")
             readSelectedPane()
@@ -844,7 +1042,7 @@ class SuccessiveCardAnswerTest {
     }
 
     @Test fun nativeOpenCodeColorOnlyQuestionSendsOneDigitFromChat() {
-        for (agent in listOf("opencode", "opencode-ursinus")) fixture(agent, nativeQuestion(1)) {
+        for (agent in listOf("opencode", "opencode-work")) fixture(agent, nativeQuestion(1)) {
             status(Status.WORKING)
             recentResult = ExecResult(0, "Preparing a question", "")
             readSelectedPane()
@@ -1232,7 +1430,7 @@ class SuccessiveCardAnswerTest {
 
     private class Fixture(private val agent: String, var frame: String) : Herdr.Commands {
         val vm = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
-        private val server = Server(id = "fixture", name = "Fixture", host = "unused.invalid", port = 22, user = "fixture", herdrPath = "/fixture/herdr")
+        private val server = Server(id = "fixture", name = "Fixture", host = "127.0.0.1", port = 1, user = "fixture", herdrPath = "/fixture/herdr")
         private val ssh = HerdrSsh(server.host, server.port, server.user, Credentials(null, null), null, { null })
         override var connection: Any? = Any()
         val sent = mutableListOf<String>()
@@ -1295,6 +1493,17 @@ class SuccessiveCardAnswerTest {
             drainUntil { recentReads > reads && !vm.answerInFlight("p1") }
         }
 
+        /** [drainUntil], with the main looper's clock moving on, for answers that wait between keys. */
+        fun drainWithTime(done: () -> Boolean) {
+            val deadline = System.nanoTime() + 10_000_000_000L
+            do {
+                shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(50))
+                if (done()) return
+                Thread.sleep(1)
+            } while (System.nanoTime() < deadline)
+            fail("Answer handler did not finish")
+        }
+
         fun drainUntil(done: () -> Boolean) {
             val deadline = System.nanoTime() + 5_000_000_000L
             do {
@@ -1313,10 +1522,41 @@ class SuccessiveCardAnswerTest {
             """.trimMargin())
         }
 
+        /** Runs as the pane's details are read (`pane get`), for what changes during that read. */
+        var onPaneGet: (() -> Unit)? = null
+        /** 2.2.7: answers waiting on the check before the keys; how many the check refused. */
+        var cardChecksRefused = 0
+        /** Runs as the check on the computer starts: what changed between the card's last read and the keys. */
+        var beforeCheck: (() -> Unit)? = null
+        /** 2.2.7: the computer has no python3; how many answers each check took. */
+        var pythonMissing = false
+        var pythonChecks = 0
+        var shellChecks = 0
+
         override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult {
             if (expectedConnection != null) assertSame(connection, expectedConnection)
+            // 2.2.7: the check before a card's keys, run here as the computer would: against the
+            // pane and screen as they are now, then each send it guards.
+            Regex("""(?s)'p1' '([0-9a-f]{64})' '([0-9a-f]{64})'.*\) && (.*)$""").find(command)?.takeIf { "herdrdroid-check" in command }?.let { m ->
+                // The Python check, failing over to the shell check (as the command does) when this computer has no python3.
+                val python = "def identity():" in command
+                if (python) pythonChecks++
+                val mark = if (python && pythonMissing) com.billmongan.herdrdroid.herdr.SHELL_CHECK_MARK + "\n" else ""
+                if (!python || pythonMissing) shellChecks++
+                beforeCheck?.invoke()
+                val now = com.billmongan.herdrdroid.herdr.CardGuard(
+                    com.billmongan.herdrdroid.herdr.cardOccupantDigest(org.json.JSONObject(pane)),
+                    com.billmongan.herdrdroid.herdr.cardScreenDigest(ansiFrame()))
+                if (now != com.billmongan.herdrdroid.herdr.CardGuard(m.groupValues[1], m.groupValues[2]) || liveScrollOffset != 0) {
+                    cardChecksRefused++
+                    return ExecResult(com.billmongan.herdrdroid.herdr.CARD_CHANGED_EXIT, mark, "")
+                }
+                var last = ok("")
+                for (part in m.groupValues[3].split(" && ")) { last = immediate(part, timeoutSeconds, expectedConnection); if (last.exit != 0) break }
+                return last.copy(out = mark + last.out)
+            }
             return when {
-                command.endsWith("'pane' 'get' 'p1'") -> ok("""{"result":{"pane":$pane}}""")
+                command.endsWith("'pane' 'get' 'p1'") -> { onPaneGet?.invoke(); ok("""{"result":{"pane":$pane}}""") }
                 command.contains("'pane' 'read' 'p1' '--source' 'recent'") -> { recentReads++; recentResult ?: ok(ansiFrame()) }
                 command.contains("'pane' 'read' 'p1' '--source' 'visible'") -> {
                     if (expectedConnection == null) discoveryVisibleReads += command.contains("'--lines'")
@@ -1382,7 +1622,7 @@ class SuccessiveCardAnswerTest {
             API calls: 2
             Current context: 1,024 / 100,000 (1%)
         """.trimIndent()
-        /** The live minipc2 Hermes screen, idle after a cross-server notice (2.1.5), with its styles. */
+        /** The live laptop2 Hermes screen, idle after a cross-server notice (2.1.5), with its styles. */
         val idleNoticeScreen = checkNotNull(SuccessiveCardAnswerTest::class.java.getResource(
             "/screens/hermes/live-2026-11-22-idle-notice/visible.ansi")).readText().replace("\r", "").trimEnd()
         const val hermesComposer = "──────────\n❯\n──────────\n☤ fixture · 1K/100K"

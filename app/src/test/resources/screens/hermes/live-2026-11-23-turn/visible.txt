@@ -1,0 +1,38 @@
+
+
+────────────────────────────────────────
+❯ From the claude pane, at the request of the user: finish_demo_login.py ran in a private herdr tab on the computer and reported {"status": "comm
+itted", "credential_committed": true}. Please verify the demo connection works. (No private values included.)
+────────────────────────────────────────
+
+📚 Skill demo-workspace  0.3s
+🔎 Grep def cmd_check|def cmd_calendar|--check|calendarList  0.3s
+✗ $ test -f "$HOME/.demo/demo_pending.json" + 5 commands  0.2s [exit 1]
+🔎 Grep def check|REFRESH_FAILED|calendarList\(\)|check_live
+
+⚠ Approval: python3 -B - <<'PY' import pathlib,re,subprocess,sys root=pathlib.Path.home()/'.demo' helper=root/'skills/productivity/demo-w…
+→ allowed once
+💻 $ python3 -B - <<'PY' import pathlib,re,subprocess,sys root=pathlib.Path.home()/'.demo' helper=root/'skills/productivity/demo-wo
+rkspace/scripts/setup.py' for args in [['--check-live'],['--check']]: try: p=subprocess.run([sys.executable,'-B',str(helper),*
+args],capture_output=True,text=True,timeout=25) except subprocess.TimeoutExpired: print(args[0], 'TIMEOUT') + 1 command  27.6s
+📖 Read setup.py L178-212
+📖 Read setup.py L213-248
+
+────────────────────────────────────────
+**Inspecting main**
+∴ Thought for 0s
+────────────────────────────────────────
+
+📖 Read setup.py L605-632
+
+────────────────────────────────────────
+☤ Hermes
+The demo connection is working. A live, read-only request succeeded using the saved settings, a separate process con
+firmed the settings persisted, and nothing is pending. No private values were printed.
+────────────────────────────────────────
+
+─ 1m00s · read 1 skill, 3 files · ran 1 command · searched 2 paths · 7:24 PM
+──────────────────────────────────────────────────────────────────────────────────── Example session title ─
+❯ Research this topic and write me a brief
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☤ gpt-6.2-sol · ~188K/500K · [████░░░░░░] ~38% · ◎ 89.7% · ◷ 4.3s · ↑ 21 t/s · 1.0d · ⏲ 1m · ✓ 0s    / commands · @ files · ! shell

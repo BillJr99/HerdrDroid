@@ -175,6 +175,24 @@ class AppPrefs(context: Context) {
         get() = prefs.getBoolean("agentMessagingEnabled", false)
         set(v) = prefs.edit().putBoolean("agentMessagingEnabled", v).apply()
 
+    /**
+     * 2.2.7: small packets automatically when the phone is on a VPN. Off unless turned on (Bill:
+     * "start with normal size packets and fall back per session to small"); Android may report a
+     * VPN as cellular, so the automatic fallback is what covers it.
+     */
+    var smallPacketsOnVpn: Boolean
+        get() = prefs.getBoolean("smallPacketsOnVpn", false)
+        set(v) = prefs.edit().putBoolean("smallPacketsOnVpn", v).apply()
+
+    /** 2.2.7: small packets automatically when the phone is on cellular (also under a VPN). Off unless turned on. */
+    var smallPacketsOnCellular: Boolean
+        get() = prefs.getBoolean("smallPacketsOnCellular", false)
+        set(v) = prefs.edit().putBoolean("smallPacketsOnCellular", v).apply()
+    /** 2.2.7: "Small packets on Wi-Fi (automatic)", off by default. */
+    var smallPacketsOnWifi: Boolean
+        get() = prefs.getBoolean("smallPacketsOnWifi", false)
+        set(v) = prefs.edit().putBoolean("smallPacketsOnWifi", v).apply()
+
     /** 2.1.4: tell agents about cross-server messaging. On by default with the feature; the user can turn it off. */
     var crossServerNotice: Boolean
         get() = prefs.getBoolean("crossServerNotice", true)
