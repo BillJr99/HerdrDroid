@@ -1,0 +1,32 @@
+› Ask me before you change the build script.
+
+  Question 1/1 (1 unanswered)
+  The release build fails on its second step, after the cache is restored. This is the part of
+  scripts/build.sh that runs there:
+
+  ```bash
+  for f in src/*.py; do
+      python3 -m py_compile "$f" || exit 1
+  done
+  make -C build test JOBS=4
+  ```
+
+  The same check could run as one call instead:
+
+  ```python
+  import compileall, sys
+  ok = compileall.compile_dir("src", quiet=1)
+  if not ok:
+      sys.exit(1)
+  ```
+
+  Each file is compiled on its own today, so one bad file stops the loop before the tests run. The
+  single call reports every bad file at once.
+
+  Should I keep the loop as it is, or replace it with one compileall call?
+
+› 1. Keep the loop (Recommended)  Leave scripts/build.sh as it is; the first bad file stops the build.
+  2. Use compileall  Replace the loop with the Python call above and keep the make line.
+  3. None of the above  Optionally, add details in notes (tab)
+
+  tab to add notes | enter to submit answer | esc to interrupt
