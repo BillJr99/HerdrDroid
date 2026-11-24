@@ -267,6 +267,62 @@ class CardSendCheck227Test {
         }
     }
 
+    /**
+     * Codex's re-review: the shell check's files are its own, made new for each check: a link planted
+     * at a name the check once used is never followed, two checks on the same pane at once don't
+     * share files, and each removes exactly its own when it ends.
+     */
+    @Test fun theShellChecksFilesArePrivatePerCheck() {
+        val sh = tool("sh")
+        assumeTrue("needs sh", sh != null)
+        val dir = java.nio.file.Files.createTempDirectory("hd227-files").toFile()
+        try {
+            val home = File(dir, "home").apply { mkdirs() }
+            val check = File(home, ".herdrdroid/check").apply { mkdirs() }
+            val target = File(dir, "keep.txt").apply { writeText("keep me") }
+            for (n in listOf("p1.j", "p1.v")) java.nio.file.Files.createSymbolicLink(File(check, n).toPath(), target.toPath())
+            File(dir, "get.json").writeText(getJson)
+            File(dir, "screen.txt").writeText(screen)
+            val herdr = File(dir, "herdr")
+            // A slow read, so the two checks below overlap.
+            herdr.writeText("#!/bin/sh\ncase \"\$2\" in\n  get) /bin/cat '${dir.path}/get.json' ;;\n" +
+                "  read) sleep 1; /bin/cat '${dir.path}/screen.txt' ;;\n  *) echo \"\$*\" >> '${dir.path}/sent.log' ;;\nesac\n")
+            herdr.setExecutable(true)
+            val h = Herdr(HerdrSsh("127.0.0.1", 1, "u", Credentials(null, null), null, { null }), herdr.path, Backend.TUI, null)
+            val command = h.cardSendCommand("p1", CardInput.Keys(listOf("enter")), guard(), shellOnly = true)
+            val runs = List(2) { ProcessBuilder(sh!!.path, "-c", command).apply { environment()["HOME"] = home.path }.start() }
+            val exits = runs.map { p -> p.inputStream.readBytes(); p.errorStream.readBytes(); p.waitFor() }
+            assertEquals("both checks pass", listOf(0, 0), exits)
+            assertEquals("pane send-keys p1 enter\npane send-keys p1 enter\n", File(dir, "sent.log").readText())
+            assertEquals("the planted link's target is untouched", "keep me", target.readText())
+            assertEquals("only the planted links are left", setOf("p1.j", "p1.v"), check.list()!!.toSet())
+            assertTrue(java.nio.file.Files.isSymbolicLink(File(check, "p1.j").toPath()))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    /** The folder must be a real one of the user's own: a link there refuses the check. */
+    @Test fun theShellCheckRefusesALinkedFolder() {
+        val sh = tool("sh")
+        assumeTrue("needs sh", sh != null)
+        val dir = java.nio.file.Files.createTempDirectory("hd227-link").toFile()
+        try {
+            val home = File(dir, "home").apply { mkdirs() }
+            val elsewhere = File(dir, "elsewhere").apply { mkdirs() }
+            File(home, ".herdrdroid").mkdirs()
+            java.nio.file.Files.createSymbolicLink(File(home, ".herdrdroid/check").toPath(), elsewhere.toPath())
+            val h = Herdr(HerdrSsh("127.0.0.1", 1, "u", Credentials(null, null), null, { null }), "/bin/false", Backend.TUI, null)
+            val p = ProcessBuilder(sh!!.path, "-c", h.cardSendCommand("p1", CardInput.Keys(listOf("enter")), guard(), shellOnly = true))
+                .apply { environment()["HOME"] = home.path }.start()
+            p.inputStream.readBytes(); p.errorStream.readBytes()
+            assertEquals(CARD_CHECK_FAILED_EXIT, p.waitFor())
+            assertEquals("nothing written through the link", 0, elsewhere.list()!!.size)
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
     /** Where python3 is missing, the one command falls over to the shell check: still checked, and said so. */
     @Test fun withoutPython3TheCommandFallsOverToTheShellCheck() {
         assumeTrue("runs where /usr/bin/python3 is missing", !File("/usr/bin/python3").canExecute())

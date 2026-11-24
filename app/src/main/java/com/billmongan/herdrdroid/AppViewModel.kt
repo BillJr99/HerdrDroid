@@ -3587,18 +3587,22 @@ class AppViewModel internal constructor(
         else notice = text
     }
 
-    /** Typed text: [bytes] are zeroed once sent or refused. */
-    fun sendSecret(target: com.billmongan.herdrdroid.herdr.SecretTarget, label: String?, bytes: ByteArray) {
-        if (secretBusy) { bytes.fill(0); return }
+    /**
+     * Typed text: [bytes] are zeroed once sent or refused. False, and nothing taken, while another
+     * secret is still being saved (omp's audit: it was dropped silently); the dialog stays open and says so.
+     */
+    fun sendSecret(target: com.billmongan.herdrdroid.herdr.SecretTarget, label: String?, bytes: ByteArray): Boolean {
+        if (secretBusy) { bytes.fill(0); return false }
         secretBusy = true
         viewModelScope.launch {
             try { finishSecret(secretSender.send(target, label, true, bytes)) } finally { secretBusy = false }
         }
+        return true
     }
 
     /** A picked file: read here (up to the limit), sent, and zeroed; named by [label] or its own name. */
-    fun sendSecretFile(target: com.billmongan.herdrdroid.herdr.SecretTarget, label: String?, uri: Uri) {
-        if (secretBusy) return
+    fun sendSecretFile(target: com.billmongan.herdrdroid.herdr.SecretTarget, label: String?, uri: Uri): Boolean {
+        if (secretBusy) return false
         secretBusy = true
         val app = getApplication<Application>()
         viewModelScope.launch {
@@ -3610,12 +3614,7 @@ class AppViewModel internal constructor(
                         }
                         val max = com.billmongan.herdrdroid.herdr.SecretDrop.MAX_BYTES
                         val b = app.contentResolver.openInputStream(uri)?.use { input ->
-                            val buf = java.io.ByteArrayOutputStream()
-                            val chunk = ByteArray(16 * 1024)
-                            var total = 0
-                            while (total <= max) { val k = input.read(chunk); if (k < 0) break; buf.write(chunk, 0, k); total += k }
-                            chunk.fill(0)
-                            buf.toByteArray().also { buf.reset() }
+                            com.billmongan.herdrdroid.herdr.SecretDrop.readBounded(input, max)
                         } ?: ByteArray(0)
                         n to b
                     }
@@ -3624,6 +3623,7 @@ class AppViewModel internal constructor(
                 finishSecret(secretSender.send(target, label?.takeIf { it.isNotBlank() } ?: name, false, bytes))
             } finally { secretBusy = false }
         }
+        return true
     }
 
     // ---- Attachments ----------------------------------------------------------------------------
@@ -5153,7 +5153,9 @@ class AppViewModel internal constructor(
     private suspend fun submitOmpAsk(h: Herdr, t: CardTarget, shown: Prompt, first: Prompt,
         firstGuard: com.billmongan.herdrdroid.herdr.CardGuard?): Boolean {
         val dialog = shown.ompAsk ?: return false
-        fun same(a: Prompt, b: Prompt) = b.ompAsk?.questions == a.ompAsk?.questions && b.ompAsk?.allAnswered == true
+        // 2.2.7 (Codex's review): the same questions with the same answers as at the tap, or nothing is sent.
+        fun same(a: Prompt, b: Prompt) = b.ompAsk?.questions == a.ompAsk?.questions && com.billmongan.herdrdroid.herdr.OmpAsk.sameAnswers(a.ompAsk?.answers.orEmpty(), b.ompAsk?.answers.orEmpty()) &&
+            b.ompAsk?.allAnswered == true
         var live = first
         var guard = firstGuard
         repeat(dialog.questions.size * 12 + 4) {
@@ -5165,7 +5167,7 @@ class AppViewModel internal constructor(
             }
             sendCheckedCardInput(h, t.server, t.pane.id, live, com.billmongan.herdrdroid.herdr.CardInput.Keys(listOf("down")), guard, t.connection, remembered = false)
             delay(250)
-            val next = t.freshAnswerGuarded(h, shown, ::same) ?: return false
+            val next = t.freshAnswerGuarded(h, shown, ::same) ?: run { readPane(t.pane.id); return false }
             live = next.first
             guard = next.second
         }
@@ -5494,8 +5496,9 @@ class AppViewModel internal constructor(
         // OpenCode's question (2.1.2): only its own answer row takes text, opened by that row's digit.
         if (prompt.openCodeQuestionFrame != null) {
             if (prompt.openCodeCustom == null || choice?.keys != prompt.openCodeCustom) { flash("Not sent. Refresh the question or open the terminal to answer."); return }
-            answerCardInput(target, prompt, text, delivered, guarded = true) { h, t, fresh ->
-                typeOpenCodeCustom(h, t.pane.id, fresh, text, t.connection) { h.readStyledViewport(t.pane.id, t.connection) }
+            var guard: com.billmongan.herdrdroid.herdr.CardGuard? = null
+            answerCardInput(target, prompt, text, delivered, guarded = true, onGuard = { guard = it }) { h, t, fresh ->
+                typeOpenCodeCustom(h, t.pane.id, fresh, text, t.connection, t to guard) { h.readStyledViewport(t.pane.id, t.connection) }
             }
             return
         }
@@ -5528,19 +5531,35 @@ class AppViewModel internal constructor(
      * digit may then have opened the row; the text never goes anywhere else).
      */
     private suspend fun typeOpenCodeCustom(h: Herdr, paneId: String, fresh: Prompt, text: String, connection: Any?,
+        /** 2.2.7 (Grok's review): from a card, the digit and the text each go under the check of the read before them. */
+        card: Pair<CardTarget, com.billmongan.herdrdroid.herdr.CardGuard?>? = null,
         reread: suspend () -> String?): Boolean {
         val digit = fresh.openCodeCustom ?: return false
         val answer = text.trim()
         if (answer.isEmpty() || answer.any { it == '\n' || it == '\r' } || fresh.openCodeQuestionFrame == null) return false
-        h.sendKeys(paneId, digit, expectedConnection = connection)
-        delay(300)
-        val after = runCatching { reread() }.getOrNull()?.takeUnless { it.isBlank() } ?: return false
+        var textGuard: com.billmongan.herdrdroid.herdr.CardGuard? = null
+        val after: String
+        if (card != null) {
+            val (t, guard) = card
+            sendCheckedCardInput(h, t.server, paneId, fresh, com.billmongan.herdrdroid.herdr.CardInput.Keys(listOf(digit)), guard, t.connection, remembered = false)
+            delay(300)
+            val (live, occupant) = h.cardPaneGuarded(paneId, t.connection) ?: return false
+            if (!t.pane.sameCardOccupant(live)) return false
+            after = h.readStyledViewport(paneId, t.connection).takeUnless { it.isBlank() } ?: return false
+            textGuard = occupant?.let { com.billmongan.herdrdroid.herdr.CardGuard(it, com.billmongan.herdrdroid.herdr.cardScreenDigest(after)) }
+        } else {
+            h.sendKeys(paneId, digit, expectedConnection = connection)
+            delay(300)
+            after = runCatching { reread() }.getOrNull()?.takeUnless { it.isBlank() } ?: return false
+        }
         val open = com.billmongan.herdrdroid.herdr.openCodeQuestionEditing(after)
         if (open == null || open.filterNot(Char::isWhitespace) != fresh.question.filterNot(Char::isWhitespace)) {
             com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: OpenCode's answer row didn't open for the same question; nothing typed")
             return false
         }
-        h.typeAndEnter(paneId, answer, connection)
+        if (card != null) sendCheckedCardInput(h, card.first.server, paneId, fresh,
+            com.billmongan.herdrdroid.herdr.CardInput.Text(answer, enter = true), textGuard, card.first.connection, remembered = false)
+        else h.typeAndEnter(paneId, answer, connection)
         return true
     }
 

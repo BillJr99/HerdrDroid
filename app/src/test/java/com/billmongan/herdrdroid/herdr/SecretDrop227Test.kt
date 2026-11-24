@@ -293,4 +293,25 @@ class SecretDrop227Test {
         port.connection = chosenOn
         assertTrue("the same connection saves", SecretSender(port).send(target, null, true, secretText.toByteArray()) is SecretOutcome.Saved)
     }
+
+    /** omp's audit: a picked file is read into buffers that are all zeroed; only the exact copy handed on is left. */
+    @Test fun aPickedFilesReadBuffersAreAllZeroed() {
+        val content = ByteArray(150 * 1024) { (it % 251 + 1).toByte() }
+        val seen = mutableListOf<ByteArray>()
+        val out = SecretDrop.readBounded(java.io.ByteArrayInputStream(content), SecretDrop.MAX_BYTES) { seen += it }
+        assertArrayEquals(content, out)
+        assertTrue("it grew past its first buffer", seen.size >= 3)
+        assertTrue("every internal buffer is zeroed", seen.all { b -> b.all { it == 0.toByte() } })
+        assertTrue("the result is not one of them", seen.none { it === out })
+        // One past the limit is read, so the sender can refuse a file that is too big.
+        assertTrue(SecretDrop.readBounded(java.io.ByteArrayInputStream(ByteArray(4096) { 1 }), 1024).size > 1024)
+        val failing = object : java.io.InputStream() {
+            var n = 0
+            override fun read(): Int = throw java.io.IOException("gone")
+            override fun read(b: ByteArray, off: Int, len: Int): Int { if (n++ > 2) throw java.io.IOException("gone"); java.util.Arrays.fill(b, off, off + len, 7); return len }
+        }
+        val kept = mutableListOf<ByteArray>()
+        assertThrows(java.io.IOException::class.java) { SecretDrop.readBounded(failing, SecretDrop.MAX_BYTES) { kept += it } }
+        assertTrue("zeroed on a failed read too", kept.all { b -> b.all { it == 0.toByte() } })
+    }
 }

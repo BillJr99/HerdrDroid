@@ -191,10 +191,38 @@ class SuccessiveCardAnswerTest {
         readSelectedPane()
         val card = displayed()
         val submit = card.choices.single { it.keys == com.billmongan.herdrdroid.herdr.OmpAsk.SUBMIT }
-        afterSend = ompScreen("ask-submit.ansi")
+        // Down folds the open question, its selection kept (shortened), and puts the highlight on Submit.
+        afterSend = ompScreen("ask-submit.ansi").replace("   Leave as CHECK-F…   List the 7 commit…   The commits are…   ✓ Other: look at the…",
+            "   ✓ Leave as CHECK-F…   List the 7 commit…   The commits are…   Other: look at the…")
         vm.answerChoice("p1", card, submit, target = checkNotNull(vm.paneTextTarget))
         drainWithTime { !vm.answerInFlight("p1") }
         assertEquals(listOf("down", "enter"), sent)
+    }
+
+    /** Codex's re-review: an answer that changes while the highlight moves to Submit stops the Submit; Enter never goes. */
+    @Test fun ompSubmitStopsWhenAnAnswerChangesOnTheWay() = fixture("omp", ompScreen("ask-open-other.ansi")) {
+        readSelectedPane()
+        val card = displayed()
+        val submit = card.choices.single { it.keys == com.billmongan.herdrdroid.herdr.OmpAsk.SUBMIT }
+        afterSend = ompScreen("ask-submit.ansi").replace("   Leave as CHECK-F…   List the 7 commit…   The commits are…   ✓ Other: look at the…",
+            "   ✓ Leave as CHECK-F…   List the 7 commit…   The commits are…   Other: look at the…")
+            .replace("✓ Leave as CHECK-FIRST   Check", "Leave as CHECK-FIRST   ✓ Check")
+        vm.answerChoice("p1", card, submit, target = checkNotNull(vm.paneTextTarget))
+        drainWithTime { !vm.answerInFlight("p1") }
+        assertEquals("only the first Down", listOf("down"), sent)
+        assertTrue(vm.notice.orEmpty(), vm.notice.orEmpty().startsWith("Not sent."))
+    }
+
+    /** Grok's re-review: OpenCode's own-answer row: the digit, then the text and Enter, each under the check. */
+    @Test fun openCodeOwnAnswerGoesThroughTheCheck() = fixture("opencode", nativeQuestion(1)) {
+        readSelectedPane()
+        val card = displayed()
+        val digit = checkNotNull(card.openCodeCustom)
+        afterSend = nativeQuestion(1).replace("┃  ↑↓ select  enter submit  esc dismiss", "┃  enter submit  esc close")
+        vm.answerTyped(checkNotNull(vm.paneTextTarget), card, Choice("Type your own answer", digit, false), "MariaDB") {}
+        drainWithTime { !vm.answerInFlight("p1") }
+        assertEquals(listOf(digit, "text:MariaDB", "enter"), sent)
+        assertEquals("the digit and the text each went through the check", 2, pythonChecks + shellChecks)
     }
 
     /** 2.2.7: the questions can always be left: Esc from the card. */

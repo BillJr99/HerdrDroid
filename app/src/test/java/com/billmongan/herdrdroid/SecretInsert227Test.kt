@@ -101,4 +101,14 @@ class SecretInsert227Test {
         assertNull("taken once", vm.secretInsert)
         assertNull(vm.takeSecretInsert("p1", drawn))
     }
+
+    /** omp's audit: a second secret while one is saving is refused for the dialog to show, not dropped. */
+    @Test fun aSecondSecretWhileOneIsSavingIsRefusedNotDropped() {
+        state("secretBusy", true)
+        val bytes = "fixture-secret-text".toByteArray()
+        val target = com.billmongan.herdrdroid.herdr.SecretTarget(server.id, "p1", "Fixture", "Claude", claude, null)
+        assertFalse("the dialog stays open", vm.sendSecret(target, null, bytes))
+        assertTrue("and the refused copy is zeroed", bytes.all { it == 0.toByte() })
+        assertFalse(vm.sendSecretFile(target, null, android.net.Uri.parse("content://fixture/secret")))
+    }
 }
