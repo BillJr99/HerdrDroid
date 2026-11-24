@@ -266,6 +266,49 @@ class CardSendCheck227Test {
         }
     }
 
+    private fun questionFile(name: String) = checkNotNull(javaClass.getResourceAsStream("/screens/hermes/derived-2.2.8-question/$name")) { name }
+        .use { it.readBytes().toString(Charsets.UTF_8) }
+
+    /** Hermes's composer rows as it redraws them every second: a new spinner frame, turn time and footer timers. */
+    private fun hermesTick(s: String) = s.replace("(88s)", "(87s)").replace("(287s)", "(286s)").replace("(80s)", "(79s)")
+        .replace("── ⠹ Working… · 1m 2s ", "── ⠼ Working… · 1m 3s ").replace("◷ 3.1s", "◷ 3.2s").replace("⏲ 1m ·", "⏲ 2m ·")
+
+    /**
+     * 2.2.8 (Bill: "Hermes will ask a question occasionally that does not render in chat"): while a clarify
+     * or approval waits, Hermes redraws its hint countdown, its composer's top rule (spinner and turn time)
+     * and its footer every second. Only those rows may change in all three digests, and only when the
+     * composer is proven under a live prompt; the panel, the hint's words and the input row still count.
+     */
+    @Test fun hermesComposerRowsTickInAllThreeDigestsAndNothingElse() {
+        val names = listOf("clarify-single-first.txt", "clarify-batch-second.txt", "clarify-single-other-typing.txt",
+            "clarify-freetext.txt", "approval-selected-deny.txt", "clarify-single-no-deadline.txt")
+        for (name in names) {
+            val shown = questionFile(name)
+            val ticked = hermesTick(shown)
+            if (name != "clarify-single-no-deadline.txt") assertNotEquals("$name ticks", shown, ticked)
+            assertEquals(name, cardScreenDigest(shown), cardScreenDigest(ticked))
+            bothChecks { mode -> assertEquals("$mode $name", 0, runReal(guard(getJson, shown), getJson, ticked, mode = mode).exit) }
+        }
+        val shown = questionFile("clarify-single-first.txt")
+        val changed = listOf(
+            shown.replace("2. release/demo", "2. release/demo2"),        // an option
+            shown.replace("Enter to lock, Tab", "Enter to lock,  Tab"),   // the hint's own words
+            shown.replace("\n? ❯\n", "\n? ❯ 2\n"),                      // the input row
+            shown.replace("Which branch", "Which branches"),             // the question
+        )
+        for (other in changed) {
+            assertNotEquals(shown, other)
+            assertNotEquals(cardScreenDigest(shown), cardScreenDigest(other))
+            bothChecks { mode -> assertEquals("$mode", CARD_CHANGED_EXIT, runReal(guard(getJson, shown), getJson, hermesTick(other), mode = mode).exit) }
+        }
+        // Not under a live prompt (the agent's answer is on screen, the composer is busy): the rule counts.
+        val busy = questionFile("resolved-clarify.txt")
+        assertNotEquals(cardScreenDigest(busy), cardScreenDigest(hermesTick(busy)))
+        // A rule that only looks like the composer's, inside the prompt and not under the hint, still counts.
+        val inner = shown.replace("│ 1 question", "│ ── ⠹ Working… · 1m 2s ─")
+        assertNotEquals(cardScreenDigest(inner), cardScreenDigest(inner.replace("│ ── ⠹ Working… · 1m 2s ─", "│ ── ⠼ Working… · 1m 3s ─")))
+    }
+
     /** Codex's re-review: a NUL byte (which a shell variable drops) never matches, in all three. */
     @Test fun aNulByteNeverMatchesInAllThree() {
         val plain = "a\nb\n"

@@ -261,7 +261,7 @@ function shown(x,   t) {
   return t
 }
 function timer(x, t,   head) {
-  if (t ~ /^(type [0-9\/]+, or )?↑\/↓ to select, enter to confirm[ \t\r\v\f]*\([0-9]+s\)$/ && match(x, /.*\([0-9]+s\)/)) {
+  if (t ~ /^((type [0-9\/]+, or )?↑\/↓ to select, enter to confirm|↑\/↓ to select, enter to lock, tab next question|type your answer and press enter)[ \t\r\v\f]*\([0-9]+s\)$/ && match(x, /.*\([0-9]+s\)/)) {
     head = substr(x, 1, RLENGTH)
     sub(/\([0-9]+s\)$/, "(Ns)", head)
     x = head substr(x, RLENGTH + 1)
@@ -295,9 +295,19 @@ END {
       if (j < 1 || index(row[j], "╭") != 1) elapsed = 0
     }
   }
+  # The Hermes composer under a live prompt (hermesComposerRows): its top rule and its footer only.
+  f = 0; hr = 0; hf = 0
+  for (i = NR; i >= 1; i--) if (row[i] != "") { f = i; break }
+  if (f >= 5 && row[f - 1] ~ /^(─)+$/ && row[f - 2] ~ /^(⚠|\?|✎|🔐|🔑|⚙)(️)?[ \t]*(❯|›)([ \t].*)?$/ &&
+      row[f - 3] ~ /^──.*─$/ &&
+      row[f - 4] ~ /^((type [0-9\/]+, or )?↑\/↓ to select, enter to confirm|↑\/↓ to select, enter to lock, tab next question|type your answer and press enter)([ \t\r\v\f]*\([0-9]+s\))?$/) {
+    hr = f - 3; hf = f
+  }
   for (i = 1; i <= NR; i++) {
     x = raw[i]
-    if (!bottom) x = timer(x, row[i])
+    if (i == hr) x = "<hermes-rule>"
+    else if (i == hf) x = "<hermes-footer>"
+    else if (!bottom) x = timer(x, row[i])
     else if (i >= top && i <= bottom) x = x
     else if (i == elapsed) sub(/elapsed [0-9hms.]+/, "elapsed N", x)
     else if (i == bottom + 1 && row[i] ~ /^[^ ]+ ([^ ]+ )?> .* > 📁 [^ ]+ ▶─/) x = "<status>"
