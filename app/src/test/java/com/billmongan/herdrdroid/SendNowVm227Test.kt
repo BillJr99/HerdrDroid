@@ -56,6 +56,7 @@ class SendNowVm227Test {
         var failSends = false
         var dropAtCtrlB = false
         var statusNow = Status.WORKING
+        var terminal = "t1"
 
         init {
             field("herdr").set(vm, Herdr(ssh, server.herdrPath, Backend.TUI, null, this))
@@ -71,7 +72,7 @@ class SendNowVm227Test {
 
         fun status(s: Status) {
             statusNow = s
-            state("panes", listOf(Pane("p1", "tab", "w1", agent, s, "", "/fixture", terminalId = "t1")))
+            state("panes", listOf(Pane("p1", "tab", "w1", agent, s, "", "/fixture", terminalId = terminal)))
         }
 
         /** The chat's latest read of the pane, as the screen Send now first decides from. */
@@ -132,11 +133,61 @@ class SendNowVm227Test {
 
         private val pane get() = """{"pane_id":"p1","workspace_id":"w1","tab_id":"tab","agent":"$agent","agent_status":"${when (statusNow) {
             Status.IDLE -> "idle"; Status.DONE -> "done"; Status.WORKING -> "working"; else -> "blocked"
-        }}","cwd":"/fixture","terminal_id":"t1","scroll":{"offset_from_bottom":0}}"""
+        }}","cwd":"/fixture","terminal_id":"$terminal","scroll":{"offset_from_bottom":0}}"""
         private fun ok(out: String) = ExecResult(0, out, "")
         private fun field(name: String) = AppViewModel::class.java.getDeclaredField(name).apply { isAccessible = true }
         @Suppress("UNCHECKED_CAST")
         fun state(name: String, value: Any?) { (field("$name\$delegate").get(vm) as MutableState<Any?>).value = value }
+    }
+
+    /**
+     * 2.2.8 (Codex's review 1): a message sent while a question card is open waits, bound to the pane's
+     * occupant. Once the question is answered it goes, once, to that occupant.
+     */
+    @Test fun aMessageQueuedBehindACardGoesOnceAfterTheCard() = fixture("claude", working.replace("esc to interrupt", "")) {
+        status(Status.NEEDS_YOU)
+        shown()
+        vm.enqueue("p1", "after the question", behindQuestion = true)
+        repeat(2) { shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(4)); Thread.sleep(5) }
+        assertTrue("held while the question is open", writes.isEmpty())
+        status(Status.IDLE)
+        drainUntil { writes.isNotEmpty() }
+        repeat(3) { shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(4)); Thread.sleep(5) }
+        assertEquals("delivered once", listOf("prompt:after the question"), writes)
+        assertTrue(vm.queued.isEmpty())
+    }
+
+    /** The same, with another session in the pane by then: nothing goes to it, and the text is back in the box. */
+    @Test fun aMessageQueuedBehindACardNeverGoesToAReplacement() = fixture("claude", working.replace("esc to interrupt", "")) {
+        status(Status.NEEDS_YOU)
+        shown()
+        vm.enqueue("p1", "for the first session only", behindQuestion = true)
+        assertNotNull(vm.queued.single().occupant)
+        terminal = "replacement"
+        status(Status.IDLE)
+        var noted = false
+        repeat(12) {
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(1)); Thread.sleep(5)
+            if (vm.notice == QUEUED_OCCUPANT_CHANGED) noted = true
+        }
+        assertTrue("nothing sent to the replacement", writes.isEmpty())
+        assertTrue(vm.queued.isEmpty())
+        assertEquals("for the first session only", vm.composerDraft("p1"))
+        assertTrue("the note says so", noted)
+        // Send now on a row bound to the old occupant sends nothing either.
+        terminal = "t1"
+        status(Status.NEEDS_YOU)
+        vm.setComposerDraft("p1", "")
+        vm.enqueue("p1", "second", behindQuestion = true)
+        terminal = "other"
+        status(Status.IDLE)
+        vm.sendQueuedNow(vm.queued.single())
+        drain()
+        assertTrue(writes.isEmpty())
+        assertEquals("second", vm.composerDraft("p1"))
+        // A message queued with no question open is not bound (as before 2.2.8).
+        vm.enqueue("p1", "unbound")
+        assertNull(vm.queued.single { it.text == "unbound" }.occupant)
     }
 
     @Test fun theFixtureScreensAreCleanWorkingClaudeScreens() {

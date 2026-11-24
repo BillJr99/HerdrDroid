@@ -2523,7 +2523,12 @@ class AppViewModel internal constructor(
             val recentClarify = preview?.hermesClarify == true
             val requiresLive = verifyOpenCode || recentClarify || recentCodexQuestion || verifyPi
             val codexQuestionCleared = recentCodexQuestion && liveCandidate == null
-            val useLive = liveCard != null && (livePrompt != null || verifyPi && preview != null || liveReport || recentReport || verifiedUsage != null || recentClarify || codexQuestionCleared || verifyOpenCode &&
+            // 2.2.8 (Codex's review 1): once the live screen was read for an unproven recent dialog, that read is
+            // the card, a closed dialog included: the stale recent dialog never goes on to be confirmed.
+            val unprovenAnswered = unprovenPreview && liveCard != null
+            if (unprovenAnswered && livePrompt == null) com.billmongan.herdrdroid.diag.DiagLog.log("prompt",
+                "$paneId: the live screen shows no dialog; the recent read's is not used")
+            val useLive = liveCard != null && (livePrompt != null || unprovenAnswered || verifyPi && preview != null || liveReport || recentReport || verifiedUsage != null || recentClarify || codexQuestionCleared || verifyOpenCode &&
                 (blocked || preview != null || openCodeBackgroundDrawer(agent, recent) || openCodeBackgroundDrawer(agent, liveCard)))
             val shownText = if (useLive) checkNotNull(liveCard) else recent
             // 2.2.7: a Claude dialog taller than the screen is completed from the pane's history when that proves it (herdr/TallDialog.kt).
@@ -6672,7 +6677,12 @@ class AppViewModel internal constructor(
                             /** 2.2.7: when [sending] began; a row stuck sending past [SENDING_STALE_MS] is free again (pre-review L1). */
                             internal val sendingSince: Long = 0L,
                             /** 2.2.7: a send of it failed; it waits for a tap (Send now, Send immediately) instead of the idle loop (pre-review M4). */
-                            val needsTap: Boolean = false) {
+                            val needsTap: Boolean = false,
+                            /**
+                             * 2.2.8 (Codex's review 1): the pane's occupant when the message was queued behind an open
+                             * question; it goes only to that occupant (see [occupantChanged]).
+                             */
+                            internal val occupant: Pane? = null) {
         /** Being sent now; false once [SENDING_STALE_MS] pass, when the attempt was dropped without a word. */
         fun inFlight(now: Long = System.currentTimeMillis()): Boolean = sending && now - sendingSince < SENDING_STALE_MS
 
@@ -6769,11 +6779,34 @@ class AppViewModel internal constructor(
         return OpenCodeSendRead(fresh, connection, text).takeIf { text.isNotBlank() && sameTarget() }
     }
 
-    /** Holds a message until the pane's agent is ready, then sends it. */
-    fun enqueue(paneId: String, text: String) {
+    /**
+     * 2.2.8 (Codex's review 1): a message queued behind a question goes only to the occupant it was
+     * queued for. When another agent or session holds the pane now, it leaves the queue and goes back
+     * to the message box, with a note, and is never sent to the new occupant. True when it was moved.
+     */
+    private fun occupantChanged(q: QueuedPrompt, now: Pane): Boolean {
+        val bound = q.occupant ?: return false
+        if (bound.sameCardOccupant(now)) return false
+        queued = queued.filterNot { it.id == q.id }
+        if (sendNowConfirm?.id == q.id) sendNowConfirm = null
+        if (resendConfirm?.id == q.id) resendConfirm = null
+        val draft = composerDraft(q.paneId)
+        setComposerDraft(q.paneId, if (draft.isBlank()) q.text else draft.trimEnd() + "\n" + q.text)
+        com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${q.paneId}: the pane's occupant changed; the queued message went back to the draft")
+        flash(QUEUED_OCCUPANT_CHANGED)
+        return true
+    }
+
+    /**
+     * Holds a message until the pane's agent is ready, then sends it. [behindQuestion]: queued while a
+     * question is open (2.2.8), so bound to the pane's occupant now.
+     */
+    fun enqueue(paneId: String, text: String, behindQuestion: Boolean = false) {
         val serverId = current?.id ?: return
         if (text.isBlank()) return
-        queued = queued + QueuedPrompt(System.nanoTime(), serverId, paneId, text, pane(paneId)?.takeIf { it.agent == "hermes" })
+        val now = pane(paneId)
+        queued = queued + QueuedPrompt(System.nanoTime(), serverId, paneId, text, now?.takeIf { it.agent == "hermes" },
+            occupant = now?.takeIf { behindQuestion })
         if (queueJob?.isActive == true) return
         queueJob = viewModelScope.launch {
             while (isActive && queued.isNotEmpty()) {
@@ -6787,6 +6820,7 @@ class AppViewModel internal constructor(
                     if (q.inFlight() || q.mayHaveSent || q.needsTap) continue
                     val p = pane(q.paneId)
                     if (p == null) continue
+                    if (occupantChanged(q, p)) continue
                     if (q.hermesTarget?.sameCardOccupant(p) == false) continue
                     // 2.2.0: an OpenCode pane herdr keeps blocked with no dialog on screen counts as ready; the send still checks.
                     val ready = p.status == Status.IDLE || p.status == Status.DONE ||
@@ -6807,6 +6841,7 @@ class AppViewModel internal constructor(
         if (q.inFlight() || q.serverId != current?.id) return
         if (q.mayHaveSent) { resendConfirm = q; return }
         val target = pane(q.paneId) ?: return
+        if (occupantChanged(q, target)) return
         if (q.hermesTarget?.sameCardOccupant(target) == false) {
             flash("Not sent: the Hermes pane changed. Cancel the queued message to remove it.")
             return
@@ -6853,6 +6888,7 @@ class AppViewModel internal constructor(
         if (item.mayHaveSent && resendConfirm?.id != item.id) { resendConfirm = item; return }
         if (item.mayHaveSent) { resendConfirm = null; updateQueued(item.id) { it.copy(mayHaveSent = false) } }
         val target = pane(item.paneId) ?: run { flash("Not sent: that pane isn't open on the computer just now."); return }
+        if (occupantChanged(item, target)) return
         if (item.hermesTarget?.sameCardOccupant(target) == false) {
             flash("Not sent: the Hermes pane changed. Cancel the queued message to remove it.")
             return
@@ -6907,6 +6943,7 @@ class AppViewModel internal constructor(
         // now attempt, only that attempt's own row (a replay or a second tap never sends it again).
         val now = queuedById(item.id) ?: return
         if (token != null && now.sendToken != token) return
+        if (occupantChanged(now, target)) return
         updateQueued(item.id) { it.copy(sending = true, sendingSince = System.currentTimeMillis(), needsTap = false, note = null) }
         sendMessage(target, item.text,
             delivered = {
@@ -7869,3 +7906,6 @@ internal object DraftSeal {
 
 /** 2.2.7: the toast the first time a server's card answers fall back to the shell check. */
 internal fun shellCheckToast(serverLabel: String) = "python3 isn't on $serverLabel, so answers are checked with the shell version."
+
+/** 2.2.8: the note when a message queued behind a question finds another occupant in the pane. */
+internal const val QUEUED_OCCUPANT_CHANGED = "Not sent: another agent or session is in that pane now. Your message is back in the message box."
