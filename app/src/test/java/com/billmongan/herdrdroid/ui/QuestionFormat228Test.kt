@@ -82,4 +82,9 @@ class QuestionFormat228Test {
         assertTrue(p.terminalReview && p.codexQuestion && p.choices.isEmpty())
         assertWholeQuestion("codex/derived-2.2.8-format/long-code-question.txt")
     }
+
+    @Test fun grokQuestionCardShowsItsWholeFrame() {
+        assertWholeQuestion("grok/derived-2.2.8-format/long-code-question.txt")
+        assertWholeQuestion("grok/derived-2.2.8-format/long-indented-question.txt")
+    }
 }
