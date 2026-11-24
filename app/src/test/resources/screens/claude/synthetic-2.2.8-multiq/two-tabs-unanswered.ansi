@@ -1,0 +1,28 @@
+
+[0m[38;2;255;255;255m●[0m Your answers are recorded. Asking the next questions from the review while the checks finish.
+  the review notes while the checks finish.
+
+  [0m[38;2;153;153;153mRan [0m[1m[38;2;153;153;153m1[0m[38;2;153;153;153m shell command [0m
+
+[0m[38;2;153;153;153m[48;2;55;55;55m❯ go ahead and ask the remaining review questions[0m[48;2;55;55;55m              [0m
+[0m[38;2;153;153;153m──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[0m[38;2;153;153;153m← [0m[38;2;0;0;0m[48;2;177;185;249m ☐ Test step  [0m☐ Reports  ✔ Submit  →[0m
+
+[0m[2m│[0m [0m[1m[38;2;255;255;255mWhich step should run first in the sample build? Older notes in the build guide let the lint step run[0m
+[0m[2m│[0m [0m[1m[38;2;255;255;255mbefore the tests; newer notes say the tests run first and the lint step runs last.[0m
+
+  [0m[38;2;153;153;153m1. [0mTests first (Recommended)
+     [0m[38;2;153;153;153mAs the newer notes say. The older lint-first lines are kept as history and marked[0m
+     [0m[38;2;153;153;153msuperseded. One order, so there is never a question of which one applies.[0m
+[0m[38;2;177;185;249m❯ [0m[38;2;153;153;153m2. [0m[38;2;177;185;249mLint first on request[0m
+     [0m[38;2;153;153;153mLint may run first when a reviewer asks for it, and that run counts. Useful only when[0m
+     [0m[38;2;153;153;153mthe tests are slow; needs a rule for which run wins.[0m
+  [0m[38;2;153;153;153m3. [0mAlternate by day
+     [0m[38;2;153;153;153mLint first on even days and tests first on odd days.[0m
+  [0m[38;2;153;153;153m4. Type something.[0m
+[0m[38;2;153;153;153m──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  5. Chat about this
+  
+[0m[38;2;153;153;153mEnter to select · Tab/Arrow keys to navigate · Esc to cancel[0m
+
+ 

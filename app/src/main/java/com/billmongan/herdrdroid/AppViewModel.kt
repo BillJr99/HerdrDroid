@@ -2471,14 +2471,23 @@ class AppViewModel internal constructor(
                 (blocked || paneStatus == Status.WORKING || preview != null || openCodeBackgroundDrawer(agent, recent))
             val verifyHermesUsage = agent == "hermes"
             val verifyPi = paneNow != null && requiresLivePiQuestion(paneNow)
+            // 2.2.8 (Bill: "the AWS Cloud session failed to render a question ... make that more robust"): a
+            // question the recent read shows but whose dialog that read can't prove (its top, or rows above it,
+            // in the scrollback) is read again from the live screen, which shows the dialog alone.
+            val unprovenPreview = blocked && preview != null && preview.choices.isNotEmpty() && !preview.terminalReview &&
+                !com.billmongan.herdrdroid.herdr.questionRead(recent, preview.forCard(), agent, version, blocked).topped
+            if (unprovenPreview) com.billmongan.herdrdroid.diag.DiagLog.log("prompt",
+                "$paneId: the recent read's dialog isn't proven (${preview!!.choices.size} choice(s)); reading the live screen")
             val liveCard = if (liveUsage == null &&
-                (verifyOpenCode || verifyHermesUsage || verifyPi || missingCodexCard || unfinishedChoicePreview || preview?.terminalReview == true || (blocked && preview?.choices.isNullOrEmpty())) && canUpgrade()) {
+                (verifyOpenCode || verifyHermesUsage || verifyPi || missingCodexCard || unfinishedChoicePreview || unprovenPreview ||
+                    preview?.terminalReview == true || (blocked && preview?.choices.isNullOrEmpty())) && canUpgrade()) {
                 val owner = checkNotNull(cardOwner)
                 quietly { h ->
                     if (h !== owner.client) return@quietly null
                     if ((verifyHermesUsage || verifyPi) && (!com.billmongan.herdrdroid.herdr.hasStableOccupant(owner.pane) ||
                             h.cardPane(paneId, owner.connection)?.sameCardOccupant(owner.pane) != true || !canUpgrade())) return@quietly null
-                    h.readCardViewport(paneId, owner.connection, timeoutSeconds = 1)
+                    // 2.2.8: a far server (a cloud host) can take more than a second to answer.
+                    h.readCardViewport(paneId, owner.connection, timeoutSeconds = 3)
                 }
                     ?.takeIf { canUpgrade() && !it.isBlank() }
             } else null
@@ -5283,19 +5292,23 @@ class AppViewModel internal constructor(
         com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$id: tapped question pill ${index + 1} \"${title.take(40)}\"")
         answerOnce(id) { h ->
             var blocked = false
+            var pillGuard: com.billmongan.herdrdroid.herdr.CardGuard? = null
             fun current() = target.isCurrent(h) && paneDraft?.target?.pane?.id != id && usageOverlayFor(id) == null
             val outcome = pills.move(
                 target.pane.agent, shown, index, title, headings,
                 read = read@{
                     if (!current()) return@read null
-                    val live = h.cardPane(id, target.connection) ?: return@read null
+                    val (live, occupant) = h.cardPaneGuarded(id, target.connection) ?: return@read null
                     if (!current() || !target.pane.sameCardOccupant(live) || live.scrollOffset != 0) return@read null
                     blocked = live.status == Status.NEEDS_YOU
-                    h.readCardViewport(id, target.connection).takeUnless { it.isBlank() || !current() }
+                    val raw = h.readStyledViewport(id, target.connection)
+                    // 2.2.8: each pill key goes under the check of the read just before it.
+                    pillGuard = occupant?.let { com.billmongan.herdrdroid.herdr.CardGuard(it, com.billmongan.herdrdroid.herdr.cardScreenDigest(raw)) }
+                    com.billmongan.herdrdroid.herdr.stripAnsi(raw).takeUnless { it.isBlank() || !current() }
                 },
                 detect = { detectPrompt(it, blocked, target.pane.agent, versionOf(id)) },
                 stillCurrent = ::current,
-                send = { keys -> h.sendKeys(id, *keys.toTypedArray(), expectedConnection = target.connection) },
+                send = { keys -> sendCheckedCardInput(h, target.server, id, shown, com.billmongan.herdrdroid.herdr.CardInput.Keys(keys), pillGuard, target.connection, remembered = false) },
                 pause = { delay(200) },
             )
             when (outcome) {
