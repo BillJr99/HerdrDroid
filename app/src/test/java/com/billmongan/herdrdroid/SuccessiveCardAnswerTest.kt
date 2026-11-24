@@ -339,6 +339,39 @@ class SuccessiveCardAnswerTest {
             assertEquals(listOf("also check the cache"), vm.queued.filter { it.paneId == "p1" }.map { it.text })
         }
 
+    /**
+     * 2.2.8 (Codex's review 1): the live read is the card even when it shows the dialog closed. A stale
+     * recent read with an unproven dialog, then a live screen with only the composer: no card, ever.
+     */
+    @Test fun aLiveComposerOutranksAStaleUnprovenRecentDialog() = fixture("claude",
+        "Earlier reply line.\n\n" + "─".repeat(40) + "\n❯ \n" + "─".repeat(40) + "\n  ? for shortcuts\n") {
+        val dialog = checkNotNull(javaClass.getResource("/screens/claude/synthetic-2.2.8-multiq/four-tabs-first.ansi")).readText()
+        val plain = com.billmongan.herdrdroid.herdr.stripAnsi(dialog).replace("\r", "").lines()
+        val tabs = plain.indexOfFirst { it.startsWith("←") }
+        val box = plain.indexOfFirst { it.startsWith("│") }
+        // Recent reads that show the options but can't prove the dialog: its top gone by in the
+        // scrollback, or a row of the chat in between. The one that parses with options is the case.
+        val shapes = listOf(
+            listOf("❯ a stray echoed message") + plain.dropWhile { !it.startsWith("❯ 1.") },
+            listOf("❯ a stray echoed message") + plain.drop(box),
+            plain.take(tabs + 1) + "❯ a stray echoed message" + plain.drop(tabs + 1),
+            plain.take(box) + "❯ a stray echoed message" + plain.drop(box),
+        ).map { it.joinToString("\n") }
+        val stale = checkNotNull(shapes.firstOrNull { r ->
+            val p = detectPrompt(r, true, "claude")?.forCard()
+            p != null && p.choices.isNotEmpty() && !p.terminalReview && !com.billmongan.herdrdroid.herdr.questionRead(r, p, "claude", null, true).topped
+        }) { "no unproven recent shape" }
+        recentResult = ExecResult(0, stale, "")
+        repeat(com.billmongan.herdrdroid.herdr.FALLBACK_READS + 4) {
+            readSelectedPane()
+            val card = vm.questionCardFor("p1", vm.cardParse("p1", vm.paneText), "Claude")
+            assertTrue("no card from the stale recent dialog (read ${it + 1})", card == null || card.choices.isEmpty())
+            assertFalse("the live screen, not the recent read (read ${it + 1})", vm.paneText.contains("stray echoed"))
+        }
+        assertTrue(guardedVisibleReads > 0)
+        assertTrue(sent.isEmpty())
+    }
+
     /** 2.2.7: the questions can always be left: Esc from the card. */
     @Test fun ompAskCanBeCancelled() = fixture("omp", ompScreen("ask-open-first.ansi")) {
         readSelectedPane()
