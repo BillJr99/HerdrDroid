@@ -94,4 +94,10 @@ class QuestionFormat228Test {
             assertWholeQuestion(path, heading = "1. $q")
         }
     }
+
+    @Test fun copilotVibeAndOpenCodeQuestionsShowTheirWholeBox() {
+        assertWholeQuestion("copilot/derived-2.2.8-format/long-code-question.txt")
+        assertWholeQuestion("vibe/derived-2.2.8-format/long-code-question.txt")
+        assertWholeQuestion("opencode/derived-2.2.8-format/long-code-question.txt")
+    }
 }
