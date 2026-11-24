@@ -845,6 +845,12 @@ class Herdr internal constructor(
         throw UploadMismatch(last ?: "it couldn't be checked")
     }
 
+    /** 2.2.7 Send a secret: this computer's runner for [SecretDrop] (the secret only on stdin). */
+    internal val secretRun = SecretDrop.Run { command, stdin ->
+        if (stdin != null) commands?.let { it.input(command, stdin, it.connection ?: Any()) } ?: ssh.execInput(command, stdin, timeoutSeconds = 120)
+        else commands?.let { it.immediate(command, 10, null) } ?: ssh.exec(command)
+    }
+
     /** Automatic usage collection must never write to a pane. No inline-command fallback. */
     internal suspend fun readQuota(paneIds: List<String>, profile: QuotaProfile): List<QuotaItem>? {
         if (profile.cliCommand != null) return cliQuota(profile)
