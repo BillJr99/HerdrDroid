@@ -2,6 +2,7 @@ package com.billmongan.herdrdroid.ui
 
 import android.app.Activity
 import android.content.Context
+import android.content.ActivityNotFoundException
 import android.content.ContextWrapper
 import android.net.Uri
 import android.view.View
@@ -85,6 +86,7 @@ fun SendSecretDialog(
     var file by remember { mutableStateOf<Pair<Uri, String>?>(null) }
     var target by remember { mutableStateOf(initial) }
     var choosing by remember { mutableStateOf(false) }
+    var noPicker by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) file = uri to (displayName(context, uri) ?: "the chosen file")
@@ -139,8 +141,11 @@ fun SendSecretDialog(
                     )
                 } else {
                     Row {
-                        TextButton(onClick = { runCatching { picker.launch(arrayOf("*/*")) } }) { Text(if (file == null) "Choose a file" else "Choose another") }
+                        TextButton(onClick = {
+                            noPicker = try { picker.launch(arrayOf("*/*")); false } catch (_: ActivityNotFoundException) { true }
+                        }) { Text(if (file == null) "Choose a file" else "Choose another") }
                     }
+                    if (noPicker) Text(NO_FILE_PICKER_TEXT, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
                     file?.let { Text("Chosen: ${it.second}", color = Palette.Ink, fontSize = 13.sp) }
                 }
                 OutlinedTextField(
@@ -184,6 +189,9 @@ fun SendSecretDialog(
 /** 2.2.7: shown while another secret is still being saved; Save waits, nothing is dropped. */
 const val SECRET_BUSY_TEXT = "Another secret is still being saved. Save becomes available when it is done; what you typed stays here."
 const val SECRET_BUSY_BUTTON = "Waiting for the last secret"
+
+/** Shown when no app on the phone can pick a document (OpenDocument has no handler). */
+const val NO_FILE_PICKER_TEXT = "No file picker on this phone."
 
 private fun Context.activity(): Activity? {
     var c: Context? = this

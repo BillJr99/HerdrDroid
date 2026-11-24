@@ -6,14 +6,12 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.lifecycle.viewModelScope
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.billmongan.herdrdroid.herdr.Pane
 import com.billmongan.herdrdroid.herdr.Status
 import com.billmongan.herdrdroid.store.Server
 import com.billmongan.herdrdroid.ui.HomeScreen
 import com.billmongan.herdrdroid.ui.ServersScreen
-import kotlinx.coroutines.cancel
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Rule
@@ -35,7 +33,7 @@ class ServersBackToMain227Test {
     private val server = Server(id = "hd227-back", name = "BackFixture", host = "127.0.0.1", port = 1, user = "fix", herdrPath = "/fixture/herdr")
     private val claude = Pane("w1:p1", "w1:t1", "w1", "claude", Status.IDLE, "Claude", "/fixture", scrollOffset = 0, terminalId = "t1")
 
-    @After fun close() { rule.runOnUiThread { vm.viewModelScope.cancel() } }
+    @After fun close() { rule.runOnUiThread { vm.clearForTest() } }
 
     @Suppress("UNCHECKED_CAST")
     private fun state(name: String, value: Any?) {

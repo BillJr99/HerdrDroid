@@ -51,7 +51,7 @@ class UsageOverlayTest {
     }
 
     @Test fun serverSideGuardSendsOnlyForTheExactLiveSnapshot() {
-        assumeTrue(File("/usr/bin/python3").canExecute() && File("/proc/self/stat").isFile)
+        assumeTrue("needs /usr/bin/python3 and Linux /proc for the server-side guard script", File("/usr/bin/python3").canExecute() && File("/proc/self/stat").isFile)
         val root = tmp.newFolder()
         val fake = root.resolve("herdr")
         fake.writeText("""#!/usr/bin/python3

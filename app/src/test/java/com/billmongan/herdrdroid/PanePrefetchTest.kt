@@ -157,7 +157,7 @@ class PanePrefetchTest {
             compose.runOnUiThread { f.install() }
             body(f)
         } finally {
-            f.vm.viewModelScope.cancel()
+            f.vm.clearForTest()
         }
     }
 

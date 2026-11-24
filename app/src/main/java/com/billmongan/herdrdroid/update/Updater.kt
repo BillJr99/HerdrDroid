@@ -59,8 +59,11 @@ class Updater(
     private var job: Job? = null
     private var pending: File? = null
 
+    /** Kept so [release] can tell whether the installer's results still come here. */
+    private val events: (Int, String?) -> Unit = ::installResult
+
     init {
-        UpdateEvents.listener = ::installResult
+        UpdateEvents.listener = events
         // An APK left from an install that replaced the app, or one that was interrupted.
         scope.launch(io) { runCatching { dir.listFiles()?.forEach { it.delete() } } }
     }
@@ -216,4 +219,10 @@ class Updater(
     }
 
     private fun discard(file: File) { runCatching { file.delete() } }
+
+    /** 2.2.8: the owner is gone; a later updater may already have taken the installer's results. */
+    fun release() {
+        job?.cancel()
+        if (UpdateEvents.listener === events) UpdateEvents.listener = null
+    }
 }

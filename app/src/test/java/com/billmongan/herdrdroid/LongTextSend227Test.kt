@@ -47,7 +47,7 @@ class LongTextSend227Test {
     private fun fixture(test: Fixture.() -> Unit) {
         val f = Fixture()
         try { f.test() } finally {
-            f.vm.viewModelScope.cancel()
+            f.vm.clearForTest()
             shadowOf(Looper.getMainLooper()).idle()
         }
     }

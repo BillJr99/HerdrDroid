@@ -488,12 +488,14 @@ class AppViewModel internal constructor(
 
     // ---- 2.2.6 link diagnostics ----------------------------------------------------------------
 
+    /** 2.2.7: told on the main thread; the latest view model is the one listening. Kept for [onCleared]. */
+    private val networkListener: (String, Int) -> Unit = { type, _ ->
+        viewModelScope.launch(Dispatchers.Main) { onNetworkChanged(type) }
+    }
+
     init {
         com.billmongan.herdrdroid.diag.NetworkWatch.start(app)
-        // 2.2.7: told on the main thread; the latest view model is the one listening.
-        com.billmongan.herdrdroid.diag.NetworkWatch.listener = { type, _ ->
-            viewModelScope.launch(Dispatchers.Main) { onNetworkChanged(type) }
-        }
+        com.billmongan.herdrdroid.diag.NetworkWatch.listener = networkListener
     }
 
     /** Counted from a sign-in to its disconnect, for the session summary line. */
@@ -7760,8 +7762,20 @@ class AppViewModel internal constructor(
         }
     }
 
+    /**
+     * 2.2.8: everything this view model started that its scope doesn't own: the reconnect, the
+     * other servers' watcher and their connections, Hermes's chat, and the two process-wide
+     * listeners (left alone when a newer view model already holds them).
+     */
     override fun onCleared() {
+        reconnectJob?.cancel()
+        networkRecheck?.cancel()
+        fleet?.stop()
+        fleet = null
+        hermes?.close()
         ssh?.close()
+        updates.release()
+        if (com.billmongan.herdrdroid.diag.NetworkWatch.listener === networkListener) com.billmongan.herdrdroid.diag.NetworkWatch.listener = null
         super.onCleared()
     }
 }

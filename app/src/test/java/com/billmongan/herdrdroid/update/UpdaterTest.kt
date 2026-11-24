@@ -2,7 +2,10 @@ package com.billmongan.herdrdroid.update
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -73,9 +76,13 @@ class UpdaterTest {
     private val http = FakeHttp()
     private val platform = FakePlatform()
     private val cache by lazy { tmp.newFolder("cache") }
+    /** Cancelled after each test so no download or check outlives it. */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
     private val updater by lazy {
-        Updater(prefs, http, platform, CoroutineScope(Dispatchers.Unconfined), cache, io = Dispatchers.Unconfined)
+        Updater(prefs, http, platform, scope, cache, io = Dispatchers.Unconfined)
     }
+
+    @After fun cancelScope() = scope.cancel()
 
     private fun releaseJson(ver: String = "2.1.5", size: Long = 1000) =
         """{"tag_name":"v$ver","draft":false,"prerelease":false,"assets":[

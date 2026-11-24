@@ -35,7 +35,7 @@ class SmallPacketsSetting226Test {
     }
 
     @Test fun aWebSocketServerNeverAsksForIt() {
-        val ws = base.copy(wsUrl = "wss://bridge.invalid/ssh", smallPackets = true)
+        val ws = base.copy(wsUrl = "ws://127.0.0.1:1/ssh", smallPackets = true)
         assertNull(ws.smallPacketsMss)
     }
 }

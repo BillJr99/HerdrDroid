@@ -39,7 +39,7 @@ class SendNowVm227Test {
     private fun fixture(agent: String, frame: String, test: Fixture.() -> Unit) {
         val f = Fixture(agent, frame)
         try { f.test() } finally {
-            f.vm.viewModelScope.cancel()
+            f.vm.clearForTest()
             shadowOf(Looper.getMainLooper()).idle()
         }
     }

@@ -90,7 +90,7 @@ class SelectedCardLatencyTest {
             rule.mainClock.advanceTimeBy(2_500)
             rule.runOnUiThread { assertEquals(2, reads) }
         } finally {
-            vm.viewModelScope.cancel()
+            vm.clearForTest()
         }
     }
 
@@ -134,7 +134,7 @@ class SelectedCardLatencyTest {
             println("$agent fixture screen-to-card latency: $latency ms (Compose clock)")
             assertTrue("$agent card appeared after $latency ms", latency <= 750)
         } finally {
-            vm.viewModelScope.cancel()
+            vm.clearForTest()
         }
     }
 
