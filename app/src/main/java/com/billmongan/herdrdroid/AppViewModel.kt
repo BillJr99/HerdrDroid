@@ -5097,6 +5097,23 @@ class AppViewModel internal constructor(
     }
 
     /**
+     * 2.2.7 (Bill: "implement a fallback/pure shell version for when python3 is missing ... and
+     * silently auto fail over to it with a notification toast"): the servers found this app session
+     * to have no python3. Their card answers go straight to the shell check; each is told once.
+     */
+    private val noPython3: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    internal fun shellCheckFallback(server: String) {
+        if (!noPython3.add(server)) return
+        val label = current?.takeIf { it.id == server }?.label ?: servers.firstOrNull { it.id == server }?.label ?: "this computer"
+        com.billmongan.herdrdroid.diag.DiagLog.log("answer", "server=${com.billmongan.herdrdroid.diag.LinkDiag.serverTag(server)} card-check=shell reason=no-python3")
+        val text = shellCheckToast(label)
+        viewModelScope.launch(Dispatchers.Main) {
+            android.widget.Toast.makeText(getApplication<Application>(), text, android.widget.Toast.LENGTH_LONG).show()
+        }
+    }
+
+    /**
      * 2.2.7 (Bill, "check right before send"): a card's answer through [Herdr.sendCardInput]. When
      * the check on the computer typed nothing, the card is no longer held as answered (a new tap on
      * the same question can go), and the error says so: [answerOnce] reports it and reads the card again.
@@ -5107,7 +5124,8 @@ class AppViewModel internal constructor(
         remembered: Boolean = true,
     ) {
         try {
-            h.sendCardInput(paneId, input, guard, connection, permit)
+            h.sendCardInput(paneId, input, guard, connection, permit, shellOnly = server in noPython3,
+                onShellFallback = { shellCheckFallback(server) })
         } catch (e: Exception) {
             if (remembered && (e is com.billmongan.herdrdroid.herdr.CardChanged || e is com.billmongan.herdrdroid.herdr.CardCheckFailed) &&
                 answeredCards[server to paneId]?.first == fresh) answeredCards.remove(server to paneId)
@@ -7668,3 +7686,6 @@ internal object DraftSeal {
     @Volatile var seal: (ByteArray) -> ByteArray = { com.billmongan.herdrdroid.store.ChatVault.seal(it, AAD) }
     @Volatile var open: (ByteArray) -> ByteArray = { com.billmongan.herdrdroid.store.ChatVault.open(it, AAD) }
 }
+
+/** 2.2.7: the toast the first time a server's card answers fall back to the shell check. */
+internal fun shellCheckToast(serverLabel: String) = "python3 isn't on $serverLabel, so answers are checked with the shell version."

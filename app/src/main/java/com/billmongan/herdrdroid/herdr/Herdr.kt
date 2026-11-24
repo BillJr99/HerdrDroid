@@ -408,7 +408,13 @@ class Herdr internal constructor(
      * itself failed (nothing was typed either way). Without a guard (herdr-core), the input goes
      * as before, bound only to [connection].
      */
-    internal suspend fun sendCardInput(paneId: String, input: CardInput, guard: CardGuard?, connection: Any, permit: WritePermit? = null) {
+    internal suspend fun sendCardInput(
+        paneId: String, input: CardInput, guard: CardGuard?, connection: Any, permit: WritePermit? = null,
+        /** 2.2.7: this computer has no python3 (found earlier this session): the shell check only. */
+        shellOnly: Boolean = false,
+        /** 2.2.7: python3 was missing, so this answer was checked by the shell version. */
+        onShellFallback: () -> Unit = {},
+    ) {
         if (guard == null || core) {
             when (input) {
                 is CardInput.Keys -> if (permit != null) sendPermittedKeys(paneId, input.keys, connection, permit)
@@ -420,20 +426,33 @@ class Herdr internal constructor(
             }
             return
         }
-        try {
-            runWrite(cardSendCommand(paneId, input, guard), expectedConnection = connection, permit = permit)
-        } catch (e: HerdrError) {
-            when (e.exit) {
-                CARD_CHANGED_EXIT -> throw CardChanged()
-                CARD_CHECK_FAILED_EXIT, 126, 127 -> throw CardCheckFailed()
-                else -> throw e
-            }
+        // One write, the permit claimed once: the failover to the shell check happens inside it,
+        // on the computer, so a voice answer's single-use permit is never needed twice.
+        val r = kotlinx.coroutines.withContext(com.billmongan.herdrdroid.ssh.WriteCommand.MARK) {
+            commands?.let { permit.admit(); it.immediate(cardSendCommand(paneId, input, guard, shellOnly), 30, connection) }
+                ?: ssh.execNow(cardSendCommand(paneId, input, guard, shellOnly), 30, connection, permit)
+        }
+        if (!shellOnly && r.out.lines().any { it.trim() == SHELL_CHECK_MARK }) onShellFallback()
+        when (r.exit) {
+            0 -> return
+            CARD_CHANGED_EXIT -> throw CardChanged()
+            CARD_CHECK_FAILED_EXIT, 126, 127 -> throw CardCheckFailed()
+            else -> throw HerdrError((r.err.ifBlank { r.out }).trim().lines().lastOrNull { it.isNotBlank() } ?: "exit ${r.exit}", r.exit)
         }
     }
 
-    /** The one command [sendCardInput] runs: [CARD_SEND_CHECK], then (only when it passed) the same send-keys or send-text as before. */
-    internal fun cardSendCommand(paneId: String, input: CardInput, guard: CardGuard): String {
-        val check = "$PY -c ${shq(CARD_SEND_CHECK)} $herdr ${shq(paneId)} ${shq(guard.occupant)} ${shq(guard.screen)}"
+    /**
+     * The one command [sendCardInput] runs: the check ([CARD_SEND_CHECK]; where python3 is missing
+     * or can't run, exit 127 or 126, [SHELL_CHECK_MARK] and then [CARD_SEND_CHECK_SH] in the same
+     * command), then, only when it passed, the same send-keys or send-text as before.
+     * [shellOnly]: the shell check alone.
+     */
+    internal fun cardSendCommand(paneId: String, input: CardInput, guard: CardGuard, shellOnly: Boolean = false): String {
+        val args = "$herdr ${shq(paneId)} ${shq(guard.occupant)} ${shq(guard.screen)}"
+        val shell = "sh -c ${shq(CARD_SEND_CHECK_SH)} herdrdroid-check $args"
+        val check = if (shellOnly) "( $shell )"
+            else "( $PY -c ${shq(CARD_SEND_CHECK)} $args; st=\$?; " +
+                "if [ \"\$st\" -eq 126 ] || [ \"\$st\" -eq 127 ]; then echo $SHELL_CHECK_MARK; $shell; else exit \"\$st\"; fi )"
         val send = when (input) {
             is CardInput.Keys -> cmd("pane", "send-keys", paneId, *input.keys.toTypedArray())
             is CardInput.Text -> cmd("pane", "send-text", paneId, input.text) +
@@ -4161,10 +4180,16 @@ internal class CardChanged : Exception("The question changed; not sent.")
 internal class CardCheckFailed : Exception("Not sent. The check on the computer failed.")
 
 internal const val CARD_CHANGED_EXIT = 3
+/** Printed by the card check command when python3 was missing and the shell check ran instead. */
+internal const val SHELL_CHECK_MARK = "@@herdrdroid-shell-check@@"
+
+/** 2.2.7: [CARD_SEND_CHECK] in POSIX sh and awk, for a computer without python3 (resources/herdrdroid/card-check.sh). */
+internal val CARD_SEND_CHECK_SH: String by lazy {
+    checkNotNull(Herdr::class.java.getResourceAsStream("/herdrdroid/card-check.sh")) { "card-check.sh is missing" }
+        .use { it.readBytes().toString(Charsets.UTF_8) }
+}
 internal const val CARD_CHECK_FAILED_EXIT = 4
 
-/** Neither side's value for a field that is missing, null or not a string or whole number. */
-private const val NO_VALUE = "\u0001"
 private val CARD_OCCUPANT_FIELDS = listOf("pane_id", "tab_id", "workspace_id", "agent", "foreground_cwd", "cwd", "terminal_id")
 private val CARD_SESSION_FIELDS = listOf("kind", "agent", "value")
 
@@ -4174,18 +4199,32 @@ private val CARD_SESSION_FIELDS = listOf("kind", "agent", "value")
  * [CARD_SEND_CHECK] computes it on the computer.
  */
 internal fun cardOccupantDigest(p: JSONObject): String {
-    fun v(x: Any?): String = when (x) { is String -> x; is Int, is Long -> x.toString(); else -> NO_VALUE }
+    val out = java.io.ByteArrayOutputStream()
+    // Each field framed by its UTF-8 length ("<bytes>:<value>\n"); "-\n" for a field that is
+    // missing, null or not a string or whole number. No separator a value could contain.
+    fun put(x: Any?) {
+        val b = when (x) {
+            is String -> x.toByteArray(Charsets.UTF_8)
+            is Int, is Long, is java.math.BigInteger -> x.toString().toByteArray(Charsets.US_ASCII)
+            else -> null
+        }
+        if (b == null) out.write("-\n".toByteArray()) else { out.write("${b.size}:".toByteArray()); out.write(b); out.write('\n'.code) }
+    }
     val session = p.optJSONObject("agent_session")
-    val fields = CARD_OCCUPANT_FIELDS.map { v(p.opt(it)) } + CARD_SESSION_FIELDS.map { v(session?.opt(it)) }
-    return sha256Hex(fields.joinToString("\u0000").toByteArray(Charsets.UTF_8))
+    CARD_OCCUPANT_FIELDS.forEach { put(p.opt(it)) }
+    CARD_SESSION_FIELDS.forEach { put(session?.opt(it)) }
+    return sha256Hex(out.toByteArray())
 }
 
 /** A running countdown ("Enter to confirm (57s)") changes nothing about the question. */
 private val CARD_COUNTDOWN = Regex("""\(\d{1,4}s\)""")
 
 /** The screen digest of a card's raw `pane read --source visible --format ansi`, as [CARD_SEND_CHECK] computes it. */
-internal fun cardScreenDigest(raw: String): String =
-    sha256Hex(CARD_COUNTDOWN.replace(raw, "(Ns)").toByteArray(Charsets.UTF_8))
+internal fun cardScreenDigest(raw: String): String {
+    // Every line ends in a newline (the last one too), as a line-by-line awk prints it.
+    val t = CARD_COUNTDOWN.replace(raw, "(Ns)").let { if (it.isNotEmpty() && !it.endsWith("\n")) it + "\n" else it }
+    return sha256Hex(t.toByteArray(Charsets.UTF_8))
+}
 
 /**
  * 2.2.7 (Bill, "check right before send"): run on the computer just before a card's keys, in the
@@ -4200,10 +4239,12 @@ internal val CARD_SEND_CHECK = """
         return subprocess.check_output([herdr, 'pane', *args])
     def v(x):
         if isinstance(x, str):
-            return x
-        if type(x) is int:
-            return str(x)
-        return '\x01'
+            b = x.encode('utf-8')
+        elif type(x) is int:
+            b = str(x).encode('ascii')
+        else:
+            return b'-\n'
+        return str(len(b)).encode('ascii') + b':' + b + b'\n'
     def identity():
         p = json.loads(call('get', pane))['result']['pane']
         if p.get('pane_id') != pane or (p.get('scroll') or {}).get('offset_from_bottom') != 0:
@@ -4212,12 +4253,15 @@ internal val CARD_SEND_CHECK = """
         s = s if isinstance(s, dict) else {}
         f = [p.get(k) for k in ('pane_id', 'tab_id', 'workspace_id', 'agent', 'foreground_cwd', 'cwd', 'terminal_id')]
         f += [s.get(k) for k in ('kind', 'agent', 'value')]
-        return hashlib.sha256('\x00'.join(v(x) for x in f).encode('utf-8')).hexdigest()
+        return hashlib.sha256(b''.join(v(x) for x in f)).hexdigest()
     try:
         before = identity()
         visible = call('read', pane, '--source', 'visible', '--format', 'ansi')
         after = identity()
-        seen = hashlib.sha256(re.sub(rb'\(\d{1,4}s\)', b'(Ns)', visible)).hexdigest()
+        visible = re.sub(rb'\(\d{1,4}s\)', b'(Ns)', visible)
+        if visible and not visible.endswith(b'\n'):
+            visible += b'\n'
+        seen = hashlib.sha256(visible).hexdigest()
     except Exception:
         sys.exit(4)
     sys.exit(0 if before == after == occupant and seen == screen else 3)
