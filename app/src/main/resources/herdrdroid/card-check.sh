@@ -251,15 +251,38 @@ function timer(x, t,   head) {
   }
   return x
 }
-{ raw[NR] = $0; row[NR] = shown($0); if (row[NR] ~ /^╭─ allow tool: .*╮$/) top = NR }
+{ raw[NR] = $0; row[NR] = shown($0); if (row[NR] ~ /^╭─ allow tool: .*╮$/) { tops++; top = NR } }
+function boxrow(x) { return index(x, "│") == 1 || index(x, "├") == 1 }
 END {
+  # The one proven approval box (ompApprovalRegion in Herdr.kt), or none.
   bottom = 0
-  if (top) for (i = top + 1; i <= NR; i++) if (row[i] ~ /^╰(─)+╯$/) { bottom = i; break }
+  elapsed = 0
+  if (tops == 1) {
+    for (i = top + 1; i <= NR; i++) {
+      if (row[i] ~ /^╰(─)+╯$/) { bottom = i; break }
+      if (!boxrow(row[i])) break
+    }
+    # A second bottom-shaped edge under the top: which one closes the box is not proven.
+    if (bottom) for (i = bottom + 1; i <= NR; i++) if (row[i] ~ /^╰(─)+╯$/) bottom = 0
+  }
+  if (bottom) {
+    lo = top - 3
+    if (lo < 1) lo = 1
+    for (i = top - 1; i >= lo; i--) {
+      if (row[i] ~ /^╰(─)+ elapsed [0-9hms.]+ (─)+╯$/) { elapsed = i; break }
+      if (index(row[i], "╭") == 1 || index(row[i], "╰") == 1 || boxrow(row[i])) break
+    }
+    if (elapsed) {
+      j = elapsed - 1
+      while (j >= 1 && index(row[j], "│") == 1) j--
+      if (j < 1 || index(row[j], "╭") != 1) elapsed = 0
+    }
+  }
   for (i = 1; i <= NR; i++) {
     x = raw[i]
     if (!bottom) x = timer(x, row[i])
     else if (i >= top && i <= bottom) x = x
-    else if (i < top && row[i] ~ /^╰(─)+ elapsed [0-9hms.]+ (─)+╯$/) sub(/elapsed [0-9hms.]+/, "elapsed N", x)
+    else if (i == elapsed) sub(/elapsed [0-9hms.]+/, "elapsed N", x)
     else if (i == bottom + 1 && row[i] ~ /^[^ ]+ ([^ ]+ )?> .* > 📁 [^ ]+ ▶─/) x = "<status>"
     else x = timer(x, row[i])
     print x
