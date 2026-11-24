@@ -3038,15 +3038,34 @@ fun detectUnnumberedMenu(text: String): Prompt? {
     // Kiro: "shell requires approval" under a rule, with the tool and command just above the rule
     // ("↓ Shell mkdir -p sub && date > sub/now.txt"). The question carries the command too.
     var kiroCmd: String? = null
+    // 2.2.8: a command on several rows ("↓ Shell for f in src/*.py; do" over its indented rows, down
+    // to the rule): every row, its indentation kept, on the card. The question still names the first.
+    var kiroRows: List<String>? = null
+    val tool = Regex("""^[↓•●▸]?\s*(Shell|Write|Edit|Read|Fetch|Web\w*|\w+Tool)\s+(.+)$""")
     if (question.endsWith("requires approval")) {
-        (top - 1 downTo maxOf(0, top - 8)).map { raw[it].trim() }
-            .firstNotNullOfOrNull { Regex("""^[↓•●▸]?\s*(Shell|Write|Edit|Read|Fetch|Web\w*|\w+Tool)\s+(.+)$""").find(it) }
+        val rule = (top - 1 downTo maxOf(0, top - 4)).firstOrNull { raw[it].trim().let { r -> r.length >= 3 && r.all { c -> c in "─━═" } } }
+        if (rule != null) {
+            var k = rule - 1
+            while (k >= 0 && k > rule - TALL_QUESTION_ROWS && raw[k].isNotBlank() && raw[k].first().isWhitespace() && tool.find(raw[k].trim()) == null) k--
+            val m = if (k in 0 until rule - 1 && raw[k].isNotBlank()) tool.find(raw[k].trim()) else null
+            if (m != null) {
+                // The rows under the first line keep their indentation relative to the least indented.
+                val col = (k + 1 until rule).minOf { j -> raw[j].indexOfFirst { !it.isWhitespace() } }
+                kiroRows = listOf(m.groupValues[2].trim()) + (k + 1 until rule).map { j ->
+                    val r = raw[j]; val c = r.indexOfFirst { !it.isWhitespace() }
+                    " ".repeat((c - col).coerceAtLeast(0)) + r.trim()
+                }
+            }
+        }
+        if (kiroRows != null) { kiroCmd = kiroRows!!.first(); question = "$question: $kiroCmd" }
+        else (top - 1 downTo maxOf(0, top - 8)).map { raw[it].trim() }
+            .firstNotNullOfOrNull { tool.find(it) }
             ?.let { m -> kiroCmd = m.groupValues[2].trim(); question = "$question: $kiroCmd" }
     }
     val selected = rows.indexOfFirst { it.first == at } + 1
     val parts = kiroCmd?.let { cmd ->
         val head = question.substringBefore(": ").replaceFirstChar { it.uppercase() }
-        QuestionParts(emptyList(), listOf(QBlock(QKind.HEADING, head), QBlock(QKind.COMMAND, cmd)))
+        QuestionParts(emptyList(), listOf(QBlock(QKind.HEADING, head), QBlock(QKind.COMMAND, kiroRows?.joinToString("\n") ?: cmd)))
     }
     return Prompt(question, labels.mapIndexed { i, l -> Choice(l, (i + 1).toString(), false) }, selected.toString(), parts = parts)
 }
