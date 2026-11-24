@@ -76,4 +76,29 @@ class SecretInsert227Test {
         connect(Quiet())
         assertNull("a reconnect since the save", vm.secretInsertFor("p1"))
     }
+
+    /**
+     * Codex's review of 69943fc: the composer asks again as it inserts the path. A change between the
+     * screen being drawn and that moment (a reconnect, another occupant) inserts nothing.
+     */
+    @Test fun aChangeBetweenDrawingAndInsertingInsertsNothing() {
+        val first = Quiet()
+        connect(first)
+        state("current", server)
+        state("link", Link.CONNECTED)
+        state("panes", listOf(claude))
+        waiting(first.connection)
+        val drawn = checkNotNull(vm.secretInsertFor("p1")).first
+        connect(Quiet())
+        assertNull("reconnected before the insert", vm.takeSecretInsert("p1", drawn))
+        assertNotNull("still waiting, never inserted", vm.secretInsert)
+        connect(first)
+        state("panes", listOf(claude.copy(sessionId = "sess-B")))
+        assertNull("another session before the insert", vm.takeSecretInsert("p1", drawn))
+        state("panes", listOf(claude))
+        assertNull("another insert's id", vm.takeSecretInsert("p1", drawn + 1))
+        assertEquals("/home/u/.herdrdroid/secrets/x.txt", vm.takeSecretInsert("p1", drawn))
+        assertNull("taken once", vm.secretInsert)
+        assertNull(vm.takeSecretInsert("p1", drawn))
+    }
 }

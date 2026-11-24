@@ -160,20 +160,24 @@ fun ChatComposer(
      */
     compact: Boolean = false,
     menuItems: List<Pair<String, () -> Unit>> = emptyList(),
-    /** 2.2.7 Send a secret: text to put in at the caret once (an id and the text), then [onInserted] with the id. */
-    insert: Pair<Long, String>? = null,
-    onInserted: (Long) -> Unit = {},
+    /**
+     * 2.2.7 Send a secret: the id of text waiting to go in at the caret once. [takeInsert] is asked
+     * for it at the moment it goes in, and gives the text (taking it) only if its target still holds.
+     */
+    insert: Long? = null,
+    takeInsert: (Long) -> String? = { null },
 ) {
     // The box keeps its caret (2.2.7, for [insert]); text set from outside puts the caret at its end.
     var held by remember { mutableStateOf(androidx.compose.ui.text.input.TextFieldValue(value, androidx.compose.ui.text.TextRange(value.length))) }
     val boxValue = if (held.text == value) held
     else androidx.compose.ui.text.input.TextFieldValue(value, androidx.compose.ui.text.TextRange(value.length))
-    androidx.compose.runtime.LaunchedEffect(insert?.first) {
-        val ins = insert ?: return@LaunchedEffect
-        val (text, caret) = com.billmongan.herdrdroid.herdr.SecretDrop.insertAt(boxValue.text, boxValue.selection.max, ins.second)
+    androidx.compose.runtime.LaunchedEffect(insert) {
+        val id = insert ?: return@LaunchedEffect
+        // Checked again here, when it goes in, not only when the screen was drawn (Codex's review).
+        val path = takeInsert(id) ?: return@LaunchedEffect
+        val (text, caret) = com.billmongan.herdrdroid.herdr.SecretDrop.insertAt(boxValue.text, boxValue.selection.max, path)
         held = androidx.compose.ui.text.input.TextFieldValue(text, androidx.compose.ui.text.TextRange(caret))
         onValueChange(text)
-        onInserted(ins.first)
     }
     var showCommands by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }

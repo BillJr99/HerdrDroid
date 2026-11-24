@@ -167,6 +167,44 @@ class SuccessiveCardAnswerTest {
         assertEquals("fixture", vm.current?.id)
     }
 
+    private fun ompScreen(name: String) = checkNotNull(javaClass.getResource("/screens/omp/live-2026-11-24-ask/$name")) { name }.readText()
+
+    /**
+     * 2.2.7 (Bill: "not get stuck"): "Other" on Oh My Pi's Ask dialog takes typed text: the highlight
+     * moves there (checked), the text is typed and Enter confirms it, each under the check of the read before it.
+     */
+    @Test fun ompOtherTakesTypedTextThenEnter() = fixture("omp", ompScreen("ask-open-first.ansi")) {
+        readSelectedPane()
+        val card = displayed()
+        val other = card.choices.single { it.label == "Other: type your own" }
+        afterSend = ompScreen("ask-open-first.ansi").replace("❯ ◉ Leave", "  ◉ Leave").replace("  ○ Other", "❯ ○ Other")
+        var delivered = false
+        vm.answerTyped(checkNotNull(vm.paneTextTarget), card, other, "look at the logs first") { delivered = true }
+        drainWithTime { !vm.answerInFlight("p1") }
+        assertEquals(listOf("down down down", "text:look at the logs first", "enter"), sent)
+        assertTrue(delivered)
+        assertEquals("the move and the typed answer each went through the check", 2, shellChecks + pythonChecks)
+    }
+
+    /** 2.2.7: Submit moves the highlight down, one checked step at a time, and presses Enter only on Submit. */
+    @Test fun ompSubmitStepsDownToSubmitThenEnter() = fixture("omp", ompScreen("ask-open-other.ansi")) {
+        readSelectedPane()
+        val card = displayed()
+        val submit = card.choices.single { it.keys == com.billmongan.herdrdroid.herdr.OmpAsk.SUBMIT }
+        afterSend = ompScreen("ask-submit.ansi")
+        vm.answerChoice("p1", card, submit, target = checkNotNull(vm.paneTextTarget))
+        drainWithTime { !vm.answerInFlight("p1") }
+        assertEquals(listOf("down", "enter"), sent)
+    }
+
+    /** 2.2.7: the questions can always be left: Esc from the card. */
+    @Test fun ompAskCanBeCancelled() = fixture("omp", ompScreen("ask-open-first.ansi")) {
+        readSelectedPane()
+        val card = displayed()
+        answer(card, index = card.choices.indexOfFirst { it.label == com.billmongan.herdrdroid.herdr.OmpAsk.CANCEL_LABEL })
+        assertEquals(listOf("esc"), sent)
+    }
+
     /** 2.2.7: the pane's occupant changed after the card's last read: nothing typed. */
     @Test fun anOccupantChangedBeforeTheKeysIsNotSent() =
         fixture("hermes", hermesClarify) {
@@ -1365,6 +1403,17 @@ class SuccessiveCardAnswerTest {
             assertTrue(AppBus.emit(NotifyAction(server.id, "p1", choice.keys, choice.pressEnter, prompt.question,
                 label = choice.label, agent = agent)))
             drainUntil { recentReads > reads && !vm.answerInFlight("p1") }
+        }
+
+        /** [drainUntil], with the main looper's clock moving on, for answers that wait between keys. */
+        fun drainWithTime(done: () -> Boolean) {
+            val deadline = System.nanoTime() + 10_000_000_000L
+            do {
+                shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(50))
+                if (done()) return
+                Thread.sleep(1)
+            } while (System.nanoTime() < deadline)
+            fail("Answer handler did not finish")
         }
 
         fun drainUntil(done: () -> Boolean) {

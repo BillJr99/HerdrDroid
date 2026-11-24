@@ -113,6 +113,6 @@ internal fun voiceServersNamed(servers: List<Server>, spoken: String, loose: Boo
     val strict = first({ it == name }, { two != null && it == two })
     if (strict.isNotEmpty() || !loose) return strict
     first({ withNumber(it, name) }).takeIf { it.isNotEmpty() }?.let { return it }
-    val heard = listOfNotNull(name, two).map(::skeleton).filter { h -> h.count { it.isLetter() } >= 3 }
+    val heard = listOfNotNull(name, two).map(::skeleton).filter { h -> h.count { it.isLetter() && it !in "aeiouy" } >= 3 }
     return first({ s -> heard.any { h -> skeleton(s) == h || withNumber(skeleton(s), h) } }).takeIf { it.size == 1 }.orEmpty()
 }

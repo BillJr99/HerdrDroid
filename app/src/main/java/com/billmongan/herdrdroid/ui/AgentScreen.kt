@@ -1002,8 +1002,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     add("Snippets" to { showSnippets = true })
                     add(SEND_SECRET_ITEM to { showSecret = true })
                 },
-                insert = vm.secretInsertFor(paneId),
-                onInserted = vm::secretInsertTaken,
+                insert = vm.secretInsertFor(paneId)?.first,
+                takeInsert = { id -> vm.takeSecretInsert(paneId, id) },
             )
         }
     }

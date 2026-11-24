@@ -3511,6 +3511,17 @@ class AppViewModel internal constructor(
         private set
     fun secretInsertTaken(id: Long) { if (secretInsert?.id == id) secretInsert = null }
 
+    /**
+     * The path waiting for [paneId]'s message box, taken: only when it is still [id], on the same
+     * server, connection and occupant at this moment (the composer asks as it inserts it).
+     */
+    fun takeSecretInsert(paneId: String, id: Long): String? {
+        val (waiting, path) = secretInsertFor(paneId) ?: return null
+        if (waiting != id) return null
+        secretInsert = null
+        return path
+    }
+
     /** The path for [paneId]'s message box (its id to [secretInsertTaken]), only on the same server, connection and occupant. */
     fun secretInsertFor(paneId: String): Pair<Long, String>? {
         val s = secretInsert ?: return null
@@ -5070,7 +5081,10 @@ class AppViewModel internal constructor(
      * send"): the occupant and screen digests of the very reads the card was checked against.
      * The guard is null on herdr-core, which has no such reads.
      */
-    private suspend fun CardTarget.freshAnswerGuarded(h: Herdr, shown: Prompt): Pair<Prompt, com.billmongan.herdrdroid.herdr.CardGuard?>? {
+    private suspend fun CardTarget.freshAnswerGuarded(h: Herdr, shown: Prompt,
+        /** Whether the fresh card is still the one shown; the dialog's own rule for Oh My Pi's Submit steps. */
+        fits: (Prompt, Prompt) -> Boolean = ::cardAnswerStillFits,
+    ): Pair<Prompt, com.billmongan.herdrdroid.herdr.CardGuard?>? {
         if (shown.terminalReview || !isCurrent(h)) return null
         val guardedChoice = shown.hermesClarify || shown.openCodeQuestionFrame != null
         if (guardedChoice && (!foreground || h.backend != Backend.TUI || pane.scrollOffset != 0 ||
@@ -5099,7 +5113,7 @@ class AppViewModel internal constructor(
             if (!isCurrent(h)) return null
             detectPrompt(rebuilt, currentPane.status == Status.NEEDS_YOU, currentPane.agent, versionOf(pane.id))
         } else live
-        return whole?.takeIf { cardAnswerStillFits(shown, it) }?.let { it to guard }
+        return whole?.takeIf { fits(shown, it) }?.let { it to guard }
     }
 
     internal fun answerCardKey(target: CardTarget?, prompt: Prompt, key: String, label: String) {
@@ -5128,6 +5142,34 @@ class AppViewModel internal constructor(
         viewModelScope.launch(Dispatchers.Main) {
             android.widget.Toast.makeText(getApplication<Application>(), text, android.widget.Toast.LENGTH_LONG).show()
         }
+    }
+
+    /**
+     * 2.2.7 (Bill: "not get stuck"): Submit on Oh My Pi's Ask dialog. Down, one step at a time,
+     * each sent under the check of the read before it, until a fresh read shows the highlight on
+     * Submit (the same dialog, every question answered); then Enter there. Down only moves the
+     * highlight; nothing is answered or sent before Enter on Submit.
+     */
+    private suspend fun submitOmpAsk(h: Herdr, t: CardTarget, shown: Prompt, first: Prompt,
+        firstGuard: com.billmongan.herdrdroid.herdr.CardGuard?): Boolean {
+        val dialog = shown.ompAsk ?: return false
+        fun same(a: Prompt, b: Prompt) = b.ompAsk?.questions == a.ompAsk?.questions && b.ompAsk?.allAnswered == true
+        var live = first
+        var guard = firstGuard
+        repeat(dialog.questions.size * 12 + 4) {
+            val state = live.ompAsk ?: return false
+            if (!state.allAnswered) return false
+            if (state.onSubmit) {
+                sendCheckedCardInput(h, t.server, t.pane.id, live, com.billmongan.herdrdroid.herdr.CardInput.Keys(listOf("enter")), guard, t.connection, remembered = false)
+                return true
+            }
+            sendCheckedCardInput(h, t.server, t.pane.id, live, com.billmongan.herdrdroid.herdr.CardInput.Keys(listOf("down")), guard, t.connection, remembered = false)
+            delay(250)
+            val next = t.freshAnswerGuarded(h, shown, ::same) ?: return false
+            live = next.first
+            guard = next.second
+        }
+        return false
     }
 
     /**
@@ -5294,6 +5336,12 @@ class AppViewModel internal constructor(
         // The answer goes into the history only once it was sent (1.3.2, from a code review).
         if (prompt.terminalReview) return
         if (target != null && target.pane.id != paneId) { flash("Not sent. The question belongs to another pane."); return }
+        if (choice.keys == com.billmongan.herdrdroid.herdr.OmpAsk.SUBMIT) {
+            if (voiceAllowed != null) { feedback?.invoke("Open Chat to submit the answers."); return }
+            var guard: com.billmongan.herdrdroid.herdr.CardGuard? = null
+            answerCardInput(target, prompt, choice.label, onGuard = { guard = it }) { h, t, fresh -> submitOmpAsk(h, t, prompt, fresh, guard) }
+            return
+        }
         if (choice.keys.startsWith("grok-privacy:") && voiceAllowed == null) {
             answerCardInput(target, prompt, choice.label) { h, t, fresh ->
                 if (choice !in fresh.choices) return@answerCardInput false
@@ -5451,19 +5499,24 @@ class AppViewModel internal constructor(
             }
             return
         }
-        answerCardInput(target, prompt, text, delivered) { h, t, fresh ->
+        // 2.2.7: the moves and the typed answer each go under the check of the read just before them.
+        var guard: com.billmongan.herdrdroid.herdr.CardGuard? = null
+        answerCardInput(target, prompt, text, delivered, onGuard = { guard = it }) { h, t, fresh ->
             val id = t.pane.id
+            var live = fresh
             if (choice != null) {
                 if (choice !in fresh.choices) return@answerCardInput false
                 val move = moveKeys(fresh, choice) ?: return@answerCardInput false
                 if (move.isNotEmpty()) {
-                    h.sendKeys(id, *move.toTypedArray(), expectedConnection = t.connection)
+                    sendCheckedCardInput(h, t.server, id, fresh, com.billmongan.herdrdroid.herdr.CardInput.Keys(move), guard, t.connection, remembered = false)
                     delay(300)
-                    val moved = t.freshAnswer(h, prompt) ?: return@answerCardInput false
-                    if (moveKeys(moved, choice)?.isEmpty() != true) return@answerCardInput false
+                    val moved = t.freshAnswerGuarded(h, prompt) ?: return@answerCardInput false
+                    if (moveKeys(moved.first, choice)?.isEmpty() != true) return@answerCardInput false
+                    live = moved.first
+                    guard = moved.second
                 }
             }
-            h.typeAndEnter(id, text, t.connection)
+            sendCheckedCardInput(h, t.server, id, live, com.billmongan.herdrdroid.herdr.CardInput.Text(text, enter = true), guard, t.connection, remembered = false)
             true
         }
     }

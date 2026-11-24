@@ -226,6 +226,47 @@ class CardSendCheck227Test {
         bothChecks { mode -> assertEquals("$mode", 0, runReal(guard(getJson, confirm), getJson, confirm.replace("(30s)", "(29s)"), mode = mode).exit) }
     }
 
+    private fun screenFile(name: String) = checkNotNull(javaClass.getResourceAsStream("/screens/hermes/derived-2.2.7/$name")) { name }
+        .use { it.readBytes().toString(Charsets.UTF_8) }
+
+    /** Grok's re-review: Hermes's real hints (two spaces before the timer, any number of digits) tick in all three. */
+    @Test fun hermesRealHintsTickInAllThreeDigests() {
+        val cases = listOf(
+            screenFile("approval-modern.txt").let { it to it.replace("(58s)", "(57s)") },
+            screenFile("approval-modern-hidden.txt").let { it to it.replace("(58s)", "(57s)") },
+            screenFile("slash-confirm-modern.txt").let { it to it.replace("(41s)", "(40s)") },
+            screenFile("approval-modern.txt").replace("(58s)", "(86224s)").let { it to it.replace("(86224s)", "(86223s)") },
+        )
+        for ((shown, ticked) in cases) {
+            assertNotEquals("the fixture ticks", shown, ticked)
+            assertEquals(cardScreenDigest(shown), cardScreenDigest(ticked))
+            bothChecks { mode -> assertEquals("$mode", 0, runReal(guard(getJson, shown), getJson, ticked, mode = mode).exit) }
+        }
+        // The command's own text still counts on a real screen.
+        val real = screenFile("approval-modern.txt")
+        val command = Regex("""\(\d+s\)""").findAll(real).count()
+        assertEquals("only the hint has a countdown in the fixture", 1, command)
+        val edited = real.replaceFirst("Dangerous", "Dangerous (12s)")
+        bothChecks { mode ->
+            val r = runReal(guard(getJson, edited), getJson, edited.replace("Dangerous (12s)", "Dangerous (13s)"), mode = mode)
+            assertEquals("$mode", CARD_CHANGED_EXIT, r.exit)
+        }
+    }
+
+    /** Codex's re-review: a NUL byte (which a shell variable drops) never matches, in all three. */
+    @Test fun aNulByteNeverMatchesInAllThree() {
+        val plain = "a\nb\n"
+        assertNotEquals(cardScreenDigest(plain), cardScreenDigest("a\u0000\nb\n"))
+        assertNotEquals(cardScreenDigest("a\u0000\nb\n"), sha256Hex("a\u0000\nb\n".toByteArray()))
+        bothChecks { mode ->
+            val added = runReal(guard(getJson, plain), getJson, "a\u0000\nb\n", mode = mode)
+            assertEquals("$mode: an added NUL", CARD_CHANGED_EXIT, added.exit)
+            assertEquals("", added.sent)
+            val both = runReal(guard(getJson, "a\u0000\nb\n"), getJson, "a\u0000\nb\n", mode = mode)
+            assertEquals("$mode: a NUL on both reads", CARD_CHANGED_EXIT, both.exit)
+        }
+    }
+
     /** Where python3 is missing, the one command falls over to the shell check: still checked, and said so. */
     @Test fun withoutPython3TheCommandFallsOverToTheShellCheck() {
         assumeTrue("runs where /usr/bin/python3 is missing", !File("/usr/bin/python3").canExecute())
@@ -244,7 +285,7 @@ class CardSendCheck227Test {
     @Test fun theShellCheckWithoutAShaToolSendsNothing() {
         val bin: (File) -> String = { dir ->
             val b = File(dir, "bin").apply { mkdirs() }
-            for (t in listOf("sh", "awk", "cut", "sed", "cat")) {
+            for (t in listOf("sh", "awk", "cut", "sed", "cat", "mkdir", "chmod", "tr", "cmp")) {
                 val real = tool(t) ?: continue
                 java.nio.file.Files.createSymbolicLink(File(b, t).toPath(), real.toPath())
             }
