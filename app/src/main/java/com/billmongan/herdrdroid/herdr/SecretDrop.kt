@@ -44,9 +44,13 @@ object SecretDrop {
      * The remote command for one secret named [name]. umask 077 first, so the folder and the
      * temporary file are private from the start; a folder that is a link is refused; the folder
      * is set to 0700 and the file to 0600; set -C and mv -n never write over an existing file.
+     * 2.2.7 (Codex's review): the temporary file gets its final name only once it holds all [size]
+     * bytes, so a link cut mid-upload (cat then sees an early end and exits 0) leaves only the
+     * ".part" file, never a partial secret under the name a message would point at.
      * The results (path, size, SHA-256, the file's mode, the folder's mode) follow [MARKER].
      */
-    fun command(name: String): String {
+    fun command(name: String, size: Int): String {
+        require(size >= 0) { "negative size" }
         require(name.matches(Regex("[A-Za-z0-9][A-Za-z0-9._-]*"))) { "unsafe secret file name" }
         val d = "\"\$HOME\"/${shq(DIR)}"
         val f = "$d/${shq(name)}"
@@ -54,7 +58,8 @@ object SecretDrop {
         fun mode(p: String) = "{ stat -c %a $p 2>/dev/null || stat -f %Lp $p; }"
         return "umask 077; " +
             "if [ -L \"\$HOME\"/.herdrdroid ] || [ -L $d ]; then echo 'The secrets folder is a link, so nothing was saved.' >&2; exit 4; fi; " +
-            "mkdir -p $d && chmod 700 $d && set -C && cat > $t && { [ ! -e $f ] && mv -n $t $f && [ ! -e $t ]; } && chmod 600 $f && " +
+            "mkdir -p $d && chmod 700 $d && set -C && cat > $t && " +
+            "{ [ \$(wc -c < $t) -eq $size ] || { echo 'Only part of it arrived, so it was not saved.' >&2; exit 5; }; } && { [ ! -e $f ] && mv -n $t $f && [ ! -e $t ]; } && chmod 600 $f && " +
             "printf '%s\\n' $MARKER $f && wc -c < $f && " +
             "{ sha256sum $f 2>/dev/null || shasum -a 256 $f 2>/dev/null || echo nosum; } | cut -d' ' -f1 && " +
             "${mode(f)} && ${mode(d)}"
@@ -91,7 +96,7 @@ object SecretDrop {
         var last: String? = null
         for (attempt in 1..2) {
             val name = fileName(label, text)
-            val r = run.run(command(name), bytes)
+            val r = run.run(command(name, bytes.size), bytes)
             if (r.exit != 0) {
                 val err = r.err.trim().lines().lastOrNull { it.isNotBlank() }.orEmpty()
                 com.billmongan.herdrdroid.diag.DiagLog.log("send", "secret bytes=${bytes.size} try=$attempt result=failed exit=${r.exit}")
@@ -134,8 +139,15 @@ object SecretDrop {
 class SecretNotPrivate(val path: String, fileMode: String?, dirMode: String?) :
     Exception("it was saved as $path, but its permissions are ${fileMode ?: "unknown"} (folder ${dirMode ?: "unknown"}), not 600 (folder 700); remove it on the computer")
 
-/** One pane a secret can go to: [serverId] and [paneId], with the names shown in the dialog. */
-data class SecretTarget(val serverId: String, val paneId: String, val serverLabel: String, val paneLabel: String)
+/**
+ * One pane a secret can go to: [serverId] and [paneId], with the names shown in the dialog.
+ * 2.2.7 (Codex's review): [pane] is the pane as the dialog listed it, so the save and the path go
+ * only to that occupant (its agent, tab, terminal and session), not to whatever took its id since.
+ */
+data class SecretTarget(val serverId: String, val paneId: String, val serverLabel: String, val paneLabel: String, val pane: Pane? = null) {
+    /** [p] is this target's pane with the same occupant (any pane with its id when none was listed). */
+    internal fun matches(p: Pane?): Boolean = p != null && p.id == paneId && (pane == null || sameOccupant(pane, p))
+}
 
 /** How a secret ended: saved (and where its path went) or refused (nothing inserted). */
 sealed class SecretOutcome {
@@ -148,34 +160,67 @@ sealed class SecretOutcome {
  * 2.2.7: sends one secret to [SecretTarget]'s server and puts its path into that pane's message
  * box: the open one at the caret, any other as its draft. A target that is gone (or a server not
  * connected) before the save gets nothing saved and nothing inserted.
+ *
+ * 2.2.7 (Codex's review): the whole send is bound to one SSH connection ([Port.bind]): the pane
+ * is read fresh on it before the save, the save runs only on it (a replacement refuses it), and
+ * the pane is read on it again before the path goes in. A pane whose occupant changed, or that
+ * can't be read back, gets no path. The send counts as one in flight on that connection, so the
+ * small-packets fallback doesn't reset it mid-upload.
  */
 class SecretSender(private val port: Port) {
+    /** One connection: its runner, a fresh read of a pane on it, and its send-lane count. */
+    class Bound(
+        val run: SecretDrop.Run,
+        val pane: suspend (String) -> Pane?,
+        val begin: () -> Unit = {},
+        val end: () -> Unit = {},
+    )
+
     interface Port {
-        /** The pane is still listed on its server. */
+        /** The pane is still listed on its server, with the same occupant. */
         fun present(t: SecretTarget): Boolean
-        /** The connected server's runner, or null when it isn't connected now. */
-        fun runner(serverId: String): SecretDrop.Run?
+        /** The connected server's current connection, or null when it isn't connected now. */
+        fun bind(serverId: String): Bound?
         /** The pane is the one open on screen now. */
         fun isOpen(t: SecretTarget): Boolean
         fun insertLive(t: SecretTarget, path: String)
         fun appendDraft(t: SecretTarget, path: String)
     }
 
+    private suspend fun stillThere(b: Bound, t: SecretTarget): Boolean = try {
+        t.matches(b.pane(t.paneId))
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        false
+    }
+
     suspend fun send(t: SecretTarget, label: String?, text: Boolean, bytes: ByteArray): SecretOutcome {
         try {
             if (!port.present(t)) return SecretOutcome.Refused("${t.paneLabel} is no longer open on ${t.serverLabel}, so nothing was saved.")
-            val run = port.runner(t.serverId) ?: return SecretOutcome.Refused("${t.serverLabel} isn't connected, so nothing was saved.")
-            val receipt = try {
-                SecretDrop.upload(label, text, bytes, run)
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                return SecretOutcome.Refused("Couldn't save the secret on ${t.serverLabel}: ${e.message ?: e.javaClass.simpleName}. Nothing went into the message.")
-            }
-            return when {
-                port.isOpen(t) -> { port.insertLive(t, receipt.path); SecretOutcome.Saved(t, receipt.path, live = true, draft = false) }
-                port.present(t) -> { port.appendDraft(t, receipt.path); SecretOutcome.Saved(t, receipt.path, live = false, draft = true) }
-                else -> SecretOutcome.Saved(t, receipt.path, live = false, draft = false)
+            val bound = port.bind(t.serverId) ?: return SecretOutcome.Refused("${t.serverLabel} isn't connected, so nothing was saved.")
+            bound.begin()
+            try {
+                if (!stillThere(bound, t) || !port.present(t)) {
+                    return SecretOutcome.Refused("${t.paneLabel} on ${t.serverLabel} changed or couldn't be checked, so nothing was saved.")
+                }
+                val receipt = try {
+                    SecretDrop.upload(label, text, bytes, bound.run)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: com.billmongan.herdrdroid.ssh.ConnectionChanged) {
+                    return SecretOutcome.Refused("The connection to ${t.serverLabel} changed, so nothing was saved.")
+                } catch (e: Exception) {
+                    return SecretOutcome.Refused("Couldn't save the secret on ${t.serverLabel}: ${e.message ?: e.javaClass.simpleName}. Nothing went into the message.")
+                }
+                val there = stillThere(bound, t)
+                return when {
+                    there && port.isOpen(t) && port.present(t) -> { port.insertLive(t, receipt.path); SecretOutcome.Saved(t, receipt.path, live = true, draft = false) }
+                    there && port.present(t) -> { port.appendDraft(t, receipt.path); SecretOutcome.Saved(t, receipt.path, live = false, draft = true) }
+                    else -> SecretOutcome.Saved(t, receipt.path, live = false, draft = false)
+                }
+            } finally {
+                bound.end()
             }
         } finally {
             bytes.fill(0)
@@ -189,6 +234,6 @@ fun secretNotice(o: SecretOutcome): String = when (o) {
     is SecretOutcome.Saved -> "Saved on ${o.target.serverLabel} as ${o.path}; only the path goes in the chat." + when {
         o.live -> ""
         o.draft -> " It is in ${o.target.paneLabel}'s message box, not sent."
-        else -> " ${o.target.paneLabel} closed, so it went into no message."
+        else -> " ${o.target.paneLabel} closed or changed, so it went into no message."
     }
 }
