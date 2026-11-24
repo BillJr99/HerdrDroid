@@ -1,0 +1,24 @@
+ I will hand this to Hermes on the other server.
+
+ ```
+   HDMSG2 K7P3QX
+   HDTO Hermes on labbox2
+   HD> UGxlYXNlIHJ1biB0aGUgYnVpbGQgYW5kIHJlcG9y
+   HD> dC4=
+   HDEND K7P3QX
+ ```
+
+ And I would like to see the codex pane there:
+
+ ```
+   HDREAD1 M4N8RT
+   HDSRV labbox
+   HDPANE codex
+   HDLINES 80
+   HDWHY see why the build stopped
+   HDEND M4N8RT
+ ```
+
+                                                                                       Session title
+ π > ⬢ sample-model > 📁 ~/work/demo ▶─────────────────45%──────╎───────┃───────────128K─
+╰─

@@ -3841,7 +3841,9 @@ class AppViewModel internal constructor(
      * already in its input line at the computer, or someone typing there in the last 4 seconds.
      * Null to send. A pane waiting on a question is answered, not typed into, so it is never held.
      */
-    private fun holdReason(paneId: String, screen: String): String? = holdReasonFor(paneId, screen, menuWrite = false)
+    // 2.2.7: a message goes as the agent's prompt, which on Oh My Pi and Copilot clears the box with
+    // their own Ctrl+U first ([Herdr.sendMessage]), so a blank box there is empty for it, as for a menu write.
+    private fun holdReason(paneId: String, screen: String): String? = holdReasonFor(paneId, screen, menuWrite = true)
 
     /** [holdReason], for a menu write when [menuWrite] (2.2.2: a blank Oh My Pi or Copilot box counts as empty there). */
     private fun holdReasonFor(paneId: String, screen: String, menuWrite: Boolean): String? {
@@ -4775,7 +4777,8 @@ class AppViewModel internal constructor(
             override fun blocked(fresh: Pane, viewport: String): Boolean {
                 if ((fresh.backgroundBusy && !takesInputDuringBackgroundWork(fresh.agent)) || blocksNormalSend(fresh, viewport)) return true
                 if (com.billmongan.herdrdroid.herdr.composerFooterSaysWorking(viewport)) return true
-                val line = com.billmongan.herdrdroid.herdr.inputLineOf(viewport, fresh.agent)
+                // 2.2.7: a blank Oh My Pi or Copilot box is empty for a prompt, which clears it first.
+                val line = com.billmongan.herdrdroid.herdr.inputLineOf(viewport, fresh.agent, menuWrite = true)
                 if (line != "" || com.billmongan.herdrdroid.herdr.composerDraftOf(viewport, fresh.agent) != null) return true
                 return holdReason(fresh.id, viewport) != null
             }
@@ -4809,7 +4812,7 @@ class AppViewModel internal constructor(
         if (now.client !== owner.client || now.connection !== owner.connection || now.server != owner.server ||
             !sameOccupant(now.pane, owner.pane) || now.pane.scrollOffset != 0 || !hasStableOccupant(now.pane)) return
         val label = current?.let { com.billmongan.herdrdroid.store.agentServerLabel(it, servers) }.orEmpty()
-        paneReads.noteFrames(owner, owner.server, owner.pane.id, "${com.billmongan.herdrdroid.ui.sessionName(owner.pane)} on $label", recent)
+        paneReads.noteFrames(owner, owner.server, owner.pane.id, "${com.billmongan.herdrdroid.ui.sessionName(owner.pane)} on $label", recent, owner.pane.agent)
     }
 
     // ---- 2.1.4: telling agents about cross-server messaging ------------------------------------
@@ -4948,7 +4951,8 @@ class AppViewModel internal constructor(
                 // 2.2.1 (Grok's review): background work no longer holds a Claude here, so a turn the
                 // screen shows running ("esc to interrupt" under the box) is held, as the relay holds it.
                 if (com.billmongan.herdrdroid.herdr.composerFooterSaysWorking(viewport)) return true
-                val line = com.billmongan.herdrdroid.herdr.inputLineOf(viewport, fresh.agent)
+                // 2.2.7: a blank Oh My Pi or Copilot box is empty for a prompt, which clears it first.
+                val line = com.billmongan.herdrdroid.herdr.inputLineOf(viewport, fresh.agent, menuWrite = true)
                 if (line != "" || com.billmongan.herdrdroid.herdr.composerDraftOf(viewport, fresh.agent) != null) return true
                 return holdReason(fresh.id, viewport) != null
             }
@@ -4975,7 +4979,8 @@ class AppViewModel internal constructor(
                 quietly(allowBackground = true) { if (it === h) it.readStyled(id, sendReadLines(target.agent)) else null }
             override fun blocked(fresh: Pane, viewport: String): Boolean {
                 if (blocksNormalSend(fresh, viewport)) return true
-                val line = com.billmongan.herdrdroid.herdr.inputLineOf(viewport, fresh.agent)
+                // 2.2.7: a blank Oh My Pi or Copilot box is empty for a prompt, which clears it first.
+                val line = com.billmongan.herdrdroid.herdr.inputLineOf(viewport, fresh.agent, menuWrite = true)
                 if (!line.isNullOrEmpty() || com.billmongan.herdrdroid.herdr.composerDraftOf(viewport, fresh.agent) != null) {
                     draftSeen = true
                     return true

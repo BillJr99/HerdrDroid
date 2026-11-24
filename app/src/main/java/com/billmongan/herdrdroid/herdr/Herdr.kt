@@ -696,15 +696,22 @@ class Herdr internal constructor(
             pane.agent != null && status != Status.NEEDS_YOU -> "herdr agent prompt"
             else -> "herdr pane send-text + enter"
         }
+        // 2.2.7 (Bill: "make sure herdrdroid can tell omp about the cross server session"): Oh My Pi
+        // and Copilot draw no cursor, so a blank box may hold typed spaces; their own delete-to-line-start
+        // key (Ctrl+U, a no-op on an empty line) goes first, in the same command, so the prompt never
+        // follows stray spaces and the send no longer waits for a box it can't prove empty.
+        val clear = AgentComposers.clearKey(pane.agent)?.takeIf { status != Status.NEEDS_YOU }
         if (core) {
             // hc send pastes and presses Enter; it refuses a terminal waiting on a question
             // unless forced, and a message sent then is meant as the answer.
-            if (status == Status.NEEDS_YOU) runWrite(hcCmd("send", "--force", pane.id, text)) else runWrite(hcCmd("send", pane.id, text), expectedConnection = expectedConnection, permit = permit)
+            if (status == Status.NEEDS_YOU) runWrite(hcCmd("send", "--force", pane.id, text))
+            else runWrite((clear?.let { hcCmd("keys", pane.id, it) + " && " } ?: "") + hcCmd("send", pane.id, text), expectedConnection = expectedConnection, permit = permit)
             return
         }
         if (pane.agent != null && status != Status.NEEDS_YOU) {
             try {
-                runWrite(cmd("agent", "prompt", pane.id, text), expectedConnection = expectedConnection, permit = permit)
+                runWrite((clear?.let { cmd("pane", "send-keys", pane.id, it) + " && " } ?: "") + cmd("agent", "prompt", pane.id, text),
+                    expectedConnection = expectedConnection, permit = permit)
                 return
             } catch (e: HerdrError) {
                 if (!allowTerminalFallback) throw e
