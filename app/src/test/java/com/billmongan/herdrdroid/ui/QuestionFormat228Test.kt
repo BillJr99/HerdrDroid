@@ -100,4 +100,10 @@ class QuestionFormat228Test {
         assertWholeQuestion("vibe/derived-2.2.8-format/long-code-question.txt")
         assertWholeQuestion("opencode/derived-2.2.8-format/long-code-question.txt")
     }
+
+    @Test fun hermesHeredocShowsAsOneScriptWithItsIndentation() {
+        val (p, blocks, _) = card("hermes/derived-2.2.8-format/long-command-approval.txt", blocked = false)
+        assertEquals(listOf(listOf("python3 -B - <<'PY'") + python + "PY"), blocks.filterIsInstance<CardBlock.Code>().map { it.lines })
+        assertEquals(listOf("Allow once", "Allow for this session", "Add to permanent allowlist", "Deny"), p.choices.map { it.label })
+    }
 }
