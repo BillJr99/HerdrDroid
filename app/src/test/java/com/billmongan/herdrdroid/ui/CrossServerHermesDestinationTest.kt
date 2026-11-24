@@ -104,7 +104,7 @@ class CrossServerHermesDestinationTest {
         // A working agent is still reachable by name; only sending waits for it to be idle.
         val names = vm.crossServerReachable(card).map { vm.agentFacingName(it) }
         assertTrue(names.toString(), "Hermes on minipc2" in names && "Claude on minipc2" in names)
-        assertTrue(names.none { it.contains("minipc.invalid") || it.contains(":22") })
+        assertTrue(names.none { it.contains("127.0.0.1") || it.contains(":1") || it.contains(":2") })
         assertTrue(source.writes.isEmpty() && minipc2.writes.isEmpty())
     }
 
@@ -115,7 +115,7 @@ class CrossServerHermesDestinationTest {
         val card = frame("Hermes on server 2")
         assertEquals("w2:p9", checkNotNull(card.choice).pane.id)
         for (name in vm.crossServerReachable(card).map { vm.agentFacingName(it) }) {
-            assertFalse(name, name.contains("fixture") || name.contains(".invalid") || name.contains(":22") || name.contains("@"))
+            assertFalse(name, name.contains("fixture") || name.contains("127.0.0.1") || name.contains(":2") || name.contains("@"))
         }
     }
 
@@ -125,7 +125,7 @@ class CrossServerHermesDestinationTest {
         vm.changeAgentMessaging(true)
         runBlocking { frame("Somebody") }
         rule.setContent { CrossServerPanel(vm, "p1") }
-        rule.onNodeWithText("Hermes on fixture@minipc2.invalid · minipc2.invalid:22 · w2:p9").performScrollTo().assertIsDisplayed()
+        rule.onNodeWithText("Hermes on fixture@127.0.0.1 · 127.0.0.1:2 · w2:p9").performScrollTo().assertIsDisplayed()
         assertTrue(minipc2.writes.isEmpty())
     }
 
@@ -198,7 +198,16 @@ class CrossServerHermesDestinationTest {
         vm.changeAgentMessaging(true)
         val long = (1..14).joinToString("\n") { "Line $it of a longer cross-server message for Hermes." }
         runBlocking { frame("Hermes on minipc2", long) }
-        rule.runOnUiThread { vm.deferCrossServerDialog(vm.crossServerCardsFor("p1").single()) }
+        rule.runOnUiThread {
+            vm.deferCrossServerDialog(vm.crossServerCardsFor("p1").single())
+            // AgentScreen's own loops (the work list every 5 s, the chat log, the pane list and the
+            // previews) read over SSH itself, past the fixture's herdr commands, so they dial the
+            // fixture host. That failure is a lost link, which rightly clears the cross-server cards;
+            // with an .invalid host this only passed while the name lookup was still pending (2.2.7,
+            // GitHub CI). The layout under test needs no reads, so the screen opens with the app's
+            // polls paused (its in-front flag off); cross-server messaging stays on, so the card stays.
+            state(vm, "foreground", false)
+        }
         rule.setContent { AgentScreen(vm, "p1", readScreen = { }) }
         rule.onNodeWithContentDescription("Cross-server message card").assertExists()
         val window = rule.onRoot().fetchSemanticsNode().boundsInRoot
@@ -212,9 +221,9 @@ class CrossServerHermesDestinationTest {
         runBlocking { frame("Somebody") }
         rule.setContent { CrossServerPanel(vm, "p1") }
         rule.onNodeWithText("Choose a destination:").performScrollTo().assertIsDisplayed()
-        rule.onNodeWithText("Claude on minipc2 · minipc2.invalid:22 · w2:p5").performScrollTo().assertIsDisplayed()
+        rule.onNodeWithText("Claude on minipc2 · 127.0.0.1:2 · w2:p5").performScrollTo().assertIsDisplayed()
         rule.onNodeWithContentDescription("Approve cross-server message").assertDoesNotExist()
-        rule.onNodeWithText("Hermes on minipc2 · minipc2.invalid:22 · w2:p9").performScrollTo().performClick()
+        rule.onNodeWithText("Hermes on minipc2 · 127.0.0.1:2 · w2:p9").performScrollTo().performClick()
         // The pick shows on the card and opens the Yes/No dialog for it; nothing is sent yet.
         rule.onAllNodesWithText("To: Hermes on minipc2").assertCountEquals(2)
         rule.onNodeWithContentDescription("Approve cross-server message").assertIsDisplayed()
@@ -240,7 +249,7 @@ class CrossServerHermesDestinationTest {
 
     /** Claude on the server the phone has open: the source of the proposal. */
     private class Source : Herdr.Commands {
-        val server = Server(id = "minipc", name = "minipc", host = "minipc.invalid", port = 22, user = "fixture", herdrPath = "/fixture/herdr")
+        val server = Server(id = "minipc", name = "minipc", host = "127.0.0.1", port = 1, user = "fixture", herdrPath = "/fixture/herdr")
         val ssh = HerdrSsh(server.host, server.port, server.user, Credentials(null, null), null, { null })
         val client = Herdr(ssh, server.herdrPath, Backend.TUI, null, this)
         override var connection: Any? = Any()
@@ -261,7 +270,7 @@ class CrossServerHermesDestinationTest {
 
     /** minipc2, watched by Fleet, with the rows `herdr pane list` and `herdr tab list` give there. */
     private class Minipc2 : Herdr.Commands {
-        val server = Server(id = "minipc2", name = "minipc2", host = "minipc2.invalid", port = 22, user = "fixture", herdrPath = "/fixture/herdr")
+        val server = Server(id = "minipc2", name = "minipc2", host = "127.0.0.1", port = 2, user = "fixture", herdrPath = "/fixture/herdr")
         val ssh = HerdrSsh(server.host, server.port, server.user, Credentials(null, null), null, { null })
         val client = Herdr(ssh, server.herdrPath, Backend.TUI, null, this)
         override var connection: Any? = Any()

@@ -168,7 +168,7 @@ class QuestionConfirmVm222Test {
 
     private class Fixture : Herdr.Commands {
         val vm = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
-        val server = Server(id = "fixture", name = "Fixture", host = "test.invalid", port = 22, user = "fixture", herdrPath = "/fixture/herdr")
+        val server = Server(id = "fixture", name = "Fixture", host = "127.0.0.1", port = 1, user = "fixture", herdrPath = "/fixture/herdr")
         private val ssh = HerdrSsh(server.host, server.port, server.user, Credentials(null, null), null, { null })
         override var connection: Any? = Any()
         val screens = mutableMapOf<String, String>()

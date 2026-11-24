@@ -38,7 +38,7 @@ class ServersBackUiTest {
     @get:Rule val rule = createAndroidComposeRule<ComponentActivity>()
 
     private val vm: AppViewModel by lazy { rule.runOnUiThread { AppViewModel(rule.activity.application) } }
-    private val server = Server(id = "hd213-back", name = "BackFixture", host = "back.invalid", port = 22, user = "fix", herdrPath = "/fixture/herdr")
+    private val server = Server(id = "hd213-back", name = "BackFixture", host = "127.0.0.1", port = 1, user = "fix", herdrPath = "/fixture/herdr")
     private val codex = Pane("w1:p1", "w1:t1", "w1", "codex", Status.IDLE, "Codex · 1", "/fixture", scrollOffset = 0, terminalId = "t1")
 
     @After fun close() {

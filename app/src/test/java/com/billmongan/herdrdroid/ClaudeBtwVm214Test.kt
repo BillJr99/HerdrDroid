@@ -29,7 +29,7 @@ import org.robolectric.Shadows.shadowOf
 class ClaudeBtwVm214Test {
     @get:Rule val idleMainLooper = IdleMainLooperRule()
     private val vm = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
-    private val server = Server(id = "fixture-c", name = "FixtureC", host = "c.invalid", port = 22, user = "fixc", herdrPath = "/fixture/herdr")
+    private val server = Server(id = "fixture-c", name = "FixtureC", host = "127.0.0.1", port = 1, user = "fixc", herdrPath = "/fixture/herdr")
     private fun screen(name: String) = checkNotNull(javaClass.getResource("/screens/claude/captured-2.1.329-btw/$name")).readText()
     private val short = screen("short.txt")
     private val idle = screen("after-esc.txt")
@@ -154,7 +154,7 @@ class ClaudeBtwVm214Test {
 
     /** One Claude pane on a fake herdr. The guarded usage snapshot is answered as the server script would. */
     private class Fake(@Volatile var screen: String, status: String = "idle") : Herdr.Commands {
-        val ssh = HerdrSsh("fake.invalid", 22, "fake", Credentials(null, null), null, { null })
+        val ssh = HerdrSsh("127.0.0.1", 2, "fake", Credentials(null, null), null, { null })
         val client = Herdr(ssh, "/fixture/herdr", Backend.TUI, null, this)
         override var connection: Any? = Any()
         val pane = Pane("w1:p1", "w1:t1", "w1", "claude",

@@ -39,7 +39,7 @@ import org.robolectric.Shadows.shadowOf
 class SmallPacketSession227Test {
     @get:Rule val idleMainLooper = IdleMainLooperRule()
     private val vm = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
-    private val server = Server(id = "fixture-session", name = "MiniFixture", host = "s.invalid", port = 22, user = "u", herdrPath = "herdr", fingerprint = "SHA256:fixture")
+    private val server = Server(id = "fixture-session", name = "MiniFixture", host = "127.0.0.1", port = 1, user = "u", herdrPath = "herdr", fingerprint = "SHA256:fixture")
     private val pane = Pane("w2:p5", "w2:t5", "w2", "claude", Status.IDLE, "", "/fixture", terminalId = "t5")
     private var now = 50_000L
     // A scope that runs nothing: only the watcher's connection setup is under test, never its loop

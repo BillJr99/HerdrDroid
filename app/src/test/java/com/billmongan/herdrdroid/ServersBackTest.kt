@@ -28,7 +28,7 @@ import org.robolectric.Shadows.shadowOf
 class ServersBackTest {
     @get:Rule val idleMainLooper = IdleMainLooperRule()
     private val vm = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
-    private val server = Server(id = "fixture-a", name = "FixtureA", host = "a.invalid", port = 22, user = "fixa", herdrPath = "/fixture/herdr")
+    private val server = Server(id = "fixture-a", name = "FixtureA", host = "127.0.0.1", port = 1, user = "fixa", herdrPath = "/fixture/herdr")
     private val codex = Pane("w1:p1", "w1:t1", "w1", "codex", Status.IDLE, "Codex · 1", "/fixture", scrollOffset = 0, terminalId = "t1")
 
     @After fun close() {

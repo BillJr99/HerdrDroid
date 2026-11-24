@@ -100,7 +100,7 @@ class CrossServerNoticeDeliveryTest {
         minipc2.writes.forEach {
             assertTrue(it, it.contains("Agents on other servers: Claude on minipc."))
             assertFalse(it, it.contains("hermes on minipc2"))
-            assertFalse(it, it.contains(".invalid") || it.contains(":22"))
+            assertFalse(it, it.contains("127.0.0.1") || it.contains(":${minipc.server.port}") || it.contains(":${minipc2.server.port}"))
         }
         tick()
         assertEquals(1, minipc.writes.size)
@@ -110,7 +110,7 @@ class CrossServerNoticeDeliveryTest {
     /** Grok's RC review 4: an unnamed server is "server N" in the notice, with no account, host or port. */
     @Test fun anUnnamedServerIsNamedOnlyByItsPlaceInTheNotice() {
         val unnamed = minipc2.server.copy(name = "")
-        assertEquals("fixture@minipc2.invalid", unnamed.label)
+        assertEquals("fixture@127.0.0.1", unnamed.label)
         state(vm, "servers", listOf(minipc.server, unnamed))
         state(fleet, "states", mapOf(unnamed.id to FleetState(unnamed, minipc2.panes(), null, 0)))
         vm.changeAgentMessaging(true)
@@ -119,7 +119,7 @@ class CrossServerNoticeDeliveryTest {
         // Only the notice itself: the command around it holds the fixture's herdr path.
         val told = minipc.writes[0].substringAfter("'agent' 'prompt' 'p1' ")
         assertTrue(told, told.contains("Agents on other servers: Claude · hermes on server 2, Claude · reviewer on server 2."))
-        assertFalse(told, told.contains("fixture") || told.contains(".invalid") || told.contains(":22") || told.contains("@"))
+        assertFalse(told, told.contains("fixture") || told.contains("127.0.0.1") || told.contains(":${minipc2.server.port}") || told.contains("@"))
         // The named server is still named.
         assertEquals(2, minipc2.writes.size)
         minipc2.writes.forEach { assertTrue(it, it.contains("Agents on other servers: Claude on minipc.")) }
@@ -344,7 +344,7 @@ class CrossServerNoticeDeliveryTest {
 
     /** A herdr server with claude-style panes: lists, `pane get`, screens, and recorded prompts. */
     private class Endpoint(name: String, initial: List<Row>) : Herdr.Commands {
-        val server = Server(id = name, name = name, host = "$name.invalid", port = 22, user = "fixture", herdrPath = "/fixture/herdr")
+        val server = Server(id = name, name = name, host = "127.0.0.1", port = if (name == "minipc") 1 else 2, user = "fixture", herdrPath = "/fixture/herdr")
         val ssh = HerdrSsh(server.host, server.port, server.user, Credentials(null, null), null, { null })
         val client = Herdr(ssh, server.herdrPath, Backend.TUI, null, this)
         override var connection: Any? = Any()

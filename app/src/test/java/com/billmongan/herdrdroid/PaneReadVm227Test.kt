@@ -155,7 +155,7 @@ class PaneReadVm227Test {
     }
 
     private class Endpoint(name: String, val id: String, val agent: String) : Herdr.Commands {
-        val server = Server(id = name, name = name, host = "unused.invalid", port = 22, user = "fixture", herdrPath = "/fixture/herdr")
+        val server = Server(id = name, name = name, host = "127.0.0.1", port = 1, user = "fixture", herdrPath = "/fixture/herdr")
         val ssh = HerdrSsh(server.host, server.port, server.user, Credentials(null, null), null, { null })
         val client = Herdr(ssh, server.herdrPath, Backend.TUI, null, this)
         override var connection: Any? = Any()

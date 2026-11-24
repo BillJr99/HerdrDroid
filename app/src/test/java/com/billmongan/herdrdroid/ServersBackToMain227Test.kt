@@ -32,7 +32,7 @@ class ServersBackToMain227Test {
     @get:Rule val rule = createAndroidComposeRule<ComponentActivity>()
 
     private val vm: AppViewModel by lazy { rule.runOnUiThread { AppViewModel(rule.activity.application) } }
-    private val server = Server(id = "hd227-back", name = "BackFixture", host = "back.invalid", port = 22, user = "fix", herdrPath = "/fixture/herdr")
+    private val server = Server(id = "hd227-back", name = "BackFixture", host = "127.0.0.1", port = 1, user = "fix", herdrPath = "/fixture/herdr")
     private val claude = Pane("w1:p1", "w1:t1", "w1", "claude", Status.IDLE, "Claude", "/fixture", scrollOffset = 0, terminalId = "t1")
 
     @After fun close() { rule.runOnUiThread { vm.viewModelScope.cancel() } }
@@ -94,7 +94,7 @@ class ServersBackToMain227Test {
     @Test fun fromANotificationForALockedServer() = backAndArrowLandOn({ Screen.Agent(claude.id) }) {
         connected()
         vm.openPane(claude.id)
-        val locked = Server(id = "hd227-locked", name = "Locked", host = "locked.invalid", port = 22, user = "fix", herdrPath = "/fixture/herdr")
+        val locked = Server(id = "hd227-locked", name = "Locked", host = "127.0.0.1", port = 2, user = "fix", herdrPath = "/fixture/herdr")
         vm.saveServer(locked)
         vm.screen = Screen.Agent(claude.id)
         // It can't sign in without asking, so the notification opens the server list.

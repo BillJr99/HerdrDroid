@@ -46,7 +46,7 @@ class SendNowVm227Test {
 
     private class Fixture(val agent: String, var frame: String) : Herdr.Commands {
         val vm = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
-        private val server = Server(id = "fixture", name = "Fixture", host = "unused.invalid", port = 22, user = "fixture", herdrPath = "/fixture/herdr")
+        private val server = Server(id = "fixture", name = "Fixture", host = "127.0.0.1", port = 1, user = "fixture", herdrPath = "/fixture/herdr")
         private val ssh = HerdrSsh(server.host, server.port, server.user, Credentials(null, null), null, { null })
         override var connection: Any? = Any()
         /** Every write, in order: "keys:ctrl+b", "prompt:<text>", "text:<text>", "keys:enter". */

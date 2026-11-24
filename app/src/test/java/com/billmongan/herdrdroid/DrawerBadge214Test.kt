@@ -31,7 +31,7 @@ import org.robolectric.Shadows.shadowOf
 class DrawerBadge214Test {
     @get:Rule val idleMainLooper = IdleMainLooperRule()
     private val vm = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
-    private val server = Server(id = "fixture-d", name = "FixtureD", host = "d.invalid", port = 22, user = "fixd", herdrPath = "/fixture/herdr")
+    private val server = Server(id = "fixture-d", name = "FixtureD", host = "127.0.0.1", port = 1, user = "fixd", herdrPath = "/fixture/herdr")
     private val question = checkNotNull(javaClass.getResource("/screens/claude/captured-2.1.329/single-question.txt")).readText()
 
     @After fun close() {
@@ -84,7 +84,7 @@ class DrawerBadge214Test {
     private fun state(name: String, value: Any?) { (field("$name\$delegate").get(vm) as MutableState<Any?>).value = value }
 
     private class Fake : Herdr.Commands {
-        val ssh = HerdrSsh("fake.invalid", 22, "fake", Credentials(null, null), null, { null })
+        val ssh = HerdrSsh("127.0.0.1", 2, "fake", Credentials(null, null), null, { null })
         val client = Herdr(ssh, "/fixture/herdr", Backend.TUI, null, this)
         override var connection: Any? = Any()
         @Volatile var screen = "❯ \n"
