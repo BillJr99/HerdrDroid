@@ -51,6 +51,7 @@ class SendNowMenu227Test {
             if (command.endsWith("'pane' 'get' 'p1'")) return ExecResult(0, """{"result":{"pane":$pane}}""", "")
             return ExecResult(0, "", "")
         }
+        override suspend fun input(command: String, input: ByteArray, expectedConnection: Any) = ExecResult(0, "", "")
     }
 
     @Test fun aQueuedMessageOffersSendNowWhichAsksForceSendForAWorkingClaude() {
@@ -68,6 +69,11 @@ class SendNowMenu227Test {
                 state<Server?>("current").value = server
                 state<Link>("link").value = Link.CONNECTED
                 state<List<Pane>>("panes").value = listOf(claude)
+                // No background sweeps: they would go past the fake to a real connection and drop the link.
+                field("lastWorkAt").setLong(vm, Long.MAX_VALUE)
+                field("lastPreviewsAt").setLong(vm, Long.MAX_VALUE)
+                // Nor the chat log read, which goes past the fake too (to a real connection that fails).
+                field("readers").set(vm, emptySet<String>())
                 vm.openPane("p1")
                 vm.enqueue("p1", "a queued hello")
             }
@@ -76,6 +82,9 @@ class SendNowMenu227Test {
             rule.onNodeWithText("a queued hello").performTouchInput { longClick() }
             rule.onNodeWithText("Send now").assertExists()
             rule.onNodeWithText("Copy").assertExists()
+            // Some reads (agent versions, quotas) still go past the fake to a connection that can't
+            // resolve and mark the link lost; the dialog only needs the link up when Send now is tapped.
+            rule.runOnUiThread { field("reconnectJob").let { f -> (f.get(vm) as? kotlinx.coroutines.Job)?.cancel() }; state<Link>("link").value = Link.CONNECTED }
             rule.onNodeWithText("Send now").performClick()
             // Claude is working and its screen shows no background hint: the Force Send question.
             rule.onNodeWithText("Force send?").assertExists()
