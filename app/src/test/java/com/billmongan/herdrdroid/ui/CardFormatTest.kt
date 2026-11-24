@@ -39,7 +39,7 @@ class CardFormatTest {
         for ((screen, layout) in golden) assertEquals("card layout of $screen changed; the new layout is in app/build/card-format-actual.txt", layout, actual[screen])
     }
 
-    /** Nothing is dropped or reworded: the same characters as the parser's text, less "#" titles and the "△" glyph. */
+    /** Nothing is dropped or reworded: the same characters as the parser's text, less "#" titles, the "△" glyph and (2.2.8) code fences. */
     @Test fun layoutKeepsEveryCharacterOfTheParsedText() {
         val root = File(requireNotNull(javaClass.classLoader?.getResource("screens")).toURI())
         val strip = "#△$"
@@ -55,7 +55,9 @@ class CardFormatTest {
             val shown = CardFormat.format(parts, s).joinToString("") {
                 if (it is CardBlock.Labelled && it.label == "Your answer") ":" + it.value else CardFormat.plain(it)
             }
-            assertEquals(f.path, chars(parts.blocks.joinToString("") { it.text }), chars(shown))
+            // 2.2.8: a fenced block shows as code without its "```lang" fence rows.
+            val parsed = parts.blocks.joinToString("") { b -> b.text.lines().filterNot { com.billmongan.herdrdroid.herdr.isFenceRow(it) }.joinToString("\n") }
+            assertEquals(f.path, chars(parsed), chars(shown))
             checked++
         }
         assertTrue(checked > 50)

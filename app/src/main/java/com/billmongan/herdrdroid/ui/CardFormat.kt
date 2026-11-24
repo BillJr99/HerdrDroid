@@ -64,12 +64,15 @@ object CardFormat {
     private class Line(val norm: String, val text: String, val col: Int)
 
     private fun squash(s: String) = s.filterNot { it.isWhitespace() }
+    private val GROK_ICON = Regex("""^\?\s{2,}(?=\S)""")
 
     private fun screenLines(screen: String): List<Line> = screen.lines().map { raw ->
         val l = raw.trimEnd().trimEnd { it in FRAME || it in "╮╯" }
         var norm = l.trim().trimStart { it in MARKS }.trimEnd { it in "│┃╮╯─ " }.trim()
         norm = norm.removePrefix("$ ").trim()
-        val lead = l.indexOfFirst { it !in FRAME }.let { if (it < 0) l.length else it }
+        var lead = l.indexOfFirst { it !in FRAME }.let { if (it < 0) l.length else it }
+        // 2.2.8: Grok's question card opens its question with a "?" icon, which the parser leaves out.
+        GROK_ICON.find(l.substring(lead))?.let { m -> lead += m.value.length; norm = norm.replace(GROK_ICON, "") }
         var text = l.substring(lead)
         var col = lead
         if (text.startsWith("$ ")) { text = text.substring(2); col += 2 }
@@ -149,7 +152,8 @@ object CardFormat {
         var fenced = false
         var shellFenced = false
         fun flushShell() {
-            if (shell.isNotEmpty()) out += CardBlock.Code(if (shellFenced) shell.map { it.text } else dedented(shell),
+            // 2.2.8: a fenced block keeps its rows' indentation too (it lost it with the frame's spaces).
+            if (shell.isNotEmpty()) out += CardBlock.Code(dedented(shell),
                 wrap = shell.size == 1, exact = shellFenced)
             shell.clear(); shellFenced = false
         }
@@ -203,7 +207,10 @@ object CardFormat {
             if (t.length <= SHORT && texts.getOrNull(i + 1)?.let { BULLET.matches(it) } == true) {
                 flushProse(); out += if (t.endsWith(":")) single(t) else CardBlock.Caption(t); continue
             }
-            if (isPath(t) || LABEL.matches(t) || (t.endsWith(":") && t.length <= SHORT)) { flushProse(); out += single(t); continue }
+            // 2.2.8: the last row of a wrapped sentence ("scripts/build.sh that runs there:") goes on
+            // its paragraph, not a lead-in of its own.
+            val wrapped = prose.isNotEmpty() && prose.last().let { it.isNotEmpty() && it.last() !in ".?!:" } && t.first().isLowerCase()
+            if (isPath(t) || LABEL.matches(t) || (!wrapped && t.endsWith(":") && t.length <= SHORT)) { flushProse(); out += single(t); continue }
             // A new sentence after a finished one starts a new paragraph only when the line before
             // was short (a title over its text); wrapped prose goes on.
             if (prose.isNotEmpty() && prose.last().length <= SHORT && t.first().isUpperCase()) flushProse()
