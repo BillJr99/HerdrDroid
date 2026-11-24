@@ -231,6 +231,8 @@ class HerdrSsh(
     private val cellularAuto: () -> Boolean = { VpnSmallPackets.cellularEnabled },
     /** 2.2.7: whether the network runs over cellular at connect (also under a VPN); a seam for tests. */
     private val overCellular: () -> Boolean = { VpnSmallPackets.cellular() },
+    /** 2.2.7: the global "Small packets on Wi-Fi (automatic)" setting, read at each connect. */
+    private val wifiAuto: () -> Boolean = { VpnSmallPackets.wifiEnabled },
 ) {
     /** 2.2.6: the server's own small-packets MSS, or null when its setting is off. */
     private val serverMss: Int? = smallPacketsMss?.let { SmallPackets.clamp(it) }
@@ -255,6 +257,7 @@ class HerdrSsh(
         runCatching { networkType() }.getOrDefault("unknown"),
         runCatching { cellularAuto() }.getOrDefault(false),
         runCatching { overCellular() }.getOrDefault(false),
+        runCatching { wifiAuto() }.getOrDefault(false),
     )
 
     /** The MSS a direct TCP connection uses now; always null over a WebSocket. */

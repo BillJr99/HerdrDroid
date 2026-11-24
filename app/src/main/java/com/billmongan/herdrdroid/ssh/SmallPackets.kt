@@ -279,6 +279,9 @@ object VpnSmallPackets {
     @Volatile var cellularEnabled: Boolean = false
     /** 2.2.7: whether the default network runs over cellular now (also under a VPN); a seam for tests. */
     @Volatile var cellular: () -> Boolean = { com.billmongan.herdrdroid.diag.NetworkWatch.currentCellular() }
+
+    /** 2.2.7 (Bill: "maybe it should be a setting to send small packets [on] Wi-Fi as well"): off by default. */
+    @Volatile var wifiEnabled: Boolean = false
 }
 
 /**
@@ -290,8 +293,9 @@ data class MssChoice(val mss: Int?, val reason: String, val net: String) {
         const val SETTING = "setting"
         const val VPN_AUTO = "vpn-auto"
         const val CELLULAR_AUTO = "cellular-auto"
+        const val WIFI_AUTO = "wifi-auto"
         /** The reasons that are the app's automatic choice at connect (the fallback never fires on top of them). */
-        val AUTOMATIC = setOf(VPN_AUTO, CELLULAR_AUTO)
+        val AUTOMATIC = setOf(VPN_AUTO, CELLULAR_AUTO, WIFI_AUTO)
         const val FALLBACK = "fallback"
         const val NONE = "none"
 
@@ -300,17 +304,20 @@ data class MssChoice(val mss: Int?, val reason: String, val net: String) {
          * setting wins (its value, also on a VPN); then this session's 2.2.6 fallback; then, on a
          * VPN with the automatic setting on, [SmallPackets.DEFAULT]; then (2.2.7) on cellular, or a
          * VPN over cellular, with the cellular setting on; otherwise the normal MSS. On a VPN over
-         * cellular the VPN setting is asked first, and either one on means small packets.
+         * cellular the VPN setting is asked first, and either one on means small packets. Last, on
+         * Wi-Fi with the Wi-Fi setting on (2.2.7); a VPN over Wi-Fi reads as "vpn" and follows the
+         * VPN setting only.
          */
         fun choose(
             overWebSocket: Boolean, serverMss: Int?, fallbackMss: Int?, vpnAuto: Boolean, net: String,
-            cellularAuto: Boolean = false, overCellular: Boolean = false,
+            cellularAuto: Boolean = false, overCellular: Boolean = false, wifiAuto: Boolean = false,
         ): MssChoice = when {
             overWebSocket -> MssChoice(null, NONE, net)
             serverMss != null -> MssChoice(SmallPackets.clamp(serverMss), SETTING, net)
             fallbackMss != null -> MssChoice(SmallPackets.clamp(fallbackMss), FALLBACK, net)
             vpnAuto && net == "vpn" -> MssChoice(SmallPackets.DEFAULT, VPN_AUTO, net)
             cellularAuto && (net == "cellular" || (net == "vpn" && overCellular)) -> MssChoice(SmallPackets.DEFAULT, CELLULAR_AUTO, net)
+            wifiAuto && net == "wifi" -> MssChoice(SmallPackets.DEFAULT, WIFI_AUTO, net)
             else -> MssChoice(null, NONE, net)
         }
     }

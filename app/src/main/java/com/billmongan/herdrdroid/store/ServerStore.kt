@@ -188,6 +188,10 @@ class AppPrefs(context: Context) {
     var smallPacketsOnCellular: Boolean
         get() = prefs.getBoolean("smallPacketsOnCellular", false)
         set(v) = prefs.edit().putBoolean("smallPacketsOnCellular", v).apply()
+    /** 2.2.7: "Small packets on Wi-Fi (automatic)", off by default. */
+    var smallPacketsOnWifi: Boolean
+        get() = prefs.getBoolean("smallPacketsOnWifi", false)
+        set(v) = prefs.edit().putBoolean("smallPacketsOnWifi", v).apply()
 
     /** 2.1.4: tell agents about cross-server messaging. On by default with the feature; the user can turn it off. */
     var crossServerNotice: Boolean

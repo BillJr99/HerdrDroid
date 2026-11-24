@@ -213,6 +213,14 @@ fun SettingsScreen(vm: AppViewModel, back: Screen) {
                     "Off by default. On: a direct connection made on cellular (also a VPN over cellular) starts with small packets. Takes effect on the next connect.",
                     color = Palette.Muted, fontSize = 13.sp,
                 )
+                Row(Modifier.fillMaxWidth().clickable { vm.changeSmallPacketsOnWifi(!vm.smallPacketsOnWifi) }, verticalAlignment = Alignment.CenterVertically) {
+                    Text("Small packets on Wi-Fi (automatic)", color = Palette.Ink, fontSize = 16.sp, modifier = Modifier.weight(1f))
+                    Switch(checked = vm.smallPacketsOnWifi, onCheckedChange = { vm.changeSmallPacketsOnWifi(it) })
+                }
+                Text(
+                    "Off by default. On: a direct connection made on Wi-Fi starts with small packets (a VPN over Wi-Fi follows the VPN setting). Takes effect on the next connect.",
+                    color = Palette.Muted, fontSize = 13.sp,
+                )
             }
             Section("Diagnostics") { Diagnostics() }
             Section("Reading font") {
