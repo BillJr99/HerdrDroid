@@ -1,6 +1,6 @@
 # Question cards: coverage
 
-Every question or approval prompt the supported agents can show, as HerdrDroid reads it (1.4.9). Each row is a screen in the screen library (`app/src/test/resources/screens/<agent>/`), checked on every build by `ScreenLibraryTest` (the options) and `CardCoverageTest` (keys, cautions, refusals). "Captured" screens were read from a live pane; "from the program" screens were built from the exact strings in the agent's own program, with demo content, where there is no live capture yet.
+Every question or approval prompt the supported agents can show, as HerdrDroid reads it (1.4.9, with rows marked 2.2.7 added since). Each row is a screen in the screen library (`app/src/test/resources/screens/<agent>/`), checked on every build by `ScreenLibraryTest` (the options) and `CardCoverageTest` (keys, cautions, refusals). "Captured" screens were read from a live pane; "from the program" screens were built from the exact strings in the agent's own program, with demo content, where there is no live capture yet. Later captures of the same dialogs in other states (a moved highlight, a second question, a newer agent version) are in the library too but are not listed again here; the README's table counts every card screen, those included.
 
 For every card: the options are read in screen order; the highlighted one is the one Enter picks; an option that grants standing permission carries a caution; a refusal ("No", "Deny", "Reject", "Never allow", a deny or block rule) never does; an option marked "(esc)", or a refusal where Esc rejects, sends Esc. A card counts only at the bottom of the screen with nothing of the agent's own after it, so an answered card left in the scrollback is not shown again (1.4.9), and a card answered from the phone is not answered twice (1.4.8).
 
@@ -73,6 +73,9 @@ Card layout (2.1.1, after a report that question cards read as a wall of text an
 | Hermes | dangerous command approval | from the program | 4 | ↑/↓ + Enter, Enter | 2 | no |
 | Hermes | clarify multi question batch | from the program | 3 | ↑/↓ + Space (toggle) | 0 | no |
 | Hermes | slash command confirm | from the program | 3 | ↑/↓ + Enter, Enter | 1 | no |
+| Hermes | dangerous command approval, newer composer layout (2.2.7) | from the program | 4 | ↑/↓ + Enter, Enter | 2 | no |
+| Hermes | dangerous command approval with the command cut short, newer layout (2.2.7) | from the program | 0 in Chat | Terminal only | 0 | no |
+| Hermes | slash command confirm, newer composer layout (2.2.7) | from the program | 3 | ↑/↓ + Enter, Enter | 1 | no |
 | Muse Code | command approval | captured | 3 | its letter shortcut, Esc | 1 | yes |
 | Muse Code | proceed approval | captured | 2 | its letter shortcut, Esc | 0 | yes |
 | Muse Code | other approval kinds | from the program | 4 | its letter shortcut, Esc | 2 | yes |
