@@ -1480,7 +1480,8 @@ class AppViewModel internal constructor(
         if (watchOthers && herdr != null) fleet?.watch(watchable())
         if (herdr != null && backgroundAt > 0 && System.currentTimeMillis() - backgroundAt > 8_000) {
             ssh?.reset()
-            linkLost(null)
+            // 2.2.7 (Grok's review of 8fab7a9): a deliberate reconnect, never a drop that falls back.
+            linkLost(null, "resume")
         }
         agentMessagingForeground = true
         updateAgentMessagingSession()
@@ -1527,8 +1528,10 @@ class AppViewModel internal constructor(
         // 2.2.6: soon after sign-in, a drop may be large replies lost on the Wi-Fi; the reconnect
         // below then uses small packets (once per sign-in). Every caller has checked that the
         // failure is the open connection's.
-        // 2.2.7: a link declared lost with no error (silent keepalives) counts as a drop too.
-        val fellBack = reason == null && maybeSmallPacketFallback(e ?: LinkDown(java.io.IOException("the link went silent")), ssh)
+        // 2.2.7 (Grok's review of 8fab7a9): only a real failure counts. Every call with no error
+        // is a reconnect the app chose (coming back from the background, a send queued while the
+        // link still looked up) and names its reason; silent keepalives arrive as a LinkDown.
+        val fellBack = reason == null && e != null && maybeSmallPacketFallback(e, ssh)
         if (link == Link.CONNECTED) {
             // 2.2.6: the error's class chain, the silence before it and the keepalive setting.
             val sh = ssh
@@ -1766,7 +1769,7 @@ class AppViewModel internal constructor(
         com.billmongan.herdrdroid.diag.DiagLog.log("send", "queued until the link is back: ${q.label}")
         queue.addLast(q)
         queuedCount = queue.size
-        if (herdr != null && link == Link.CONNECTED) linkLost(null)
+        if (herdr != null && link == Link.CONNECTED) linkLost(null, "queued-send")
     }
 
     private suspend fun flushQueue() {
