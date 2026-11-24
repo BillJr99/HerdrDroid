@@ -109,6 +109,39 @@ class SuccessiveCardAnswerTest {
             assertEquals(listOf("2"), sent)
         }
 
+    /** 2.2.7 (Bill, "check right before send"): the screen changed after the card's last read: nothing typed, and a new tap can go. */
+    @Test fun aScreenChangedBeforeTheKeysIsNotSentAndCanBeAnsweredAgain() =
+        fixture("hermes", hermesClarify) {
+            status(Status.WORKING)
+            recentResult = ExecResult(0, "Preparing a question", "")
+            readSelectedPane()
+            val card = displayed()
+            beforeCheck = { ansiOverride = frame + "\nA new line under the question" }
+            answer(card, checkNotNull(vm.paneTextTarget), index = 1)
+            assertTrue(sent.isEmpty())
+            assertEquals(1, cardChecksRefused)
+            assertEquals("The question changed; not sent.", vm.notice)
+            beforeCheck = null
+            ansiOverride = null
+            readSelectedPane()
+            answer(card, checkNotNull(vm.paneTextTarget), index = 1)
+            assertEquals("not held as already answered", listOf("2"), sent)
+        }
+
+    /** 2.2.7: the pane's occupant changed after the card's last read: nothing typed. */
+    @Test fun anOccupantChangedBeforeTheKeysIsNotSent() =
+        fixture("hermes", hermesClarify) {
+            status(Status.WORKING)
+            recentResult = ExecResult(0, "Preparing a question", "")
+            readSelectedPane()
+            val card = displayed()
+            beforeCheck = { terminal = "replacement" }
+            answer(card, checkNotNull(vm.paneTextTarget), index = 1)
+            assertTrue(sent.isEmpty())
+            assertEquals(1, cardChecksRefused)
+            assertEquals("The question changed; not sent.", vm.notice)
+        }
+
     @Test fun hermesClarifyNeverSendsToChangedOrReplacementViewport() =
         fixture("hermes", hermesClarify) {
             readSelectedPane()
@@ -1313,8 +1346,28 @@ class SuccessiveCardAnswerTest {
             """.trimMargin())
         }
 
+        /** 2.2.7: answers waiting on the check before the keys; how many the check refused. */
+        var cardChecksRefused = 0
+        /** Runs as the check on the computer starts: what changed between the card's last read and the keys. */
+        var beforeCheck: (() -> Unit)? = null
+
         override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult {
             if (expectedConnection != null) assertSame(connection, expectedConnection)
+            // 2.2.7: the check before a card's keys, run here as the computer would: against the
+            // pane and screen as they are now, then each send it guards.
+            Regex("""'p1' '([0-9a-f]{64})' '([0-9a-f]{64})' && (.*)$""").find(command)?.takeIf { "def identity():" in command }?.let { m ->
+                beforeCheck?.invoke()
+                val now = com.billmongan.herdrdroid.herdr.CardGuard(
+                    com.billmongan.herdrdroid.herdr.cardOccupantDigest(org.json.JSONObject(pane)),
+                    com.billmongan.herdrdroid.herdr.cardScreenDigest(ansiFrame()))
+                if (now != com.billmongan.herdrdroid.herdr.CardGuard(m.groupValues[1], m.groupValues[2]) || liveScrollOffset != 0) {
+                    cardChecksRefused++
+                    return ExecResult(com.billmongan.herdrdroid.herdr.CARD_CHANGED_EXIT, "", "")
+                }
+                var last = ok("")
+                for (part in m.groupValues[3].split(" && ")) { last = immediate(part, timeoutSeconds, expectedConnection); if (last.exit != 0) break }
+                return last
+            }
             return when {
                 command.endsWith("'pane' 'get' 'p1'") -> ok("""{"result":{"pane":$pane}}""")
                 command.contains("'pane' 'read' 'p1' '--source' 'recent'") -> { recentReads++; recentResult ?: ok(ansiFrame()) }
