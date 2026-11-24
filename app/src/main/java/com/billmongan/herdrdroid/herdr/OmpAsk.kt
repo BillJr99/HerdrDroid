@@ -113,8 +113,42 @@ object OmpAsk {
             questions += Question(num, clean(text.toString()), answered, options.map(::clean), chosen?.let(::clean), radios, cursor, chosenAt)
             open = false
         }
+        // 2.2.8 (Bill: "make sure all the question text is visible and well formatted especially
+        // code"): a fenced block in the lead keeps its rows, indentation and blank rows, joined by
+        // newlines, so the card shows it as code instead of one line of words.
+        var fence: StringBuilder? = null
+        var fenceCol = 0
+        // 2.2.8: rows indented four or more columns past the lead's margin right after a blank row
+        // (code drawn as Markdown, without fences) as a fenced block of their own.
+        var code: StringBuilder? = null
+        var codeCol = 0
+        var lastBlank = false
         for (row in rows) {
             val t = row.trim()
+            val pad = row.takeWhile { it == ' ' }.length
+            if (code != null) {
+                if (t.isNotEmpty() && pad >= 4) { code.append('\n').append(row.drop(minOf(codeCol, pad)).trimEnd()); continue }
+                lead += "```\n$code\n```"; code = null
+            }
+            if (questions.isEmpty() && !open && fence == null && lastBlank && t.isNotEmpty() && pad >= 4 && para.isEmpty() &&
+                lead.isNotEmpty() && !isFenceRow(t)) {
+                code = StringBuilder(row.drop(pad).trimEnd()); codeCol = pad; lastBlank = false; continue
+            }
+            lastBlank = t.isEmpty()
+            // An unclosed fence ends at the first question, which is never code.
+            if (fence != null && !row.startsWith(" ") && QUESTION.matchEntire(t)?.groupValues?.get(2) == "1") { lead += fence.toString(); fence = null }
+            if (questions.isEmpty() && !open && (fence != null || isFenceRow(t))) {
+                val f = fence
+                if (f == null) {
+                    if (para.isNotEmpty()) { lead += clean(para.toString()); para = StringBuilder() }
+                    fenceCol = row.indexOfFirst { it != ' ' }
+                    fence = StringBuilder(t)
+                } else {
+                    f.append('\n').append(row.drop(minOf(fenceCol, row.takeWhile { it == ' ' }.length)).trimEnd())
+                    if (isFenceRow(t)) { lead += f.toString(); fence = null }
+                }
+                continue
+            }
             if (t.isEmpty()) {
                 if (questions.isEmpty() && !open && para.isNotEmpty()) { lead += clean(para.toString()); para = StringBuilder() }
                 continue
@@ -160,6 +194,8 @@ object OmpAsk {
             else return null
         }
         close()
+        fence?.let { lead += it.toString() }
+        code?.let { lead += "```\n$it\n```" }
         if (questions.isEmpty() || !submitSeen) return null
         if (questions.map { it.number } != (1..questions.size).toList()) return null
         return Dialog(lead, questions, h.groupValues[1].toInt(), h.groupValues[2].toInt(), onSubmit)
