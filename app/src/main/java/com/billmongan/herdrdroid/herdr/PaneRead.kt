@@ -75,7 +75,24 @@ private val NOT_REPLY_ROW = Regex("""^\s*[⎿└│┃╭╰>]""")
  * ones around it; a code in two frames that ask different things yields nothing. A line count above
  * [PaneReadLimits.MAX_LINES] is capped to it.
  */
-internal fun paneReadFinds(output: String): List<PaneReadFound> {
+/**
+ * 2.2.7 (Bill: "make sure herdrdroid can tell omp about the cross server session"): Oh My Pi and pi
+ * mark no reply's first row; they draw a fenced block as its fence rows ("```", under the message's
+ * one-column padding) with the code indented below. For them a frame counts as the agent's own when
+ * it is the whole of such a block: the fence row right above it and right below its end, nothing
+ * else in the block, and no box, quote or tool-output mark on any of its rows.
+ */
+private val FENCE = Regex("""^ {0,2}```\s*$""")
+
+private fun fencedOwnFrame(rows: List<String>, i: Int, indent: Int): Boolean {
+    if (i == 0 || !FENCE.matches(rows[i - 1])) return false
+    val end = (i until minOf(rows.size, i + 7)).firstOrNull { rows[it].trimStart().startsWith("HDEND ") } ?: return false
+    return end + 1 < rows.size && FENCE.matches(rows[end + 1]) &&
+        (i..end).all { k -> rows[k].length > indent && rows[k].take(indent).isBlank() && !NOT_REPLY_ROW.containsMatchIn(rows[k]) }
+}
+
+internal fun paneReadFinds(output: String, agent: String? = null): List<PaneReadFound> {
+    val fenced = agent?.lowercase() in setOf("omp", "pi")
     val rows = output.takeLast(65_536).lines().map { it.replace("\r", "").trimEnd() }
     val found = mutableListOf<PaneReadFound>()
     val conflicted = mutableSetOf<String>()
@@ -89,7 +106,8 @@ internal fun paneReadFinds(output: String): List<PaneReadFound> {
         val headAt = if (marked) i else (i - 1 downTo 0).firstOrNull { rows[it].isNotEmpty() && rows[it][0] != ' ' } ?: -1
         val ownReply = head != null && REPLY_HEAD.containsMatchIn(head) && !TOOL_HEAD.containsMatchIn(head) &&
             (headAt + 1 until i).none { NOT_REPLY_ROW.containsMatchIn(rows[it]) }
-        if (!ownReply) { i++; continue }
+        val ownFence = !marked && fenced && fencedOwnFrame(rows, i, indent)
+        if (!ownReply && !ownFence) { i++; continue }
         // Every row of the frame at the same indentation, nothing else on it.
         val body = (i until minOf(rows.size, i + 6)).map { k ->
             val r = rows[k]
@@ -99,7 +117,7 @@ internal fun paneReadFinds(output: String): List<PaneReadFound> {
         if (parsed == null) { i++; continue }
         val (frame, next) = parsed
         val same = found.firstOrNull { it.frame.code == frame.code }
-        if (same == null) found += PaneReadFound(frame, checkNotNull(head).trim().take(120))
+        if (same == null) found += PaneReadFound(frame, (if (ownReply) checkNotNull(head) else "${agent.orEmpty()}'s reply (a fenced block)").trim().take(120))
         else if (same.frame != frame) conflicted += frame.code
         i += next
     }
@@ -107,7 +125,7 @@ internal fun paneReadFinds(output: String): List<PaneReadFound> {
 }
 
 /** The frames alone, as [paneReadFinds] accepts them. */
-internal fun paneReadFrames(output: String): List<PaneReadFrame> = paneReadFinds(output).map { it.frame }
+internal fun paneReadFrames(output: String, agent: String? = null): List<PaneReadFrame> = paneReadFinds(output, agent).map { it.frame }
 
 private fun parseReadFrame(lines: List<String>, start: Int, code: String): Pair<PaneReadFrame, Int>? {
     if (!CrossServerCode.valid(code)) return null
@@ -377,8 +395,8 @@ internal class PaneReadRequests<S>(
     private fun keyOf(server: String, pane: String, code: String) = "read|$server|$pane|$code"
 
     /** Called with each good read of the open pane. */
-    fun noteFrames(source: S, server: String, pane: String, sourceName: String, recent: String) {
-        val finds = paneReadFinds(recent)
+    fun noteFrames(source: S, server: String, pane: String, sourceName: String, recent: String, agent: String? = null) {
+        val finds = paneReadFinds(recent, agent)
         if (finds.isEmpty()) return
         val now = clock()
         if (!port.enabled()) {

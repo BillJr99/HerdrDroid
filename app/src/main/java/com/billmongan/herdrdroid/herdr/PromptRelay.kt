@@ -229,7 +229,8 @@ internal class PromptRelay(
                 if (force && (showsQuestionDialog(stripAnsi(viewport)) || claudePermissionFooterAtBottom(viewport))) return RelayRefusal.QUESTION
                 // 2.2.1: the screen says a turn is running ("esc to interrupt" under the box), whatever herdr says.
                 if (!force && composerFooterSaysWorking(viewport)) return RelayRefusal.WORKING
-                val line = inputLineOf(viewport, agent)
+                // 2.2.7: a blank Oh My Pi or Copilot box counts as empty: the prompt clears it first ([Herdr.sendMessage]).
+                val line = inputLineOf(viewport, agent, menuWrite = true)
                 // A draft of several rows whose first row is empty is a draft too.
                 val draft = composerDraftOf(viewport, agent) != null
                 if (!line.isNullOrEmpty() || draft) return RelayRefusal.DRAFT
