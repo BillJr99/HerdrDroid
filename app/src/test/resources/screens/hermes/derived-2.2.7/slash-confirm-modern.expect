@@ -1,0 +1,4 @@
+card: options
+blocked: false
+options: Approve Once  -  reload now | Always Approve  -  reload now and silence this prompt | Cancel  -  leave MCP tools unchanged
+source: derived for 2.2.7 from Hermes's classic CLI program text (hermes_cli/cli_tui_mixin.py, cli_modern_layout.py, locales/en.yaml at caafe5389a: exact strings, modern layout order); demo content only

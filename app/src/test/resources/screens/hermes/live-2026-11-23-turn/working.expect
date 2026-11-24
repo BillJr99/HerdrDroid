@@ -1,0 +1,3 @@
+card: none
+blocked: false
+source: the 2026-11-23 minipc2 Hermes capture (visible.txt) cut where the turn was still running, under the composer Hermes draws while a turn runs (derived from hermes_cli/cli_modern_layout.py at caafe5389a; herdr said done throughout); private text replaced with neutral wording
