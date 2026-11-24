@@ -106,4 +106,11 @@ class QuestionFormat228Test {
         assertEquals(listOf(listOf("python3 -B - <<'PY'") + python + "PY"), blocks.filterIsInstance<CardBlock.Code>().map { it.lines })
         assertEquals(listOf("Allow once", "Allow for this session", "Add to permanent allowlist", "Deny"), p.choices.map { it.label })
     }
+
+    @Test fun kiroCommandOnSeveralRowsShowsEveryRow() {
+        val (p, blocks, _) = card("kiro/derived-2.2.8-format/long-command-approval.txt", blocked = false)
+        assertEquals(CardBlock.Headline("Shell requires approval"), blocks.first())
+        assertEquals(listOf(shell), blocks.filterIsInstance<CardBlock.Code>().map { it.lines })
+        assertEquals("shell requires approval: for f in src/*.py; do", p.question)
+    }
 }
