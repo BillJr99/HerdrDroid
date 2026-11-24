@@ -125,6 +125,21 @@ internal fun paneReadFinds(output: String, agent: String? = null): List<PaneRead
 }
 
 /** The frames alone, as [paneReadFinds] accepts them. */
+/**
+ * 2.2.7 (Codex's review): proof that Oh My Pi or pi wrote a read frame itself, from its own chat
+ * log: the frame's first and last lines in the agent's reply text after your latest message. A
+ * frame in your message, a tool's output or anywhere else in the log is not proof, and with no log
+ * read there is none.
+ */
+internal fun replyHasReadFrame(items: List<com.billmongan.herdrdroid.transcript.Item>, code: String): Boolean {
+    val lastUser = items.indexOfLast { it is com.billmongan.herdrdroid.transcript.UserItem }
+    return items.drop(lastUser + 1).any { item ->
+        item is com.billmongan.herdrdroid.transcript.TextItem && item.text.lines().map { it.trim() }.let { l ->
+            l.contains("HDREAD1 $code") && l.contains("HDEND $code")
+        }
+    }
+}
+
 internal fun paneReadFrames(output: String, agent: String? = null): List<PaneReadFrame> = paneReadFinds(output, agent).map { it.frame }
 
 private fun parseReadFrame(lines: List<String>, start: Int, code: String): Pair<PaneReadFrame, Int>? {
@@ -395,8 +410,11 @@ internal class PaneReadRequests<S>(
     private fun keyOf(server: String, pane: String, code: String) = "read|$server|$pane|$code"
 
     /** Called with each good read of the open pane. */
-    fun noteFrames(source: S, server: String, pane: String, sourceName: String, recent: String, agent: String? = null) {
-        val finds = paneReadFinds(recent, agent)
+    fun noteFrames(source: S, server: String, pane: String, sourceName: String, recent: String, agent: String? = null,
+        /** Proof the agent wrote a frame itself, where its screen alone can't show it (Oh My Pi, pi). */
+        trusted: (PaneReadFrame) -> Boolean = { true },
+    ) {
+        val finds = paneReadFinds(recent, agent).filter { trusted(it.frame) }
         if (finds.isEmpty()) return
         val now = clock()
         if (!port.enabled()) {

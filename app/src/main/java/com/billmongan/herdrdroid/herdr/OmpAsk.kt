@@ -18,6 +18,13 @@ object OmpAsk {
         /** Where each chosen answer sits among its question's options (0-based), when the dialog shows it. */
         val answerAt: List<Int?> = emptyList()) {
         val allAnswered: Boolean get() = total > 0 && answered >= total
+        /**
+         * Codex's review: every answer can be told apart on screen: each question shows a chosen
+         * option at a known place, and none is a typed Other (its text can change past the point
+         * where the dialog cuts it off, unseen). Only then is Submit offered from the card.
+         */
+        val verifiable: Boolean get() = answers.size == questions.size && answerAt.size == questions.size &&
+            answers.all { it != null && !isTypedAnswerChoice(it) } && answerAt.all { it != null }
     }
 
     data class Question(val number: Int, val text: String, val answered: Boolean, val options: List<String>,
@@ -33,19 +40,20 @@ object OmpAsk {
      * typed Other that differs only after the point where the dialog cuts it can't be seen on the
      * screen; the place check is the most the screen can prove there.
      */
-    fun sameAnswers(a: State, b: State): Boolean = a.answers.size == b.answers.size && a.answers.indices.all { i ->
-        val x = a.answers[i]; val y = b.answers[i]
-        val ax = a.answerAt.getOrNull(i); val by = b.answerAt.getOrNull(i)
-        fun fits(short: String, full: String) = short.endsWith("…") && !full.endsWith("…") &&
-            full.startsWith(short.removeSuffix("…").trimEnd())
-        (ax == null || by == null || ax == by) &&
-            (x == y || (x != null && y != null && (fits(x, y) || fits(y, x))))
-    }
+    fun sameAnswers(a: State, b: State): Boolean = a.verifiable && b.verifiable && a.answers.size == b.answers.size &&
+        a.answers.indices.all { i ->
+            val x = a.answers[i]!!; val y = b.answers[i]!!
+            fun fits(short: String, full: String) = short.endsWith("…") && !full.endsWith("…") &&
+                full.startsWith(short.removeSuffix("…").trimEnd())
+            a.answerAt[i] == b.answerAt[i] && (x == y || fits(x, y) || fits(y, x))
+        }
 
     /** The card's action that moves the highlight to Submit, checking each step, and presses Enter there. */
     const val SUBMIT = "omp-ask:submit"
     const val SUBMIT_LABEL = "Submit all answers"
     const val CANCEL_LABEL = "Cancel the questions (Esc)"
+    /** A typed answer (or one the app can't place) is never submitted from the card. */
+    const val TERMINAL_SUBMIT = "Submit these answers in the terminal: one of them is typed text, or can't be checked in full from here."
 
     private val HEADER = Regex("""^\s*╭─+\s*Ask\s*·\s*(\d+)\s+of\s+(\d+)\s+answered\s*─*╮\s*$""")
     private val QUESTION = Regex("""^(✓\s+)?(\d+)\.\s+(.+)$""")
@@ -55,13 +63,25 @@ object OmpAsk {
     private fun clean(s: String) = s.replace(Regex("""\s{2,}"""), " ").trim()
 
     /**
-     * A row the agent draws under its dialog: the dialog's own "⎋ …" line, the status row (its
-     * "▶───" gauge, or pi's token row "0.0%/128k"), the editor's "╰─" corner, pi's folder row.
+     * The rows Oh My Pi and pi draw under a live dialog, by their exact shapes (Grok's review):
+     * the dialog's own "⎋ <what it asks>" row; Oh My Pi's status row (a glyph, then " > " segments
+     * with the "📁 <folder>" one, then the "▶───" gauge to the row's end); its "╰─" editor corner;
+     * and pi's pair of a folder row directly over its token row ("0.0%/128k …"). Anything else
+     * under the box (a lone path, other text with a gauge in it) makes the box history.
      */
-    private fun statusRow(row: String): Boolean {
-        val t = row.trim()
-        return t.startsWith("⎋") || t.contains("▶─") || Regex("""^╰─*$""").matches(t) ||
-            Regex("""\d+(\.\d+)?%/\d+k""").containsMatchIn(t) || Regex("""^[~/]\S*$""").matches(t)
+    private val DIALOG_ROW = Regex("""^⎋ \S.*$""")
+    private val OMP_STATUS = Regex("""^\S{1,2}( \S+)? > .* > 📁 \S+ ▶─[─0-9%K╎┃]*$""")
+    private val OMP_CORNER = Regex("""^╰─$""")
+    private val PI_TOKENS = Regex("""^\d+(\.\d+)?%/\d+k\b.*$""")
+    private val PI_FOLDER = Regex("""^~?/\S*$""")
+
+    private fun onlyStatusRows(rows: List<String>): Boolean {
+        val r = rows.map { it.trim() }.filter { it.isNotEmpty() }
+        return r.indices.all { i ->
+            val t = r[i]
+            DIALOG_ROW.matches(t) || OMP_STATUS.matches(t) || OMP_CORNER.matches(t) || PI_TOKENS.matches(t) ||
+                (PI_FOLDER.matches(t) && r.getOrNull(i + 1)?.let(PI_TOKENS::matches) == true)
+        }
     }
 
     fun parse(plain: String): Dialog? {
@@ -72,7 +92,7 @@ object OmpAsk {
         val bottom = (top + 1 until lines.size).firstOrNull { lines[it].trimStart().startsWith("╰") } ?: return null
         // Grok's review: only a live dialog, the bottom-most thing on screen: under it only blank
         // rows and the agent's own status rows. An old box above newer output is history.
-        if (lines.drop(bottom + 1).any { it.isNotBlank() && !statusRow(it) }) return null
+        if (!onlyStatusRows(lines.drop(bottom + 1))) return null
         val rows = lines.subList(top + 1, bottom).map { r ->
             val t = r.trim()
             if (!t.startsWith("│") || !t.endsWith("│") || t.length < 2) return null
@@ -161,11 +181,15 @@ object OmpAsk {
             }
         }
         val extra = buildList {
-            if (state.allAnswered) add(Choice(SUBMIT_LABEL, SUBMIT, false))
+            if (state.allAnswered && state.verifiable) add(Choice(SUBMIT_LABEL, SUBMIT, false))
             add(Choice(CANCEL_LABEL, "esc", false))
         }
         if (current == null || d.onSubmit) {
-            val heading = if (state.allAnswered) "Submit all answers?" else "Answer the remaining questions in the terminal, or cancel them."
+            val heading = when {
+                state.allAnswered && state.verifiable -> "Submit all answers?"
+                state.allAnswered -> TERMINAL_SUBMIT
+                else -> "Answer the remaining questions in the terminal, or cancel them."
+            }
             return Prompt(heading, extra, parts = QuestionParts(tabs, listOf(QBlock(QKind.HEADING, heading)) +
                 d.lead.map { QBlock(QKind.TEXT, it) } + others.map { QBlock(QKind.TEXT, it) }), ompAsk = state)
         }

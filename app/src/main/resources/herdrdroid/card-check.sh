@@ -198,11 +198,10 @@ umask 077
 [ -n "$HOME" ] || exit 4
 [ -L "$HOME/.herdrdroid" ] || [ -L "$HOME/.herdrdroid/check" ] && exit 4
 dir=$HOME/.herdrdroid/check
-mkdir -p "$dir" 2>/dev/null || exit 4
+# A new folder is made private from the start; an existing one is checked as it is, never changed.
+mkdir -p "$HOME/.herdrdroid" 2>/dev/null || exit 4
+[ -e "$dir" ] || mkdir -m 700 "$dir" 2>/dev/null || [ -d "$dir" ] || exit 4
 [ -d "$dir" ] && [ ! -L "$dir" ] || exit 4
-set -- $(ls -ldn "$dir" 2>/dev/null)
-[ "$3" = "$(id -u)" ] || exit 4
-chmod 700 "$dir" 2>/dev/null || exit 4
 set -- $(ls -ldn "$dir" 2>/dev/null)
 [ "$3" = "$(id -u)" ] || exit 4
 case $1 in d???------*) ;; *) exit 4 ;; esac

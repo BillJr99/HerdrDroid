@@ -279,6 +279,7 @@ class CardSendCheck227Test {
         try {
             val home = File(dir, "home").apply { mkdirs() }
             val check = File(home, ".herdrdroid/check").apply { mkdirs() }
+            java.nio.file.Files.setPosixFilePermissions(check.toPath(), java.nio.file.attribute.PosixFilePermissions.fromString("rwx------"))
             val target = File(dir, "keep.txt").apply { writeText("keep me") }
             for (n in listOf("p1.j", "p1.v")) java.nio.file.Files.createSymbolicLink(File(check, n).toPath(), target.toPath())
             File(dir, "get.json").writeText(getJson)
@@ -297,6 +298,34 @@ class CardSendCheck227Test {
             assertEquals("the planted link's target is untouched", "keep me", target.readText())
             assertEquals("only the planted links are left", setOf("p1.j", "p1.v"), check.list()!!.toSet())
             assertTrue(java.nio.file.Files.isSymbolicLink(File(check, "p1.j").toPath()))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    /** Codex's review: an existing folder is checked as it is, never changed: one open to others refuses the check. */
+    @Test fun theShellCheckRefusesAnOpenFolderAndLeavesItAlone() {
+        val sh = tool("sh")
+        assumeTrue("needs sh", sh != null)
+        val dir = java.nio.file.Files.createTempDirectory("hd227-mode").toFile()
+        try {
+            val home = File(dir, "home").apply { mkdirs() }
+            val check = File(home, ".herdrdroid/check").apply { mkdirs() }
+            java.nio.file.Files.setPosixFilePermissions(check.toPath(), java.nio.file.attribute.PosixFilePermissions.fromString("rwxr-xr-x"))
+            val h = Herdr(HerdrSsh("127.0.0.1", 1, "u", Credentials(null, null), null, { null }), "/bin/false", Backend.TUI, null)
+            val p = ProcessBuilder(sh!!.path, "-c", h.cardSendCommand("p1", CardInput.Keys(listOf("enter")), guard(), shellOnly = true))
+                .apply { environment()["HOME"] = home.path }.start()
+            p.inputStream.readBytes(); p.errorStream.readBytes()
+            assertEquals(CARD_CHECK_FAILED_EXIT, p.waitFor())
+            assertEquals("left as it was", "rwxr-xr-x",
+                java.nio.file.attribute.PosixFilePermissions.toString(java.nio.file.Files.getPosixFilePermissions(check.toPath())))
+            // A new folder is made private from the start.
+            val fresh = File(dir, "fresh").apply { mkdirs() }
+            val q = ProcessBuilder(sh.path, "-c", h.cardSendCommand("p1", CardInput.Keys(listOf("enter")), guard(), shellOnly = true))
+                .apply { environment()["HOME"] = fresh.path }.start()
+            q.inputStream.readBytes(); q.errorStream.readBytes(); q.waitFor()
+            assertEquals("rwx------", java.nio.file.attribute.PosixFilePermissions.toString(
+                java.nio.file.Files.getPosixFilePermissions(File(fresh, ".herdrdroid/check").toPath())))
         } finally {
             dir.deleteRecursively()
         }

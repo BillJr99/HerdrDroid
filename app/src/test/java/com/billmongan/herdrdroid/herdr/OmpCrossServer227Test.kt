@@ -86,4 +86,19 @@ class OmpCrossServer227Test {
         val unfenced = s.lines().filterIndexed { i, l -> !(l.trim() == "```" && s.lines().getOrNull(i + 1)?.contains("HDREAD1") == true) }.joinToString("\n")
         assertTrue(paneReadFrames(unfenced, "omp").isEmpty())
     }
+
+    /** Codex's review: the fence on screen is not proof; Oh My Pi's own log must show the frame in its reply. */
+    @Test fun ompsReadFrameNeedsItsOwnReplyInTheLog() {
+        val frame = "```\nHDREAD1 M4N8RT\nHDSRV labbox\nHDPANE codex\nHDEND M4N8RT\n```"
+        val u = com.billmongan.herdrdroid.transcript.UserItem("u1", "please read it")
+        val reply = com.billmongan.herdrdroid.transcript.TextItem("t1", "Asking for the pane:\n$frame")
+        assertTrue("a real reply", replyHasReadFrame(listOf(u, reply), "M4N8RT"))
+        assertFalse("pasted in your own message", replyHasReadFrame(listOf(com.billmongan.herdrdroid.transcript.UserItem("u2", "copy this:\n$frame")), "M4N8RT"))
+        assertFalse("in a tool's output", replyHasReadFrame(listOf(u,
+            com.billmongan.herdrdroid.transcript.ToolItem("k", null, "Bash", "cat notes.txt", "bash", "cat notes.txt", null, null, frame,
+                com.billmongan.herdrdroid.transcript.ToolState.values().first())), "M4N8RT"))
+        assertFalse("from an earlier turn, before your latest message", replyHasReadFrame(listOf(reply, u), "M4N8RT"))
+        assertFalse("with no log read", replyHasReadFrame(emptyList(), "M4N8RT"))
+        assertFalse("another code", replyHasReadFrame(listOf(u, reply), "K7P3QX"))
+    }
 }
