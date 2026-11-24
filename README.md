@@ -18,6 +18,7 @@ HerdrDroid is for people who already run agents under herdr on a computer they c
 - [Installing](#installing)
 - [First setup](#first-setup)
 - [Security and privacy](#security-and-privacy)
+  - [Send a secret](#send-a-secret)
 - [SSH over a WebSocket](#ssh-over-a-websocket)
 - [Usage limits](#usage-limits)
 - [How the app treats the panes](#how-the-app-treats-the-panes)
@@ -329,9 +330,19 @@ From 2.1.4, HerdrDroid can update itself. In **Settings**, under **Updates**, **
 - **The fingerprint window.** The Keystore keys for saved secrets and kept chats can be used only for 4 hours after you prove who you are (a strong fingerprint or face unlock, or the screen lock). Unlocking the app counts, and so does unlocking the phone. After the window, the app asks you to unlock when it opens, and alerts say "Unlock HerdrDroid to read" instead of the question.
 - **Host key pinning.** A server's host key is pinned the first time you connect, and a changed key stops the connection.
 - **No data is lost to a locked or damaged file.** A kept file that can't be opened now (the phone locked, a read error) is left where it is; one that is damaged for certain is moved to an `unreadable` folder, not deleted. Moving data to new keys or new file names writes the new copy, reads it back, and only then removes the old one.
-- **What the app writes on the computer.** Three things, all because you asked for them: a file you send from the phone goes to `~/.herdrdroid/inbox` (or a folder you pick), so the agent can read it; **Recycle** moves a file to `~/scratch/herdrdroid-recycled-<date>` instead of deleting it; and starting an agent in a new folder creates that folder. Nothing else is written there, and the app's reader script runs from memory.
+- **What the app writes on the computer.** Three things, all because you asked for them: a file you send from the phone goes to `~/.herdrdroid/inbox` (or a folder you pick), so the agent can read it; a secret you send goes to `~/.herdrdroid/secrets` (see [Send a secret](#send-a-secret)); **Recycle** moves a file to `~/scratch/herdrdroid-recycled-<date>` instead of deleting it; and starting an agent in a new folder creates that folder. Nothing else is written there, and the app's reader script runs from memory.
 - **What a login can do.** A password login is a full shell for that user. The app only runs `herdr` commands and its reader, but anyone who can use your unlocked phone and this app can type into every pane. Keep the phone locked, and prefer servers on your own network or a VPN.
 - **No telemetry.** The app talks only to the servers you add, and to GitHub for the update check (see [Updates](#updates)), which sends nothing about you or your servers.
+
+### Send a secret
+
+For a key, token or OAuth grant that should not go through the chat. In a pane's message box, tap **⋯**, then **Send a secret…**. Type the secret into the masked box (**Show** reveals it while you check it) or choose a file, add an optional label for the file name, and pick the pane it is for: the open pane by default, or any pane on any connected server. Tap **Save on server**.
+
+- **Where it goes.** The secret is saved on that pane's server as `~/.herdrdroid/secrets/<date>-<time>-<random>[-label]` (`.txt` for typed text). The folder is made private (mode 700) and the file is readable only by your account (mode 600); the app checks the size, the SHA-256 and both modes before it says it worked. A file name comes from your label or the picked file's name, never from the secret.
+- **Only the path goes in the chat.** For the open pane the path goes into the message box at the cursor; for another pane it goes into that pane's unsent message, with **Open pane** to go there. Nothing is sent until you send it, so you can write the instruction around the path. If anything fails, the notice says why and no path is put anywhere.
+- **What the phone keeps.** Nothing. The secret goes to the computer only on the SSH command's input, never on its command line, in a pane, the clipboard, a draft or the diagnostic log (which records only the byte count and the result). The dialog is hidden from screenshots and the recents view, and keyboards are asked not to learn or suggest it.
+- **The agent can read it.** Any program running as your user on that server can read the file, including every agent there. Send a secret only to a pane whose agent you trust with it.
+- **Removing it.** HerdrDroid never deletes these files. When the agent is done with it, remove it on the computer, for example `rm ~/.herdrdroid/secrets/<name>`, or ask the agent to. A copy that failed its check is kept beside it as `<name>.failed`.
 
 ## SSH over a WebSocket
 

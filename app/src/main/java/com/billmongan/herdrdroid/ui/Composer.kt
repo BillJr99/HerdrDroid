@@ -160,7 +160,21 @@ fun ChatComposer(
      */
     compact: Boolean = false,
     menuItems: List<Pair<String, () -> Unit>> = emptyList(),
+    /** 2.2.7 Send a secret: text to put in at the caret once (an id and the text), then [onInserted] with the id. */
+    insert: Pair<Long, String>? = null,
+    onInserted: (Long) -> Unit = {},
 ) {
+    // The box keeps its caret (2.2.7, for [insert]); text set from outside puts the caret at its end.
+    var held by remember { mutableStateOf(androidx.compose.ui.text.input.TextFieldValue(value, androidx.compose.ui.text.TextRange(value.length))) }
+    val boxValue = if (held.text == value) held
+    else androidx.compose.ui.text.input.TextFieldValue(value, androidx.compose.ui.text.TextRange(value.length))
+    androidx.compose.runtime.LaunchedEffect(insert?.first) {
+        val ins = insert ?: return@LaunchedEffect
+        val (text, caret) = com.billmongan.herdrdroid.herdr.SecretDrop.insertAt(boxValue.text, boxValue.selection.max, ins.second)
+        held = androidx.compose.ui.text.input.TextFieldValue(text, androidx.compose.ui.text.TextRange(caret))
+        onValueChange(text)
+        onInserted(ins.first)
+    }
     var showCommands by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     var sendOptions by remember { mutableStateOf(false) }
@@ -250,8 +264,8 @@ fun ChatComposer(
     }
     val field: @Composable (Modifier, Int) -> Unit = { m, lines ->
         TextField(
-            value = value,
-            onValueChange = onValueChange,
+            value = boxValue,
+            onValueChange = { v -> held = v; if (v.text != value) onValueChange(v.text) },
             placeholder = { Text(placeholder, color = Palette.Muted, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) },
             textStyle = TextStyle(fontFamily = Fonts.Sans, fontSize = 16.sp, color = Palette.Ink, lineHeight = 22.sp),
             maxLines = lines,

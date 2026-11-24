@@ -365,6 +365,13 @@ fun ServerBanners(vm: AppViewModel) {
         ErrorBanner("Couldn't attach ${f.name}: ${f.why}", actionLabel = "Retry",
             secondLabel = "Dismiss", onSecond = { vm.attachFailure = null }) { vm.retryAttach() }
     }
+    // 2.2.7 Send a secret: its path went into another pane's message box.
+    vm.secretElsewhere?.let { e ->
+        ErrorBanner(e.text, actionLabel = "Open pane", secondLabel = "Dismiss", onSecond = { vm.secretElsewhere = null }) {
+            vm.secretElsewhere = null
+            vm.switchTo(e.serverId, e.paneId)
+        }
+    }
     // A one-time note (1.4.0: "Debug bundle copied").
     vm.notice?.let { ErrorBanner(it) { vm.notice = null } }
 }

@@ -176,6 +176,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     // 2.2.7: the pane reads kept on this phone (PaneReadPanel.kt).
     var showingPaneReads by remember { mutableStateOf(false) }
     var showSnippets by remember { mutableStateOf(false) }
+    var showSecret by remember { mutableStateOf(false) }
     var hermesMenu by remember { mutableStateOf(false) }
     var closingSession by remember { mutableStateOf(false) }
     /** The agent's own model menu, read off its screen, while it is open. */
@@ -999,10 +1000,15 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     if (typingAnswer && !vm.answerInFlight(paneId)) add("Discard answer draft" to { answerDraft = null })
                     add((if (vm.showKeys) "Hide keys" else "Show keys") to { vm.setKeysShown(!vm.showKeys) })
                     add("Snippets" to { showSnippets = true })
+                    add(SEND_SECRET_ITEM to { showSecret = true })
                 },
+                insert = vm.secretInsert?.takeIf { it.serverId == vm.current?.id && it.paneId == paneId }?.let { it.id to it.path },
+                onInserted = vm::secretInsertTaken,
             )
         }
     }
+
+    if (showSecret) SendSecretDialog(vm, paneId) { showSecret = false }
 
     if (showSnippets) {
         SnippetsDialog(vm, onInsert = { t -> editMessage(if (message.isBlank()) t else message.trimEnd() + "\n" + t) }, onDismiss = { showSnippets = false })
