@@ -4,16 +4,16 @@ import org.junit.Assert.*
 import org.junit.Test
 
 /**
- * 2.2.8: agy's adversarial screen corpus (screens/<agent>/corpus-2.2.8; screens/corpus-2.2.8/INDEX.md lists each case's expected
+ * 2.2.8: agy's adversarial screen corpus (screens/<agent>/derived-2.2.8-corpus; screens/corpus-2.2.8/INDEX.md lists each case's expected
  * result): live dialogs are cards with their options, work and idle screens are no card, and a dialog
  * changed between the read and the send (a new dialog under it, a changed command beside a duplicate
  * box) never passes the guard, so the card is redrawn instead.
  */
 class Corpus228Test {
-    // The screens sit in the library's own layout, screens/<agent>/corpus-2.2.8/, so the library tests
+    // The screens sit in the library's own layout, screens/<agent>/derived-2.2.8-corpus/, so the library tests
     // read them too; the index stays in screens/corpus-2.2.8/.
     private fun res(name: String): String {
-        val path = if (name == "INDEX.md") "/screens/corpus-2.2.8/INDEX.md" else "/screens/${agent(name)}/corpus-2.2.8/$name"
+        val path = if (name == "INDEX.md") "/screens/corpus-2.2.8/INDEX.md" else "/screens/${agent(name)}/derived-2.2.8-corpus/$name"
         return checkNotNull(javaClass.getResource(path)) { path }.readText()
     }
     private data class Case(val file: String, val expect: String)
@@ -172,10 +172,10 @@ class Corpus228Test {
             "grok" to "/screens/grok/captured-2026-11-15b/scan-approval.txt",
             "claude" to "/screens/claude/captured-2026-11-13/bash-permission.txt",
             "codex" to "/screens/codex/captured-2026-11-13/run-command.txt",
-            "copilot" to "/screens/copilot/corpus-2.2.8/052-copilot-run-command-approval.txt",
-            "opencode" to "/screens/opencode/corpus-2.2.8/049-opencode-permission-shell.txt",
-            "hermes" to "/screens/hermes/corpus-2.2.8/045-hermes-dangerous-command-countdown.txt",
-            "omp" to "/screens/omp/corpus-2.2.8/041-omp-allow-tool-approval.txt",
+            "copilot" to "/screens/copilot/derived-2.2.8-corpus/052-copilot-run-command-approval.txt",
+            "opencode" to "/screens/opencode/derived-2.2.8-corpus/049-opencode-permission-shell.txt",
+            "hermes" to "/screens/hermes/derived-2.2.8-corpus/045-hermes-dangerous-command-countdown.txt",
+            "omp" to "/screens/omp/derived-2.2.8-corpus/041-omp-allow-tool-approval.txt",
         )
         for ((agent, path) in cases) {
             val p = checkNotNull(detectPrompt(stripAnsi(checkNotNull(javaClass.getResource(path)).readText()), true, agent)) { path }

@@ -249,7 +249,7 @@ class SuccessiveCardAnswerTest {
     }
 
     private fun res(path: String) = checkNotNull(javaClass.getResource(path)) { path }.readText()
-    private val grokScan get() = res("/screens/grok/corpus-2.2.8/001-grok-live-approval-status-above.txt")
+    private val grokScan get() = res("/screens/grok/derived-2.2.8-corpus/001-grok-live-approval-status-above.txt")
     private val grokAlways = "Yes, and don't ask again for anything (always-approve mode)"
 
     /**
