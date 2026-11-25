@@ -386,6 +386,28 @@ class CardRegion228Test {
     }
 
     /**
+     * Codex's per-commit review of 7d6950b (MEDIUM): a message box drawn without its bottom edge ends at
+     * the first row outside its frame, so a live folder trust prompt under it is still a card.
+     */
+    @Test fun aMessageBoxWithoutItsBottomEdgeHidesNothingUnderIt() {
+        val trust = checkNotNull(javaClass.getResource("/screens/grok/derived-1.4.9/0307-trust-this-folder-startup.txt")).readText()
+        val rows = plain("thinking-panel.ansi").trimEnd().lines()
+        val bottom = rows.indexOfLast { it.trimStart().startsWith("╰") }
+        assertTrue(bottom > 0)
+        // The box's bottom edge and everything under it gone, then the trust prompt.
+        val s = rows.take(bottom).joinToString("\n") + "\n\n" + trust
+        assertFalse(grokWorkingBelowAnyQuestion(s))
+        assertEquals(listOf("y", "n"), checkNotNull(detectPrompt(s, true, "grok")).choices.map { it.keys })
+        // A live approval box's own rows under it (radio rows, the select footer) count too.
+        val box = "  ┃  ›  List the build cache\n  ┃  │ ls -la build/cache\n  ┃\n  ┃  1 (●) Yes, proceed\n" +
+            "  ┃  2 (○) No, reject (type to add feedback)\n\n  1/2:select  │  Tab:next option  │  Esc:scrollback\n"
+        assertFalse(grokWorkingBelowAnyQuestion(rows.take(bottom).joinToString("\n") + "\n\n" + box))
+        // With its bottom edge, a draft inside it is still no question.
+        val draft = rows.toMutableList().also { it.add(bottom, "  │   2. Opt in to the cleanup   │") }.joinToString("\n")
+        assertTrue(grokWorkingBelowAnyQuestion(draft))
+    }
+
+    /**
      * agy MEDIUM: a numbered point or "Opt in" in the thinking panel's own text is Grok's thought, with
      * a narrow running row (fewer than 3 spaces, no "⇣" yet) or with none drawn under the panel.
      */

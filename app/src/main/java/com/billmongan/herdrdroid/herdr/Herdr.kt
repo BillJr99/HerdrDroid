@@ -3797,6 +3797,8 @@ internal fun grokPlanOrTrustBottom(rows: List<String>): Int {
 private val GROK_COMPOSER_TOP = Regex("""^\s*╭─+╮\s*$""")
 private val GROK_COMPOSER_ROW = Regex("""^\s*│\s*❯""")
 private val GROK_COMPOSER_BOTTOM = Regex("""^\s*╰""")
+/** A row inside the message box's frame: its "│" edge on the left. */
+private val GROK_COMPOSER_FRAME = Regex("""^\s*│""")
 
 /**
  * 2.2.8 (Bill: "grok is stuck on a question I can't answer"): Grok draws its live thinking panel in the
@@ -3823,11 +3825,18 @@ internal fun grokWorkingBelowAnyQuestion(plain: String): Boolean {
         while (running + 1 < rows.size && GROK_GUTTER_ROW.containsMatchIn(rows[running + 1]) &&
             !GROK_RADIO_ROW.containsMatchIn(rows[running + 1]) && !GROK_UNNUMBERED_ALWAYS.matches(rows[running + 1])) composer[++running] = true
     }
-    // The message box: its top edge, the "│ ❯" row, the rest of a draft, its bottom edge.
+    // The message box: its top edge, the "│ ❯" row, the rest of a draft, its bottom edge; never past
+    // the first row outside its frame (Codex's per-commit review: a box drawn without its bottom edge
+    // must not hide a live prompt under it).
     for (i in rows.indices) {
         if (!GROK_COMPOSER_TOP.matches(rows[i]) || i + 1 >= rows.size || !GROK_COMPOSER_ROW.containsMatchIn(rows[i + 1])) continue
-        var j = i
-        while (j < rows.size) { composer[j] = true; if (j > i && GROK_COMPOSER_BOTTOM.containsMatchIn(rows[j])) break; j++ }
+        composer[i] = true
+        var j = i + 1
+        while (j < rows.size && (GROK_COMPOSER_FRAME.containsMatchIn(rows[j]) || GROK_COMPOSER_BOTTOM.containsMatchIn(rows[j]))) {
+            composer[j] = true
+            if (GROK_COMPOSER_BOTTOM.containsMatchIn(rows[j])) break
+            j++
+        }
     }
     val question = rows.indices.lastOrNull { i ->
         val r = rows[i]
