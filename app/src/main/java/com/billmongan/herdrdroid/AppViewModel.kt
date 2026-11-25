@@ -2638,10 +2638,10 @@ class AppViewModel internal constructor(
             // 2.1.5: a usage panel drawn where the box is (Kiro's /usage) is not text typed at the computer.
             !usageDialogShown(agent, text) &&
             (now.scrollOffset ?: 0) == 0 && (!com.billmongan.herdrdroid.herdr.inputLineOf(text, agent).isNullOrEmpty() ||
-                com.billmongan.herdrdroid.herdr.composerDraftOf(text, agent) != null)
+                com.billmongan.herdrdroid.herdr.paneDraftOf(text, agent) != null)
         if (!eligible) { if (stillShown()) { paneDraft = null; draftReadFor = null }; return }
         val o = checkNotNull(owner)
-        val plain = com.billmongan.herdrdroid.herdr.composerDraftOf(text, agent)?.text
+        val plain = com.billmongan.herdrdroid.herdr.paneDraftOf(text, agent)?.text
             ?: com.billmongan.herdrdroid.herdr.inputLineOf(text, agent)
         val key = listOf(paneId, plain, com.billmongan.herdrdroid.herdr.Occupant.of(o.pane), o.visit, o.connection, now.status)
         if (key == draftReadFor) {
@@ -2652,13 +2652,14 @@ class AppViewModel internal constructor(
         val live = quietly { h -> if (h === o.client) h.readStyledViewport(paneId, o.connection, timeoutSeconds = 2) else null }
         if (!stillShown()) return
         val draft = live?.takeIf { o.isCurrent(o.client) && detectPrompt(forPhone(it), false, agent, versionOf(paneId)) == null }
-            ?.let { com.billmongan.herdrdroid.herdr.composerDraftOf(it, agent) }
+            ?.let { com.billmongan.herdrdroid.herdr.paneDraftOf(it, agent) }
         // A failed read is not a verdict: read again next time.
         draftReadFor = key.takeIf { live != null }
         paneDraft = draft?.let {
             val shown = PaneDraftShown(o, it.text, it.bounded && com.billmongan.herdrdroid.herdr.hasStableOccupant(o.pane),
                 // A suggestion list may be in the box's buffer: no Clear either.
-                com.billmongan.herdrdroid.herdr.canClearDraft(agent) && !it.menu,
+                // 2.2.8: per agent's clear key (Backspace, or Ctrl+U on a one-row draft).
+                com.billmongan.herdrdroid.herdr.clearableDraft(agent, it),
                 com.billmongan.herdrdroid.herdr.draftSendBlock(it, now.status, now.agentName))
             paneDraft?.takeIf { d -> d == shown } ?: shown
         }
