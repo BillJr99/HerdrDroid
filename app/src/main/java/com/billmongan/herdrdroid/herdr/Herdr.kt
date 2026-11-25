@@ -368,6 +368,9 @@ class Herdr internal constructor(
         override suspend fun pane(id: String, connection: Any) = relayPane(id, connection)
         override suspend fun viewport(id: String, connection: Any) =
             runNow(cmd("pane", "read", id, "--source", "visible", "--format", "ansi"), 5, connection)
+        override suspend fun noticeHistory(pane: Pane, cursor: String, connection: Any): TranscriptRead? =
+            this@Herdr.noticeHistory(pane, cursor, script, connection)
+
         override suspend fun hasWork(pane: Pane, connection: Any): Boolean {
             val arg = org.json.JSONArray(listOf(listOf(pane.id, pane.agent.orEmpty(), pane.cwd, pane.sessionId.orEmpty()))).toString()
             val command = "$PYZ __workcounts__ ${shq(arg)}"
@@ -896,6 +899,15 @@ class Herdr internal constructor(
             return TranscriptRead(false, why, "", false, false, null, emptyList())
         }
         return Transcript.parseRead(r.out)
+    }
+
+    /** A short receipt read bound to the notice's connection, with no automatic reconnect. */
+    internal suspend fun noticeHistory(pane: Pane, cursor: String, script: ByteArray, connection: Any): TranscriptRead? {
+        val agent = pane.agent ?: return null
+        val command = "$PYZ ${shq(agent)} ${shq(pane.cwd)} ${shq(Transcript.withLive(cursor, pane.id, pane.sessionId))}"
+        val input = z(script)
+        val result = commands?.input(command, input, connection) ?: ssh.execInput(command, input, 3, connection)
+        return if (result.exit == 0 && result.out.isNotBlank()) Transcript.parseRead(result.out) else null
     }
 
     /** One image inside an agent's log, fetched with the reader's image mode. */
