@@ -3844,6 +3844,7 @@ private fun hermesLiveApprovalBox(text: String): String? {
 
 fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version: String? = null): Prompt? {
     val plain = stripAnsi(text)
+    if (agent.equals("claude", true)) claudeClippedAskReview(plain)?.let { return it }
     if (agent.equals("agy", true)) {
         agySubagentQuestion(plain)?.let { return it }
         agySubagentApproval(plain)?.let { return it }

@@ -75,6 +75,30 @@ class ClaudeReviewPreview228Test {
         assertTrue(preview.choices.isEmpty())
     }
 
+    private val clippedOptions = """
+          2. Blue
+             With a wrapped description
+        ❯ 3. Gold
+          4. Type something.
+        Enter to select · ↑/↓ to navigate · Esc to cancel
+    """.trimIndent()
+
+    @Test fun visibleOptionsWithoutTheTopOfTheAskDialogAreTerminalOnly() {
+        val prompt = checkNotNull(detectPrompt(clippedOptions, true, "claude", "2.1.332"))
+        assertTrue(prompt.terminalReview)
+        assertTrue(prompt.choices.isEmpty())
+        assertTrue(prompt.shownParts().details.any { it.contains("wrapped description") })
+        assertTrue(prompt.shownParts().details.any { it.contains("Gold") })
+        assertTrue(prompt.region.orEmpty().any { it.contains("Type something") })
+        assertNull(menuKeys(prompt, Choice("Gold", "3", true)))
+    }
+
+    @Test fun staleClippedOptionsAndEchoesDoNotProduceAPreview() {
+        assertNull(claudeReviewPreview(clippedOptions + "\n❯ A new request", null))
+        assertNull(claudeReviewPreview("❯ A pasted list\n" + clippedOptions, null))
+        assertNull(claudeReviewPreview(clippedOptions.replace("❯ 3.", "  3."), null))
+    }
+
     @Test fun aClosedOrUnframedDialogDoesNotProduceAPreview() {
         val screen = capture("tabbed")
         assertNull(claudeReviewPreview(screen + "\n❯ A new request", null))
