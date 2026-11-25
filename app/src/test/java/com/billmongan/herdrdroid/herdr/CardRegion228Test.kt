@@ -519,6 +519,42 @@ class CardRegion228Test {
         }
     }
 
+    /** Running status rows that grow a digit or a unit: before and after (Codex's per-commit review of 8c0125d). */
+    private val rollovers = listOf(
+        "  ⠋ Working… 9s · ⇣9k" to "  ⠙ Working… 10s · ⇣10.2k",
+        "  ⠋ Working… 59s" to "  ⠙ Working… 1m 0s",
+        "  ✻ Running 59m59s ⇣999k" to "  ✶ Running 1h 0m 0s ⇣1.0M",
+        "  ⠧ Thinking… 0.9s" to "  ⠏ Thinking… 12.5s",
+    )
+
+    /**
+     * Codex's per-commit review of 8c0125d (MEDIUM): a running status row's whole time and counter are
+     * read as tokens, so "9s" to "10s" or "59s" to "1m 0s" is no change, in the app and in both checks;
+     * its words still are.
+     */
+    @Test fun aStatusRowsTimeRollingOverIsNoChange() {
+        val s = grok(whole)
+        val p = card(s)
+        val last = cardRows(s).size - 1
+        for ((a, b) in rollovers) {
+            val ga = cardGuardScreen(withRow(s, last, a), p)
+            assertTrue(a, ga.startsWith("r:"))
+            assertTrue("$a -> $b", cardGuardScreenMatches(withRow(s, last, b), ga))
+            assertFalse("$a words", cardGuardScreenMatches(withRow(s, last, "$b now deleting"), ga))
+        }
+        assertEquals(cardUnderRow("⠋ Working… 59s"), cardUnderRow("⠙ Working… 1m 0s"))
+        // Not a status row (no spinner first): exact.
+        assertNotEquals(cardUnderRow("Working… 59s"), cardUnderRow("Working… 1m 0s"))
+        val hasPython = listOf("/usr/bin/python3", "/bin/python3").any { File(it).canExecute() }
+        for (python in listOfNotNull(false, true.takeIf { hasPython })) {
+            for ((a, b) in rollovers) {
+                assertEquals("python=$python $a -> $b", 0, runCheck(python, withRow(s, last, a), withRow(s, last, b), prompt = p))
+                assertEquals("python=$python $a words", CARD_CHANGED_EXIT,
+                    runCheck(python, withRow(s, last, a), withRow(s, last, "$b now deleting"), prompt = p))
+            }
+        }
+    }
+
     /**
      * Codex 4B MEDIUM: the guard takes the parser's own rows. When they are on the screen twice (an older
      * copy of the same dialog), which one the parser read isn't proven: the whole screen is compared.
