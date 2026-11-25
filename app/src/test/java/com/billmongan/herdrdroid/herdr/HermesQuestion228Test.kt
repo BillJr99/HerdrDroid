@@ -72,6 +72,16 @@ class HermesQuestion228Test {
         assertTrue(checkNotNull(detectPrompt(twice, blocked = false, agent = "hermes")).choices.isEmpty())
     }
 
+    @Test fun aStalePanelAboveOtherOutputIsNoCard() {
+        // Review 4 (Codex): an old panel, then a row that is not Hermes's hint, then the editing or a typed row.
+        for (name in listOf("clarify-stale-under-status", "clarify-stale-under-status-text")) {
+            val s = screen(name)
+            assertNull(name, hermesClassicClarify(checkNotNull(hermesWaitingScreen(s)) { name }))
+            assertNull(name, detectPrompt(s, blocked = false, agent = "hermes"))
+            assertNull(name, detectPrompt(s, blocked = true, agent = "hermes")?.takeIf { it.choices.isNotEmpty() || it.hermesClarify })
+        }
+    }
+
     @Test fun everyApprovalHighlightIsTheSameCard() {
         val all = listOf("Allow once", "Allow for this session", "Add to permanent allowlist", "Deny")
         for ((i, c) in listOf("once", "session", "always", "deny").withIndex()) {

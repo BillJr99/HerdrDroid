@@ -3835,6 +3835,7 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
         hermesWaitingScreen(text)?.let { return detectPlainPrompt(it, true, agent, version) }
         // 2.2.8: the classic CLI's clarify panel (HermesClarify.kt), proven by its hint and input rows.
         hermesClassicClarify(text)?.let { return it }
+        if (hermesStaleClassicPanel(text)) return null
         hermesClarifyFrame(text)?.let { frame ->
             return frame.card ?: detectPlainPrompt(frame.remainder, false, agent, version)
         }
