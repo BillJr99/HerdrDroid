@@ -48,6 +48,22 @@ class QuestionsViewVm228Test {
         assertEquals("the digest check ran before the key", 1, cardChecks)
     }
 
+    @Test fun agySubagentApprovalSendsOnlyTheGuardedCtrlK() = fixture("agy", agyApproval) {
+        val e = readEntry()
+        answer(e)
+        assertEquals(listOf("ctrl+k"), sent)
+        assertEquals(1, cardChecks)
+    }
+
+    @Test fun anAgySubagentCommandChangeAtTheHostSendsNothing() = fixture("agy", agyApproval) {
+        val e = readEntry()
+        beforeCheck = { frame = frame.replace("sample-only", "different-sample") }
+        answer(e)
+        assertTrue(sent.isEmpty())
+        assertEquals(1, cardChecks)
+        assertEquals(1, cardChecksRefused)
+    }
+
     @Test fun anEntryNeedsTheQuestionsViewOpen() = fixture {
         vm.screen = Screen.Home
         shadowOf(Looper.getMainLooper()).idle()
@@ -468,6 +484,9 @@ class QuestionsViewVm228Test {
     }
 
     private companion object {
+        val agyApproval = checkNotNull(QuestionsViewVm228Test::class.java.getResource(
+            "/screens/agy/derived-2.2.8-subagent-approval/approval.txt"
+        )).readText()
         val museQuota = checkNotNull(QuestionsViewVm228Test::class.java.getResource("/screens/muse/derived-2.1.0/quota-fast-full.txt")).readText()
 
         /** The warning read with styles: option [hi] bold and blue, the others plain (as SuccessiveCardAnswerTest draws it). */
