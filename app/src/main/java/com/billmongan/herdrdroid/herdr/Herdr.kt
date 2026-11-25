@@ -3878,8 +3878,14 @@ const val GROK_ALWAYS_APPROVE = "grok:always-approve"
  * done without Bill's say (the shared rules): the card shows it disabled, alerts and voice leave it
  * out, and an answer for it is refused.
  */
+/** A radio row of its own ("(○) Yes, and don't ask again …"), never the label tail above it. */
+private val WRAP_RADIO_ROW = Regex("""^\([○●◯◉]\)""")
+private val GROK_ALWAYS_HEAD = Regex("""Yes, and don't ask again for anything\b.*""", RegexOption.IGNORE_CASE)
+
 fun blockedChoiceReason(c: Choice): String? =
-    if (c.keys == GROK_ALWAYS_APPROVE || c.label.contains("always-approve mode", ignoreCase = true))
+    if (c.keys == GROK_ALWAYS_APPROVE || c.label.contains("always-approve mode", ignoreCase = true) ||
+        // 2.2.8 (agy's corpus): Grok's label with its "(always-approve mode)" tail cut off by a narrow pane.
+        GROK_ALWAYS_HEAD.matches(c.label.trim()))
         "Not offered here: it switches the agent to approve everything without asking. Use the terminal if you really mean to."
     else null
 
@@ -4118,8 +4124,11 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
         while (j < lines.size && option.find(lines[j]) == null) {
             val next = clean(lines[j])
             // A key hint under the last option ("ctrl+g to edit in editor") is not part of it.
+            // 2.2.8 (agy's corpus): or it is the label's own "(…)" tail, wrapped onto its own row in a
+            // narrow pane: Grok's "(always-approve mode)", Antigravity's "(Persist to settings.json)".
             if (next.isEmpty() || KEY_HINT_LINE.containsMatchIn(next) ||
-                !(full.count { it == '(' } > full.count { it == ')' } || next.first().isLowerCase())) break
+                !(full.count { it == '(' } > full.count { it == ')' } || next.first().isLowerCase() ||
+                    (next.startsWith("(") && next.endsWith(")") && !WRAP_RADIO_ROW.containsMatchIn(next)))) break
             full = "$full $next"; j++
         }
         lastOptionEnd = j - 1

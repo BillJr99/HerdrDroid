@@ -1,0 +1,25 @@
+╭────────────────────────────────────────────────────────────╮
+│ ⚠️  Dangerous Command                                      │
+│ chmod 600 /tmp/demo.token                                  │
+│ ❯ 1. Allow once                                            │
+│   2. Allow for this session                                │
+│   3. Add to permanent allowlist                            │
+│   4. Deny                                                  │
+╰────────────────────────────────────────────────────────────╯
+→ allowed once
+
+╭────────────────────────────────────────────────────────────╮
+│ ⚠️  Dangerous Command                                      │
+│                                                            │
+│ rm -f /tmp/demo.lock                                       │
+│                                                            │
+│ ❯ 1. Allow once                                            │
+│   2. Allow for this session                                │
+│   3. Add to permanent allowlist                            │
+│   4. Deny                                                  │
+│                                                            │
+│ recursive or forced delete                                 │
+╰────────────────────────────────────────────────────────────╯
+  ↑/↓ to select, Enter to confirm  (55s)
+── ⠹ Working… · 1m 14s ─────────────────────────────────────────────────────────────────────────────────── Clean lockfile ───────────
+⚠ ❯

@@ -1,0 +1,13 @@
+ ▐▛███▛█   Claude Code v2.1.329
+▝▜██████▀  Opus 4.1 · API Usage Billing
+ ▝▝   ▝▝   /proj
+
+● Inspecting the test runner configuration now.
+
+✻ Working… (14s · esc to interrupt)
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 1. Opt in to the cache check
+  2. Re-run pytest
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)

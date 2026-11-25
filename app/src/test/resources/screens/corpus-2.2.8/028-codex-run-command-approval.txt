@@ -1,0 +1,8 @@
+  Would you like to run the following command?
+  Environment: local
+  Reason: May I rerun this setup check outside the sandbox because sandbox restrictions prevented it from running normally?
+  $ bill-pane-send.py --list | head -2
+› 1. Yes, proceed (y)
+  2. Yes, and don't ask again for commands that start with `bill-pane-send.py --list` (p)
+  3. No, and tell Codex what to do differently (esc)
+  Press enter to confirm or esc to cancel
