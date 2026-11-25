@@ -2660,7 +2660,7 @@ class AppViewModel internal constructor(
             val shown = PaneDraftShown(o, it.text, it.bounded && com.billmongan.herdrdroid.herdr.hasStableOccupant(o.pane),
                 // A suggestion list may be in the box's buffer: no Clear either.
                 // 2.2.8: per agent's clear key (Backspace, or Ctrl+U on a one-row draft).
-                com.billmongan.herdrdroid.herdr.clearableDraft(agent, it),
+                o.client.backend == Backend.TUI && com.billmongan.herdrdroid.herdr.clearableDraft(agent, it),
                 com.billmongan.herdrdroid.herdr.draftSendBlock(it, now.status, now.agentName))
             paneDraft?.takeIf { d -> d == shown } ?: shown
         }
