@@ -151,8 +151,13 @@ class CardRegion228Test {
                 if (python) it.replace(Regex("""; st=.*fi \)""", RegexOption.DOT_MATCHES_ALL), " )") else it
             }
             val p = ProcessBuilder(sh!!.path, "-c", c).apply { environment()["HOME"] = File(dir, "home").apply { mkdirs() }.path }.start()
-            p.inputStream.readBytes(); p.errorStream.readBytes()
-            return p.waitFor()
+            val out = p.inputStream.readBytes().toString(Charsets.UTF_8); p.errorStream.readBytes()
+            val exit = p.waitFor()
+            // A region refusal says so (the refused line before exit 3), and only a pass reaches the keys.
+            val lines = out.lines().map { it.trim() }
+            if (exit == CARD_CHANGED_EXIT) assertTrue(out, CARD_REFUSED_MARK in lines && CARD_PASSED_MARK !in lines)
+            if (exit == 0) assertTrue(out, CARD_PASSED_MARK in lines && CARD_REFUSED_MARK !in lines)
+            return exit
         } finally {
             dir.deleteRecursively()
         }
