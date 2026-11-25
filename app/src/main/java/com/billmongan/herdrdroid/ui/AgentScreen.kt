@@ -2075,7 +2075,7 @@ internal data class RunningPill(val label: String, val description: String, val 
  */
 internal fun runningPill(w: com.billmongan.herdrdroid.herdr.WorkInfo, agent: String?, endedProcs: Int): RunningPill? {
     val subs = w.subagentCount(agent)
-    val shells = maxOf(w.activeProcs(agent).size, w.runningTasks)
+    val shells = w.shellCount(agent)
     val done = w.subagents.count { !it.active } + w.tasks.count { !it.running } + endedProcs
     fun n(k: Int, one: String) = "$k $one" + if (k == 1) "" else "s"
     if (subs == null) {

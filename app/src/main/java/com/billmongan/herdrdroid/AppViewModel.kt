@@ -7458,9 +7458,19 @@ class AppViewModel internal constructor(
         val p = pane(paneId) ?: return
         val client = herdr ?: return
         val connection = client.connectionIdentity
-        quietly { it.work(p, transcriptScript) }?.let { fresh ->
+        quietly { it.work(p, transcriptScript) }?.let { inventory ->
+            val reported = if (connection != null && p.agent.equals("claude", true) && hasStableOccupant(p)) quietly { h ->
+                if (h !== client) return@quietly null
+                val before = h.relayPane(paneId, connection)
+                    ?.takeIf { it.scrollOffset == 0 && sameOccupant(p, it) } ?: return@quietly null
+                val visible = h.readStyledViewport(paneId, connection, timeoutSeconds = 2)
+                val after = h.relayPane(paneId, connection)
+                if (after == null || after.scrollOffset != 0 || !sameOccupant(before, after)) return@quietly null
+                com.billmongan.herdrdroid.herdr.visibleBackgroundShellCount(p.agent, visible)
+            } else null
             if (herdr !== client || client.connectionIdentity !== connection ||
                 pane(paneId)?.sameWorkIdentity(p) != true) return
+            val fresh = inventory.copy(reportedBackgroundShells = reported)
             // Processes that were active and are gone now are kept as finished (the last 30).
             val before = work[paneId]?.activeProcs(p.agent).orEmpty()
             val now = fresh.procs.map { it.pid }.toSet()
