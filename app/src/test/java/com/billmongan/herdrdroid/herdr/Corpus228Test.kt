@@ -137,6 +137,18 @@ class Corpus228Test {
         assertTrue(card.choices.take(2).all { blockedChoiceReason(it) == null })
     }
 
+    @Test fun grokAskHeaderSurvivesTheThinkingGutter() {
+        val ask = checkNotNull(javaClass.getResource(
+            "/screens/grok/derived-1.4.9/0305-question-card-ask-user-question.txt")).readText()
+        val screen = "  ┃  ◆ Thinking…\n  ┃  Considering the sample.\n" + ask
+        val pruned = grokWithoutThinkingPanel(screen)
+        assertTrue(pruned.contains("┃  ?  Which database should demo-box use?"))
+        assertFalse(pruned.contains("Considering the sample."))
+        val card = checkNotNull(detectPrompt(screen, true, "grok"))
+        assertTrue(card.question.contains("Which database should demo-box use?"))
+        assertFalse(card.question.contains("Considering the sample."))
+    }
+
     /**
      * Codex's per-commit review of fe63209 (MEDIUM): a "(…)" row joins the option above it only when it
      * starts in the label's own column, and a radio row never joins, even under an open "(".
