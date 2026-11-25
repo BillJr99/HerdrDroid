@@ -222,12 +222,19 @@ class QuestionsAggregatorTest {
         agg.applyRead(s, QuestionRead(null, null, timedOut = true))
         assertEquals(EntryState.READY, agg.entry(s.key)?.state)
         assertEquals("Run it?", agg.entry(s.key)?.prompt?.question)
-        // Never read yet: still reading, and read again only after the wait.
+        // Never shown: it says the question kept changing, with Open pane, and is read again only after the wait.
         val p2 = src("open", "p2")
         agg.update(listOf(s, p2))
         agg.applyRead(p2, QuestionRead(null, null, timedOut = true))
-        assertEquals(EntryState.READING, agg.entry(p2.key)?.state)
+        assertEquals(EntryState.UNREAD, agg.entry(p2.key)?.state)
+        assertEquals(QuestionsAggregator.KEPT_CHANGING_NOTE, agg.entry(p2.key)?.note)
         assertFalse(p2 in agg.due(5_000))
+        now += 5_000
+        assertTrue(p2 in agg.due(5_000))
+        // Then it settles: the question shows, the note goes.
+        agg.applyRead(p2, QuestionRead(prompt("Now?", "Yes"), Any()))
+        assertEquals(EntryState.READY, agg.entry(p2.key)?.state)
+        assertNull(agg.entry(p2.key)?.note)
     }
 
     @Test fun aCandidatePaneIsListedOnlyOnceItShowsAQuestion() {

@@ -99,12 +99,17 @@ fun QuestionsScreen(vm: AppViewModel) {
     }
     // Live: any change in the lists the app keeps (the status push, the watcher) is a round now.
     val sessions = vm.sessions()
-    val signature = sessions.joinToString("\n") { "${it.server.id}|${it.pane.id}|${it.status}|${it.pane.terminalId}|${it.pane.sessionId}" }
+    // The occupant's whole identity too, so another agent or session in a pane shows at once.
+    val signature = sessions.joinToString("\n") { s -> with(s.pane) {
+        "${s.server.id}|$id|${s.status}|$agent|$terminalId|$sessionId|$tabId|$workspaceId|$cwd"
+    } }
     LaunchedEffect(signature) { feed.poke() }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) { while (true) { now = System.currentTimeMillis(); delay(15_000) } }
     BackHandler(enabled = !vm.drawerOpen) { vm.goHome() }
     var typing by remember { mutableStateOf<TypedAnswer?>(null) }
+    // Hidden (the app went behind): the list, its targets and holds are forgotten, so the typed-answer box goes too.
+    LaunchedEffect(front) { if (!front) typing = null }
     Column(Modifier.fillMaxSize().background(Palette.Ground).systemBarsPadding()) {
         Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { vm.drawerOpen = true }) { Icon(Icons.Filled.Menu, contentDescription = "All agents", tint = Palette.Ink) }

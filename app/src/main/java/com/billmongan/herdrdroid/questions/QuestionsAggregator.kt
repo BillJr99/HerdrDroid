@@ -152,8 +152,10 @@ class QuestionsAggregator(private val clock: () -> Long = System::currentTimeMil
                 else old.copy(readAt = now)
             // The app can't read this pane at all: say why, with Open pane; read again after the usual wait.
             read.unreadable != null -> old.copy(state = EntryState.UNREAD, readAt = now, target = null, prompt = null, note = read.unreadable)
-            // The dialog never read the same twice: not a sign it's gone. What shows stays; read again later.
-            read.timedOut -> old.copy(readAt = now)
+            // The dialog never read the same twice: not a sign it's gone. A question shown stays; one never
+            // shown says it kept changing, with Open pane; either is read again after the usual wait.
+            read.timedOut -> if (old.state == EntryState.READY) old.copy(readAt = now)
+                else old.copy(state = EntryState.UNREAD, readAt = now, target = null, prompt = null, note = KEPT_CHANGING_NOTE)
             read.prompt == null -> if (old.state == EntryState.READY) old.copy(state = EntryState.ANSWERED, answeredAt = now, target = null, readAt = now)
                 else old.copy(state = EntryState.UNREAD, readAt = now, target = null)
             old.state == EntryState.READY && !sameQuestion(old.prompt, read.prompt) ->
@@ -190,6 +192,8 @@ class QuestionsAggregator(private val clock: () -> Long = System::currentTimeMil
         const val ANSWERED_SHOW_MS = 1_500L
         /** What an entry says once another agent or session took its pane. */
         const val OCCUPANT_NOTE = "Another agent or session is in this pane now; this is what it shows."
+        /** What an entry says when its dialog never read the same twice before it was ever shown. */
+        const val KEPT_CHANGING_NOTE = "The question kept changing while the app read it; open the pane to see it."
         /** What an entry says when its first read failed. */
         const val READ_FAILED_NOTE = "The app couldn't read this pane's screen just now."
 

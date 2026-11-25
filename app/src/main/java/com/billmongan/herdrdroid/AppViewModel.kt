@@ -2427,6 +2427,12 @@ class AppViewModel internal constructor(
     }
 
     suspend fun readPane(paneId: String) {
+        // 2.2.8: only the pane open now is read (its result would be dropped anyway); from the Questions
+        // view, an answer's follow-up read is the view's own next round instead.
+        if ((screen as? Screen.Agent)?.paneId != paneId) {
+            if (screen == Screen.Questions) questionsFeed.poke()
+            return
+        }
         val attempt = ++paneReadSequence
         // Only for the pane open now (1.4.2, from review: a late answer for another pane set or
         // cleared the open pane's problem).
