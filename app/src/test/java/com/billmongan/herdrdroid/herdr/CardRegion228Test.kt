@@ -367,4 +367,12 @@ class CardRegion228Test {
         assertFalse(grokWorkingBelowAnyQuestion("$none\n  [Opt out]  [Opt in]"))
         assertFalse(grokWorkingBelowAnyQuestion("$none\n  ○ Opt in"))
     }
+
+    /** agy LOW: the thinking panel's title with three dots, as a narrow or plain terminal draws it. */
+    @Test fun groksThinkingPanelWithThreeDotsIsNoQuestion() {
+        val s = narrowStatus.replace(plain("thinking-under-stale-approval.ansi"), "").replace("◆ Thinking…", "◆ Thinking...")
+        assertTrue(s.contains("◆ Thinking..."))
+        assertTrue(grokWorkingBelowAnyQuestion(s))
+        assertNull(detectPrompt(s, true, "grok"))
+    }
 }
