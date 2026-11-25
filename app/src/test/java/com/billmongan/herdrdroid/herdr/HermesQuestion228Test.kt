@@ -49,7 +49,11 @@ class HermesQuestion228Test {
     @Test fun typingMultiSelectAndOpenQuestionsShowTheQuestionAndLeaveTheAnswerToTerminal() {
         for ((name, q) in listOf("clarify-freetext" to "What should the demo release be called?",
             "clarify-single-other-typing" to "Which branch should the demo build use?",
-            "clarify-multi-select" to "Which demo checks should run?")) {
+            "clarify-multi-select" to "Which demo checks should run?",
+            // Review 3 (Codex): the input row decides, not the hint: an editing marker under the older choice
+            // hint (a frame drawn mid-change), or text in the waiting row.
+            "clarify-mixed-redraw" to "Which branch should the demo build use?",
+            "clarify-input-text" to "Which branch should the demo build use?")) {
             val p = checkNotNull(card(name)) { "$name renders a card" }
             assertEquals(name, q, p.question)
             assertTrue(name, p.choices.isEmpty() && p.terminalReview && p.hermesClarify)
