@@ -33,7 +33,7 @@ class AgentMessagingLifecycleTest {
     private fun idle() = shadowOf(Looper.getMainLooper()).idle()
 
     @After fun cleanUp() {
-        models.forEach { it.viewModelScope.cancel() }
+        models.forEach { it.clearForTest() }
         idle()
     }
 
@@ -57,7 +57,7 @@ class AgentMessagingLifecycleTest {
         val first = model(adapter)
         first.changeAgentMessaging(true)
         first.changeAppLock(true)
-        first.viewModelScope.cancel()
+        first.clearForTest()
         val next = model(adapter)
         assertTrue(next.agentMessagingEnabled)
         assertTrue(next.locked)
@@ -76,7 +76,7 @@ class AgentMessagingLifecycleTest {
         next.onForeground()
         idle()
         assertEquals(Adapter.startEffects + "stop" + Adapter.startEffects, adapter.effects)
-        next.viewModelScope.cancel()
+        next.clearForTest()
         assertFalse(adapter.session!!.isActive)
     }
 

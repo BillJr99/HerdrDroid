@@ -7,6 +7,9 @@ import java.io.File
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -73,7 +76,11 @@ class PaneReadTest {
     private val ledger = CrossServerCodeLedger({ "" }, {})
     private val shared by lazy { tmp.newFolder("shared") }
     private val store by lazy { PaneReadStore(tmp.newFolder("reads"), shared = shared) }
-    private val reads by lazy { PaneReadRequests(port, ledger, store, CoroutineScope(Dispatchers.Unconfined)) { now } }
+    /** One scope for every request object a test makes, cancelled after it so no read outlives it. */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+    private val reads by lazy { PaneReadRequests(port, ledger, store, scope) { now } }
+
+    @After fun cancelScope() = scope.cancel()
 
     private fun note(text: String = frame()) = reads.noteFrames("src", "s1", "w1:p1", "Claude on laptop2", text)
     private fun only() = reads.cardsFor("s1", "w1:p1").single()
@@ -133,7 +140,7 @@ class PaneReadTest {
         assertEquals("Sent to Claude with the capture attached.", only().delivery)
         assertFalse(reads.approve(approval))
         note()
-        PaneReadRequests(port, ledger, store, CoroutineScope(Dispatchers.Unconfined)) { now }.let {
+        PaneReadRequests(port, ledger, store, scope) { now }.let {
             it.noteFrames("src", "s1", "w1:p1", "Claude on laptop2", frame())
             assertTrue(it.cards.isEmpty())
         }
@@ -182,7 +189,7 @@ class PaneReadTest {
         assertEquals(PaneReadState.PENDING, only().state)
         assertEquals(1_790_000_000_000L + CrossServerCode.LIFETIME_MS, only().deadline)
         // Turned on after them: no card at all.
-        val later = PaneReadRequests(port, ledger, store, CoroutineScope(Dispatchers.Unconfined)) { now + CrossServerCode.LIFETIME_MS }
+        val later = PaneReadRequests(port, ledger, store, scope) { now + CrossServerCode.LIFETIME_MS }
         later.noteFrames("src", "s1", "w1:p1", "Claude on laptop2", frame())
         assertTrue(later.cards.isEmpty())
     }

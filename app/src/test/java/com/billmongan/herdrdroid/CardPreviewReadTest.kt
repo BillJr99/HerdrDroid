@@ -241,7 +241,7 @@ class CardPreviewReadTest {
             assertEquals(0, fixture.ssh.execNow("true").exit)
             body(fixture)
         } finally {
-            fixture.vm.viewModelScope.cancel()
+            fixture.vm.clearForTest()
             fixture.ssh.close()
             shadowOf(Looper.getMainLooper()).idle()
         }

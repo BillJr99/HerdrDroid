@@ -35,7 +35,7 @@ class HandsFreeAppLockTest {
     }
 
     @After fun tearDown() {
-        vm.viewModelScope.cancel()
+        vm.clearForTest()
     }
 
     @Test fun launchStillRequiresAuthentication() {
@@ -73,7 +73,7 @@ class HandsFreeAppLockTest {
         try {
             assertTrue(recreated.locked)
         } finally {
-            recreated.viewModelScope.cancel()
+            recreated.clearForTest()
         }
     }
 

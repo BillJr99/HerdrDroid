@@ -27,7 +27,7 @@ import java.time.Duration
 /** Opt-in, loopback-only SSH to a synthetic CLI, with no real terminal behind it. */
 @RunWith(AndroidJUnit4::class)
 class UsageRecoveryTest {
-    @get:Rule val idleMainLooper = IdleMainLooperRule()
+    @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = IdleMainLooperRule()
     @Test fun preExistingVisibleUsageRequiresOneExplicitTapAndRestoresTheDraft() = runBlocking {
         val port = System.getenv("HD_USAGE_FIXTURE_PORT")?.toIntOrNull()
         assumeTrue("no synthetic usage recovery fixture", port != null)
@@ -94,7 +94,7 @@ class UsageRecoveryTest {
             vm.dismissUsage(current)
             assertEquals("esc", fixture("keys"))
         } finally {
-            vm.viewModelScope.cancel()
+            vm.clearForTest()
             ssh.close()
         }
     }

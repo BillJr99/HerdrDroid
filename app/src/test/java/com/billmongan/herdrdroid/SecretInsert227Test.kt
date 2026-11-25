@@ -34,7 +34,7 @@ class SecretInsert227Test {
     private val claude = Pane("p1", "tab-p1", "w1", "claude", Status.IDLE, "", "/fixture", terminalId = "t-p1", sessionId = "sess-A")
 
     @After fun close() {
-        vm.viewModelScope.cancel()
+        vm.clearForTest()
         shadowOf(Looper.getMainLooper()).idle()
     }
 

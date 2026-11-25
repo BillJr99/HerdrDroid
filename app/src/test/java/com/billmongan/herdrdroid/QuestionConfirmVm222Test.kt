@@ -41,7 +41,7 @@ class QuestionConfirmVm222Test {
     private lateinit var f: Fixture
 
     @Before fun setUp() { f = Fixture(); f.install() }
-    @After fun tearDown() { f.vm.viewModelScope.cancel() }
+    @After fun tearDown() { f.vm.clearForTest() }
 
     private fun card(pane: String = "ask") = f.vm.questionCardFor(pane, f.vm.cardParse(pane, f.vm.paneText), "Agent")
 

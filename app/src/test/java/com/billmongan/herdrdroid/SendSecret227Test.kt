@@ -98,6 +98,8 @@ class SendSecret227Test {
             field("lastWorkAt").setLong(vm, Long.MAX_VALUE)
             field("lastPreviewsAt").setLong(vm, Long.MAX_VALUE)
             field("readers").set(vm, emptySet<String>())
+            // A read that gets past the fake marks the link lost; no real reconnect may follow it.
+            vm.holdReconnectForTest()
             vm.openPane("p1")
         }
         return vm
@@ -109,12 +111,12 @@ class SendSecret227Test {
     }
 
     /**
-     * Some reads (agent versions, quotas) go past the fake to a connection that can't resolve and
-     * mark the link lost, as in SendNowMenu227Test; the send only needs the link up when it starts.
+     * Some reads (agent versions, quotas) go past the fake to a connection that is refused and
+     * mark the link lost, as in SendSecret227Test's setUp; the send only needs the link up when it
+     * starts. The reconnect stays held (holdReconnectForTest), so nothing dials after the loss.
      */
     private fun relink(vm: AppViewModel) {
         fun field(name: String) = AppViewModel::class.java.getDeclaredField(name).apply { isAccessible = true }
-        (field("reconnectJob").get(vm) as? kotlinx.coroutines.Job)?.cancel()
         @Suppress("UNCHECKED_CAST")
         (field("link\$delegate").get(vm) as MutableState<Link>).value = Link.CONNECTED
     }
@@ -163,7 +165,7 @@ class SendSecret227Test {
             }
             rule.onAllNodes(holdsText(secret), useUnmergedTree = true).assertCountEquals(0)
         } finally {
-            rule.runOnUiThread { vm.viewModelScope.cancel() }
+            rule.runOnUiThread { vm.clearForTest() }
         }
     }
 
@@ -173,7 +175,9 @@ class SendSecret227Test {
         try {
             rule.setContent { AgentScreen(vm, "p1", readScreen = {}) }
             rule.runOnUiThread { vm.sendSecret(target(vm, "p2"), null, secret.toByteArray()) }
-            rule.waitUntil(5_000) { vm.secretElsewhere != null }
+            try { rule.waitUntil(5_000) { vm.secretElsewhere != null } } catch (e: androidx.compose.ui.test.ComposeTimeoutException) {
+                throw AssertionError("no draft save; link=${vm.link} notice=${vm.notice} panes=${vm.panes.map { it.id }}", e)
+            }
             rule.runOnIdle {
                 assertTrue(vm.composerDraft("p2").startsWith("/home/u/.herdrdroid/secrets/"))
                 assertFalse("the open pane's box is untouched", vm.composerDraft("p1").contains(".herdrdroid"))
@@ -183,7 +187,7 @@ class SendSecret227Test {
             }
             rule.onNodeWithText("Open pane").assertExists()
         } finally {
-            rule.runOnUiThread { vm.viewModelScope.cancel() }
+            rule.runOnUiThread { vm.clearForTest() }
         }
     }
 
@@ -207,7 +211,7 @@ class SendSecret227Test {
                 assertFalse(vm.composerDraft("p1").contains(".herdrdroid"))
             }
         } finally {
-            rule.runOnUiThread { vm.viewModelScope.cancel() }
+            rule.runOnUiThread { vm.clearForTest() }
         }
     }
 }
