@@ -3759,30 +3759,60 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
 
 private val GROK_THINKING_PANEL = Regex("""^\s*┃\s*◆\s+Thinking…?\s*$""")
 private val GROK_SELECT_FOOTER = Regex("""^\s*\d+/\d+:select\b""")
+/** A row in the "┃" gutter (the thinking panel's body, an approval box's rows). */
+private val GROK_GUTTER_ROW = Regex("""^\s*┃""")
+/**
+ * Grok's running row however narrow the pane or early the turn (agy's GROKTHINK review): a spinner,
+ * then text, then "[stop]" at the row's end, with any spacing and before "⇣<tokens>" appears.
+ */
+private val GROK_RUNNING_ROW = Regex("""^\s*[\u2800-\u28FF]\s*\S.*\[stop]\s*$""")
+/** The privacy banner's own rows: its buttons, or its radio rows; never prose that says "Opt in". */
+private val GROK_PRIVACY_ROW = Regex("""\[Opt out]\s*\[Opt in]|^\s*[○●]\s+Opt (?:in|out)\s*$""")
 /** Grok's plan review footer ("a:approve  │  s:request changes  │ …"), [detectLetterMenu]'s own rule. */
 private val GROK_PLAN_FOOTER = Regex("""\ba:approve\b""")
 /** Grok's folder trust rows ("y  Yes, proceed", "n  No, quit") and their hint ("Enter or y to trust"). */
 private val GROK_TRUST_ROW = Regex("""^\s*[yn]\s{2,}(?:Yes|No)\b|\bEnter or y to trust\b""")
+private val GROK_COMPOSER_TOP = Regex("""^\s*╭─+╮\s*$""")
+private val GROK_COMPOSER_ROW = Regex("""^\s*│\s*❯""")
+private val GROK_COMPOSER_BOTTOM = Regex("""^\s*╰""")
 
 /**
  * 2.2.8 (Bill: "grok is stuck on a question I can't answer"): Grok draws its live thinking panel in the
  * same "┃" gutter as its approval box ("┃  ◆ Thinking…", "┃  …", its thought text), with its running
  * row under it ("⠧ Thinking… 44s   22m58s ⇣121k [stop]") and the message box below. That is Grok at
- * work, not a question: a card there could not be answered. True when Grok's running row, or its
- * thinking panel, is lower on the screen than every row a Grok question is made of (an option row,
- * the "N/M:select" footer, the privacy banner's buttons, the plan review footer, the folder trust rows;
- * agy's GROKTHINK review: a plan approval or folder trust prompt under a running row is a question), so a stale approval box scrolled above the
- * work isn't a card either. A waiting approval draws its running row above the box, never below.
+ * work, not a question: a card there could not be answered. True when Grok's running row, or the bottom
+ * of its thinking panel, is lower on the screen than every row a Grok question is made of (an option
+ * row, the "N/M:select" footer, the privacy banner's own rows, the plan review footer, the folder trust
+ * rows), so a stale approval box scrolled above the work isn't a card either. A waiting approval draws
+ * its running row above the box, never below. agy's GROKTHINK review: the thinking panel's own text
+ * (a numbered point in it) and a draft in the message box ("│ ❯ 1. check foo │") are never question
+ * rows, and a plan approval or folder trust prompt under a running row still is one.
  */
 internal fun grokWorkingBelowAnyQuestion(plain: String): Boolean {
     val rows = plain.lines()
-    val running = rows.indexOfLast { GrokMeta.statusRow(it) != null || GROK_THINKING_PANEL.matches(it) }
+    var running = rows.indexOfLast { GrokMeta.statusRow(it) != null || GROK_RUNNING_ROW.matches(it) || GROK_THINKING_PANEL.matches(it) }
     if (running < 0) return false
-    val question = rows.indexOfLast { r ->
-        MENU_OPTION_ROW.find(r) != null || GROK_RADIO_ROW.containsMatchIn(r) || GROK_UNNUMBERED_ALWAYS.matches(r) ||
-            GROK_SELECT_FOOTER.containsMatchIn(r) || r.contains("Opt in") || GROK_PLAN_FOOTER.containsMatchIn(r) ||
-            GROK_TRUST_ROW.containsMatchIn(r)
+    // The thinking panel runs on down its "┃" gutter: its body is Grok's thought, not a question
+    // (up to an approval box's own radio rows, should one follow in the same gutter).
+    // Its rows are never question rows.
+    val composer = BooleanArray(rows.size)
+    if (GROK_THINKING_PANEL.matches(rows[running])) {
+        composer[running] = true
+        while (running + 1 < rows.size && GROK_GUTTER_ROW.containsMatchIn(rows[running + 1]) &&
+            !GROK_RADIO_ROW.containsMatchIn(rows[running + 1]) && !GROK_UNNUMBERED_ALWAYS.matches(rows[running + 1])) composer[++running] = true
     }
+    // The message box: its top edge, the "│ ❯" row, the rest of a draft, its bottom edge.
+    for (i in rows.indices) {
+        if (!GROK_COMPOSER_TOP.matches(rows[i]) || i + 1 >= rows.size || !GROK_COMPOSER_ROW.containsMatchIn(rows[i + 1])) continue
+        var j = i
+        while (j < rows.size) { composer[j] = true; if (j > i && GROK_COMPOSER_BOTTOM.containsMatchIn(rows[j])) break; j++ }
+    }
+    val question = rows.indices.lastOrNull { i ->
+        val r = rows[i]
+        !composer[i] && (MENU_OPTION_ROW.find(r) != null || GROK_RADIO_ROW.containsMatchIn(r) || GROK_UNNUMBERED_ALWAYS.matches(r) ||
+            GROK_SELECT_FOOTER.containsMatchIn(r) || GROK_PRIVACY_ROW.containsMatchIn(r) || GROK_PLAN_FOOTER.containsMatchIn(r) ||
+            GROK_TRUST_ROW.containsMatchIn(r))
+    } ?: -1
     return running > question
 }
 
