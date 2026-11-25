@@ -3755,7 +3755,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     }
     // 2.2.8 (Bill: "grok is stuck on a question I can't answer"): Grok working under its own rows.
     if (agent.equals("grok", true) && grokWorkingBelowAnyQuestion(plain)) return null
-    val p = detectPlainPrompt(plain, blocked, agent, version)
+    val p = detectPlainPrompt(if (agent.equals("grok", true)) grokWithoutThinkingPanel(plain) else plain, blocked, agent, version)
     return if (p != null && agent.equals("grok", true)) grokApproval(plain, p) else p
 }
 
@@ -3807,6 +3807,37 @@ internal fun grokPlanOrTrustBottom(rows: List<String>): Int {
     if (!GROK_TRUST_HINT.matches(rows[hint]) || !letterMenuTail(rows.subList(no + 1, rows.size))) return -1
     return last
 }
+/**
+ * Grok's live thinking panel in [rows] from its title row [top]: down its "┃" gutter to a dialog's own
+ * boundary in the same gutter (Codex's per-commit review of 7d6950b: a box title, a radio row, a
+ * highlighted option run), and, when it stops at a menu with no box title, back to its last blank "┃" row, so a question
+ * line right above the dialog's options is the dialog's, not thought (review of 894e44b). No footer
+ * elsewhere on the screen decides it: a select footer under the panel is a question row of its own.
+ */
+internal fun grokThinkingPanel(rows: List<String>, top: Int): IntRange {
+    var end = top
+    while (end + 1 < rows.size && GROK_GUTTER_ROW.containsMatchIn(rows[end + 1]) && !grokDialogBoundary(rows, end + 1)) end++
+    // A menu with no box title of its own: its question is the rows after the panel's last blank row.
+    if (end + 1 < rows.size && MENU_OPTION_ROW.find(rows[end + 1]) != null && !GROK_RADIO_ROW.containsMatchIn(rows[end + 1])) {
+        (end downTo top + 1).firstOrNull { GROK_BLANK_GUTTER.matches(rows[it]) }?.let { end = it }
+    }
+    return top..end
+}
+private val GROK_BLANK_GUTTER = Regex("""^\s*┃\s*$""")
+
+/**
+ * [plain] with Grok's live thinking panel above a dialog in the same gutter blanked out (its rows kept,
+ * empty), so the card's question is the dialog's own rows, never the thought above them.
+ */
+internal fun grokWithoutThinkingPanel(plain: String): String {
+    val rows = plain.lines()
+    val top = rows.indexOfLast { GROK_THINKING_PANEL.matches(it) }
+    if (top < 0) return plain
+    val panel = grokThinkingPanel(rows, top)
+    if (panel.last + 1 >= rows.size || !GROK_GUTTER_ROW.containsMatchIn(rows[panel.last + 1])) return plain
+    return rows.mapIndexed { i, r -> if (i in panel) "" else r }.joinToString("\n")
+}
+
 /** A Grok approval box's title row in the "┃" gutter: "┃  ›  List the build cache". */
 private val GROK_BOX_TITLE = Regex("""^\s*┃\s*›\s+\S""")
 
@@ -3851,15 +3882,9 @@ internal fun grokWorkingBelowAnyQuestion(plain: String): Boolean {
     // Its rows are never question rows.
     val composer = BooleanArray(rows.size)
     if (GROK_THINKING_PANEL.matches(rows[running])) {
-        val top = running
-        // Codex's per-commit review of 7d6950b: the panel ends at a dialog's own boundary in the same
-        // gutter: a box title ("┃  ›  Title"), a radio row, a highlighted option row ("┃  ❯ 1. Yes").
-        var end = top
-        while (end + 1 < rows.size && GROK_GUTTER_ROW.containsMatchIn(rows[end + 1]) && !grokDialogBoundary(rows, end + 1)) end++
-        // (Codex's per-commit review of 894e44b: no footer elsewhere on the screen decides it. A select
-        // footer under the panel is a question row of its own below it.)
-        for (i in top..end) composer[i] = true
-        running = end
+        val panel = grokThinkingPanel(rows, running)
+        for (i in panel) composer[i] = true
+        running = panel.last
     }
     // The message box: its top edge, the "│ ❯" row, the rest of a draft, its bottom edge; never past
     // the first row outside its frame (Codex's per-commit review: a box drawn without its bottom edge

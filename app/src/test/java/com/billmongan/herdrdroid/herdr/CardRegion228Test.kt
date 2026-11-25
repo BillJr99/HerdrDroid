@@ -483,6 +483,22 @@ class CardRegion228Test {
         val footed = base.replace(thoughtRow, "$thoughtRow\n  ┃  1. Yes, proceed\n  ┃  2. No, reject") +
             "\n  1/2:select  │  Tab:next option  │  Esc:scrollback\n"
         assertFalse(grokWorkingBelowAnyQuestion(footed))
+        // Codex's per-commit review of 894e44b (LOW): each is a card end to end, with its own options and
+        // question, never the thought above it.
+        // As Grok draws a waiting menu: its footer under it, no message box.
+        val top = base.substring(0, base.indexOf(thoughtRow) + thoughtRow.length)
+        val foot = "\n  ┃\n\n  1/2:select  │  Tab:next option  │  Esc:scrollback\n"
+        val asked = "$top\n  ┃\n  ┃  Run the cleanup?\n  ┃  ❯ 1. Yes, proceed\n  ┃    2. No, reject$foot"
+        val boxed = "$top\n  ┃  ›  List the build cache\n  ┃  │ ls -la build/cache\n  ┃  ❯ 1. Yes, proceed\n  ┃    2. No, reject$foot"
+        assertFalse(grokWorkingBelowAnyQuestion(asked))
+        assertFalse(grokWorkingBelowAnyQuestion(boxed))
+        for ((what, s) in listOf("asked" to asked, "titled" to boxed)) {
+            val p = checkNotNull(detectPrompt(s, true, "grok")) { what }
+            assertEquals(what, listOf("Yes, proceed", "No, reject"), p.choices.map { it.label })
+            assertFalse("$what: ${p.question}", p.question.contains("scripts lock"))
+        }
+        assertTrue(checkNotNull(detectPrompt(asked, true, "grok")).question.contains("Run the cleanup?"))
+        assertTrue(checkNotNull(detectPrompt(boxed, true, "grok")).question.contains("List the build cache"))
         // Codex's per-commit review of 894e44b (MEDIUM): one quoted highlighted row in the thought is
         // thought, and a footer detached from the panel by other output doesn't make its list a menu.
         val quoted = base.replace(thoughtRow, "$thoughtRow\n  ┃  ❯ 1. Yes, proceed is what the box will show.\n  ┃  Then I run it.")
