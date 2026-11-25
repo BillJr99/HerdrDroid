@@ -482,7 +482,7 @@ class SuccessiveCardAnswerTest {
                 original.replace("▸ 1.", "  1."), hermesComposer, "")) {
                 frame = changed
                 answer(card, target)
-                assertTrue(vm.notice.orEmpty().startsWith("Not sent."))
+                assertEquals("2.2.8: the card shows the question on screen now", CARD_UPDATED_NOTE, vm.notice)
             }
             frame = original
             terminal = "replacement"
@@ -501,7 +501,7 @@ class SuccessiveCardAnswerTest {
         frame = "$hermesClarify\n\n$approval"
 
         answer(clarify, target, index = 1)
-        assertTrue(vm.notice.orEmpty().startsWith("Not sent."))
+        assertEquals("2.2.8: the card shows the question on screen now", CARD_UPDATED_NOTE, vm.notice)
         readSelectedPane()
         val newer = displayed()
         assertTrue(newer.question, newer.question.contains("Dangerous Command"))
@@ -1235,7 +1235,7 @@ class SuccessiveCardAnswerTest {
         )) {
             frame = changed
             answer(card, target, index = 1)
-            assertTrue(vm.notice.orEmpty().startsWith("Not sent."))
+            assertEquals("2.2.8: the card shows the question on screen now", CARD_UPDATED_NOTE, vm.notice)
         }
         frame = nativeQuestion(2)
         liveScrollOffset = 1
@@ -1509,7 +1509,7 @@ class SuccessiveCardAnswerTest {
         ansiRows = false
         answer(shown, checkNotNull(vm.paneTextTarget))
         assertTrue(sent.isEmpty())
-        assertTrue(vm.notice.orEmpty().startsWith("Not sent."))
+        assertEquals("2.2.8: the card shows the question on screen now", CARD_UPDATED_NOTE, vm.notice)
     }
 
     @Test fun approvalRecoveredAfterFailedRecentReadCanBeAnswered() =
@@ -1539,7 +1539,7 @@ class SuccessiveCardAnswerTest {
         ansiRows = false
         answer(prompt, checkNotNull(vm.paneTextTarget))
         assertEquals(vm.notice, emptyList<String>(), sent)
-        assertTrue(vm.notice.orEmpty().startsWith("Not sent."))
+        assertEquals("2.2.8: the card shows the question on screen now", CARD_UPDATED_NOTE, vm.notice)
     }
 
     @Test fun staleApprovalCannotAnswerTheNewCommand() = fixture("codex", command("alpha-beta")) {
@@ -1547,7 +1547,7 @@ class SuccessiveCardAnswerTest {
         frame = command("alphabeta")
         answer(stale)
         assertTrue(sent.isEmpty())
-        assertTrue(vm.notice.orEmpty().startsWith("Not sent."))
+        assertEquals("2.2.8: the card shows the question on screen now", CARD_UPDATED_NOTE, vm.notice)
     }
 
     @Test fun staleTargetCannotAnswerAfterOccupantOrConnectionReplacement() = fixture("claude", firstStep) {
@@ -1556,13 +1556,13 @@ class SuccessiveCardAnswerTest {
         terminal = "t2" // Only the remote metadata has changed.
         answer(prompt, old)
         assertTrue(sent.isEmpty())
-        assertTrue(vm.notice.orEmpty().startsWith("Not sent."))
+        assertEquals("2.2.8: the card shows the question on screen now", CARD_UPDATED_NOTE, vm.notice)
 
         terminal = "t1"
         connection = Any()
         answer(prompt, old)
         assertTrue(sent.isEmpty())
-        assertTrue(vm.notice.orEmpty().startsWith("Not sent."))
+        assertEquals("2.2.8: the card shows the question on screen now", CARD_UPDATED_NOTE, vm.notice)
     }
 
     private fun bothMessagingSettings(agent: String, frame: String, test: Fixture.() -> Unit) {
