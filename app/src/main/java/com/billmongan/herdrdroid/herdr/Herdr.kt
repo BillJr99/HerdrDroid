@@ -5000,15 +5000,19 @@ private val CODEX_UPDATE_KEY = Regex("""^(?:›\s*)?(\d)\.\s+\S""")
  * Codex's per-commit review of 8c0125d: each counts exactly as it is (styles and all, only its ends
  * trimmed: a changed shortcut or a highlight shown only in colour is a change), except a running
  * status row ([CARD_STATUS_ROW]: a spinner's glyph, a space, then a running time), which counts by
- * its shape: styles dropped, every digit read as 0, a spinner's glyph as "*".
+ * its shape: styles dropped, a spinner's glyph as "*", each whole running time ("9s", "10s", "1m 0s",
+ * "22m58s") as "T", each token counter ("⇣1.2k") as "⇣N", and any other digit as 0, so a time or
+ * counter growing a digit or a unit is no change either.
  */
 private val CARD_UNDER_GLYPH = Regex("[\u2800-\u28FF·✢✳✶✻✽◐◓◑◒]")
 internal val CARD_STATUS_ROW = Regex("^[\u2800-\u28FF·✢✳✶✻✽◐◓◑◒][ \t].*[0-9][smh]")
 internal fun cardUnderRow(row: String): String {
     val shown = cardRegionRow(CARD_CSI.replace(row, ""))
     if (!CARD_STATUS_ROW.containsMatchIn(shown)) return cardRegionRow(row)
-    return CARD_UNDER_GLYPH.replace(shown.replace(Regex("[0-9]"), "0"), "*")
+    return CARD_UNDER_GLYPH.replace(shown, "*").replace(CARD_COUNTER, "⇣N").replace(CARD_RUN_TIME, "T").replace(Regex("[0-9]"), "0")
 }
+private val CARD_COUNTER = Regex("⇣ ?[0-9.]+[kKM]?")
+private val CARD_RUN_TIME = Regex("([0-9]+h ?)?([0-9]+m ?)?[0-9]+(\\.[0-9]+)?[smh]")
 
 /** The line between the dialog's rows and the rows under it in the digest. */
 internal const val CARD_UNDER_MARK = "@@under@@"
@@ -5089,7 +5093,10 @@ internal val CARD_SEND_CHECK = """
         t = re.sub(rb'\x1b\[[0-9;?]*[ -/]*[@-~]', b'', line).strip(b' \t\r\x0b\x0c')
         if not STATUS.search(t):
             return line.strip(b' \t\r\x0b\x0c')
-        return GLYPH.sub(b'*', DIGIT.sub(b'0', t))
+        t = GLYPH.sub(b'*', t)
+        t = re.sub('\u21e3'.encode('utf-8') + rb' ?[0-9.]+[kKM]?', '\u21e3N'.encode('utf-8'), t)
+        t = re.sub(rb'([0-9]+h ?)?([0-9]+m ?)?[0-9]+(\.[0-9]+)?[smh]', b'T', t)
+        return DIGIT.sub(b'0', t)
     def timer(line, t):
         return re.sub(rb'(?s)^(.*)\([0-9]+s\)', rb'\1(Ns)', line, count=1) if TIMER_LINE.match(t) else line
     V = '\u2502'.encode('utf-8')
