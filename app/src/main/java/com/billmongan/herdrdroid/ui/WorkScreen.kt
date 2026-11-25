@@ -62,7 +62,6 @@ import com.billmongan.herdrdroid.transcript.rowsOf
 import kotlinx.coroutines.delay
 import org.json.JSONObject
 import com.billmongan.herdrdroid.herdr.RunPlace
-import com.billmongan.herdrdroid.herdr.subagentPlace
 
 /**
  * What runs under an agent: its subagents and background tasks (Claude, from its own files) and
@@ -149,7 +148,6 @@ private fun WorkList(vm: AppViewModel, paneId: String) {
         }
         val keep = remember(w) { protectedPids(w, pane?.agent) }
         val places = vm.shellPlaces(paneId)
-        val screenNow = vm.workScreens[paneId]
         val activeProcs = remember(w) { w.activeProcs(pane?.agent) }
         val activePids = activeProcs.map { it.pid }.toSet()
         val ended = vm.endedProcs[paneId].orEmpty()
@@ -182,9 +180,8 @@ private fun WorkList(vm: AppViewModel, paneId: String) {
             if (runningSubs.isNotEmpty()) {
                 item { SectionTitle("Subagents", "${runningSubs.size} running") }
                 items(runningSubs, key = { "s:" + it.id }) { a ->
-                    val place = subagentPlace(pane?.agent, screenNow, a.title)
-                    val where = when (place) { RunPlace.FOREGROUND -> " · foreground"; RunPlace.BACKGROUND -> " · background"; else -> "" }
-                    WorkRow(Palette.Blue, a.title, "Subagent · running$where · updated ${ago(a.updated)} · ${a.kb} KB") { vm.screen = Screen.Work(paneId, "sub", a.file, a.title) }
+                    // 2.2.8: no Foreground or Background mark: nothing on screen ties a subagent to its log for certain.
+                    WorkRow(Palette.Blue, a.title, "Subagent · running · updated ${ago(a.updated)} · ${a.kb} KB") { vm.screen = Screen.Work(paneId, "sub", a.file, a.title) }
                 }
             }
             // ---- Finished --------------------------------------------------------------------

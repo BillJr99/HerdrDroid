@@ -239,53 +239,90 @@ internal fun backgroundOutcomeText(outcome: Backgrounder.Outcome, agentName: Str
     Backgrounder.Outcome.TIMED_OUT -> "$agentName hasn't taken the message yet. It is still in its queue."
 }
 
-/** Where a shell or subagent under a pane runs, as its agent's screen shows it (2.2.8). */
+/** Where a shell under a pane runs, as its agent's screen shows it for certain (2.2.8). */
 internal enum class RunPlace { FOREGROUND, BACKGROUND, UNKNOWN }
 
-private val CLAUDE_HELPER_ROW = Regex("""^ {2}[◯○◉] (\S+)\s{2,}(.+?)(?:\s{2,}.*)?$""")
+/** Claude Code's command row above a running row: "! sleep 120" (shell mode) or "● Bash(sleep 600)". */
+private val CLAUDE_BANG_ROW = Regex("""^! (.+)$""")
+private val CLAUDE_TOOL_ROW = Regex("""^[●⏺]\s*Bash\((.+?)\)?$""")
+/** Claude Code's count of background shells in its mode row ("⏵⏵ auto mode on · 1 shell · ↓ to manage"). */
+private val CLAUDE_SHELL_COUNT = Regex("""·\s+(\d+) shells?\b""")
+private val CLAUDE_MODE_LINE = Regex("""^ {1,4}(⏵⏵|⏸|⏵)\s+\S.*$""")
+private val CLAUDE_HINT_ROW = Regex("""^\(?\s*ctrl\s*\+\s*b to run in background\s*\)?$""", RegexOption.IGNORE_CASE)
 
 /**
- * The descriptions of Claude Code's background helpers in the list it draws under its input box
- * ("  ◯ general-purpose  Watching CI workflow run    16m 39s · ↓ 1"). The "● main" row is the session.
+ * The commands Claude Code shows running in the foreground: each one's command row right above its
+ * running row and hint ("! sleep 122", "  ⎿  Running… (4s)", "     (ctrl+b to run in background)").
+ * A cut command ends in "…".
  */
-internal fun claudeBackgroundHelpers(screen: String): List<String> =
-    stripAnsi(screen).lines().mapNotNull { CLAUDE_HELPER_ROW.matchEntire(it.trimEnd())?.groupValues?.get(2)?.trim() }
+internal fun claudeForegroundCommands(screen: String): List<String> {
+    val all = stripAnsi(screen).lines().map { it.trimEnd() }
+    val box = all.indexOfLast { it.trimStart().startsWith("❯") }
+    val rows = if (box >= 0) all.take(box) else all
+    val out = mutableListOf<String>()
+    for (i in rows.indices) {
+        if (!CLAUDE_HINT_ROW.matches(rows[i].trim()) || !rows[i].startsWith(" ")) continue
+        val running = (i - 1 downTo maxOf(0, i - 2)).firstOrNull { rows[it].isNotBlank() } ?: continue
+        if (!rows[running].contains("Running…") && !Regex("""\(\d+(\.\d+)?m?s\)\s*$""").containsMatchIn(rows[running])) continue
+        val head = (running - 1 downTo maxOf(0, running - 2)).firstOrNull { rows[it].isNotBlank() } ?: continue
+        val r = rows[head].trim()
+        val cmd = CLAUDE_BANG_ROW.matchEntire(r)?.groupValues?.get(1) ?: CLAUDE_TOOL_ROW.matchEntire(r)?.groupValues?.get(1)
+        out += cmd?.trim() ?: return emptyList()
+    }
+    return out
+}
 
-private fun norm(t: String) = t.filter { it.isLetterOrDigit() }.lowercase()
+/** Claude Code's background shell count from its mode row, 0 with the row but no count, null without the row. */
+internal fun claudeBackgroundShellCount(screen: String): Int? {
+    val row = stripAnsi(screen).lines().lastOrNull { CLAUDE_MODE_LINE.matches(it.trimEnd()) } ?: return null
+    return CLAUDE_SHELL_COUNT.find(row)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+}
 
-/**
- * Where a Claude subagent titled [title] runs: in the background when Claude's helper list shows it,
- * in the foreground when the list is there without it, unknown with no list or for other agents.
- */
-internal fun subagentPlace(agent: String?, screen: String?, title: String): RunPlace {
-    if (!agent.equals("claude", true) || screen.isNullOrBlank()) return RunPlace.UNKNOWN
-    val helpers = claudeBackgroundHelpers(screen)
-    if (helpers.isEmpty()) return RunPlace.UNKNOWN
-    val t = norm(title)
-    if (t.isEmpty()) return RunPlace.UNKNOWN
-    return if (helpers.any { h -> norm(h).let { it.isNotEmpty() && (t.startsWith(it.take(24)) || it.startsWith(t.take(24))) } })
-        RunPlace.BACKGROUND else RunPlace.FOREGROUND
+/** [shell] (Claude's eval'd command) is the command the screen shows as [shown] ("…" at its end: cut). */
+private fun sameCommand(shown: String, shell: String): Boolean {
+    val s = shell.trim()
+    if (shown.endsWith("…")) {
+        val prefix = shown.dropLast(1).trimEnd()
+        return prefix.length >= 6 && s.startsWith(prefix)
+    }
+    return s == shown
 }
 
 /**
- * Where each running shell [procs] runs, by pid. Claude Code only: with its foreground hint on the
- * screen, the newest top-level shell is in the foreground and the rest in the background; with no
- * hint, all of them are in the background. [backgrounded]: pids the app just moved with Ctrl+B,
- * shown in the background until a read says otherwise. Other agents: unknown.
+ * Where each running shell [procs] runs, by pid, only where it is certain (Bill, 2026-11-25: "figure
+ * out which shell is the foreground shell and be certain, and then mark that"). Claude Code starts
+ * every shell the same way (its own session, no terminal; a capture showed no process-group or
+ * session difference between a foreground and a background one), so the process tree alone can't
+ * tell them apart. The screen can: each foreground command shows with its own hint, and its text
+ * must match exactly one shell's command ([ProcInfo.shell], from its command line). The others are
+ * in the background only when their number is the background count Claude shows in its mode row.
+ * Anything else is unknown. [backgrounded]: shells the app just moved with Ctrl+B, shown in the
+ * background at once. Other agents: unknown.
  */
 internal fun shellPlaces(agent: String?, screen: String?, procs: List<ProcInfo>, backgrounded: Set<Int> = emptySet()): Map<Int, RunPlace> {
-    if (!agent.equals("claude", true) || screen.isNullOrBlank() || procs.isEmpty()) return procs.associate { it.pid to RunPlace.UNKNOWN }
-    val top = procs.minOf { it.depth }
-    val roots = procs.filter { it.depth == top }
-    // The newest shell holds the hint; one the app just moved stays in the background until a read clears the hint.
-    val fg = if (claudeBackgroundHint(screen)) roots.minByOrNull { it.ageSec }?.takeIf { it.pid !in backgrounded } else null
-    // A child shows where its top-level shell runs.
+    val unknown = procs.associate { it.pid to RunPlace.UNKNOWN }
+    if (!agent.equals("claude", true) || screen.isNullOrBlank() || procs.isEmpty()) return unknown
     val byPid = procs.associateBy { it.pid }
-    fun root(p: ProcInfo): ProcInfo {
+    fun root(p: ProcInfo): ProcInfo? {
         var at = p
         var guard = 0
-        while (at.depth > top && guard++ < 16) at = byPid[at.ppid] ?: break
-        return at
+        while (at.shell == null && guard++ < 16) at = byPid[at.ppid] ?: return null
+        return at.takeIf { it.shell != null }
     }
-    return procs.associate { p -> p.pid to if (fg != null && root(p).pid == fg.pid) RunPlace.FOREGROUND else RunPlace.BACKGROUND }
+    val shells = procs.filter { it.shell != null && (byPid[it.ppid]?.let { parent -> root(parent) } == null) }
+    if (shells.isEmpty()) return unknown
+    val place = mutableMapOf<Int, RunPlace>()
+    val shown = claudeForegroundCommands(screen)
+    val fg = mutableSetOf<Int>()
+    var certain = true
+    for (c in shown) {
+        val m = shells.filter { it.pid !in backgrounded && sameCommand(c, it.shell!!) }
+        if (m.size == 1) fg += m.single().pid else certain = false
+    }
+    fg.forEach { place[it] = RunPlace.FOREGROUND }
+    val rest = shells.filter { it.pid !in fg }
+    val count = claudeBackgroundShellCount(screen)
+    if (certain && count != null && rest.size == count) rest.forEach { place[it.pid] = RunPlace.BACKGROUND }
+    backgrounded.filter { it in byPid }.forEach { place[it] = RunPlace.BACKGROUND }
+    return procs.associate { p -> p.pid to (root(p)?.let { place[it.pid] } ?: RunPlace.UNKNOWN) }
 }
