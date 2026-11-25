@@ -117,6 +117,8 @@ sealed interface Screen {
     data object Usage : Screen
     /** The pane's past sessions; with [session] set, that one session, read-only. */
     data class History(val paneId: String, val session: PastSession? = null) : Screen
+    /** 2.2.8: every open question on the servers the app can see, with its answers ([com.billmongan.herdrdroid.ui.QuestionsScreen]). */
+    data object Questions : Screen
 }
 
 /** Whether the open pane's conversation comes from the agent's own log (ON) or its screen (OFF). */
@@ -5223,6 +5225,61 @@ class AppViewModel internal constructor(
         }
     }
 
+    // ---- The Questions view (2.2.8) -----------------------------------------------------------
+
+    /**
+     * 2.2.8: a card target for a pane on the open server while the Questions view is open. The same
+     * client, connection, server, visit and occupant binding as the open pane's [cardTarget], so an
+     * answer from the view goes through the same checks (fresh read, occupant, screen digest).
+     * Leaving the view (or opening a pane) changes the visit, and a target made here goes stale.
+     */
+    internal fun questionsCardTarget(paneId: String): CardTarget? {
+        if (screen != Screen.Questions || locked || link != Link.CONNECTED) return null
+        val client = herdr ?: return null
+        return CardTarget(client, client.connectionIdentity ?: return null, current?.id ?: return null,
+            paneVisit, pane(paneId) ?: return null)
+    }
+
+    /** The panes needing you now, on the open server and the watched ones, as the drawer lists them. */
+    private fun questionSources(): List<com.billmongan.herdrdroid.questions.QuestionSource> =
+        sessions().filter { it.status == Status.NEEDS_YOU }.map {
+            com.billmongan.herdrdroid.questions.QuestionSource(it.server.id, it.server.label, it.current, it.pane)
+        }
+
+    /**
+     * One pane read for the Questions view: the card target bound first (open server only), then
+     * the confirmed card from [readListedVoiceCard] (the pane's own record, the live viewport, read
+     * until the same dialog shows twice, over the server's shared connection). Null when it couldn't be read.
+     */
+    private suspend fun readQuestionSource(src: com.billmongan.herdrdroid.questions.QuestionSource): com.billmongan.herdrdroid.questions.QuestionRead? {
+        val session = sessions().firstOrNull { it.server.id == src.serverId && it.pane.id == src.pane.id && it.current == src.current } ?: return null
+        val target = if (src.current) questionsCardTarget(src.pane.id)?.takeIf { it.pane.sameCardOccupant(src.pane) } else null
+        val r = readListedVoiceCard(session) ?: return null
+        return com.billmongan.herdrdroid.questions.QuestionRead(r.prompt?.forCard(), target)
+    }
+
+    internal val questionsFeed by lazy { com.billmongan.herdrdroid.questions.QuestionsFeed(
+        viewModelScope,
+        sources = ::questionSources,
+        read = ::readQuestionSource,
+        inFlight = { it.current && it.serverId == current?.id && answerInFlight(it.pane.id) },
+    ) }
+
+    /** The drawer's Questions badge: each pane needing you is one open question. */
+    fun openQuestionCount(): Int = sessions().count { it.status == Status.NEEDS_YOU }
+
+    /** The Questions view is on screen (and the app in front): reads run, and the watched servers are read as often as with the drawer out. */
+    internal fun questionsShown() {
+        questionsFeed.show()
+        tuneFleet()
+        fleet?.poke()
+    }
+
+    internal fun questionsHidden() {
+        questionsFeed.hide()
+        tuneFleet()
+    }
+
     /** The pause between voice's confirmation reads of a card (2.2.2). */
     private val VOICE_CONFIRM_PAUSE_MS = 300L
 
@@ -5245,7 +5302,8 @@ class AppViewModel internal constructor(
         sessionId == other.sessionId && terminalId == other.terminalId && tabId == other.tabId &&
         workspaceId == other.workspaceId && cwd == other.cwd
 
-    private fun CardTarget.isCurrent(h: Herdr): Boolean = client === h && cardTarget(pane.id)?.let {
+    // 2.2.8: a card answered from the Questions view is current only while that view stays open.
+    private fun CardTarget.isCurrent(h: Herdr): Boolean = client === h && (cardTarget(pane.id) ?: questionsCardTarget(pane.id))?.let {
         it.client === client && it.connection === connection && it.server == server && it.visit == visit &&
             it.pane.sameCardOccupant(pane)
     } == true
@@ -6033,7 +6091,7 @@ class AppViewModel internal constructor(
 
     /** The other servers' read gap for the drawer and the app's place (2.1.4). */
     private fun tuneFleet() {
-        fleet?.everyMs = NeedsYouCadence.fleetGapMs(watching, drawerShown, foreground)
+        fleet?.everyMs = NeedsYouCadence.fleetGapMs(watching, drawerShown || questionsFeed.visible, foreground)
     }
 
     private var pushJob: Job? = null
