@@ -1622,6 +1622,17 @@ class SuccessiveCardAnswerTest {
 
         override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult {
             if (expectedConnection != null) assertSame(connection, expectedConnection)
+            if ("hashlib.sha256(screen)" in command) {
+                val occupant = Regex("""'p1' '([0-9a-f]{64})' '-'""").find(command)!!.groupValues[1]
+                val digest = Regex("""'p1' '([0-9a-f]{64})' && echo""").find(command)!!.groupValues[1]
+                val now = com.billmongan.herdrdroid.herdr.cardOccupantDigest(org.json.JSONObject(pane))
+                val visible = com.billmongan.herdrdroid.herdr.sha256Hex(ansiFrame().toByteArray())
+                if (now != occupant || visible != digest)
+                    return ExecResult(com.billmongan.herdrdroid.herdr.CARD_CHANGED_EXIT, com.billmongan.herdrdroid.herdr.CARD_REFUSED_MARK, "")
+                val send = command.substringAfter(" && echo ${com.billmongan.herdrdroid.herdr.OCCUPANT_PASSED_MARK} && ")
+                val result = immediate(send, timeoutSeconds, expectedConnection)
+                return result.copy(out = com.billmongan.herdrdroid.herdr.OCCUPANT_PASSED_MARK + "\n" + result.out)
+            }
             // 2.2.7: the check before a card's keys, run here as the computer would: against the
             // pane and screen as they are now, then each send it guards.
             Regex("""(?s)'p1' '([0-9a-f]{64})' '([0-9a-f]{64})'.*\) && (.*)$""").find(command)?.takeIf { "herdrdroid-check" in command }?.let { m ->
