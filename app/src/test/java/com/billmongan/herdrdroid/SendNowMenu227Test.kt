@@ -81,13 +81,17 @@ class SendNowMenu227Test {
             }
             rule.setContent { AgentScreen(vm, "p1", readScreen = {}) }
             rule.onNodeWithText("Queued until idle").assertExists()
+            // 2.2.8 (Bill): the row's own button sends as soon as the pane accepts input.
+            rule.onNodeWithText("Send when ready").assertExists()
             rule.onNodeWithText("a queued hello").performTouchInput { longClick() }
-            rule.onNodeWithText("Send now").assertExists()
+            // 2.2.8: named Send immediately for Claude Code, which can move running tasks to the background; with Share.
+            rule.onNodeWithText("Send immediately (background running tasks)").assertExists()
+            rule.onNodeWithText("Share").assertExists()
             rule.onNodeWithText("Copy").assertExists()
             // Some reads (agent versions, quotas) still go past the fake to a connection that is
             // refused and mark the link lost; the dialog only needs the link up when Send now is tapped.
             rule.runOnUiThread { state<Link>("link").value = Link.CONNECTED }
-            rule.onNodeWithText("Send now").performClick()
+            rule.onNodeWithText("Send immediately (background running tasks)").performClick()
             // Claude is working and its screen shows no background hint: the Force Send question.
             rule.onNodeWithText("Force send?").assertExists()
             rule.onNodeWithText("Send anyway").assertExists()
@@ -110,5 +114,6 @@ class SendNowMenu227Test {
         rule.onNodeWithText("A pending message").performTouchInput { longClick() }
         rule.onNodeWithText("Force send immediately").assertExists()
         rule.onNodeWithText("Send now").assertDoesNotExist()
+        rule.onNodeWithText("Send immediately (background running tasks)").assertDoesNotExist()
     }
 }
