@@ -5059,13 +5059,21 @@ private val CODEX_UPDATE_KEY = Regex("""^(?:›\s*)?(\d)\.\s+\S""")
  * dialog owns the keys (a new dialog drawn under the old one takes them), so they count too.
  * Codex's per-commit review of 8c0125d: each counts exactly as it is (styles and all, only its ends
  * trimmed: a changed shortcut or a highlight shown only in colour is a change), except a running
- * status row ([CARD_STATUS_ROW]: a spinner's glyph, a space, then a running time), which counts by
+ * status row ([CARD_STATUS_ROW]), which counts by
  * its shape: styles dropped, a spinner's glyph as "*", each whole running time ("9s", "10s", "1m 0s",
  * "22m58s") as "T", each token counter ("⇣1.2k") as "⇣N", and any other digit as 0, so a time or
  * counter growing a digit or a unit is no change either.
  */
-private val CARD_UNDER_GLYPH = Regex("[\u2800-\u28FF·✢✳✶✻✽◐◓◑◒]")
-internal val CARD_STATUS_ROW = Regex("^[\u2800-\u28FF·✢✳✶✻✽◐◓◑◒][ \t].*[0-9][smh]")
+private val CARD_UNDER_GLYPH = Regex("[\u2800-\u28FF·✢✳✶✻✽◐◓◑◒◆◇◈•]")
+/**
+ * A running status row as each agent draws it (Codex's per-commit review of dce009c: never any row that
+ * merely starts with a glyph): Grok's ("⠧ Thinking… 44s   22m58s ⇣121k [stop]", "◆ List … [↓][stop]"),
+ * Claude's, Codex's and Antigravity's ("✻ Working… (14s · esc to interrupt)", "• Working (12s • esc to
+ * interrupt)", "◇ Calling tools (21s · esc to interrupt)") and Hermes's ("── ⠹ Working… · 1m 2s ──── …").
+ * Matched on the row with its styles dropped and its ends trimmed; the same three shapes in
+ * [CARD_SEND_CHECK] and card-check.sh.
+ */
+internal val CARD_STATUS_ROW = Regex("^(?:(?:[\u2800-\u28FF]|◆|◇|◈) .*\\[stop]$|(?:[\u2800-\u28FF]|✻|✶|✳|✢|·|✽|◇|◆|•) .*\\(.*esc to interrupt\\)$|─+ [\u2800-\u28FF] Working)")
 internal fun cardUnderRow(row: String): String {
     val shown = cardRegionRow(CARD_CSI.replace(row, ""))
     if (!CARD_STATUS_ROW.containsMatchIn(shown)) return cardRegionRow(row)
@@ -5146,8 +5154,14 @@ internal val CARD_SEND_CHECK = """
         return re.sub(rb'\x1b\[[0-9;?]*[ -/]*[@-~]', b'', line).lower().strip(b' \t\r\x0b\x0c')
     DIGIT = re.compile(rb'[0-9]')
     GLYPH = re.compile(rb'\xe2[\xa0-\xa3][\x80-\xbf]|' + b'|'.join(re.escape(c.encode('utf-8')) for c in
-                       '\u00b7\u2722\u2733\u2736\u273b\u273d\u25d0\u25d3\u25d1\u25d2'))
-    STATUS = re.compile(rb'^(?:' + GLYPH.pattern + rb')[ \t].*[0-9][smh]')
+                       '\u00b7\u2722\u2733\u2736\u273b\u273d\u25d0\u25d3\u25d1\u25d2\u25c6\u25c7\u25c8\u2022'))
+    SPIN = rb'\xe2[\xa0-\xa3][\x80-\xbf]'
+    def alt(cs):
+        return b'|'.join(re.escape(c.encode('utf-8')) for c in cs)
+    # cardUnderRow's CARD_STATUS_ROW in Herdr.kt: Grok's, Claude's / Codex's / Antigravity's, Hermes's.
+    STATUS = re.compile(rb'^(?:(?:' + SPIN + b'|' + alt('\u25c6\u25c7\u25c8') + rb') .*\[stop\]$|(?:' + SPIN + b'|' +
+                        alt('\u273b\u2736\u2733\u2722\u00b7\u273d\u25c7\u25c6\u2022') + rb') .*\(.*esc to interrupt\)$|' +
+                        b'(?:' + '\u2500'.encode('utf-8') + b')+ ' + SPIN + b' Working)')
     def shape(line):
         # cardUnderRow in Herdr.kt: a running status row by its shape, every other row exactly.
         t = re.sub(rb'\x1b\[[0-9;?]*[ -/]*[@-~]', b'', line).strip(b' \t\r\x0b\x0c')
