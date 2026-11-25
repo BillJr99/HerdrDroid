@@ -47,13 +47,12 @@ class Corpus228Test {
     /**
      * Where the app reads a case differently from the index on purpose, and what it does instead:
      * the plan review offers approve, request changes, comment and quit, never "copy plan" (a:s:c:q,
-     * detectLetterMenu); a command the card can't show whole (Codex's heredoc in a narrow pane,
-     * Hermes's hidden heredoc) is a review-in-terminal card; OpenCode's "Type your own answer" is the
+     * detectLetterMenu); a command the card can't show whole (Hermes's hidden heredoc) is a
+     * review-in-terminal card (agy's re-review: Codex's narrow heredoc, 033, is a whole card); OpenCode's "Type your own answer" is the
      * card's typed answer, not a button.
      */
     private val asDesigned = mapOf(
         "008-grok-plan-approval-bulleted-above-status.txt" to { p: Prompt -> p.choices.map { it.keys } == listOf("a", "s", "c", "q") },
-        "033-codex-narrow-wrapped-command-code.txt" to { p: Prompt -> p.terminalReview },
         "046-hermes-approval-hidden-heredoc.txt" to { p: Prompt -> p.terminalReview },
         // Codex's per-commit review of fe63209 (LOW): and its third row stays the typed answer.
         "050-opencode-question-dialog.txt" to { p: Prompt ->
@@ -200,6 +199,14 @@ class Corpus228Test {
         val p = checkNotNull(detectPrompt(res("054-copilot-guard-new-dialog-below.txt"), true, "copilot"))
         assertEquals(listOf("Yes", "No, and tell Copilot what to do differently (Esc to stop)"), p.choices.map { it.label })
         assertEquals("Do you want to edit src/app.py?", p.question)
+    }
+
+    /** agy's re-review (MEDIUM): Codex's option wrapped before its key hint (033) is one option with its key. */
+    @Test fun aCodexOptionWrappedBeforeItsKeyHintIsWhole() {
+        val p = checkNotNull(detectPrompt(res("033-codex-narrow-wrapped-command-code.txt"), true, "codex"))
+        assertFalse(p.terminalReview)
+        assertEquals("Yes, and don't ask again for commands that start with `python3 -` in /home/user/work/demo-repo (p)", p.choices[1].label)
+        assertEquals(listOf("y", "p", "esc"), p.choices.map { menuKeys(p, it)?.single() })
     }
 
     @Test fun theCorpusReadsAsItsIndexSays() {
