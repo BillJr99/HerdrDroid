@@ -1792,6 +1792,15 @@ class AppViewModel internal constructor(
             stopForProblem(hostKeyMessage(e))
         } catch (e: HerdrError) {
             error = "${q.label}: ${e.message}"
+        } catch (e: com.billmongan.herdrdroid.herdr.DeliveryUncertain) {
+            // 2.2.8 (Codex's re-review 3): a bound write failed after it began: kept as maybe sent, never resent by itself.
+            com.billmongan.herdrdroid.diag.DiagLog.log("send", "a write failed after it began; it may have gone in: ${q.label}")
+            q.pendingId?.let { id ->
+                pendingSends = pendingSends.map {
+                    if (it.id == id) it.copy(awaitingLink = false, waiting = false, undelivered = true, held = MAY_HAVE_SENT) else it
+                }
+            }
+            error = "${q.label}: it may have reached the agent (${e.message}). Check the agent before sending it again."
         } catch (e: Exception) {
             error = "${q.label}: ${friendly(e)}"
         } finally {
@@ -4108,7 +4117,7 @@ class AppViewModel internal constructor(
                 if (failed != null && e !is CancellationException) {
                     // Removed first, so a replay of this action after a reconnect finds nothing to send.
                     pendingSends = pendingSends.filterNot { it.id == pendingId }
-                    failed(com.billmongan.herdrdroid.diag.DiagLog.describe(e),
+                    failed(com.billmongan.herdrdroid.diag.DiagLog.describe(e), e is com.billmongan.herdrdroid.herdr.DeliveryUncertain ||
                         kotlin.coroutines.coroutineContext[com.billmongan.herdrdroid.ssh.SendTrace]?.started == true)
                 }
                 throw e
@@ -4293,6 +4302,10 @@ class AppViewModel internal constructor(
                 pendingSends = pendingSends.filterNot { it.id == p.id }
                 heldThen.remove(p.id)
                 occupantMovedDuringSend(p.bound)
+            } else if (outcome.error is com.billmongan.herdrdroid.herdr.DeliveryUncertain) {
+                // 2.2.8 (Codex's re-review 3): the write began, then failed: maybe sent, never resent by itself.
+                pendingSends = pendingSends.map { if (it.id == p.id) it.copy(waiting = false, undelivered = true, held = MAY_HAVE_SENT) else it }
+                noteSendProblem(server, p.paneId, "Not confirmed: the message to $agentName may have gone in (${outcome.error.message}). Check the agent before sending it again.")
             } else {
                 val why = "sending failed (${com.billmongan.herdrdroid.diag.DiagLog.describe(outcome.error)})"
                 pendingSends = pendingSends.map { if (it.id == p.id) it.copy(waiting = false, undelivered = true, held = why) else it }
@@ -8001,3 +8014,6 @@ internal const val QUEUED_OCCUPANT_CHANGED = "Not sent: another agent or session
 
 /** 2.2.8: a held bound message's last look before the write found another occupant; nothing was typed. */
 internal class BoundOccupantChanged : Exception("the pane changed")
+
+/** 2.2.8: why a bound send that failed after its write began is kept, not sent again by itself. */
+internal const val MAY_HAVE_SENT = "it may have reached the agent; check the agent before sending it again"

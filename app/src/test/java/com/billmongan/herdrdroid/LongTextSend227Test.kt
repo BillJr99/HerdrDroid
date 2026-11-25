@@ -101,10 +101,14 @@ class LongTextSend227Test {
             // 2.2.8: the occupant check before a bound write, as the computer runs it, then the write.
             Regex("""(?s)'p1' '([0-9a-f]{64})' '-'.*\) && (.*)$""").find(command)?.takeIf { "herdrdroid-check" in command }?.let { m ->
                 if (com.billmongan.herdrdroid.herdr.cardOccupantDigest(org.json.JSONObject(pane)) != m.groupValues[1])
-                    return ExecResult(com.billmongan.herdrdroid.herdr.OCCUPANT_CHANGED_EXIT, "", "")
+                    return ExecResult(com.billmongan.herdrdroid.herdr.OCCUPANT_CHANGED_EXIT, com.billmongan.herdrdroid.herdr.OCCUPANT_REFUSED_MARK + "\n", "")
+                var out = ""
                 var last = ok("")
-                for (part in m.groupValues[2].split(" && ")) { last = direct(part); if (last.exit != 0) break }
-                return last
+                for (part in m.groupValues[2].split(" && ")) {
+                    if (part.startsWith("echo ")) { out += part.removePrefix("echo ") + "\n"; continue }
+                    last = direct(part); if (last.exit != 0) break
+                }
+                return last.copy(out = out + last.out)
             }
             return direct(command)
         }

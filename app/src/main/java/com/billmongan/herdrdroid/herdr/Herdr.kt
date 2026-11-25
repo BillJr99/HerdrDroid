@@ -206,6 +206,13 @@ class Herdr internal constructor(
     private suspend fun runWrite(command: String, timeoutSeconds: Long = 30, expectedConnection: Any? = null, permit: WritePermit? = null): String =
         kotlinx.coroutines.withContext(com.billmongan.herdrdroid.ssh.WriteCommand.MARK) { runNow(command, timeoutSeconds, expectedConnection, permit) }
 
+    /** 2.2.8: a write whose exit and output the caller reads itself (the bound send's markers). */
+    private suspend fun runWriteResult(command: String, expectedConnection: Any?, permit: WritePermit?): com.billmongan.herdrdroid.ssh.ExecResult =
+        kotlinx.coroutines.withContext(com.billmongan.herdrdroid.ssh.WriteCommand.MARK) {
+            commands?.let { permit.admit(); it.immediate(command, 30, expectedConnection) }
+                ?: ssh.execNow(command, 30, expectedConnection, permit)
+        }
+
     /** A command on the send lane: it doesn't wait behind reads. */
     private suspend fun runNow(command: String, timeoutSeconds: Long = 30, expectedConnection: Any? = null, permit: WritePermit? = null): String {
         // The test seam claims the permit itself, so fakes see the same no-write-after-revoke rule.
@@ -720,17 +727,21 @@ class Herdr internal constructor(
         busyOk: Boolean = false, occupant: String? = null, shellOnly: Boolean = false,
     ) {
         require(occupant == null || (!core && expectedConnection != null))
-        // 2.2.8: behind the occupant check, in the same command; its own exits say what happened.
+        // 2.2.8: behind the occupant check, in the same command. Codex's re-review 3: the check's refusal
+        // is told by its own line, and the passed line goes out just before the first write, so a write
+        // step's exit (whatever its number) is never taken for a refusal: after that line, a failure is
+        // [DeliveryUncertain], never "nothing typed".
         suspend fun write(command: String, permit: WritePermit? = null) {
             if (occupant == null) { runWrite(command, expectedConnection = expectedConnection, permit = permit); return }
-            try {
-                runWrite(occupantCheckCommand(pane.id, occupant, shellOnly) + " && " + command, expectedConnection = expectedConnection, permit = permit)
-            } catch (e: HerdrError) {
-                when (e.exit) {
-                    OCCUPANT_CHANGED_EXIT -> throw OccupantChanged()
-                    CARD_CHECK_FAILED_EXIT, 126, 127 -> throw CardCheckFailed()
-                    else -> throw e
-                }
+            val full = occupantCheckCommand(pane.id, occupant, shellOnly) + " && echo $OCCUPANT_PASSED_MARK && " + command
+            val r = runWriteResult(full, expectedConnection, permit)
+            if (r.exit == 0) return
+            val lines = r.out.lines().map { it.trim() }
+            val why = (r.err.ifBlank { r.out }).trim().lines().lastOrNull { it.isNotBlank() && it.trim() != OCCUPANT_PASSED_MARK } ?: "exit ${r.exit}"
+            when {
+                OCCUPANT_PASSED_MARK in lines -> throw DeliveryUncertain(why)
+                r.exit == OCCUPANT_CHANGED_EXIT && OCCUPANT_REFUSED_MARK in lines -> throw OccupantChanged()
+                else -> throw CardCheckFailed()
             }
         }
         // herdr's own status picks the route: an OpenCode pane marked needs-you from its screen
@@ -4504,6 +4515,17 @@ internal const val OCCUPANT_CHANGED_EXIT = 5
 /** 2.2.8: a message bound to a pane's occupant found another one there, checked on the computer; nothing was typed. */
 internal class OccupantChanged : Exception("the pane changed")
 
+/**
+ * 2.2.8 (Codex's re-review 3): printed by the occupant-only check when it refuses (exit 5), and by the
+ * command once the check passed, just before the first write. The two tell a refusal (nothing typed)
+ * from a write that failed after it began (it may have gone in).
+ */
+internal const val OCCUPANT_REFUSED_MARK = "@@herdrdroid-occupant-refused@@"
+internal const val OCCUPANT_PASSED_MARK = "@@herdrdroid-occupant-passed@@"
+
+/** 2.2.8: a bound write failed after its check passed and the write began: it may have reached the agent. */
+internal class DeliveryUncertain(message: String) : Exception(message)
+
 private val CARD_OCCUPANT_FIELDS = listOf("pane_id", "tab_id", "workspace_id", "agent", "foreground_cwd", "cwd", "terminal_id")
 private val CARD_SESSION_FIELDS = listOf("kind", "agent", "value")
 
@@ -4737,7 +4759,10 @@ internal val CARD_SEND_CHECK = """
             after = identity()
         except Exception:
             sys.exit(4)
-        sys.exit(0 if before is not None and before == after == occupant else 5)
+        if before is not None and before == after == occupant:
+            sys.exit(0)
+        print('@@herdrdroid-occupant-refused@@', flush=True)
+        sys.exit(5)
     try:
         before = identity()
         visible = call('read', pane, '--source', 'visible', '--format', 'ansi')

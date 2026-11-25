@@ -64,6 +64,8 @@ class SendNowVm227Test {
         var remoteTerminal: String? = null
         /** The terminal only the occupant check on the computer sees (null: as `pane get`). */
         var checkTerminal: String? = null
+        /** 2.2.8: the exit of an agent prompt write (it is still recorded): a write that fails after it began. */
+        var promptExit = 0
         /** Occupant checks the computer ran, and how many refused. */
         var occupantChecks = 0
         var occupantRefused = 0
@@ -123,10 +125,14 @@ class SendNowVm227Test {
             Regex("""(?s)'p1' '([0-9a-f]{64})' '-'.*\) && (.*)$""").find(command)?.takeIf { "herdrdroid-check" in command }?.let { m ->
                 occupantChecks++
                 val now = com.billmongan.herdrdroid.herdr.cardOccupantDigest(org.json.JSONObject(paneOn(checkTerminal ?: remoteTerminal ?: terminal)))
-                if (now != m.groupValues[1]) { occupantRefused++; return ExecResult(com.billmongan.herdrdroid.herdr.OCCUPANT_CHANGED_EXIT, "", "") }
+                if (now != m.groupValues[1]) { occupantRefused++; return ExecResult(com.billmongan.herdrdroid.herdr.OCCUPANT_CHANGED_EXIT, com.billmongan.herdrdroid.herdr.OCCUPANT_REFUSED_MARK + "\n", "") }
+                var out = ""
                 var last = ok("")
-                for (part in m.groupValues[2].split(" && ")) { last = direct(part); if (last.exit != 0) break }
-                return last
+                for (part in m.groupValues[2].split(" && ")) {
+                    if (part.startsWith("echo ")) { out += part.removePrefix("echo ") + "\n"; continue }
+                    last = direct(part); if (last.exit != 0) break
+                }
+                return last.copy(out = out + last.out)
             }
             return direct(command)
         }
@@ -137,7 +143,7 @@ class SendNowVm227Test {
             command.contains("'agent' 'prompt' 'p1' ") -> {
                 if (failSends) ExecResult(1, "", "fixture refused") else {
                     writes += "prompt:" + command.substringAfter("'p1' ").removeSurrounding("'")
-                    ok("")
+                    if (promptExit != 0) ExecResult(promptExit, "", "fixture write lost") else ok("")
                 }
             }
             command.contains("'pane' 'send-text' 'p1' ") -> {
@@ -291,6 +297,46 @@ class SendNowVm227Test {
         assertEquals(listOf("prompt:for this session"), writes)
         assertEquals(1, occupantChecks)
         assertEquals(0, occupantRefused)
+    }
+
+    /**
+     * 2.2.8 (Codex's re-review 3): the write itself fails with 5 after the check passed. That is not a
+     * refusal: the message may have gone in, so it is kept as maybe sent and never put back as unsent.
+     */
+    @Test fun aWriteThatFailsAfterTheCheckIsMaybeSentNotRestored() = fixture("claude", working.replace("esc to interrupt", "")) {
+        status(Status.IDLE)
+        shown()
+        promptExit = com.billmongan.herdrdroid.herdr.OCCUPANT_CHANGED_EXIT
+        // Send now: the queued row stays, marked as maybe sent.
+        vm.enqueue("p1", "maybe it went", behindQuestion = true)
+        vm.sendQueuedNow(vm.queued.single())
+        drainUntil { vm.queued.singleOrNull()?.mayHaveSent == true }
+        assertEquals(listOf("prompt:maybe it went"), writes)
+        assertTrue(vm.queued.single().note.orEmpty().startsWith("It may have reached the agent"))
+        assertEquals("not put back as unsent", "", vm.composerDraft("p1"))
+        assertTrue(vm.notice != QUEUED_OCCUPANT_CHANGED)
+        // The idle loop's route (Send immediately): the pending row shows it as maybe sent.
+        vm.cancelQueued(vm.queued.single())
+        writes.clear()
+        vm.enqueue("p1", "maybe again", behindQuestion = true)
+        vm.sendQueuedImmediately(vm.queued.single())
+        drainUntil { vm.pendingSends.any { it.held == MAY_HAVE_SENT } }
+        assertEquals(listOf("prompt:maybe again"), writes)
+        assertTrue(vm.pendingSends.single().undelivered)
+        assertEquals("", vm.composerDraft("p1"))
+        assertTrue(vm.queued.isEmpty())
+    }
+
+    /** The check's own refusal (its line, then 5) is still told apart: nothing typed, back in the box. */
+    @Test fun theChecksRefusalIsStillToldApart() = fixture("claude", working.replace("esc to interrupt", "")) {
+        status(Status.IDLE)
+        shown()
+        checkTerminal = "replacement"
+        vm.enqueue("p1", "not for the replacement", behindQuestion = true)
+        vm.sendQueuedNow(vm.queued.single())
+        drainUntil { vm.composerDraft("p1") == "not for the replacement" }
+        assertTrue(writes.isEmpty())
+        assertTrue(vm.queued.isEmpty())
     }
 
     @Test fun theFixtureScreensAreCleanWorkingClaudeScreens() {
