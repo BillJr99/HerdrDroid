@@ -618,11 +618,47 @@ class CardRegion228Test {
         }
     }
 
+    /**
+     * Codex's per-commit review of d2895b5 (HIGH): in a status row only the spinner's glyph, whole running
+     * times and counter numbers are tokens; every other digit, every word and every style counts, in the
+     * app and both checks.
+     */
+    @Test fun aStatusRowKeepsEverythingButItsMovingParts() {
+        assertEquals("* Thinking… T   T ⇣N [stop]", cardUnderRow("⠧ Thinking… 44s   22m58s ⇣121k [stop]"))
+        assertEquals("* Working… (T · ↓ N tokens · esc to interrupt)", cardUnderRow("✻ Working… (14s · ↓ 1.2k tokens · esc to interrupt)"))
+        assertEquals("── * Working… · T ──── Step 2 of 5 ─", cardUnderRow("── ⠹ Working… · 1m 2s ──── Step 2 of 5 ─"))
+        // Not part of a word or a number.
+        assertEquals("* Build abc12s and v2.5s… T [stop]", cardUnderRow("⠋ Build abc12s and v2.5s… 3s [stop]"))
+        // Styles stay.
+        assertEquals("\u001b[1m* Working… T\u001b[0m [stop]", cardUnderRow("\u001b[1m⠋ Working… 12s\u001b[0m [stop]"))
+        val s = grok(whole)
+        val p = card(s)
+        val last = cardRows(s).size - 1
+        val base = "  ⠋ Step 2 of 5: build abc12s… 3s [stop]"
+        val changed = listOf(
+            "  ⠙ Step 3 of 5: build abc12s… 4s [stop]",
+            "  ⠙ Step 2 of 5: build abc13s… 4s [stop]",
+            "  ⠙ \u001b[1mStep 2 of 5\u001b[0m: build abc12s… 4s [stop]",
+        )
+        val g = cardGuardScreen(withRow(s, last, base), p)
+        assertTrue(cardGuardScreenMatches(withRow(s, last, "  ⠙ Step 2 of 5: build abc12s… 1m 0s [stop]"), g))
+        for (c in changed) assertFalse(c, cardGuardScreenMatches(withRow(s, last, c), g))
+        val hasPython = listOf("/usr/bin/python3", "/bin/python3").any { File(it).canExecute() }
+        for (python in listOfNotNull(false, true.takeIf { hasPython })) {
+            assertEquals("python=$python tick", 0, runCheck(python, withRow(s, last, base), withRow(s, last, "  ⠙ Step 2 of 5: build abc12s… 1m 0s [stop]"), prompt = p))
+            for (c in changed) assertEquals("python=$python $c", CARD_CHANGED_EXIT, runCheck(python, withRow(s, last, base), withRow(s, last, c), prompt = p))
+            // Styled status rows, both sides the same: they pass as they are.
+            val styled = "  \u001b[38;2;133;133;133m⠧ Thinking… 44s\u001b[0m   \u001b[38;2;108;108;108m22m58s ⇣121k [stop]\u001b[0m"
+            val styled2 = "  \u001b[38;2;133;133;133m⠏ Thinking… 1m 0s\u001b[0m   \u001b[38;2;108;108;108m23m0s ⇣1.2M [stop]\u001b[0m"
+            assertEquals("python=$python styled", 0, runCheck(python, withRow(s, last, styled), withRow(s, last, styled2), prompt = p))
+        }
+    }
+
     /** Running status rows that grow a digit or a unit: before and after (Codex's per-commit review of 8c0125d). */
     private val rollovers = listOf(
         "  ⠋ Working… 9s · ⇣9k [stop]" to "  ⠙ Working… 10s · ⇣10.2k [stop]",
         "  ⠋ Working… 59s [stop]" to "  ⠙ Working… 1m 0s [stop]",
-        "  ✻ Running… (59m59s · ↓ 999k tokens · esc to interrupt)" to "  ✶ Running… (1h 0m 0s · ↓ 998k tokens · esc to interrupt)",
+        "  ✻ Running… (59m59s · ↓ 999k tokens · esc to interrupt)" to "  ✶ Running… (1h 0m 0s · ↓ 1.0M tokens · esc to interrupt)",
         "  ⠧ Thinking… 0.9s   9m59s ⇣9.9k [↓][stop]" to "  ⠏ Thinking… 12.5s   10m0s ⇣10k [↓][stop]",
         "── ⠹ Working… · 59s ──────── Check the build ─" to "── ⠼ Working… · 1m 0s ──────── Check the build ─",
     )
