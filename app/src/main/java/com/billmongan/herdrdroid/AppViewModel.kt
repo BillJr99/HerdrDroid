@@ -15,6 +15,7 @@ import com.billmongan.herdrdroid.transcript.toMarkdown
 import com.billmongan.herdrdroid.herdr.detectPrompt
 import com.billmongan.herdrdroid.herdr.activePiQuestion
 import com.billmongan.herdrdroid.herdr.isOpenCode
+import com.billmongan.herdrdroid.herdr.backgroundSupport
 import com.billmongan.herdrdroid.herdr.openCodeBackgroundDrawer
 import com.billmongan.herdrdroid.herdr.openCodeEmptyComposer
 import com.billmongan.herdrdroid.herdr.Prompt
@@ -7047,7 +7048,7 @@ class AppViewModel internal constructor(
     fun cancelResend() { resendConfirm = null }
 
     /** Sends [item] once through [sendMessage] with all its guards; it leaves the queue only when delivered. */
-    private fun dispatchQueued(item: QueuedPrompt, target: Pane, token: Long? = null) {
+    private fun dispatchQueued(item: QueuedPrompt, target: Pane, token: Long? = null, then: (() -> Unit)? = null) {
         // Pre-review M1 and M2: only a row still queued (not removed meanwhile), and, inside a Send
         // now attempt, only that attempt's own row (a replay or a second tap never sends it again).
         val now = queuedById(item.id) ?: return
@@ -7058,6 +7059,7 @@ class AppViewModel internal constructor(
             delivered = {
                 queued = queued.filterNot { it.id == item.id }
                 com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${target.id}: send now delivered; removed from the queue")
+                then?.invoke()
             },
             failed = { why, started ->
                 updateQueued(item.id) {
@@ -7118,7 +7120,8 @@ class AppViewModel internal constructor(
                 if (!moved) return@act fail("the task didn't show as moved to the background after Ctrl+B")
                 if (!mine()) return@act // removed while the check ran (pre-review M1)
                 com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${target.id}: send now saw the task in the background; sending")
-                dispatchQueued(item, pane(target.id) ?: now, token)
+                // 2.2.8: then keep moving foreground commands to the background until Claude takes it.
+                dispatchQueued(item, pane(target.id) ?: now, token) { pushUntilTaken(target.id, item.text) }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -7127,6 +7130,85 @@ class AppViewModel internal constructor(
                 fail(com.billmongan.herdrdroid.diag.DiagLog.describe(e))
                 if (e is LinkDown && herdr === h) linkLost(e)
             }
+        }
+    }
+
+    // -- Send immediately on a message in the agent's own queue (2.2.8) ----------------------------
+
+    /** The pending sends the chat shows greyed (in the agent's own queue), oldest first. */
+    fun pendingSendsShown(paneId: String): List<PendingSend> {
+        val shown = pendingFor(paneId).toSet()
+        return pendingSends.filter { it.isFor(current?.id, paneId) && !it.removable && (it.text to it.at) in shown }
+    }
+
+    /** Pending sends (by id) whose Send immediately is running. */
+    var pushingSends by mutableStateOf<Set<Long>>(emptySet())
+        private set
+
+    /** Why Send immediately is off for [paneId]'s greyed messages now, or null when it can run. */
+    fun sendImmediatelyBlock(paneId: String): String? {
+        val p = pane(paneId) ?: return "That pane isn't open on the computer just now."
+        backgroundSupport(p.agent, p.agentName)?.let { return it }
+        if (link != Link.CONNECTED || herdr == null) return "Not connected."
+        if (hasPendingQuestion(p)) return "Answer ${p.agentName}'s question first."
+        return null
+    }
+
+    /**
+     * Send immediately on a greyed message (2.2.8): it is already typed into the agent's own queue,
+     * which the agent reads when its current step ends. A command running in the foreground holds
+     * that step, so each time the screen shows one ([foregroundHint]) Ctrl+B moves it to the
+     * background, until the message shows in the agent's log or the agent is idle. Never while a
+     * question, approval or panel is open; never Esc or Ctrl+C. Bounded by [Backgrounder.Limits].
+     */
+    fun sendPendingImmediately(text: String, at: Long) {
+        val ps = pendingSendsShown((screen as? Screen.Agent)?.paneId ?: return).firstOrNull { it.text == text && it.at == at } ?: return
+        sendImmediatelyBlock(ps.paneId)?.let { flash(it); return }
+        pushUntilTaken(ps.paneId, ps.text, ps.id)
+    }
+
+    internal var pushLimits = com.billmongan.herdrdroid.herdr.Backgrounder.Limits()
+
+    private fun pushUntilTaken(paneId: String, text: String, knownId: Long? = null) {
+        val target = pane(paneId) ?: return
+        if (backgroundSupport(target.agent, target.agentName) != null) return
+        val client = herdr ?: return
+        val server = current?.id
+        fun pendingId(): Long? = knownId?.takeIf { id -> pendingSends.any { it.id == id } }
+            ?: pendingSends.lastOrNull { it.isFor(server, paneId) && !it.removable && it.text == text }?.id
+        val id = pendingId() ?: return
+        if (id in pushingSends) return
+        pushingSends = pushingSends + id
+        viewModelScope.launch {
+            val port = object : com.billmongan.herdrdroid.herdr.Backgrounder.Port {
+                fun same() = herdr === client && current?.id == server && link == Link.CONNECTED
+                override suspend fun screen(): String? =
+                    if (!same()) null else quietly { h -> if (h === client) h.readStyled(paneId, sendReadLines(target.agent)) else null }?.takeIf { it.isNotBlank() }
+                override fun blocked(screen: String): Boolean {
+                    val p = pane(paneId)?.takeIf { it.sameCardOccupant(target) } ?: return true
+                    return !same() || hasPendingQuestion(p) || checkedSendBlocked(p, screen, null) || usageDialogShown(p.agent, screen)
+                }
+                override fun done(screen: String): Boolean =
+                    pendingSends.none { it.id == id } || !com.billmongan.herdrdroid.herdr.agentWorking(pane(paneId)?.status ?: Status.UNKNOWN, screen)
+                override suspend fun press() {
+                    com.billmongan.herdrdroid.diag.DiagLog.log("send", "to $paneId: send immediately pressed Ctrl+B")
+                    quietly { h -> if (h === client) { h.sendKeys(paneId, com.billmongan.herdrdroid.herdr.Backgrounding.KEY); true } else null }
+                        ?: throw IllegalStateException("the key could not be sent")
+                }
+                override suspend fun pause(ms: Long) = delay(ms)
+            }
+            val outcome = try {
+                com.billmongan.herdrdroid.herdr.Backgrounder(port, pushLimits).run()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.UNREADABLE
+            } finally {
+                pushingSends = pushingSends - id
+            }
+            com.billmongan.herdrdroid.diag.DiagLog.log("send", "to $paneId: send immediately ${outcome.name.lowercase()}")
+            com.billmongan.herdrdroid.herdr.backgroundOutcomeText(outcome, target.agentName)?.let { flash(it) }
+            if (current?.id == server) readPane(paneId)
         }
     }
 

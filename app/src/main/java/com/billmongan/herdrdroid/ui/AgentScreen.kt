@@ -5,6 +5,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import com.billmongan.herdrdroid.herdr.screenLinks
 import com.billmongan.herdrdroid.herdr.openCodeBackgroundDrawer
+import com.billmongan.herdrdroid.herdr.backgroundSupport
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.material.icons.filled.MoreVert
@@ -790,6 +791,9 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     queuedNote = "Queued in ${pane?.agentName ?: "the agent"} · it reads these when its current step ends",
                     onOpen = { t -> opened = t },
                     focusKey = matches.getOrNull(findAt)?.second,
+                    // 2.2.8: long-press a greyed message for Send immediately (Ctrl+B until it goes).
+                    onSendPendingNow = { t, at -> vm.sendPendingImmediately(t, at) },
+                    sendPendingNowOff = vm.sendImmediatelyBlock(paneId),
                 ),
                 header = {},
                 footer = promptCard,
@@ -908,8 +912,9 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                                 onSend = { vm.sendQueuedImmediately(q) },
                                 sendEnabled = canSend,
                                 // 2.2.7: long-press for Send now (Ctrl+B first where Claude shows its background hint).
+                                // 2.2.8: named Send immediately there, with Share, for agents that background tasks.
                                 forceSendMenu = true,
-                                menuSendLabel = "Send now",
+                                menuSendLabel = if (backgroundSupport(pane?.agent, pane?.agentName ?: "") == null) "Send immediately (background running tasks)" else "Send now",
                                 onMenuSend = { vm.sendQueuedNow(q) },
                             )
                         }
@@ -1270,6 +1275,7 @@ internal fun PendingMessageRow(
 ) {
     var menu by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
+    val context = androidx.compose.ui.platform.LocalContext.current
     Column(
         Modifier.fillMaxWidth().background(Palette.BlueSoft, RoundedCornerShape(12.dp))
             .padding(start = 12.dp, end = 4.dp),
@@ -1293,6 +1299,12 @@ internal fun PendingMessageRow(
                         onClick = { menu = false; onMenuSend?.invoke() },
                     )
                     DropdownMenuItem(text = { Text("Copy") }, onClick = { menu = false; clipboard.setText(androidx.compose.ui.text.AnnotatedString(text)) })
+                    // 2.2.8: Share through the Android share sheet.
+                    DropdownMenuItem(text = { Text("Share") }, onClick = {
+                        menu = false
+                        val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(android.content.Intent.EXTRA_TEXT, text) }
+                        runCatching { context.startActivity(android.content.Intent.createChooser(send, null)) }
+                    })
                     DropdownMenuItem(text = { Text("Remove") }, onClick = { menu = false; onRemove() })
                 }
             }
