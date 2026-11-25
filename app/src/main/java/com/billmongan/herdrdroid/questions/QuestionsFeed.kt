@@ -69,6 +69,11 @@ class QuestionsFeed(
     /** Something changed (a pane's state, an answer sent) or Refresh was tapped: a round now, through the loop's one conflated wake. */
     fun poke() { wake.trySend(Unit) }
 
+    /** Shows why an answer from the view wasn't sent on its entry; on the feed's own thread. */
+    fun note(key: String, text: String) {
+        scope.launch { aggregator.note(key, text); publish() }
+    }
+
     fun holdUi(key: String) { uiHolds += key; aggregator.hold(key) }
 
     fun releaseUi(key: String) {

@@ -80,9 +80,14 @@ class QuestionsViewVm228Test {
         val e = readEntry()
         terminal = "t2"
         status(Status.NEEDS_YOU)
+        val gets = paneGets
         answer(e)
         assertTrue(sent.isEmpty())
+        assertEquals("never sent to the computer", 0, cardChecks)
+        assertEquals("no retry: not even a fresh read", gets, paneGets)
         assertTrue(vm.notice.orEmpty().startsWith("Not sent."))
+        assertEquals("the entry says why", "Not sent. Another agent or session is in this pane now.",
+            vm.questionsFeed.entries.single().note)
         // And the list starts that pane again rather than keep the old buttons.
         runBlocking { vm.questionsFeed.refreshNow() }
         val again = vm.questionsFeed.entries.single()
@@ -140,6 +145,7 @@ class QuestionsViewVm228Test {
         val sent = mutableListOf<String>()
         var afterSend: String? = null
         var visibleReads = 0
+        var paneGets = 0
         var cardChecks = 0
         var cardChecksRefused = 0
         var beforeCheck: (() -> Unit)? = null
@@ -171,8 +177,11 @@ class QuestionsViewVm228Test {
 
         fun answer(e: QuestionEntry) {
             val p = e.prompt!!
-            vm.answerChoice("p1", p, p.choices.first(), target = e.target as AppViewModel.CardTarget)
+            val t = e.target as AppViewModel.CardTarget
+            // As the screen does: what went wrong is shown on the entry.
+            vm.answerChoice("p1", p, p.choices.first(), target = t, feedback = { vm.questionsFeed.note(e.key, vm.questionsRefusal(t, it)) })
             drainUntil { !vm.answerInFlight("p1") }
+            shadowOf(Looper.getMainLooper()).idle()
         }
 
         fun drainUntil(done: () -> Boolean) {
@@ -207,7 +216,7 @@ class QuestionsViewVm228Test {
                 return last
             }
             return when {
-                command.endsWith("'pane' 'get' 'p1'") -> ok("""{"result":{"pane":$pane}}""")
+                command.endsWith("'pane' 'get' 'p1'") -> { paneGets++; ok("""{"result":{"pane":$pane}}""") }
                 command.contains("'pane' 'read' 'p1' '--source' 'recent'") -> ok(frame)
                 command.contains("'pane' 'read' 'p1' '--source' 'visible'") -> { visibleReads++; ok(frame) }
                 command.contains("'pane' 'send-keys' 'p1' ") -> {

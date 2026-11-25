@@ -49,6 +49,8 @@ data class QuestionEntry(
     val target: Any? = null,
     val readAt: Long = 0L,
     val answeredAt: Long = 0L,
+    /** Why the last answer from the view wasn't sent, or what changed in the pane; shown on the entry. */
+    val note: String? = null,
 ) {
     val key: String get() = source.key
 }
@@ -84,6 +86,9 @@ class QuestionsAggregator(private val clock: () -> Long = System::currentTimeMil
 
     fun release(key: String) { held -= key }
 
+    /** Shows [text] on the entry (why an answer wasn't sent); a new question in it clears it. */
+    fun note(key: String, text: String) { byKey[key]?.let { byKey[key] = it.copy(note = text) } }
+
     /**
      * The panes needing you now. A new one is added as READING; one whose pane changed occupant
      * (another agent or session in the same pane) starts again; one no longer listed shows
@@ -97,7 +102,7 @@ class QuestionsAggregator(private val clock: () -> Long = System::currentTimeMil
             val old = byKey[key]
             byKey[key] = when {
                 old == null -> QuestionEntry(src, EntryState.READING, since = now)
-                !sameOccupant(old.source.pane, src.pane) -> QuestionEntry(src, EntryState.READING, since = now)
+                !sameOccupant(old.source.pane, src.pane) -> QuestionEntry(src, EntryState.READING, since = now, note = OCCUPANT_NOTE)
                 // Its dialog closed while herdr still says it needs you: "Answered" shows its full
                 // time; once it has gone, a pane still needing you is read again as a new entry.
                 old.state == EntryState.ANSWERED -> old
@@ -160,6 +165,8 @@ class QuestionsAggregator(private val clock: () -> Long = System::currentTimeMil
     companion object {
         /** How long an answered entry stays, saying so, before it goes. */
         const val ANSWERED_SHOW_MS = 1_500L
+        /** What an entry says once another agent or session took its pane. */
+        const val OCCUPANT_NOTE = "Another agent or session is in this pane now; this is what it shows."
 
         /** The same agent session in the same terminal: what the card's own occupant check compares. */
         fun sameOccupant(a: Pane, b: Pane): Boolean = a.id == b.id && a.agent == b.agent && a.sessionId == b.sessionId &&

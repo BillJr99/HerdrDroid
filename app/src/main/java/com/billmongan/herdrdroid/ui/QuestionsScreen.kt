@@ -119,10 +119,15 @@ fun QuestionsScreen(vm: AppViewModel) {
             sending = { it.source.current && vm.answerInFlight(it.source.pane.id) },
             onOpen = { e -> vm.drawerOpen = false; vm.switchTo(e.source.serverId, e.source.pane.id) },
             onPress = { e, down -> if (down) feed.holdUi(e.key) else feed.releaseUi(e.key) },
-            onChoice = { e, p, c -> vm.answerChoice(e.source.pane.id, p, c, target = e.target as? AppViewModel.CardTarget); feed.poke() },
+            onChoice = { e, p, c ->
+                val t = e.target as? AppViewModel.CardTarget
+                vm.answerChoice(e.source.pane.id, p, c, target = t, feedback = { feed.note(e.key, vm.questionsRefusal(t, it)) })
+                feed.poke()
+            },
             onKey = { e, p, k ->
                 val label = "Pressed " + when (k) { "esc" -> "Esc"; "tab" -> "Tab"; "shift+tab" -> "Shift+Tab"; "ctrl+c" -> "Ctrl+C"; else -> k }
-                vm.answerCardKey(e.target as? AppViewModel.CardTarget, p, k, label)
+                val t = e.target as? AppViewModel.CardTarget
+                vm.answerCardKey(t, p, k, label, feedback = { feed.note(e.key, vm.questionsRefusal(t, it)) })
                 feed.poke()
             },
             onType = { e, p, c -> feed.holdUi(e.key); typing = TypedAnswer(e, p, c) },
@@ -133,7 +138,8 @@ fun QuestionsScreen(vm: AppViewModel) {
             t, sending = vm.answerInFlight(t.entry.source.pane.id),
             onDismiss = { typing = null; feed.releaseUi(t.entry.key) },
             onSend = { text ->
-                vm.answerTyped(t.entry.target as? AppViewModel.CardTarget, t.prompt, t.choice, text) {
+                val target = t.entry.target as? AppViewModel.CardTarget
+                vm.answerTyped(target, t.prompt, t.choice, text, feedback = { feed.note(t.entry.key, vm.questionsRefusal(target, it)) }) {
                     if (typing === t) { typing = null; feed.releaseUi(t.entry.key) }
                 }
             },
@@ -227,6 +233,7 @@ private fun QuestionEntryCard(
                 if (e.state == EntryState.ANSWERED) Text("Answered", color = Palette.Green, fontSize = 13.sp, fontWeight = FontWeight.Bold,
                     modifier = Modifier.testTag("question-answered"))
             }
+            e.note?.let { Text(it, color = Palette.OrangeInk, fontSize = 13.sp, modifier = Modifier.testTag("question-note")) }
             val p = e.prompt
             when {
                 e.state == EntryState.ANSWERED -> Unit

@@ -118,6 +118,7 @@ class QuestionsAggregatorTest {
         assertNull(e.prompt)
         assertNull(e.target)
         assertEquals(now, e.since)
+        assertEquals("the entry says the pane changed hands", QuestionsAggregator.OCCUPANT_NOTE, e.note)
         // The read made for the old occupant lands late: ignored.
         agg.applyRead(old, QuestionRead(prompt("Run it?", "Yes", "No"), Any()))
         assertEquals(EntryState.READING, agg.entry(replaced.key)?.state)
@@ -157,6 +158,18 @@ class QuestionsAggregatorTest {
         agg.release(a.key)
         agg.update(emptyList())
         assertEquals(EntryState.ANSWERED, agg.entry(a.key)?.state)
+    }
+
+    @Test fun aNoteShowsOnItsEntryUntilANewQuestion() {
+        val s = src("open", "p1")
+        agg.update(listOf(s))
+        agg.applyRead(s, QuestionRead(prompt("Run it?", "Yes", "No"), Any()))
+        agg.note(s.key, "Not sent. Another agent or session is in this pane now.")
+        assertEquals("Not sent. Another agent or session is in this pane now.", agg.entry(s.key)?.note)
+        agg.applyRead(s, QuestionRead(prompt("Run it?", "Yes", "No"), Any()))
+        assertEquals("the same question keeps it", "Not sent. Another agent or session is in this pane now.", agg.entry(s.key)?.note)
+        agg.applyRead(s, QuestionRead(prompt("Other?", "A"), Any()))
+        assertNull(agg.entry(s.key)?.note)
     }
 
     @Test fun anOlderReadFinishingAfterANewerOneDoesNotOverwriteIt() {
