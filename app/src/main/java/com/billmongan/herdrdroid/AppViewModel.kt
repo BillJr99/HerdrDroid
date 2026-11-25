@@ -5066,8 +5066,11 @@ class AppViewModel internal constructor(
                 synchronized(noticeForced) { noticeForced -= c.key }
                 val result = sendNotice(s, c.text)
                 when (result.outcome) {
-                    NoticeOutcome.ACCEPTED, NoticeOutcome.UNCONFIRMED ->
-                        notifier.sent(c, accepted = result.outcome == NoticeOutcome.ACCEPTED)
+                    NoticeOutcome.POSSIBLY_SENT -> {
+                        // Persist before waiting for a receipt. Cancellation must not cause a replay.
+                        notifier.sent(c)
+                        if (result.confirm?.invoke() == true) notifier.sent(c, confirmed = true)
+                    }
                     NoticeOutcome.HELD -> Unit
                     NoticeOutcome.REFUSED -> if (notifier.refused(c, forced)) noteSendProblem(s.server.id, s.pane.id,
                         "Cross-server notice was not sent to ${agentFacingName(s)}: ${result.why}. " +
@@ -5079,20 +5082,54 @@ class AppViewModel internal constructor(
         }
     }
 
-    private enum class NoticeOutcome { ACCEPTED, UNCONFIRMED, HELD, REFUSED }
-    private data class NoticeDelivery(val outcome: NoticeOutcome, val why: String = "")
+    private enum class NoticeOutcome { POSSIBLY_SENT, HELD, REFUSED }
+    private data class NoticeDelivery(
+        val outcome: NoticeOutcome,
+        val why: String = "",
+        val confirm: (suspend () -> Boolean)? = null,
+    )
+
+    private suspend fun noticeConfirmation(
+        pane: Pane,
+        text: String,
+        current: suspend () -> Boolean,
+        read: suspend (String) -> com.billmongan.herdrdroid.transcript.TranscriptRead?,
+    ): (suspend () -> Boolean)? {
+        if (com.billmongan.herdrdroid.herdr.ruleAgent(pane.agent) !in readers ||
+            com.billmongan.herdrdroid.herdr.LongText.plan(text) !is com.billmongan.herdrdroid.herdr.LongText.Plan.Single
+        ) return null
+        suspend fun <T> safely(action: suspend () -> T): T? = try {
+            action()
+        } catch (c: CancellationException) {
+            throw c
+        } catch (_: Exception) {
+            null
+        }
+        val baseline = kotlinx.coroutines.withTimeoutOrNull(2_500) {
+            if (safely(current) == true) safely { read("") } else null
+        }
+        val receipt = com.billmongan.herdrdroid.herdr.NoticeReceipt.begin(pane.sessionId, baseline) ?: return null
+        return {
+            com.billmongan.herdrdroid.herdr.confirmNotice(receipt, text, { safely(current) == true }) { cursor ->
+                safely { read(cursor) }
+            }
+        }
+    }
 
     /** Keep ambiguous writes deduplicated, and count only proven pre-input refusals against retry. */
     private suspend fun sendNotice(s: Session, text: String): NoticeDelivery {
         val held = NoticeDelivery(NoticeOutcome.HELD)
         if (!s.current) {
             val route = promptRelay.bind(s.server.id, s.pane) ?: return held
+            val confirm = noticeConfirmation(route.pane, text, {
+                noticeActive() && promptRelay.isCurrent(route) &&
+                    route.port.pane(route.pane.id, route.connection)?.let { sameOccupant(it, route.pane) } == true
+            }) { cursor -> route.port.noticeHistory(route.pane, cursor, route.connection) }
             var refusal: com.billmongan.herdrdroid.herdr.RelayRefusal? = null
             return when (promptRelay.send(route, text, refused = { refusal = it }) {
                 noticeActive() && promptRelay.isCurrent(route)
             }) {
-                RelayResult.SENT -> NoticeDelivery(NoticeOutcome.ACCEPTED)
-                RelayResult.UNCERTAIN -> NoticeDelivery(NoticeOutcome.UNCONFIRMED)
+                RelayResult.SENT, RelayResult.UNCERTAIN -> NoticeDelivery(NoticeOutcome.POSSIBLY_SENT, confirm = confirm)
                 RelayResult.DRAFT, RelayResult.REFUSED ->
                     refusal?.takeIf { it == com.billmongan.herdrdroid.herdr.RelayRefusal.AGENT_NOT_FOUND }
                         ?.let { NoticeDelivery(NoticeOutcome.REFUSED, it.why) } ?: held
@@ -5124,6 +5161,10 @@ class AppViewModel internal constructor(
             // 2.2.7: a notice too long to type goes as a checked file.
             override suspend fun upload(name: String, bytes: ByteArray) = h.uploadVerified(name, bytes)
         }
+        val confirm = noticeConfirmation(s.pane, text, {
+            noticeActive() && current?.id == server && herdr === h && h.connectionIdentity === connection &&
+                h.relayPane(s.pane.id, connection)?.let { sameOccupant(it, s.pane) } == true
+        }) { cursor -> h.noticeHistory(s.pane, cursor, transcriptScript, connection) }
         val result = localPromptSend.send(server, com.billmongan.herdrdroid.herdr.Occupant.of(s.pane), text, ::allowed, port)
         (result.failure as? LinkDown)?.let { if (herdr === h) linkLost(it) }
         if (result.failure?.let { com.billmongan.herdrdroid.herdr.promptTargetNotFound(it) } == true) {
@@ -5131,8 +5172,9 @@ class AppViewModel internal constructor(
                 com.billmongan.herdrdroid.herdr.RelayRefusal.AGENT_NOT_FOUND.why)
         }
         return when (result.outcome) {
-            com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.SENT -> NoticeDelivery(NoticeOutcome.ACCEPTED)
-            com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.UNCERTAIN -> NoticeDelivery(NoticeOutcome.UNCONFIRMED)
+            com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.SENT,
+            com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.UNCERTAIN ->
+                NoticeDelivery(NoticeOutcome.POSSIBLY_SENT, confirm = confirm)
             else -> held
         }
     }

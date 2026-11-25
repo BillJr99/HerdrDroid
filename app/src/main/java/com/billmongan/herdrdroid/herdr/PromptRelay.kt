@@ -10,6 +10,8 @@ internal interface PromptRelayPort {
     suspend fun hasWork(pane: Pane, connection: Any): Boolean
     suspend fun viewport(id: String, connection: Any): String
     suspend fun send(pane: Pane, text: String, connection: Any)
+    suspend fun noticeHistory(pane: Pane, cursor: String, connection: Any):
+        com.billmongan.herdrdroid.transcript.TranscriptRead? = null
 
     /**
      * Sends only if [permit] is still open when the write starts. A real transport claims it after

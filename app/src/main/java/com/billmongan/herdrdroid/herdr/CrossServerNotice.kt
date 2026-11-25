@@ -1,5 +1,8 @@
 package com.billmongan.herdrdroid.herdr
 
+import com.billmongan.herdrdroid.transcript.TranscriptRead
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 
 /**
@@ -39,17 +42,64 @@ Agents on other servers: ${names.joinToString(", ")}. The phone shows your messa
     fun clampThreshold(v: Int): Int = (((v.coerceIn(50, 100) + 2) / 5) * 5).coerceIn(50, 100)
 }
 
+/** A notice counts as confirmed only when it appears as an exact new user entry. */
+internal class NoticeReceipt private constructor(
+    private val session: String,
+    private val baseline: TranscriptRead,
+) {
+    fun matches(read: TranscriptRead, text: String): Boolean {
+        val live = read.live ?: return false
+        return read.ok && !read.reset && !live.herdrStale && live.sid == session &&
+            live.ref == baseline.live?.ref && live.db == baseline.live?.db &&
+            read.items.any { item ->
+                item.optString("t") == "user" && item.optString("text") == text &&
+                    item.optString("k").let { key ->
+                        key.isNotBlank() && baseline.items.none { it.optString("k") == key }
+                    }
+            }
+    }
+
+    val cursor get() = baseline.cursor
+
+    companion object {
+        fun begin(session: String?, read: TranscriptRead?): NoticeReceipt? {
+            if (session.isNullOrBlank() || read == null || !read.ok || read.more ||
+                read.cursor.isBlank() || read.cursor == "{}") return null
+            val live = read.live ?: return null
+            if (live.herdrStale || live.sid != session || (live.ref == null && live.db == null)) return null
+            return NoticeReceipt(session, read)
+        }
+    }
+}
+
+/** At most three attempts on one pinned connection. Lack of proof never authorizes a retry. */
+internal suspend fun confirmNotice(
+    before: NoticeReceipt?, text: String, current: suspend () -> Boolean,
+    read: suspend (String) -> TranscriptRead?,
+): Boolean {
+    if (before == null) return false
+    return withTimeoutOrNull(5_000) {
+        repeat(3) { attempt ->
+            if (attempt > 0) delay(250)
+            if (!current()) return@withTimeoutOrNull false
+            val fresh = read(before.cursor)
+            if (fresh?.let { before.matches(it, text) } == true && current()) return@withTimeoutOrNull true
+        }
+        false
+    } == true
+}
+
 /**
  * What was sent, keyed by server and pane, with the agent session and the notice's fingerprint, so
  * an app restart does not send it again. Stored as JSON through [load] and [save].
  */
 internal class NoticeLedger(private val load: () -> String, private val save: (String) -> Unit) {
-    data class Entry(val session: String, val fingerprint: String, val at: Long, val accepted: Boolean)
+    data class Entry(val session: String, val fingerprint: String, val at: Long, val confirmed: Boolean)
 
     private val entries: MutableMap<String, Entry> = runCatching {
         val o = JSONObject(load().ifBlank { "{}" })
         o.keys().asSequence().associateWith { k ->
-            o.getJSONObject(k).let { Entry(it.getString("s"), it.getString("f"), it.getLong("at"), it.optBoolean("accepted")) }
+            o.getJSONObject(k).let { Entry(it.getString("s"), it.getString("f"), it.getLong("at"), it.optBoolean("confirmed")) }
         }.toMutableMap()
     }.getOrDefault(mutableMapOf())
 
@@ -60,7 +110,7 @@ internal class NoticeLedger(private val load: () -> String, private val save: (S
         // Old panes are forgotten after 30 days.
         entries.entries.removeAll { now - it.value.at > 30L * 24 * 3_600_000 }
         save(JSONObject().apply {
-            entries.forEach { (k, e) -> put(k, JSONObject().put("s", e.session).put("f", e.fingerprint).put("at", e.at).put("accepted", e.accepted)) }
+            entries.forEach { (k, e) -> put(k, JSONObject().put("s", e.session).put("f", e.fingerprint).put("at", e.at).put("confirmed", e.confirmed)) }
         }.toString())
     }
 }
@@ -103,11 +153,11 @@ internal class CrossServerNotifier(
     }
 
     /** Records a sent (or possibly sent) notice so it is never sent twice. */
-    fun sent(c: Candidate, accepted: Boolean = true) {
+    fun sent(c: Candidate, confirmed: Boolean = false) {
         val now = clock()
         tries.remove(c.key)
         gaveUp.remove(c.key)
-        ledger.put(c.key, NoticeLedger.Entry(c.session, c.fingerprint, now, accepted), now)
+        ledger.put(c.key, NoticeLedger.Entry(c.session, c.fingerprint, now, confirmed), now)
     }
 
     /** Counts a refused attempt. True when this was the last try, so the pane gets a notice. */
