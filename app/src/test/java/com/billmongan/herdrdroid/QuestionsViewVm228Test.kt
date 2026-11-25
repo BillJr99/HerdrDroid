@@ -95,6 +95,22 @@ class QuestionsViewVm228Test {
         assertEquals(EntryState.READY, again.state)
     }
 
+    /** 2.2.8 (Codex's re-review 6): the check passed, then the keys failed: maybe sent, on the entry, never resent. */
+    @Test fun aCardAnswerFailingAfterTheCheckIsShownAsMaybeSentAndNeverSentAgain() = fixture {
+        val e = readEntry()
+        failAfterSend = true
+        answer(e)
+        assertEquals("typed once", listOf("y"), sent)
+        assertEquals("the check passed first", 1, cardChecks)
+        assertEquals(CARD_MAY_HAVE_SENT, vm.questionsFeed.entries.single().note)
+        assertEquals(CARD_MAY_HAVE_SENT, vm.notice)
+        // No retry by itself, and a second tap on the same question right away isn't sent twice.
+        failAfterSend = false
+        drainUntil { !vm.answerInFlight("p1") }
+        answer(e)
+        assertEquals(listOf("y"), sent)
+    }
+
     @Test fun anEntryGoesStaleOnceTheViewIsLeft() = fixture {
         val e = readEntry()
         vm.screen = Screen.Agent("p1")
@@ -144,6 +160,7 @@ class QuestionsViewVm228Test {
         var terminal = "t1"
         val sent = mutableListOf<String>()
         var afterSend: String? = null
+        var failAfterSend = false
         var visibleReads = 0
         var paneGets = 0
         var cardChecks = 0
@@ -211,9 +228,15 @@ class QuestionsViewVm228Test {
                     cardChecksRefused++
                     return ExecResult(com.billmongan.herdrdroid.herdr.CARD_CHANGED_EXIT, "", "")
                 }
+                // The rest runs as the computer would: the passed line, then the keys, stopping at a failure.
+                var out = ""
                 var last = ok("")
-                for (part in m.groupValues[3].split(" && ")) { last = immediate(part, timeoutSeconds, expectedConnection); if (last.exit != 0) break }
-                return last
+                for (part in m.groupValues[3].split(" && ")) {
+                    last = if (part.startsWith("echo ")) ok(part.removePrefix("echo ") + "\n") else immediate(part, timeoutSeconds, expectedConnection)
+                    out += last.out
+                    if (last.exit != 0) break
+                }
+                return last.copy(out = out)
             }
             return when {
                 command.endsWith("'pane' 'get' 'p1'") -> { paneGets++; ok("""{"result":{"pane":$pane}}""") }
@@ -222,7 +245,7 @@ class QuestionsViewVm228Test {
                 command.contains("'pane' 'send-keys' 'p1' ") -> {
                     sent += command.substringAfter("'p1' ").replace("'", "")
                     afterSend?.let { frame = it }
-                    ok("")
+                    if (failAfterSend) ExecResult(1, "", "fixture lost acknowledgement") else ok("")
                 }
                 command.contains("'pane' 'send-text' 'p1' ") -> { sent += "text:" + command.substringAfter("'p1' ").removeSurrounding("'"); ok("") }
                 else -> ok("")
