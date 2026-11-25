@@ -317,4 +317,25 @@ class CardRegion228Test {
             }
         }
     }
+
+    // ---- agy's GROKTHINK review (on 8edb9ec) and Codex's review 4B (the whole branch).
+
+    private fun plain(name: String) = stripAnsi(grok(name))
+    private val narrowStatus = Regex("""⠧ Thinking… 44s\s+22m58s ⇣121k \[stop]""")
+    private val thoughtRow = "its own files, and the option rows are numbered in the order the menu shows them."
+
+    /** agy HIGH: a plan review or folder trust prompt under Grok's running row is still a question. */
+    @Test fun aPlanApprovalOrFolderTrustUnderAGrokRunningRowIsStillACard() {
+        val plan = checkNotNull(javaClass.getResource("/screens/grok/derived-1.4.9/0306-plan-approval.txt")).readText()
+            .replace(Regex("""(?m)^  \d\. """), "  - ")
+        val screen = "   ⠧ Planning… 12s   3m02s ⇣4.1k [stop]\n\n  ┃  ◆ Thinking…\n  ┃  1. read the app first\n\n$plan"
+        assertFalse(grokWorkingBelowAnyQuestion(screen))
+        val p = checkNotNull(detectPrompt(screen, true, "grok")) { "plan approval" }
+        assertTrue(p.choices.map { it.keys }.toString(), p.choices.map { it.keys }.containsAll(listOf("a", "s", "c", "q")))
+        val trust = "   ⠧ Starting… 1s ⇣0 [stop]\n\n" +
+            checkNotNull(javaClass.getResource("/screens/grok/derived-1.4.9/0307-trust-this-folder-startup.txt")).readText()
+        assertFalse(grokWorkingBelowAnyQuestion(trust))
+        val t = checkNotNull(detectPrompt(trust, true, "grok")) { "folder trust" }
+        assertEquals(listOf("y", "n"), t.choices.map { it.keys })
+    }
 }

@@ -3759,6 +3759,10 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
 
 private val GROK_THINKING_PANEL = Regex("""^\s*┃\s*◆\s+Thinking…?\s*$""")
 private val GROK_SELECT_FOOTER = Regex("""^\s*\d+/\d+:select\b""")
+/** Grok's plan review footer ("a:approve  │  s:request changes  │ …"), [detectLetterMenu]'s own rule. */
+private val GROK_PLAN_FOOTER = Regex("""\ba:approve\b""")
+/** Grok's folder trust rows ("y  Yes, proceed", "n  No, quit") and their hint ("Enter or y to trust"). */
+private val GROK_TRUST_ROW = Regex("""^\s*[yn]\s{2,}(?:Yes|No)\b|\bEnter or y to trust\b""")
 
 /**
  * 2.2.8 (Bill: "grok is stuck on a question I can't answer"): Grok draws its live thinking panel in the
@@ -3766,7 +3770,8 @@ private val GROK_SELECT_FOOTER = Regex("""^\s*\d+/\d+:select\b""")
  * row under it ("⠧ Thinking… 44s   22m58s ⇣121k [stop]") and the message box below. That is Grok at
  * work, not a question: a card there could not be answered. True when Grok's running row, or its
  * thinking panel, is lower on the screen than every row a Grok question is made of (an option row,
- * the "N/M:select" footer, the privacy banner's buttons), so a stale approval box scrolled above the
+ * the "N/M:select" footer, the privacy banner's buttons, the plan review footer, the folder trust rows;
+ * agy's GROKTHINK review: a plan approval or folder trust prompt under a running row is a question), so a stale approval box scrolled above the
  * work isn't a card either. A waiting approval draws its running row above the box, never below.
  */
 internal fun grokWorkingBelowAnyQuestion(plain: String): Boolean {
@@ -3775,7 +3780,8 @@ internal fun grokWorkingBelowAnyQuestion(plain: String): Boolean {
     if (running < 0) return false
     val question = rows.indexOfLast { r ->
         MENU_OPTION_ROW.find(r) != null || GROK_RADIO_ROW.containsMatchIn(r) || GROK_UNNUMBERED_ALWAYS.matches(r) ||
-            GROK_SELECT_FOOTER.containsMatchIn(r) || r.contains("Opt in")
+            GROK_SELECT_FOOTER.containsMatchIn(r) || r.contains("Opt in") || GROK_PLAN_FOOTER.containsMatchIn(r) ||
+            GROK_TRUST_ROW.containsMatchIn(r)
     }
     return running > question
 }
