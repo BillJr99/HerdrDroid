@@ -5265,6 +5265,15 @@ class AppViewModel internal constructor(
         inFlight = { it.current && it.serverId == current?.id && answerInFlight(it.pane.id) },
     ) }
 
+    /**
+     * 2.2.8: why a Questions-view answer through [target] was refused, said plainly when the reason is
+     * that another agent or session is in the pane now (the target's occupant no longer there); else [message].
+     */
+    internal fun questionsRefusal(target: CardTarget?, message: String): String {
+        val now = target?.let { questionsCardTarget(it.pane.id) }
+        return if (target != null && now != null && !now.pane.sameCardOccupant(target.pane)) "Not sent. Another agent or session is in this pane now." else message
+    }
+
     /** The drawer's Questions badge: each pane needing you is one open question. */
     fun openQuestionCount(): Int = sessions().count { it.status == Status.NEEDS_YOU }
 
@@ -5350,11 +5359,14 @@ class AppViewModel internal constructor(
         return whole?.takeIf { fits(shown, it) }?.let { it to guard }
     }
 
-    internal fun answerCardKey(target: CardTarget?, prompt: Prompt, key: String, label: String) {
+    internal fun answerCardKey(target: CardTarget?, prompt: Prompt, key: String, label: String,
+        /** 2.2.8: told why nothing was sent (the Questions view shows it on the entry). */
+        feedback: ((String) -> Unit)? = null,
+    ) {
         // OpenCode's question dialog (2.1.2): Esc dismisses it; no other key goes in from the card.
-        if (prompt.openCodeQuestionFrame != null && key != "esc") { flash("Not sent. Refresh the question or open the terminal to answer."); return }
+        if (prompt.openCodeQuestionFrame != null && key != "esc") { flash("Not sent. Refresh the question or open the terminal to answer."); feedback?.invoke("Not sent. Refresh the question or open the terminal to answer."); return }
         var guard: com.billmongan.herdrdroid.herdr.CardGuard? = null
-        answerCardInput(target, prompt, label, guarded = prompt.openCodeQuestionFrame != null, onGuard = { guard = it }) { h, t, fresh ->
+        answerCardInput(target, prompt, label, guarded = prompt.openCodeQuestionFrame != null, onGuard = { guard = it }, feedback = feedback) { h, t, fresh ->
             sendCheckedCardInput(h, t.server, t.pane.id, fresh, com.billmongan.herdrdroid.herdr.CardInput.Keys(listOf(key)), guard, t.connection,
                 remembered = false)
             true
@@ -5501,16 +5513,18 @@ class AppViewModel internal constructor(
         guarded: Boolean = false,
         /** 2.2.7: told the guard of the fresh read, for a [send] that goes through [Herdr.sendCardInput]. */
         onGuard: (com.billmongan.herdrdroid.herdr.CardGuard?) -> Unit = {},
+        /** 2.2.8: told why nothing was sent. */
+        feedback: ((String) -> Unit)? = null,
         send: suspend (Herdr, CardTarget, Prompt) -> Boolean,
     ) {
         val refused = "Not sent. Refresh the question or open the terminal to answer."
-        if (target == null || shown.terminalReview || shown.hermesClarify || (shown.openCodeQuestionFrame != null && !guarded)) { flash(refused); return }
+        if (target == null || shown.terminalReview || shown.hermesClarify || (shown.openCodeQuestionFrame != null && !guarded)) { flash(refused); feedback?.invoke(refused); return }
         val id = target.pane.id
-        answerOnce(id) { h ->
+        answerOnce(id, feedback) { h ->
             val checked = target.freshAnswerGuarded(h, shown)
             val fresh = checked?.first
             onGuard(checked?.second)
-            if (fresh == null || !send(h, target, fresh)) { flash(refused); return@answerOnce }
+            if (fresh == null || !send(h, target, fresh)) { flash(refused); feedback?.invoke(refused); return@answerOnce }
             delivered()
             noteAnswer(id, shown, label, serverId = target.server)
             readPane(id)
@@ -5557,6 +5571,13 @@ class AppViewModel internal constructor(
                 com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: the keys failed after the check passed; they may have gone in")
                 flash(CARD_MAY_HAVE_SENT)
                 feedback?.invoke(CARD_MAY_HAVE_SENT)
+                if (herdr === client && link == Link.CONNECTED) readPane(paneId)
+            } catch (e: com.billmongan.herdrdroid.herdr.OccupantChanged) {
+                // 2.2.8: another agent or session is in the pane: nothing typed, and no retry.
+                com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: another occupant is in the pane; not sent")
+                val message = "Not sent. Another agent or session is in this pane now."
+                flash(message)
+                feedback?.invoke(message)
                 if (herdr === client && link == Link.CONNECTED) readPane(paneId)
             } catch (e: com.billmongan.herdrdroid.herdr.CardCheckFailed) {
                 com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: the check before the keys failed; not sent")
@@ -5741,19 +5762,23 @@ class AppViewModel internal constructor(
      * option, verify the move, then type the text and press Enter. Without a known highlight,
      * leave the answer to the terminal instead of guessing where to type it.
      */
-    internal fun answerTyped(target: CardTarget?, prompt: Prompt, choice: Choice?, text: String, delivered: () -> Unit) {
+    internal fun answerTyped(target: CardTarget?, prompt: Prompt, choice: Choice?, text: String,
+        /** 2.2.8: told why nothing was sent (the Questions view shows it on the entry). */
+        feedback: ((String) -> Unit)? = null,
+        delivered: () -> Unit,
+    ) {
         // OpenCode's question (2.1.2): only its own answer row takes text, opened by that row's digit.
         if (prompt.openCodeQuestionFrame != null) {
-            if (prompt.openCodeCustom == null || choice?.keys != prompt.openCodeCustom) { flash("Not sent. Refresh the question or open the terminal to answer."); return }
+            if (prompt.openCodeCustom == null || choice?.keys != prompt.openCodeCustom) { flash("Not sent. Refresh the question or open the terminal to answer."); feedback?.invoke("Not sent. Refresh the question or open the terminal to answer."); return }
             var guard: com.billmongan.herdrdroid.herdr.CardGuard? = null
-            answerCardInput(target, prompt, text, delivered, guarded = true, onGuard = { guard = it }) { h, t, fresh ->
+            answerCardInput(target, prompt, text, delivered, guarded = true, onGuard = { guard = it }, feedback = feedback) { h, t, fresh ->
                 typeOpenCodeCustom(h, t.pane.id, fresh, text, t.connection, t to guard) { h.readStyledViewport(t.pane.id, t.connection) }
             }
             return
         }
         // 2.2.7: the moves and the typed answer each go under the check of the read just before them.
         var guard: com.billmongan.herdrdroid.herdr.CardGuard? = null
-        answerCardInput(target, prompt, text, delivered, onGuard = { guard = it }) { h, t, fresh ->
+        answerCardInput(target, prompt, text, delivered, onGuard = { guard = it }, feedback = feedback) { h, t, fresh ->
             val id = t.pane.id
             var live = fresh
             // 2.2.8: Oh My Pi's "type to deny and steer": the text goes straight into its approval box.
