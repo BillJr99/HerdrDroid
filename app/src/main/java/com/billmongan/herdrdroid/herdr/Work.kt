@@ -7,6 +7,8 @@ import org.json.JSONObject
 data class ProcInfo(
     val pid: Int, val ppid: Int, val depth: Int, val name: String, val cmd: String,
     val ageSec: Long, val cpu: Double, val rssKb: Long,
+    /** 2.2.8: for a shell Claude Code started, the command it runs (masked like [cmd]), else null. */
+    val shell: String? = null,
 )
 
 /** A Claude subagent: its own log [file], a title, and whether it wrote in the last two minutes. */
@@ -64,7 +66,8 @@ fun parseWork(json: String): WorkInfo {
     return WorkInfo(
         procs = o.list(if (agentOwnedOnly) "active_procs" else "procs").map {
             ProcInfo(it.optInt("pid"), it.optInt("ppid"), it.optInt("depth"), it.optString("name"), it.optString("cmd"),
-                it.optLong("age"), it.optDouble("cpu"), it.optLong("rss"))
+                it.optLong("age"), it.optDouble("cpu"), it.optLong("rss"),
+                it.optString("shell").takeIf { s -> s.isNotEmpty() && !it.isNull("shell") })
         },
         subagents = o.list("subagents").map {
             SubagentInfo(it.optString("id"), it.optString("file"), it.optString("title"), it.optLong("updated"), it.optBoolean("active"), it.optInt("kb"))
