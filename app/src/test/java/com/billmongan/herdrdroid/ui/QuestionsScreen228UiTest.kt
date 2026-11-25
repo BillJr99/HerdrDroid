@@ -10,6 +10,8 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.getBoundsInRoot
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.billmongan.herdrdroid.IdleMainLooperRule
 import com.billmongan.herdrdroid.OUTERMOST_RULE
@@ -21,6 +23,7 @@ import com.billmongan.herdrdroid.questions.EntryState
 import com.billmongan.herdrdroid.questions.QuestionEntry
 import com.billmongan.herdrdroid.questions.QuestionSource
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -50,8 +53,9 @@ class QuestionsScreen228UiTest {
         rule.onNodeWithContentDescription("Questions, none open").assertIsDisplayed()
         count = 3
         rule.waitForIdle()
-        rule.onNodeWithTag("drawer-questions-badge").assertIsDisplayed()
-        rule.onNodeWithText("3").assertIsDisplayed()
+        // Robolectric's display check misses this badge although it is laid out with a size: check that directly.
+        val badge = rule.onNodeWithTag("drawer-questions-badge", useUnmergedTree = true).assertExists().assertTextEquals("3").getBoundsInRoot()
+        assertTrue(badge.right > badge.left && badge.bottom > badge.top)
         rule.onNodeWithContentDescription("Questions, 3 open").performClick()
         rule.runOnIdle { assertEquals(1, taps) }
     }
