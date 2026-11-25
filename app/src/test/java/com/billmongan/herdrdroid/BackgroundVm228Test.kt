@@ -21,6 +21,7 @@ import com.billmongan.herdrdroid.store.Server
 import kotlinx.coroutines.cancel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Ignore
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -69,6 +70,13 @@ class BackgroundVm228Test {
         /** The terminal the computer reports (null: [terminal]). */
         var remoteTerminal: String? = null
         var checks = 0
+        var reads = 0
+        var pushReads = 0
+        val prompts = mutableListOf<String>()
+        var afterRead: (() -> Unit)? = null
+        var afterKey: (() -> Unit)? = null
+        var beforeNthRead: ((Int) -> Unit)? = null
+        var statusNow = Status.WORKING
         /** Runs once, after the first `pane get` the computer answers (the app binding the occupant). */
         var afterFirstGet: (() -> Unit)? = null
 
@@ -84,7 +92,24 @@ class BackgroundVm228Test {
             shadowOf(Looper.getMainLooper()).idle()
         }
 
-        fun status(s: Status) = state("panes", listOf(com.billmongan.herdrdroid.herdr.Pane("p1", "tab", "w1", agent, s, "", "/fixture", terminalId = terminal)))
+        fun status(s: Status) {
+            statusNow = s
+            state("panes", listOf(com.billmongan.herdrdroid.herdr.Pane("p1", "tab", "w1", agent, s, "", "/fixture", terminalId = terminal)))
+        }
+
+        fun replaceServer() = state("current", server.copy(id = "other-fixture"))
+
+        fun startPending() {
+            val row = pending("finish the sample")
+            vm.sendPendingImmediately(row.text, row.at)
+        }
+
+        fun startBackground(push: Boolean) {
+            if (push) startPending() else vm.backgroundForeground("p1")
+        }
+
+        fun draftCard(text: String) =
+            AppViewModel.PaneDraftShown(checkNotNull(vm.cardTarget("p1")), text, actionable = true, clearable = true)
 
         fun drain(ms: Long = 30, rounds: Int = 60) = repeat(rounds) {
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(ms))
@@ -97,6 +122,7 @@ class BackgroundVm228Test {
         """.trimMargin())
 
         override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult {
+            check(expectedConnection == null || expectedConnection === connection) { "write or read used a replaced connection" }
             if (BACKGROUND_REFUSED_MARK in command) {
                 // The occupant check, then the screen check, then the key: as the computer would run them.
                 checks++
@@ -108,17 +134,30 @@ class BackgroundVm228Test {
                 if (!backgroundCheckPasses(step, frame)) return ExecResult(BACKGROUND_REFUSED_EXIT, "$BACKGROUND_REFUSED_MARK\n", "")
                 keys += "ctrl+b"
                 afterCtrlB?.let { frame = it }
+                afterKey?.invoke()
                 return ok(com.billmongan.herdrdroid.herdr.OCCUPANT_PASSED_MARK + "\n")
             }
             return when {
                 command.endsWith("'pane' 'get' 'p1'") -> ok("""{"result":{"pane":${paneOn(remoteTerminal ?: terminal)}}}""").also { afterFirstGet?.also { afterFirstGet = null }?.invoke() }
-                command.contains("'pane' 'read' 'p1'") -> ok(frame)
+                command.contains("'pane' 'read' 'p1'") -> {
+                    reads++
+                    if (vm.pushingSends.isNotEmpty()) pushReads++
+                    beforeNthRead?.invoke(reads)
+                    ok(frame).also { afterRead?.also { afterRead = null }?.invoke() }
+                }
+                command.contains("'agent' 'prompt' 'p1' ") -> { prompts += command; ok("") }
+                command.contains("'pane' 'send-text' 'p1' ") -> { prompts += command; ok("") }
                 command.contains("'pane' 'send-keys' 'p1' ") -> { keys += "unchecked:" + command.substringAfter("'p1' ").replace("'", ""); ok("") }
                 else -> ok("")
             }
         }
 
-        private fun paneOn(t: String) = """{"pane_id":"p1","workspace_id":"w1","tab_id":"tab","agent":"$agent","agent_status":"working","cwd":"/fixture","terminal_id":"$t","scroll":{"offset_from_bottom":0}}"""
+        private val statusWord get() = when (statusNow) {
+            Status.IDLE -> "idle"
+            Status.NEEDS_YOU -> "blocked"
+            else -> "working"
+        }
+        private fun paneOn(t: String) = """{"pane_id":"p1","workspace_id":"w1","tab_id":"tab","agent":"$agent","agent_status":"$statusWord","cwd":"/fixture","terminal_id":"$t","scroll":{"offset_from_bottom":0}}"""
         private fun ok(out: String) = ExecResult(0, out, "")
         private fun field(name: String) = AppViewModel::class.java.getDeclaredField(name).apply { isAccessible = true }
         @Suppress("UNCHECKED_CAST")
@@ -196,5 +235,107 @@ class BackgroundVm228Test {
         vm.sendPendingImmediately(p.text, p.at)
         drain()
         assertEquals(listOf("ctrl+b"), keys)
+    }
+
+    @Test fun afterTheAppReadBothActionsStopOnLocalTargetReplacement() {
+        val changes: List<Fixture.() -> Unit> = listOf(
+            { terminal = "replacement"; status(Status.WORKING) },
+            { connection = Any() },
+            { replaceServer() },
+            { status(Status.NEEDS_YOU) },
+        )
+        for (push in listOf(false, true)) for (change in changes) fixture("claude", fg) {
+            afterRead = { change() }
+            startBackground(push)
+            drain()
+            assertTrue("push=$push: the read seam ran", afterRead == null)
+            assertEquals("push=$push", emptyList<String>(), keys)
+            assertEquals("push=$push", 0, checks)
+        }
+    }
+
+    @Test fun atTheRemoteCheckBothActionsRefuseAChangedScreenOrOccupant() {
+        for (push in listOf(false, true)) for (replacement in listOf(dialog, moved, null)) fixture("claude", fg) {
+            if (replacement == null) afterRead = { remoteTerminal = "replacement" }
+            else atCheck = { frame = replacement }
+            startBackground(push)
+            drain()
+            assertTrue("push=$push: the check ran", checks > 0)
+            assertEquals("push=$push", emptyList<String>(), keys)
+        }
+    }
+
+    @Test fun betweenPressesBothActionsStopOnAQuestionOrTargetChange() {
+        val changes: List<Fixture.() -> Unit> = listOf(
+            { frame = dialog },
+            { connection = Any() },
+            { replaceServer() },
+            { terminal = "replacement"; status(Status.WORKING) },
+        )
+        for (push in listOf(false, true)) for (change in changes) fixture("claude", fg) {
+            afterKey = { change() }
+            startBackground(push)
+            drain()
+            assertEquals("push=$push", listOf("ctrl+b"), keys)
+        }
+    }
+
+    @Test fun unsupportedPanesDoNotUseThePendingMessageShortcut() {
+        for (agent in listOf("opencode", "muse", "codex")) fixture(agent, fg) {
+            startPending()
+            drain(rounds = 10)
+            assertEquals(agent, emptyList<String>(), keys)
+            assertEquals(agent, 0, checks)
+        }
+    }
+
+    @Test fun pendingMessageStopsAtSixPresses() = fixture("claude", fg) {
+        vm.pushLimits = Backgrounder.Limits(pollMs = 10)
+        beforeNthRead = { n -> frame = if (n % 2 == 1) fg else fg.replace("(ctrl+b to run in background)", "") }
+        startPending()
+        drain()
+        assertEquals(List(6) { "ctrl+b" }, keys)
+        assertTrue(vm.pushingSends.isEmpty())
+    }
+
+    @Test fun pendingMessageStopsAfterSixtyReadsWithNoHint() = fixture("claude", fg.replace("(ctrl+b to run in background)", "")) {
+        vm.pushLimits = Backgrounder.Limits(pollMs = 1)
+        startPending()
+        drain()
+        assertEquals(60, pushReads)
+        assertEquals(emptyList<String>(), keys)
+        assertTrue(vm.pushingSends.isEmpty())
+    }
+
+    @Test fun queuedSendStopsIfAQuestionOpensAfterTheBackgroundKey() = fixture("claude", fg) {
+        vm.backgroundCheckMs = 10
+        state("paneText", fg)
+        state("paneTextPane", "p1")
+        vm.enqueue("p1", "finish the sample")
+        afterCtrlB = dialog
+        vm.sendQueuedNow(vm.queued.single())
+        drain()
+        assertEquals(listOf("ctrl+b"), keys)
+        assertEquals(emptyList<String>(), prompts)
+        assertEquals("finish the sample", vm.queued.single().text)
+    }
+
+    private fun ompDraft() = res("/screens/omp/live-2026-11-25-probe/omp-draft.ansi")
+
+    @Test fun clearRequiresTheShownDraftToMatchTheVerifiedInput() = fixture("omp", ompDraft()) {
+        status(Status.IDLE)
+        vm.clearPaneDraft(draftCard("some older draft"))
+        drain()
+        assertTrue(reads > 0)
+        assertEquals(emptyList<String>(), keys)
+    }
+
+    @Ignore("BUG: Clear checks pane identity after the viewport read but does not bind Ctrl+E/Ctrl+U to that viewport.")
+    @Test fun clearDoesNotTouchAReplacementDraftAfterTheViewportRead() = fixture("omp", ompDraft()) {
+        status(Status.IDLE)
+        afterRead = { frame = frame.replace("alpha beta gamma", "another draft") }
+        vm.clearPaneDraft(draftCard("alpha beta gamma"))
+        drain()
+        assertEquals(emptyList<String>(), keys)
     }
 }
