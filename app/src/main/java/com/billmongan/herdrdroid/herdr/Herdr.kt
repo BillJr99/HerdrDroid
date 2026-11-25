@@ -3751,8 +3751,33 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
         detectOpenCodeQuestion(plain)?.let { return it }
         detectOpenCodePermission(text, plain)?.let { return it }
     }
+    // 2.2.8 (Bill: "grok is stuck on a question I can't answer"): Grok working under its own rows.
+    if (agent.equals("grok", true) && grokWorkingBelowAnyQuestion(plain)) return null
     val p = detectPlainPrompt(plain, blocked, agent, version)
     return if (p != null && agent.equals("grok", true)) grokApproval(plain, p) else p
+}
+
+private val GROK_THINKING_PANEL = Regex("""^\s*┃\s*◆\s+Thinking…?\s*$""")
+private val GROK_SELECT_FOOTER = Regex("""^\s*\d+/\d+:select\b""")
+
+/**
+ * 2.2.8 (Bill: "grok is stuck on a question I can't answer"): Grok draws its live thinking panel in the
+ * same "┃" gutter as its approval box ("┃  ◆ Thinking…", "┃  …", its thought text), with its running
+ * row under it ("⠧ Thinking… 44s   22m58s ⇣121k [stop]") and the message box below. That is Grok at
+ * work, not a question: a card there could not be answered. True when Grok's running row, or its
+ * thinking panel, is lower on the screen than every row a Grok question is made of (an option row,
+ * the "N/M:select" footer, the privacy banner's buttons), so a stale approval box scrolled above the
+ * work isn't a card either. A waiting approval draws its running row above the box, never below.
+ */
+internal fun grokWorkingBelowAnyQuestion(plain: String): Boolean {
+    val rows = plain.lines()
+    val running = rows.indexOfLast { GrokMeta.statusRow(it) != null || GROK_THINKING_PANEL.matches(it) }
+    if (running < 0) return false
+    val question = rows.indexOfLast { r ->
+        MENU_OPTION_ROW.find(r) != null || GROK_RADIO_ROW.containsMatchIn(r) || GROK_UNNUMBERED_ALWAYS.matches(r) ||
+            GROK_SELECT_FOOTER.containsMatchIn(r) || r.contains("Opt in")
+    }
+    return running > question
 }
 
 /**
