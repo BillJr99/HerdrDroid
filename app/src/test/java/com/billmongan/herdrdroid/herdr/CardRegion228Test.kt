@@ -338,4 +338,33 @@ class CardRegion228Test {
         val t = checkNotNull(detectPrompt(trust, true, "grok")) { "folder trust" }
         assertEquals(listOf("y", "n"), t.choices.map { it.keys })
     }
+
+    /** agy MEDIUM: a draft in the message box is not a question row, numbered or saying "Opt in". */
+    @Test fun aDraftInGroksMessageBoxIsNotAQuestionRow() {
+        for (draft in listOf("1. check foo", "Opt in to the cleanup")) {
+            val s = plain("thinking-panel.ansi").replaceFirst(Regex("""│ ❯ {${draft.length + 1}}"""), "│ ❯ $draft ")
+            assertTrue(draft, s.contains("│ ❯ $draft"))
+            assertTrue(draft, grokWorkingBelowAnyQuestion(s))
+            for (blocked in listOf(false, true)) assertNull("$draft blocked=$blocked", detectPrompt(s, blocked, "grok"))
+        }
+    }
+
+    /**
+     * agy MEDIUM: a numbered point or "Opt in" in the thinking panel's own text is Grok's thought, with
+     * a narrow running row (fewer than 3 spaces, no "⇣" yet) or with none drawn under the panel.
+     */
+    @Test fun numberedPointsInGroksThoughtAreNotQuestionRows() {
+        val base = plain("thinking-panel.ansi").replace(thoughtRow, "1. Opt in to the cleanup, then list the option rows.")
+        assertTrue(base.contains("┃  1. Opt in"))
+        val narrow = narrowStatus.replace(base, "⠧ Thinking… 44s 22m58s [stop]")
+        assertNotEquals(base, narrow)
+        val none = narrowStatus.replace(base, "")
+        for ((what, s) in listOf("status row" to base, "narrow status row" to narrow, "no status row" to none)) {
+            assertTrue(what, grokWorkingBelowAnyQuestion(s))
+            for (blocked in listOf(false, true)) assertNull("$what blocked=$blocked", detectPrompt(s, blocked, "grok"))
+        }
+        // The privacy banner's own rows still count as a question (its buttons, its radio rows).
+        assertFalse(grokWorkingBelowAnyQuestion("$none\n  [Opt out]  [Opt in]"))
+        assertFalse(grokWorkingBelowAnyQuestion("$none\n  ○ Opt in"))
+    }
 }
