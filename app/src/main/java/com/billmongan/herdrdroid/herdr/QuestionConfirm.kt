@@ -59,7 +59,7 @@ internal fun needsConfirmation(p: Prompt): Boolean =
  * styled live read), Muse's quota dialog (a styled read) and Grok's privacy dialog (its settings box).
  */
 private fun selfFramed(p: Prompt): Boolean =
-    p.agyApproval || p.hermesClarify || p.openCodeQuestionFrame != null || p.openCodePermission || p.numberKeys || p.museQuota || p == GROK_PRIVACY_PROMPT
+    p.guardedShortcutApproval || p.hermesClarify || p.openCodeQuestionFrame != null || p.openCodePermission || p.numberKeys || p.museQuota || p == GROK_PRIVACY_PROMPT
 
 /**
  * One read's card: [topped] when its top is proven (an edge from which the same card reads, with no

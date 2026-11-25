@@ -64,6 +64,13 @@ class QuestionsViewVm228Test {
         assertEquals(1, cardChecksRefused)
     }
 
+    @Test fun kiroDenyOnceSendsOnlyTheGuardedN() = fixture("kiro", kiroApproval) {
+        val e = readEntry()
+        answer(e, choiceIndex = 2)
+        assertEquals(listOf("n"), sent)
+        assertEquals(1, cardChecks)
+    }
+
     @Test fun anEntryNeedsTheQuestionsViewOpen() = fixture {
         vm.screen = Screen.Home
         shadowOf(Looper.getMainLooper()).idle()
@@ -415,11 +422,11 @@ class QuestionsViewVm228Test {
 
         fun settle() { drainUntil { !vm.answerInFlight("p1") }; shadowOf(Looper.getMainLooper()).idle() }
 
-        fun answer(e: QuestionEntry) {
+        fun answer(e: QuestionEntry, choiceIndex: Int = 0) {
             val p = e.prompt!!
             val t = e.target as AppViewModel.CardTarget
             // As the screen does: what went wrong is shown on the entry.
-            vm.answerChoice("p1", p, p.choices.first(), target = t, feedback = { vm.questionsFeed.note(e.key, vm.questionsRefusal(t, it)) })
+            vm.answerChoice("p1", p, p.choices[choiceIndex], target = t, feedback = { vm.questionsFeed.note(e.key, vm.questionsRefusal(t, it)) })
             drainUntil { !vm.answerInFlight("p1") }
             shadowOf(Looper.getMainLooper()).idle()
         }
@@ -484,6 +491,9 @@ class QuestionsViewVm228Test {
     }
 
     private companion object {
+        val kiroApproval = checkNotNull(QuestionsViewVm228Test::class.java.getResource(
+            "/screens/kiro/derived-1.4.9/0901-default-page-label-set.txt"
+        )).readText()
         val agyApproval = checkNotNull(QuestionsViewVm228Test::class.java.getResource(
             "/screens/agy/derived-2.2.8-subagent-approval/approval.txt"
         )).readText()
