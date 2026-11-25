@@ -112,6 +112,24 @@ class CardRegion228Test {
         assertFalse("the question", cardGuardScreenMatches(screen.replace("Run the cleanup?", "Run the cleanup now?"), g))
     }
 
+    /**
+     * 2.2.8 (Bill: "grok is stuck on a question I can't answer"): Grok's live thinking panel sits in the
+     * same "┃" gutter as its approval box, with its running row and the message box under it. No card,
+     * whatever herdr reports, and none for an older approval box scrolled above the work either.
+     */
+    @Test fun groksThinkingPanelIsNoQuestion() {
+        for (name in listOf("thinking-panel.ansi", "thinking-under-stale-approval.ansi")) {
+            val s = grok(name)
+            for (blocked in listOf(false, true)) assertNull("$name blocked=$blocked", detectPrompt(stripAnsi(s), blocked, "grok"))
+            assertTrue(name, grokWorkingBelowAnyQuestion(stripAnsi(s)))
+        }
+        // A waiting approval draws its running row above the box: still a card.
+        for (name in listOf(clipped, whole, "approval-scope-clipped.ansi", "approval-scope-tall.ansi")) {
+            assertFalse(name, grokWorkingBelowAnyQuestion(stripAnsi(grok(name))))
+            assertNotNull(name, detectPrompt(stripAnsi(grok(name)), false, "grok"))
+        }
+    }
+
     // ---- Grok 4.7's newer box: a scope row, a fourth option, and a command taller than the screen.
 
     private val scoped = "approval-scope-clipped.ansi"
