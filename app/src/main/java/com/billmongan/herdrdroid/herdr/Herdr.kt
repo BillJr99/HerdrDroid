@@ -3842,8 +3842,8 @@ internal fun grokWithoutThinkingPanel(plain: String): String {
     return rows.mapIndexed { i, r -> if (i in panel) "" else r }.joinToString("\n")
 }
 
-/** A Grok approval box's title row in the "┃" gutter: "┃  ›  List the build cache". */
-private val GROK_BOX_TITLE = Regex("""^\s*┃\s*›\s+\S""")
+/** A Grok approval or question title in the same gutter as its radio rows. */
+private val GROK_BOX_TITLE = Regex("""^\s*┃\s*([›?])\s+\S""")
 
 /**
  * Whether [rows] at [i] starts a Grok dialog in the thinking panel's gutter (never thought text): a box
@@ -4056,7 +4056,6 @@ fun approveAllAsk(p: Prompt, c: Choice): ApproveAllAsk? {
     return ApproveAllAsk(c.label, keys, reason)
 }
 
-private val GROK_APPROVAL_OR_ASK_HEADING = Regex("""^\s*┃\s*([›?])\s+\S""")
 private val GROK_APPROVAL_SELECT = Regex("""^\s*\d{1,2}/\d{1,2}:select\s+│""")
 
 /**
@@ -4075,7 +4074,7 @@ internal fun grokApproval(plain: String, parsed: Prompt): Prompt {
     while (first > 0 && GROK_RADIO_ROW.containsMatchIn(rows[first - 1])) first--
     val boxedHeading = rows.take(first).asReversed()
         .takeWhile { it.trimStart().startsWith("┃") }
-        .firstNotNullOfOrNull { GROK_APPROVAL_OR_ASK_HEADING.find(it)?.groupValues?.get(1) }
+        .firstNotNullOfOrNull { GROK_BOX_TITLE.find(it)?.groupValues?.get(1) }
     val footer = rows.drop(last + 1).firstOrNull { it.isNotBlank() && !it.trimStart().startsWith("┃") }
     val approval = boxedHeading != "?" &&
         (boxedHeading == "›" || footer?.let(GROK_APPROVAL_SELECT::containsMatchIn) == true)
