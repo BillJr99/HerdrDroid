@@ -105,6 +105,8 @@ internal fun hermesClarifyFrame(plain: String): HermesClarifyFrame? {
 private val CLASSIC_CHOICE_HINT = Regex("""^↑/↓ to select, Enter to lock, Tab next question(?:\s+\([0-9]+s\))?$""")
 private val CLASSIC_TYPING_HINT = Regex("""^type your answer and press Enter(?:\s+\([0-9]+s\))?$""")
 private val CLASSIC_INPUT = Regex("""^[?✎]\s*[❯›](?:\s.*)?$""")
+/** The only input row under which a digit picks a choice: the waiting "? ❯", with nothing typed. */
+private val CLASSIC_CHOOSING = Regex("""^\?\s*[❯›]$""")
 private val CLASSIC_TOP = Regex("""^╭─ (.+ needs your input) ─+╮$""")
 private val CLASSIC_HEADER = Regex("""^([1-9][0-9]*) questions?$""")
 private val CLASSIC_MARKER = Regex("""^([✓▸·]) (\S.*)$""")
@@ -123,7 +125,10 @@ internal fun hermesClassicClarify(plain: String): Prompt? {
     if (input < 2 || !CLASSIC_INPUT.matches(lines[input].trim())) return null
     val hint = (input - 1 downTo 0).firstOrNull { lines[it].isNotBlank() } ?: return null
     val hintRow = lines[hint].trim()
-    val typing = CLASSIC_TYPING_HINT.matches(hintRow)
+    // Review 3 (Codex): the input row, not the hint alone, decides. The editing marker "✎", or any text in
+    // the input row, means the composer takes text (a frame drawn mid-change can pair it with the older
+    // choice hint), so a digit would be typed, not picked: that card is Terminal only.
+    val typing = CLASSIC_TYPING_HINT.matches(hintRow) || !CLASSIC_CHOOSING.matches(lines[input].trim())
     if (!typing && !CLASSIC_CHOICE_HINT.matches(hintRow)) return null
     val bottom = (hint - 1 downTo 0).firstOrNull { lines[it].isNotBlank() } ?: return null
     if (!lines[bottom].trim().let { it.startsWith("╰") && it.endsWith("╯") && it.drop(1).dropLast(1).all { c -> c == '─' } }) return null

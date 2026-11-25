@@ -4577,6 +4577,8 @@ private val CARD_HERMES_HINT = Regex("""^(?:(type [0-9/]+, or )?↑/↓ to selec
 private val CARD_HERMES_RULE = Regex("""^──.*─$""")
 private val CARD_HERMES_INPUT = Regex("""^(?:⚠|\?|✎|🔐|🔑|⚙)\uFE0F?[ \t]*[❯›](?:[ \t].*)?$""")
 private val CARD_HERMES_BOTTOM = Regex("""^─+$""")
+/** Hermes's footer as [cardShown] gives it: "☤ <model> · ~188k/500k · …" (the model, then the context gauge). */
+private val CARD_HERMES_FOOTER = Regex("""^☤ [^ ]+ · ~?[0-9][0-9.,]*[km]?/[0-9][0-9.,]*[km]?(?: · .*)?$""")
 private val CARD_TIMER = Regex("""^(.*)\([0-9]+s\)""", RegexOption.DOT_MATCHES_ALL)
 private val CARD_CSI = Regex("\u001B\\[[0-9;?]*[ -/]*[@-~]")
 
@@ -4654,25 +4656,30 @@ internal fun ompApprovalRegion(shown: List<String>): OmpRegion? {
  * Hermes's modern composer that it redraws every second while a prompt waits, neither part of the
  * question: the composer's top rule (a spinner frame and the turn's running time on its left) and the
  * footer under it (the model, context gauge and timers). Only when they are proven to be the composer
- * under a live prompt: the last row on the screen with text is the footer, right under the composer's
+ * under a live prompt, on a pane whose agent is Hermes: the last row on the screen with text is the
+ * footer in Hermes's own shape ([CARD_HERMES_FOOTER]: "☤ <model> · ~188K/500K · …"), right under the composer's
  * bottom rule, right under a waiting input row ("⚠ ❯", "? ❯", "✎ ❯ …"), right under the top rule, right
  * under Hermes's hint row ([CARD_HERMES_HINT]). Each stands for itself as one fixed row; the hint, the
- * input row and every row of the prompt above count as they are. Returns the two indices, or null.
- * [CARD_SEND_CHECK] and card-check.sh apply exactly this rule.
+ * input row and every row of the prompt above count as they are. Returns the two indices, or null, and
+ * when the layout can't be established every row keeps its bytes. Review 3 (Codex): the checks on the
+ * computer take the agent from the occupant they read ("agent": "hermes", herdr's own name); the app
+ * passes the pane's agent, so a pane whose name the app maps to Hermes but herdr does not reads
+ * differently and the answer is refused, never sent. [CARD_SEND_CHECK] and card-check.sh apply exactly this rule.
  */
 private fun hermesComposerRows(shown: List<String>): Pair<Int, Int>? {
     val footer = shown.indexOfLast { it.isNotEmpty() }
     if (footer < 4) return null
-    val ok = CARD_HERMES_BOTTOM.matches(shown[footer - 1]) && CARD_HERMES_INPUT.matches(shown[footer - 2]) &&
+    val ok = CARD_HERMES_FOOTER.matches(shown[footer]) && CARD_HERMES_BOTTOM.matches(shown[footer - 1]) && CARD_HERMES_INPUT.matches(shown[footer - 2]) &&
         CARD_HERMES_RULE.matches(shown[footer - 3]) && CARD_HERMES_HINT.matches(shown[footer - 4])
     return if (ok) (footer - 3) to footer else null
 }
 
 /** The screen's rows as the digest takes them: [cardTimerLine] on each, Oh My Pi's two running rows and Hermes's composer rows. */
-internal fun cardScreenRows(lines: List<String>): List<String> {
+internal fun cardScreenRows(lines: List<String>, agent: String? = null): List<String> {
     val shown = lines.map { cardShown(it) }
     val r = ompApprovalRegion(shown)
-    val hermes = hermesComposerRows(shown)
+    // Review 3 (Codex): only on a Hermes pane, as herdr names its agent in the occupant the checks read.
+    val hermes = if (agent == "hermes") hermesComposerRows(shown) else null
     return lines.mapIndexed { i, line ->
         when {
             i == hermes?.first -> "<hermes-rule>"
@@ -4691,11 +4698,11 @@ internal fun cardScreenRows(lines: List<String>): List<String> {
  * computes it. A screen that is not UTF-8, or holds a NUL, reads differently here and on the
  * computer, so it never matches: the check fails closed (exit 3), never open.
  */
-internal fun cardScreenDigest(raw: String): String {
+internal fun cardScreenDigest(raw: String, agent: String? = null): String {
     // A NUL is refused by both checks on the computer (a shell can't hold one): never a match here either.
     if ('\u0000' in raw) return CARD_NO_MATCH
     // Every line ends in a newline (the last one too), as a line-by-line awk prints it.
-    val t = cardScreenRows(raw.split("\n")).joinToString("\n").let { if (it.isNotEmpty() && !it.endsWith("\n")) it + "\n" else it }
+    val t = cardScreenRows(raw.split("\n"), agent).joinToString("\n").let { if (it.isNotEmpty() && !it.endsWith("\n")) it + "\n" else it }
     return sha256Hex(t.toByteArray(Charsets.UTF_8))
 }
 
@@ -4720,6 +4727,8 @@ internal val CARD_SEND_CHECK = """
         return str(len(b)).encode('ascii') + b':' + b + b'\n'
     # 2.2.8: a screen digest of '-' checks the occupant only, wherever the pane is scrolled.
     ANYSCROLL = screen == '-'
+    # The pane's agent as herdr names it, from the last occupant read (Hermes's composer rule only for 'hermes').
+    SEEN = {}
     def identity():
         p = json.loads(call('get', pane))['result']['pane']
         if p.get('pane_id') != pane or (not ANYSCROLL and (p.get('scroll') or {}).get('offset_from_bottom') != 0):
@@ -4728,6 +4737,7 @@ internal val CARD_SEND_CHECK = """
         s = s if isinstance(s, dict) else {}
         f = [p.get(k) for k in ('pane_id', 'tab_id', 'workspace_id', 'agent', 'foreground_cwd', 'cwd', 'terminal_id')]
         f += [s.get(k) for k in ('kind', 'agent', 'value')]
+        SEEN['agent'] = p.get('agent')
         return hashlib.sha256(b''.join(v(x) for x in f)).hexdigest()
     # Only the agent's own timer line (cardTimerLine in Herdr.kt): its last (Ns), nothing else.
     ARROWS = '\u2191/\u2193'.encode('utf-8')
@@ -4741,6 +4751,7 @@ internal val CARD_SEND_CHECK = """
     HERMES_INPUT = re.compile(b'^(?:' + b'|'.join(re.escape(c.encode('utf-8')) for c in ('\u26a0', '?', '\u270e', '\U0001f510', '\U0001f511', '\u2699')) +
                               b')(?:' + '\ufe0f'.encode('utf-8') + b')?[ \t]*(?:' + '\u276f'.encode('utf-8') + b'|' + '\u203a'.encode('utf-8') + b')(?:[ \t].*)?$')
     HERMES_BOTTOM = re.compile(b'^(?:' + RULE + b')+$')
+    HERMES_FOOTER = re.compile('^\u2624 [^ ]+ \u00b7 ~?[0-9][0-9.,]*[km]?/[0-9][0-9.,]*[km]?(?: \u00b7 .*)?$'.encode('utf-8'))
     OMP_STATUS = re.compile(rb'^[^ ]+ ([^ ]+ )?> .* > ' + '\U0001f4c1'.encode('utf-8') + rb' [^ ]+ ' + '\u25b6\u2500'.encode('utf-8') + rb'.*$')
     ELAPSED_ROW = re.compile('\u2570'.encode('utf-8') + b'(?:' + '\u2500'.encode('utf-8') + rb')+ elapsed [0-9hms.]+ (?:' +
                              '\u2500'.encode('utf-8') + b')+' + '\u256f'.encode('utf-8') + b'$')
@@ -4784,12 +4795,12 @@ internal val CARD_SEND_CHECK = """
             if j < 0 or not t[j].startswith(TL):
                 elapsed = -1
         return top, bottom, elapsed
-    def rows(lines):
+    def rows(lines, hermes_pane):
         t = [shown(line) for line in lines]
         r = region(t)
         f = max((i for i, x in enumerate(t) if x), default=-1)
-        hermes = (f - 3, f) if f >= 4 and HERMES_BOTTOM.match(t[f - 1]) and HERMES_INPUT.match(t[f - 2]) and \
-            HERMES_RULE.match(t[f - 3]) and HERMES_HINT.match(t[f - 4]) else (-1, -1)
+        hermes = (f - 3, f) if hermes_pane and f >= 4 and HERMES_FOOTER.match(t[f]) and HERMES_BOTTOM.match(t[f - 1]) and \
+            HERMES_INPUT.match(t[f - 2]) and HERMES_RULE.match(t[f - 3]) and HERMES_HINT.match(t[f - 4]) else (-1, -1)
         out = []
         for i, line in enumerate(lines):
             if i == hermes[0]:
@@ -4825,7 +4836,7 @@ internal val CARD_SEND_CHECK = """
         if b'\x00' in visible:
             print('@@herdrdroid-card-refused@@', flush=True)
             sys.exit(3)  # a NUL never matches (the shell check can't hold one); as cardScreenDigest
-        visible = b'\n'.join(rows(visible.split(b'\n')))
+        visible = b'\n'.join(rows(visible.split(b'\n'), SEEN.get('agent') == 'hermes'))
         if visible and not visible.endswith(b'\n'):
             visible += b'\n'
         seen = hashlib.sha256(visible).hexdigest()
