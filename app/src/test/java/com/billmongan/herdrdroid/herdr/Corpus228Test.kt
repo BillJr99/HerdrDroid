@@ -74,6 +74,31 @@ class Corpus228Test {
     }
 
     /**
+     * Codex's per-commit review of a1314cd (HIGH): on a Grok card, an option whose label the pane cut off
+     * anywhere inside the always-approve one ("Yes", "Yes, a…", "Yes, and don't ask again f") is
+     * ambiguous and never sent; Grok's own whole options stay usable.
+     */
+    @Test fun aGrokOptionCutOffAnywhereInsideAlwaysApproveIsNeverSent() {
+        val full = "Yes, and don't ask again for anything (always-approve mode)"
+        val screen = res("018-grok-narrow-wrapped-options-code.txt")
+        val row = "  ┃  1 (○) Yes, and don't ask again for anything\n  ┃        (always-approve mode)\n"
+        assertTrue(screen.contains(row))
+        for (n in 1 until full.length) {
+            for (cut in listOf(full.take(n).trimEnd(), full.take(n).trimEnd() + "…")) {
+                if (cut.isEmpty() || cut == "…") continue
+                val s = screen.replace(row, "  ┃  1 (○) $cut\n")
+                val p = detectPrompt(s, true, "grok") ?: continue
+                val one = p.choices.firstOrNull { it.keys == "1" } ?: continue
+                assertNotNull("cut '$cut' -> '${one.label}'", blockedChoiceReason(one))
+                for (c in p.choices.filter { it.keys == "2" || it.keys == "3" }) assertNull(c.label, blockedChoiceReason(c))
+            }
+        }
+        // The same short labels on another agent's card are ordinary options.
+        assertNull(blockedChoiceReason(Choice("Yes", "1", false)))
+        assertNull(blockedChoiceReason(Choice("Yes, allow", "1", false)))
+    }
+
+    /**
      * Codex's per-commit review of fe63209 (MEDIUM): a "(…)" row joins the option above it only when it
      * starts in the label's own column, and a radio row never joins, even under an open "(".
      */
