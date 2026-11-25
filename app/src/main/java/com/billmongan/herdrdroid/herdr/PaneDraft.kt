@@ -77,6 +77,8 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
         suspend fun viewport(id: String): String?
         /** Keys that the transport starts only while [permit] is open. */
         suspend fun keys(id: String, keys: List<String>, permit: WritePermit)
+        /** Clear only while the host still sees the viewport the app verified. */
+        suspend fun clearKeys(id: String, keys: List<String>, viewport: String, permit: WritePermit): Boolean
         /** Time for the agent to redraw before the next read. */
         suspend fun pause(ms: Long)
     }
@@ -197,8 +199,10 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
                     if (!allowed()) return@guarded if (pressed) Outcome.UNCERTAIN else Outcome.REFUSED
                     // 2.2.8 (Codex's VM tests): the box is read once more, with the permit open, right
                     // before the keys, and must still hold what is left of the shown draft.
-                    if (!boxStillHolds(shown, left, port)) return@guarded if (pressed) Outcome.UNCERTAIN else Outcome.CHANGED
-                    port.keys(shown.id, List(count) { "backspace" }, permit)
+                    val viewport = verifiedViewport(shown, left, port)
+                        ?: return@guarded if (pressed) Outcome.UNCERTAIN else Outcome.CHANGED
+                    if (!port.clearKeys(shown.id, List(count) { "backspace" }, viewport, permit))
+                        return@guarded if (pressed) Outcome.UNCERTAIN else Outcome.CHANGED
                     pressed = true
                 } catch (e: WriteRevoked) {
                     return@guarded if (pressed) Outcome.UNCERTAIN else Outcome.REFUSED
@@ -242,12 +246,12 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
      */
     /**
      * The last read before a Clear key: the box shows exactly [expected] (trailing spaces aside), bounded,
-     * with no list under it. Residual window, as for Send draft: one SSH round trip to the key.
+     * with no list under it. The host compares the same viewport immediately before the key.
      */
-    private suspend fun boxStillHolds(shown: Pane, expected: String, port: Port): Boolean {
-        val last = port.viewport(shown.id) ?: return false
-        val still = draftOn(shown, last) ?: return false
-        return still.bounded && !still.menu && still.text.trimEnd() == expected.trimEnd()
+    private suspend fun verifiedViewport(shown: Pane, expected: String, port: Port): String? {
+        val last = port.viewport(shown.id) ?: return null
+        val still = draftOn(shown, last) ?: return null
+        return last.takeIf { still.bounded && !still.menu && still.text.trimEnd() == expected.trimEnd() }
     }
 
     private suspend fun clearLine(server: String, shown: Pane, draft: ComposerDraft, allowed: () -> Boolean, port: Port): Outcome {
@@ -256,8 +260,8 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
         try {
             if (!allowed()) return Outcome.REFUSED
             // 2.2.8 (Codex's VM tests): a replacement draft typed after the first read is never cleared.
-            if (!boxStillHolds(shown, draft.text, port)) return Outcome.CHANGED
-            port.keys(shown.id, LINE_CLEAR_KEYS, permit)
+            val viewport = verifiedViewport(shown, draft.text, port) ?: return Outcome.CHANGED
+            if (!port.clearKeys(shown.id, LINE_CLEAR_KEYS, viewport, permit)) return Outcome.CHANGED
         } catch (e: WriteRevoked) {
             return Outcome.REFUSED
         } catch (c: CancellationException) {

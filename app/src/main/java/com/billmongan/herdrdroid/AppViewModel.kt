@@ -2698,6 +2698,14 @@ class AppViewModel internal constructor(
                     quietly { if (it === h) { it.sendPermittedKeys(id, keys, target.connection, permit); true } else null }
                         ?: throw IllegalStateException("the keys could not be sent")
                 }
+                override suspend fun clearKeys(id: String, keys: List<String>, viewport: String, permit: WritePermit): Boolean =
+                    quietly { client ->
+                        if (client !== h || !allowed()) return@quietly false
+                        val bound = client.boundOccupant(id, target.connection)
+                            ?.takeIf { it.first.sameCardOccupant(target.pane) && it.first.scrollOffset == 0 }
+                            ?: return@quietly false
+                        client.sendDraftClearKeys(id, keys, viewport, bound.second, target.connection, permit)
+                    } ?: false
                 override suspend fun pause(ms: Long) = delay(ms)
             }
             val outcome = try {
@@ -7117,8 +7125,9 @@ class AppViewModel internal constructor(
             if (!mine()) return@act
             val connection = h.connectionIdentity
             try {
-                val lines = sendReadLines(target.agent)
-                suspend fun fresh(): String? = runCatching { h.readStyled(target.id, lines) }.getOrNull()?.takeIf { it.isNotBlank() }
+                suspend fun fresh(): String? = connection?.let {
+                    runCatching { h.readStyledViewport(target.id, it) }.getOrNull()?.takeIf(String::isNotBlank)
+                }
                 val before = fresh() ?: return@act fail("its screen couldn't be read first")
                 val now = pane(target.id)?.takeIf { it.sameCardOccupant(target) } ?: return@act fail("the pane changed")
                 if (checkedSendBlocked(now, before, null) || usageDialogShown(now.agent, before)) return@act fail("a question or panel is open in it")
@@ -7134,7 +7143,7 @@ class AppViewModel internal constructor(
                     return@act
                 }
                 // 2.2.8 (Muse's review): behind the computer's own check of the occupant and the screen.
-                if (!h.sendBackgroundKey(target.id, com.billmongan.herdrdroid.herdr.BackgroundStep.CLAUDE, bound.second, checkNotNull(connection)))
+                if (!h.sendBackgroundKey(target.id, com.billmongan.herdrdroid.herdr.BackgroundStep.CLAUDE, before, bound.second, checkNotNull(connection)))
                     return@act fail("the running command finished, or a question opened, before Ctrl+B")
                 com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${target.id}: send now pressed Ctrl+B; checking the task moved to the background")
                 var moved = false
@@ -7240,15 +7249,15 @@ class AppViewModel internal constructor(
             ?.takeIf { it.first.sameCardOccupant(target) } ?: return com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.BLOCKED
         val port = object : com.billmongan.herdrdroid.herdr.Backgrounder.Port {
             override suspend fun screen(): String? =
-                if (!same()) null else quietly { h -> if (h === client) h.readStyled(paneId, sendReadLines(target.agent)) else null }?.takeIf { it.isNotBlank() }
+                if (!same()) null else quietly { h -> if (h === client) h.readStyledViewport(paneId, connection) else null }?.takeIf { it.isNotBlank() }
             override fun blocked(screen: String): Boolean {
                 val p = pane(paneId)?.takeIf { it.sameCardOccupant(target) } ?: return true
                 return !same() || hasPendingQuestion(p) || checkedSendBlocked(p, screen, null) || usageDialogShown(p.agent, screen)
             }
             override fun done(screen: String) = done(screen)
-            override suspend fun press(step: com.billmongan.herdrdroid.herdr.BackgroundStep): Boolean {
+            override suspend fun press(step: com.billmongan.herdrdroid.herdr.BackgroundStep, viewport: String): Boolean {
                 if (!same()) return false
-                val went = quietly { h -> if (h === client) h.sendBackgroundKey(paneId, step, bound.second, connection) else null } ?: false
+                val went = quietly { h -> if (h === client) h.sendBackgroundKey(paneId, step, viewport, bound.second, connection) else null } ?: false
                 com.billmongan.herdrdroid.diag.DiagLog.log("send", "to $paneId: Ctrl+B for ${step.check} ${if (went) "went" else "refused by the check"}")
                 if (went) onPressed(step)
                 return went

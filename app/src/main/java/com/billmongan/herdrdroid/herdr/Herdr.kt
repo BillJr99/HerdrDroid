@@ -814,10 +814,13 @@ class Herdr internal constructor(
      * [OccupantChanged] or [CardCheckFailed] when nothing was typed for another reason;
      * [DeliveryUncertain] when the key may have gone. Never on herdr-core (no occupant check there).
      */
-    internal suspend fun sendBackgroundKey(paneId: String, step: BackgroundStep, occupant: String, connection: Any): Boolean {
-        if (core) return false
+    internal suspend fun sendBackgroundKey(
+        paneId: String, step: BackgroundStep, viewport: String, occupant: String, connection: Any,
+    ): Boolean {
+        if (core || viewport.isBlank()) return false
         val check = "$PY -c ${shq(BACKGROUND_CHECK)} $herdr ${shq(paneId)} ${shq(step.check)}"
-        val full = occupantCheckCommand(paneId, occupant) + " && " + check + " && echo $OCCUPANT_PASSED_MARK && " +
+        val full = occupantCheckCommand(paneId, occupant) + " && " + check + " && " +
+            exactViewportCheck(paneId, viewport) + " && echo $OCCUPANT_PASSED_MARK && " +
             cmd("pane", "send-keys", paneId, Backgrounding.KEY)
         val r = runWriteResult(full, connection, null)
         if (r.exit == 0) return true
@@ -826,6 +829,7 @@ class Herdr internal constructor(
         when {
             OCCUPANT_PASSED_MARK in lines -> throw DeliveryUncertain(why)
             r.exit == BACKGROUND_REFUSED_EXIT && BACKGROUND_REFUSED_MARK in lines -> return false
+            r.exit == CARD_CHANGED_EXIT && CARD_REFUSED_MARK in lines -> return false
             r.exit == OCCUPANT_CHANGED_EXIT && OCCUPANT_REFUSED_MARK in lines -> throw OccupantChanged()
             else -> throw CardCheckFailed()
         }
@@ -834,6 +838,25 @@ class Herdr internal constructor(
     suspend fun sendKeys(paneId: String, vararg keys: String, expectedConnection: Any? = null) =
         if (core) runWrite(hcCmd("keys", paneId, *keys), expectedConnection = expectedConnection)
         else runWrite(cmd("pane", "send-keys", paneId, *keys), expectedConnection = expectedConnection)
+
+    private fun exactViewportCheck(paneId: String, viewport: String): String {
+        val digest = sha256Hex(viewport.toByteArray(Charsets.UTF_8))
+        return "$PY -c ${shq(EXACT_VIEWPORT_CHECK)} $herdr ${shq(paneId)} ${shq(digest)}"
+    }
+
+    /** Clear keys only after the host compares the app's last ANSI viewport byte for byte. */
+    internal suspend fun sendDraftClearKeys(
+        paneId: String, keys: List<String>, viewport: String, occupant: String, connection: Any, permit: WritePermit,
+    ): Boolean {
+        if (core || viewport.isBlank()) return false
+        val check = occupantCheckCommand(paneId, occupant) + " && " + exactViewportCheck(paneId, viewport)
+        val send = cmd("pane", "send-keys", paneId, *keys.toTypedArray())
+        val result = runWriteResult("$check && echo $OCCUPANT_PASSED_MARK && $send", connection, permit)
+        if (result.exit == 0) return true
+        val lines = result.out.lineSequence().map(String::trim).toSet()
+        if (OCCUPANT_PASSED_MARK in lines) throw DeliveryUncertain("The Clear key may have gone through.")
+        return false
+    }
 
     /** Keys that go only while [permit] is open; on herdr-core as `hc keys` (2.2.0: the mode menu works there too). */
     internal suspend fun sendPermittedKeys(paneId: String, keys: List<String>, connection: Any, permit: WritePermit) =
@@ -4857,6 +4880,24 @@ internal val CARD_SEND_CHECK = """
 
 /** 2.2.7: the line before an upload's results, so text a shell prints at login is skipped. */
 internal const val UPLOAD_MARKER = "@@herdrdroid-upload@@"
+
+/** Host-side byte compare without sending draft or command text back to the host. */
+internal val EXACT_VIEWPORT_CHECK = """
+    import hashlib, subprocess, sys
+    herdr, pane, expected = sys.argv[1:]
+    try:
+        screen = subprocess.check_output(
+            [herdr, 'pane', 'read', pane, '--source', 'visible', '--format', 'ansi'],
+            timeout=5,
+        )
+    except Exception:
+        sys.exit(4)
+    if not screen.strip() or b'\x00' in screen:
+        sys.exit(4)
+    if hashlib.sha256(screen).hexdigest() != expected:
+        print('$CARD_REFUSED_MARK', flush=True)
+        sys.exit($CARD_CHANGED_EXIT)
+""".trimIndent()
 
 internal fun sha256Hex(bytes: ByteArray): String =
     java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }

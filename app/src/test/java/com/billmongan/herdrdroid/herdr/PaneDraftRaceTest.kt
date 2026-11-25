@@ -41,6 +41,10 @@ class PaneDraftRaceTest {
             events += "keys:" + keys.joinToString(",")
             writes += keys
         }
+        override suspend fun clearKeys(id: String, keys: List<String>, viewport: String, permit: WritePermit): Boolean {
+            keys(id, keys, permit)
+            return true
+        }
         override suspend fun pause(ms: Long) {}
     }
 

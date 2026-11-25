@@ -65,6 +65,7 @@ class BackgroundVm228Test {
         var afterCtrlB: String? = null
         /** Runs when the computer's own check reads the screen, before it decides (once). */
         var atCheck: (() -> Unit)? = null
+        var atClear: (() -> Unit)? = null
         var terminal = "t1"
         /** The terminal the computer reports (null: [terminal]). */
         var remoteTerminal: String? = null
@@ -122,6 +123,12 @@ class BackgroundVm228Test {
 
         override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult {
             check(expectedConnection == null || expectedConnection === connection) { "write or read used a replaced connection" }
+            fun exactViewportMatches(): Boolean {
+                val digest = Regex("""'p1' '([0-9a-f]{64})' && echo""").find(command)!!.groupValues[1]
+                return digest == com.billmongan.herdrdroid.herdr.sha256Hex(frame.toByteArray())
+            }
+            fun changed() = ExecResult(com.billmongan.herdrdroid.herdr.CARD_CHANGED_EXIT,
+                com.billmongan.herdrdroid.herdr.CARD_REFUSED_MARK + "\n", "")
             if (BACKGROUND_REFUSED_MARK in command) {
                 // The occupant check, then the screen check, then the key: as the computer would run them.
                 checks++
@@ -129,12 +136,19 @@ class BackgroundVm228Test {
                 val now = com.billmongan.herdrdroid.herdr.cardOccupantDigest(org.json.JSONObject(paneOn(remoteTerminal ?: terminal)))
                 if (now != occupant) return ExecResult(com.billmongan.herdrdroid.herdr.OCCUPANT_CHANGED_EXIT, com.billmongan.herdrdroid.herdr.OCCUPANT_REFUSED_MARK + "\n", "")
                 atCheck?.also { atCheck = null }?.invoke()
-                val step = BackgroundStep.entries.single { Regex("""'p1' '${it.check}' && echo""").containsMatchIn(command) }
+                val step = BackgroundStep.entries.single { Regex("""'p1' '${it.check}' && """).containsMatchIn(command) }
                 if (!backgroundCheckPasses(step, frame)) return ExecResult(BACKGROUND_REFUSED_EXIT, "$BACKGROUND_REFUSED_MARK\n", "")
+                if (!exactViewportMatches()) return changed()
                 keys += "ctrl+b"
                 afterCtrlB?.let { frame = it }
                 afterKey?.invoke()
                 return ok(com.billmongan.herdrdroid.herdr.OCCUPANT_PASSED_MARK + "\n")
+            }
+            if ("hashlib.sha256(screen)" in command) {
+                atClear?.also { atClear = null }?.invoke()
+                if (!exactViewportMatches()) return changed()
+                keys += "checked-clear"
+                return ok("")
             }
             return when {
                 command.endsWith("'pane' 'get' 'p1'") -> ok("""{"result":{"pane":${paneOn(remoteTerminal ?: terminal)}}}""").also { afterFirstGet?.also { afterFirstGet = null }?.invoke() }
@@ -326,6 +340,23 @@ class BackgroundVm228Test {
         vm.clearPaneDraft(draftCard("some older draft"))
         drain()
         assertTrue(reads > 0)
+        assertEquals(emptyList<String>(), keys)
+    }
+
+    @Test fun clearkeysRefuseReplacementAtTheHostCheck() = fixture("omp", ompDraft()) {
+        status(Status.IDLE)
+        atClear = { frame = frame.replace("alpha beta gamma", "another draft") }
+        vm.clearPaneDraft(draftCard("alpha beta gamma"))
+        drain()
+        assertTrue(atClear == null)
+        assertEquals(emptyList<String>(), keys)
+    }
+
+    @Test fun backgroundRefusesAReplacementWithTheSameHint() = fixture("claude", fg) {
+        atCheck = { frame = "Old output changed\n" + frame }
+        vm.backgroundForeground("p1")
+        drain()
+        assertEquals(1, checks)
         assertEquals(emptyList<String>(), keys)
     }
 
