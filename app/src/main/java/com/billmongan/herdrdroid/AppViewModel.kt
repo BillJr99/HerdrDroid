@@ -5064,10 +5064,13 @@ class AppViewModel internal constructor(
                     continue
                 }
                 synchronized(noticeForced) { noticeForced -= c.key }
-                when (sendNotice(s, c.text)) {
-                    true -> notifier.sent(c)
-                    false -> if (notifier.refused(c, forced)) noteSendProblem(s.server.id, s.pane.id,
-                        "HerdrDroid could not tell this agent about cross-server messaging after ${notifier.maxTries} tries. " +
+                val result = sendNotice(s, c.text)
+                when (result.outcome) {
+                    NoticeOutcome.ACCEPTED, NoticeOutcome.UNCONFIRMED ->
+                        notifier.sent(c, accepted = result.outcome == NoticeOutcome.ACCEPTED)
+                    NoticeOutcome.HELD -> Unit
+                    NoticeOutcome.REFUSED -> if (notifier.refused(c, forced)) noteSendProblem(s.server.id, s.pane.id,
+                        "Cross-server notice was not sent to ${agentFacingName(s)}: ${result.why}. " +
                             "Tap Tell agents now in Settings to try again.")
                 }
             }
@@ -5076,17 +5079,27 @@ class AppViewModel internal constructor(
         }
     }
 
-    /** True when sent or possibly sent (never sent twice), false when refused and nothing went out. */
-    private suspend fun sendNotice(s: Session, text: String): Boolean {
+    private enum class NoticeOutcome { ACCEPTED, UNCONFIRMED, HELD, REFUSED }
+    private data class NoticeDelivery(val outcome: NoticeOutcome, val why: String = "")
+
+    /** Keep ambiguous writes deduplicated, and count only proven pre-input refusals against retry. */
+    private suspend fun sendNotice(s: Session, text: String): NoticeDelivery {
+        val held = NoticeDelivery(NoticeOutcome.HELD)
         if (!s.current) {
-            val route = promptRelay.bind(s.server.id, s.pane) ?: return false
-            return when (promptRelay.send(route, text) { noticeActive() && promptRelay.isCurrent(route) }) {
-                RelayResult.SENT, RelayResult.UNCERTAIN -> true
-                RelayResult.REFUSED, RelayResult.DRAFT -> false
+            val route = promptRelay.bind(s.server.id, s.pane) ?: return held
+            var refusal: com.billmongan.herdrdroid.herdr.RelayRefusal? = null
+            return when (promptRelay.send(route, text, refused = { refusal = it }) {
+                noticeActive() && promptRelay.isCurrent(route)
+            }) {
+                RelayResult.SENT -> NoticeDelivery(NoticeOutcome.ACCEPTED)
+                RelayResult.UNCERTAIN -> NoticeDelivery(NoticeOutcome.UNCONFIRMED)
+                RelayResult.DRAFT, RelayResult.REFUSED ->
+                    refusal?.takeIf { it == com.billmongan.herdrdroid.herdr.RelayRefusal.AGENT_NOT_FOUND }
+                        ?.let { NoticeDelivery(NoticeOutcome.REFUSED, it.why) } ?: held
             }
         }
-        val h = herdr ?: return false
-        val connection = h.connectionIdentity ?: return false
+        val h = herdr ?: return held
+        val connection = h.connectionIdentity ?: return held
         val server = s.server.id
         fun allowed() = noticeActive() && current?.id == server && herdr === h && h.connectionIdentity === connection &&
             link == Link.CONNECTED && promptLaneClear(server, s.pane.id)
@@ -5113,8 +5126,15 @@ class AppViewModel internal constructor(
         }
         val result = localPromptSend.send(server, com.billmongan.herdrdroid.herdr.Occupant.of(s.pane), text, ::allowed, port)
         (result.failure as? LinkDown)?.let { if (herdr === h) linkLost(it) }
-        return result.outcome == com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.SENT ||
-            result.outcome == com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.UNCERTAIN
+        if (result.failure?.let { com.billmongan.herdrdroid.herdr.promptTargetNotFound(it) } == true) {
+            return NoticeDelivery(NoticeOutcome.REFUSED,
+                com.billmongan.herdrdroid.herdr.RelayRefusal.AGENT_NOT_FOUND.why)
+        }
+        return when (result.outcome) {
+            com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.SENT -> NoticeDelivery(NoticeOutcome.ACCEPTED)
+            com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.UNCERTAIN -> NoticeDelivery(NoticeOutcome.UNCONFIRMED)
+            else -> held
+        }
     }
 
     internal suspend fun sendVoiceMessage(target: VoiceTarget, text: String, allowed: () -> Boolean): String {
