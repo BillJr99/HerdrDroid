@@ -386,6 +386,24 @@ class CardRegion228Test {
     }
 
     /**
+     * Codex's per-commit review of 573e426 (MEDIUM): a live folder trust prompt with one more row of its
+     * own UI under its hint (a footer) is still a card under a running row; running output there is not.
+     */
+    @Test fun aTrustPromptWithAFooterUnderItsHintIsStillACard() {
+        val trust = checkNotNull(javaClass.getResource("/screens/grok/derived-1.4.9/0307-trust-this-folder-startup.txt")).readText().trimEnd()
+        val running = "   ⠧ Starting… 1s ⇣0 [stop]\n\n"
+        for (foot in listOf("  ? for shortcuts", "  Grok 4.7 · ~/work/demo")) {
+            val s = "$running$trust\n\n$foot\n"
+            assertFalse(foot, grokWorkingBelowAnyQuestion(s))
+            assertEquals(foot, listOf("y", "n"), checkNotNull(detectPrompt(s, true, "grok")) { foot }.choices.map { it.keys })
+        }
+        for (after in listOf("  ⠋ Working… 2s [stop]", "  ◈ Explored 3 files", "  extra row one\n  extra row two")) {
+            val s = "$running$trust\n\n$after\n"
+            assertTrue(after, grokWorkingBelowAnyQuestion(s))
+        }
+    }
+
+    /**
      * Codex's per-commit review of 7d6950b (MEDIUM): a message box drawn without its bottom edge ends at
      * the first row outside its frame, so a live folder trust prompt under it is still a card.
      */

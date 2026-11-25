@@ -2692,9 +2692,8 @@ fun detectLetterMenu(text: String, blocked: Boolean): Prompt? {
     val rows = lines.withIndex().filter { row.matches(it.value) }
     if (rows.size !in 2..6) return null
     // One run, near the bottom, with the letters named in the hint under it ("Enter or y to trust · n or Esc to quit").
-    if (rows.zipWithNext().any { (a, b) -> b.index != a.index + 1 } || rows.last().index < lines.size - 3) return null
+    if (rows.zipWithNext().any { (a, b) -> b.index != a.index + 1 } || !letterMenuTail(lines.drop(rows.last().index + 1))) return null
     val letters = rows.map { row.find(it.value)!!.groupValues[1] }
-    if (agentWentOn(lines.drop(rows.last().index + 1))) return null
     val hint = lines.drop(rows.last().index + 1).joinToString(" ")
     if (!blocked && letters.none { Regex("""\b$it\b""").containsMatchIn(hint) }) return null
     val question = lines.take(rows.first().index).lastOrNull { it.trim().endsWith("?") }?.trim() ?: "Choose"
@@ -3781,18 +3780,31 @@ private val GROK_TRUST_YES = Regex("""^\s*y\s{2,}Yes\b.*$""")
 private val GROK_TRUST_NO = Regex("""^\s*n\s{2,}No\b.*$""")
 
 /**
+ * The rows with text under a letter menu's options (its hint, and at most one more row of its own UI,
+ * such as a footer), with nothing of the agent's going on in them: no activity or working line, input
+ * row or running row. [detectLetterMenu] and [grokPlanOrTrustBottom] share it (Codex's per-commit
+ * review of 573e426).
+ */
+internal fun letterMenuTail(under: List<String>): Boolean {
+    val rows = under.filter { it.isNotBlank() }
+    return rows.size <= 2 && !agentWentOn(rows) && rows.none { GrokMeta.statusRow(it) != null || GROK_RUNNING_ROW.matches(it) }
+}
+
+/**
  * The last row of a whole plan review or folder trust prompt at the bottom of [rows], or -1: the plan
- * footer as the last row that holds text; or the trust hint as the last row, with "n  No …" and
- * "y  Yes …" right above it (blank rows between them aside). A mention of either anywhere else is not one.
+ * footer as the last row that holds text; or "y  Yes …" and "n  No …" with the trust hint right under
+ * them and only the menu's own rows after ([letterMenuTail], the card parser's rule). A mention of
+ * either anywhere else is not one.
  */
 internal fun grokPlanOrTrustBottom(rows: List<String>): Int {
     val last = rows.indexOfLast { it.isNotBlank() }
     if (last < 0) return -1
     if (GROK_PLAN_FOOTER_ROW.matches(rows[last])) return last
-    if (!GROK_TRUST_HINT.matches(rows[last])) return -1
-    val above = (last - 1 downTo 0).filter { rows[it].isNotBlank() }.take(2)
-    return if (above.size == 2 && GROK_TRUST_NO.matches(rows[above[0]]) && GROK_TRUST_YES.matches(rows[above[1]]) &&
-        above[0] - above[1] == 1) last else -1
+    val no = rows.indexOfLast { GROK_TRUST_NO.matches(it) }
+    if (no < 1 || !GROK_TRUST_YES.matches(rows[no - 1])) return -1
+    val hint = (no + 1..last).firstOrNull { rows[it].isNotBlank() } ?: return -1
+    if (!GROK_TRUST_HINT.matches(rows[hint]) || !letterMenuTail(rows.subList(no + 1, rows.size))) return -1
+    return last
 }
 /** A Grok approval box's title row in the "┃" gutter: "┃  ›  List the build cache". */
 private val GROK_BOX_TITLE = Regex("""^\s*┃\s*›\s+\S""")
