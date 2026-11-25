@@ -308,3 +308,33 @@ internal suspend fun confirmByReads(first: String, firstPrompt: Prompt, agent: S
         p = if (text.isBlank()) null else detectPrompt(text, true, agent, version)
     }
 }
+
+private val CLAUDE_SINGLE_TAB = Regex("""^☐\s+\S.{0,24}$""")
+private val CLAUDE_PREVIEW_OPTION = Regex("""^\s*[❯›]?\s*\d{1,2}[.)]\s+(\S.*)$""")
+
+/** Keep an identifiable Claude dialog readable without making unconfirmed choices actionable. */
+internal fun claudeReviewPreview(text: String, parsed: Prompt?): Prompt? {
+    val rows = withoutClaudeChromeUnderDialog(stripAnsi(text)).lines().takeLast(80)
+    val footer = rows.indexOfLast { it.isNotBlank() }
+    if (footer < 0) return null
+    val hint = rows[footer].trim()
+    val ask = hint.startsWith("Enter to select · ") && hint.endsWith(" · Esc to cancel") &&
+        ("to navigate" in hint)
+    val top = if (ask) {
+        (footer - 1 downTo 0).firstOrNull { parseTabBar(rows[it]) != null || CLAUDE_SINGLE_TAB.matches(rows[it].trim()) }
+    } else if (claudePermissionFooterAtBottom(text)) {
+        (footer - 1 downTo 0).firstOrNull { isDialogHeaderRow(rows[it]) }
+    } else null
+    if (top == null) return null
+    val body = rows.subList(if (ask) top + 1 else top, footer)
+    val labels = body.mapNotNull { row ->
+        CLAUDE_PREVIEW_OPTION.matchEntire(row)?.groupValues?.get(1)?.trim()
+    }
+    val heading = body.firstOrNull { it.isNotBlank() }?.trim() ?: return null
+    val shownLabels = parsed?.choices?.map { it.label }.orEmpty().ifEmpty { labels }
+    if (shownLabels.isEmpty()) return null
+    val parts = parsed?.shownParts() ?: questionParts(listOf(QLine(heading)))
+    val blocks = parts.blocks + shownLabels.map { QBlock(QKind.TEXT, it) }
+    return Prompt(parsed?.question ?: heading, emptyList(), region = body,
+        terminalReview = true, parts = parts.copy(blocks = blocks))
+}

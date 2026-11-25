@@ -306,7 +306,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         // twice), parsed exactly as the read path parses it (pi's live question included); until then a
         // neutral card with no options or keys, never chat text as the question.
         else vm.questionCardFor(paneId, vm.cardParse(paneId, screenText)
-            ?.takeIf { !it.codexQuestion || shownTarget != null }, pane?.agentName ?: "The agent")
+            ?.takeIf { !it.codexQuestion || shownTarget != null }, pane?.agentName ?: "The agent",
+            liveScreenText.takeIf { openingPreview == null && shownTarget != null })
     // An agent's error on screen (1.4.2): shown as a banner when there is no question.
     // Not from the last screen while the latest read failed (1.4.2, from review).
     // 2.2.0: as its own card, with OpenCode's failed turn read whole; acknowledged ones are hidden.
@@ -1570,6 +1571,7 @@ internal fun PromptCard(
                     p.unreadQuestion -> "The app couldn't read this question from the screen. Open the terminal to see it and answer it there."
                     // 2.2.2: the dialog is still drawing, or hasn't read the same twice yet; its answers come next.
                     p.readingQuestion -> "Its answers show here once the question has finished drawing on the screen."
+                    agent.startsWith("Claude", ignoreCase = true) && p.region != null -> "Review this question in the terminal before answering."
                     else -> "This preview is incomplete. Open the terminal to review the full command before answering."
                 },
                     color = Palette.Muted, fontSize = 12.5.sp)
