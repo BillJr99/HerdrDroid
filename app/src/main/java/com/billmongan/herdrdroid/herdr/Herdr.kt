@@ -3772,8 +3772,9 @@ private val GROK_GUTTER_ROW = Regex("""^\s*┃""")
  * then text, then "[stop]" at the row's end, with any spacing and before "⇣<tokens>" appears.
  */
 private val GROK_RUNNING_ROW = Regex("""^\s*[\u2800-\u28FF]\s*\S.*\[stop]\s*$""")
-/** The privacy banner's own rows: its buttons, or its radio rows; never prose that says "Opt in". */
-private val GROK_PRIVACY_ROW = Regex("""\[Opt out]\s*\[Opt in]|^\s*[○●]\s+Opt (?:in|out)\s*$""")
+private val GROK_PRIVACY_BUTTONS = Regex("""\[Opt out]\s*\[Opt in]""")
+/** An entire radio row, with the frame drawn by /privacy when it fits. */
+private val GROK_PRIVACY_ROW = Regex("""^\s*[│┃|]?\s*([○●◯◉])\s+(Opt in|Opt out)\s*[│┃|]?\s*$""")
 /**
  * Grok's plan review footer as the screen's last row: "a:approve  │  s:request changes  │ … │  q:quit
  * plan", its keys between "│" bars ([detectLetterMenu] takes the same row). Prose that mentions the
@@ -3906,7 +3907,7 @@ internal fun grokWorkingBelowAnyQuestion(plain: String): Boolean {
     val question = rows.indices.lastOrNull { i ->
         val r = rows[i]
         !composer[i] && (MENU_OPTION_ROW.find(r) != null || GROK_RADIO_ROW.containsMatchIn(r) || GROK_UNNUMBERED_ALWAYS.matches(r) ||
-            GROK_SELECT_FOOTER.containsMatchIn(r) || GROK_PRIVACY_ROW.containsMatchIn(r))
+            GROK_SELECT_FOOTER.containsMatchIn(r) || GROK_PRIVACY_BUTTONS.containsMatchIn(r) || GROK_PRIVACY_ROW.matches(r))
     } ?: -1
     // A whole plan review or folder trust prompt at the bottom (Codex's per-commit review: never a
     // mention of their keys, and never one with Grok's running output under it).
@@ -4698,8 +4699,7 @@ fun showsGrokBanner(text: String): Boolean {
 fun detectGrokPrivacyDialog(text: String): Prompt? {
     val lines = text.lines().takeLast(40)
     if (lines.none { it.contains("Coding data, retention, and training") }) return null
-    val row = Regex("""^[\s│┃|]*([○●◯◉])\s+(Opt in|Opt out)\b""")
-    val rows = lines.mapNotNull { row.find(it) }
+    val rows = lines.mapNotNull(GROK_PRIVACY_ROW::matchEntire)
     if (rows.size != 2) return null
     val choices = rows.mapIndexed { i, m -> Choice(m.groupValues[2], (i + 1).toString(), false) }
     val selected = rows.indexOfFirst { it.groupValues[1] in setOf("●", "◉") }.takeIf { it >= 0 }?.let { (it + 1).toString() }
