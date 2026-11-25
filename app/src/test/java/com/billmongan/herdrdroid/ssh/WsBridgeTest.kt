@@ -42,27 +42,33 @@ class WsBridgeTest {
 
     @Test fun bytesArriveIntactAndInOrderBothWays() {
         val server = echoServer()
-        val url = server.url("/").toString().replaceFirst("http", "ws")
-        val bridge = WsBridge.open(url)
-        val data = ByteArray(6 * 1024 * 1024).also { Random(7).nextBytes(it) }
-        Socket("127.0.0.1", bridge.port).use { s ->
-            // Write everything on one thread while reading on this one, as sshj does.
-            val writer = Thread { s.getOutputStream().apply { write(data); flush() } }.apply { start() }
-            val got = ByteArrayOutputStream()
-            val buf = ByteArray(64 * 1024)
-            val input = s.getInputStream()
-            while (got.size() < data.size) {
-                val n = input.read(buf)
-                if (n < 0) break
-                got.write(buf, 0, n)
+        try {
+            val url = server.url("/").toString().replaceFirst("http", "ws")
+            val bridge = WsBridge.open(url)
+            try {
+                val data = ByteArray(6 * 1024 * 1024).also { Random(7).nextBytes(it) }
+                Socket("127.0.0.1", bridge.port).use { s ->
+                    // Write everything on one thread while reading on this one, as sshj does.
+                    val writer = Thread { s.getOutputStream().apply { write(data); flush() } }.apply { start() }
+                    val got = ByteArrayOutputStream()
+                    val buf = ByteArray(64 * 1024)
+                    val input = s.getInputStream()
+                    while (got.size() < data.size) {
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        got.write(buf, 0, n)
+                    }
+                    writer.join()
+                    assertEquals(data.size, got.size())
+                    assertArrayEquals(data, got.toByteArray())
+                }
+            } finally {
+                bridge.close()
             }
-            writer.join()
-            assertEquals(data.size, got.size())
-            assertArrayEquals(data, got.toByteArray())
+            assertTrue(!bridge.isOpen)
+        } finally {
+            server.shutdown()
         }
-        bridge.close()
-        assertTrue(!bridge.isOpen)
-        server.shutdown()
     }
 
     @Test fun aRefusedUpgradeIsAnErrorNotAHang() {
@@ -70,15 +76,18 @@ class WsBridgeTest {
         // What an HTTP/2 edge does: a plain 200 instead of 101 Switching Protocols.
         server.enqueue(MockResponse().setResponseCode(200).setBody("ok"))
         server.start()
-        val started = System.currentTimeMillis()
         try {
-            WsBridge.open(server.url("/").toString().replaceFirst("http", "ws"))
-            fail("expected an error")
-        } catch (e: IOException) {
-            assertTrue(e.message!!, e.message!!.contains("HTTP 200"))
+            val started = System.currentTimeMillis()
+            try {
+                WsBridge.open(server.url("/").toString().replaceFirst("http", "ws")).close()
+                fail("expected an error")
+            } catch (e: IOException) {
+                assertTrue(e.message!!, e.message!!.contains("HTTP 200"))
+            }
+            assertTrue(System.currentTimeMillis() - started < 10_000)
+        } finally {
+            server.shutdown()
         }
-        assertTrue(System.currentTimeMillis() - started < 10_000)
-        server.shutdown()
     }
 
     @Test fun onlyWebSocketAddressesAreAccepted() {
@@ -99,13 +108,20 @@ class WsBridgeTest {
             }
         }))
         server.start()
-        val bridge = WsBridge.open(server.url("/").toString().replaceFirst("http", "ws"))
-        Socket("127.0.0.1", bridge.port).use { s ->
-            s.soTimeout = 10_000
-            val all = s.getInputStream().readBytes() // returns at EOF; a hang would time out
-            assertArrayEquals(byteArrayOf(1, 2, 3), all)
+        try {
+            val bridge = WsBridge.open(server.url("/").toString().replaceFirst("http", "ws"))
+            try {
+                Socket("127.0.0.1", bridge.port).use { s ->
+                    s.soTimeout = 10_000
+                    val all = s.getInputStream().readBytes() // returns at EOF; a hang would time out
+                    assertArrayEquals(byteArrayOf(1, 2, 3), all)
+                }
+            } finally {
+                bridge.close()
+            }
+        } finally {
+            server.shutdown()
         }
-        server.shutdown()
     }
 
     @Test fun theServerSpeaksFirstAndALateClientStillGetsEveryByteInOrder() {
@@ -124,31 +140,37 @@ class WsBridgeTest {
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(1000, null) }
         }))
         server.start()
-        val bridge = WsBridge.open(server.url("/").toString().replaceFirst("http", "ws"))
-        // The bridge listens on IPv4 loopback, which is where sshj is pointed.
-        assertEquals("127.0.0.1", bridge.host)
-        Thread.sleep(500) // the server's bytes arrive before anyone connects
-        Socket(bridge.host, bridge.port).use { s ->
-            s.soTimeout = 10_000
-            val input = s.getInputStream()
-            val got = ByteArray(banner.size)
-            var n = 0
-            while (n < got.size) { val k = input.read(got, n, got.size - n); if (k < 0) break; n += k }
-            assertArrayEquals(banner, got)
-            s.getOutputStream().apply { write("SSH-2.0-test\r\n".toByteArray()); flush() }
-            val reply = ByteArray(18)
-            n = 0
-            while (n < reply.size) { val k = input.read(reply, n, reply.size - n); if (k < 0) break; n += k }
-            assertEquals("got SSH-2.0-test\r\n", String(reply))
+        try {
+            val bridge = WsBridge.open(server.url("/").toString().replaceFirst("http", "ws"))
+            try {
+                // The bridge listens on IPv4 loopback, which is where sshj is pointed.
+                assertEquals("127.0.0.1", bridge.host)
+                Thread.sleep(500) // the server's bytes arrive before anyone connects
+                Socket(bridge.host, bridge.port).use { s ->
+                    s.soTimeout = 10_000
+                    val input = s.getInputStream()
+                    val got = ByteArray(banner.size)
+                    var n = 0
+                    while (n < got.size) { val k = input.read(got, n, got.size - n); if (k < 0) break; n += k }
+                    assertArrayEquals(banner, got)
+                    s.getOutputStream().apply { write("SSH-2.0-test\r\n".toByteArray()); flush() }
+                    val reply = ByteArray(18)
+                    n = 0
+                    while (n < reply.size) { val k = input.read(reply, n, reply.size - n); if (k < 0) break; n += k }
+                    assertEquals("got SSH-2.0-test\r\n", String(reply))
+                }
+            } finally {
+                bridge.close()
+            }
+            val log = com.billmongan.herdrdroid.diag.DiagLog.text()
+            assertTrue(log, log.contains("onOpen: HTTP 101"))
+            assertTrue(log, log.contains("onMessage(binary) #1: 10 bytes, starts \"SSH-2.0-Op\""))
+            assertTrue(log, log.contains("ws.send(binary) #1: 14 bytes, starts \"SSH-2.0-test\\r\\n\""))
+            // The address never goes in the log.
+            assertTrue(log, !log.contains(server.hostName + ":" + server.port) && log.contains("<address hidden>"))
+        } finally {
+            server.shutdown()
         }
-        bridge.close()
-        val log = com.billmongan.herdrdroid.diag.DiagLog.text()
-        assertTrue(log, log.contains("onOpen: HTTP 101"))
-        assertTrue(log, log.contains("onMessage(binary) #1: 10 bytes, starts \"SSH-2.0-Op\""))
-        assertTrue(log, log.contains("ws.send(binary) #1: 14 bytes, starts \"SSH-2.0-test\\r\\n\""))
-        // The address never goes in the log.
-        assertTrue(log, !log.contains(server.hostName + ":" + server.port) && log.contains("<address hidden>"))
-        server.shutdown()
     }
 
     /**
@@ -164,18 +186,20 @@ class WsBridgeTest {
         val herdr = System.getenv("HD_WS_HERDR") ?: "/home/node/.local/bin/herdr"
         fun creds(path: String) = Credentials(KeySource.Imported(File(path).readText(), null), "not-a-password")
         val ssh = HerdrSsh("unused", 0, user, creds(System.getenv("HD_WS_KEY")), fp, { null }, url)
+        try {
+            val list = ssh.exec("$herdr agent list")
+            assertEquals(0, list.exit)
+            for (a in listOf("claude", "codex", "grok", "agy")) assertTrue(list.out, list.out.contains("\"$a\""))
+            val read = ssh.exec("$herdr pane read p1 --lines 5")
+            assertTrue(read.out, read.out.contains("pane output"))
 
-        val list = ssh.exec("$herdr agent list")
-        assertEquals(0, list.exit)
-        for (a in listOf("claude", "codex", "grok", "agy")) assertTrue(list.out, list.out.contains("\"$a\""))
-        val read = ssh.exec("$herdr pane read p1 --lines 5")
-        assertTrue(read.out, read.out.contains("pane output"))
-
-        // A minute of idling: the connection must still be there (no reconnect needed).
-        Thread.sleep(65_000)
-        val again = ssh.exec("echo still-here")
-        assertEquals("still-here", again.out.trim())
-        ssh.close()
+            // A minute of idling: the connection must still be there (no reconnect needed).
+            Thread.sleep(65_000)
+            val again = ssh.exec("echo still-here")
+            assertEquals("still-here", again.out.trim())
+        } finally {
+            ssh.close()
+        }
 
         // A key the server doesn't know: a clear refusal, quickly, and no password offered.
         val bad = HerdrSsh("unused", 0, user, creds(System.getenv("HD_WS_BADKEY")), fp, { null }, url)
@@ -185,8 +209,9 @@ class WsBridgeTest {
             fail("expected the key to be refused")
         } catch (e: AuthRejected) {
             assertTrue(System.currentTimeMillis() - t0 < 20_000)
+        } finally {
+            bad.close()
         }
-        bad.close()
 
         // No key at all: refused before anything is sent.
         val none = HerdrSsh("unused", 0, user, Credentials(null, "pw"), fp, { null }, url)
@@ -195,6 +220,8 @@ class WsBridgeTest {
             fail("expected a refusal")
         } catch (e: AuthRejected) {
             assertTrue(e.message!!.contains("key only"))
+        } finally {
+            none.close()
         }
 
         // The wrong pinned host key stops the connection.
@@ -204,6 +231,8 @@ class WsBridgeTest {
             fail("expected a host key mismatch")
         } catch (e: HostKeyChanged) {
             assertEquals(fp, e.actual)
+        } finally {
+            wrongPin.close()
         }
     }
 }

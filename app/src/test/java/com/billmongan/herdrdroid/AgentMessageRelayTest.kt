@@ -57,7 +57,7 @@ class AgentMessageRelayTest {
     }
 
     @After fun close() {
-        vm.viewModelScope.cancel()
+        vm.clearForTest()
         shadowOf(Looper.getMainLooper()).idle()
     }
 
@@ -185,7 +185,7 @@ class AgentMessageRelayTest {
         try {
             val ledger = field(again, "crossServerCodes").get(again)
             assertTrue((ledger as CrossServerCodeLedger).spent("${source.server.id}|p1|$code"))
-        } finally { again.viewModelScope.cancel() }
+        } finally { again.clearForTest() }
     }
 
     @Test fun aNewFrameAfterBackgroundShowsAgainUntilItsTenMinutes() = runBlocking {
@@ -520,7 +520,7 @@ class AgentMessageRelayTest {
         val again = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
         try {
             assertTrue((field(again, "crossServerCodes").get(again) as CrossServerCodeLedger).spent(busy.id))
-        } finally { again.viewModelScope.cancel() }
+        } finally { again.clearForTest() }
         vm.closeCrossServerCard(done)
         vm.readPane("p1")
         assertTrue(vm.crossServerCardsFor("p1").isEmpty())

@@ -1,6 +1,7 @@
 package com.billmongan.herdrdroid.ui
 
 import com.billmongan.herdrdroid.OUTERMOST_RULE
+import com.billmongan.herdrdroid.clearForTest
 import com.billmongan.herdrdroid.IdleMainLooperRule
 import com.billmongan.herdrdroid.*
 
@@ -80,7 +81,7 @@ class CrossServerHermesDestinationTest {
     }
 
     @After fun close() {
-        rule.runOnUiThread { vm.viewModelScope.cancel() }
+        rule.runOnUiThread { vm.clearForTest() }
         shadowOf(Looper.getMainLooper()).idle()
     }
 

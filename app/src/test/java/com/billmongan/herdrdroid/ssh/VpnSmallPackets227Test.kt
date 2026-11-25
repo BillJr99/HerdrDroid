@@ -108,13 +108,13 @@ class VpnSmallPackets227Test {
     }
 
     @Test fun wifiLeavesAWebSocketAlone() {
-        val ws = wifi("wifi", vpnOn = true, wifiOn = true, ws = "wss://bridge.invalid/ssh")
+        val ws = wifi("wifi", vpnOn = true, wifiOn = true, ws = "ws://127.0.0.1:1/ssh")
         assertEquals(MssChoice(null, MssChoice.NONE, "wifi"), ws.mssChoice())
         assertNull(ws.socketFactoryForNext())
     }
 
     @Test fun cellularLeavesAWebSocketAlone() {
-        val ws = cell("cellular", true, vpnOn = true, cellOn = true, ws = "wss://bridge.invalid/ssh")
+        val ws = cell("cellular", true, vpnOn = true, cellOn = true, ws = "ws://127.0.0.1:1/ssh")
         assertNull(ws.activeMss)
         assertNull(ws.socketFactoryForNext())
     }
@@ -145,7 +145,7 @@ class VpnSmallPackets227Test {
     }
 
     @Test fun aWebSocketIsUnaffected() {
-        val ws = ssh({ "vpn" }, ws = "wss://bridge.invalid/ssh")
+        val ws = ssh({ "vpn" }, ws = "ws://127.0.0.1:1/ssh")
         assertNull(ws.activeMss)
         assertEquals(MssChoice.NONE, ws.mssChoice().reason)
         assertNull(ws.socketFactoryForNext())

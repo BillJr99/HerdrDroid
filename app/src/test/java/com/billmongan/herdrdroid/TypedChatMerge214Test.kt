@@ -53,7 +53,7 @@ class TypedChatMerge214Test {
             "\n\n Enter to select · ↑/↓ to navigate · Esc to cancel"
 
     @After fun close() {
-        vm.viewModelScope.cancel()
+        vm.clearForTest()
         shadowOf(Looper.getMainLooper()).idle()
     }
 

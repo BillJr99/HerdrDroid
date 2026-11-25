@@ -37,7 +37,7 @@ class PaneLoadingTitle227Test {
     private val id = "w2:p5"
     private val claude = Pane(id, "w2:t5", "w2", "claude", Status.IDLE, "", "/fixture")
 
-    @After fun close() { vm.viewModelScope.cancel() }
+    @After fun close() { vm.clearForTest() }
 
     @Suppress("UNCHECKED_CAST")
     private fun <T> state(property: String): MutableState<T> =

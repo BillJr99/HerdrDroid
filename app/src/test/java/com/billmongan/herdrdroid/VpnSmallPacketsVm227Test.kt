@@ -35,7 +35,7 @@ class VpnSmallPacketsVm227Test {
     private fun newVm() = AppViewModel(app).also { vms += it }
 
     @After fun close() {
-        vms.forEach { it.viewModelScope.cancel() }
+        vms.forEach { it.clearForTest() }
         shadowOf(Looper.getMainLooper()).idle()
         VpnSmallPackets.enabled = false
         VpnSmallPackets.cellularEnabled = false
@@ -62,7 +62,7 @@ class VpnSmallPacketsVm227Test {
         // The server's own setting wins; a WebSocket never sets one.
         assertEquals(MssChoice(1000, MssChoice.SETTING, "wifi"),
             HerdrSsh("127.0.0.1", 22, "u", Credentials(null, null), null, { null }, null, 1000, networkType = { "wifi" }).mssChoice())
-        assertNull(HerdrSsh("unused", 0, "u", Credentials(null, null), null, { null }, "wss://bridge.invalid/ssh", networkType = { "wifi" }).activeMss)
+        assertNull(HerdrSsh("unused", 0, "u", Credentials(null, null), null, { null }, "ws://127.0.0.1:1/ssh", networkType = { "wifi" }).activeMss)
 
         VpnSmallPackets.wifiEnabled = false // as if the process restarted
         assertTrue("restored from the saved setting", newVm().smallPacketsOnWifi)

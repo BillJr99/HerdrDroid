@@ -56,7 +56,7 @@ class OpenCodeAlert212Test {
     private val composer = res("/screens/opencode/live-2026-11-20-composer/empty.ansi")
 
     @After fun close() {
-        vm.viewModelScope.cancel()
+        vm.clearForTest()
         shadowOf(Looper.getMainLooper()).idle()
     }
 

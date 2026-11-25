@@ -47,7 +47,7 @@ class SmallPacketSession227Test {
     private val fleetScope = CoroutineScope(SupervisorJob().apply { cancel() })
 
     @After fun close() {
-        vm.viewModelScope.cancel()
+        vm.clearForTest()
         fleetScope.cancel()
         shadowOf(Looper.getMainLooper()).idle()
     }

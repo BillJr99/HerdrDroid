@@ -130,15 +130,15 @@ class LinkDiagnostics226Test {
         DiagLog.clear()
         val server = ServerSocket(0, 50, InetAddress.getLoopbackAddress())
         val acceptor = thread(isDaemon = true) { runCatching { while (true) server.accept().close() } }
+        val ssh = HerdrSsh("127.0.0.1", server.localPort, "nobody", Credentials(null, "hunter2"), null, { null }, null, null, "server-id-raw",
+            object : MssOps {
+                override fun set(socket: java.net.Socket, mss: Int) = "fake"
+                override fun get(socket: java.net.Socket): Int? = 1448
+            })
         try {
-            val ssh = HerdrSsh("127.0.0.1", server.localPort, "nobody", Credentials(null, "hunter2"), null, { null }, null, null, "server-id-raw",
-                object : MssOps {
-                    override fun set(socket: java.net.Socket, mss: Int) = "fake"
-                    override fun get(socket: java.net.Socket): Int? = 1448
-                })
             runCatching { runBlocking { withContext(ReadLabel("list-read")) { ssh.exec("herdr pane list SECRET_CMD") } } }
         } finally {
-            server.close(); acceptor.join(2_000)
+            ssh.close(); server.close(); acceptor.join(2_000)
         }
         val lines = DiagLog.text().lines().filter { it.contains(" [link] ") }
         assertClean(lines)

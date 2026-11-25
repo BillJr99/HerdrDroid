@@ -35,7 +35,7 @@ class DrawerBadge214Test {
     private val question = checkNotNull(javaClass.getResource("/screens/claude/captured-2.1.329/single-question.txt")).readText()
 
     @After fun close() {
-        vm.viewModelScope.cancel()
+        vm.clearForTest()
         shadowOf(Looper.getMainLooper()).idle()
     }
 

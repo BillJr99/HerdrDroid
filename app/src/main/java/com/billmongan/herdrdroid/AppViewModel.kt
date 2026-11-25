@@ -492,12 +492,14 @@ class AppViewModel internal constructor(
 
     // ---- 2.2.6 link diagnostics ----------------------------------------------------------------
 
+    /** 2.2.7: told on the main thread; the latest view model is the one listening. Kept for [onCleared]. */
+    private val networkListener: (String, Int) -> Unit = { type, _ ->
+        viewModelScope.launch(Dispatchers.Main) { onNetworkChanged(type) }
+    }
+
     init {
         com.billmongan.herdrdroid.diag.NetworkWatch.start(app)
-        // 2.2.7: told on the main thread; the latest view model is the one listening.
-        com.billmongan.herdrdroid.diag.NetworkWatch.listener = { type, _ ->
-            viewModelScope.launch(Dispatchers.Main) { onNetworkChanged(type) }
-        }
+        com.billmongan.herdrdroid.diag.NetworkWatch.listener = networkListener
     }
 
     /** Counted from a sign-in to its disconnect, for the session summary line. */
@@ -8170,16 +8172,27 @@ class AppViewModel internal constructor(
         }
     }
 
+    /**
+     * 2.2.8: everything this view model started that its scope doesn't own: the reconnect, the
+     * other servers' watcher and their connections, Hermes's chat, and the two process-wide
+     * listeners (left alone when a newer view model already holds them).
+     */
     override fun onCleared() {
         // 2.2.8 (Bill: "be more robust about managing and closing stale connections"): every
         // connection the app holds is closed when it goes: the open server's, the one kept from a
-        // moment ago, one still signing in, and the watcher's (whose loop stops too).
+        // moment ago, one still signing in, and the watcher's (whose loop stops too). The groundwork
+        // lane adds the reconnect, the network recheck, Hermes's chat, the updater and the listener.
+        reconnectJob?.cancel()
+        networkRecheck?.cancel()
         ssh?.close()
         parked?.ssh?.close()
         parked = null
         connectingSsh?.close()
         fleet?.stop()
         fleet = null
+        hermes?.close()
+        updates.release()
+        if (com.billmongan.herdrdroid.diag.NetworkWatch.listener === networkListener) com.billmongan.herdrdroid.diag.NetworkWatch.listener = null
         super.onCleared()
     }
 }
