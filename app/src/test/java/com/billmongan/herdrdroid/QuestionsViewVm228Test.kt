@@ -226,7 +226,7 @@ class QuestionsViewVm228Test {
                     com.billmongan.herdrdroid.herdr.cardScreenDigest(frame))
                 if (now != com.billmongan.herdrdroid.herdr.CardGuard(m.groupValues[1], m.groupValues[2])) {
                     cardChecksRefused++
-                    return ExecResult(com.billmongan.herdrdroid.herdr.CARD_CHANGED_EXIT, "", "")
+                    return ExecResult(com.billmongan.herdrdroid.herdr.CARD_CHANGED_EXIT, com.billmongan.herdrdroid.herdr.CARD_REFUSED_MARK + "\n", "")
                 }
                 // The rest runs as the computer would: the passed line, then the keys, stopping at a failure.
                 var out = ""
