@@ -2795,11 +2795,14 @@ class AppViewModel internal constructor(
      * once the reads confirmed it, else a neutral card with no options or keys (or, for a question
      * whose dialog never proved itself, the card that says it couldn't be read).
      */
-    fun questionCardFor(paneId: String, parsed: Prompt?, agent: String): Prompt? {
+    fun questionCardFor(paneId: String, parsed: Prompt?, agent: String, screenText: String? = null): Prompt? {
         val key = "${current?.id}|$paneId"
         // A pane no read has reached yet (a screen set without one): as before 2.2.2.
-        if (!questionConfirm.seen(key)) return parsed
-        return com.billmongan.herdrdroid.herdr.shownCard(parsed, cardDecisions[key], agent)
+        val shown = if (!questionConfirm.seen(key)) parsed
+            else com.billmongan.herdrdroid.herdr.shownCard(parsed, cardDecisions[key], agent)
+        if ((shown == null || shown.unreadQuestion) && pane(paneId)?.agent.equals("claude", true) && screenText != null)
+            return com.billmongan.herdrdroid.herdr.claudeReviewPreview(screenText, parsed) ?: shown
+        return shown
     }
 
     /** One read of [paneId]'s screen offered to the question confirmation: the card [cardParse] gives for it. */
@@ -5302,6 +5305,7 @@ class AppViewModel internal constructor(
             val blocked = fresh.status == Status.NEEDS_YOU
             val styled = com.billmongan.herdrdroid.herdr.isOpenCode(agent) || agent.equals("muse", true)
             val gate = com.billmongan.herdrdroid.herdr.QuestionConfirm()
+            var reviewPreview: Prompt? = null
             for (n in 0..com.billmongan.herdrdroid.herdr.FALLBACK_READS) {
                 if (n > 0) delay(VOICE_CONFIRM_PAUSE_MS)
                 val raw = client.readStyledViewport(pane.id, connection)
@@ -5321,7 +5325,10 @@ class AppViewModel internal constructor(
                     parsed = detectPrompt(plain, blocked, agent, version)
                 }
                 parsed = parsed?.takeIf { it.terminalReview || it.choices.isNotEmpty() }
+                reviewPreview = if (agent.equals("claude", true))
+                    com.billmongan.herdrdroid.herdr.claudeReviewPreview(plain, parsed) else null
                 if (parsed == null) {
+                    reviewPreview?.let { return com.billmongan.herdrdroid.questions.QuestionRead(it, null) }
                     // The first read shows no dialog: confirmed none. Later, a dialog that came and went keeps being read.
                     if (n == 0) return com.billmongan.herdrdroid.questions.QuestionRead(null, null)
                     gate.decide("questions", null)
@@ -5332,7 +5339,8 @@ class AppViewModel internal constructor(
                     return com.billmongan.herdrdroid.questions.QuestionRead(parsed.forCard(), target)
                 }
             }
-            com.billmongan.herdrdroid.questions.QuestionRead(null, null, timedOut = true)
+            reviewPreview?.let { com.billmongan.herdrdroid.questions.QuestionRead(it, null) }
+                ?: com.billmongan.herdrdroid.questions.QuestionRead(null, null, timedOut = true)
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
