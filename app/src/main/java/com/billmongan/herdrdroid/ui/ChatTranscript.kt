@@ -113,6 +113,12 @@ class ChatActions(
     val onOpen: ((String) -> Unit)? = null,
     /** The row "Find in chat" is on: drawn with an outline. */
     val focusKey: String? = null,
+    /**
+     * 2.2.8: Send immediately on a greyed message (one in the agent's own queue), by its text and
+     * time; null when the agent can't be helped along. [sendPendingNowOff] says why it is off.
+     */
+    val onSendPendingNow: ((String, Long) -> Unit)? = null,
+    val sendPendingNowOff: String? = null,
 )
 
 /**
@@ -306,7 +312,9 @@ fun TranscriptChat(
                         ) {
                             pending.forEach { (text, at) ->
                                 Column {
-                                    UserBubble(text, size, sending = true, onQuote = actions.onQuote)
+                                    UserBubble(text, size, sending = true, onQuote = actions.onQuote,
+                                        onSendNow = actions.onSendPendingNow?.let { f -> { f(text, at) } },
+                                        sendNowOff = actions.sendPendingNowOff)
                                     ChatTimestamp(at, end = true)
                                 }
                             }
@@ -493,7 +501,11 @@ private fun QuestionContent(q: QuestionItem, size: Float) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun UserBubble(text: String, size: Float, sending: Boolean = false, onQuote: (String) -> Unit) {
+fun UserBubble(
+    text: String, size: Float, sending: Boolean = false, onQuote: (String) -> Unit,
+    /** 2.2.8: a greyed message's Send immediately, and why it is off (shown disabled with the reason). */
+    onSendNow: (() -> Unit)? = null, sendNowOff: String? = null,
+) {
     var menu by remember { mutableStateOf(false) }
     val haptic = LocalHapticFeedback.current
     // 2.2.7: a long message that went as a file: a small label, and the original text collapsed.
@@ -535,17 +547,31 @@ fun UserBubble(text: String, size: Float, sending: Boolean = false, onQuote: (St
                     })
                     .padding(horizontal = 14.dp, vertical = 10.dp),
             )
-            MessageMenu(menu, shown, onDismiss = { menu = false }, onQuote = onQuote)
+            MessageMenu(menu, shown, onDismiss = { menu = false }, onQuote = onQuote,
+                sendNow = if (sending && (onSendNow != null || sendNowOff != null)) (onSendNow ?: {}) else null, sendNowOff = sendNowOff)
         }
     }
 }
 
 @Composable
-private fun MessageMenu(open: Boolean, text: String, onDismiss: () -> Unit, onQuote: (String) -> Unit) {
+private fun MessageMenu(
+    open: Boolean, text: String, onDismiss: () -> Unit, onQuote: (String) -> Unit,
+    sendNow: (() -> Unit)? = null, sendNowOff: String? = null,
+) {
     val context = LocalContext.current
     val copy = rememberCopier()
     val boxes = remember(text) { BoxCopy.markdownBoxes(text) }
     DropdownMenu(expanded = open, onDismissRequest = onDismiss) {
+        if (sendNow != null) DropdownMenuItem(
+            text = {
+                androidx.compose.foundation.layout.Column {
+                    Text("Send immediately")
+                    Text(sendNowOff ?: "Moves running commands to the background until it goes", fontSize = 12.sp, color = Palette.Muted)
+                }
+            },
+            enabled = sendNowOff == null,
+            onClick = { sendNow(); onDismiss() },
+        )
         DropdownMenuItem(text = { Text("Copy") }, onClick = { copy(text, "Copied"); onDismiss() })
         // 2.2.0: each box in the message too, by its first line.
         boxes.forEach { b -> DropdownMenuItem(text = { Text("Copy box: " + BoxCopy.label(b)) }, onClick = { copy(b, "Copied box"); onDismiss() }) }

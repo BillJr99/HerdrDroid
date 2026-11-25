@@ -109,6 +109,7 @@ internal object AgentComposers {
         val plain = stripAnsi(row).removePrefix("╰─").trim()
         if (!OMP_HINT.matches("  $plain")) return false
         // The label after the key is drawn dim and italic ("\u001B[2m\u001B[3m…"); typed text never is.
-        return Regex("""\u001B\[[23]m[^\u001B]*to (?:change thinking effort|see)""").containsMatchIn(row)
+        // 2.2.8: Oh My Pi 19 also draws it italic and grey in one run ("\u001B[3m\u001B[38;2;107;114;128mto change…").
+        return Regex("""\u001B\[[23]m(?:\u001B\[[0-9;]*m)*[^\u001B]*to (?:change thinking effort|see)""").containsMatchIn(row)
     }
 }

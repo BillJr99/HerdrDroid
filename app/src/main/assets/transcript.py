@@ -1680,6 +1680,21 @@ def pane_of(pid):
     return None
 
 
+CLAUDE_EVAL = re.compile(r"&& eval '((?:[^']|'\"'\"')*)' < /dev/null && pwd -P >\| /tmp/claude-[0-9a-f]+-cwd$")
+
+
+def claude_shell_command(args):
+    """2.2.8: the command a shell Claude Code started runs (`bash -c "source <snapshot> ... && eval '<cmd>'
+    < /dev/null && pwd -P >| /tmp/claude-<id>-cwd"`), masked like a command line, or None for any other
+    process. The app matches it against the command Claude shows running in the foreground."""
+    if len(args) != 3 or os.path.basename(args[0]) != "bash" or args[1] != "-c" or "/.claude/shell-snapshots/" not in args[2]:
+        return None
+    m = CLAUDE_EVAL.search(args[2])
+    if not m:
+        return None
+    return mask_args([m.group(1).replace("'\"'\"'", "'")])
+
+
 def pane_procs(pane, table=None, pids=None):
     """The processes running in a herdr pane (they all carry HERDR_PANE_ID), as a tree.
     [pids], when the caller already knows which processes are in the pane, skips that lookup."""
@@ -1710,9 +1725,13 @@ def pane_procs(pane, table=None, pids=None):
                 rss_kb = int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE") // 1024
         except Exception:
             rss_kb = 0
-        out.append({"pid": pid, "ppid": ppid, "depth": depth, "cmd": mask_args(args) or "?",
+        row = {"pid": pid, "ppid": ppid, "depth": depth, "cmd": mask_args(args) or "?",
                     "name": os.path.basename(args[0]) if args else "?", "sid": sid, "tty": tty,
-                    "age": int(age), "cpu": round(100.0 * (cpu / hz) / age, 1) if age > 1 else 0.0, "rss": rss_kb})
+                    "age": int(age), "cpu": round(100.0 * (cpu / hz) / age, 1) if age > 1 else 0.0, "rss": rss_kb}
+        shell = claude_shell_command(args)
+        if shell is not None:
+            row["shell"] = shell
+        out.append(row)
         for c in sorted(kids.get(pid, [])):
             walk(c, depth + 1)
 

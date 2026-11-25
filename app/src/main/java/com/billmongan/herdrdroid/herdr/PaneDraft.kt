@@ -10,9 +10,57 @@ import kotlinx.coroutines.CancellationException
  * Grok (the app already clears Grok's box this way before /privacy). Other agents show the draft
  * and Send draft, but no Clear draft, until their box is checked the same way.
  */
-internal val DRAFT_CLEARABLE = setOf("claude", "codex", "hermes", "grok")
+internal val DRAFT_CLEARABLE = setOf("claude", "codex", "hermes", "grok", "agy", "kiro", "vibe", "muse", "pi", "opencode")
 
-internal fun canClearDraft(agent: String?): Boolean = agent?.lowercase() in DRAFT_CLEARABLE
+internal fun canClearDraft(agent: String?): Boolean = draftClearKey(agent) != null
+
+/**
+ * 2.2.8: the key Clear draft presses, per agent, or null where none is checked. Backspace for the
+ * agents above, and for Agy 1.5.17, Kiro, Vibe 3.1.2, Muse Code 1.4.24, pi 1.6.0 and OpenCode 2.3.2,
+ * each checked live in a throwaway pane (2026-11-25): "alpha beta gamma" typed, 16 Backspaces, the
+ * box empty and nothing else changed. Ctrl+U for Oh My Pi 19.0.1 and Copilot 1.0.114, which delete
+ * from the cursor to the start of the row: Ctrl+E (end of row) goes first in the same write, since
+ * the screen shows no cursor there (checked live: with the cursor six left of the end, Ctrl+U alone
+ * left " gamma", Ctrl+E then Ctrl+U emptied the box). One row only ([clearableDraft]).
+ */
+internal fun draftClearKey(agent: String?): String? = when (agent?.lowercase()) {
+    in DRAFT_CLEARABLE -> "backspace"
+    "omp", "copilot" -> "ctrl+u"
+    else -> null
+}
+
+/** The keys one Ctrl+U clear presses: to the end of the row, then delete to its start. */
+internal val LINE_CLEAR_KEYS = listOf("ctrl+e", "ctrl+u")
+
+/** Whether Clear draft may run on [draft] in [agent]'s box: a Ctrl+U agent's draft must be one row. */
+internal fun clearableDraft(agent: String?, draft: ComposerDraft): Boolean {
+    val key = draftClearKey(agent) ?: return false
+    return !draft.menu && (key != "ctrl+u" || '\n' !in draft.text)
+}
+
+/**
+ * 2.2.8: the draft in [agent]'s input box on [screen], for every agent the app reads: the glyph
+ * composers ([composerDraftOf]), the boxes found by shape ([AgentComposers]: pi, Oh My Pi, Copilot)
+ * and OpenCode's ([openCodeComposerDraft]). Null when the box is empty, shows only a placeholder, or
+ * isn't found.
+ */
+internal fun paneDraftOf(screen: String, agent: String?): ComposerDraft? = when {
+    AgentComposers.handles(agent) -> AgentComposers.line(screen, agent)
+        ?.takeIf { it.isNotBlank() && it != AgentComposers.UNSURE_BLANK }
+        ?.let { ComposerDraft(it, bounded = true, menu = false) }
+    isOpenCode(agent) -> openCodeComposerDraft(screen)?.let { ComposerDraft(it, bounded = true, menu = false) }
+    else -> composerDraftOf(screen, agent)
+}
+
+/** 2.2.8: [agent]'s input box positively found empty on [screen] (a placeholder counts as empty). */
+internal fun paneBoxEmpty(screen: String?, agent: String?): Boolean {
+    if (screen.isNullOrBlank()) return false
+    return when {
+        AgentComposers.handles(agent) -> AgentComposers.line(screen, agent) == ""
+        isOpenCode(agent) -> openCodeComposerEmpty(screen)
+        else -> inputLineOf(screen, agent) == "" && composerDraftOf(screen, agent) == null
+    }
+}
 
 /**
  * A draft typed in a pane's input box at the computer, as the chat shows it, and the two things
@@ -29,6 +77,8 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
         suspend fun viewport(id: String): String?
         /** Keys that the transport starts only while [permit] is open. */
         suspend fun keys(id: String, keys: List<String>, permit: WritePermit)
+        /** Clear only while the host still sees the viewport the app verified. */
+        suspend fun clearKeys(id: String, keys: List<String>, viewport: String, permit: WritePermit): Boolean
         /** Time for the agent to redraw before the next read. */
         suspend fun pause(ms: Long)
     }
@@ -78,11 +128,10 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
         if (visible.isNullOrBlank()) return null
         if (dismissibleUsageFrame(pane.agent, visible) != null) return null
         if (detectPrompt(forPhone(visible), pane.status == Status.NEEDS_YOU, pane.agent) != null) return null
-        return composerDraftOf(visible, pane.agent)
+        return paneDraftOf(visible, pane.agent)
     }
 
-    private fun emptyBox(pane: Pane, visible: String?): Boolean =
-        !visible.isNullOrBlank() && inputLineOf(visible, pane.agent) == "" && composerDraftOf(visible, pane.agent) == null
+    private fun emptyBox(pane: Pane, visible: String?): Boolean = paneBoxEmpty(visible, pane.agent)
 
     /** Presses Enter once, only if the box still holds [shownText]. */
     suspend fun send(server: String, shown: Pane, shownText: String, allowed: () -> Boolean, port: Port): Outcome =
@@ -134,10 +183,11 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
      * Never presses Enter.
      */
     suspend fun clear(server: String, shown: Pane, shownText: String, allowed: () -> Boolean, port: Port): Outcome {
-        if (!canClearDraft(shown.agent)) return Outcome.REFUSED
+        val key = draftClearKey(shown.agent) ?: return Outcome.REFUSED
         return guarded(server, shown, shownText, allowed, port) { _, draft ->
             // A suggestion list may be part of the box's buffer: nothing is typed then.
             if (draft.menu) return@guarded Outcome.NOT_SENDABLE
+            if (key == "ctrl+u") return@guarded clearLine(server, shown, draft, allowed, port)
             var left = shownText
             var pressed = false
             for (round in 1..MAX_CLEAR_ROUNDS) {
@@ -147,7 +197,12 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
                     ?: return@guarded if (pressed) Outcome.UNCERTAIN else Outcome.REFUSED
                 try {
                     if (!allowed()) return@guarded if (pressed) Outcome.UNCERTAIN else Outcome.REFUSED
-                    port.keys(shown.id, List(count) { "backspace" }, permit)
+                    // 2.2.8 (Codex's VM tests): the box is read once more, with the permit open, right
+                    // before the keys, and must still hold what is left of the shown draft.
+                    val viewport = verifiedViewport(shown, left, port)
+                        ?: return@guarded if (pressed) Outcome.UNCERTAIN else Outcome.CHANGED
+                    if (!port.clearKeys(shown.id, List(count) { "backspace" }, viewport, permit))
+                        return@guarded if (pressed) Outcome.UNCERTAIN else Outcome.CHANGED
                     pressed = true
                 } catch (e: WriteRevoked) {
                     return@guarded if (pressed) Outcome.UNCERTAIN else Outcome.REFUSED
@@ -183,6 +238,47 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
             }
             Outcome.PARTIAL
         }
+    }
+
+    /**
+     * 2.2.8: Clear for a Ctrl+U agent: Ctrl+E then Ctrl+U on a one-row draft, in one write, then reads
+     * until the box shows empty. Never Enter, never a second write.
+     */
+    /**
+     * The last read before a Clear key: the box shows exactly [expected] (trailing spaces aside), bounded,
+     * with no list under it. The host compares the same viewport immediately before the key.
+     */
+    private suspend fun verifiedViewport(shown: Pane, expected: String, port: Port): String? {
+        val last = port.viewport(shown.id) ?: return null
+        val still = draftOn(shown, last) ?: return null
+        return last.takeIf { still.bounded && !still.menu && still.text.trimEnd() == expected.trimEnd() }
+    }
+
+    private suspend fun clearLine(server: String, shown: Pane, draft: ComposerDraft, allowed: () -> Boolean, port: Port): Outcome {
+        if ('\n' in draft.text) return Outcome.NOT_SENDABLE
+        val permit = gate.open(server to shown.id, WritePermit(allowed)) ?: return Outcome.REFUSED
+        try {
+            if (!allowed()) return Outcome.REFUSED
+            // 2.2.8 (Codex's VM tests): a replacement draft typed after the first read is never cleared.
+            val viewport = verifiedViewport(shown, draft.text, port) ?: return Outcome.CHANGED
+            if (!port.clearKeys(shown.id, LINE_CLEAR_KEYS, viewport, permit)) return Outcome.CHANGED
+        } catch (e: WriteRevoked) {
+            return Outcome.REFUSED
+        } catch (c: CancellationException) {
+            if (permit.submitted) return Outcome.UNCERTAIN
+            throw c
+        } catch (e: Exception) {
+            return if (permit.submitted) Outcome.UNCERTAIN else Outcome.REFUSED
+        } finally {
+            gate.finish(server to shown.id, permit)
+        }
+        repeat(CONFIRM_READS) {
+            port.pause(SETTLE_MS)
+            val fresh = readOrNull { port.pane(shown.id) }
+            val after = readOrNull { port.viewport(shown.id) }
+            if (fresh != null && ready(shown, fresh) && emptyBox(fresh, after)) return Outcome.CLEARED
+        }
+        return Outcome.UNCERTAIN
     }
 
     private suspend fun guarded(
