@@ -133,6 +133,10 @@ class DraftInChat228Test {
             writes += keys
             if (obeys && keys == LINE_CLEAR_KEYS) text = ""
         }
+        override suspend fun clearKeys(id: String, keys: List<String>, viewport: String, permit: WritePermit): Boolean {
+            keys(id, keys, permit)
+            return true
+        }
         override suspend fun pause(ms: Long) {}
     }
 
@@ -151,6 +155,10 @@ class DraftInChat228Test {
             override suspend fun pane(id: String) = ompPane
             override suspend fun viewport(id: String) = if (sent) live("omp") else typed("omp", "fix the build")
             override suspend fun keys(id: String, keys: List<String>, permit: WritePermit) { permit.admit(); assertEquals(listOf("enter"), keys); sent = true }
+            override suspend fun clearKeys(id: String, keys: List<String>, viewport: String, permit: WritePermit): Boolean {
+                keys(id, keys, permit)
+                return true
+            }
             override suspend fun pause(ms: Long) {}
         }
         assertEquals(PaneDraftAction.Outcome.SENT, PaneDraftAction(PaneDispatch(), WriteGate()).send("srv", ompPane, "fix the build", { true }, box))

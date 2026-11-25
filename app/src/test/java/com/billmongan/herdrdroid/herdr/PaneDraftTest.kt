@@ -140,6 +140,10 @@ class PaneDraftTest {
             permit.admit()
             writes += keys
         }
+        override suspend fun clearKeys(id: String, keys: List<String>, viewport: String, permit: WritePermit): Boolean {
+            keys(id, keys, permit)
+            return true
+        }
         override suspend fun pause(ms: Long) {}
     }
 
@@ -225,6 +229,10 @@ class PaneDraftTest {
             writes += keys
             val n = keys.size - (if (writes.size == 1) drop else 0) + (if (writes.size == 1) extra else 0)
             text = text.dropLast(n.coerceAtMost(text.length))
+        }
+        override suspend fun clearKeys(id: String, keys: List<String>, viewport: String, permit: WritePermit): Boolean {
+            keys(id, keys, permit)
+            return true
         }
         override suspend fun pause(ms: Long) {}
     }

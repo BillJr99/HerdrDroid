@@ -35,7 +35,7 @@ internal class Backgrounder(private val agent: String?, private val port: Port, 
          * Presses the background key once for [step], behind the computer's own check of the screen.
          * False: the check refused (the screen no longer shows the step's hint); nothing was typed.
          */
-        suspend fun press(step: BackgroundStep): Boolean
+        suspend fun press(step: BackgroundStep, viewport: String): Boolean
         suspend fun pause(ms: Long)
     }
 
@@ -52,6 +52,8 @@ internal class Backgrounder(private val agent: String?, private val port: Port, 
         DONE,
         /** A question, approval or panel opened: nothing more was pressed. */
         BLOCKED,
+        /** The host no longer sees the viewport the app verified. */
+        CHANGED,
         /** The screen could not be read twice running. */
         UNREADABLE,
         /** The hint was still there after a press and a full wait: the key did not take. */
@@ -84,9 +86,9 @@ internal class Backgrounder(private val agent: String?, private val port: Port, 
                 return Outcome.STUCK
             }
             if (presses >= limits.maxPresses) return Outcome.TIMED_OUT
-            val pressed = port.press(step)
+            val pressed = port.press(step, screen)
             if (step == BackgroundStep.AGY_ARM) armedAt = read
-            if (!pressed) { pressedAt = -1; pressedStep = null; continue }
+            if (!pressed) return Outcome.CHANGED
             presses++
             pressedAt = read
             pressedStep = step
@@ -234,6 +236,7 @@ internal fun foregroundHint(agent: String?, screen: String): Boolean = when (bac
 internal fun backgroundOutcomeText(outcome: Backgrounder.Outcome, agentName: String): String? = when (outcome) {
     Backgrounder.Outcome.DONE -> null
     Backgrounder.Outcome.BLOCKED -> "Stopped moving tasks to the background: $agentName has a question or panel open. Answer it first."
+    Backgrounder.Outcome.CHANGED -> "Stopped: $agentName's running view changed. The message is still in its queue."
     Backgrounder.Outcome.UNREADABLE -> "Stopped: $agentName's screen couldn't be read. The message is still in its queue."
     Backgrounder.Outcome.STUCK -> "Ctrl+B didn't move $agentName's running command to the background. The message is still in its queue."
     Backgrounder.Outcome.TIMED_OUT -> "$agentName hasn't taken the message yet. It is still in its queue."

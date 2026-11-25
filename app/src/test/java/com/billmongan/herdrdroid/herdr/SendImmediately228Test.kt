@@ -31,9 +31,9 @@ class SendImmediately228Test {
         override suspend fun screen(): String? = screens[minOf(reads, screens.size - 1)].also { reads++ }
         override fun blocked(screen: String) = blockAt in 0 until reads
         override fun done(screen: String) = reads > taken
-        override suspend fun press(step: BackgroundStep): Boolean {
+        override suspend fun press(step: BackgroundStep, viewport: String): Boolean {
             val now = atKey?.invoke(reads) ?: screens[minOf(reads - 1, screens.size - 1)]
-            if (now == null || !backgroundCheckPasses(step, now)) return false
+            if (now == null || now != viewport || !backgroundCheckPasses(step, now)) return false
             presses++; steps += step; return true
         }
         override suspend fun pause(ms: Long) {}
@@ -131,7 +131,7 @@ class SendImmediately228Test {
     @Test fun `a dialog that opens between the read and the key gets no key`() = runBlocking {
         val dialog = withHint.trimEnd() + "\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n\n Esc to cancel"
         val f = Fake(listOf(withHint), atKey = { dialog })
-        assertEquals(Backgrounder.Outcome.TIMED_OUT, claude(f).run())
+        assertEquals(Backgrounder.Outcome.CHANGED, claude(f).run())
         assertEquals(0, f.presses)
     }
 
