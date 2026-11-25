@@ -440,12 +440,17 @@ class Herdr internal constructor(
             commands?.let { permit.admit(); it.immediate(cardSendCommand(paneId, input, guard, shellOnly), 30, connection) }
                 ?: ssh.execNow(cardSendCommand(paneId, input, guard, shellOnly), 30, connection, permit)
         }
-        if (!shellOnly && r.out.lines().any { it.trim() == SHELL_CHECK_MARK }) onShellFallback()
-        when (r.exit) {
-            0 -> return
-            CARD_CHANGED_EXIT -> throw CardChanged()
-            CARD_CHECK_FAILED_EXIT, 126, 127 -> throw CardCheckFailed()
-            else -> throw HerdrError((r.err.ifBlank { r.out }).trim().lines().lastOrNull { it.isNotBlank() } ?: "exit ${r.exit}", r.exit)
+        val lines = r.out.lines().map { it.trim() }
+        if (!shellOnly && SHELL_CHECK_MARK in lines) onShellFallback()
+        if (r.exit == 0) return
+        // 2.2.8 (Codex's re-review 6): after the passed line the keys had started: whatever the exit, a
+        // failure may have reached the pane ([DeliveryUncertain]). Before it, only the check's own refusal
+        // line with its exit means the question changed; anything else, the check failed.
+        val why = (r.err.ifBlank { r.out }).trim().lines().lastOrNull { it.isNotBlank() && it.trim() != CARD_PASSED_MARK } ?: "exit ${r.exit}"
+        when {
+            CARD_PASSED_MARK in lines -> throw DeliveryUncertain(why)
+            r.exit == CARD_CHANGED_EXIT && CARD_REFUSED_MARK in lines -> throw CardChanged()
+            else -> throw CardCheckFailed()
         }
     }
 
@@ -462,7 +467,8 @@ class Herdr internal constructor(
             is CardInput.Text -> cmd("pane", "send-text", paneId, input.text) +
                 (if (input.enter) " && " + cmd("pane", "send-keys", paneId, "enter") else "")
         }
-        return "$check && $send"
+        // 2.2.8 (Codex's re-review 6): the passed line goes out just before the keys (see [sendCardInput]).
+        return "$check && echo $CARD_PASSED_MARK && $send"
     }
 
     /** The check before a write: [CARD_SEND_CHECK], failing over to [CARD_SEND_CHECK_SH] where python3 can't run. */
@@ -4522,6 +4528,9 @@ internal class OccupantChanged : Exception("the pane changed")
  */
 internal const val OCCUPANT_REFUSED_MARK = "@@herdrdroid-occupant-refused@@"
 internal const val OCCUPANT_PASSED_MARK = "@@herdrdroid-occupant-passed@@"
+/** 2.2.8 (Codex's re-review 6): the card check's own refusal line (before exit 3), and the line just before the keys. */
+internal const val CARD_REFUSED_MARK = "@@herdrdroid-card-refused@@"
+internal const val CARD_PASSED_MARK = "@@herdrdroid-card-passed@@"
 
 /** 2.2.8: a bound write failed after its check passed and the write began: it may have reached the agent. */
 internal class DeliveryUncertain(message: String) : Exception(message)
@@ -4768,6 +4777,7 @@ internal val CARD_SEND_CHECK = """
         visible = call('read', pane, '--source', 'visible', '--format', 'ansi')
         after = identity()
         if b'\x00' in visible:
+            print('@@herdrdroid-card-refused@@', flush=True)
             sys.exit(3)  # a NUL never matches (the shell check can't hold one); as cardScreenDigest
         visible = b'\n'.join(rows(visible.split(b'\n')))
         if visible and not visible.endswith(b'\n'):
@@ -4775,7 +4785,11 @@ internal val CARD_SEND_CHECK = """
         seen = hashlib.sha256(visible).hexdigest()
     except Exception:
         sys.exit(4)
-    sys.exit(0 if before == after == occupant and seen == screen else 3)
+    if before == after == occupant and seen == screen:
+        sys.exit(0)
+    # 2.2.8 (Codex's re-review 6): the refusal says so, so a failed key write is never taken for it.
+    print('@@herdrdroid-card-refused@@', flush=True)
+    sys.exit(3)
 """.trimIndent()
 
 /** 2.2.7: the line before an upload's results, so text a shell prints at login is skipped. */

@@ -5494,6 +5494,12 @@ class AppViewModel internal constructor(
                 flash("The question changed; not sent.")
                 feedback?.invoke("The question changed; not sent.")
                 if (herdr === client && link == Link.CONNECTED) readPane(paneId)
+            } catch (e: com.billmongan.herdrdroid.herdr.DeliveryUncertain) {
+                // 2.2.8 (Codex's re-review 6): the check passed and the keys began, then failed: never resent.
+                com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: the keys failed after the check passed; they may have gone in")
+                flash(CARD_MAY_HAVE_SENT)
+                feedback?.invoke(CARD_MAY_HAVE_SENT)
+                if (herdr === client && link == Link.CONNECTED) readPane(paneId)
             } catch (e: com.billmongan.herdrdroid.herdr.CardCheckFailed) {
                 com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: the check before the keys failed; not sent")
                 val message = "Not sent. The check on the computer failed. Refresh the question or open the terminal to answer."
@@ -8017,3 +8023,6 @@ internal class BoundOccupantChanged : Exception("the pane changed")
 
 /** 2.2.8: why a bound send that failed after its write began is kept, not sent again by itself. */
 internal const val MAY_HAVE_SENT = "it may have reached the agent; check the agent before sending it again"
+
+/** 2.2.8: a card answer whose keys failed after the check passed. */
+internal const val CARD_MAY_HAVE_SENT = "Could not confirm delivery: the answer may have been sent. Check the pane before answering again."

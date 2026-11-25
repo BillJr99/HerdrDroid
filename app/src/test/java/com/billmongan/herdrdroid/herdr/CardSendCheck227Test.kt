@@ -23,13 +23,13 @@ class CardSendCheck227Test {
         CardGuard(cardOccupantDigest(JSONObject(json).getJSONObject("result").getJSONObject("pane")), cardScreenDigest(visible))
 
     /** The transport seam: answers the combined command with [exit], and keeps what it was sent. */
-    private class Seam(var exit: Int = 0) : Herdr.Commands {
+    private class Seam(var exit: Int = 0, var out: String = "") : Herdr.Commands {
         override val connection: Any? = Any()
         val writes = mutableListOf<String>()
         override suspend fun bulk(command: String) = ExecResult(0, "", "")
         override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult {
             writes += command
-            return ExecResult(exit, "", if (exit == 0) "" else "fixture exit $exit")
+            return ExecResult(exit, out, if (exit == 0) "" else "fixture exit $exit")
         }
     }
 
@@ -47,7 +47,7 @@ class CardSendCheck227Test {
     }
 
     @Test fun aChangedPaneOrScreenIsNotSentAndSaysSo() = runBlocking<Unit> {
-        val seam = Seam(CARD_CHANGED_EXIT)
+        val seam = Seam(CARD_CHANGED_EXIT, CARD_REFUSED_MARK + "\n")
         assertThrows(CardChanged::class.java) {
             runBlocking { client(seam).sendCardInput("p1", CardInput.Keys(listOf("enter")), guard(), seam.connection!!) }
         }
@@ -62,9 +62,22 @@ class CardSendCheck227Test {
             }
         }
         // Any other failure (the send itself) stays a failure of delivery, not "not sent".
+        // 2.2.8 (Codex's re-review 6): a failure after the check passed (its line went out) may have reached
+        // the pane, whatever its exit, the check's own refusal code included; one with no line is the check's.
+        for (exit in listOf(1, CARD_CHANGED_EXIT, CARD_CHECK_FAILED_EXIT)) {
+            val passed = Seam(exit, CARD_PASSED_MARK + "\n")
+            assertThrows("exit $exit after the check passed", DeliveryUncertain::class.java) {
+                runBlocking { client(passed).sendCardInput("p1", CardInput.Keys(listOf("enter")), guard(), passed.connection!!) }
+            }
+        }
         val seam = Seam(1)
-        assertThrows(HerdrError::class.java) {
+        assertThrows(CardCheckFailed::class.java) {
             runBlocking { client(seam).sendCardInput("p1", CardInput.Keys(listOf("enter")), guard(), seam.connection!!) }
+        }
+        // Exit 3 without the check's refusal line is not a refusal either.
+        val bare = Seam(CARD_CHANGED_EXIT)
+        assertThrows(CardCheckFailed::class.java) {
+            runBlocking { client(bare).sendCardInput("p1", CardInput.Keys(listOf("enter")), guard(), bare.connection!!) }
         }
     }
 

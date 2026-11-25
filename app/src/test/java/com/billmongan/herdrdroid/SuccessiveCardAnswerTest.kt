@@ -1636,11 +1636,15 @@ class SuccessiveCardAnswerTest {
                     com.billmongan.herdrdroid.herdr.cardScreenDigest(ansiFrame()))
                 if (now != com.billmongan.herdrdroid.herdr.CardGuard(m.groupValues[1], m.groupValues[2]) || liveScrollOffset != 0) {
                     cardChecksRefused++
-                    return ExecResult(com.billmongan.herdrdroid.herdr.CARD_CHANGED_EXIT, mark, "")
+                    return ExecResult(com.billmongan.herdrdroid.herdr.CARD_CHANGED_EXIT, mark + com.billmongan.herdrdroid.herdr.CARD_REFUSED_MARK + "\n", "")
                 }
                 var last = ok("")
-                for (part in m.groupValues[3].split(" && ")) { last = immediate(part, timeoutSeconds, expectedConnection); if (last.exit != 0) break }
-                return last.copy(out = mark + last.out)
+                var echoed = ""
+                for (part in m.groupValues[3].split(" && ")) {
+                    if (part.startsWith("echo ")) { echoed += part.removePrefix("echo ") + "\n"; continue }
+                    last = immediate(part, timeoutSeconds, expectedConnection); if (last.exit != 0) break
+                }
+                return last.copy(out = mark + echoed + last.out)
             }
             return when {
                 command.endsWith("'pane' 'get' 'p1'") -> { onPaneGet?.invoke(); ok("""{"result":{"pane":$pane}}""") }
