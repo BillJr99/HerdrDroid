@@ -4360,6 +4360,7 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
         raw = tail
         pastDialog = true
     }
+    if (agent.equals("claude", true)) raw = withoutClaudeAskPreview(raw)
     lines = raw.filter { it.isNotBlank() }.takeLast(40)
     // 2.2.8 (Codex's review 4B): the row of raw each of lines is, so the guard gets the parser's own rows.
     val rawAt = raw.indices.filter { raw[it].isNotBlank() }.takeLast(40)

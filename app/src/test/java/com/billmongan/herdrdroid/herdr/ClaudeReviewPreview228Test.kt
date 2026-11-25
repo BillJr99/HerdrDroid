@@ -34,7 +34,10 @@ class ClaudeReviewPreview228Test {
     }
 
     @Test fun aSideBySidePreviewKeepsTheLabelsSeparateFromTheSample() {
-        val preview = checkNotNull(claudeReviewPreview(capture("preview"), null))
+        val screen = capture("preview")
+        val parsed = checkNotNull(detectPrompt(screen, true, "claude", "2.1.332"))
+        assertEquals(listOf("Wide", "Tall"), parsed.choices.map { it.label }.take(2))
+        val preview = checkNotNull(claudeReviewPreview(screen, null))
         assertEquals("Which neutral sample layout should we use?", preview.question)
         assertTrue(preview.shownParts().details.containsAll(listOf("Wide", "Tall")))
         assertFalse(preview.shownParts().details.any { it.contains('┌') || it.contains('│') })

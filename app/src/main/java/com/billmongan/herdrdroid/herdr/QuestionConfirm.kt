@@ -312,33 +312,44 @@ internal suspend fun confirmByReads(first: String, firstPrompt: Prompt, agent: S
 private val CLAUDE_SINGLE_TAB = Regex("""^☐\s+\S.{0,24}$""")
 private val CLAUDE_PREVIEW_OPTION = Regex("""^\s*[❯›]?\s*\d{1,2}[.)]\s+(\S.*)$""")
 
+private fun claudeAskFooter(row: String): Boolean = row.trim().let {
+    it.startsWith("Enter to select · ") && it.endsWith(" · Esc to cancel") && "to navigate" in it
+}
+
+private fun claudeAskTab(row: String): Boolean = parseTabBar(row) != null || CLAUDE_SINGLE_TAB.matches(row.trim())
+
+private val CLAUDE_PREVIEW_TOP = Regex("""┌─+┐\s*""")
+
+/** Remove a complete right-hand preview only in a live Claude AskUserQuestion frame. */
+internal fun withoutClaudeAskPreview(rows: List<String>): List<String> {
+    val footer = rows.indexOfLast { it.isNotBlank() }
+    if (footer < 0 || !claudeAskFooter(rows[footer])) return rows
+    val tab = (footer - 1 downTo 0).firstOrNull { claudeAskTab(rows[it]) } ?: return rows
+    val start = (tab + 1 until footer).firstOrNull { i ->
+        val row = rows[i]
+        val col = row.indexOf('┌')
+        col > 0 && CLAUDE_PREVIEW_OPTION.matches(row.take(col)) && CLAUDE_PREVIEW_TOP.matches(row.substring(col))
+    } ?: return rows
+    val col = rows[start].indexOf('┌')
+    val end = (start + 1 until footer).firstOrNull { rows[it].getOrNull(col) != '│' } ?: return rows
+    if (end == start + 1 || rows[end].getOrNull(col) != '└') return rows
+    return rows.mapIndexed { i, row -> if (i in start..end) row.take(col).trimEnd() else row }
+}
+
 /** Keep an identifiable Claude dialog readable without making unconfirmed choices actionable. */
 internal fun claudeReviewPreview(text: String, parsed: Prompt?): Prompt? {
     val rows = withoutClaudeChromeUnderDialog(stripAnsi(text)).lines().takeLast(80)
     val footer = rows.indexOfLast { it.isNotBlank() }
     if (footer < 0) return null
-    val hint = rows[footer].trim()
-    val ask = hint.startsWith("Enter to select · ") && hint.endsWith(" · Esc to cancel") &&
-        ("to navigate" in hint)
+    val ask = claudeAskFooter(rows[footer])
     val top = if (ask) {
-        (footer - 1 downTo 0).firstOrNull { parseTabBar(rows[it]) != null || CLAUDE_SINGLE_TAB.matches(rows[it].trim()) }
+        (footer - 1 downTo 0).firstOrNull { claudeAskTab(rows[it]) }
     } else if (claudePermissionFooterAtBottom(text)) {
         (footer - 1 downTo 0).firstOrNull { isDialogHeaderRow(rows[it]) }
     } else null
     if (top == null) return null
     val body = rows.subList(if (ask) top + 1 else top, footer)
-    val previewColumn = if (ask) body.indexOfFirst { row ->
-        row.indexOf('┌').takeIf { it > 0 }?.let { col ->
-            CLAUDE_PREVIEW_OPTION.matches(row.take(col)) && row.substring(col).matches(Regex("┌─+┐\\s*"))
-        } == true
-    }.takeIf { it >= 0 }?.let { i ->
-        val col = body[i].indexOf('┌')
-        val end = body.drop(i + 1).indexOfFirst { it.getOrNull(col) != '│' }
-        col.takeIf { end > 0 && body.getOrNull(i + 1 + end)?.getOrNull(col) == '└' }
-    } else null
-    val visible = if (previewColumn == null) body else body.map { row ->
-        if (row.getOrNull(previewColumn) in listOf('┌', '│', '└')) row.take(previewColumn) else row
-    }
+    val visible = if (ask) withoutClaudeAskPreview(rows).subList(top + 1, footer) else body
     val labels = visible.mapNotNull { row ->
         CLAUDE_PREVIEW_OPTION.matchEntire(row)?.groupValues?.get(1)?.trim()
     }
