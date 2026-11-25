@@ -4389,6 +4389,10 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
                     if (got.any { it.row } && edgeTitle.any(Char::isLetter)) { got.add(0, QLine(edgeTitle)); edgeRow = i }
                     break
                 }
+                // 2.2.8 (agy's corpus, 054): the bottom edge of the frame the options are drawn in, above
+                // them, closes an older dialog: the question starts under it (never that dialog's footer).
+                if (got.isNotEmpty() && frame != null && l.indexOfFirst { it != ' ' } == frame.first &&
+                    l.trimStart().firstOrNull()?.let { it == '╰' || it == '└' || it == '┗' } == true) break
                 if (l.isBlank() || c.isEmpty()) {
                     if (got.isNotEmpty() && !gap) {
                         gap = true

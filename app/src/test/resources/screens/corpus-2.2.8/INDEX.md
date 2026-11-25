@@ -1,4 +1,5 @@
 # HerdrDroid 2.2.8 Adversarial Screen-Fixture Corpus Index
+Each screen lives in the library layout at `screens/<agent>/corpus-2.2.8/<file>`, with a `.expect` file for its card result; this index stays here.
 Total: 54 cases (21 real, 33 constructed) across grok, claude, codex, agy, omp, hermes, opencode, copilot.
 - `001-grok-live-approval-status-above.txt` | `real (`grok/captured-2026-11-13/ssh-permission.txt`)` | **CARD (1: Yes, and don't ask again for anything (always-approve mode); 2: Yes, proceed; 3: No, reject (type to add feedback))** | Live SSH approval box with running status row drawn above the dialog, so waiting approval is active.
 - `002-grok-scan-approval-thought-above.txt` | `real (`grok/captured-2026-11-15b/scan-approval.txt`)` | **CARD (1: Yes, and don't ask again for anything (always-approve mode); 2: Yes, proceed; 3: No, reject (type to add feedback); 4: Never allow: python3 -)** | Finished Thought and running status row sit above a clipped multi-line python approval box with scope row.
