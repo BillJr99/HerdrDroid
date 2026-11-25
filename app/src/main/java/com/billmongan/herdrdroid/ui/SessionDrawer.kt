@@ -142,6 +142,12 @@ fun SessionDrawer(vm: AppViewModel, opening: Boolean = true) {
                 Spacer(Modifier.height(24.dp))
             }
         }
+        // 2.2.8: every open question on the servers the app can see, pinned under the list.
+        HorizontalDivider(color = Palette.Line)
+        QuestionsDrawerItem(vm.openQuestionCount(), selected = vm.screen == Screen.Questions) {
+            vm.drawerOpen = false
+            vm.screen = Screen.Questions
+        }
     }
     relaying?.let { session ->
         var target by remember(session.server.id, session.pane.id) { mutableStateOf<AppViewModel.RemotePromptTarget?>(null) }
