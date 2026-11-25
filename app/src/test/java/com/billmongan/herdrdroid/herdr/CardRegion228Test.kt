@@ -438,6 +438,13 @@ class CardRegion228Test {
         val box = "  ┃  ›  List the build cache\n  ┃  │ ls -la build/cache\n  ┃\n  ┃  1 (●) Yes, proceed\n" +
             "  ┃  2 (○) No, reject (type to add feedback)\n\n  1/2:select  │  Tab:next option  │  Esc:scrollback\n"
         assertFalse(grokWorkingBelowAnyQuestion(rows.take(bottom).joinToString("\n") + "\n\n" + box))
+        // Codex's per-commit review of 63560fe (LOW): right after the box's last row, end to end: the
+        // approval is a card with its own options and question.
+        val tight = rows.take(bottom).joinToString("\n") + "\n" + box
+        assertFalse(grokWorkingBelowAnyQuestion(tight))
+        val card = checkNotNull(detectPrompt(tight, true, "grok")) { "approval under an open message box" }
+        assertEquals(listOf("Yes, proceed", "No, reject (type to add feedback)"), card.choices.map { it.label })
+        assertTrue(card.question, card.question.contains("ls -la build/cache"))
         // With its bottom edge, a draft inside it is still no question.
         val draft = rows.toMutableList().also { it.add(bottom, "  │   2. Opt in to the cleanup   │") }.joinToString("\n")
         assertTrue(grokWorkingBelowAnyQuestion(draft))
