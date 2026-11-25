@@ -1,0 +1,22 @@
+────────────────────────────────────────
+❯ Please tidy the demo workspace and tell me what changed.
+────────────────────────────────────────
+
+📚 Skill demo-workspace  0.3s
+🔎 Grep TODO|FIXME  0.2s
+💻 $ ls -la /home/user/demo  0.1s
+
+╭─ Hermes needs your input ────────────────────────────────────────╮
+│ 1 question                                                       │
+│ ▸ Before I publish the demo notes, which of the two prepared     │
+│   summaries should go at the top of the page that readers see    │
+│   first?                                                         │
+│   ❯ 1. The short summary                                         │
+│     2. The detailed summary                                      │
+│     3. Other (type your answer)                                  │
+╰──────────────────────────────────────────────────────────────────╯
+  ↑/↓ to select, Enter to lock, Tab next question  (88s)
+── ⠹ Working… · 1m 2s ───────────────────────────────────────────────────────────────────────────────────── Tidy the demo workspace ─
+? ❯
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☤ demo-model · ~42K/500K · [█░░░░░░░░░] ~8% · ◎ 12.0% · ◷ 3.1s · ↑ 20 t/s · 1.0d · ⏲ 1m · ~/demo

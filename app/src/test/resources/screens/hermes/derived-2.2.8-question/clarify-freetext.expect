@@ -1,0 +1,4 @@
+card: terminal-review
+blocked: false
+heading: What should the demo release be called?
+source: derived for 2.2.8 from Hermes's classic CLI program text (hermes_cli/cli_tui_mixin.py, cli_modal_mixin.py, cli_modern_layout.py, locales/en.yaml: exact strings, modern layout order); demo content only
