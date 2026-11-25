@@ -50,7 +50,10 @@ class Corpus228Test {
         "008-grok-plan-approval-bulleted-above-status.txt" to { p: Prompt -> p.choices.map { it.keys } == listOf("a", "s", "c", "q") },
         "033-codex-narrow-wrapped-command-code.txt" to { p: Prompt -> p.terminalReview },
         "046-hermes-approval-hidden-heredoc.txt" to { p: Prompt -> p.terminalReview },
-        "050-opencode-question-dialog.txt" to { p: Prompt -> p.choices.map { it.label } == listOf("SQLite (Recommended)", "Postgres") },
+        // Codex's per-commit review of fe63209 (LOW): and its third row stays the typed answer.
+        "050-opencode-question-dialog.txt" to { p: Prompt ->
+            p.choices.map { it.label } == listOf("SQLite (Recommended)", "Postgres") && p.openCodeCustom == "3" && p.openCodeQuestionFrame != null
+        },
     )
 
     /** agy's corpus (018, 036, 053): an option's "(…)" tail wrapped onto its own row is part of its label. */
