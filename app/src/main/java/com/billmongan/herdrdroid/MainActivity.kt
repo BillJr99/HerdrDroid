@@ -198,7 +198,7 @@ class MainActivity : FragmentActivity() {
                 BoxWithConstraints(Modifier.fillMaxSize().background(Palette.Ground)) {
                 val wide = maxWidth >= 840.dp
                 val s0 = vm.screen
-                if (wide && (s0 is Screen.Agent || s0 == Screen.Home)) {
+                if (wide && (s0 is Screen.Agent || s0 == Screen.Home || s0 == Screen.Questions)) {
                     // Wide: the drawer stays out beside the agent.
                     // 2.2.7: Back on the wide main screen (agent or Home) stays in the app: the drawer is
                     // already out here, so there is nothing to open or close, and the app never closes from it.
@@ -208,6 +208,7 @@ class MainActivity : FragmentActivity() {
                         VerticalDivider(color = Palette.Line)
                         Box(Modifier.weight(1f).fillMaxHeight()) {
                             if (s0 is Screen.Agent) androidx.compose.runtime.key(vm.chatServerId, s0.paneId) { AgentScreen(vm, s0.paneId) }
+                            else if (s0 == Screen.Questions) com.billmongan.herdrdroid.ui.QuestionsScreen(vm)
                             else com.billmongan.herdrdroid.ui.HomeScreen(vm)
                         }
                     }
@@ -247,7 +248,7 @@ class MainActivity : FragmentActivity() {
                         BackHandler { vm.disconnect() }
                         TabsScreen(vm)
                     }
-                    is Screen.Agent, Screen.Home -> {
+                    is Screen.Agent, Screen.Home, Screen.Questions -> {
                         // The drawer is the way around: Back closes it, or opens it.
                         val drawer = androidx.compose.material3.rememberDrawerState(androidx.compose.material3.DrawerValue.Closed)
                         LaunchedEffect(vm.drawerOpen) { if (vm.drawerOpen) drawer.open() else drawer.close() }
@@ -269,6 +270,8 @@ class MainActivity : FragmentActivity() {
                             // Keyed by server (2.1.1): the same pane id on another server is another chat, so
                             // its composer text (saved per pane id) never carries over.
                             if (s is Screen.Agent) androidx.compose.runtime.key(vm.chatServerId) { AgentScreen(vm, s.paneId) }
+                            // 2.2.8: the Questions view, the drawer still there.
+                            else if (s == Screen.Questions) com.billmongan.herdrdroid.ui.QuestionsScreen(vm)
                             // 2.2.7: the main screen with no agent open, the drawer still there.
                             else com.billmongan.herdrdroid.ui.HomeScreen(vm)
                         }
