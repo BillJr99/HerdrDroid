@@ -3000,7 +3000,11 @@ internal fun markScreenNeedsYou(list: List<Pane>, tails: Map<String, String>): L
         val why = when {
             tail == null -> null
             p.agent == "claude" -> claudeNeedsYouReason(tail)
-            p.agent == "agy" -> "a subagent approval is open".takeIf { agySubagentApproval(tail) != null }
+            p.agent == "agy" -> when {
+                agySubagentApproval(tail) != null -> "a subagent approval is open"
+                agySubagentQuestion(tail) != null -> "a subagent question needs attention"
+                else -> null
+            }
             isOpenCode(p.agent) -> openCodeNeedsYouReason(tail)
             else -> null
         }
@@ -3840,7 +3844,10 @@ private fun hermesLiveApprovalBox(text: String): String? {
 
 fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version: String? = null): Prompt? {
     val plain = stripAnsi(text)
-    if (agent.equals("agy", true)) agySubagentApproval(plain)?.let { return it }
+    if (agent.equals("agy", true)) {
+        agySubagentQuestion(plain)?.let { return it }
+        agySubagentApproval(plain)?.let { return it }
+    }
     if (ruleAgent(agent) in setOf("kiro", "kiro-cli")) kiroApprovalShortcuts(plain)?.let { return it }
     if (agent.equals("hermes", true)) hermesUsageEnd(plain)?.let { end ->
         // A report supersedes any old question above it, not a new card below it. A close

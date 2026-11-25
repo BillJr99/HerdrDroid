@@ -21,6 +21,27 @@ class AgySubagentApproval228Test {
         assertTrue(questionRead(frame, prompt, "agy", null, false).complete)
     }
 
+    @Test fun supportedControlKeySpellingsStillRequireTheApprovalHintAndACompleteFrame() {
+        for (alias in listOf("ctrl+k", "Ctrl+K", "Ctrl-K", "^K", "C-k")) {
+            val screen = frame.replace("ctrl+k", alias)
+            val prompt = checkNotNull(agySubagentApproval(screen))
+            assertEquals(alias, listOf("ctrl+k"), menuKeys(prompt, prompt.choices.single()))
+            assertNull(alias, agySubagentApproval(screen.replace(" approve ", " answer ")))
+        }
+    }
+
+    @Test fun pendingSubagentQuestionOffersNoApprovalOrManagementKey() {
+        val screen = " ┃ research has a question\n"
+        val prompt = checkNotNull(detectPrompt(screen, false, "agy"))
+        assertEquals("research has a question", prompt.question)
+        assertTrue(prompt.terminalReview)
+        assertFalse(prompt.agyApproval)
+        assertTrue(prompt.choices.isEmpty())
+        assertTrue(alertPlan(prompt).buttons.isEmpty())
+        assertNull(agySubagentQuestion(screen + "❯ New input"))
+        assertNull(agySubagentQuestion(screen.trimStart().removePrefix("┃ ")))
+    }
+
     @Test fun staleAndUnprovenPanelRowsCannotOfferApproval() {
         assertNull(agySubagentApproval(frame + " ❯ New input\n"))
         assertNull(agySubagentApproval(frame.replace(" ┃ ctrl+k", "   ctrl+k")))

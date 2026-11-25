@@ -1,8 +1,10 @@
 package com.billmongan.herdrdroid.herdr
 
-private const val MANAGE_HINT = "ctrl+k approve · alt+j manage"
+private val MANAGE_HINT = Regex("""(?i:ctrl[+-]k|\^k|c-k) approve · alt\+j manage""")
 private val GUTTER = Regex("""^( {0,2})┃ +(.+)$""")
-private val HEADER = Regex("""^([A-Za-z0-9][A-Za-z0-9._-]{0,79}) needs approval for Bash$""")
+private const val AGENT_NAME = "[A-Za-z0-9][A-Za-z0-9._-]{0,79}"
+private val HEADER = Regex("""^($AGENT_NAME) needs approval for Bash$""")
+private val PICKER_HEADER = Regex("""^($AGENT_NAME) has a question$""")
 private val COMMAND = Regex("""^● Bash\((.+)\)$""")
 private val RULE = Regex("""^─{3,}$""")
 
@@ -10,7 +12,7 @@ private val RULE = Regex("""^─{3,}$""")
 internal fun agySubagentApproval(screen: String): Prompt? {
     val rows = stripAnsi(screen).lines().dropLastWhile { it.isBlank() }.takeLast(4).map(String::trimEnd)
     val footer = rows.lastOrNull()?.let(GUTTER::matchEntire) ?: return null
-    if (footer.groupValues[2] != MANAGE_HINT) return null
+    if (!MANAGE_HINT.matches(footer.groupValues[2])) return null
     val review = Prompt("Review the AGY approval", emptyList(), region = rows, terminalReview = true,
         agyApproval = true)
     if (rows.size != 4) return review
@@ -24,4 +26,12 @@ internal fun agySubagentApproval(screen: String): Prompt? {
     return Prompt(heading, listOf(Choice("Approve once (Ctrl+K)", "ctrl+k", false)),
         parts = QuestionParts(emptyList(), listOf(QBlock(QKind.HEADING, heading), QBlock(QKind.COMMAND, command))),
         approvalIdentity = rows.joinToString("\n"), agyApproval = true)
+}
+
+/** The pending question row is a cue to open a different picker, not an approval. */
+internal fun agySubagentQuestion(screen: String): Prompt? {
+    val last = stripAnsi(screen).lines().lastOrNull { it.isNotBlank() }?.trimEnd() ?: return null
+    val row = GUTTER.matchEntire(last)?.groupValues?.get(2) ?: return null
+    if (!PICKER_HEADER.matches(row)) return null
+    return Prompt(row, emptyList(), region = listOf(row), terminalReview = true)
 }
