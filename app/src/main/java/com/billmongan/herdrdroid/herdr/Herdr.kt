@@ -2678,7 +2678,8 @@ fun detectLetterMenu(text: String, blocked: Boolean): Prompt? {
     val lines = text.lines().map { it.trimEnd() }.filter { it.isNotBlank() }.takeLast(14)
     if (lines.isEmpty()) return null
     val foot = lines.last()
-    if (Regex("""\ba:approve\b""").containsMatchIn(foot)) {
+    // The plan review's own footer row, its keys between "│" bars: never prose that mentions them.
+    if (Regex("""^\s*a:approve\s+│""").containsMatchIn(foot)) {
         val pairs = Regex("""\b([a-z]):([a-z][a-z ]*[a-z])""").findAll(foot).map { it.groupValues[1] to it.groupValues[2] }
             .filter { (k, _) -> k in setOf("a", "s", "c", "q") }.toList()
         if (pairs.size < 2) return null
@@ -3769,10 +3770,30 @@ private val GROK_GUTTER_ROW = Regex("""^\s*┃""")
 private val GROK_RUNNING_ROW = Regex("""^\s*[\u2800-\u28FF]\s*\S.*\[stop]\s*$""")
 /** The privacy banner's own rows: its buttons, or its radio rows; never prose that says "Opt in". */
 private val GROK_PRIVACY_ROW = Regex("""\[Opt out]\s*\[Opt in]|^\s*[○●]\s+Opt (?:in|out)\s*$""")
-/** Grok's plan review footer ("a:approve  │  s:request changes  │ …"), [detectLetterMenu]'s own rule. */
-private val GROK_PLAN_FOOTER = Regex("""\ba:approve\b""")
-/** Grok's folder trust rows ("y  Yes, proceed", "n  No, quit") and their hint ("Enter or y to trust"). */
-private val GROK_TRUST_ROW = Regex("""^\s*[yn]\s{2,}(?:Yes|No)\b|\bEnter or y to trust\b""")
+/**
+ * Grok's plan review footer as the screen's last row: "a:approve  │  s:request changes  │ … │  q:quit
+ * plan", its keys between "│" bars ([detectLetterMenu] takes the same row). Prose that mentions the
+ * keys ("press a:approve or s:request changes") is not it (Codex's per-commit review).
+ */
+internal val GROK_PLAN_FOOTER_ROW = Regex("""^\s*a:approve\s+│\s+s:request changes\s+│.*\bq:quit plan\b.*$""")
+private val GROK_TRUST_HINT = Regex("""^\s*Enter or y to trust\b.*$""")
+private val GROK_TRUST_YES = Regex("""^\s*y\s{2,}Yes\b.*$""")
+private val GROK_TRUST_NO = Regex("""^\s*n\s{2,}No\b.*$""")
+
+/**
+ * The last row of a whole plan review or folder trust prompt at the bottom of [rows], or -1: the plan
+ * footer as the last row that holds text; or the trust hint as the last row, with "n  No …" and
+ * "y  Yes …" right above it (blank rows between them aside). A mention of either anywhere else is not one.
+ */
+internal fun grokPlanOrTrustBottom(rows: List<String>): Int {
+    val last = rows.indexOfLast { it.isNotBlank() }
+    if (last < 0) return -1
+    if (GROK_PLAN_FOOTER_ROW.matches(rows[last])) return last
+    if (!GROK_TRUST_HINT.matches(rows[last])) return -1
+    val above = (last - 1 downTo 0).filter { rows[it].isNotBlank() }.take(2)
+    return if (above.size == 2 && GROK_TRUST_NO.matches(rows[above[0]]) && GROK_TRUST_YES.matches(rows[above[1]]) &&
+        above[0] - above[1] == 1) last else -1
+}
 private val GROK_COMPOSER_TOP = Regex("""^\s*╭─+╮\s*$""")
 private val GROK_COMPOSER_ROW = Regex("""^\s*│\s*❯""")
 private val GROK_COMPOSER_BOTTOM = Regex("""^\s*╰""")
@@ -3783,8 +3804,8 @@ private val GROK_COMPOSER_BOTTOM = Regex("""^\s*╰""")
  * row under it ("⠧ Thinking… 44s   22m58s ⇣121k [stop]") and the message box below. That is Grok at
  * work, not a question: a card there could not be answered. True when Grok's running row, or the bottom
  * of its thinking panel, is lower on the screen than every row a Grok question is made of (an option
- * row, the "N/M:select" footer, the privacy banner's own rows, the plan review footer, the folder trust
- * rows), so a stale approval box scrolled above the work isn't a card either. A waiting approval draws
+ * row, the "N/M:select" footer, the privacy banner's own rows, a whole plan review or folder trust
+ * prompt at the screen's bottom, [grokPlanOrTrustBottom]), so a stale approval box scrolled above the work isn't a card either. A waiting approval draws
  * its running row above the box, never below. agy's GROKTHINK review: the thinking panel's own text
  * (a numbered point in it) and a draft in the message box ("│ ❯ 1. check foo │") are never question
  * rows, and a plan approval or folder trust prompt under a running row still is one.
@@ -3811,10 +3832,11 @@ internal fun grokWorkingBelowAnyQuestion(plain: String): Boolean {
     val question = rows.indices.lastOrNull { i ->
         val r = rows[i]
         !composer[i] && (MENU_OPTION_ROW.find(r) != null || GROK_RADIO_ROW.containsMatchIn(r) || GROK_UNNUMBERED_ALWAYS.matches(r) ||
-            GROK_SELECT_FOOTER.containsMatchIn(r) || GROK_PRIVACY_ROW.containsMatchIn(r) || GROK_PLAN_FOOTER.containsMatchIn(r) ||
-            GROK_TRUST_ROW.containsMatchIn(r))
+            GROK_SELECT_FOOTER.containsMatchIn(r) || GROK_PRIVACY_ROW.containsMatchIn(r))
     } ?: -1
-    return running > question
+    // A whole plan review or folder trust prompt at the bottom (Codex's per-commit review: never a
+    // mention of their keys, and never one with Grok's running output under it).
+    return running > maxOf(question, grokPlanOrTrustBottom(rows))
 }
 
 /**

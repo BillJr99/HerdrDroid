@@ -346,6 +346,35 @@ class CardRegion228Test {
         assertEquals(listOf("y", "n"), t.choices.map { it.keys })
     }
 
+    /**
+     * Codex's per-commit review of 7ce9dd0 (MEDIUM): only a whole plan review or folder trust prompt at
+     * the screen's bottom counts. Prose that mentions their keys, or a stale prompt with Grok's running
+     * output under it, is Grok at work: no card.
+     */
+    @Test fun aMentionOfPlanOrTrustKeysIsNotAQuestion() {
+        val running = "   ⠧ Planning… 12s   3m02s ⇣4.1k [stop]\n\n"
+        val quoted = listOf(
+            "  Press a:approve or s:request changes when the plan looks right.",
+            "  a:approve and s:request changes are the keys; q:quit plan leaves it.",
+            "  The prompt says Enter or y to trust, then n or Esc to quit.",
+            "  Enter or y to trust · n or Esc to quit",
+        )
+        for (q in quoted) {
+            val s = running + q + "\n"
+            assertTrue(q, grokWorkingBelowAnyQuestion(s))
+            assertNull(q, detectPrompt(s, true, "grok"))
+        }
+        val plan = checkNotNull(javaClass.getResource("/screens/grok/derived-1.4.9/0306-plan-approval.txt")).readText()
+        val trust = checkNotNull(javaClass.getResource("/screens/grok/derived-1.4.9/0307-trust-this-folder-startup.txt")).readText()
+        for ((what, stale) in listOf("plan" to plan, "trust" to trust)) {
+            val s = stale.trimEnd() + "\n\n   ⠧ Working… 3s   0s ⇣1.1k [stop]\n"
+            assertTrue(what, grokWorkingBelowAnyQuestion(s))
+            assertNull(what, detectPrompt(s, true, "grok"))
+            assertEquals(what, -1, grokPlanOrTrustBottom(s.lines()))
+            assertTrue(what, grokPlanOrTrustBottom(stale.lines()) >= 0)
+        }
+    }
+
     /** agy MEDIUM: a draft in the message box is not a question row, numbered or saying "Opt in". */
     @Test fun aDraftInGroksMessageBoxIsNotAQuestionRow() {
         for (draft in listOf("1. check foo", "Opt in to the cleanup")) {
