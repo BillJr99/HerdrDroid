@@ -5426,7 +5426,7 @@ class AppViewModel internal constructor(
      */
     internal fun questionsRefusal(target: CardTarget?, message: String): String {
         // Only a refusal before anything was sent is restated: a "may have been sent" stays exactly as it is.
-        if (!message.startsWith("Not sent.")) return message
+        if (!message.startsWith("Not sent.") && message != CARD_UPDATED_NOTE) return message
         val now = target?.let { questionsCardTarget(it.pane.id) }
         return if (target != null && now != null && !now.pane.sameCardOccupant(target.pane)) OCCUPANT_REFUSAL else message
     }
@@ -5513,7 +5513,6 @@ class AppViewModel internal constructor(
         val raw = h.readStyledViewport(pane.id, connection)
         val text = (if (isOpenCode(pane.agent) || shown.museQuota) raw
             else com.billmongan.herdrdroid.herdr.stripAnsi(raw)).takeUnless { it.isBlank() } ?: return null
-        val guard = occupant?.let { com.billmongan.herdrdroid.herdr.CardGuard(it, com.billmongan.herdrdroid.herdr.cardScreenDigest(raw, currentPane.agent)) }
         if (!isCurrent(h) || guardedChoice && !foreground) return null
         val live = if (pane.agent == "pi" && h.backend == Backend.TUI &&
             (pane.status == Status.WORKING || currentPane.status == Status.WORKING)) activePiQuestion(text, versionOf(pane.id))
@@ -5528,6 +5527,11 @@ class AppViewModel internal constructor(
             if (!isCurrent(h)) return null
             detectPrompt(rebuilt, currentPane.status == Status.NEEDS_YOU, currentPane.agent, versionOf(pane.id))
         } else live
+        // 2.2.8 (Bill: "just render the question and then give the buttons"): the keys go under a check
+        // of the dialog's own rows in this read, so a spinner or running time beside it is no change.
+        // A card rebuilt from the history is checked against the whole screen, as before.
+        val guard = occupant?.let { com.billmongan.herdrdroid.herdr.CardGuard(it,
+            com.billmongan.herdrdroid.herdr.cardGuardScreen(raw, live?.takeIf { whole === live }, currentPane.agent)) }
         return whole?.takeIf { fits(shown, it) }?.let { it to guard }
     }
 
@@ -5696,7 +5700,9 @@ class AppViewModel internal constructor(
             val checked = target.freshAnswerGuarded(h, shown)
             val fresh = checked?.first
             onGuard(checked?.second)
-            if (fresh == null || !send(h, target, fresh)) { flash(refused); feedback?.invoke(refused); return@answerOnce }
+            // 2.2.8: the dialog on screen isn't the one the card shows: the card shows it now instead.
+            if (fresh == null) { feedback?.invoke(CARD_UPDATED_NOTE); cardUpdated(target.server, id); return@answerOnce }
+            if (!send(h, target, fresh)) { flash(refused); feedback?.invoke(refused); return@answerOnce }
             delivered()
             noteAnswer(id, shown, label, serverId = target.server)
             readPane(id)
@@ -5738,11 +5744,11 @@ class AppViewModel internal constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: com.billmongan.herdrdroid.herdr.CardChanged) {
-                // 2.2.7 (Bill, "check right before send"): nothing was typed; the card is read again.
-                com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: the question changed before the keys; not sent")
-                flash("The question changed; not sent.")
-                feedback?.invoke("The question changed; not sent.")
-                if (herdr === client && link == Link.CONNECTED) readPane(paneId)
+                // 2.2.7 (Bill, "check right before send"): nothing was typed. 2.2.8 (Bill: "I don't like
+                // the 'question changed, won't send'"): the card shows what is on screen now, with its buttons.
+                com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: the dialog's rows differed at the send; nothing typed, card updated")
+                feedback?.invoke(CARD_UPDATED_NOTE)
+                if (herdr === client && link == Link.CONNECTED) cardUpdated(server, paneId)
             } catch (e: com.billmongan.herdrdroid.herdr.DeliveryUncertain) {
                 // 2.2.8 (Codex's re-review 6): the check passed and the keys began, then failed: never resent.
                 com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: the keys failed after the check passed; they may have gone in")
@@ -5775,9 +5781,36 @@ class AppViewModel internal constructor(
         }
     }
 
+    /**
+     * Bill (2026-11-25): a tapped approve-from-now-on option waiting on "Approve everything from now on?"
+     * ([com.billmongan.herdrdroid.herdr.approveAllAsk]); nothing is sent until [confirmApproveAll].
+     */
+    internal data class ApproveAllPending(
+        val paneId: String, val serverId: String?, val prompt: Prompt, val choice: Choice, val target: CardTarget?,
+        val ask: com.billmongan.herdrdroid.herdr.ApproveAllAsk, val feedback: ((String) -> Unit)?,
+    )
+    internal var approveAllPending by mutableStateOf<ApproveAllPending?>(null)
+        private set
+
+    /** Cancel on the confirmation: nothing is sent. */
+    fun cancelApproveAll() { approveAllPending = null }
+
+    /**
+     * Confirm on the confirmation: the option goes as any card answer does, under the same check of the
+     * dialog right before its keys, so a label that changed since the card is no send: the card is
+     * redrawn. A label the app can't show whole or reach is never sent from here.
+     */
+    fun confirmApproveAll() {
+        val p = approveAllPending ?: return
+        approveAllPending = null
+        if (p.ask.reason != null || p.ask.keys == null || p.serverId != current?.id) return
+        answerChoice(p.paneId, p.prompt, p.choice, target = p.target, feedback = p.feedback, confirmed = true)
+    }
+
     internal fun answerChoice(paneId: String, prompt: Prompt, choice: Choice,
         voiceAllowed: (() -> Boolean)? = null,
-        target: CardTarget? = cardTarget(paneId), feedback: ((String) -> Unit)? = null,
+        target: CardTarget? = cardTarget(paneId), confirmed: Boolean = false,
+        feedback: ((String) -> Unit)? = null,
     ) {
         // The answer goes into the history only once it was sent (1.3.2, from a code review).
         if (prompt.terminalReview) return
@@ -5801,6 +5834,16 @@ class AppViewModel internal constructor(
             return
         }
         fun report(message: String) { flash(message); feedback?.invoke(message) }
+        // Bill (2026-11-25): an approve-from-now-on option asks "Approve everything from now on?" first;
+        // voice never answers one. One the app can't show whole or reach is never sent.
+        val ask = com.billmongan.herdrdroid.herdr.approveAllAsk(prompt, choice)
+        if (ask != null && (!confirmed || voiceAllowed != null)) {
+            if (voiceAllowed != null) { report(ask.reason ?: "Not sent by voice: it approves from now on. Use the card."); return }
+            approveAllPending = ApproveAllPending(paneId, current?.id, prompt, choice, target, ask, feedback)
+            return
+        }
+        com.billmongan.herdrdroid.herdr.blockedChoiceReason(choice)?.let { report(it); return }
+        if (prompt.clipped) { report(CLIPPED_NOTE); return }
         val agentName = pane(paneId)?.agentName ?: "the agent"
         com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: tapped \"${choice.label.take(60)}\" (option ${choice.keys}, highlighted ${prompt.selected})")
         answerOnce(paneId, feedback) { h ->
@@ -5808,9 +5851,16 @@ class AppViewModel internal constructor(
             val checked = target?.freshAnswerGuarded(h, prompt)
             val fresh = checked?.first
             val guard = checked?.second
-            if (target == null || fresh == null || (choice !in fresh.choices && choice != fresh.claudeCheckboxAction)) {
+            if (target == null) {
                 report("Not sent. Refresh the question or open the terminal to answer.")
                 readPane(paneId)
+                return@answerOnce
+            }
+            if (fresh == null || (choice !in fresh.choices && choice != fresh.claudeCheckboxAction) ||
+                fresh.clipped || com.billmongan.herdrdroid.herdr.blockedChoiceReason(choice) != null) {
+                // 2.2.8: the dialog on screen isn't the one the card shows: the card shows it now instead.
+                feedback?.invoke(CARD_UPDATED_NOTE)
+                cardUpdated(target.server, paneId)
                 return@answerOnce
             }
             val keys = if (voiceAllowed == null) com.billmongan.herdrdroid.herdr.menuKeys(fresh, choice)
@@ -5892,6 +5942,21 @@ class AppViewModel internal constructor(
 
     /** 2.2.8: [flash] for the screens (a short note that goes by itself). */
     fun flashNote(text: String) = flash(text)
+
+    /**
+     * 2.2.8 (Bill: "never show 'question changed, won't send'"): the pane's card as it is on screen now,
+     * [cardUpdatedAt] marking it for a moment; a dialog that is gone takes its card with it. Nothing is sent.
+     */
+    var cardUpdatedAt by mutableStateOf<Pair<String, String>?>(null)
+        private set
+
+    private suspend fun cardUpdated(server: String, paneId: String) {
+        val mark = server to paneId
+        cardUpdatedAt = mark
+        flash(CARD_UPDATED_NOTE)
+        viewModelScope.launch { delay(4_000); if (cardUpdatedAt == mark) cardUpdatedAt = null }
+        readPane(paneId)
+    }
 
     /** A short note on the screen that goes by itself after 5 seconds (1.4.3). */
     private fun flash(text: String) {
@@ -6697,6 +6762,14 @@ class AppViewModel internal constructor(
         }
         // The same depth and agent the alert was made with (1.4.2, from review).
         val now = detectPrompt(text, blocked = true, agent = a.agent)
+        // 2.2.8: an alert never approves everything, nor answers a command the agent shows only in part.
+        // Bill (2026-11-25): an approve-from-now-on option is only ever sent after the app's own confirmation.
+        if (now != null && (now.clipped || now.choices.firstOrNull { it.keys == a.keys }?.let { com.billmongan.herdrdroid.herdr.approvesFromNowOn(it) } == true)) {
+            Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
+                if (now.clipped) "The agent shows only part of the command, so nothing was sent. Open the app to see it whole."
+                else "That option approves from now on, so it is confirmed in the app first. Nothing was sent.")
+            return
+        }
         // An OpenCode permission (2.1.2): only Esc, Reject, or Allow once moved to from the highlight
         // this read shows; never Always allow, never a typed digit.
         val permissionKeys = now?.takeIf { it.openCodePermission }?.let { com.billmongan.herdrdroid.notify.openCodePermissionAlertKeys(it, a) }
@@ -8320,3 +8393,9 @@ internal val QUESTION_CANDIDATE_AGENTS = setOf("omp", "pi")
 
 /** 2.2.8: a card answer whose keys failed after the check passed. */
 internal const val CARD_MAY_HAVE_SENT = "Could not confirm delivery: the answer may have been sent. Check the pane before answering again."
+
+/** 2.2.8: what the app says when the card was brought up to date at a tap instead of sending. */
+internal const val CARD_UPDATED_NOTE = "Updated to the question on screen now. Nothing was sent; check it and tap again."
+
+/** 2.2.8: an answer tapped on a card whose command the agent shows only in part. */
+internal const val CLIPPED_NOTE = "Not sent. The agent shows only part of this command: tap Show the whole command first."

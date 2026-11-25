@@ -1,0 +1,47 @@
+ 
+  [0m[1mUpdate available[0m[2m · 1.2.0 → 1.3.0[0m
+  [0m[2mRelease notes: [0m[2m[4mhttps://example.com/demo-cli/releases/latest[0m
+ 
+[0m[1m[7m› 1. Update now (runs `sh -c 's=$(curl -fsSL https://example.com/demo-cli/install.sh) && DEMO_NON_INTERACTIVE=1 eval "$s"'`)            [0m
+  2. Skip
+  3. Skip until next version
+ 
+  [0m[1menter[0m[2m continue · [0m[1mesc[0m[2m skip[0m
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 

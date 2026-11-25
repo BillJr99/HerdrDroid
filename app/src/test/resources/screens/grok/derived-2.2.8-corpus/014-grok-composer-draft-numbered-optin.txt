@@ -1,0 +1,18 @@
+  ~/work/demo                                                                                            115k / 256k │ [Dashboard]
+
+  ┃
+  ┃  ›  List the build cache
+  ┃  │ ls -la build/cache
+  ┃  2 (●) Yes, proceed
+  ┃  3 (○) No, reject (type to add feedback)
+
+     ◈ Ran 2 commands
+
+  ⠧ Thinking… 12s  [stop]
+
+  ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ ❯ 1. Opt in to strict mode                                                                                                     │
+  │   2. Run cleanup after tests                                                                                                   │
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────── Grok 4.7 (high) · auto-review ─╯
+
+  Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+.:shortcuts

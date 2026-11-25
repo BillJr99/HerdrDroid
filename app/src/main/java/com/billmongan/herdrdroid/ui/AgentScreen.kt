@@ -431,6 +431,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 p,
                 agent = pane?.agentName ?: "The agent",
                 optionNotes = remember(cardScreen, p) { CardFormat.optionNotes(cardScreen, p.choices) },
+                updated = vm.cardUpdatedAt == (vm.current?.id to paneId),
                 sending = vm.answerInFlight(paneId),
                 readOnlyPreview = openingPreview != null ||
                     ((com.billmongan.herdrdroid.herdr.isOpenCode(pane?.agent) || p.hermesClarify) && shownTarget == null && !p.terminalReview),
@@ -495,6 +496,30 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             text = { Text(forceDialogText(pane?.agentName ?: "Claude", vm.current?.name ?: "this server"), color = Palette.Ink) },
             confirmButton = { TextButton(onClick = { vm.confirmSendNow() }) { Text("Send anyway") } },
             dismissButton = { TextButton(onClick = { vm.cancelSendNow() }) { Text("Cancel") } },
+        )
+    }
+
+    // Bill (2026-11-25): an approve-from-now-on option is confirmed here first, with its full label;
+    // one the app can't show whole or reach only says why, and has no Confirm.
+    vm.approveAllPending?.takeIf { it.paneId == paneId && it.serverId == vm.current?.id }?.let { pending ->
+        val ask = pending.ask
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { vm.cancelApproveAll() },
+            modifier = Modifier.semantics { contentDescription = "Approve everything from now on" }.testTag("approve-all-dialog"),
+            title = { Text(if (ask.reason == null) "Approve everything from now on?" else "Not sent from here") },
+            text = {
+                Column {
+                    Text("\u201c${ask.label}\u201d", color = Palette.Ink, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(8.dp))
+                    Text(ask.reason ?: "${pane?.agentName ?: "The agent"} will do this again without asking you. Nothing is sent until you confirm.",
+                        color = Palette.Ink)
+                }
+            },
+            confirmButton = {
+                if (ask.reason == null) TextButton(onClick = { vm.confirmApproveAll() }, modifier = Modifier.testTag("approve-all-confirm")) { Text("Confirm") }
+                else TextButton(onClick = { vm.cancelApproveAll() }, modifier = Modifier.testTag("approve-all-close")) { Text("Close") }
+            },
+            dismissButton = if (ask.reason == null) ({ TextButton(onClick = { vm.cancelApproveAll() }, modifier = Modifier.testTag("approve-all-cancel")) { Text("Cancel") } }) else null,
         )
     }
 
@@ -1539,6 +1564,8 @@ internal fun PromptCard(
     readOnlyPreview: Boolean = false,
     /** The line an agent draws under an option, by its keys (2.1.1): shown under the label, display only. */
     optionNotes: Map<String, String> = emptyMap(),
+    /** 2.2.8: the card was just brought up to the question on screen at a tap (nothing was sent). */
+    updated: Boolean = false,
 ) {
     @Suppress("NAME_SHADOWING") val p = p.forCard()
     Surface(
@@ -1553,6 +1580,9 @@ internal fun PromptCard(
                 Text(if (readOnlyPreview) "Preview" else if (sending) "Checking and sending…"
                     else if (p.choices.isEmpty()) "$agent is waiting for you" else "Your answer", color = Palette.OrangeInk,
                     fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                // 2.2.8: a quiet mark that the card now shows what is on screen, with fresh buttons.
+                if (updated) Text("Updated", color = Palette.Blue, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
+                    modifier = Modifier.testTag("card-updated"))
             }
             if (readOnlyPreview) {
                 onShowTerminal?.let { show ->
@@ -1575,6 +1605,23 @@ internal fun PromptCard(
                     else -> "This preview is incomplete. Open the terminal to review the full command before answering."
                 },
                     color = Palette.Muted, fontSize = 12.5.sp)
+                onShowTerminal?.let { show ->
+                    TextButton(onClick = show, modifier = Modifier.fillMaxWidth()) { Text("Show terminal") }
+                }
+                return@Column
+            }
+            // 2.2.8: Grok shows only part of the command ("… Ctrl+F to expand"): no answer until it is
+            // shown whole. Ctrl+F expands it in Grok's own box (checked like any card key), then the card reads it again.
+            if (p.clipped) {
+                Text("$agent shows only part of this command. Show it whole here before you answer.",
+                    color = Palette.Muted, fontSize = 12.5.sp)
+                Button(
+                    enabled = !sending,
+                    onClick = { onKey("ctrl+f") },
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Palette.Blue, contentColor = Palette.OnBlue),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp).testTag("card-expand"),
+                ) { Text("Show the whole command (Ctrl+F)", fontSize = 15.sp, fontWeight = FontWeight.SemiBold) }
                 onShowTerminal?.let { show ->
                     TextButton(onClick = show, modifier = Modifier.fillMaxWidth()) { Text("Show terminal") }
                 }
@@ -1633,6 +1680,24 @@ internal fun PromptCard(
                 if (com.billmongan.herdrdroid.herdr.typedChatPair(allRows) != null)
                     Text("\u201cChat about this\u201d isn't offered here; use Terminal for it.", color = Palette.Muted, fontSize = 12.5.sp)
                 com.billmongan.herdrdroid.herdr.shownChoices(allRows).forEach { c ->
+                    // 2.2.8: shown, but never sent (cut off, or a row no key reaches), with the reason; a tap
+                    // says why in the approve-everything dialog (Bill, 2026-11-25).
+                    val blocked = com.billmongan.herdrdroid.herdr.blockedChoiceReason(c)
+                    if (blocked != null) {
+                        OutlinedButton(
+                            enabled = !readOnlyPreview && !sending,
+                            onClick = { onChoice(c) },
+                            shape = RoundedCornerShape(14.dp),
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp).testTag("choice-blocked"),
+                        ) {
+                            Column(Modifier.fillMaxWidth()) {
+                                Text(c.label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, lineHeight = 20.sp, color = Palette.Muted)
+                                Text(blocked, fontSize = 12.sp, color = Palette.Muted)
+                            }
+                        }
+                        return@forEach
+                    }
                     // Say what tapping really sends: arrows and Enter for a menu with a highlighted row,
                     // Esc for a "(esc)" option, otherwise the key itself (1.2.7; it always said "sends N").
                     val typed = !p.hermesClarify && com.billmongan.herdrdroid.herdr.isTypedAnswerChoice(c.label)

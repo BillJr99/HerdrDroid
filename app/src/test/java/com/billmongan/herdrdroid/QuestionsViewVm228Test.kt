@@ -63,7 +63,8 @@ class QuestionsViewVm228Test {
         answer(e)
         assertTrue(sent.isEmpty())
         assertEquals(0, cardChecks)
-        assertTrue(vm.notice.orEmpty(), vm.notice.orEmpty().startsWith("Not sent."))
+        // 2.2.8 (Grok lane): never "the question changed": the card shows what is on screen now.
+        assertEquals(CARD_UPDATED_NOTE, vm.notice)
     }
 
     @Test fun aScreenChangedAfterTheLastReadIsRefusedOnTheComputer() = fixture {
@@ -73,7 +74,7 @@ class QuestionsViewVm228Test {
         assertTrue(sent.isEmpty())
         assertEquals(1, cardChecks)
         assertEquals(1, cardChecksRefused)
-        assertEquals("The question changed; not sent.", vm.notice)
+        assertEquals(CARD_UPDATED_NOTE, vm.notice)
     }
 
     @Test fun anOccupantChangeAfterTheListSendsNothing() = fixture {
@@ -85,7 +86,7 @@ class QuestionsViewVm228Test {
         assertTrue(sent.isEmpty())
         assertEquals("never sent to the computer", 0, cardChecks)
         assertEquals("no retry: not even a fresh read", gets, paneGets)
-        assertTrue(vm.notice.orEmpty().startsWith("Not sent."))
+        assertEquals(CARD_UPDATED_NOTE, vm.notice)
         assertEquals("the entry says why", "Not sent. Another agent or session is in this pane now.",
             vm.questionsFeed.entries.single().note)
         // And the list starts that pane again rather than keep the old buttons.
@@ -424,13 +425,12 @@ class QuestionsViewVm228Test {
 
         override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult {
             if (expectedConnection != null) assertSame(connection, expectedConnection)
-            Regex("""(?s)'p1' '([0-9a-f]{64})' '([0-9a-f]{64})'.*\) && (.*)$""").find(command)?.takeIf { "herdrdroid-check" in command }?.let { m ->
+            Regex("""(?s)'p1' '([0-9a-f]{64})' '((?:r:[0-9]+:[0-9]+:)?[0-9a-f]{64})'.*\) && (.*)$""").find(command)?.takeIf { "herdrdroid-check" in command }?.let { m ->
                 cardChecks++
                 beforeCheck?.invoke()
-                val now = com.billmongan.herdrdroid.herdr.CardGuard(
-                    com.billmongan.herdrdroid.herdr.cardOccupantDigest(org.json.JSONObject(pane)),
-                    com.billmongan.herdrdroid.herdr.cardScreenDigest(frame))
-                if (now != com.billmongan.herdrdroid.herdr.CardGuard(m.groupValues[1], m.groupValues[2])) {
+                // 2.2.8 (with the Grok lane): the guard's dialog rows (or the whole screen), as the checks on the computer compare them.
+                val occupantNow = com.billmongan.herdrdroid.herdr.cardOccupantDigest(org.json.JSONObject(pane))
+                if (occupantNow != m.groupValues[1] || !com.billmongan.herdrdroid.herdr.cardGuardScreenMatches(frame, m.groupValues[2], agent)) {
                     cardChecksRefused++
                     return ExecResult(com.billmongan.herdrdroid.herdr.CARD_CHANGED_EXIT, com.billmongan.herdrdroid.herdr.CARD_REFUSED_MARK + "\n", "")
                 }

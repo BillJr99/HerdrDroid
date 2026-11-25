@@ -45,7 +45,8 @@ class CardFormatTest {
         val strip = "#△$"
         fun chars(s: String) = s.filterNot { it.isWhitespace() || it in strip }.toList().sorted()
         var checked = 0
-        for (f in root.walkTopDown().filter { it.isFile && it.name.endsWith(".txt") }) {
+        val bad = mutableListOf<String>()
+        for (f in root.walkTopDown().filter { it.isFile && it.name.endsWith(".txt") }.sortedBy { it.path }) {
             val agent = f.parentFile.parentFile.name
             val s = f.readText()
             val p = detectPrompt(s, true, agent) ?: continue
@@ -57,9 +58,16 @@ class CardFormatTest {
             }
             // 2.2.8: a fenced block shows as code without its "```lang" fence rows.
             val parsed = parts.blocks.joinToString("") { b -> b.text.lines().filterNot { com.billmongan.herdrdroid.herdr.isFenceRow(it) }.joinToString("\n") }
-            assertEquals(f.path, chars(parsed), chars(shown))
+            // Every screen that differs is listed, not only the first one found.
+            if (chars(parsed) != chars(shown)) {
+                val want = chars(parsed).groupingBy { it }.eachCount()
+                val got = chars(shown).groupingBy { it }.eachCount()
+                bad += "${f.relativeTo(root).path}: dropped ${want.mapValues { (c, n) -> n - (got[c] ?: 0) }.filterValues { it > 0 }}, " +
+                    "added ${got.mapValues { (c, n) -> n - (want[c] ?: 0) }.filterValues { it > 0 }}"
+            }
             checked++
         }
+        assertTrue(bad.joinToString("\n"), bad.isEmpty())
         assertTrue(checked > 50)
     }
 
