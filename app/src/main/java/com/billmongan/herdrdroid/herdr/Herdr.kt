@@ -449,17 +449,38 @@ class Herdr internal constructor(
      * [shellOnly]: the shell check alone.
      */
     internal fun cardSendCommand(paneId: String, input: CardInput, guard: CardGuard, shellOnly: Boolean = false): String {
-        val args = "$herdr ${shq(paneId)} ${shq(guard.occupant)} ${shq(guard.screen)}"
-        val shell = "sh -c ${shq(CARD_SEND_CHECK_SH)} herdrdroid-check $args"
-        val check = if (shellOnly) "( $shell )"
-            else "( $PY -c ${shq(CARD_SEND_CHECK)} $args; st=\$?; " +
-                "if [ \"\$st\" -eq 126 ] || [ \"\$st\" -eq 127 ]; then echo $SHELL_CHECK_MARK; $shell; else exit \"\$st\"; fi )"
+        val check = checkCommand(paneId, guard.occupant, guard.screen, shellOnly)
         val send = when (input) {
             is CardInput.Keys -> cmd("pane", "send-keys", paneId, *input.keys.toTypedArray())
             is CardInput.Text -> cmd("pane", "send-text", paneId, input.text) +
                 (if (input.enter) " && " + cmd("pane", "send-keys", paneId, "enter") else "")
         }
         return "$check && $send"
+    }
+
+    /** The check before a write: [CARD_SEND_CHECK], failing over to [CARD_SEND_CHECK_SH] where python3 can't run. */
+    private fun checkCommand(paneId: String, occupant: String, screen: String, shellOnly: Boolean): String {
+        val args = "$herdr ${shq(paneId)} ${shq(occupant)} ${shq(screen)}"
+        val shell = "sh -c ${shq(CARD_SEND_CHECK_SH)} herdrdroid-check $args"
+        return if (shellOnly) "( $shell )"
+            else "( $PY -c ${shq(CARD_SEND_CHECK)} $args; st=\$?; " +
+                "if [ \"\$st\" -eq 126 ] || [ \"\$st\" -eq 127 ]; then echo $SHELL_CHECK_MARK; $shell; else exit \"\$st\"; fi )"
+    }
+
+    /**
+     * 2.2.8 (Codex's re-review 2): the occupant-only check, on the computer, in the same command as a
+     * write: its occupant digest must still be [occupant] ([cardOccupantDigest]), wherever the pane is
+     * scrolled, or the command exits [OCCUPANT_CHANGED_EXIT] before anything is typed.
+     */
+    internal fun occupantCheckCommand(paneId: String, occupant: String, shellOnly: Boolean = false) =
+        checkCommand(paneId, occupant, "-", shellOnly)
+
+    /** 2.2.8: [paneId]'s occupant as the computer reports it now, with its digest, on [connection] (any scroll). */
+    internal suspend fun boundOccupant(paneId: String, connection: Any): Pair<Pane, String>? {
+        if (core) return null
+        val p = JSONObject(runNow(cmd("pane", "get", paneId), 5, connection)).getJSONObject("result").getJSONObject("pane")
+        val pane = tuiPane(p).takeIf { it.id == paneId } ?: return null
+        return pane to cardOccupantDigest(p)
     }
 
     /** [cardPane], but a scrolled-back pane is returned with its offset rather than as null (2.2.2: the relay refuses it as SCROLLED). */
@@ -684,13 +705,34 @@ class Herdr internal constructor(
     internal suspend fun sendPermitted(pane: Pane, text: String, connection: Any, permit: WritePermit) =
         sendMessage(pane, text, allowTerminalFallback = false, expectedConnection = connection, permit = permit)
 
-    suspend fun sendMessage(pane: Pane, text: String, allowTerminalFallback: Boolean = true, expectedConnection: Any? = null) =
-        sendMessage(pane, text, allowTerminalFallback, expectedConnection, permit = null)
+    /**
+     * [occupant] (2.2.8): the pane's occupant digest the message is bound to. Each write then goes in one
+     * command behind [occupantCheckCommand], so the computer types it only into that occupant;
+     * [OccupantChanged] when another one is there, [CardCheckFailed] when the check couldn't run.
+     * [shellOnly]: this computer has no python3.
+     */
+    suspend fun sendMessage(pane: Pane, text: String, allowTerminalFallback: Boolean = true, expectedConnection: Any? = null,
+                            occupant: String? = null, shellOnly: Boolean = false) =
+        sendMessage(pane, text, allowTerminalFallback, expectedConnection, permit = null, occupant = occupant, shellOnly = shellOnly)
 
     private suspend fun sendMessage(
         pane: Pane, text: String, allowTerminalFallback: Boolean, expectedConnection: Any?, permit: WritePermit?,
-        busyOk: Boolean = false,
+        busyOk: Boolean = false, occupant: String? = null, shellOnly: Boolean = false,
     ) {
+        require(occupant == null || (!core && expectedConnection != null))
+        // 2.2.8: behind the occupant check, in the same command; its own exits say what happened.
+        suspend fun write(command: String, permit: WritePermit? = null) {
+            if (occupant == null) { runWrite(command, expectedConnection = expectedConnection, permit = permit); return }
+            try {
+                runWrite(occupantCheckCommand(pane.id, occupant, shellOnly) + " && " + command, expectedConnection = expectedConnection, permit = permit)
+            } catch (e: HerdrError) {
+                when (e.exit) {
+                    OCCUPANT_CHANGED_EXIT -> throw OccupantChanged()
+                    CARD_CHECK_FAILED_EXIT, 126, 127 -> throw CardCheckFailed()
+                    else -> throw e
+                }
+            }
+        }
         // herdr's own status picks the route: an OpenCode pane marked needs-you from its screen
         // keeps the send it had (2.1.2).
         val status = pane.sendStatus
@@ -717,8 +759,7 @@ class Herdr internal constructor(
         }
         if (pane.agent != null && status != Status.NEEDS_YOU) {
             try {
-                runWrite((clear?.let { cmd("pane", "send-keys", pane.id, it) + " && " } ?: "") + cmd("agent", "prompt", pane.id, text),
-                    expectedConnection = expectedConnection, permit = permit)
+                write((clear?.let { cmd("pane", "send-keys", pane.id, it) + " && " } ?: "") + cmd("agent", "prompt", pane.id, text), permit)
                 return
             } catch (e: HerdrError) {
                 if (!allowTerminalFallback) throw e
@@ -726,6 +767,7 @@ class Herdr internal constructor(
                 lastSendRoute = "agent prompt refused; typed with send-text + enter"
             }
         }
+        if (occupant != null) { write(cmd("pane", "send-text", pane.id, text) + " && " + cmd("pane", "send-keys", pane.id, "enter")); return }
         runWrite(cmd("pane", "send-text", pane.id, text), expectedConnection = expectedConnection)
         runWrite(cmd("pane", "send-keys", pane.id, "enter"), expectedConnection = expectedConnection)
     }
@@ -4456,6 +4498,11 @@ internal val CARD_SEND_CHECK_SH: String by lazy {
         .use { it.readBytes().toString(Charsets.UTF_8) }
 }
 internal const val CARD_CHECK_FAILED_EXIT = 4
+/** 2.2.8: the occupant-only check ([occupantCheckCommand]) found another occupant: nothing was typed. */
+internal const val OCCUPANT_CHANGED_EXIT = 5
+
+/** 2.2.8: a message bound to a pane's occupant found another one there, checked on the computer; nothing was typed. */
+internal class OccupantChanged : Exception("the pane changed")
 
 private val CARD_OCCUPANT_FIELDS = listOf("pane_id", "tab_id", "workspace_id", "agent", "foreground_cwd", "cwd", "terminal_id")
 private val CARD_SESSION_FIELDS = listOf("kind", "agent", "value")
@@ -4611,9 +4658,11 @@ internal val CARD_SEND_CHECK = """
         else:
             return b'-\n'
         return str(len(b)).encode('ascii') + b':' + b + b'\n'
+    # 2.2.8: a screen digest of '-' checks the occupant only, wherever the pane is scrolled.
+    ANYSCROLL = screen == '-'
     def identity():
         p = json.loads(call('get', pane))['result']['pane']
-        if p.get('pane_id') != pane or (p.get('scroll') or {}).get('offset_from_bottom') != 0:
+        if p.get('pane_id') != pane or (not ANYSCROLL and (p.get('scroll') or {}).get('offset_from_bottom') != 0):
             return None
         s = p.get('agent_session')
         s = s if isinstance(s, dict) else {}
@@ -4681,6 +4730,14 @@ internal val CARD_SEND_CHECK = """
             else:
                 out.append(timer(line, t[i]))
         return out
+    if screen == '-':
+        # 2.2.8: the occupant only (a message queued behind a question): 0, 5 when it changed, 4.
+        try:
+            before = identity()
+            after = identity()
+        except Exception:
+            sys.exit(4)
+        sys.exit(0 if before is not None and before == after == occupant else 5)
     try:
         before = identity()
         visible = call('read', pane, '--source', 'visible', '--format', 'ansi')

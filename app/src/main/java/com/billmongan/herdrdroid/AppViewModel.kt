@@ -3935,6 +3935,25 @@ class AppViewModel internal constructor(
         flash(QUEUED_OCCUPANT_CHANGED)
     }
 
+    /**
+     * 2.2.8 (Codex's re-review 2): a bound message's write. Its pane's occupant is read on the pinned
+     * connection (the app's list can be behind), compared with [bound]'s, and the write goes behind
+     * the occupant check on the computer ([com.billmongan.herdrdroid.herdr.Herdr.occupantCheckCommand]).
+     * False when another occupant is there (read here, or found by the computer): nothing was typed.
+     */
+    private suspend fun sendBound(h: Herdr, bound: BoundSend, pane: Pane, text: String, connection: Any?): Boolean {
+        val conn = connection ?: h.connectionIdentity ?: throw LinkDown(IllegalStateException("not connected"))
+        val (fresh, digest) = h.boundOccupant(pane.id, conn) ?: return false
+        if (!bound.occupant.sameCardOccupant(fresh)) return false
+        return try {
+            h.sendMessage(pane, text, expectedConnection = conn, occupant = digest,
+                shellOnly = current?.id?.let { it in noPython3 } == true)
+            true
+        } catch (_: com.billmongan.herdrdroid.herdr.OccupantChanged) {
+            false
+        }
+    }
+
     private fun boundMoved(bound: BoundSend?, paneId: String): Boolean =
         bound != null && pane(paneId)?.let { bound.occupant.sameCardOccupant(it) } != true
 
@@ -4070,7 +4089,16 @@ class AppViewModel internal constructor(
             }
             try {
                 val checked = openCodeRead
-                h.sendMessage(checked?.pane ?: pane, text, expectedConnection = checked?.connection)
+                if (bound != null && h.backend == Backend.TUI) {
+                    // 2.2.8 (Codex's re-review 2): the occupant read again on the pinned connection, never
+                    // from the app's list, then checked once more on the computer in the write's own command.
+                    if (!sendBound(h, bound, checked?.pane ?: pane, text, checked?.connection)) {
+                        pendingSends = pendingSends.filterNot { it.id == pendingId }
+                        if (usageRecord != null) saveOpenedUsage(openedUsage.filterNot { it === usageRecord })
+                        occupantMovedDuringSend(bound)
+                        return@act
+                    }
+                } else h.sendMessage(checked?.pane ?: pane, text, expectedConnection = checked?.connection)
                 com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${pane.id}: delivered to herdr (${h.lastSendRoute})")
                 delivered()
             } catch (e: Exception) {
@@ -4231,7 +4259,10 @@ class AppViewModel internal constructor(
                 // 2.2.8: checked by the retry's own check; this is the write's last look, with nothing in between.
                 if (p.bound != null && (!p.bound.occupant.sameCardOccupant(pn) || checked?.pane?.let { p.bound.occupant.sameCardOccupant(it) } == false))
                     throw BoundOccupantChanged()
-                h.sendMessage(checked?.pane ?: pn, p.text, expectedConnection = checked?.connection)
+                // 2.2.8 (Codex's re-review 2): read on the pinned connection and checked on the computer too.
+                if (p.bound != null && h.backend == Backend.TUI) {
+                    if (!sendBound(h, p.bound, checked?.pane ?: pn, p.text, checked?.connection)) throw BoundOccupantChanged()
+                } else h.sendMessage(checked?.pane ?: pn, p.text, expectedConnection = checked?.connection)
                 log("delivered to herdr (${h.lastSendRoute})")
             },
             log = log,

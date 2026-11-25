@@ -57,6 +57,16 @@ class SendNowVm227Test {
         var dropAtCtrlB = false
         var statusNow = Status.WORKING
         var terminal = "t1"
+        /**
+         * 2.2.8 (Codex's re-review 2): the terminal the computer reports for `pane get` and for the
+         * occupant check, when it differs from the app's list (null: the same as [terminal]).
+         */
+        var remoteTerminal: String? = null
+        /** The terminal only the occupant check on the computer sees (null: as `pane get`). */
+        var checkTerminal: String? = null
+        /** Occupant checks the computer ran, and how many refused. */
+        var occupantChecks = 0
+        var occupantRefused = 0
         /** 2.2.8: runs as a screen read is answered (once), for a change while the send reads the pane. */
         var duringRead: (() -> Unit)? = null
 
@@ -108,8 +118,21 @@ class SendNowVm227Test {
             |{"result":{"tabs":[]}}
         """.trimMargin())
 
-        override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult = when {
-            command.endsWith("'pane' 'get' 'p1'") -> ok("""{"result":{"pane":$pane}}""")
+        override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult {
+            // 2.2.8: the occupant check before a bound write, run as the computer would, then each write it guards.
+            Regex("""(?s)'p1' '([0-9a-f]{64})' '-'.*\) && (.*)$""").find(command)?.takeIf { "herdrdroid-check" in command }?.let { m ->
+                occupantChecks++
+                val now = com.billmongan.herdrdroid.herdr.cardOccupantDigest(org.json.JSONObject(paneOn(checkTerminal ?: remoteTerminal ?: terminal)))
+                if (now != m.groupValues[1]) { occupantRefused++; return ExecResult(com.billmongan.herdrdroid.herdr.OCCUPANT_CHANGED_EXIT, "", "") }
+                var last = ok("")
+                for (part in m.groupValues[2].split(" && ")) { last = direct(part); if (last.exit != 0) break }
+                return last
+            }
+            return direct(command)
+        }
+
+        private fun direct(command: String): ExecResult = when {
+            command.endsWith("'pane' 'get' 'p1'") -> ok("""{"result":{"pane":${paneOn(remoteTerminal ?: terminal)}}}""")
             command.contains("'pane' 'read' 'p1'") -> { duringRead?.also { duringRead = null }?.invoke(); ok(frame) }
             command.contains("'agent' 'prompt' 'p1' ") -> {
                 if (failSends) ExecResult(1, "", "fixture refused") else {
@@ -133,9 +156,10 @@ class SendNowVm227Test {
             else -> ok("")
         }
 
-        private val pane get() = """{"pane_id":"p1","workspace_id":"w1","tab_id":"tab","agent":"$agent","agent_status":"${when (statusNow) {
+        private val pane get() = paneOn(terminal)
+        private fun paneOn(t: String) = """{"pane_id":"p1","workspace_id":"w1","tab_id":"tab","agent":"$agent","agent_status":"${when (statusNow) {
             Status.IDLE -> "idle"; Status.DONE -> "done"; Status.WORKING -> "working"; else -> "blocked"
-        }}","cwd":"/fixture","terminal_id":"$terminal","scroll":{"offset_from_bottom":0}}"""
+        }}","cwd":"/fixture","terminal_id":"$t","scroll":{"offset_from_bottom":0}}"""
         private fun ok(out: String) = ExecResult(0, out, "")
         private fun field(name: String) = AppViewModel::class.java.getDeclaredField(name).apply { isAccessible = true }
         @Suppress("UNCHECKED_CAST")
@@ -212,6 +236,61 @@ class SendNowVm227Test {
         assertTrue(vm.pendingSends.isEmpty())
         assertEquals("only for the first session", vm.composerDraft("p1"))
         assertTrue(noted)
+    }
+
+    /**
+     * 2.2.8 (Codex's re-review 2): the computer's occupant changes while the app's pane list stays as it
+     * was. The send reads the occupant on its own connection: nothing is typed, the text is back in the box.
+     */
+    @Test fun aRemoteOccupantChangeTheListHasNotSeenStopsABoundSend() = fixture("claude", working.replace("esc to interrupt", "")) {
+        status(Status.IDLE)
+        shown()
+        vm.enqueue("p1", "only for the first session", behindQuestion = true)
+        remoteTerminal = "replacement"
+        vm.sendQueuedImmediately(vm.queued.single())
+        var noted = false
+        repeat(40) {
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100)); Thread.sleep(2)
+            if (vm.notice == QUEUED_OCCUPANT_CHANGED) noted = true
+        }
+        assertEquals("the app's list never saw it", "t1", vm.pane("p1")?.terminalId)
+        assertTrue("nothing typed to the replacement", writes.isEmpty())
+        assertTrue(vm.queued.isEmpty())
+        assertTrue(vm.pendingSends.isEmpty())
+        assertEquals("only for the first session", vm.composerDraft("p1"))
+        assertTrue(noted)
+    }
+
+    /** The same change, seen only by the check on the computer in the write's own command: refused there. */
+    @Test fun theComputerRefusesABoundWriteToAnotherOccupant() = fixture("claude", working.replace("esc to interrupt", "")) {
+        status(Status.IDLE)
+        shown()
+        vm.enqueue("p1", "only for the first session", behindQuestion = true)
+        checkTerminal = "replacement"
+        vm.sendQueuedImmediately(vm.queued.single())
+        var noted = false
+        repeat(40) {
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100)); Thread.sleep(2)
+            if (vm.notice == QUEUED_OCCUPANT_CHANGED) noted = true
+        }
+        assertEquals(1, occupantRefused)
+        assertTrue("nothing typed to the replacement", writes.isEmpty())
+        assertTrue(vm.queued.isEmpty())
+        assertTrue(vm.pendingSends.isEmpty())
+        assertEquals("only for the first session", vm.composerDraft("p1"))
+        assertTrue(noted)
+    }
+
+    /** With the occupant unchanged, the bound write goes once, behind the check on the computer. */
+    @Test fun aBoundWriteGoesBehindTheComputersCheck() = fixture("claude", working.replace("esc to interrupt", "")) {
+        status(Status.IDLE)
+        shown()
+        vm.enqueue("p1", "for this session", behindQuestion = true)
+        vm.sendQueuedImmediately(vm.queued.single())
+        drainUntil { writes.isNotEmpty() }
+        assertEquals(listOf("prompt:for this session"), writes)
+        assertEquals(1, occupantChecks)
+        assertEquals(0, occupantRefused)
     }
 
     @Test fun theFixtureScreensAreCleanWorkingClaudeScreens() {
