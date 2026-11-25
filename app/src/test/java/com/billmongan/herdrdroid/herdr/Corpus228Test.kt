@@ -123,6 +123,20 @@ class Corpus228Test {
         assertNull(blockedChoiceReason(Choice("Yes, allow", "1", false)))
     }
 
+    @Test fun ordinaryGrokYesAnswersStaySelectable() {
+        val plain = checkNotNull(detectPrompt("Continue reviewing the sample? [y/n]", true, "grok"))
+        assertEquals(listOf("y", "n"), plain.choices.map { it.keys })
+        assertTrue(plain.choices.all { blockedChoiceReason(it) == null })
+
+        val ask = checkNotNull(javaClass.getResource(
+            "/screens/grok/derived-1.4.9/0305-question-card-ask-user-question.txt")).readText()
+            .replace("Which database should demo-box use?", "Continue reviewing the sample?")
+            .replace("SQLite", "Yes").replace("Postgres", "No")
+        val card = checkNotNull(detectPrompt(ask, true, "grok"))
+        assertEquals(listOf("Yes", "No"), card.choices.take(2).map { it.label })
+        assertTrue(card.choices.take(2).all { blockedChoiceReason(it) == null })
+    }
+
     /**
      * Codex's per-commit review of fe63209 (MEDIUM): a "(…)" row joins the option above it only when it
      * starts in the label's own column, and a radio row never joins, even under an open "(".

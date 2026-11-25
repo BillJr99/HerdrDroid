@@ -4056,6 +4056,9 @@ fun approveAllAsk(p: Prompt, c: Choice): ApproveAllAsk? {
     return ApproveAllAsk(c.label, keys, reason)
 }
 
+private val GROK_APPROVAL_OR_ASK_HEADING = Regex("""^\s*┃\s*([›?])\s+\S""")
+private val GROK_APPROVAL_SELECT = Regex("""^\s*\d{1,2}/\d{1,2}:select\s+│""")
+
 /**
  * 2.2.8 (Bill: "grok has a question but keeps saying it changed and won't send"): Grok 4.7's approval
  * box as it draws it now: numbered radio rows ("2 (●) Yes, proceed", "3 (○) No, reject (type to add
@@ -4065,16 +4068,20 @@ fun approveAllAsk(p: Prompt, c: Choice): ApproveAllAsk? {
  */
 internal fun grokApproval(plain: String, parsed: Prompt): Prompt {
     if (parsed.choices.isEmpty() || parsed.terminalReview) return parsed
-    // Codex's per-commit review of a1314cd (HIGH): Grok draws no plain "Yes" and no option that is only
-    // the start of its always-approve one, so a label cut off anywhere inside that one ("Yes", "Yes,
-    // a…", "Yes, and don't ask again f…") is ambiguous: shown, never sent.
-    val p = if (parsed.choices.none { grokCouldBeAlways(it.label) }) parsed
-        else parsed.copy(choices = parsed.choices.map { if (grokCouldBeAlways(it.label)) it.copy(ambiguous = true) else it }).withSpanOf(parsed)
     val rows = plain.lines()
     val last = rows.indexOfLast { GROK_RADIO_ROW.containsMatchIn(it) }
-    if (last < 0) return p
+    if (last < 0) return parsed
     var first = last
     while (first > 0 && GROK_RADIO_ROW.containsMatchIn(rows[first - 1])) first--
+    val boxedHeading = rows.take(first).asReversed()
+        .takeWhile { it.trimStart().startsWith("┃") }
+        .firstNotNullOfOrNull { GROK_APPROVAL_OR_ASK_HEADING.find(it)?.groupValues?.get(1) }
+    val footer = rows.drop(last + 1).firstOrNull { it.isNotBlank() && !it.trimStart().startsWith("┃") }
+    val approval = boxedHeading != "?" &&
+        (boxedHeading == "›" || footer?.let(GROK_APPROVAL_SELECT::containsMatchIn) == true)
+    // The shortest prefixes are ambiguous only in approval menus. A regular question can ask Yes/No.
+    val p = if (!approval || parsed.choices.none { grokCouldBeAlways(it.label) }) parsed
+        else parsed.copy(choices = parsed.choices.map { if (grokCouldBeAlways(it.label)) it.copy(ambiguous = true) else it }).withSpanOf(parsed)
     var out = p
     rows.getOrNull(last + 1)?.let { GROK_UNNUMBERED_ALWAYS.matchEntire(it) }?.let { m ->
         val label = m.groupValues[1].trim()
