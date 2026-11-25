@@ -6,7 +6,8 @@
 # 2.2.8: a screen digest of "-" checks the occupant only, wherever the pane is scrolled (a message
 # queued behind a question goes only to its occupant): 0 when it matches, 5 when it doesn't, 4.
 # 2.2.8: a screen argument "r:<rows under>:<rows>:<digest>" compares only the dialog's rows
-# (cardRegionDigest in Herdr.kt): the same rows of this read, each with only its ends trimmed.
+# (cardRegionDigest in Herdr.kt): the same rows of this read, each with only its ends trimmed, and
+# the rows under them by their shape (a new dialog under the old one is a change).
 herdr=$1
 pane=$2
 occupant=$3
@@ -333,6 +334,18 @@ END {
     x = r[i]
     sub(/^[ \t\r\v\f]+/, "", x)
     sub(/[ \t\r\v\f]+$/, "", x)
+    print x
+  }
+  # 2.2.8 (Codex review 4B): the rows under the dialog by their shape (cardUnderRow in Herdr.kt):
+  # styles dropped, ends trimmed, each digit 0, each spinner glyph "*".
+  print "@@under@@"
+  for (i = NR - below + 1; i <= NR; i++) {
+    x = r[i]
+    gsub(/\033\[[0-9;?]*[ -\/]*[@-~]/, "", x)
+    sub(/^[ \t\r\v\f]+/, "", x)
+    sub(/[ \t\r\v\f]+$/, "", x)
+    gsub(/[0-9]/, "0", x)
+    gsub(/\342[\240-\243][\200-\277]|·|✢|✳|✶|✻|✽|◐|◓|◑|◒/, "*", x)
     print x
   }
 }
