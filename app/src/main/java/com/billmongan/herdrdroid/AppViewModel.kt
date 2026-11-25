@@ -252,6 +252,8 @@ class AppViewModel internal constructor(
             }
             if (!inServersFlow(value)) serversOrigin = null
             chatVisit.navigate((currentScreen as? Screen.Agent)?.paneId, (value as? Screen.Agent)?.paneId)
+            // 2.2.8: every way into or out of the Questions view starts a new visit of it, so its targets go stale.
+            if ((currentScreen == Screen.Questions) != (value == Screen.Questions)) questionsVisit++
             currentScreen = value
         }
     var servers by mutableStateOf(store.all().sortedBy { it.label.lowercase() })
@@ -5237,25 +5239,97 @@ class AppViewModel internal constructor(
         if (screen != Screen.Questions || locked || link != Link.CONNECTED) return null
         val client = herdr ?: return null
         return CardTarget(client, client.connectionIdentity ?: return null, current?.id ?: return null,
-            paneVisit, pane(paneId) ?: return null)
+            paneVisit, pane(paneId) ?: return null, questionsVisit)
     }
 
-    /** The panes needing you now, on the open server and the watched ones, as the drawer lists them. */
+    /** 2.2.8: the Questions view's visit: bumped on every way into or out of it, and when it is hidden. */
+    private var questionsVisit = 0L
+
+    /** The target an entry for [src] answers through: the open server's pane only, with the same occupant; else null. */
+    internal fun questionTargetFor(src: com.billmongan.herdrdroid.questions.QuestionSource): CardTarget? =
+        if (!src.current || src.serverId != current?.id) null
+        else questionsCardTarget(src.pane.id)?.takeIf { it.pane.sameCardOccupant(src.pane) }
+
+    /**
+     * The panes needing you now, on the open server and the watched ones, as the drawer lists them;
+     * and, as candidates, Oh My Pi and pi panes herdr calls working, whose approval or Ask dialog
+     * waits while herdr says so (the pane's card shows them whatever herdr reports).
+     */
     private fun questionSources(): List<com.billmongan.herdrdroid.questions.QuestionSource> =
-        sessions().filter { it.status == Status.NEEDS_YOU }.map {
-            com.billmongan.herdrdroid.questions.QuestionSource(it.server.id, it.server.label, it.current, it.pane)
+        sessions().mapNotNull {
+            val waiting = it.status == Status.NEEDS_YOU
+            val candidate = !waiting && it.status == Status.WORKING && it.pane.agent?.lowercase() in QUESTION_CANDIDATE_AGENTS
+            if (!waiting && !candidate) null
+            else com.billmongan.herdrdroid.questions.QuestionSource(it.server.id, it.server.label, it.current, it.pane, candidate = candidate)
         }
 
     /**
-     * One pane read for the Questions view: the card target bound first (open server only), then
-     * the confirmed card from [readListedVoiceCard] (the pane's own record, the live viewport, read
-     * until the same dialog shows twice, over the server's shared connection). Null when it couldn't be read.
+     * One pane read for the Questions view, over the server's shared connection: the target bound
+     * first (open server only), then the pane's own record and its live viewport, read until the same
+     * dialog shows twice. Styled where the highlight is only a colour (OpenCode, Muse); a tall Claude
+     * dialog rebuilt whole as its card does. Null when the read failed; [QuestionRead.unreadable] when
+     * this pane can't be read at all; [QuestionRead.timedOut] when the dialog never read the same twice.
      */
     private suspend fun readQuestionSource(src: com.billmongan.herdrdroid.questions.QuestionSource): com.billmongan.herdrdroid.questions.QuestionRead? {
         val session = sessions().firstOrNull { it.server.id == src.serverId && it.pane.id == src.pane.id && it.current == src.current } ?: return null
-        val target = if (src.current) questionsCardTarget(src.pane.id)?.takeIf { it.pane.sameCardOccupant(src.pane) } else null
-        val r = readListedVoiceCard(session) ?: return null
-        return com.billmongan.herdrdroid.questions.QuestionRead(r.prompt?.forCard(), target)
+        val (server, pane) = session
+        val client = clientFor(server.id) ?: return null
+        val connection = client.connectionIdentity ?: return null
+        fun unreadable(why: String) = com.billmongan.herdrdroid.questions.QuestionRead(null, null, unreadable = why)
+        if (client.backend != Backend.TUI) return unreadable("This computer's herdr can't show the pane's screen to the app. Open the pane to answer.")
+        if (pane.terminalId == null && pane.sessionId == null) return unreadable("The app can't tell which agent is in this pane. Open the pane to answer.")
+        val target = questionTargetFor(src)
+        val version = versionOf(pane.id).takeIf { session.current }
+        fun stillCurrent() = !locked && (foreground || !server.overWebSocket) && clientFor(server.id) === client &&
+            client.connectionIdentity === connection &&
+            if (session.current) current == server && link == Link.CONNECTED && pane(pane.id)?.sameCardOccupant(pane) == true
+            else fleetStates[server.id]?.let { it.server == server && it.error == null &&
+                it.panes.singleOrNull { other -> other.id == pane.id }?.sameCardOccupant(pane) == true } == true
+        return try {
+            if (!stillCurrent()) return null
+            val fresh = client.cardPane(pane.id, connection)
+                ?: return unreadable("The pane is scrolled back at the computer, so its question isn't on screen. Open the pane to answer.")
+            if (!stillCurrent() || !pane.sameCardOccupant(fresh)) return null
+            val agent = fresh.agent
+            val blocked = fresh.status == Status.NEEDS_YOU
+            val styled = com.billmongan.herdrdroid.herdr.isOpenCode(agent) || agent.equals("muse", true)
+            val gate = com.billmongan.herdrdroid.herdr.QuestionConfirm()
+            for (n in 0..com.billmongan.herdrdroid.herdr.FALLBACK_READS) {
+                if (n > 0) delay(VOICE_CONFIRM_PAUSE_MS)
+                val raw = client.readStyledViewport(pane.id, connection)
+                if (!stillCurrent()) return null
+                var plain = com.billmongan.herdrdroid.herdr.stripAnsi(raw)
+                var parsed = when {
+                    plain.isBlank() -> null
+                    agent == "pi" && !blocked -> activePiQuestion(plain, version)
+                    else -> detectPrompt(if (styled) raw else plain, blocked, agent, version)
+                }
+                // A Claude dialog taller than the screen: rebuilt whole from the history, as its card is.
+                if (parsed != null && parsed.topOffScreen && agent.equals("claude", true)) {
+                    plain = com.billmongan.herdrdroid.herdr.completeTallDialog(plain, blocked, version) { k ->
+                        if (stillCurrent()) client.read(pane.id, k, preserveGlyphs = true) else null
+                    }
+                    if (!stillCurrent()) return null
+                    parsed = detectPrompt(plain, blocked, agent, version)
+                }
+                parsed = parsed?.takeIf { it.terminalReview || it.choices.isNotEmpty() }
+                if (parsed == null) {
+                    // The first read shows no dialog: confirmed none. Later, a dialog that came and went keeps being read.
+                    if (n == 0) return com.billmongan.herdrdroid.questions.QuestionRead(null, null)
+                    gate.decide("questions", null)
+                    continue
+                }
+                val v = gate.decide("questions", com.billmongan.herdrdroid.herdr.questionRead(plain, parsed, agent, version, blocked))
+                if (v.shows == com.billmongan.herdrdroid.herdr.CardShows.CARD) {
+                    return com.billmongan.herdrdroid.questions.QuestionRead(parsed.forCard(), target)
+                }
+            }
+            com.billmongan.herdrdroid.questions.QuestionRead(null, null, timedOut = true)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
     }
 
     internal val questionsFeed by lazy { com.billmongan.herdrdroid.questions.QuestionsFeed(
@@ -5270,12 +5344,19 @@ class AppViewModel internal constructor(
      * that another agent or session is in the pane now (the target's occupant no longer there); else [message].
      */
     internal fun questionsRefusal(target: CardTarget?, message: String): String {
+        // Only a refusal before anything was sent is restated: a "may have been sent" stays exactly as it is.
+        if (!message.startsWith("Not sent.")) return message
         val now = target?.let { questionsCardTarget(it.pane.id) }
-        return if (target != null && now != null && !now.pane.sameCardOccupant(target.pane)) "Not sent. Another agent or session is in this pane now." else message
+        return if (target != null && now != null && !now.pane.sameCardOccupant(target.pane)) OCCUPANT_REFUSAL else message
     }
 
-    /** The drawer's Questions badge: each pane needing you is one open question. */
-    fun openQuestionCount(): Int = sessions().count { it.status == Status.NEEDS_YOU }
+    /**
+     * The drawer's Questions badge: each pane needing you is one open question, or the questions the
+     * view lists, when more (approvals it found on panes herdr calls working). The view's list is
+     * forgotten when it is hidden.
+     */
+    fun openQuestionCount(): Int = maxOf(sessions().count { it.status == Status.NEEDS_YOU },
+        questionsFeed.entries.count { it.state != com.billmongan.herdrdroid.questions.EntryState.ANSWERED })
 
     /** The Questions view is on screen (and the app in front): reads run, and the watched servers are read as often as with the drawer out. */
     internal fun questionsShown() {
@@ -5285,6 +5366,7 @@ class AppViewModel internal constructor(
     }
 
     internal fun questionsHidden() {
+        questionsVisit++
         questionsFeed.hide()
         tuneFleet()
     }
@@ -5298,7 +5380,10 @@ class AppViewModel internal constructor(
         return true
     }
 
-    internal data class CardTarget(val client: Herdr, val connection: Any, val server: String, val visit: Long, val pane: Pane)
+    internal data class CardTarget(val client: Herdr, val connection: Any, val server: String, val visit: Long, val pane: Pane,
+        /** 2.2.8: the Questions view's visit a target made there belongs to; -1 for the open pane's own card. */
+        val questionsVisit: Long = -1L,
+    )
 
     internal fun cardTarget(paneId: String): CardTarget? {
         if ((screen as? Screen.Agent)?.paneId != paneId || locked || link != Link.CONNECTED) return null
@@ -5313,7 +5398,7 @@ class AppViewModel internal constructor(
 
     // 2.2.8: a card answered from the Questions view is current only while that view stays open.
     private fun CardTarget.isCurrent(h: Herdr): Boolean = client === h && (cardTarget(pane.id) ?: questionsCardTarget(pane.id))?.let {
-        it.client === client && it.connection === connection && it.server == server && it.visit == visit &&
+        it.client === client && it.connection === connection && it.server == server && it.visit == visit && it.questionsVisit == questionsVisit &&
             it.pane.sameCardOccupant(pane)
     } == true
 
@@ -5532,7 +5617,12 @@ class AppViewModel internal constructor(
     }
 
     private fun answerOnce(paneId: String, feedback: ((String) -> Unit)? = null, run: suspend (Herdr) -> Unit) {
-        val server = current?.id ?: return
+        val server = current?.id ?: run {
+            val message = "Not sent. No server is open."
+            flash(message)
+            feedback?.invoke(message)
+            return
+        }
         val client = herdr
         if (client == null || link != Link.CONNECTED) {
             val message = "Not sent. Reconnect and check the question before trying again."
@@ -5575,7 +5665,7 @@ class AppViewModel internal constructor(
             } catch (e: com.billmongan.herdrdroid.herdr.OccupantChanged) {
                 // 2.2.8: another agent or session is in the pane: nothing typed, and no retry.
                 com.billmongan.herdrdroid.diag.DiagLog.log("answer", "$paneId: another occupant is in the pane; not sent")
-                val message = "Not sent. Another agent or session is in this pane now."
+                val message = OCCUPANT_REFUSAL
                 flash(message)
                 feedback?.invoke(message)
                 if (herdr === client && link == Link.CONNECTED) readPane(paneId)
@@ -5604,15 +5694,17 @@ class AppViewModel internal constructor(
     ) {
         // The answer goes into the history only once it was sent (1.3.2, from a code review).
         if (prompt.terminalReview) return
-        if (target != null && target.pane.id != paneId) { flash("Not sent. The question belongs to another pane."); return }
+        if (target != null && target.pane.id != paneId) {
+            flash("Not sent. The question belongs to another pane."); feedback?.invoke("Not sent. The question belongs to another pane."); return
+        }
         if (choice.keys == com.billmongan.herdrdroid.herdr.OmpAsk.SUBMIT) {
             if (voiceAllowed != null) { feedback?.invoke("Open Chat to submit the answers."); return }
             var guard: com.billmongan.herdrdroid.herdr.CardGuard? = null
-            answerCardInput(target, prompt, choice.label, onGuard = { guard = it }) { h, t, fresh -> submitOmpAsk(h, t, prompt, fresh, guard) }
+            answerCardInput(target, prompt, choice.label, onGuard = { guard = it }, feedback = feedback) { h, t, fresh -> submitOmpAsk(h, t, prompt, fresh, guard) }
             return
         }
         if (choice.keys.startsWith("grok-privacy:") && voiceAllowed == null) {
-            answerCardInput(target, prompt, choice.label) { h, t, fresh ->
+            answerCardInput(target, prompt, choice.label, feedback = feedback) { h, t, fresh ->
                 if (choice !in fresh.choices) return@answerCardInput false
                 answerGrokPrivacy(h, paneId, optIn = choice.keys == com.billmongan.herdrdroid.herdr.GROK_PRIVACY_IN,
                     connection = t.connection)?.let { throw IllegalStateException(it) }
@@ -5704,7 +5796,8 @@ class AppViewModel internal constructor(
             // Next and Submit here only advance the dialog, not answer or confirm it.
             if (choice != fresh.claudeCheckboxAction) noteAnswer(paneId, prompt, choice.label, serverId = target.server)
             // Say what went (1.4.3): a tap that answers shows it at once.
-            report("Sent $sent to $agentName: ${choice.label.take(40)}")
+            // A sent answer is a note on the screen, not a reason on the Questions view's entry.
+            if (voiceAllowed != null) report("Sent $sent to $agentName: ${choice.label.take(40)}") else flash("Sent $sent to $agentName: ${choice.label.take(40)}")
             readPane(paneId)
             viewModelScope.launch { refreshPanes() }
         }
@@ -8108,4 +8201,10 @@ internal class BoundOccupantChanged : Exception("the pane changed")
 internal const val MAY_HAVE_SENT = "it may have reached the agent; check the agent before sending it again"
 
 /** 2.2.8: a card answer whose keys failed after the check passed. */
+/** 2.2.8: an answer refused before anything was sent because another agent or session is in the pane. */
+internal const val OCCUPANT_REFUSAL = "Not sent. Another agent or session is in this pane now."
+
+/** 2.2.8: agents whose approval or Ask dialog waits while herdr may call them working: the Questions view reads them too. */
+internal val QUESTION_CANDIDATE_AGENTS = setOf("omp", "pi")
+
 internal const val CARD_MAY_HAVE_SENT = "Could not confirm delivery: the answer may have been sent. Check the pane before answering again."

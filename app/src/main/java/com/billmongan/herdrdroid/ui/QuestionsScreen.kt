@@ -78,9 +78,8 @@ internal fun QuestionsDrawerItem(count: Int, selected: Boolean, onClick: () -> U
     }
 }
 
-/** "waiting 4m", "waiting just now". */
-internal fun waitedText(since: Long, now: Long): String =
-    com.billmongan.herdrdroid.herdr.ago(since, now).removeSuffix(" ago").let { if (it == "just now") "waiting just now" else "waiting $it" }
+/** "first seen 4m ago", "first seen just now": since the app first saw the question waiting. */
+internal fun waitedText(since: Long, now: Long): String = "first seen " + com.billmongan.herdrdroid.herdr.ago(since, now)
 
 /** Why an entry with a question can't be answered from here, or null when it can. */
 internal fun cannotAnswerWhy(e: QuestionEntry): String? = when {
@@ -118,7 +117,7 @@ fun QuestionsScreen(vm: AppViewModel) {
             entries = feed.entries, now = now,
             sending = { it.source.current && vm.answerInFlight(it.source.pane.id) },
             onOpen = { e -> vm.drawerOpen = false; vm.switchTo(e.source.serverId, e.source.pane.id) },
-            onPress = { e, down -> if (down) feed.holdUi(e.key) else feed.releaseUi(e.key) },
+            onPress = { e, down -> if (down) feed.holdPress(e.key) else feed.releasePress(e.key) },
             onChoice = { e, p, c ->
                 val t = e.target as? AppViewModel.CardTarget
                 vm.answerChoice(e.source.pane.id, p, c, target = t, feedback = { feed.note(e.key, vm.questionsRefusal(t, it)) })
@@ -130,17 +129,29 @@ fun QuestionsScreen(vm: AppViewModel) {
                 vm.answerCardKey(t, p, k, label, feedback = { feed.note(e.key, vm.questionsRefusal(t, it)) })
                 feed.poke()
             },
-            onType = { e, p, c -> feed.holdUi(e.key); typing = TypedAnswer(e, p, c) },
+            onType = { e, p, c -> typing = TypedAnswer(e, p, c) },
         )
     }
     typing?.let { t ->
+        // Held while the box is on screen, and released however it leaves (sent, cancelled, or the view closed).
+        DisposableEffect(t) {
+            feed.holdTyping(t.entry.key)
+            onDispose { feed.releaseTyping(t.entry.key) }
+        }
+        var problem by remember(t) { mutableStateOf<String?>(null) }
         TypedAnswerDialog(
-            t, sending = vm.answerInFlight(t.entry.source.pane.id),
-            onDismiss = { typing = null; feed.releaseUi(t.entry.key) },
+            t, sending = vm.answerInFlight(t.entry.source.pane.id), problem = problem,
+            onDismiss = { typing = null },
             onSend = { text ->
+                problem = null
                 val target = t.entry.target as? AppViewModel.CardTarget
-                vm.answerTyped(target, t.prompt, t.choice, text, feedback = { feed.note(t.entry.key, vm.questionsRefusal(target, it)) }) {
-                    if (typing === t) { typing = null; feed.releaseUi(t.entry.key) }
+                vm.answerTyped(target, t.prompt, t.choice, text, feedback = {
+                    // Why it wasn't sent (or that it may have been) shows in the box and on the entry.
+                    val why = vm.questionsRefusal(target, it)
+                    problem = why
+                    feed.note(t.entry.key, why)
+                }) {
+                    if (typing === t) typing = null
                 }
             },
         )
@@ -150,7 +161,7 @@ fun QuestionsScreen(vm: AppViewModel) {
 internal data class TypedAnswer(val entry: QuestionEntry, val prompt: Prompt, val choice: Choice?)
 
 @Composable
-private fun TypedAnswerDialog(t: TypedAnswer, sending: Boolean, onDismiss: () -> Unit, onSend: (String) -> Unit) {
+private fun TypedAnswerDialog(t: TypedAnswer, sending: Boolean, problem: String?, onDismiss: () -> Unit, onSend: (String) -> Unit) {
     var text by remember(t) { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -159,6 +170,7 @@ private fun TypedAnswerDialog(t: TypedAnswer, sending: Boolean, onDismiss: () ->
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 t.choice?.let { Text("Through “${it.label}”", color = Palette.Muted, fontSize = 13.sp) }
                 OutlinedTextField(text, { text = it }, modifier = Modifier.fillMaxWidth().testTag("questions-typed"), minLines = 2)
+                problem?.let { Text(it, color = Palette.OrangeInk, fontSize = 13.sp, modifier = Modifier.testTag("questions-typed-problem")) }
             }
         },
         confirmButton = { TextButton(enabled = !sending && text.isNotBlank(), onClick = { onSend(text.trim()) }) { Text(if (sending) "Sending…" else "Send") } },
@@ -217,8 +229,12 @@ private fun QuestionEntryCard(
                         val down = awaitPointerEvent(PointerEventPass.Initial)
                         if (down.changes.none { it.pressed }) continue
                         onPress(true)
-                        do { val ev = awaitPointerEvent(PointerEventPass.Initial) } while (ev.changes.any { it.pressed })
-                        onPress(false)
+                        // Released when the press ends, and also when the gesture is cancelled or the entry leaves.
+                        try {
+                            do { val ev = awaitPointerEvent(PointerEventPass.Initial) } while (ev.changes.any { it.pressed })
+                        } finally {
+                            onPress(false)
+                        }
                     }
                 }
             },

@@ -5,6 +5,7 @@ import com.billmongan.herdrdroid.herdr.Pane
 import com.billmongan.herdrdroid.herdr.Prompt
 import com.billmongan.herdrdroid.herdr.Status
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -187,5 +188,61 @@ class QuestionsAggregatorTest {
         agg.applyRead(s, QuestionRead(null, null), stale)
         assertEquals(EntryState.READY, agg.entry(s.key)?.state)
         assertEquals("Third?", agg.entry(s.key)?.prompt?.question)
+    }
+
+    @Test fun anUnreadablePaneSaysWhyAndIsReadOnlyAfterTheWait() {
+        val s = src("open", "p1")
+        agg.update(listOf(s))
+        agg.applyRead(s, QuestionRead(null, null, unreadable = "The pane is scrolled back."))
+        val e = agg.entry(s.key)!!
+        assertEquals(EntryState.UNREAD, e.state)
+        assertEquals("The pane is scrolled back.", e.note)
+        assertTrue("not read again at once", agg.due(5_000).isEmpty())
+        now += 5_000
+        assertEquals(listOf(s), agg.due(5_000))
+    }
+
+    @Test fun aFailedFirstReadSaysSoAndWaitsBeforeTheNext() {
+        val s = src("open", "p1")
+        agg.update(listOf(s))
+        agg.applyRead(s, null)
+        assertEquals(EntryState.UNREAD, agg.entry(s.key)?.state)
+        assertEquals(QuestionsAggregator.READ_FAILED_NOTE, agg.entry(s.key)?.note)
+        assertTrue(agg.due(5_000).isEmpty())
+        // Read fine later: the question shows, the note goes.
+        agg.applyRead(s, QuestionRead(prompt("Run it?", "Yes"), Any()))
+        assertEquals(EntryState.READY, agg.entry(s.key)?.state)
+        assertNull(agg.entry(s.key)?.note)
+    }
+
+    @Test fun aDialogThatNeverReadTheSameTwiceIsNotTakenAsAnswered() {
+        val s = src("open", "p1")
+        agg.update(listOf(s))
+        agg.applyRead(s, QuestionRead(prompt("Run it?", "Yes", "No"), Any()))
+        agg.applyRead(s, QuestionRead(null, null, timedOut = true))
+        assertEquals(EntryState.READY, agg.entry(s.key)?.state)
+        assertEquals("Run it?", agg.entry(s.key)?.prompt?.question)
+        // Never read yet: still reading, and read again only after the wait.
+        val p2 = src("open", "p2")
+        agg.update(listOf(s, p2))
+        agg.applyRead(p2, QuestionRead(null, null, timedOut = true))
+        assertEquals(EntryState.READING, agg.entry(p2.key)?.state)
+        assertFalse(p2 in agg.due(5_000))
+    }
+
+    @Test fun aCandidatePaneIsListedOnlyOnceItShowsAQuestion() {
+        val c = QuestionSource("open", "Open", true, pane("omp1", agent = "omp"), candidate = true)
+        agg.update(listOf(c))
+        assertTrue(agg.entries().isEmpty())
+        assertEquals(0, agg.openCount())
+        assertEquals("but it is read", listOf(c), agg.due(5_000))
+        agg.applyRead(c, QuestionRead(null, null))
+        assertTrue("no question: never shown", agg.entries().isEmpty())
+        now += 5_000
+        agg.applyRead(c, QuestionRead(prompt("Allow tool: bash?", "Approve", "Deny"), Any()))
+        assertEquals(listOf(c.key), agg.entries().map { it.key })
+        assertEquals(1, agg.openCount())
+        agg.update(emptyList())
+        assertEquals(EntryState.ANSWERED, agg.entries().single().state)
     }
 }

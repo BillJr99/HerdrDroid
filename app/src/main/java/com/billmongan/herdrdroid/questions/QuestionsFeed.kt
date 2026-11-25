@@ -6,8 +6,6 @@ import androidx.compose.runtime.setValue
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.isActive
@@ -31,15 +29,22 @@ class QuestionsFeed(
     private val read: suspend (QuestionSource) -> QuestionRead?,
     /** An answer to this pane is being sent now (the per-pane card's own in-flight flag). */
     private val inFlight: (QuestionSource) -> Boolean,
+    /** The most a single pane's read may take before it counts as failed (a slow server never holds the others). */
+    private val readTimeoutMs: Long = READ_TIMEOUT_MS,
     clock: () -> Long = System::currentTimeMillis,
 ) {
-    val aggregator = QuestionsAggregator(clock)
+    private val clock = clock
+
+    /** The list's state; a new one each time the view is hidden, so nothing shown before (or its targets) outlives a visit. */
+    var aggregator = QuestionsAggregator(clock)
+        private set
 
     var entries by mutableStateOf<List<QuestionEntry>>(emptyList())
         private set
 
-    /** Entries the screen holds still (a button pressed, a typed answer open). */
-    private val uiHolds = HashSet<String>()
+    /** Entries the screen holds still, kept apart by why: a finger on it, and a typed answer open. */
+    private val pressHolds = HashSet<String>()
+    private val typingHolds = HashSet<String>()
     private var job: Job? = null
     private val wake = Channel<Unit>(Channel.CONFLATED)
     private val reads = Semaphore(MAX_PARALLEL_READS)
@@ -60,10 +65,15 @@ class QuestionsFeed(
         poke()
     }
 
+    /** Stops reading and forgets the list: its entries, their targets and every hold. */
     fun hide() {
         visible = false
         job?.cancel()
         job = null
+        pressHolds.clear()
+        typingHolds.clear()
+        aggregator = QuestionsAggregator(clock)
+        entries = emptyList()
     }
 
     /** Something changed (a pane's state, an answer sent) or Refresh was tapped: a round now, through the loop's one conflated wake. */
@@ -74,12 +84,17 @@ class QuestionsFeed(
         scope.launch { aggregator.note(key, text); publish() }
     }
 
-    fun holdUi(key: String) { uiHolds += key; aggregator.hold(key) }
+    /** A finger is on the entry (released in a finally when the press ends or is cancelled). */
+    fun holdPress(key: String) { pressHolds += key; aggregator.hold(key) }
 
-    fun releaseUi(key: String) {
-        uiHolds -= key
-        poke()
-    }
+    fun releasePress(key: String) { if (pressHolds.remove(key)) poke() }
+
+    /** Its typed-answer box is open (released when the box leaves the screen, however it goes). */
+    fun holdTyping(key: String) { typingHolds += key; aggregator.hold(key) }
+
+    fun releaseTyping(key: String) { if (typingHolds.remove(key)) poke() }
+
+    internal fun isHeldByUi(key: String) = key in pressHolds || key in typingHolds
 
     /** One round at a time: a round asked for while one runs makes that one run once more, never a second beside it. */
     private val round = Mutex()
@@ -105,26 +120,29 @@ class QuestionsFeed(
         publish()
         val due = aggregator.due(REREAD_MS)
         if (due.isEmpty()) return
-        val results = coroutineScope {
-            due.map { s ->
-                val token = aggregator.beginRead(s.key)
-                async {
-                    Triple(s, token, reads.withPermit {
-                        try { read(s) } catch (c: CancellationException) { throw c } catch (_: Exception) { null }
-                    })
+        val agg = aggregator
+        coroutineScope {
+            for (s in due) {
+                val token = agg.beginRead(s.key)
+                launch {
+                    val r = reads.withPermit {
+                        try { withTimeoutOrNull(readTimeoutMs) { read(s) } } catch (c: CancellationException) { throw c } catch (_: Exception) { null }
+                    }
+                    // Each read shows as soon as it is in, so one slow server never holds the others back.
+                    if (agg !== aggregator) return@launch
+                    syncHolds()
+                    // The list as it is now: a pane that stopped needing you during the read is settled, not re-filled.
+                    agg.update(sources())
+                    agg.applyRead(s, r, token)
+                    publish()
                 }
-            }.awaitAll()
+            }
         }
-        syncHolds()
-        // The list as it is now: a pane that stopped needing you during the reads is settled, not re-filled.
-        aggregator.update(sources())
-        results.forEach { (s, token, r) -> aggregator.applyRead(s, r, token) }
-        publish()
     }
 
     private fun syncHolds() {
-        for (e in aggregator.entries()) {
-            if (e.key in uiHolds || inFlight(e.source)) aggregator.hold(e.key) else aggregator.release(e.key)
+        for (e in aggregator.all()) {
+            if (isHeldByUi(e.key) || inFlight(e.source)) aggregator.hold(e.key) else aggregator.release(e.key)
         }
     }
 
@@ -140,5 +158,7 @@ class QuestionsFeed(
         const val REREAD_MS = 5_000L
         /** Reads at once, over the shared connections. */
         const val MAX_PARALLEL_READS = 3
+        /** A pane's read (its confirmation reads included) that takes longer than this counts as failed. */
+        const val READ_TIMEOUT_MS = 15_000L
     }
 }

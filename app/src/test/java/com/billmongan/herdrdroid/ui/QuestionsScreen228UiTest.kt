@@ -68,7 +68,7 @@ class QuestionsScreen228UiTest {
     @Test fun anEntryShowsItsAgentServerWaitAndTheCardsOwnAnswers() {
         val e = entry("laptop", "claude-1", current = true)
         rule.setContent { list(listOf(e)) }
-        rule.onNodeWithText("Laptop · waiting 4m").assertIsDisplayed()
+        rule.onNodeWithText("Laptop · first seen 4m ago").assertIsDisplayed()
         rule.onNodeWithText("Run npm test?").assertIsDisplayed()
         rule.onNodeWithText("Yes, for this session", substring = true).assertIsDisplayed()
         rule.onNodeWithText("No", substring = false).assertIsDisplayed()

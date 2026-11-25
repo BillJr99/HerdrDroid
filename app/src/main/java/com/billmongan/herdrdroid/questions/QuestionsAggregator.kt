@@ -24,6 +24,12 @@ data class QuestionSource(
     val serverLabel: String,
     val current: Boolean,
     val pane: Pane,
+    /**
+     * A pane herdr doesn't call blocked, but whose agent can wait on an approval while herdr says
+     * it works (Oh My Pi's "Allow tool", pi's Ask dialog): read like the others, and listed only
+     * once a read confirms a question on its screen.
+     */
+    val candidate: Boolean = false,
 ) {
     val key: String get() = "$serverId|${pane.id}"
 }
@@ -55,8 +61,13 @@ data class QuestionEntry(
     val key: String get() = source.key
 }
 
-/** One read of a pane for the list: the confirmed card (null when the screen shows none) and the target bound before the read. */
-data class QuestionRead(val prompt: Prompt?, val target: Any?)
+/**
+ * One read of a pane for the list: the confirmed card (null when the screen confirmed none) and the
+ * target bound before the read. [unreadable]: why the app can't read this pane at all (its herdr,
+ * a pane scrolled back, no agent identity); [timedOut]: the dialog kept changing and never read the
+ * same twice. Neither of those says the question is gone.
+ */
+data class QuestionRead(val prompt: Prompt?, val target: Any?, val unreadable: String? = null, val timedOut: Boolean = false)
 
 class QuestionsAggregator(private val clock: () -> Long = System::currentTimeMillis) {
     private val byKey = LinkedHashMap<String, QuestionEntry>()
@@ -68,16 +79,22 @@ class QuestionsAggregator(private val clock: () -> Long = System::currentTimeMil
     /** A token for a read of [key] about to start; reads are applied only newest-first ([applyRead]). */
     fun beginRead(key: String): Long = ((issued[key] ?: 0L) + 1).also { issued[key] = it }
 
+    /** Whether the list shows [e]: a candidate pane only once it showed a question. */
+    private fun shown(e: QuestionEntry) = !e.source.candidate || e.state == EntryState.READY || e.state == EntryState.ANSWERED
+
     /** Entries grouped by server (the open one first, then by name), oldest waiting first in each. */
-    fun entries(): List<QuestionEntry> = byKey.values.sortedWith(
+    fun entries(): List<QuestionEntry> = byKey.values.filter(::shown).sortedWith(
         compareBy<QuestionEntry>({ !it.source.current }, { it.source.serverLabel.lowercase() }, { it.source.serverId },
             { it.since }, { it.source.pane.id }),
     )
 
     /** How many questions are still open (an entry showing "Answered" doesn't count). */
-    fun openCount(): Int = byKey.values.count { it.state != EntryState.ANSWERED }
+    fun openCount(): Int = byKey.values.count { shown(it) && it.state != EntryState.ANSWERED }
 
     fun entry(key: String): QuestionEntry? = byKey[key]
+
+    /** Every entry, those the list doesn't show yet included (candidates still being read). */
+    fun all(): List<QuestionEntry> = byKey.values.toList()
 
     fun isHeld(key: String): Boolean = key in held
 
@@ -130,21 +147,27 @@ class QuestionsAggregator(private val clock: () -> Long = System::currentTimeMil
         if (old.state == EntryState.ANSWERED || !sameOccupant(old.source.pane, source.pane)) return
         val now = clock()
         byKey[key] = when {
-            // The read itself failed: keep what is shown, try again next time.
-            read == null -> old.copy(readAt = now)
+            // The read itself failed: keep a question shown, try again next time; a pane never read says so.
+            read == null -> if (old.state == EntryState.READING) old.copy(state = EntryState.UNREAD, readAt = now, note = READ_FAILED_NOTE)
+                else old.copy(readAt = now)
+            // The app can't read this pane at all: say why, with Open pane; read again after the usual wait.
+            read.unreadable != null -> old.copy(state = EntryState.UNREAD, readAt = now, target = null, prompt = null, note = read.unreadable)
+            // The dialog never read the same twice: not a sign it's gone. What shows stays; read again later.
+            read.timedOut -> old.copy(readAt = now)
             read.prompt == null -> if (old.state == EntryState.READY) old.copy(state = EntryState.ANSWERED, answeredAt = now, target = null, readAt = now)
                 else old.copy(state = EntryState.UNREAD, readAt = now, target = null)
             old.state == EntryState.READY && !sameQuestion(old.prompt, read.prompt) ->
                 QuestionEntry(old.source, EntryState.READY, since = now, prompt = read.prompt, target = read.target, readAt = now)
-            else -> old.copy(state = EntryState.READY, prompt = read.prompt, target = read.target, readAt = now)
+            else -> old.copy(state = EntryState.READY, prompt = read.prompt, target = read.target, readAt = now,
+                note = old.note.takeUnless { old.state == EntryState.UNREAD })
         }
     }
 
     /** The entries due a read: not held, not answered, and not read in the last [rereadMs]. */
     fun due(rereadMs: Long): List<QuestionSource> {
         val now = clock()
-        return entries().filter { it.key !in held && it.state != EntryState.ANSWERED &&
-            (it.state == EntryState.READING || now - it.readAt >= rereadMs) }.map { it.source }
+        return byKey.values.sortedWith(compareBy({ !it.source.current }, { it.since })).filter { it.key !in held && it.state != EntryState.ANSWERED &&
+            (it.readAt == 0L || now - it.readAt >= rereadMs) }.map { it.source }
     }
 
     /** Removes "Answered" entries shown long enough; true when any went. */
@@ -167,6 +190,8 @@ class QuestionsAggregator(private val clock: () -> Long = System::currentTimeMil
         const val ANSWERED_SHOW_MS = 1_500L
         /** What an entry says once another agent or session took its pane. */
         const val OCCUPANT_NOTE = "Another agent or session is in this pane now; this is what it shows."
+        /** What an entry says when its first read failed. */
+        const val READ_FAILED_NOTE = "The app couldn't read this pane's screen just now."
 
         /** The same agent session in the same terminal: what the card's own occupant check compares. */
         fun sameOccupant(a: Pane, b: Pane): Boolean = a.id == b.id && a.agent == b.agent && a.sessionId == b.sessionId &&

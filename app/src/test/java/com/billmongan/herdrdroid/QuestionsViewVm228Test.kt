@@ -140,8 +140,124 @@ class QuestionsViewVm228Test {
         assertEquals(0, vm.openQuestionCount())
     }
 
-    private fun fixture(test: Fixture.() -> Unit) {
-        val f = Fixture()
+    @Test fun anEntryGoesStaleAfterQuestionsToHomeToQuestions() = fixture {
+        val e = readEntry()
+        vm.screen = Screen.Home
+        shadowOf(Looper.getMainLooper()).idle()
+        vm.screen = Screen.Questions
+        shadowOf(Looper.getMainLooper()).idle()
+        answer(e)
+        assertTrue("a new visit of the view: the old target isn't current", sent.isEmpty())
+        assertEquals(0, cardChecks)
+    }
+
+    @Test fun hidingTheViewForgetsItsEntriesAndMakesTheirTargetsStale() = fixture {
+        val e = readEntry()
+        vm.questionsHidden()
+        assertTrue(vm.questionsFeed.entries.isEmpty())
+        answer(e)
+        assertTrue(sent.isEmpty())
+    }
+
+    @Test fun aSentAnswerLeavesNoNoteOnTheEntry() = fixture {
+        val e = readEntry()
+        answer(e)
+        assertEquals(listOf("y"), sent)
+        assertNull(note())
+        assertTrue(vm.notice.orEmpty().startsWith("Sent"))
+    }
+
+    @Test fun onlyARefusalBeforeSendingIsRestatedAsAnOccupantChange() = fixture {
+        val e = readEntry()
+        val t = e.target as AppViewModel.CardTarget
+        terminal = "t2"
+        status(Status.NEEDS_YOU)
+        assertEquals(OCCUPANT_REFUSAL, vm.questionsRefusal(t, "Not sent. Refresh the question or open the terminal to answer."))
+        assertEquals("a maybe-sent answer is never turned into not sent", CARD_MAY_HAVE_SENT, vm.questionsRefusal(t, CARD_MAY_HAVE_SENT))
+        val unsure = "Could not confirm delivery. Refresh the question before trying again."
+        assertEquals(unsure, vm.questionsRefusal(t, unsure))
+    }
+
+    @Test fun everyRefusalBranchReachesTheEntry() = fixture {
+        val e = readEntry()
+        val p = e.prompt!!
+        val notes = mutableListOf<String>()
+        // Oh My Pi's Submit and Grok's privacy choice, with no target to answer through.
+        vm.answerChoice("p1", p, com.billmongan.herdrdroid.herdr.Choice("Submit", com.billmongan.herdrdroid.herdr.OmpAsk.SUBMIT, false), target = null, feedback = { notes += it })
+        vm.answerChoice("p1", p, com.billmongan.herdrdroid.herdr.Choice("Opt in", com.billmongan.herdrdroid.herdr.GROK_PRIVACY_IN, false), target = null, feedback = { notes += it })
+        // The target is another pane's.
+        vm.answerChoice("p2", p, p.choices.first(), target = e.target as AppViewModel.CardTarget, feedback = { notes += it })
+        settle()
+        assertEquals(listOf("Not sent. Refresh the question or open the terminal to answer.",
+            "Not sent. Refresh the question or open the terminal to answer.", "Not sent. The question belongs to another pane."), notes)
+        // No server open.
+        state("current", null)
+        vm.answerChoice("p1", p, p.choices.first(), target = e.target as AppViewModel.CardTarget, feedback = feedbackFor(e))
+        settle()
+        assertEquals("Not sent. No server is open.", note())
+        assertTrue(sent.isEmpty())
+    }
+
+    @Test fun aKeyAndATypedAnswerGoThroughTheCardsCheck() = fixture {
+        val e = readEntry()
+        val t = e.target as AppViewModel.CardTarget
+        vm.answerCardKey(t, e.prompt!!, "esc", "Pressed Esc", feedback = feedbackFor(e))
+        settle()
+        assertEquals(listOf("esc"), sent)
+        assertEquals(1, cardChecks)
+        var delivered = false
+        vm.answerTyped(t, e.prompt!!, null, "use the other flag", feedback = feedbackFor(e)) { delivered = true }
+        settle()
+        assertTrue(delivered)
+        assertEquals(listOf("esc", "text:use the other flag", "enter"), sent)
+        assertEquals(2, cardChecks)
+    }
+
+    @Test fun aWatchedServersEntryAndTheSamePaneIdOnAnotherServerHaveNoTarget() = fixture {
+        val e = readEntry()
+        val elsewhere = e.source.copy(serverId = "other", serverLabel = "Other", current = false)
+        assertNull(vm.questionTargetFor(elsewhere))
+        assertNull("listed as current but not the open server", vm.questionTargetFor(elsewhere.copy(current = true)))
+        // The open server switches to another one with a pane of the same id: the old target answers nothing.
+        state("current", Server(id = "fixture-q2", name = "FixtureQ2", host = "127.0.0.2", port = 1, user = "fixq", herdrPath = "/fixture/herdr"))
+        answer(e)
+        assertTrue(sent.isEmpty())
+    }
+
+    @Test fun aScrolledBackPaneSaysWhyAndIsNotReadEveryRound() = fixture {
+        scrolled = 4
+        runBlocking { vm.questionsFeed.refreshNow() }
+        val e = vm.questionsFeed.entries.single()
+        assertEquals(EntryState.UNREAD, e.state)
+        assertTrue(e.note.orEmpty(), e.note.orEmpty().contains("scrolled back"))
+        assertNull(e.target)
+        val gets = paneGets
+        runBlocking { vm.questionsFeed.refreshNow() }
+        assertEquals("not read again before the wait", gets, paneGets)
+    }
+
+    @Test fun anOhMyPiApprovalWhileHerdrSaysWorkingIsListedAndAnswered() = fixture("omp", ompBox) {
+        status(Status.WORKING)
+        assertEquals(0, vm.openQuestionCount())
+        runBlocking { vm.questionsFeed.refreshNow() }
+        val e = vm.questionsFeed.entries.single()
+        assertEquals(EntryState.READY, e.state)
+        assertEquals(1, vm.openQuestionCount())
+        val deny = e.prompt!!.choices.indexOfFirst { it.label == "Deny" }
+        vm.answerChoice("p1", e.prompt!!, e.prompt!!.choices[deny], target = e.target as AppViewModel.CardTarget, feedback = feedbackFor(e))
+        settle()
+        assertEquals(listOf("down down enter"), sent)
+    }
+
+    @Test fun aWorkingOhMyPiPaneWithNoApprovalIsNotListed() = fixture("omp", "Thinking about the build…") {
+        status(Status.WORKING)
+        runBlocking { vm.questionsFeed.refreshNow() }
+        assertTrue(vm.questionsFeed.entries.isEmpty())
+        assertEquals(0, vm.openQuestionCount())
+    }
+
+    private fun fixture(agent: String = "codex", frame: String = command("alpha"), test: Fixture.() -> Unit) {
+        val f = Fixture(agent, frame)
         try {
             f.test()
         } finally {
@@ -151,18 +267,18 @@ class QuestionsViewVm228Test {
         }
     }
 
-    private class Fixture : Herdr.Commands {
+    private class Fixture(val agent: String, var frame: String) : Herdr.Commands {
         val vm = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
         private val server = Server(id = "fixture-q", name = "FixtureQ", host = "127.0.0.1", port = 1, user = "fixq", herdrPath = "/fixture/herdr")
         private val ssh = HerdrSsh(server.host, server.port, server.user, Credentials(null, null), null, { null })
         override var connection: Any? = Any()
-        var frame = command("alpha")
         var terminal = "t1"
         val sent = mutableListOf<String>()
         var afterSend: String? = null
         var failAfterSend = false
         var visibleReads = 0
         var paneGets = 0
+        var scrolled = 0
         var cardChecks = 0
         var cardChecksRefused = 0
         var beforeCheck: (() -> Unit)? = null
@@ -180,7 +296,7 @@ class QuestionsViewVm228Test {
 
         fun status(status: Status) {
             statusNow = status
-            state("panes", listOf(Pane("p1", "tab", "w1", "codex", status, "", "/fixture", tabLabel = "codex", scrollOffset = 0, terminalId = terminal)))
+            state("panes", listOf(Pane("p1", "tab", "w1", agent, status, "", "/fixture", tabLabel = agent, scrollOffset = 0, terminalId = terminal)))
         }
 
         fun readEntry(): QuestionEntry {
@@ -191,6 +307,16 @@ class QuestionsViewVm228Test {
             assertSame("the same target the card's own checks compare", vm.questionsCardTarget("p1")?.client, target.client)
             return e
         }
+
+        fun note(): String? = vm.questionsFeed.entries.singleOrNull()?.note
+
+        /** As the screen does: what went wrong is shown on the entry. */
+        fun feedbackFor(e: QuestionEntry): (String) -> Unit {
+            val t = e.target as? AppViewModel.CardTarget
+            return { vm.questionsFeed.note(e.key, vm.questionsRefusal(t, it)) }
+        }
+
+        fun settle() { drainUntil { !vm.answerInFlight("p1") }; shadowOf(Looper.getMainLooper()).idle() }
 
         fun answer(e: QuestionEntry) {
             val p = e.prompt!!
@@ -252,16 +378,17 @@ class QuestionsViewVm228Test {
             }
         }
 
-        private val pane get() = """{"pane_id":"p1","workspace_id":"w1","tab_id":"tab","agent":"codex","agent_status":"${when (statusNow) {
+        private val pane get() = """{"pane_id":"p1","workspace_id":"w1","tab_id":"tab","agent":"$agent","agent_status":"${when (statusNow) {
             Status.IDLE -> "idle"; Status.DONE -> "done"; Status.WORKING -> "working"; else -> "blocked"
-        }}","cwd":"/fixture","terminal_id":"$terminal","scroll":{"offset_from_bottom":0}}"""
+        }}","cwd":"/fixture","terminal_id":"$terminal","scroll":{"offset_from_bottom":$scrolled}}"""
         private fun ok(out: String) = ExecResult(0, out, "")
         private fun field(name: String) = AppViewModel::class.java.getDeclaredField(name).apply { isAccessible = true }
         @Suppress("UNCHECKED_CAST")
-        private fun state(name: String, value: Any?) { (field("$name\$delegate").get(vm) as MutableState<Any?>).value = value }
+        fun state(name: String, value: Any?) { (field("$name\$delegate").get(vm) as MutableState<Any?>).value = value }
     }
 
     private companion object {
+        val ompBox = checkNotNull(QuestionsViewVm228Test::class.java.getResource("/screens/omp/synthetic-2.2.8-approval/approval-three.ansi")).readText()
         fun command(arg: String) = """
             Would you like to run the following command?
             ${'$'} echo $arg
