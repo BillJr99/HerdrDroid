@@ -331,10 +331,14 @@ internal fun claudeReviewPreview(text: String, parsed: Prompt?): Prompt? {
         CLAUDE_PREVIEW_OPTION.matchEntire(row)?.groupValues?.get(1)?.trim()
     }
     val heading = body.firstOrNull { it.isNotBlank() }?.trim() ?: return null
-    val shownLabels = parsed?.choices?.map { it.label }.orEmpty().ifEmpty { labels }
-    if (shownLabels.isEmpty()) return null
+    val shownLabels = (parsed?.choices?.map { it.label }.orEmpty() + labels).distinct()
     val parts = parsed?.shownParts() ?: questionParts(listOf(QLine(heading)))
-    val blocks = parts.blocks + shownLabels.map { QBlock(QKind.TEXT, it) }
+    val knownDetails = parts.blocks.map { it.text }.toSet()
+    val blocks = parts.blocks + body.asSequence()
+        .map { row -> CLAUDE_PREVIEW_OPTION.matchEntire(row)?.groupValues?.get(1)?.trim() ?: row.trim() }
+        .filter { it.isNotBlank() && it !in knownDetails && it !in shownLabels }
+        .map { QBlock(QKind.TEXT, it) }.toList() +
+        shownLabels.filterNot(knownDetails::contains).map { QBlock(QKind.TEXT, it) }
     return Prompt(parsed?.question ?: heading, emptyList(), region = body,
         terminalReview = true, parts = parts.copy(blocks = blocks))
 }

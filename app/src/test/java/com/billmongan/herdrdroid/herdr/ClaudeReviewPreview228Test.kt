@@ -33,6 +33,36 @@ class ClaudeReviewPreview228Test {
         }
     }
 
+    @Test fun aPartialParseDoesNotHideVisibleOptionsOrWrappedQuestionText() {
+        val screen = """
+            ☐ Sample
+            Which color should the sample use?
+            It will appear in the header.
+            ❯ 1. Blue
+              2. Gold
+            Enter to select · ↑/↓ to navigate · Esc to cancel
+        """.trimIndent()
+        val partial = Prompt("Which color should the sample use?", listOf(Choice("Blue", "1", true)))
+        val preview = checkNotNull(claudeReviewPreview(screen, partial))
+        val details = preview.shownParts().details.joinToString("\n")
+        assertTrue(details.contains("It will appear in the header."))
+        assertTrue(details.contains("Gold"))
+        assertTrue(preview.terminalReview)
+        assertTrue(preview.choices.isEmpty())
+    }
+
+    @Test fun aClippedDialogKeepsItsVisibleQuestionWithoutOfferableChoices() {
+        val screen = """
+            ☐ Sample
+            Which color should the sample use?
+            Enter to select · ↑/↓ to navigate · Esc to cancel
+        """.trimIndent()
+        val preview = checkNotNull(claudeReviewPreview(screen, null))
+        assertEquals("Which color should the sample use?", preview.question)
+        assertTrue(preview.terminalReview)
+        assertTrue(preview.choices.isEmpty())
+    }
+
     @Test fun aClosedOrUnframedDialogDoesNotProduceAPreview() {
         val screen = capture("tabbed")
         assertNull(claudeReviewPreview(screen + "\n❯ A new request", null))
