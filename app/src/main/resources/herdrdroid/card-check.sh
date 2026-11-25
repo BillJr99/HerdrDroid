@@ -236,6 +236,7 @@ if [ "$screen" = "-" ]; then
   b=$?
   [ "$b" -eq 4 ] && exit 4
   [ "$a" -eq 0 ] && [ "$b" -eq 0 ] && [ "$before" = "$id" ] && [ "$id" = "$occupant" ] && exit 0
+  echo @@herdrdroid-occupant-refused@@
   exit 5
 fi
 identity

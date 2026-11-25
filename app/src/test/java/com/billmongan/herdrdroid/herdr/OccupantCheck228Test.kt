@@ -40,7 +40,7 @@ class OccupantCheck228Test {
             val sent = File(dir, "sent.log")
             val herdr = File(dir, "herdr")
             herdr.writeText("#!/bin/sh\ncase \"\$1 \$2\" in\n  'pane get') /bin/cat '${get.path}' ;;\n" +
-                "  'agent prompt'|'pane send-text'|'pane send-keys') echo \"\$*\" >> '${sent.path}' ;;\n  *) exit 9 ;;\nesac\n")
+                "  'agent prompt'|'pane send-text'|'pane send-keys') echo \"\$*\" >> '${sent.path}'; [ -e '${dir.path}/fail5' ] && exit 5; : ;;\n  *) exit 9 ;;\nesac\n")
             herdr.setExecutable(true)
             val seam = Shell(dir)
             val h = Herdr(HerdrSsh("127.0.0.1", 1, "u", Credentials(null, null), null, { null }), herdr.path, Backend.TUI, null, seam)
@@ -65,12 +65,22 @@ class OccupantCheck228Test {
                 runBlocking { h.sendMessage(pane.copy(status = Status.NEEDS_YOU), "never", expectedConnection = seam.connection, occupant = bound, shellOnly = shellOnly) }
             }
             assertEquals(before, sent.readText())
+            // Codex's re-review 3: a write that fails with 5 after the check passed is not a refusal: it may have gone in.
+            get.writeText(json("term-1"))
+            File(dir, "fail5").writeText("")
+            val sentBefore = sent.readLines().size
+            assertThrows(DeliveryUncertain::class.java) {
+                runBlocking { h.sendMessage(pane, "maybe", allowTerminalFallback = false, expectedConnection = seam.connection, occupant = bound, shellOnly = shellOnly) }
+            }
+            assertEquals("the write was attempted", sentBefore + 1, sent.readLines().size)
+            File(dir, "fail5").delete()
+            val before2 = sent.readText()
             // An unreadable pane: the check failed, nothing typed.
             get.writeText("not json")
             assertThrows(CardCheckFailed::class.java) {
                 runBlocking { h.sendMessage(pane, "never", allowTerminalFallback = false, expectedConnection = seam.connection, occupant = bound, shellOnly = shellOnly) }
             }
-            assertEquals(before, sent.readText())
+            assertEquals(before2, sent.readText())
         } finally {
             dir.deleteRecursively()
         }
