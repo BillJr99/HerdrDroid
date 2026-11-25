@@ -446,7 +446,8 @@ object CardFormat {
     }
 
     /** A key hint at the end of a label ("(y)", "(esc)", "(Esc to stop)"), shown quieter. */
-    private val KEY_HINT = Regex("""\s\((?:[a-z]|esc|tab|Esc to stop|Tab to edit)\)$""")
+    // 2.2.8: Grok's "No, reject (type to add feedback)": the hint reads quieter than the answer.
+    private val KEY_HINT = Regex("""\s\((?:[a-z]|esc|tab|Esc to stop|Tab to edit|type to add feedback)\)$""")
 
     /**
      * The label split for display without changing its text: the main words, then a quieter tail

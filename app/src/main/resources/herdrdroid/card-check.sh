@@ -5,6 +5,9 @@
 # Arguments: herdr, pane id, occupant digest, screen digest. No prompt text.
 # 2.2.8: a screen digest of "-" checks the occupant only, wherever the pane is scrolled (a message
 # queued behind a question goes only to its occupant): 0 when it matches, 5 when it doesn't, 4.
+# 2.2.8: a screen argument "r:<rows under>:<rows>:<digest>" compares only the dialog's rows
+# (cardRegionDigest in Herdr.kt): the same rows of this read, each with its runs of whitespace
+# made one space and its ends trimmed.
 herdr=$1
 pane=$2
 occupant=$3
@@ -226,6 +229,20 @@ identity() {
 }
 
 anyscroll=0
+below=
+case $screen in
+  r:*)
+    rest=${screen#r:}
+    below=${rest%%:*}
+    rest=${rest#*:}
+    count=${rest%%:*}
+    want=${rest#*:}
+    case $below in '' | *[!0-9]*) { echo @@herdrdroid-card-refused@@; exit 3; } ;; esac
+    case $count in '' | *[!0-9]* | 0*) { echo @@herdrdroid-card-refused@@; exit 3; } ;; esac
+    [ ${#below} -le 6 ] && [ ${#count} -le 6 ] || { echo @@herdrdroid-card-refused@@; exit 3; }
+    hex64 "$want" || { echo @@herdrdroid-card-refused@@; exit 3; }
+    ;;
+esac
 if [ "$screen" = "-" ]; then
   anyscroll=1
   identity
@@ -306,6 +323,33 @@ END {
   }
 }
 '
+if [ -n "$below" ]; then
+  # The dialog's rows only: "start" past the screen's top means they aren't there (exit 3).
+  R='
+{ r[NR] = $0 }
+END {
+  start = NR - below - count + 1
+  if (start < 1) exit 3
+  for (i = start; i <= NR - below; i++) {
+    x = r[i]
+    gsub(/[ \t\r\v\f]+/, " ", x)
+    sub(/^ /, "", x)
+    sub(/ $/, "", x)
+    print x
+  }
+}
+'
+  awk "$T" "$v" > "$j" 2>/dev/null || exit 4
+  awk -v below="$below" -v count="$count" "$R" "$j" > "$v" 2>/dev/null
+  st=$?
+  [ "$st" -eq 3 ] && { echo @@herdrdroid-card-refused@@; exit 3; }
+  [ "$st" -eq 0 ] || exit 4
+  seen=$(sha < "$v")
+  hex64 "$seen" || exit 4
+  [ "$a" -eq 0 ] && [ "$b" -eq 0 ] && [ "$before" = "$id" ] && [ "$id" = "$occupant" ] && [ "$seen" = "$want" ] && exit 0
+  echo @@herdrdroid-card-refused@@
+  exit 3
+fi
 seen=$(awk "$T" "$v" 2>/dev/null | sha)
 hex64 "$seen" || exit 4
 [ "$a" -eq 0 ] && [ "$b" -eq 0 ] && [ "$before" = "$id" ] && [ "$id" = "$occupant" ] && [ "$seen" = "$screen" ] && exit 0
