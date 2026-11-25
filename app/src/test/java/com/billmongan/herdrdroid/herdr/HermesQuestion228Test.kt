@@ -17,7 +17,7 @@ class HermesQuestion228Test {
     private fun card(name: String) = detectPrompt(screen(name), blocked = false, agent = "hermes")
 
     @Test fun aSingleChoiceQuestionIsAGuardedCardAnsweredByItsDigit() {
-        for ((name, focus) in listOf("clarify-single-first" to "1", "clarify-single-second" to "2", "clarify-single-other" to "3",
+        for ((name, focus) in listOf("clarify-single-first" to "1", "clarify-single-first-cr" to "1", "clarify-single-second" to "2", "clarify-single-other" to "3",
             "clarify-single-no-deadline" to "2")) {
             val p = checkNotNull(card(name)) { name }
             assertEquals(name, "Which branch should the demo build use?", p.question)
@@ -80,7 +80,7 @@ class HermesQuestion228Test {
     }
 
     @Test fun answeredPromptsLeaveNoCard() {
-        for (name in listOf("resolved-approval-once", "resolved-approval-denied-wrapped", "resolved-approval-timeout",
+        for (name in listOf("resolved-approval-once", "resolved-approval-wrapped-word", "resolved-approval-denied-wrapped", "resolved-approval-timeout",
             "resolved-clarify", "resolved-clarify-timeout")) {
             assertNull(name, detectPrompt(screen(name), blocked = false, agent = "hermes"))
             assertNull("$name even when herdr still says blocked", detectPrompt(screen(name), blocked = true, agent = "hermes")
