@@ -86,6 +86,55 @@ class OccupantCheck228Test {
         }
     }
 
+    /**
+     * 2.2.8 (Codex's re-review 6): the card path, in a real shell. A key write that fails after the card
+     * check passed, with the check's own refusal code (3), may have gone in: DeliveryUncertain, never
+     * "the question changed". The check's real refusal is still CardChanged, with no key sent.
+     */
+    private fun runCard(shellOnly: Boolean) {
+        val dir = java.nio.file.Files.createTempDirectory("hd228-card").toFile()
+        try {
+            val get = File(dir, "get.json")
+            val screenFile = File(dir, "screen.txt")
+            val sent = File(dir, "sent.log")
+            val herdr = File(dir, "herdr")
+            herdr.writeText("#!/bin/sh\ncase \"\$1 \$2\" in\n  'pane get') /bin/cat '${get.path}' ;;\n  'pane read') /bin/cat '${screenFile.path}' ;;\n" +
+                "  'pane send-keys'|'pane send-text') echo \"\$*\" >> '${sent.path}'; [ -e '${dir.path}/fail3' ] && exit 3; : ;;\n  *) exit 9 ;;\nesac\n")
+            herdr.setExecutable(true)
+            val seam = Shell(dir)
+            val h = Herdr(HerdrSsh("127.0.0.1", 1, "u", Credentials(null, null), null, { null }), herdr.path, Backend.TUI, null, seam)
+            val screen = "❯ 1. Yes\n  2. No\n"
+            get.writeText(json("term-1"))
+            screenFile.writeText(screen)
+            val guard = CardGuard(digest(json("term-1")), cardScreenDigest(screen))
+            runBlocking { h.sendCardInput("p1", CardInput.Keys(listOf("enter")), guard, seam.connection!!, shellOnly = shellOnly) }
+            assertEquals("shellOnly=$shellOnly: sent once", 1, sent.readLines().size)
+            File(dir, "fail3").writeText("")
+            assertThrows("shellOnly=$shellOnly", DeliveryUncertain::class.java) {
+                runBlocking { h.sendCardInput("p1", CardInput.Keys(listOf("enter")), guard, seam.connection!!, shellOnly = shellOnly) }
+            }
+            assertEquals("the keys were attempted", 2, sent.readLines().size)
+            File(dir, "fail3").delete()
+            screenFile.writeText("❯ 1. Yes, and more\n  2. No\n")
+            assertThrows(CardChanged::class.java) {
+                runBlocking { h.sendCardInput("p1", CardInput.Keys(listOf("enter")), guard, seam.connection!!, shellOnly = shellOnly) }
+            }
+            assertEquals("nothing sent on a refusal", 2, sent.readLines().size)
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test fun aCardKeyFailureAfterTheShellCheckIsUncertain() {
+        assumeTrue(File("/bin/sh").canExecute())
+        runCard(shellOnly = true)
+    }
+
+    @Test fun aCardKeyFailureAfterThePythonCheckIsUncertain() {
+        assumeTrue(File("/bin/sh").canExecute() && listOf("/usr/bin/python3", "/bin/python3").any { File(it).canExecute() })
+        runCard(shellOnly = false)
+    }
+
     @Test fun theShellCheckRefusesAnotherOccupant() {
         assumeTrue(File("/bin/sh").canExecute())
         run(shellOnly = true)

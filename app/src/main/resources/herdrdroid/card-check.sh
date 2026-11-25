@@ -248,7 +248,7 @@ identity
 b=$?
 [ "$b" -eq 4 ] && exit 4
 # A NUL in the screen never matches (cardScreenDigest; the Python check exits 3 too).
-nul "$v" && exit 3
+nul "$v" && { echo @@herdrdroid-card-refused@@; exit 3; }
 # Hermes's countdown (cardTimerLine in Herdr.kt), and Oh My Pi's two running rows only around its
 # approval box (cardScreenRows): every row of the box counts as it is.
 T='
@@ -309,4 +309,5 @@ END {
 seen=$(awk "$T" "$v" 2>/dev/null | sha)
 hex64 "$seen" || exit 4
 [ "$a" -eq 0 ] && [ "$b" -eq 0 ] && [ "$before" = "$id" ] && [ "$id" = "$occupant" ] && [ "$seen" = "$screen" ] && exit 0
+echo @@herdrdroid-card-refused@@
 exit 3
