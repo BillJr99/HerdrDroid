@@ -167,8 +167,12 @@ private fun WorkList(vm: AppViewModel, paneId: String) {
             }
             // ---- Shells ----------------------------------------------------------------------
             val runningTasks = w.tasks.filter { it.running }
-            if (runningTasks.isNotEmpty() || activeProcs.isNotEmpty()) {
-                item { SectionTitle("Shells", "${activeProcs.size} running") }
+            val shellCount = w.shellCount(pane?.agent)
+            if (shellCount > 0) {
+                item { SectionTitle("Shells", "$shellCount observed running") }
+                w.reportedBackgroundShells?.let { count ->
+                    item { Text("$count background reported by Claude Code", color = Palette.Muted, fontSize = 13.sp) }
+                }
                 if (activeProcs.isNotEmpty() && com.billmongan.herdrdroid.herdr.Backgrounding.supported(pane?.agent)) item {
                     // 2.2.8: only where the screen shows the move; elsewhere, why not.
                     val off = com.billmongan.herdrdroid.herdr.backgroundSupport(pane?.agent, pane?.agentName ?: "The agent")

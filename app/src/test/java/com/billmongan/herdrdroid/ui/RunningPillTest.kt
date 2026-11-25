@@ -4,6 +4,7 @@ import com.billmongan.herdrdroid.herdr.ProcInfo
 import com.billmongan.herdrdroid.herdr.SubagentInfo
 import com.billmongan.herdrdroid.herdr.TaskInfo
 import com.billmongan.herdrdroid.herdr.WorkInfo
+import com.billmongan.herdrdroid.herdr.visibleBackgroundShellCount
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -38,6 +39,19 @@ class RunningPillTest {
         assertEquals("0 observed shells; subagent count unavailable", pill.description)
         assertEquals(false, pill.active)
         assertEquals("1 sh - ? sub", runningPill(work.copy(procs = listOf(proc)), "codex", 0)!!.label)
+    }
+
+    @Test fun claudeComposerFooterReportsBackgroundShellsWithoutCountingProcessesTwice() {
+        val capture = checkNotNull(javaClass.getResource(
+            "/screens/claude/live-2026-11-25-probe/claude-after-ctrlb.ansi"
+        )).readText()
+        val reported = visibleBackgroundShellCount("claude", capture)
+        assertEquals(1, reported)
+        assertNull(visibleBackgroundShellCount("codex", capture))
+        assertNull(visibleBackgroundShellCount("claude", "  ⏵⏵ auto mode on · 1 shell · ↓ to manage"))
+        val work = WorkInfo(listOf(proc), emptyList(), emptyList(), agentOwnedOnly = true, reportedBackgroundShells = reported)
+        assertEquals("1 sh - ? sub", runningPill(work, "claude", 0)!!.label)
+        assertEquals("1 sh - ? sub", runningPill(work.copy(procs = emptyList()), "claude", 0)!!.label)
     }
 
     @Test fun finishedWorkKeepsAMutedWayIn() {

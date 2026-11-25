@@ -20,6 +20,7 @@ data class TaskInfo(val id: String, val file: String, val title: String, val upd
 /** Everything running under one pane. */
 data class WorkInfo(val procs: List<ProcInfo>, val subagents: List<SubagentInfo>, val tasks: List<TaskInfo>,
     val agentOwnedOnly: Boolean = false,
+    val reportedBackgroundShells: Int? = null,
 ) {
     val activeSubagents get() = subagents.count { it.active }
     val runningTasks get() = tasks.count { it.running }
@@ -49,8 +50,12 @@ data class WorkInfo(val procs: List<ProcInfo>, val subagents: List<SubagentInfo>
         }
     }
 
+    /** The reports can overlap with process observations, so use the largest count. */
+    fun shellCount(agent: String?): Int =
+        maxOf(activeProcs(agent).size, runningTasks, reportedBackgroundShells ?: 0)
+
     /** What is still active: running subagents, running background tasks, and active processes. */
-    fun activeCount(agent: String?): Int = activeSubagents + runningTasks + activeProcs(agent).size
+    fun activeCount(agent: String?): Int = activeSubagents + shellCount(agent)
 }
 
 /** Long-lived helpers an agent starts on demand. Kept in step with HELPER_RE in transcript.py. */
@@ -168,3 +173,16 @@ fun parseSearch(json: String): List<SearchHit> {
         )
     }
 }
+
+/** A shell count explicitly reported by Claude's live composer footer. */
+internal fun visibleBackgroundShellCount(agent: String?, screen: String): Int? {
+    if (!agent.equals("claude", true)) return null
+    val rows = stripAnsi(screen).lines().map { it.trimEnd() }.filter { it.isNotBlank() }
+    if (rows.size < 4 || !rows.last().trimEnd().endsWith("· ↓ to manage")) return null
+    if (!workComposerRule.matches(rows[rows.lastIndex - 1].trim()) ||
+        !rows[rows.lastIndex - 2].trimStart().startsWith("❯") ||
+        !workComposerRule.matches(rows[rows.lastIndex - 3].trim())) return null
+    return claudeBackgroundShellCount(rows.last())?.takeIf { it > 0 }
+}
+
+private val workComposerRule = Regex("─{20,}")
