@@ -81,6 +81,37 @@ class CardRegion228Test {
         }
     }
 
+    /** [s] with spaces after the end of the row holding [needle]. */
+    private fun trailing(s: String, needle: String): String = s.split("\n").joinToString("\n") { if (stripAnsi(it).contains(needle)) "$it   " else it }
+
+    /**
+     * Grok's review 4 (HIGH): the region is the card's own option rows and the question block the parser
+     * read, never rows found by a few letters. An older copy of the menu above, a wrapped option, or a
+     * row near the options repeating the question's opening never moves the command out of the digest.
+     */
+    @Test fun theRegionIsTheParsersOwnRowsNotLookAlikes() {
+        // A row just above the options repeating the title's opening: the command above it still counts.
+        val s = grok(whole).replace("# the stamp file marks the last clean build", "# List the build cache, then clean it")
+        val p = card(s)
+        val guard = cardGuardScreen(s, p)
+        assertTrue(guard, guard.startsWith("r:"))
+        assertFalse("command above a look-alike row", cardGuardScreenMatches(s.replace("ls -la build/cache", "ls -la build/cachf"), guard))
+        assertFalse("inner spaces", cardGuardScreenMatches(s.replace("ls -la build/cache", "ls  -la build/cache"), guard))
+        assertTrue("trailing spaces", cardGuardScreenMatches(trailing(s, "Yes, proceed"), guard))
+        // An older copy of the menu above the live one, and a wrapped option with a short first row.
+        val older = "Old question?\n❯ 1. Ok\n  2. No,\n  and stop\n\n"
+        val live = "Run the cleanup?\n  echo one\n❯ 1. Ok\n  2. No,\n  and stop\n\nEsc to cancel\n"
+        val screen = older + live
+        val q = checkNotNull(detectPrompt(screen, true, null))
+        assertEquals(listOf("Ok", "No, and stop"), q.choices.map { it.label })
+        val g = cardGuardScreen(screen, q)
+        assertFalse("the live command", cardGuardScreenMatches(screen.replace("echo one", "echo two"), g))
+        assertFalse("the live wrapped option", cardGuardScreenMatches(screen.replace("  and stop\n\nEsc", "  and go\n\nEsc"), g))
+        assertTrue("the same screen", cardGuardScreenMatches(screen, g))
+        // The question block the parser read is the region's top: its first row counts.
+        assertFalse("the question", cardGuardScreenMatches(screen.replace("Run the cleanup?", "Run the cleanup now?"), g))
+    }
+
     // ---- Grok 4.7's newer box: a scope row, a fourth option, and a command taller than the screen.
 
     private val scoped = "approval-scope-clipped.ansi"
@@ -190,16 +221,20 @@ class CardRegion228Test {
                     if (r.below > 0) assertTrue("$path below", cardGuardScreenMatches(with(rows.size - 1, t), guard))
                 }
                 // Whitespace inside a row is not a change.
-                assertTrue("$path spaces", cardGuardScreenMatches(with(end, rows[end] + "   "), guard))
+                // Spaces after a row's end are not a change (Grok's review 4: spaces inside it are).
+                assertTrue("$path trailing spaces", cardGuardScreenMatches(with(end, rows[end] + "   "), guard))
                 // The last option and the question's first row are.
                 assertFalse("$path option", cardGuardScreenMatches(with(end, rows[end] + " x"), guard))
                 assertFalse("$path question", cardGuardScreenMatches(with(start, rows[start] + " x"), guard))
             }
             println("card regions proven for $agent: $proven")
-            if (agent in setOf("claude", "codex", "hermes", "omp", "grok")) assertTrue("$agent has proven dialogs", proven > 0)
+            // Oh My Pi's options are unnumbered: its screen is compared whole, with its own proven-box rules
+            // (ompsRunningRowsStillTickFreelyInsideTheRegionRule, OmpApproval228Test).
+            if (agent in setOf("claude", "codex", "hermes", "grok")) assertTrue("$agent has proven dialogs", proven > 0)
         }
     }
 
+    /** Oh My Pi's unnumbered approval falls back to the whole screen, where its running rows still tick freely. */
     @Test fun ompsRunningRowsStillTickFreelyInsideTheRegionRule() {
         for (name in listOf("approval-three.ansi", "approval-reason-two.ansi")) {
             val s = checkNotNull(javaClass.getResource("/screens/omp/synthetic-2.2.8-approval/$name")).readText()
@@ -251,7 +286,10 @@ class CardRegion228Test {
                 val s = grok(name)
                 assertEquals("$name python=$python same", 0, runCheck(python, s, s))
                 for (n in 1..2) assertEquals("$name python=$python tick", 0, runCheck(python, s, tick(s, n)))
-                assertEquals("$name python=$python spaces", 0, runCheck(python, s, s.replace("Yes, proceed", "Yes,   proceed")))
+                assertEquals("$name python=$python trailing spaces", 0, runCheck(python, s, trailing(s, "Yes, proceed")))
+                // Grok's review 4: spaces inside a command or an option are part of it.
+                assertEquals("$name python=$python inner spaces", CARD_CHANGED_EXIT, runCheck(python, s, s.replace("ls -la build/cache", "ls  -la build/cache")))
+                assertEquals("$name python=$python option spaces", CARD_CHANGED_EXIT, runCheck(python, s, s.replace("Yes, proceed", "Yes,   proceed")))
                 assertEquals("$name python=$python command", CARD_CHANGED_EXIT, runCheck(python, s, s.replace("ls -la build/cache", "ls -la build/cachf")))
                 assertEquals("$name python=$python option", CARD_CHANGED_EXIT, runCheck(python, s, s.replace("Yes, proceed", "Yes, proceed now")))
                 assertEquals("$name python=$python highlight", CARD_CHANGED_EXIT,
