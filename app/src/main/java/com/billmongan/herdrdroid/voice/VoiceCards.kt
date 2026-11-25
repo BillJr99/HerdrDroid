@@ -3,6 +3,7 @@ package com.billmongan.herdrdroid.voice
 import com.billmongan.herdrdroid.herdr.Choice
 import com.billmongan.herdrdroid.herdr.Prompt
 import com.billmongan.herdrdroid.herdr.grantsStandingPermission
+import com.billmongan.herdrdroid.herdr.blockedChoiceReason
 import com.billmongan.herdrdroid.herdr.isCheckbox
 import com.billmongan.herdrdroid.herdr.isTypedAnswerChoice
 import com.billmongan.herdrdroid.herdr.menuKeys
@@ -20,7 +21,7 @@ internal fun voiceCardKeys(prompt: Prompt, choice: Choice): List<String>? {
     val parts = prompt.parts
     val tabs = parts?.tabs.orEmpty()
     // Muse's quota warning (2.1.0) can turn on data use: answered from the chat card only.
-    if (prompt.terminalReview || prompt.hermesClarify || prompt.openCodeQuestionFrame != null || prompt.museQuota ||
+    if (prompt.terminalReview || prompt.clipped || blockedChoiceReason(choice) != null || prompt.hermesClarify || prompt.openCodeQuestionFrame != null || prompt.museQuota ||
         prompt.multi || choice !in prompt.choices || tabs.count { !it.submit } > 1 ||
         tabs.any { it.current && it.submit } || prompt.choices.any { isCheckbox(it.label) } ||
         isTypedAnswerChoice(choice.label) || grantsStandingPermission(choice.label) ||

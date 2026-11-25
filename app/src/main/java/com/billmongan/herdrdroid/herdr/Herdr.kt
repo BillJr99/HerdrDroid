@@ -1446,6 +1446,12 @@ data class Prompt(
     internal val topOffScreen: Boolean = false,
     /** 2.2.7: Oh My Pi's or pi's multi-question Ask dialog, as [OmpAsk] read it. */
     internal val ompAsk: OmpAsk.State? = null,
+    /**
+     * 2.2.8 (Bill: "grok has a question but keeps saying it changed"): Grok shows only part of the
+     * command ("… Ctrl+F to expand"). The card offers no answer until the command is shown whole:
+     * only Ctrl+F, which expands it in Grok's own box, after which the card reads it again.
+     */
+    internal val clipped: Boolean = false,
 ) {
     /**
      * Never an empty card (1.4.2): a prompt with no choices always has something to show, the
@@ -3734,7 +3740,56 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
         detectOpenCodeQuestion(plain)?.let { return it }
         detectOpenCodePermission(text, plain)?.let { return it }
     }
-    return detectPlainPrompt(plain, blocked, agent, version)
+    val p = detectPlainPrompt(plain, blocked, agent, version)
+    return if (p != null && agent.equals("grok", true)) grokApproval(plain, p) else p
+}
+
+/** 2.2.8: Grok's "… Ctrl+F to expand" row inside its approval box: the command is cut there. */
+internal val GROK_EXPAND_HINT = Regex("""^(?:…|\.\.\.)\s*ctrl[-+]f to expand$""", RegexOption.IGNORE_CASE)
+private val GROK_RADIO_ROW = Regex("""^\s*┃?\s*\d{1,2}\s+\([○●]\)\s+\S""")
+private val GROK_UNNUMBERED_ALWAYS = Regex("""^\s*┃?\s*\([○●]\)\s+(\S.*\(always-approve mode\))\s*┃?\s*$""")
+
+/** 2.2.8: the card's key for Grok's unnumbered always-approve row, which the card shows but never sends. */
+const val GROK_ALWAYS_APPROVE = "grok:always-approve"
+
+/**
+ * 2.2.8: why a choice is shown but can't be tapped, or null. Grok's "Yes, and don't ask again for
+ * anything (always-approve mode)" switches Grok to approve every tool from then on, which is never
+ * done without Bill's say (the shared rules): the card shows it disabled, alerts and voice leave it
+ * out, and an answer for it is refused.
+ */
+fun blockedChoiceReason(c: Choice): String? =
+    if (c.keys == GROK_ALWAYS_APPROVE || c.label.contains("always-approve mode", ignoreCase = true))
+        "Not offered here: it switches the agent to approve everything without asking. Use the terminal if you really mean to."
+    else null
+
+/**
+ * 2.2.8 (Bill: "grok has a question but keeps saying it changed and won't send"): Grok 4.7's approval
+ * box as it draws it now: numbered radio rows ("2 (●) Yes, proceed", "3 (○) No, reject (type to add
+ * feedback)") and, under them, an unnumbered "(○) Yes, and don't ask again for anything
+ * (always-approve mode)" row, which the card shows disabled ([blockedChoiceReason]). A box whose
+ * command is cut ("… Ctrl+F to expand") gives a [Prompt.clipped] card.
+ */
+internal fun grokApproval(plain: String, p: Prompt): Prompt {
+    if (p.choices.isEmpty() || p.terminalReview) return p
+    val rows = plain.lines()
+    val last = rows.indexOfLast { GROK_RADIO_ROW.containsMatchIn(it) }
+    if (last < 0) return p
+    var first = last
+    while (first > 0 && GROK_RADIO_ROW.containsMatchIn(rows[first - 1])) first--
+    var out = p
+    rows.getOrNull(last + 1)?.let { GROK_UNNUMBERED_ALWAYS.matchEntire(it) }?.let { m ->
+        val label = m.groupValues[1].trim()
+        if (out.choices.none { it.label == label }) out = out.copy(choices = out.choices + Choice(label, GROK_ALWAYS_APPROVE, false))
+    }
+    // The box's own rows above its options: each starts with its "┃" edge (blank rows of the box too).
+    var i = first - 1
+    var clipped = false
+    while (i >= 0 && rows[i].trimStart().startsWith("┃")) {
+        if (GROK_EXPAND_HINT.matches(rows[i].trimStart().drop(1).trim())) clipped = true
+        i--
+    }
+    return if (clipped) out.copy(clipped = true) else out
 }
 
 /**
@@ -4061,7 +4116,7 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
                 // Grok's question card starts its question with a "?" icon (1.4.9).
                 val row = if (gutter) c.trimStart { it in GROK_GUTTER || it == ' ' }.trimEnd().removeSuffix("·").trimEnd()
                     else if (isCmd && tl.startsWith("┃")) c.trimEnd().removeSuffix("·").trimEnd() else c
-                if (row.any(Char::isLetterOrDigit) && !row.contains("narrow scope")) got.add(0, QLine(row.trimStart('›', '❯', ' ').replace(Regex("""^\?\s+"""), ""), isCmd, bar = !isCmd && tl.startsWith("│"), indent = bodyCol))
+                if (row.any(Char::isLetterOrDigit) && !row.contains("narrow scope") && !(grokRows && GROK_EXPAND_HINT.matches(row.trim()))) got.add(0, QLine(row.trimStart('›', '❯', ' ').replace(Regex("""^\?\s+"""), ""), isCmd, bar = !isCmd && tl.startsWith("│"), indent = bodyCol))
                 i--
             }
             // A "┆" row goes on the line above only when that row ends in Grok's "·" wrap mark; else
@@ -4671,6 +4726,84 @@ internal fun cardScreenDigest(raw: String): String {
 }
 
 /**
+ * 2.2.8 (Bill: "I don't like the 'question changed, won't send' in general; just render the question
+ * and then give the buttons so that can't happen"): the guard compares the dialog, not the screen.
+ * The dialog's rows are the rows from its question down to its last option, found in the very read
+ * the card was checked against ([cardRegion]); the check on the computer takes the same rows of its
+ * own read (the same count, the same number of rows under them: a pane's screen keeps its height) and
+ * compares them, each with its runs of whitespace made one space and its ends trimmed. Rows outside
+ * the dialog (a spinner, running times, a token counter, a header, a footer) never count, for any agent.
+ * The rows are first taken as [cardScreenRows] gives them, so the rules kept there still hold inside.
+ * When the dialog's rows can't be found, the whole screen is compared as before ([cardScreenDigest]).
+ */
+internal data class CardRegion(val below: Int, val count: Int)
+
+/** A read's rows as the checks count them: split at each newline, with no empty row after the last one. */
+internal fun cardRows(raw: String): List<String> = raw.split("\n").let { if (raw.endsWith("\n")) it.dropLast(1) else it }
+
+private fun regionKey(s: String): String = stripAnsi(s).filter { it.isLetterOrDigit() }.lowercase()
+private val REGION_SPACE = Regex("[ \t\r\u000B\u000C]+")
+
+/** One dialog row as the region digest takes it: whitespace runs as one space, ends trimmed, styles kept. */
+internal fun cardRegionRow(row: String): String = REGION_SPACE.replace(row, " ").trim(' ')
+
+/**
+ * The dialog's rows in [raw] for the card [p]: the last row holding its last option's words, each
+ * earlier option above it in order, and the nearest row above the first option holding the start
+ * of its question. Null when any of them isn't found, or for a card with no options to answer.
+ */
+internal fun cardRegion(raw: String, p: Prompt): CardRegion? {
+    if ('\u0000' in raw || p.terminalReview || p.readingQuestion || p.unreadQuestion) return null
+    val rows = cardRows(raw)
+    val keys = rows.map(::regionKey)
+    // Options the dialog draws (the card's own rows, such as Oh My Pi's typed steer, have a ":" key).
+    val labels = p.choices.filter { ':' !in it.keys }.map { regionKey(it.label).take(12) }
+    if (labels.isEmpty() || labels.any { it.isEmpty() }) return null
+    var at = rows.size - 1
+    var bottom = -1
+    var first = -1
+    for (l in labels.reversed()) {
+        val i = (at downTo 0).firstOrNull { keys[it].contains(l) } ?: return null
+        if (bottom < 0) bottom = i
+        first = i
+        // Buttons side by side share a row; a menu's options each have their own.
+        at = if (p.horizontal) i else i - 1
+    }
+    if (bottom - first > 60) return null
+    val q = regionKey(p.question)
+    if (q.isEmpty()) return null
+    val lo = maxOf(0, first - TALL_QUESTION_ROWS)
+    val top = listOf(12, 6).firstNotNullOfOrNull { n -> (first - 1 downTo lo).firstOrNull { keys[it].contains(q.take(n)) } } ?: return null
+    return CardRegion(rows.size - 1 - bottom, bottom - top + 1)
+}
+
+/** The digest of [r]'s rows in [raw], as [CARD_SEND_CHECK] and card-check.sh compute it; null when they aren't there. */
+internal fun cardRegionDigest(raw: String, r: CardRegion): String? {
+    if ('\u0000' in raw) return null
+    val rows = cardScreenRows(cardRows(raw))
+    val start = rows.size - r.below - r.count
+    if (r.count < 1 || r.below < 0 || start < 0) return null
+    val t = rows.subList(start, rows.size - r.below).joinToString("") { cardRegionRow(it) + "\n" }
+    return sha256Hex(t.toByteArray(Charsets.UTF_8))
+}
+
+/**
+ * The screen argument of a card's guard for [raw] read as [p]: "r:<rows under>:<rows>:<digest>"
+ * for the dialog's rows, or the whole screen's digest when they can't be found.
+ */
+internal fun cardGuardScreen(raw: String, p: Prompt?): String {
+    val r = p?.let { cardRegion(raw, it) } ?: return cardScreenDigest(raw)
+    val d = cardRegionDigest(raw, r) ?: return cardScreenDigest(raw)
+    return "r:${r.below}:${r.count}:$d"
+}
+
+/** Whether [raw] still matches a guard's [screen] argument, as the checks on the computer decide it. */
+internal fun cardGuardScreenMatches(raw: String, screen: String): Boolean {
+    val m = Regex("""^r:([0-9]{1,6}):([1-9][0-9]{0,5}):([0-9a-f]{64})$""").matchEntire(screen) ?: return cardScreenDigest(raw) == screen
+    return cardRegionDigest(raw, CardRegion(m.groupValues[1].toInt(), m.groupValues[2].toInt())) == m.groupValues[3]
+}
+
+/**
  * 2.2.7 (Bill, "check right before send"): run on the computer just before a card's keys, in the
  * same command. Reads the pane's occupant, its visible screen and its occupant again; exits 0 only
  * when both occupant reads and the screen match the digests the card was checked against, 3 when
@@ -4761,6 +4894,11 @@ internal val CARD_SEND_CHECK = """
             else:
                 out.append(timer(line, t[i]))
         return out
+    # 2.2.8: "r:<rows under>:<rows>:<digest>" compares the dialog's rows only (cardGuardScreen).
+    REGION = None
+    m = re.fullmatch(r'r:([0-9]{1,6}):([1-9][0-9]{0,5}):([0-9a-f]{64})', screen)
+    if m:
+        REGION = (int(m.group(1)), int(m.group(2)), m.group(3))
     if screen == '-':
         # 2.2.8: the occupant only (a message queued behind a question): 0, 5 when it changed, 4.
         try:
@@ -4779,6 +4917,23 @@ internal val CARD_SEND_CHECK = """
         if b'\x00' in visible:
             print('@@herdrdroid-card-refused@@', flush=True)
             sys.exit(3)  # a NUL never matches (the shell check can't hold one); as cardScreenDigest
+        if REGION is not None:
+            # 2.2.8: the dialog's rows only (cardRegionDigest in Herdr.kt).
+            below, count, want = REGION
+            lines = visible.split(b'\n')
+            if visible.endswith(b'\n'):
+                lines = lines[:-1]
+            r = rows(lines)
+            start = len(r) - below - count
+            seen = None
+            if start >= 0:
+                seg = r[start:len(r) - below]
+                seen = hashlib.sha256(b''.join(re.sub(rb'[ \t\r\x0b\x0c]+', b' ', x).strip(b' ') + b'\n' for x in seg)).hexdigest()
+            if before == after == occupant and seen == want:
+                sys.exit(0)
+            # The dialog's rows changed or aren't there: refused, as the whole-screen check refuses.
+            print('@@herdrdroid-card-refused@@', flush=True)
+            sys.exit(3)
         visible = b'\n'.join(rows(visible.split(b'\n')))
         if visible and not visible.endswith(b'\n'):
             visible += b'\n'

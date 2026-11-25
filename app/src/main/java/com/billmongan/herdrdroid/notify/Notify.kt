@@ -165,11 +165,12 @@ internal fun alertOptionsSig(choices: List<Choice>): String =
  * named in the alert's text for the question card that tapping the alert opens.
  */
 internal fun alertPlan(prompt: com.billmongan.herdrdroid.herdr.Prompt, terminalReview: Boolean = prompt.terminalReview, reply: Boolean = true): AlertPlan {
-    if (terminalReview || prompt.terminalReview) return AlertPlan(emptyList(), emptyList())
+    if (terminalReview || prompt.terminalReview || prompt.clipped) return AlertPlan(emptyList(), emptyList())
     val escChoice = prompt.choices.firstOrNull { com.billmongan.herdrdroid.herdr.menuKeys(prompt, it) == listOf("esc") }
     // 2.1.4: "Type something." and "Chat about this" are one "Type your answer" reply button.
     val merged = com.billmongan.herdrdroid.herdr.typedChatPair(prompt.choices)?.first
-    val answers = com.billmongan.herdrdroid.herdr.shownChoices(prompt.choices).map { c ->
+    // 2.2.8: an option the card shows disabled (approve-everything) is never an alert button.
+    val answers = com.billmongan.herdrdroid.herdr.shownChoices(prompt.choices).filter { com.billmongan.herdrdroid.herdr.blockedChoiceReason(it) == null }.map { c ->
         if (c == merged && reply) return@map AlertButton(com.billmongan.herdrdroid.herdr.TYPED_ANSWER_LABEL, choice = c, typed = true)
         // 2.2.2: the button reads the label as the card shows it (no marker, gutter or hint); its answer keeps c.label.
         val display = com.billmongan.herdrdroid.ui.QuestionText.label(if (c == merged) c.label else com.billmongan.herdrdroid.herdr.shownChoiceLabel(prompt.choices, c), c.keys)
