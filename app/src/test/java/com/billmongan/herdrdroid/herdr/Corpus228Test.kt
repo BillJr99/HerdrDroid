@@ -209,6 +209,23 @@ class Corpus228Test {
         assertEquals(listOf("y", "p", "esc"), p.choices.map { menuKeys(p, it)?.single() })
     }
 
+    @Test fun grokThinkingAndDraftsStayHiddenWhenThePaneStillReportsBlocked() {
+        val files = listOf(
+            "010-grok-live-thinking-numbered-optin-code.txt",
+            "011-grok-live-thinking-ascii-narrow-no-arrow.txt",
+            "014-grok-composer-draft-numbered-optin.txt",
+        )
+        for (file in files) {
+            val prompt = detectPrompt(stripAnsi(res(file)), true, "grok")
+            assertFalse(file, prompt != null && (prompt.choices.isNotEmpty() || prompt.terminalReview))
+        }
+    }
+
+    @Test fun ompSubmitReadyShowsItsSingleChoice() {
+        val prompt = checkNotNull(detectPrompt(stripAnsi(res("040-omp-ask-submit-ready.txt")), true, "omp"))
+        assertEquals(listOf("Submit"), prompt.choices.map { it.label })
+    }
+
     @Test fun theCorpusReadsAsItsIndexSays() {
         val all = cases()
         assertEquals(54, all.size)
