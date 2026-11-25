@@ -7,6 +7,7 @@ import com.billmongan.herdrdroid.herdr.Choice
 import com.billmongan.herdrdroid.herdr.Pane
 import com.billmongan.herdrdroid.herdr.Prompt
 import com.billmongan.herdrdroid.herdr.Status
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -71,5 +72,34 @@ class QuestionsFeedTest {
         feed.refreshNow()
         assertEquals(listOf("open|p1", "other|p2", "open|p1"), read)
         assertFalse(feed.visible)
+    }
+
+    @Test fun repeatedRefreshesWhileARoundRunsAddOneRoundAndNoExtraReads() = runBlocking {
+        val p1 = src("open", "p1")
+        val p2 = src("open", "p2")
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var reads = 0
+        var inRead = 0
+        var maxInRead = 0
+        var sourcesAsked = 0
+        val feed = QuestionsFeed(this, { sourcesAsked++; listOf(p1, p2) }, {
+            reads++; inRead++; maxInRead = maxOf(maxInRead, inRead)
+            gate.await()
+            inRead--
+            QuestionRead(prompt("Q ${it.key}", "Yes"), null)
+        }, { false }) { now }
+        val first = launch { feed.refreshNow() }
+        while (reads < 2) kotlinx.coroutines.yield()
+        // Ten taps while the first round's reads are still out: none starts a round beside it.
+        val taps = (1..10).map { launch { feed.refreshNow() } }
+        taps.forEach { it.join() }
+        assertEquals("only the first round's reads", 2, reads)
+        gate.complete(Unit)
+        first.join()
+        assertEquals("the panes just read are not read again", 2, reads)
+        assertEquals(2, maxInRead)
+        // The first round (before and after its reads) and one more round with nothing due: never one per tap.
+        assertEquals(3, sourcesAsked)
+        assertEquals(listOf(EntryState.READY, EntryState.READY), feed.entries.map { it.state })
     }
 }

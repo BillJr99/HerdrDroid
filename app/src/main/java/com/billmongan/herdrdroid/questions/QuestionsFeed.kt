@@ -12,6 +12,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
@@ -65,7 +66,7 @@ class QuestionsFeed(
         job = null
     }
 
-    /** Something changed (a pane's state, an answer sent): a round now. */
+    /** Something changed (a pane's state, an answer sent) or Refresh was tapped: a round now, through the loop's one conflated wake. */
     fun poke() { wake.trySend(Unit) }
 
     fun holdUi(key: String) { uiHolds += key; aggregator.hold(key) }
@@ -75,8 +76,25 @@ class QuestionsFeed(
         poke()
     }
 
-    /** One round: the list of panes needing you, then reads of the ones due. */
+    /** One round at a time: a round asked for while one runs makes that one run once more, never a second beside it. */
+    private val round = Mutex()
+    @Volatile private var again = false
+
+    /**
+     * A round now, or (when one is running) once more right after it. Repeated asks while a round
+     * runs add at most one more round, and its reads are only of panes due by then.
+     */
     suspend fun refreshNow() {
+        if (!round.tryLock()) { again = true; return }
+        try {
+            do { again = false; oneRound() } while (again)
+        } finally {
+            round.unlock()
+        }
+    }
+
+    /** The list of panes needing you, then reads of the ones due. */
+    private suspend fun oneRound() {
         syncHolds()
         aggregator.update(sources())
         publish()
@@ -84,17 +102,18 @@ class QuestionsFeed(
         if (due.isEmpty()) return
         val results = coroutineScope {
             due.map { s ->
+                val token = aggregator.beginRead(s.key)
                 async {
-                    s to reads.withPermit {
+                    Triple(s, token, reads.withPermit {
                         try { read(s) } catch (c: CancellationException) { throw c } catch (_: Exception) { null }
-                    }
+                    })
                 }
             }.awaitAll()
         }
         syncHolds()
         // The list as it is now: a pane that stopped needing you during the reads is settled, not re-filled.
         aggregator.update(sources())
-        results.forEach { (s, r) -> aggregator.applyRead(s, r) }
+        results.forEach { (s, token, r) -> aggregator.applyRead(s, r, token) }
         publish()
     }
 

@@ -59,6 +59,12 @@ data class QuestionRead(val prompt: Prompt?, val target: Any?)
 class QuestionsAggregator(private val clock: () -> Long = System::currentTimeMillis) {
     private val byKey = LinkedHashMap<String, QuestionEntry>()
     private val held = HashSet<String>()
+    /** Per pane: the last read handed out ([beginRead]) and the newest one applied, so a slower older read never overwrites a newer one. */
+    private val issued = HashMap<String, Long>()
+    private val applied = HashMap<String, Long>()
+
+    /** A token for a read of [key] about to start; reads are applied only newest-first ([applyRead]). */
+    fun beginRead(key: String): Long = ((issued[key] ?: 0L) + 1).also { issued[key] = it }
 
     /** Entries grouped by server (the open one first, then by name), oldest waiting first in each. */
     fun entries(): List<QuestionEntry> = byKey.values.sortedWith(
@@ -104,12 +110,16 @@ class QuestionsAggregator(private val clock: () -> Long = System::currentTimeMil
     }
 
     /**
-     * A confirmed read of [source]'s pane. Ignored when the entry is held, gone, or now belongs to
+     * A confirmed read of [source]'s pane, started with [token] from [beginRead]. Ignored when a
+     * newer read of the pane was already taken, when the entry is held, gone, or now belongs to
      * another occupant (a read that started before the change). A different question than before
      * starts its own wait time. No question on a pane that showed one means its dialog closed.
      */
-    fun applyRead(source: QuestionSource, read: QuestionRead?) {
+    fun applyRead(source: QuestionSource, read: QuestionRead?, token: Long = beginRead(source.key)) {
         val key = source.key
+        // An older read finishing after a newer one was applied (or dropped) is superseded.
+        if (token <= (applied[key] ?: 0L)) return
+        applied[key] = token
         if (key in held) return
         val old = byKey[key] ?: return
         if (old.state == EntryState.ANSWERED || !sameOccupant(old.source.pane, source.pane)) return
