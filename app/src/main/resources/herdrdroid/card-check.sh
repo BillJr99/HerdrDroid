@@ -222,6 +222,9 @@ identity() {
   [ "$st" -eq 0 ] || { [ "$st" -eq 3 ] && return 3; return 4; }
   id=$(MODE=ser awk "$J" "$j" 2>/dev/null | sha)
   hex64 "$id" || return 4
+  # The agent as herdr names it (the fourth occupant field): the Hermes composer rule is for "hermes" only.
+  hermes=0
+  [ "$(MODE=ser awk "$J" "$j" 2>/dev/null | sed -n 4p)" = "6:hermes" ] && hermes=1
   return 0
 }
 
@@ -261,7 +264,7 @@ function shown(x,   t) {
   return t
 }
 function timer(x, t,   head) {
-  if (t ~ /^(type [0-9\/]+, or )?↑\/↓ to select, enter to confirm[ \t\r\v\f]*\([0-9]+s\)$/ && match(x, /.*\([0-9]+s\)/)) {
+  if (t ~ /^((type [0-9\/]+, or )?↑\/↓ to select, enter to confirm|↑\/↓ to select, enter to lock, tab next question|type your answer and press enter)[ \t\r\v\f]*\([0-9]+s\)$/ && match(x, /.*\([0-9]+s\)/)) {
     head = substr(x, 1, RLENGTH)
     sub(/\([0-9]+s\)$/, "(Ns)", head)
     x = head substr(x, RLENGTH + 1)
@@ -295,9 +298,19 @@ END {
       if (j < 1 || index(row[j], "╭") != 1) elapsed = 0
     }
   }
+  # The Hermes composer under a live prompt (hermesComposerRows): its top rule and its footer only.
+  f = 0; hr = 0; hf = 0
+  for (i = NR; i >= 1; i--) if (row[i] != "") { f = i; break }
+  if (H == 1 && f >= 5 && row[f] ~ /^☤ [^ ]+ · ~?[0-9][0-9.,]*[km]?\/[0-9][0-9.,]*[km]?( · .*)?$/ && row[f - 1] ~ /^(─)+$/ && row[f - 2] ~ /^(⚠|\?|✎|🔐|🔑|⚙)(️)?[ \t]*(❯|›)([ \t].*)?$/ &&
+      row[f - 3] ~ /^──.*─$/ &&
+      row[f - 4] ~ /^((type [0-9\/]+, or )?↑\/↓ to select, enter to confirm|↑\/↓ to select, enter to lock, tab next question|type your answer and press enter)([ \t\r\v\f]*\([0-9]+s\))?$/) {
+    hr = f - 3; hf = f
+  }
   for (i = 1; i <= NR; i++) {
     x = raw[i]
-    if (!bottom) x = timer(x, row[i])
+    if (i == hr) x = "<hermes-rule>"
+    else if (i == hf) x = "<hermes-footer>"
+    else if (!bottom) x = timer(x, row[i])
     else if (i >= top && i <= bottom) x = x
     else if (i == elapsed) sub(/elapsed [0-9hms.]+/, "elapsed N", x)
     else if (i == bottom + 1 && row[i] ~ /^[^ ]+ ([^ ]+ )?> .* > 📁 [^ ]+ ▶─/) x = "<status>"
@@ -306,7 +319,7 @@ END {
   }
 }
 '
-seen=$(awk "$T" "$v" 2>/dev/null | sha)
+seen=$(awk -v H="$hermes" "$T" "$v" 2>/dev/null | sha)
 hex64 "$seen" || exit 4
 [ "$a" -eq 0 ] && [ "$b" -eq 0 ] && [ "$before" = "$id" ] && [ "$id" = "$occupant" ] && [ "$seen" = "$screen" ] && exit 0
 echo @@herdrdroid-card-refused@@

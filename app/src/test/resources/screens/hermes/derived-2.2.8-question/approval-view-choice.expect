@@ -1,0 +1,4 @@
+card: options
+blocked: false
+options: Allow once | Allow for this session | Add to permanent allowlist | Deny | Show full command
+source: derived for 2.2.8 from Hermes's classic CLI program text (hermes_cli/cli_tui_mixin.py, cli_modal_mixin.py, cli_modern_layout.py, locales/en.yaml: exact strings, modern layout order); demo content only

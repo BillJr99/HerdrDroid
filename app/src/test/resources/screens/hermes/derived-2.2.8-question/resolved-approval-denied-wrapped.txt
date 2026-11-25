@@ -1,0 +1,21 @@
+────────────────────────────────────────
+❯ Please tidy the demo workspace and tell me what changed.
+────────────────────────────────────────
+
+📚 Skill demo-workspace  0.3s
+🔎 Grep TODO|FIXME  0.2s
+💻 $ ls -la /home/user/demo  0.1s
+
+
+⚠ Approval: python3 - <<'PY' from pathlib import Path import json body='demo text for the release notes of the demo workspace, noth… 
+→ denied
+
+────────────────────────────────────────
+☤ Hermes
+I left the command unrun, as you asked.
+────────────────────────────────────────
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────── Tidy the demo workspace ─
+❯
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☤ demo-model · ~42K/500K · [█░░░░░░░░░] ~8% · ◎ 12.0% · ◷ 3.1s · ↑ 20 t/s · 1.0d · ⏲ 1m · ~/demo     / commands · @ files · ! shell

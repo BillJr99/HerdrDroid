@@ -20,7 +20,10 @@ class CardSendCheck227Test {
     private val screen = "\u001b[1m⚠ Dangerous Command\u001b[0m\n❯ 1. Allow once\n  2. Deny\n↑/↓ to select, Enter to confirm (57s)\n⚠ ❯\n"
 
     private fun guard(json: String = getJson, visible: String = screen) =
-        CardGuard(cardOccupantDigest(JSONObject(json).getJSONObject("result").getJSONObject("pane")), cardScreenDigest(visible))
+        JSONObject(json).getJSONObject("result").getJSONObject("pane").let { p ->
+            // The app passes the pane's agent (2.2.8: Hermes's composer rows are left out only on a Hermes pane).
+            CardGuard(cardOccupantDigest(p), cardScreenDigest(visible, p.optString("agent").takeIf { !p.isNull("agent") }))
+        }
 
     /** The transport seam: answers the combined command with [exit], and keeps what it was sent. */
     private class Seam(var exit: Int = 0, var out: String = "") : Herdr.Commands {
@@ -263,6 +266,76 @@ class CardSendCheck227Test {
         bothChecks { mode ->
             val r = runReal(guard(getJson, edited), getJson, edited.replace("Dangerous (12s)", "Dangerous (13s)"), mode = mode)
             assertEquals("$mode", CARD_CHANGED_EXIT, r.exit)
+        }
+    }
+
+    private fun questionFile(name: String) = checkNotNull(javaClass.getResourceAsStream("/screens/hermes/derived-2.2.8-question/$name")) { name }
+        .use { it.readBytes().toString(Charsets.UTF_8) }
+
+    /** Hermes's composer rows as it redraws them every second: a new spinner frame, turn time and footer timers. */
+    private fun hermesTick(s: String) = s.replace("(88s)", "(87s)").replace("(287s)", "(286s)").replace("(80s)", "(79s)")
+        .replace("── ⠹ Working… · 1m 2s ", "── ⠼ Working… · 1m 3s ").replace("◷ 3.1s", "◷ 3.2s").replace("⏲ 1m ·", "⏲ 2m ·")
+
+    /**
+     * 2.2.8 (Bill: "Hermes will ask a question occasionally that does not render in chat"): while a clarify
+     * or approval waits, Hermes redraws its hint countdown, its composer's top rule (spinner and turn time)
+     * and its footer every second. Only those rows may change in all three digests, and only when the
+     * composer is proven under a live prompt; the panel, the hint's words and the input row still count.
+     */
+    @Test fun hermesComposerRowsTickInAllThreeDigestsAndNothingElse() {
+        val names = listOf("clarify-single-first.txt", "clarify-batch-second.txt", "clarify-single-other-typing.txt",
+            "clarify-freetext.txt", "approval-selected-deny.txt", "clarify-single-no-deadline.txt")
+        for (name in names) {
+            val shown = questionFile(name)
+            val ticked = hermesTick(shown)
+            if (name != "clarify-single-no-deadline.txt") assertNotEquals("$name ticks", shown, ticked)
+            assertEquals(name, cardScreenDigest(shown, "hermes"), cardScreenDigest(ticked, "hermes"))
+            bothChecks { mode -> assertEquals("$mode $name", 0, runReal(guard(getJson, shown), getJson, ticked, mode = mode).exit) }
+        }
+        val shown = questionFile("clarify-single-first.txt")
+        val changed = listOf(
+            shown.replace("2. release/demo", "2. release/demo2"),        // an option
+            shown.replace("Enter to lock, Tab", "Enter to lock,  Tab"),   // the hint's own words
+            shown.replace("\n? ❯\n", "\n? ❯ 2\n"),                      // the input row
+            shown.replace("Which branch", "Which branches"),             // the question
+        )
+        for (other in changed) {
+            assertNotEquals(shown, other)
+            assertNotEquals(cardScreenDigest(shown, "hermes"), cardScreenDigest(other, "hermes"))
+            bothChecks { mode -> assertEquals("$mode", CARD_CHANGED_EXIT, runReal(guard(getJson, shown), getJson, hermesTick(other), mode = mode).exit) }
+        }
+        // Not under a live prompt (the agent's answer is on screen, the composer is busy): the rule counts.
+        val busy = questionFile("resolved-clarify.txt")
+        assertNotEquals(cardScreenDigest(busy, "hermes"), cardScreenDigest(hermesTick(busy), "hermes"))
+        // A rule that only looks like the composer's, inside the prompt and not under the hint, still counts.
+        val inner = shown.replace("│ 1 question", "│ ── ⠹ Working… · 1m 2s ─")
+        assertNotEquals(cardScreenDigest(inner, "hermes"), cardScreenDigest(inner.replace("│ ── ⠹ Working… · 1m 2s ─", "│ ── ⠼ Working… · 1m 3s ─"), "hermes"))
+    }
+
+    /**
+     * HD228 review 3 (Codex): the composer rule applies only on a pane herdr names "hermes", and only under a
+     * footer in Hermes's own shape. Otherwise every row keeps its bytes, in all three digests.
+     */
+    @Test fun hermesComposerRowsAreLeftOutOnlyOnAHermesPaneWithHermessFooter() {
+        val shown = questionFile("clarify-single-first.txt")
+        val ticked = hermesTick(shown)
+        // Another agent's pane: the same rows count.
+        val other = getJson.replace("\"agent\":\"hermes\"", "\"agent\":\"codex\"")
+        assertNotEquals(other, getJson)
+        assertNotEquals(cardScreenDigest(shown, "codex"), cardScreenDigest(ticked, "codex"))
+        assertNotEquals(cardScreenDigest(shown), cardScreenDigest(ticked))
+        bothChecks { mode -> assertEquals("$mode", CARD_CHANGED_EXIT, runReal(guard(other, shown), other, ticked, mode = mode).exit) }
+        // A Hermes pane whose last row is not Hermes's footer: nothing is left out, so a changed last row refuses.
+        val footer = shown.lines().last { it.isNotBlank() }
+        val plain = shown.replace(footer, "build finished in 3.1s")
+        assertNotEquals(shown, plain)
+        assertNotEquals(cardScreenDigest(plain, "hermes"), cardScreenDigest(plain.replace("3.1s", "3.2s"), "hermes"))
+        assertNotEquals(cardScreenDigest(plain, "hermes"), cardScreenDigest(hermesTick(plain), "hermes"))
+        bothChecks { mode ->
+            assertEquals("$mode", CARD_CHANGED_EXIT, runReal(guard(getJson, plain), getJson, plain.replace("3.1s", "3.2s"), mode = mode).exit)
+            assertEquals("$mode", CARD_CHANGED_EXIT, runReal(guard(getJson, plain), getJson, hermesTick(plain), mode = mode).exit)
+            // The real footer still ticks on the Hermes pane.
+            assertEquals("$mode", 0, runReal(guard(getJson, shown), getJson, ticked, mode = mode).exit)
         }
     }
 

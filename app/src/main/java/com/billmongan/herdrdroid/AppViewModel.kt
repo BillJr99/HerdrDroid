@@ -5274,7 +5274,7 @@ class AppViewModel internal constructor(
         val raw = h.readStyledViewport(pane.id, connection)
         val text = (if (isOpenCode(pane.agent) || shown.museQuota) raw
             else com.billmongan.herdrdroid.herdr.stripAnsi(raw)).takeUnless { it.isBlank() } ?: return null
-        val guard = occupant?.let { com.billmongan.herdrdroid.herdr.CardGuard(it, com.billmongan.herdrdroid.herdr.cardScreenDigest(raw)) }
+        val guard = occupant?.let { com.billmongan.herdrdroid.herdr.CardGuard(it, com.billmongan.herdrdroid.herdr.cardScreenDigest(raw, currentPane.agent)) }
         if (!isCurrent(h) || guardedChoice && !foreground) return null
         val live = if (pane.agent == "pi" && h.backend == Backend.TUI &&
             (pane.status == Status.WORKING || currentPane.status == Status.WORKING)) activePiQuestion(text, versionOf(pane.id))
@@ -5415,7 +5415,7 @@ class AppViewModel internal constructor(
                     blocked = live.status == Status.NEEDS_YOU
                     val raw = h.readStyledViewport(id, target.connection)
                     // 2.2.8: each pill key goes under the check of the read just before it.
-                    pillGuard = occupant?.let { com.billmongan.herdrdroid.herdr.CardGuard(it, com.billmongan.herdrdroid.herdr.cardScreenDigest(raw)) }
+                    pillGuard = occupant?.let { com.billmongan.herdrdroid.herdr.CardGuard(it, com.billmongan.herdrdroid.herdr.cardScreenDigest(raw, live.agent)) }
                     com.billmongan.herdrdroid.herdr.stripAnsi(raw).takeUnless { it.isBlank() || !current() }
                 },
                 detect = { detectPrompt(it, blocked, target.pane.agent, versionOf(id)) },
@@ -5739,7 +5739,7 @@ class AppViewModel internal constructor(
             val (live, occupant) = h.cardPaneGuarded(paneId, t.connection) ?: return false
             if (!t.pane.sameCardOccupant(live)) return false
             after = h.readStyledViewport(paneId, t.connection).takeUnless { it.isBlank() } ?: return false
-            textGuard = occupant?.let { com.billmongan.herdrdroid.herdr.CardGuard(it, com.billmongan.herdrdroid.herdr.cardScreenDigest(after)) }
+            textGuard = occupant?.let { com.billmongan.herdrdroid.herdr.CardGuard(it, com.billmongan.herdrdroid.herdr.cardScreenDigest(after, live.agent)) }
         } else {
             h.sendKeys(paneId, digit, expectedConnection = connection)
             delay(300)

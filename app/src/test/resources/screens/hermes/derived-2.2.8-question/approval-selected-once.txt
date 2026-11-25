@@ -1,0 +1,25 @@
+────────────────────────────────────────
+❯ Please tidy the demo workspace and tell me what changed.
+────────────────────────────────────────
+
+📚 Skill demo-workspace  0.3s
+🔎 Grep TODO|FIXME  0.2s
+💻 $ ls -la /home/user/demo  0.1s
+
+╭────────────────────────────────────────────────╮
+│ ⚠️  Dangerous Command                           │
+│                                                │
+│ rm -rf /home/user/demo/build                   │
+│                                                │
+│ ❯ 1. Allow once                                │
+│   2. Allow for this session                    │
+│   3. Add to permanent allowlist                │
+│   4. Deny                                      │
+│                                                │
+│ recursive delete                               │
+╰────────────────────────────────────────────────╯
+  ↑/↓ to select, Enter to confirm  (287s)
+── ⠹ Working… · 1m 2s ───────────────────────────────────────────────────────────────────────────────────── Tidy the demo workspace ─
+⚠ ❯
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☤ demo-model · ~42K/500K · [█░░░░░░░░░] ~8% · ◎ 12.0% · ◷ 3.1s · ↑ 20 t/s · 1.0d · ⏲ 1m · ~/demo
