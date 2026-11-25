@@ -18,14 +18,19 @@ internal fun canClearDraft(agent: String?): Boolean = draftClearKey(agent) != nu
  * 2.2.8: the key Clear draft presses, per agent, or null where none is checked. Backspace for the
  * agents above, and for Agy 1.5.17, Kiro, Vibe 3.1.2, Muse Code 1.4.24, pi 1.6.0 and OpenCode 2.3.2,
  * each checked live in a throwaway pane (2026-11-25): "alpha beta gamma" typed, 16 Backspaces, the
- * box empty and nothing else changed. Ctrl+U for Oh My Pi 19.0.1 and Copilot 1.0.114
- * (checked live too), which empties one row only ([clearableDraft]).
+ * box empty and nothing else changed. Ctrl+U for Oh My Pi 19.0.1 and Copilot 1.0.114, which delete
+ * from the cursor to the start of the row: Ctrl+E (end of row) goes first in the same write, since
+ * the screen shows no cursor there (checked live: with the cursor six left of the end, Ctrl+U alone
+ * left " gamma", Ctrl+E then Ctrl+U emptied the box). One row only ([clearableDraft]).
  */
 internal fun draftClearKey(agent: String?): String? = when (agent?.lowercase()) {
     in DRAFT_CLEARABLE -> "backspace"
     "omp", "copilot" -> "ctrl+u"
     else -> null
 }
+
+/** The keys one Ctrl+U clear presses: to the end of the row, then delete to its start. */
+internal val LINE_CLEAR_KEYS = listOf("ctrl+e", "ctrl+u")
 
 /** Whether Clear draft may run on [draft] in [agent]'s box: a Ctrl+U agent's draft must be one row. */
 internal fun clearableDraft(agent: String?, draft: ComposerDraft): Boolean {
@@ -229,15 +234,15 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
     }
 
     /**
-     * 2.2.8: Clear for a Ctrl+U agent: one Ctrl+U on a one-row draft, then reads until the box shows
-     * empty. Never Enter, never a second key.
+     * 2.2.8: Clear for a Ctrl+U agent: Ctrl+E then Ctrl+U on a one-row draft, in one write, then reads
+     * until the box shows empty. Never Enter, never a second write.
      */
     private suspend fun clearLine(server: String, shown: Pane, draft: ComposerDraft, allowed: () -> Boolean, port: Port): Outcome {
         if ('\n' in draft.text) return Outcome.NOT_SENDABLE
         val permit = gate.open(server to shown.id, WritePermit(allowed)) ?: return Outcome.REFUSED
         try {
             if (!allowed()) return Outcome.REFUSED
-            port.keys(shown.id, listOf("ctrl+u"), permit)
+            port.keys(shown.id, LINE_CLEAR_KEYS, permit)
         } catch (e: WriteRevoked) {
             return Outcome.REFUSED
         } catch (c: CancellationException) {

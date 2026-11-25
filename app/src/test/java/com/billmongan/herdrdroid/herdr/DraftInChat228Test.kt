@@ -112,6 +112,14 @@ class DraftInChat228Test {
         for (a in listOf("omp", "pi", "opencode")) assertTrue(a, paneBoxEmpty(probe(a, (if (a == "opencode") "oc" else a) + "-draft-cleared"), a))
     }
 
+    @Test fun `ctrl+u alone leaves text before the cursor, ctrl+e first empties the box`() {
+        // Muse's review: Ctrl+U deletes from the cursor to the start of the row (cursor six left of the end).
+        assertEquals("gamma", paneDraftOf(probe("omp", "omp-left-ctrlu"), "omp")?.text)
+        assertNull(paneDraftOf(probe("omp", "omp-ctrle-ctrlu"), "omp"))
+        assertEquals("gamma", paneDraftOf(probe("copilot", "cp-left-ctrlu"), "copilot")?.text)
+        assertNull(paneDraftOf(probe("copilot", "cp-ctrle-ctrlu"), "copilot"))
+    }
+
     private val ompPane = Pane("w2:p1", "w2:t1", "w2", "omp", Status.IDLE, "Oh My Pi", "/home/u", scrollOffset = 0,
         terminalId = "term-1", sessionId = "s-1")
 
@@ -123,18 +131,18 @@ class DraftInChat228Test {
         override suspend fun keys(id: String, keys: List<String>, permit: WritePermit) {
             permit.admit()
             writes += keys
-            if (obeys && keys == listOf("ctrl+u")) text = ""
+            if (obeys && keys == LINE_CLEAR_KEYS) text = ""
         }
         override suspend fun pause(ms: Long) {}
     }
 
-    @Test fun `clear on oh my pi presses ctrl+u once and confirms the box is empty`() = runBlocking {
+    @Test fun `clear on oh my pi presses ctrl+e then ctrl+u once and confirms the box is empty`() = runBlocking {
         val box = OmpBox("fix the build")
         assertEquals(PaneDraftAction.Outcome.CLEARED, PaneDraftAction(PaneDispatch(), WriteGate()).clear("srv", ompPane, "fix the build", { true }, box))
-        assertEquals(listOf(listOf("ctrl+u")), box.writes)
+        assertEquals(listOf(listOf("ctrl+e", "ctrl+u")), box.writes)
         val stuck = OmpBox("fix the build", obeys = false)
         assertEquals(PaneDraftAction.Outcome.UNCERTAIN, PaneDraftAction(PaneDispatch(), WriteGate()).clear("srv", ompPane, "fix the build", { true }, stuck))
-        assertEquals(listOf(listOf("ctrl+u")), stuck.writes)
+        assertEquals(listOf(listOf("ctrl+e", "ctrl+u")), stuck.writes)
     }
 
     @Test fun `send draft on oh my pi presses enter once and sees the box empty`() = runBlocking {
