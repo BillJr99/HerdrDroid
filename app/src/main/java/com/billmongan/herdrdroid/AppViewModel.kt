@@ -7456,7 +7456,11 @@ class AppViewModel internal constructor(
 
     suspend fun refreshWork(paneId: String) {
         val p = pane(paneId) ?: return
+        val client = herdr ?: return
+        val connection = client.connectionIdentity
         quietly { it.work(p, transcriptScript) }?.let { fresh ->
+            if (herdr !== client || client.connectionIdentity !== connection ||
+                pane(paneId)?.sameWorkIdentity(p) != true) return
             // Processes that were active and are gone now are kept as finished (the last 30).
             val before = work[paneId]?.activeProcs(p.agent).orEmpty()
             val now = fresh.procs.map { it.pid }.toSet()

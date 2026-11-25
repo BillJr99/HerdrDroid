@@ -159,7 +159,12 @@ private fun WorkList(vm: AppViewModel, paneId: String) {
         LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             item { Spacer(Modifier.height(6.dp)) }
             // Three groups, matching the header's "N sh / K ag": shells, subagents, then finished.
-            if (w.activeCount(pane?.agent) == 0) item { Text("Nothing is running underneath right now.", color = Palette.Muted, fontSize = 13.sp) }
+            if (w.activeCount(pane?.agent) == 0 && w.subagentCount(pane?.agent) != null) item {
+                Text("Nothing is running underneath right now.", color = Palette.Muted, fontSize = 13.sp)
+            }
+            if (w.subagentCount(pane?.agent) == null) item {
+                Text("Subagent count unavailable for this pane.", color = Palette.Muted, fontSize = 13.sp)
+            }
             // ---- Shells ----------------------------------------------------------------------
             val runningTasks = w.tasks.filter { it.running }
             if (runningTasks.isNotEmpty() || activeProcs.isNotEmpty()) {

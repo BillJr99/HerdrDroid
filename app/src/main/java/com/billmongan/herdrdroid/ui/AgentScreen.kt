@@ -2074,13 +2074,17 @@ internal data class RunningPill(val label: String, val description: String, val 
  * when there is nothing to show.
  */
 internal fun runningPill(w: com.billmongan.herdrdroid.herdr.WorkInfo, agent: String?, endedProcs: Int): RunningPill? {
-    val subs = w.activeSubagents
+    val subs = w.subagentCount(agent)
     val shells = maxOf(w.activeProcs(agent).size, w.runningTasks)
+    val done = w.subagents.count { !it.active } + w.tasks.count { !it.running } + endedProcs
+    fun n(k: Int, one: String) = "$k $one" + if (k == 1) "" else "s"
+    if (subs == null) {
+        val count = if (shells > 0) "$shells sh - ? sub" else if (done > 0) "$done done - ? sub" else "? sub"
+        return RunningPill(count, n(shells, "observed shell") + "; subagent count unavailable", shells > 0)
+    }
     if (subs > 0 || shells > 0) {
-        fun n(k: Int, one: String) = "$k $one" + if (k == 1) "" else "s"
         return RunningPill("$shells sh - $subs sub", n(shells, "shell") + " and " + n(subs, "subagent") + " running", true)
     }
-    val done = w.subagents.count { !it.active } + w.tasks.count { !it.running } + endedProcs
     return if (done > 0) RunningPill("$done done", "Nothing running, $done finished", false) else null
 }
 
