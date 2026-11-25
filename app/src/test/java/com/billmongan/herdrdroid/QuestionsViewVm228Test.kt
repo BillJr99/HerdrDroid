@@ -133,6 +133,27 @@ class QuestionsViewVm228Test {
         assertEquals(0, vm.openQuestionCount())
     }
 
+    @Test fun aProbeTabIsExcludedByLabelAndInvalidatesAnExistingQuestion() = fixture {
+        val e = readEntry()
+        assertEquals(1, vm.openQuestionCount())
+        status(Status.NEEDS_YOU, "probe-question")
+        assertTrue(vm.pane("p1")!!.isProbe)
+        assertTrue(vm.visibleQuestions().isEmpty())
+        assertEquals(0, vm.openQuestionCount())
+        assertNull(vm.questionsCardTarget("p1"))
+        answer(e)
+        assertTrue(sent.isEmpty())
+
+        val reads = visibleReads
+        runBlocking { vm.questionsFeed.refreshNow() }
+        assertEquals(reads, visibleReads)
+
+        status(Status.NEEDS_YOU, "work-probe-question")
+        assertTrue(!vm.pane("p1")!!.isProbe)
+        assertEquals(1, vm.openQuestionCount())
+        assertNotNull(vm.questionsCardTarget("p1"))
+    }
+
     @Test fun noPanesNeedingYouIsAnEmptyListAndNoBadge() = fixture {
         status(Status.IDLE)
         runBlocking { vm.questionsFeed.refreshNow() }
@@ -353,9 +374,9 @@ class QuestionsViewVm228Test {
             shadowOf(Looper.getMainLooper()).idle()
         }
 
-        fun status(status: Status) {
+        fun status(status: Status, label: String = agent) {
             statusNow = status
-            state("panes", listOf(Pane("p1", "tab", "w1", agent, status, "", "/fixture", tabLabel = agent, scrollOffset = 0, terminalId = terminal)))
+            state("panes", listOf(Pane("p1", "tab", "w1", agent, status, "", "/fixture", tabLabel = label, scrollOffset = 0, terminalId = terminal)))
         }
 
         fun readEntry(): QuestionEntry {

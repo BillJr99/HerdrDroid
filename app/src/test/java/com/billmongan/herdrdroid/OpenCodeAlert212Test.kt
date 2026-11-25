@@ -153,6 +153,25 @@ class OpenCodeAlert212Test {
 
     // ---- the alert ----------------------------------------------------------------------------
 
+    @Test fun probeTabStatusChangesDoNotReadOrPostAlerts() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        Notify.channels(app)
+        vm.changeWatching(true)
+        val probe = pane("opencode", Status.IDLE).copy(tabLabel = "probe-alert")
+        val ordinary = probe.copy(id = "ordinary-pane", title = "probe-title", tabLabel = "ordinary")
+        var reads = 0
+        val client = { reads++; null }
+        vm.noticeChanges(server.id, server.label, listOf(probe, ordinary), client)
+        vm.noticeChanges(server.id, server.label, listOf(probe.copy(status = Status.NEEDS_YOU),
+            ordinary.copy(status = Status.NEEDS_YOU)), client)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(1, reads)
+        assertFalse(Notify.isShowing(app, server.id, probe.id))
+        assertTrue(Notify.isShowing(app, server.id, ordinary.id))
+        Notify.clear(app, server.id, ordinary.id)
+    }
+
     @Test fun theAlertOffersEveryButtonWithNoReply() {
         val app = ApplicationProvider.getApplicationContext<Application>()
         shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)

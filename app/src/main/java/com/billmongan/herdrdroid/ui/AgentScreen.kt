@@ -598,7 +598,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             // 2.1.5: the pill is the only way into the view; the "Running underneath" menu entry is gone
             // (Bill, 2026-11-22). With nothing running it stays as a muted "N done" while the session has
             // finished work to read, and is hidden when there is nothing at all.
-            vm.work[paneId]?.let { w ->
+            vm.work[paneId]?.takeUnless { pane?.isProbe == true }?.let { w ->
                 runningPill(w, pane?.agent, vm.endedProcs[paneId].orEmpty().size)?.let { RunningPillChip(vm, paneId, it) }
             }
             // Everything else lives in one menu, so the header stays readable on a phone.
@@ -689,7 +689,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         HorizontalDivider(color = Palette.Line)
         ServerBanners(vm)
         // A held send's problem shows only in its own pane's chat, on its own server (2.1.2).
-        vm.sendNoticeFor(paneId)?.let { ErrorBanner(it) { vm.dismissSendNotice(paneId) } }
+        vm.sendNoticeFor(paneId)?.takeUnless { pane?.isProbe == true }?.let { ErrorBanner(it) { vm.dismissSendNotice(paneId) } }
         // 2.1.5: cross-server cards from frames the agent rendered in this chat (2.2.0: kept to a
         // share of the window, so the message box below always fits).
         if (!live) CrossServerPanel(vm, paneId)

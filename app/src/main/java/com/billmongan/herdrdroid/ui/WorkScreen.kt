@@ -123,6 +123,10 @@ private fun WorkList(vm: AppViewModel, paneId: String) {
     val w = vm.work[paneId]
     Column(Modifier.fillMaxSize().background(Palette.Ground).systemBarsPadding()) {
         WorkHeader("Running under ${pane?.agentName ?: "this pane"}", pane?.folder ?: paneId, onBack = { vm.screen = Screen.Agent(paneId) })
+        if (pane?.isProbe == true) {
+            Text("Work tracking is disabled for probe tabs.", modifier = Modifier.padding(16.dp), color = Palette.Muted)
+            return@Column
+        }
         if (w == null) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Palette.Blue) }
             return@Column

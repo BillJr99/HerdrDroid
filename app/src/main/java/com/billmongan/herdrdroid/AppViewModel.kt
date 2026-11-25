@@ -4206,6 +4206,7 @@ class AppViewModel internal constructor(
     }
 
     private fun noteSendProblem(serverId: String, paneId: String, text: String) {
+        if (probePane(serverId, paneId)) return
         sendNotices = sendNotices.filterNot { it.serverId == serverId && it.paneId == paneId } + SendNotice(serverId, paneId, text)
     }
 
@@ -5312,7 +5313,7 @@ class AppViewModel internal constructor(
         if (screen != Screen.Questions || locked || link != Link.CONNECTED) return null
         val client = herdr ?: return null
         return CardTarget(client, client.connectionIdentity ?: return null, current?.id ?: return null,
-            paneVisit, pane(paneId) ?: return null, questionsVisit)
+            paneVisit, pane(paneId)?.takeUnless { it.isProbe } ?: return null, questionsVisit)
     }
 
     /** 2.2.8: the Questions view's visit: bumped on every way into or out of it, and when it is hidden. */
@@ -5329,7 +5330,7 @@ class AppViewModel internal constructor(
      * waits while herdr says so (the pane's card shows them whatever herdr reports).
      */
     private fun questionSources(): List<com.billmongan.herdrdroid.questions.QuestionSource> =
-        sessions().mapNotNull {
+        sessions().filterNot { it.pane.isProbe }.mapNotNull {
             val waiting = it.status == Status.NEEDS_YOU
             val candidate = !waiting && it.status == Status.WORKING && it.pane.agent?.lowercase() in QUESTION_CANDIDATE_AGENTS
             if (!waiting && !candidate) null
@@ -5346,6 +5347,7 @@ class AppViewModel internal constructor(
     private suspend fun readQuestionSource(src: com.billmongan.herdrdroid.questions.QuestionSource): com.billmongan.herdrdroid.questions.QuestionRead? {
         val session = sessions().firstOrNull { it.server.id == src.serverId && it.pane.id == src.pane.id && it.current == src.current } ?: return null
         val (server, pane) = session
+        if (pane.isProbe) return null
         val client = clientFor(server.id) ?: return null
         val connection = client.connectionIdentity ?: return null
         fun unreadable(why: String) = com.billmongan.herdrdroid.questions.QuestionRead(null, null, unreadable = why)
@@ -5353,7 +5355,8 @@ class AppViewModel internal constructor(
         if (pane.terminalId == null && pane.sessionId == null) return unreadable("The app can't tell which agent is in this pane. Open the pane to answer.")
         val target = questionTargetFor(src)
         val version = versionOf(pane.id).takeIf { session.current }
-        fun stillCurrent() = !locked && (foreground || !server.overWebSocket) && clientFor(server.id) === client &&
+        fun stillCurrent() = !locked && !probePane(server.id, pane.id) &&
+            (foreground || !server.overWebSocket) && clientFor(server.id) === client &&
             client.connectionIdentity === connection &&
             if (session.current) current == server && link == Link.CONNECTED && pane(pane.id)?.sameCardOccupant(pane) == true
             else fleetStates[server.id]?.let { it.server == server && it.error == null &&
@@ -5433,8 +5436,14 @@ class AppViewModel internal constructor(
      * view lists, when more (approvals it found on panes herdr calls working). The view's list is
      * forgotten when it is hidden.
      */
-    fun openQuestionCount(): Int = maxOf(sessions().count { it.status == Status.NEEDS_YOU },
-        questionsFeed.entries.count { it.state != com.billmongan.herdrdroid.questions.EntryState.ANSWERED })
+    fun openQuestionCount(): Int = maxOf(sessions().count { !it.pane.isProbe && it.status == Status.NEEDS_YOU },
+        visibleQuestions().count { it.state != com.billmongan.herdrdroid.questions.EntryState.ANSWERED })
+
+    internal fun visibleQuestions() = questionsFeed.entries.filterNot { probePane(it.source.serverId, it.source.pane.id) }
+
+    internal fun probePane(serverId: String, paneId: String): Boolean =
+        (if (serverId == current?.id) pane(paneId) else fleetStates[serverId]?.panes?.singleOrNull { it.id == paneId })
+            ?.isProbe == true
 
     /** The Questions view is on screen (and the app in front): reads run, and the watched servers are read as often as with the drawer out. */
     internal fun questionsShown() {
@@ -6357,7 +6366,7 @@ class AppViewModel internal constructor(
     /** Each pane's running alert confirmation (2.2.2), "server|pane" to job: one at a time per pane. */
     private val alertJobs = HashMap<String, Job>()
 
-    private fun noticeChanges(serverId: String, serverLabel: String, seen: List<Pane>, client: () -> Herdr?) {
+    internal fun noticeChanges(serverId: String, serverLabel: String, seen: List<Pane>, client: () -> Herdr?) {
         if (!watching) {
             seen.forEach { lastStatus["$serverId|${it.id}"] = it.status }
             return
@@ -6367,6 +6376,11 @@ class AppViewModel internal constructor(
             val key = "$serverId|${p.id}"
             val before = lastStatus[key]
             lastStatus[key] = p.status
+            if (p.isProbe) {
+                alertJobs.remove(key)?.cancel()
+                if (Notify.isShowing(app, serverId, p.id)) Notify.clear(app, serverId, p.id)
+                continue
+            }
             if (before == null || before == p.status || p.agent == null) continue
             // 2.2.2: a new state ends the alert's confirmation reads for the old one.
             alertJobs.remove(key)?.cancel()
@@ -6377,6 +6391,7 @@ class AppViewModel internal constructor(
                     // Glyphs kept (2.1.2), as the tap's read keeps them, so the question identity the
                     // alert carries is computed from the same text the tap compares it with.
                     var text = runCatching { client()?.read(p.id, NOTIFY_READ_LINES, preserveGlyphs = true) }.getOrNull().orEmpty()
+                    if (!isActive || probePane(serverId, p.id)) return@launch
                     // A screen that couldn't be read: one plain notice, no question and no Reply (1.4.2, from review).
                     if (text.isBlank()) { Notify.unread(app, serverId, serverLabel, p.id, p.agentName); return@launch }
                     val prompt = detectPrompt(text, blocked = true, agent = p.agent)
@@ -6402,7 +6417,7 @@ class AppViewModel internal constructor(
                         Notify.needsYou(app, serverId, serverLabel, p.id, p.agentName, neutral.question, emptyList(), p.agent,
                             terminalReview = true, reply = false, prompt = neutral)
                         // Still the alert to update: watched, waiting, not open on screen, and the neutral alert not tapped or dismissed.
-                        fun stillWanted() = watching && lastStatus[key] == Status.NEEDS_YOU && Notify.isShowing(app, serverId, p.id) &&
+                        fun stillWanted() = watching && !probePane(serverId, p.id) && lastStatus[key] == Status.NEEDS_YOU && Notify.isShowing(app, serverId, p.id) &&
                             !(foreground && serverId == current?.id && (screen as? Screen.Agent)?.paneId == p.id)
                         val got = com.billmongan.herdrdroid.herdr.confirmByReads(text, prompt, p.agent, null) {
                             delay(com.billmongan.herdrdroid.herdr.ALERT_CONFIRM_PAUSE_MS)
@@ -6420,6 +6435,7 @@ class AppViewModel internal constructor(
                     val asked = card
                     val askedText = text
                     withContext(Dispatchers.Main) { if (asked != null && asked.choices.isNotEmpty()) observeQuestion(serverId, p.id, asked, p.status, p.agentName, askedText) }
+                    if (!isActive || probePane(serverId, p.id)) return@launch
                     // 2.1.2: the alert offers the card's own options (Hermes's clarify and OpenCode's
                     // question included), answered through the same checks when tapped.
                     Notify.needsYou(app, serverId, serverLabel, p.id, p.agentName, asked?.question ?: "Waiting for you.", asked?.choices.orEmpty(), p.agent,
@@ -6485,6 +6501,10 @@ class AppViewModel internal constructor(
     /** A notification button: answer only if the same question is still on screen. */
     private suspend fun answerFromNotification(a: NotifyAction) {
         val app = getApplication<Application>()
+        if (probePane(a.serverId, a.paneId)) {
+            Notify.clear(app, a.serverId, a.paneId)
+            return
+        }
         val serverLabel = servers.firstOrNull { it.id == a.serverId }?.label ?: ""
         val h = if (a.serverId == current?.id) herdr else fleet?.herdr(a.serverId)
         if (h == null) {
@@ -7493,8 +7513,9 @@ class AppViewModel internal constructor(
     }
 
     suspend fun refreshWork(paneId: String) {
-        val p = pane(paneId) ?: return
+        val p = pane(paneId)?.takeUnless { it.isProbe } ?: return
         quietly { it.work(p, transcriptScript) }?.let { fresh ->
+            if (pane(paneId)?.isProbe != false) return
             // Processes that were active and are gone now are kept as finished (the last 30).
             val before = work[paneId]?.activeProcs(p.agent).orEmpty()
             val now = fresh.procs.map { it.pid }.toSet()
@@ -7827,6 +7848,7 @@ class AppViewModel internal constructor(
 
     /** 2.2.2: a key press left the mode unreadable: not confirmed, said loudly in the chat, as an error and as an alert. */
     private fun modeUnknownAlarm(paneId: String, p: Pane, why: String) {
+        if (p.isProbe || current?.id?.let { probePane(it, paneId) } == true) return
         val text = "${p.agentName}'s mode is not confirmed" + (if (why.isNotBlank()) " ($why)" else "") + "; check it at the computer."
         error = text
         current?.id?.let { noteSendProblem(it, paneId, text) }
@@ -7879,6 +7901,7 @@ class AppViewModel internal constructor(
 
     /** The mode switch ended on a mode that approves every tool the user didn't pick: said in the chat, as an error and as an alert. */
     private fun modeAlarm(paneId: String, p: Pane, mode: String, why: String) {
+        if (p.isProbe || current?.id?.let { probePane(it, paneId) } == true) return
         val text = "${p.agentName} is in $mode, which approves every tool, and the app couldn't switch it back" +
             (if (why.isNotBlank()) " ($why)" else "") + ". Change its mode at the computer now."
         error = text

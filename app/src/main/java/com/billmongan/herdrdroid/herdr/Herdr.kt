@@ -46,6 +46,9 @@ data class Pane(
      */
     val openCodeStaleBlock: Boolean = false,
 ) {
+    /** Disposable probes use a reserved tab label, independent of pane titles and agent output. */
+    val isProbe: Boolean get() = tabLabel.startsWith("probe-")
+
     /** The status that picks how a message goes out: herdr's own, not the screen's (2.1.2). */
     val sendStatus: Status get() = screenNeedsYouFrom ?: status
 

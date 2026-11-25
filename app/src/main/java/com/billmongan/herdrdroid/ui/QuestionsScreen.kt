@@ -101,7 +101,7 @@ fun QuestionsScreen(vm: AppViewModel) {
     val sessions = vm.sessions()
     // The occupant's whole identity too, so another agent or session in a pane shows at once.
     val signature = sessions.joinToString("\n") { s -> with(s.pane) {
-        "${s.server.id}|$id|${s.status}|$agent|$terminalId|$sessionId|$tabId|$workspaceId|$cwd"
+        "${s.server.id}|$id|${s.status}|$agent|$terminalId|$sessionId|$tabId|$workspaceId|$cwd|$isProbe"
     } }
     LaunchedEffect(signature) { feed.poke() }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -119,7 +119,7 @@ fun QuestionsScreen(vm: AppViewModel) {
         }
         vm.notice?.let { ErrorBanner(it) { vm.notice = null } }
         QuestionsList(
-            entries = feed.entries, now = now,
+            entries = vm.visibleQuestions(), now = now,
             sending = { it.source.current && vm.answerInFlight(it.source.pane.id) },
             onOpen = { e -> vm.drawerOpen = false; vm.switchTo(e.source.serverId, e.source.pane.id) },
             onPress = { e, down -> if (down) feed.holdPress(e.key) else feed.releasePress(e.key) },
@@ -137,7 +137,9 @@ fun QuestionsScreen(vm: AppViewModel) {
             onType = { e, p, c -> typing = TypedAnswer(e, p, c) },
         )
     }
-    typing?.let { t ->
+    val typingProbe = typing?.entry?.source?.let { vm.probePane(it.serverId, it.pane.id) } == true
+    LaunchedEffect(typingProbe) { if (typingProbe) typing = null }
+    typing?.takeUnless { typingProbe }?.let { t ->
         // Held while the box is on screen, and released however it leaves (sent, cancelled, or the view closed).
         DisposableEffect(t) {
             feed.holdTyping(t.entry.key)
