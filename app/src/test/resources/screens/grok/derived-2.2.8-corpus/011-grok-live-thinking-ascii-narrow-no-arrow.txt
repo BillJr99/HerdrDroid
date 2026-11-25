@@ -1,0 +1,20 @@
+  ~/work/demo                                    42k/256k │ [Dash]
+
+     ❯ Inspect config defaults and report.                11:36 PM
+
+     ◈ Explored 2 files
+
+  ┃  ◆ Thinking...
+  ┃
+  ┃  Notes from config.toml:
+  ┃  1. Read config from ~/.demo/config.toml
+  ┃  2. Check Opt in flag (defaults false)
+  ┃  3. Verify backup rotation limit
+
+  ⠧ Thinking… 8s  [stop]
+
+  ╭──────────────────────────────────────────────────────────────╮
+  │ ❯                                                            │
+  ╰──────────────────────────────────────── Grok 4.7 (high) ─────╯
+
+  Shift+Tab:mode  │  Ctrl+c:cancel

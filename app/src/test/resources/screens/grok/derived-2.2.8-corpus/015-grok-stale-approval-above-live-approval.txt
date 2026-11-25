@@ -1,0 +1,25 @@
+  ~/work/demo                                                                                            124k / 256k │ [Dashboard]
+
+  ┃
+  ┃  ›  List the build cache
+  ┃  │ ls -la build/cache
+  ┃  1 (○) Yes, and don't ask again for anything (always-approve mode)
+  ┃  2 (●) Yes, proceed
+  ┃  3 (○) No, reject (type to add feedback)
+
+     ◈ Ran 1 command
+
+   ◆ Check repository status… 1s                                                                                 4m05s ⇣71.2k [↓][stop]
+
+  ┃
+  ┃  ›  Check repository status
+  ┃  │ git status -sb
+  ┃  ← → narrow scope
+  ┃
+  ┃  1 (○) Yes, and don't ask again for anything (always-approve mode)
+  ┃  2 (●) Yes, proceed
+  ┃  3 (○) No, reject (type to add feedback)
+  ┃  4 (○) Never allow: git status
+  ┃
+
+  1/4:select  │  Tab:next option  │  ←/→:scope  │  Ctrl+o:always-approve  │  Ctrl+c:cancel  │  Esc:scrollback

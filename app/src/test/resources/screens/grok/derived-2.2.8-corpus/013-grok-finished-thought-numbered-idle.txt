@@ -1,0 +1,23 @@
+  ~/work/demo                                                                                            108k / 256k │ [Dashboard]
+
+     ❯ Summarize how telemetry settings and cache cleanup work.                                                           3:18 PM
+
+     ◆ Thought for 3.4s
+
+     Here is how both behave:
+
+     1. Keep cache entries referenced by build/stamp.
+     2. Prune stale *.tmp files older than 24h:
+        ```sh
+        # 1. dry-run check
+        find build/cache -name '*.tmp' -print
+        ```
+     3. Telemetry is disabled by default; users can Opt in via settings.
+
+     Worked for 5.1s
+
+  ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ ❯                                                                                                                              │
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────── Grok 4.7 (high) · auto-review ─╯
+
+  Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+.:shortcuts

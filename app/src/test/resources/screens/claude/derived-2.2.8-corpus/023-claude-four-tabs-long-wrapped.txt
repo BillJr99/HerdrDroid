@@ -1,0 +1,24 @@
+
+● Your answers are recorded. Asking the next questions from the review while the checks finish.
+  the review notes while the checks finish.
+
+  Ran 1 shell command
+
+❯ go ahead and ask the remaining review questions
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Build order  ☒ Cache  ☐ Test step  ☐ Reports  ✔ Submit  →
+
+│ Which step should run first in the sample build? Older notes in the build guide let the lint step run
+│ before the tests; newer notes say the tests run first and the lint step runs last.
+
+❯ 1. Tests first (Recommended)
+     As the newer notes say. The older lint-first lines are kept as history and marked
+     superseded. One order, so there is never a question of which one applies.
+  2. Lint first on request
+     Lint may run first when a reviewer asks for it, and that run counts. Useful only when
+     the tests are slow; needs a rule for which run wins.
+  3. Type something.
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel

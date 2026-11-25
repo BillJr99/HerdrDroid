@@ -1389,7 +1389,11 @@ private fun isChrome(line: String): Boolean {
     return boxy * 2 >= t.length
 }
 
-data class Choice(val label: String, val keys: String, val pressEnter: Boolean)
+/**
+ * One option of a card. [ambiguous] (2.2.8, Codex's per-commit review of a1314cd): the pane cut its
+ * label off so that it could be the agent's approve-everything option; it is never sent ([blockedChoiceReason]).
+ */
+data class Choice(val label: String, val keys: String, val pressEnter: Boolean, val ambiguous: Boolean = false)
 /**
  * A question on screen. [selected] is the number of the highlighted menu option (the ❯ line),
  * when there is one: answers then move the highlight with the arrow keys and press Enter instead
@@ -1461,7 +1465,25 @@ data class Prompt(
     internal val topOffScreen: Boolean = false,
     /** 2.2.7: Oh My Pi's or pi's multi-question Ask dialog, as [OmpAsk] read it. */
     internal val ompAsk: OmpAsk.State? = null,
+    /**
+     * 2.2.8 (Bill: "grok has a question but keeps saying it changed"): Grok shows only part of the
+     * command ("… Ctrl+F to expand"). The card offers no answer until the command is shown whole:
+     * only Ctrl+F, which expands it in Grok's own box, after which the card reads it again.
+     */
+    internal val clipped: Boolean = false,
 ) {
+    /**
+     * 2.2.8 (Grok's review 4; Codex's review 4B): the exact rows the parser read the dialog from, from
+     * the question's first row down to the last option's last row, for the card's guard ([cardRegion]);
+     * null when the question wasn't read as one block. Where the dialog sits on the screen, not what it
+     * asks: not part of the card's identity (equality, [copy]), so the same question read at another
+     * scroll is the same card. [withSpanOf] carries it.
+     */
+    internal var dialogRows: DialogRows? = null
+
+    /** This card with [other]'s [dialogRows] (a [copy] of a parsed card made in a parser). */
+    internal fun withSpanOf(other: Prompt): Prompt = also { it.dialogRows = other.dialogRows }
+
     /**
      * Never an empty card (1.4.2): a prompt with no choices always has something to show, the
      * screen region or, when the screen couldn't be read, a note saying so, with the generic keys.
@@ -2675,7 +2697,9 @@ fun detectLetterMenu(text: String, blocked: Boolean): Prompt? {
     val lines = text.lines().map { it.trimEnd() }.filter { it.isNotBlank() }.takeLast(14)
     if (lines.isEmpty()) return null
     val foot = lines.last()
-    if (Regex("""\ba:approve\b""").containsMatchIn(foot)) {
+    // The plan review's own whole footer row (GROK_PLAN_FOOTER_ROW, the running filter's own rule):
+    // never prose that mentions its keys, and never a partial footer (Codex's per-commit review of 573e426).
+    if (GROK_PLAN_FOOTER_ROW.matches(foot)) {
         val pairs = Regex("""\b([a-z]):([a-z][a-z ]*[a-z])""").findAll(foot).map { it.groupValues[1] to it.groupValues[2] }
             .filter { (k, _) -> k in setOf("a", "s", "c", "q") }.toList()
         if (pairs.size < 2) return null
@@ -2688,9 +2712,8 @@ fun detectLetterMenu(text: String, blocked: Boolean): Prompt? {
     val rows = lines.withIndex().filter { row.matches(it.value) }
     if (rows.size !in 2..6) return null
     // One run, near the bottom, with the letters named in the hint under it ("Enter or y to trust · n or Esc to quit").
-    if (rows.zipWithNext().any { (a, b) -> b.index != a.index + 1 } || rows.last().index < lines.size - 3) return null
+    if (rows.zipWithNext().any { (a, b) -> b.index != a.index + 1 } || !letterMenuTail(lines.drop(rows.last().index + 1))) return null
     val letters = rows.map { row.find(it.value)!!.groupValues[1] }
-    if (agentWentOn(lines.drop(rows.last().index + 1))) return null
     val hint = lines.drop(rows.last().index + 1).joinToString(" ")
     if (!blocked && letters.none { Regex("""\b$it\b""").containsMatchIn(hint) }) return null
     val question = lines.take(rows.first().index).lastOrNull { it.trim().endsWith("?") }?.trim() ?: "Choose"
@@ -3739,7 +3762,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
         try {
             val p = detectPrompt(text, true, agent, version) ?: return null
             val steer = plain.lines().takeLast(14).any { it.contains("type to deny and steer") }
-            return if (steer && p.choices.isNotEmpty() && !p.terminalReview) p.copy(choices = p.choices + Choice(OMP_STEER_LABEL, OMP_STEER, false)) else p
+            return if (steer && p.choices.isNotEmpty() && !p.terminalReview) p.copy(choices = p.choices + Choice(OMP_STEER_LABEL, OMP_STEER, false)).withSpanOf(p) else p
         } finally {
             OMP_APPROVAL_INNER.set(false)
         }
@@ -3749,7 +3772,337 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
         detectOpenCodeQuestion(plain)?.let { return it }
         detectOpenCodePermission(text, plain)?.let { return it }
     }
-    return detectPlainPrompt(plain, blocked, agent, version)
+    // 2.2.8 (Bill: "grok is stuck on a question I can't answer"): Grok working under its own rows.
+    if (agent.equals("grok", true) && grokWorkingBelowAnyQuestion(plain)) return null
+    val p = detectPlainPrompt(if (agent.equals("grok", true)) grokWithoutThinkingPanel(plain) else plain, blocked, agent, version)
+    return if (p != null && agent.equals("grok", true)) grokApproval(plain, p) else p
+}
+
+private val GROK_THINKING_PANEL = Regex("""^\s*┃\s*◆\s+Thinking(?:…|\.\.\.)?\s*$""")
+private val GROK_SELECT_FOOTER = Regex("""^\s*\d+/\d+:select\b""")
+/** A row in the "┃" gutter (the thinking panel's body, an approval box's rows). */
+private val GROK_GUTTER_ROW = Regex("""^\s*┃""")
+/**
+ * Grok's running row however narrow the pane or early the turn (agy's GROKTHINK review): a spinner,
+ * then text, then "[stop]" at the row's end, with any spacing and before "⇣<tokens>" appears.
+ */
+private val GROK_RUNNING_ROW = Regex("""^\s*[\u2800-\u28FF]\s*\S.*\[stop]\s*$""")
+/** The privacy banner's own rows: its buttons, or its radio rows; never prose that says "Opt in". */
+private val GROK_PRIVACY_ROW = Regex("""\[Opt out]\s*\[Opt in]|^\s*[○●]\s+Opt (?:in|out)\s*$""")
+/**
+ * Grok's plan review footer as the screen's last row: "a:approve  │  s:request changes  │ … │  q:quit
+ * plan", its keys between "│" bars ([detectLetterMenu] takes the same row). Prose that mentions the
+ * keys ("press a:approve or s:request changes") is not it (Codex's per-commit review).
+ */
+internal val GROK_PLAN_FOOTER_ROW = Regex("""^\s*a:approve\s+│\s+s:request changes\s+│.*\bq:quit plan\b.*$""")
+private val GROK_TRUST_HINT = Regex("""^\s*Enter or y to trust\b.*$""")
+private val GROK_TRUST_YES = Regex("""^\s*y\s{2,}Yes\b.*$""")
+private val GROK_TRUST_NO = Regex("""^\s*n\s{2,}No\b.*$""")
+
+/**
+ * The rows with text under a letter menu's options (its hint, and at most one more row of its own UI,
+ * such as a footer), with nothing of the agent's going on in them: no activity or working line, input
+ * row or running row. [detectLetterMenu] and [grokPlanOrTrustBottom] share it (Codex's per-commit
+ * review of 573e426).
+ */
+internal fun letterMenuTail(under: List<String>): Boolean {
+    val rows = under.filter { it.isNotBlank() }
+    return rows.size <= 2 && !agentWentOn(rows) && rows.none { GrokMeta.statusRow(it) != null || GROK_RUNNING_ROW.matches(it) }
+}
+
+/**
+ * The last row of a whole plan review or folder trust prompt at the bottom of [rows], or -1: the plan
+ * footer as the last row that holds text; or "y  Yes …" and "n  No …" with the trust hint right under
+ * them and only the menu's own rows after ([letterMenuTail], the card parser's rule). A mention of
+ * either anywhere else is not one.
+ */
+internal fun grokPlanOrTrustBottom(rows: List<String>): Int {
+    val last = rows.indexOfLast { it.isNotBlank() }
+    if (last < 0) return -1
+    if (GROK_PLAN_FOOTER_ROW.matches(rows[last])) return last
+    val no = rows.indexOfLast { GROK_TRUST_NO.matches(it) }
+    if (no < 1 || !GROK_TRUST_YES.matches(rows[no - 1])) return -1
+    val hint = (no + 1..last).firstOrNull { rows[it].isNotBlank() } ?: return -1
+    if (!GROK_TRUST_HINT.matches(rows[hint]) || !letterMenuTail(rows.subList(no + 1, rows.size))) return -1
+    return last
+}
+/**
+ * Grok's live thinking panel in [rows] from its title row [top]: down its "┃" gutter to a dialog's own
+ * boundary in the same gutter (Codex's per-commit review of 7d6950b: a box title, a radio row, a
+ * highlighted option run), and, when it stops at a menu with no box title, back to its last blank "┃" row, so a question
+ * line right above the dialog's options is the dialog's, not thought (review of 894e44b). No footer
+ * elsewhere on the screen decides it: a select footer under the panel is a question row of its own.
+ */
+internal fun grokThinkingPanel(rows: List<String>, top: Int): IntRange {
+    var end = top
+    while (end + 1 < rows.size && GROK_GUTTER_ROW.containsMatchIn(rows[end + 1]) && !grokDialogBoundary(rows, end + 1)) end++
+    // A menu with no box title of its own: its question is the rows after the panel's last blank row.
+    if (end + 1 < rows.size && MENU_OPTION_ROW.find(rows[end + 1]) != null && !GROK_RADIO_ROW.containsMatchIn(rows[end + 1])) {
+        (end downTo top + 1).firstOrNull { GROK_BLANK_GUTTER.matches(rows[it]) }?.let { end = it }
+    }
+    return top..end
+}
+private val GROK_BLANK_GUTTER = Regex("""^\s*┃\s*$""")
+
+/**
+ * [plain] with Grok's live thinking panel above a dialog in the same gutter blanked out (its rows kept,
+ * empty), so the card's question is the dialog's own rows, never the thought above them.
+ */
+internal fun grokWithoutThinkingPanel(plain: String): String {
+    val rows = plain.lines()
+    val top = rows.indexOfLast { GROK_THINKING_PANEL.matches(it) }
+    if (top < 0) return plain
+    val panel = grokThinkingPanel(rows, top)
+    if (panel.last + 1 >= rows.size || !GROK_GUTTER_ROW.containsMatchIn(rows[panel.last + 1])) return plain
+    return rows.mapIndexed { i, r -> if (i in panel) "" else r }.joinToString("\n")
+}
+
+/** A Grok approval box's title row in the "┃" gutter: "┃  ›  List the build cache". */
+private val GROK_BOX_TITLE = Regex("""^\s*┃\s*›\s+\S""")
+
+/**
+ * Whether [rows] at [i] starts a Grok dialog in the thinking panel's gutter (never thought text): a box
+ * title, a radio row, the always row, or a highlighted option row with the next option right under it
+ * (one highlighted row alone, as thought may quote it, is not a menu).
+ */
+private fun grokDialogBoundary(rows: List<String>, i: Int): Boolean {
+    val r = rows[i]
+    if (GROK_BOX_TITLE.containsMatchIn(r) || GROK_RADIO_ROW.containsMatchIn(r) || GROK_UNNUMBERED_ALWAYS.matches(r)) return true
+    val m = MENU_OPTION_ROW.find(r) ?: return false
+    if (m.groupValues[1].isBlank()) return false
+    val next = rows.getOrNull(i + 1)?.let { MENU_OPTION_ROW.find(it) } ?: return false
+    return menuOptionKey(next).toIntOrNull() == menuOptionKey(m).toIntOrNull()?.plus(1)
+}
+
+private val GROK_COMPOSER_TOP = Regex("""^\s*╭─+╮\s*$""")
+private val GROK_COMPOSER_ROW = Regex("""^\s*│\s*❯""")
+private val GROK_COMPOSER_BOTTOM = Regex("""^\s*╰""")
+/** A row inside the message box's frame: its "│" edge on the left. */
+private val GROK_COMPOSER_FRAME = Regex("""^\s*│""")
+
+/**
+ * 2.2.8 (Bill: "grok is stuck on a question I can't answer"): Grok draws its live thinking panel in the
+ * same "┃" gutter as its approval box ("┃  ◆ Thinking…", "┃  …", its thought text), with its running
+ * row under it ("⠧ Thinking… 44s   22m58s ⇣121k [stop]") and the message box below. That is Grok at
+ * work, not a question: a card there could not be answered. True when Grok's running row, or the bottom
+ * of its thinking panel, is lower on the screen than every row a Grok question is made of (an option
+ * row, the "N/M:select" footer, the privacy banner's own rows, a whole plan review or folder trust
+ * prompt at the screen's bottom, [grokPlanOrTrustBottom]), so a stale approval box scrolled above the work isn't a card either. A waiting approval draws
+ * its running row above the box, never below. agy's GROKTHINK review: the thinking panel's own text
+ * (a numbered point in it) and a draft in the message box ("│ ❯ 1. check foo │") are never question
+ * rows, and a plan approval or folder trust prompt under a running row still is one.
+ */
+internal fun grokWorkingBelowAnyQuestion(plain: String): Boolean {
+    val rows = plain.lines()
+    var running = rows.indexOfLast { GrokMeta.statusRow(it) != null || GROK_RUNNING_ROW.matches(it) || GROK_THINKING_PANEL.matches(it) }
+    if (running < 0) return false
+    // The thinking panel runs on down its "┃" gutter: its body is Grok's thought, not a question
+    // (up to an approval box's own radio rows, should one follow in the same gutter).
+    // Its rows are never question rows.
+    val composer = BooleanArray(rows.size)
+    if (GROK_THINKING_PANEL.matches(rows[running])) {
+        val panel = grokThinkingPanel(rows, running)
+        for (i in panel) composer[i] = true
+        running = panel.last
+    }
+    // The message box: its top edge, the "│ ❯" row, the rest of a draft, its bottom edge; never past
+    // the first row outside its frame (Codex's per-commit review: a box drawn without its bottom edge
+    // must not hide a live prompt under it).
+    for (i in rows.indices) {
+        if (!GROK_COMPOSER_TOP.matches(rows[i]) || i + 1 >= rows.size || !GROK_COMPOSER_ROW.containsMatchIn(rows[i + 1])) continue
+        composer[i] = true
+        var j = i + 1
+        while (j < rows.size && (GROK_COMPOSER_FRAME.containsMatchIn(rows[j]) || GROK_COMPOSER_BOTTOM.containsMatchIn(rows[j]))) {
+            composer[j] = true
+            if (GROK_COMPOSER_BOTTOM.containsMatchIn(rows[j])) break
+            j++
+        }
+    }
+    val question = rows.indices.lastOrNull { i ->
+        val r = rows[i]
+        !composer[i] && (MENU_OPTION_ROW.find(r) != null || GROK_RADIO_ROW.containsMatchIn(r) || GROK_UNNUMBERED_ALWAYS.matches(r) ||
+            GROK_SELECT_FOOTER.containsMatchIn(r) || GROK_PRIVACY_ROW.containsMatchIn(r))
+    } ?: -1
+    // A whole plan review or folder trust prompt at the bottom (Codex's per-commit review: never a
+    // mention of their keys, and never one with Grok's running output under it).
+    return running > maxOf(question, grokPlanOrTrustBottom(rows))
+}
+
+/**
+ * 2.2.8 (Bill: codex "sat blocked" on its own update prompt, which the app showed nothing for): Codex's
+ * "Update available · <from> → <to>" prompt, its release-notes row, then "› 1. Update now (runs `…`)",
+ * "2. Skip", "3. Skip until next version" and the footer "enter continue · esc skip". A card with the
+ * three options, "Update now" with the exact command it runs; answered with the arrows from the
+ * highlighted row and Enter, under the usual check. Only with that footer as the screen's last row
+ * (blank rows aside), the heading over it and a single highlight; otherwise null.
+ */
+private val CODEX_UPDATE_HEAD = Regex("""^Update available · \S+ → \S+$""")
+private val CODEX_UPDATE_FOOTER = Regex("""^enter continue · esc skip$""")
+private val CODEX_UPDATE_OPTION = Regex("""^(›\s*)?(\d)\.\s+(\S.*)$""")
+
+internal fun codexUpdatePrompt(text: String): Prompt? {
+    val rows = text.lines().takeLast(80).map { it.trim() }
+    val footer = rows.indexOfLast { it.isNotBlank() }
+    if (footer < 0 || !CODEX_UPDATE_FOOTER.matches(rows[footer])) return null
+    val head = (footer - 1 downTo maxOf(0, footer - 30)).firstOrNull { CODEX_UPDATE_HEAD.matches(rows[it]) } ?: return null
+    val notes = mutableListOf<String>()
+    val options = mutableListOf<Triple<String, String, Boolean>>()
+    val optionAt = mutableListOf<Int>()
+    var lastRow = -1
+    for (i in head + 1 until footer) {
+        val r = rows[i]
+        if (r.isBlank()) continue
+        val m = CODEX_UPDATE_OPTION.matchEntire(r)
+        when {
+            m != null -> { optionAt += i; lastRow = i; options += Triple(m.groupValues[2], m.groupValues[3].trim(), m.groupValues[1].isNotEmpty()) }
+            // A long option the terminal wrapped goes on its row, as the terminal cut it.
+            options.isNotEmpty() -> { lastRow = i; options[options.size - 1] = options.last().let { Triple(it.first, it.second + r, it.third) } }
+            else -> notes += r
+        }
+    }
+    if (options.size < 2 || options.map { it.first } != (1..options.size).map { it.toString() } || options.count { it.third } != 1) return null
+    // "1.2.0 → 1.3.0" reads "1.2.0 to 1.3.0": a lone arrow on a card or alert reads as a row mark.
+    val heading = rows[head].replace(" → ", " to ")
+    val lines = listOf(QLine(heading)) + notes.map { QLine(it) }
+    return Prompt(
+        (listOf(heading) + notes).joinToString(" "),
+        options.map { Choice(it.second, it.first, false) },
+        selected = options.single { it.third }.first,
+        parts = questionParts(lines),
+    ).also { p ->
+        val screen = text.lines().takeLast(80)
+        p.dialogRows = DialogRows(screen.subList(head, lastRow + 1).map { cardRegionRow(it) }, optionAt.map { it - head })
+    }
+}
+
+/** 2.2.8: Grok's "… Ctrl+F to expand" row inside its approval box: the command is cut there. */
+internal val GROK_EXPAND_HINT = Regex("""^(?:…|\.\.\.)\s*ctrl[-+]f to expand$""", RegexOption.IGNORE_CASE)
+private val GROK_RADIO_ROW = Regex("""^\s*┃?\s*\d{1,2}\s+\([○●]\)\s+\S""")
+private val GROK_UNNUMBERED_ALWAYS = Regex("""^\s*┃?\s*\([○●]\)\s+(\S.*\(always-approve mode\))\s*┃?\s*$""")
+
+/** 2.2.8: the card's key for Grok's unnumbered always-approve row, which the card shows but never sends. */
+const val GROK_ALWAYS_APPROVE = "grok:always-approve"
+
+/**
+ * 2.2.8: why a choice is shown but can't be tapped, or null. Grok's "Yes, and don't ask again for
+ * anything (always-approve mode)" switches Grok to approve every tool from then on, which is never
+ * done without Bill's say (the shared rules): the card shows it disabled, alerts and voice leave it
+ * out, and an answer for it is refused.
+ */
+/**
+ * The column [s] draws its character at [index] in, as a terminal lays it out: a tab moves to the next
+ * multiple of 8, a wide character (CJK, an emoji) takes two columns, every other character one.
+ */
+internal fun displayColumn(s: String, index: Int): Int {
+    var col = 0
+    var i = 0
+    while (i < index && i < s.length) {
+        val cp = s.codePointAt(i)
+        col = when {
+            cp == '\t'.code -> (col / 8 + 1) * 8
+            wideCodePoint(cp) -> col + 2
+            else -> col + 1
+        }
+        i += Character.charCount(cp)
+    }
+    return col
+}
+
+private fun wideCodePoint(cp: Int): Boolean = cp in 0x1100..0x115F || cp in 0x2E80..0xA4CF || cp in 0xAC00..0xD7A3 ||
+    cp in 0xF900..0xFAFF || cp in 0xFE30..0xFE4F || cp in 0xFF00..0xFF60 || cp in 0xFFE0..0xFFE6 || cp in 0x1F300..0x1FAFF ||
+    cp in 0x20000..0x3FFFD
+
+/** An option's own key hint at the end of its label: "(p)", "(esc)", "(y)". */
+private val OPTION_KEY_TAIL = Regex("""\((?:[a-z]|esc)\)$""")
+
+/** A radio row of its own ("(○) Yes, and don't ask again …"), never the label tail above it. */
+private val WRAP_RADIO_ROW = Regex("""^\([○●◯◉]\)""")
+/** Grok's always-approve option in full. */
+private const val GROK_ALWAYS_FULL = "Yes, and don't ask again for anything (always-approve mode)"
+
+/**
+ * Codex's per-commit review of fe63209 (HIGH): a label the pane cut off anywhere inside Grok's
+ * always-approve option ("Yes, and", "Yes, and don't ask again f") can't show what it approves, so it
+ * is blocked too; a label that goes on past that point with its own scope ("… for mkdir commands in
+ * /tmp/t") is not a cut-off one and stays usable.
+ */
+private fun grokAlwaysCutOff(label: String): Boolean =
+    label.trim().trimEnd('…', '.').trim().length >= "Yes, and".length && grokCouldBeAlways(label)
+
+/** Why [c] could be Grok's always-approve option cut off: a start of its label, short of the whole of it. */
+internal fun grokCouldBeAlways(label: String): Boolean {
+    val l = label.trim().trimEnd('…', '.').trim()
+    return l.isNotEmpty() && l.length < GROK_ALWAYS_FULL.length && GROK_ALWAYS_FULL.startsWith(l, ignoreCase = true)
+}
+
+internal const val AMBIGUOUS_CHOICE_REASON =
+    "Not sent: the pane cut this option's label off, so it could be the one that approves everything. Widen the pane, or use the terminal."
+
+/**
+ * Why [c] is never sent from the app, or null. Bill (2026-11-25): an approve-from-now-on option is
+ * offered behind its own confirmation ([approveAllAsk]); only what the app can't show or reach is
+ * never sent: a label cut off so it could be the approve-everything option ([Choice.ambiguous], or a
+ * cut-off start of Grok's), and Grok's unnumbered always-approve row, which no key the app sends selects.
+ */
+fun blockedChoiceReason(c: Choice): String? = when {
+    c.ambiguous || grokAlwaysCutOff(c.label) -> AMBIGUOUS_CHOICE_REASON
+    c.keys == GROK_ALWAYS_APPROVE ->
+        "Not sent: the app can't select this row with keys. It switches the agent to approve everything; use the terminal if you really mean to."
+    else -> null
+}
+
+/**
+ * Bill (2026-11-25): an option that approves from now on, on any agent (Grok's "Yes, and don't ask
+ * again for anything", Claude's and Codex's "don't ask again", "always", Oh My Pi's "for this session",
+ * OpenCode's "Always allow", Hermes's allowlist), and any option the app won't send: a tap opens
+ * "Approve everything from now on?" with its full label first.
+ */
+fun approvesFromNowOn(c: Choice): Boolean =
+    c.ambiguous || c.keys == GROK_ALWAYS_APPROVE || grantsStandingPermission(c.label) || blockedChoiceReason(c) != null
+
+/** The confirmation for [c] on [p]: its full label, the keys Confirm sends, or why it can't be sent. */
+data class ApproveAllAsk(val label: String, val keys: List<String>?, val reason: String?)
+
+/** [approvesFromNowOn]'s confirmation for [c] on the card [p], or null when [c] needs none. */
+fun approveAllAsk(p: Prompt, c: Choice): ApproveAllAsk? {
+    if (!approvesFromNowOn(c)) return null
+    val keys = if (blockedChoiceReason(c) == null) menuKeys(p, c) else null
+    val reason = blockedChoiceReason(c) ?: if (keys == null) "Not sent: the app can't tell which keys pick this option. Use the terminal." else null
+    return ApproveAllAsk(c.label, keys, reason)
+}
+
+/**
+ * 2.2.8 (Bill: "grok has a question but keeps saying it changed and won't send"): Grok 4.7's approval
+ * box as it draws it now: numbered radio rows ("2 (●) Yes, proceed", "3 (○) No, reject (type to add
+ * feedback)") and, under them, an unnumbered "(○) Yes, and don't ask again for anything
+ * (always-approve mode)" row, which the card shows disabled ([blockedChoiceReason]). A box whose
+ * command is cut ("… Ctrl+F to expand") gives a [Prompt.clipped] card.
+ */
+internal fun grokApproval(plain: String, parsed: Prompt): Prompt {
+    if (parsed.choices.isEmpty() || parsed.terminalReview) return parsed
+    // Codex's per-commit review of a1314cd (HIGH): Grok draws no plain "Yes" and no option that is only
+    // the start of its always-approve one, so a label cut off anywhere inside that one ("Yes", "Yes,
+    // a…", "Yes, and don't ask again f…") is ambiguous: shown, never sent.
+    val p = if (parsed.choices.none { grokCouldBeAlways(it.label) }) parsed
+        else parsed.copy(choices = parsed.choices.map { if (grokCouldBeAlways(it.label)) it.copy(ambiguous = true) else it }).withSpanOf(parsed)
+    val rows = plain.lines()
+    val last = rows.indexOfLast { GROK_RADIO_ROW.containsMatchIn(it) }
+    if (last < 0) return p
+    var first = last
+    while (first > 0 && GROK_RADIO_ROW.containsMatchIn(rows[first - 1])) first--
+    var out = p
+    rows.getOrNull(last + 1)?.let { GROK_UNNUMBERED_ALWAYS.matchEntire(it) }?.let { m ->
+        val label = m.groupValues[1].trim()
+        if (out.choices.none { it.label == label }) out = out.copy(choices = out.choices + Choice(label, GROK_ALWAYS_APPROVE, false)).withSpanOf(p)
+    }
+    // The box's own rows above its options: each starts with its "┃" edge (blank rows of the box too).
+    var i = first - 1
+    var clipped = false
+    while (i >= 0 && rows[i].trimStart().startsWith("┃")) {
+        if (GROK_EXPAND_HINT.matches(rows[i].trimStart().drop(1).trim())) clipped = true
+        i--
+    }
+    return if (clipped) out.copy(clipped = true).withSpanOf(p) else out
 }
 
 /**
@@ -3803,6 +4156,7 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
     // 2.1.4: Claude's /btw panel is a side answer, not a question.
     if ((agent == null || agent.equals("claude", true)) && claudeBtwOverlay(text) != null) return null
     if (agent.equals("claude", true)) claudeBackgroundList(text)?.let { return it }
+    if (agent.equals("codex", true)) codexUpdatePrompt(text)?.let { return it }
     if (agent.equals("codex", true)) {
         val rows = text.lines().takeLast(80)
         fun hints(row: String) = row.split('|').map(String::trim)
@@ -3921,6 +4275,8 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
         pastDialog = true
     }
     lines = raw.filter { it.isNotBlank() }.takeLast(40)
+    // 2.2.8 (Codex's review 4B): the row of raw each of lines is, so the guard gets the parser's own rows.
+    val rawAt = raw.indices.filter { raw[it].isNotBlank() }.takeLast(40)
     val activeText = raw.joinToString("\n")
     val dialogAt = raw.indexOfLast { parseTabBar(clean(it)) != null }
     // "❯ 1. Yes", "  2. Yes, and don't ask again for …" (labels can be long; up to 200 characters).
@@ -3930,9 +4286,9 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
     // Muse Code marks the highlighted row with "⟩" (1.4.7: "⟩ 1. Allow this stage once (y)").
     // 1.4.9 (the card audit): Hermes's "❯ [ ] 1. pytest" (a checkbox before the number) and "❯ [1] Approve
     // Once" (a number in brackets), and pi's "→" highlight.
-    val option = Regex("""^[\s│┃|]*([❯›>▶➤⟩→]\s*)?(\[[ xX✓✔]\]\s+)?(?:(\d{1,2})(?:[.)]|\s+(\([○●◯◉]\)))|\[(\d{1,2})\])\s+(.{1,200}?)[\s│┃|]*$""")
-    fun key(m: MatchResult) = m.groupValues[3].ifEmpty { m.groupValues[5] }
-    fun label(m: MatchResult) = (m.groupValues[2] + m.groupValues[6]).trim()
+    val option = MENU_OPTION_ROW
+    fun key(m: MatchResult) = menuOptionKey(m)
+    fun label(m: MatchResult) = menuOptionLabel(m)
     val marked = mutableSetOf<Int>()
     val optionRows = lines.withIndex().mapNotNull { (i, l) ->
         option.find(l)?.let { m ->
@@ -3950,16 +4306,37 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
     // An option's label wrapped onto the next line goes on there (1.4.9, from Grok's review: Copilot's
     // "(Manual" over "Approval for this session; …)"): the next line, when it is not an option row, while a
     // "(" is still open or it starts in lower case. A description under it (capitalised, its own sentence) is not.
+    // The last option's last row (its label wrapped), in lines: the bottom of the dialog the guard checks.
+    var lastOptionEnd = -1
     val numbered = run.map { (i, k, label) ->
         var full = label
         var j = i + 1
+        // Where the label starts on its row, as the terminal draws it: a wrapped row of it starts in the same column.
+        val labelCol = option.find(lines[i])?.let { m -> (m.groups[2] ?: m.groups[6])?.range?.first?.let { displayColumn(lines[i], it) } } ?: -1
         while (j < lines.size && option.find(lines[j]) == null) {
             val next = clean(lines[j])
+            // A radio row of its own ("(○) Yes, and don't ask again …") is never part of the label above
+            // it, whatever else holds (Codex's per-commit review of fe63209).
+            if (next.isEmpty() || WRAP_RADIO_ROW.containsMatchIn(next) || GROK_UNNUMBERED_ALWAYS.matches(lines[j])) break
             // A key hint under the last option ("ctrl+g to edit in editor") is not part of it.
-            if (next.isEmpty() || KEY_HINT_LINE.containsMatchIn(next) ||
-                !(full.count { it == '(' } > full.count { it == ')' } || next.first().isLowerCase())) break
+            // 2.2.8 (agy's corpus): or it is the label's own "(…)" tail, wrapped onto its own row in a
+            // narrow pane: Grok's "(always-approve mode)", Antigravity's "(Persist to settings.json)",
+            // and only when it starts in the label's own column (Codex's per-commit review: a "(…)"
+            // row of other output is not the label's).
+            // Codex's per-commit review of 5672ba8: on every path, a "(…)" row joins only in the label's
+            // column, counted as the terminal draws it (a tab to the next multiple of 8).
+            val nextCol = lines[j].indexOfFirst { it !in " \t│┃|" }.let { if (it < 0) -1 else displayColumn(lines[j], it) }
+            val parenRow = next.startsWith("(")
+            // agy's re-review (MEDIUM): Codex's narrow pane wraps an option before its own key hint
+            // ("2. Yes, and don't ask again for commands that start with" over "`python3 -` in … (p)"):
+            // a row in the label's column that ends with the key hint the label still lacks is its rest.
+            val keyTail = labelCol >= 0 && nextCol == labelCol && OPTION_KEY_TAIL.containsMatchIn(next) && !OPTION_KEY_TAIL.containsMatchIn(full)
+            if (KEY_HINT_LINE.containsMatchIn(next) || (parenRow && (labelCol < 0 || nextCol != labelCol)) ||
+                !(full.count { it == '(' } > full.count { it == ')' } || next.first().isLowerCase() ||
+                    (parenRow && next.endsWith(")")) || keyTail)) break
             full = "$full $next"; j++
         }
+        lastOptionEnd = j - 1
         Choice(full, k, false)
     }.distinctBy { it.keys }
     // The question: the text just above the first choice (up to four lines, skipping frame
@@ -3971,6 +4348,9 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
     // screen, or any screen with a row in Grok's "┆" gutter.
     val grokRows = agent.equals("grok", true) || raw.any { r -> GrokMeta.commandRow(r, null)?.cont == true }
     var topOff = false
+    // 2.2.8 (Grok's review 4): the top row of the question block the walk below read, so the card's
+    // guard hashes exactly that block through the options ([Prompt.questionSpan]); -1 when none.
+    var walkTop = -1
     val above = run.firstOrNull()?.let {
         val at = firstOption
         if (at <= 0) null else {
@@ -3983,16 +4363,18 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
             val barAt = (at - 1 downTo maxOf(0, at - TALL_QUESTION_ROWS)).firstOrNull { parseTabBar(clean(raw[it])) != null }
             if (barAt != null) {
                 got += dialogQuestionLines(raw.subList(barAt, at), clean)
+                walkTop = barAt
                 return@let got.takeIf { it.isNotEmpty() }
             }
             // 2.2.4: Claude's permission dialog, read by its frame however tall its command is.
             val framed = if (grokRows) null else claudeFramedDialog(raw, at)
-            if (framed != null) { topOff = framed.topOffScreen; return@let framed.lines }
+            if (framed != null) { topOff = framed.topOffScreen; walkTop = maxOf(framed.top, 0); return@let framed.lines }
             var i = at - 1
             // Blank lines inside a card are crossed (Antigravity puts one between "Requesting
             // permission for:", the command, and "Run this command?"), up to two of them; a rule, the
             // top of a box, or the agent's own activity lines above the card end the question.
             var gaps = 0
+            var edgeRow = -1
             var gap = false
             // 2.2.8 (Bill: "make sure all the question text is visible and well formatted especially
             // code"): a long question with code blocks was cut at its third blank line or 20th line.
@@ -4029,9 +4411,13 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
                 // the walk would cross it like a blank line into the reply above (2.1.4).
                 if (grokRows && got.isNotEmpty() && l.trimStart().startsWith("╭")) {
                     val edgeTitle = l.trim().trim('╭', '╮', '─', ' ')
-                    if (got.any { it.row } && edgeTitle.any(Char::isLetter)) got.add(0, QLine(edgeTitle))
+                    if (got.any { it.row } && edgeTitle.any(Char::isLetter)) { got.add(0, QLine(edgeTitle)); edgeRow = i }
                     break
                 }
+                // 2.2.8 (agy's corpus, 054): the bottom edge of the frame the options are drawn in, above
+                // them, closes an older dialog: the question starts under it (never that dialog's footer).
+                if (got.isNotEmpty() && frame != null && l.indexOfFirst { it != ' ' } == frame.first &&
+                    l.trimStart().firstOrNull()?.let { it == '╰' || it == '└' || it == '┗' } == true) break
                 if (l.isBlank() || c.isEmpty()) {
                     if (got.isNotEmpty() && !gap) {
                         gap = true
@@ -4079,9 +4465,10 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
                 // Grok's question card starts its question with a "?" icon (1.4.9).
                 val row = if (gutter) c.trimStart { it in GROK_GUTTER || it == ' ' }.trimEnd().removeSuffix("·").trimEnd()
                     else if (isCmd && tl.startsWith("┃")) c.trimEnd().removeSuffix("·").trimEnd() else c
-                if (row.any(Char::isLetterOrDigit) && !row.contains("narrow scope")) got.add(0, QLine(row.trimStart('›', '❯', ' ').replace(Regex("""^\?\s+"""), ""), isCmd, bar = !isCmd && tl.startsWith("│"), indent = bodyCol))
+                if (row.any(Char::isLetterOrDigit) && !row.contains("narrow scope") && !row.contains("widen scope") && !(grokRows && GROK_EXPAND_HINT.matches(row.trim()))) got.add(0, QLine(row.trimStart('›', '❯', ' ').replace(Regex("""^\?\s+"""), ""), isCmd, bar = !isCmd && tl.startsWith("│"), indent = bodyCol))
                 i--
             }
+            walkTop = if (edgeRow >= 0) edgeRow else i + 1
             // A "┆" row goes on the line above only when that row ends in Grok's "·" wrap mark; else
             // it is a line of its own (2.1.4). The command reads in its true order, one line per row.
             val joined = mutableListOf<QLine>()
@@ -4226,6 +4613,15 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
             lines.takeLast(4).any { CODEX_FOOTER.containsMatchIn(it) || MUSE_CARD_FOOTER.containsMatchIn(it) }
         return Prompt(question ?: "Choose an option", numbered, selected, escRejects = vibeCard, parts = parts, multi = multi,
             shortcuts = shortcuts, approvalIdentity = approvalIdentity, claudeCheckboxAction = checkboxAction, topOffScreen = topOff)
+            .also { p ->
+                // 2.2.8 (Codex's review 4B): the parser's exact rows, the question block it read down to the
+                // last option's last row, with each option's own row; none when they can't be mapped.
+                val bottom = rawAt.getOrNull(lastOptionEnd) ?: -1
+                val at = run.map { rawAt.getOrNull(it.first) ?: -1 }
+                p.dialogRows = if (aboveText != null && walkTop in 0..firstOption && firstOption == at.firstOrNull() &&
+                    bottom >= firstOption && at.all { it in walkTop..bottom } && run.size == numbered.size)
+                    DialogRows(raw.subList(walkTop, bottom + 1).map { cardRegionRow(it) }, at.map { it - walkTop }) else null
+            }
     }
 
     val yn = Regex("""[(\[]\s*[yY](?:es)?\s*/\s*[nN]o?\s*[)\]]""")
@@ -4723,6 +5119,168 @@ internal fun cardScreenDigest(raw: String, agent: String? = null): String {
 }
 
 /**
+ * 2.2.8 (Bill: "I don't like the 'question changed, won't send' in general; just render the question
+ * and then give the buttons so that can't happen"): the guard compares the dialog, not the screen.
+ * The dialog's rows are the rows from its question down to its last option, found in the very read
+ * the card was checked against ([cardRegion]); the check on the computer takes the same rows of its
+ * own read (the same count, the same number of rows under them: a pane's screen keeps its height) and
+ * compares them, each with only its ends trimmed. Rows above
+ * the dialog (a spinner, running times, a token counter, a header) never count, for any agent. The
+ * rows under it count by their shape only ([cardUnderRow], Codex's review 4B): a new dialog drawn
+ * under the old one changes them, a ticking counter or spinner there doesn't.
+ * The rows are first taken as [cardScreenRows] gives them, so the rules kept there still hold inside.
+ * When the dialog's rows can't be found, the whole screen is compared as before ([cardScreenDigest]).
+ */
+internal data class CardRegion(val below: Int, val count: Int)
+
+/** A read's rows as the checks count them: split at each newline, with no empty row after the last one. */
+internal fun cardRows(raw: String): List<String> = raw.split("\n").let { if (raw.endsWith("\n")) it.dropLast(1) else it }
+
+/**
+ * One dialog row as the region digest takes it: only its ends trimmed, every space inside kept (Grok's
+ * review 4: `ls  -la` and `ls -la` are different commands), styles kept.
+ */
+internal fun cardRegionRow(row: String): String = row.trim { it == ' ' || it == '\t' || it == '\r' || it == '\u000B' || it == '\u000C' }
+
+/** 2.2.8: a numbered menu row, as the generic parser reads it ("❯ 1. Yes", "2 (●) Yes, proceed", "[1] Approve"). */
+internal val MENU_OPTION_ROW = Regex("""^[\s│┃|]*([❯›>▶➤⟩→]\s*)?(\[[ xX✓✔]\]\s+)?(?:(\d{1,2})(?:[.)]|\s+(\([○●◯◉]\)))|\[(\d{1,2})\])\s+(.{1,200}?)[\s│┃|]*$""")
+internal fun menuOptionKey(m: MatchResult) = m.groupValues[3].ifEmpty { m.groupValues[5] }
+internal fun menuOptionLabel(m: MatchResult) = (m.groupValues[2] + m.groupValues[6]).trim()
+
+/**
+ * 2.2.8 (Codex's review 4B): the dialog as the parser read it. [rows]: each screen row from the
+ * question's first row down to the last option's last row, as [cardRegionRow] gives it (no styles);
+ * [options]: where each of the card's options is among them.
+ */
+internal data class DialogRows(val rows: List<String>, val options: List<Int>)
+
+/**
+ * The dialog's rows in [raw] for the card [p] (2.2.8, Grok's review 4; Codex's review 4B): exactly
+ * the rows the parser read ([Prompt.dialogRows]), found once and only once on the screen, each
+ * option row there the card's own option by its key. Null (the whole screen is compared) when they
+ * aren't there, are there twice (an older copy of the same dialog), or a row isn't the card's option.
+ */
+internal fun cardRegion(raw: String, p: Prompt): CardRegion? {
+    if ('\u0000' in raw || p.terminalReview || p.readingQuestion || p.unreadQuestion) return null
+    val d = p.dialogRows ?: return null
+    if (d.rows.isEmpty()) return null
+    val rows = cardRows(raw)
+    val plain = rows.map { cardRegionRow(stripAnsi(it)) }
+    // Options the dialog draws (the card's own rows, such as Oh My Pi's typed steer, have a ":" key).
+    val options = p.choices.filter { ':' !in it.keys }
+    if (options.isEmpty() || options.size != d.options.size) return null
+    val n = d.rows.size
+    val at = (0..plain.size - n).filter { i -> (0 until n).all { plain[i + it] == d.rows[it] } }
+    val top = at.singleOrNull() ?: return null
+    for ((o, c) in d.options.zip(options)) {
+        val m = MENU_OPTION_ROW.find(plain[top + o])
+        // Codex's update prompt draws "› 1. Update now" (CODEX_UPDATE_OPTION), the same numbers.
+        val k = m?.let(::menuOptionKey) ?: CODEX_UPDATE_KEY.find(plain[top + o])?.groupValues?.get(1)
+        if (k != c.keys) return null
+    }
+    val bottom = top + n - 1
+    return CardRegion(rows.size - 1 - bottom, n)
+}
+
+private val CODEX_UPDATE_KEY = Regex("""^(?:›\s*)?(\d)\.\s+\S""")
+
+/**
+ * 2.2.8 (Codex's review 4B): a row under the dialog as the guard takes it. Those rows decide which
+ * dialog owns the keys (a new dialog drawn under the old one takes them), so they count too.
+ * Codex's per-commit review of 8c0125d: each counts exactly as it is (styles and all, only its ends
+ * trimmed: a changed shortcut or a highlight shown only in colour is a change), except a running
+ * status row ([CARD_STATUS_ROW]), where only its moving parts are read as tokens (Codex's per-commit
+ * review of d2895b5): its spinner's glyph (the first one) as "*", each whole running time ("9s", "10s",
+ * "1m 0s", "22m58s"; never part of a word or a number) as "T", and each token counter's number
+ * ("⇣1.2k", "↓ 999k") as "N". Every other character and every style stays as it is.
+ */
+private val CARD_UNDER_GLYPH = Regex("[\u2800-\u28FF·✢✳✶✻✽◐◓◑◒◆◇◈•]")
+/**
+ * A running status row as each agent draws it (Codex's per-commit review of dce009c: never any row that
+ * merely starts with a glyph): Grok's ("⠧ Thinking… 44s   22m58s ⇣121k [stop]", "◆ List … [↓][stop]"),
+ * Claude's, Codex's and Antigravity's ("✻ Working… (14s · esc to interrupt)", "• Working (12s • esc to
+ * interrupt)", "◇ Calling tools (21s · esc to interrupt)") and Hermes's ("── ⠹ Working… · 1m 2s ──── …").
+ * Matched on the row with its styles dropped and its ends trimmed; the same three shapes in
+ * [CARD_SEND_CHECK] and card-check.sh.
+ */
+internal val CARD_STATUS_ROW = Regex("^(?:(?:[\u2800-\u28FF]|◆|◇|◈) .*\\[stop]$|(?:[\u2800-\u28FF]|✻|✶|✳|✢|·|✽|◇|◆|•) .*\\(.*esc to interrupt\\)$|─+ [\u2800-\u28FF] Working)")
+internal fun cardUnderRow(row: String): String {
+    val trimmed = cardRegionRow(row)
+    if (!CARD_STATUS_ROW.containsMatchIn(cardRegionRow(CARD_CSI.replace(row, "")))) return trimmed
+    // Each run of text between two styles on its own: the styles stay where they are.
+    val out = StringBuilder()
+    var spun = false
+    var pos = 0
+    fun text(t: String) {
+        var x = t
+        if (!spun) CARD_UNDER_GLYPH.find(x)?.let { m -> x = x.replaceRange(m.range, "*"); spun = true }
+        x = cardTokens(x, CARD_COUNTER, false) { m -> m.value.takeWhile { !it.isDigit() } + "N" }
+        x = cardTokens(x, CARD_RUN_TIME, true) { "T" }
+        out.append(x)
+    }
+    for (m in CARD_CSI.findAll(trimmed)) {
+        text(trimmed.substring(pos, m.range.first))
+        out.append(m.value)
+        pos = m.range.last + 1
+    }
+    text(trimmed.substring(pos))
+    return out.toString()
+}
+private val CARD_COUNTER = Regex("[⇣↓] ?[0-9]+(\\.[0-9]+)?[kKM]?")
+private val CARD_RUN_TIME = Regex("([0-9]+h ?)?([0-9]+m ?)?[0-9]+(\\.[0-9]+)?[smh]")
+private fun cardWordChar(c: Char) = c in '0'..'9' || c in 'a'..'z' || c in 'A'..'Z'
+
+/**
+ * [t] with each match of [re] that stands on its own (no letter or digit right after it, and with
+ * [before], none or a "." right before it) replaced by [to]. One left-to-right scan: a match that
+ * doesn't stand on its own keeps its first character and the scan goes on from the next one, exactly
+ * as [CARD_SEND_CHECK] and card-check.sh scan.
+ */
+private fun cardTokens(t: String, re: Regex, before: Boolean, to: (MatchResult) -> String): String {
+    val out = StringBuilder()
+    var i = 0
+    while (true) {
+        val m = re.find(t, i)
+        if (m == null) { out.append(t, i, t.length); break }
+        val st = m.range.first
+        val en = m.range.last + 1
+        val ok = (en == t.length || !cardWordChar(t[en])) && (!before || st == 0 || !(cardWordChar(t[st - 1]) || t[st - 1] == '.'))
+        if (ok) { out.append(t, i, st).append(to(m)); i = en } else { out.append(t, i, st + 1); i = st + 1 }
+    }
+    return out.toString()
+}
+
+/** The line between the dialog's rows and the rows under it in the digest. */
+internal const val CARD_UNDER_MARK = "@@under@@"
+
+/** The digest of [r]'s rows in [raw], as [CARD_SEND_CHECK] and card-check.sh compute it; null when they aren't there. */
+internal fun cardRegionDigest(raw: String, r: CardRegion, agent: String? = null): String? {
+    if ('\u0000' in raw) return null
+    val rows = cardScreenRows(cardRows(raw), agent)
+    val start = rows.size - r.below - r.count
+    if (r.count < 1 || r.below < 0 || start < 0) return null
+    val t = rows.subList(start, rows.size - r.below).joinToString("") { cardRegionRow(it) + "\n" } +
+        CARD_UNDER_MARK + "\n" + rows.subList(rows.size - r.below, rows.size).joinToString("") { cardUnderRow(it) + "\n" }
+    return sha256Hex(t.toByteArray(Charsets.UTF_8))
+}
+
+/**
+ * The screen argument of a card's guard for [raw] read as [p]: "r:<rows under>:<rows>:<digest>"
+ * for the dialog's rows, or the whole screen's digest when they can't be found.
+ */
+internal fun cardGuardScreen(raw: String, p: Prompt?, agent: String? = null): String {
+    val r = p?.let { cardRegion(raw, it) } ?: return cardScreenDigest(raw, agent)
+    val d = cardRegionDigest(raw, r, agent) ?: return cardScreenDigest(raw, agent)
+    return "r:${r.below}:${r.count}:$d"
+}
+
+/** Whether [raw] still matches a guard's [screen] argument, as the checks on the computer decide it. */
+internal fun cardGuardScreenMatches(raw: String, screen: String, agent: String? = null): Boolean {
+    val m = Regex("""^r:([0-9]{1,6}):([1-9][0-9]{0,5}):([0-9a-f]{64})$""").matchEntire(screen) ?: return cardScreenDigest(raw, agent) == screen
+    return cardRegionDigest(raw, CardRegion(m.groupValues[1].toInt(), m.groupValues[2].toInt()), agent) == m.groupValues[3]
+}
+
+/**
  * 2.2.7 (Bill, "check right before send"): run on the computer just before a card's keys, in the
  * same command. Reads the pane's occupant, its visible screen and its occupant again; exits 0 only
  * when both occupant reads and the screen match the digests the card was checked against, 3 when
@@ -4776,6 +5334,56 @@ internal val CARD_SEND_CHECK = """
     BOX_BOTTOM = re.compile('\u2570'.encode('utf-8') + b'(?:' + '\u2500'.encode('utf-8') + b')+' + '\u256f'.encode('utf-8') + b'$')
     def shown(line):
         return re.sub(rb'\x1b\[[0-9;?]*[ -/]*[@-~]', b'', line).lower().strip(b' \t\r\x0b\x0c')
+    DIGIT = re.compile(rb'[0-9]')
+    GLYPH = re.compile(rb'\xe2[\xa0-\xa3][\x80-\xbf]|' + b'|'.join(re.escape(c.encode('utf-8')) for c in
+                       '\u00b7\u2722\u2733\u2736\u273b\u273d\u25d0\u25d3\u25d1\u25d2\u25c6\u25c7\u25c8\u2022'))
+    SPIN = rb'\xe2[\xa0-\xa3][\x80-\xbf]'
+    def alt(cs):
+        return b'|'.join(re.escape(c.encode('utf-8')) for c in cs)
+    # cardUnderRow's CARD_STATUS_ROW in Herdr.kt: Grok's, Claude's / Codex's / Antigravity's, Hermes's.
+    STATUS = re.compile(rb'^(?:(?:' + SPIN + b'|' + alt('\u25c6\u25c7\u25c8') + rb') .*\[stop\]$|(?:' + SPIN + b'|' +
+                        alt('\u273b\u2736\u2733\u2722\u00b7\u273d\u25c7\u25c6\u2022') + rb') .*\(.*esc to interrupt\)$|' +
+                        b'(?:' + '\u2500'.encode('utf-8') + b')+ ' + SPIN + b' Working)')
+    CSI = re.compile(rb'\x1b\[[0-9;?]*[ -/]*[@-~]')
+    COUNTER = re.compile(rb'(?:' + alt('\u21e3\u2193') + rb') ?[0-9]+(\.[0-9]+)?[kKM]?')
+    RUNTIME = re.compile(rb'([0-9]+h ?)?([0-9]+m ?)?[0-9]+(\.[0-9]+)?[smh]')
+    WORD = b'0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'
+    def tokens(t, rx, before, to):
+        # cardTokens in Herdr.kt: one left-to-right scan, a match only where it stands on its own.
+        out = b''
+        i = 0
+        while True:
+            m = rx.search(t, i)
+            if m is None:
+                return out + t[i:]
+            st, en = m.start(), m.end()
+            ok = (en == len(t) or t[en] not in WORD) and (not before or st == 0 or not (t[st - 1] in WORD or t[st - 1:st] == b'.'))
+            if ok:
+                out += t[i:st] + to(m.group(0))
+                i = en
+            else:
+                out += t[i:st + 1]
+                i = st + 1
+    def shape(line):
+        # cardUnderRow in Herdr.kt: a running status row's moving parts as tokens, every other byte as it is.
+        x = line.strip(b' \t\r\x0b\x0c')
+        if not STATUS.search(CSI.sub(b'', x).strip(b' \t\r\x0b\x0c')):
+            return x
+        out = b''
+        spun = False
+        for k, seg in enumerate(re.split(rb'(\x1b\[[0-9;?]*[ -/]*[@-~])', x)):
+            if k % 2:
+                out += seg
+                continue
+            if not spun:
+                g = GLYPH.search(seg)
+                if g:
+                    seg = seg[:g.start()] + b'*' + seg[g.end():]
+                    spun = True
+            seg = tokens(seg, COUNTER, False, lambda v: re.match(rb'[^0-9]*', v).group(0) + b'N')
+            seg = tokens(seg, RUNTIME, True, lambda v: b'T')
+            out += seg
+        return out
     def timer(line, t):
         return re.sub(rb'(?s)^(.*)\([0-9]+s\)', rb'\1(Ns)', line, count=1) if TIMER_LINE.match(t) else line
     V = '\u2502'.encode('utf-8')
@@ -4834,6 +5442,11 @@ internal val CARD_SEND_CHECK = """
             else:
                 out.append(timer(line, t[i]))
         return out
+    # 2.2.8: "r:<rows under>:<rows>:<digest>" compares the dialog's rows only (cardGuardScreen).
+    REGION = None
+    m = re.fullmatch(r'r:([0-9]{1,6}):([1-9][0-9]{0,5}):([0-9a-f]{64})', screen)
+    if m:
+        REGION = (int(m.group(1)), int(m.group(2)), m.group(3))
     if screen == '-':
         # 2.2.8: the occupant only (a message queued behind a question): 0, 5 when it changed, 4.
         try:
@@ -4852,6 +5465,26 @@ internal val CARD_SEND_CHECK = """
         if b'\x00' in visible:
             print('@@herdrdroid-card-refused@@', flush=True)
             sys.exit(3)  # a NUL never matches (the shell check can't hold one); as cardScreenDigest
+        if REGION is not None:
+            # 2.2.8: the dialog's rows only, each with only its ends trimmed (cardRegionDigest in Herdr.kt).
+            below, count, want = REGION
+            lines = visible.split(b'\n')
+            if visible.endswith(b'\n'):
+                lines = lines[:-1]
+            r = rows(lines, SEEN.get('agent') == 'hermes')
+            start = len(r) - below - count
+            seen = None
+            if start >= 0:
+                seg = r[start:len(r) - below]
+                # Codex's review 4B: the rows under the dialog by their shape (cardUnderRow in Herdr.kt).
+                under = r[len(r) - below:]
+                seen = hashlib.sha256(b''.join(x.strip(b' \t\r\x0b\x0c') + b'\n' for x in seg) + b'@@under@@\n' +
+                                      b''.join(shape(x) + b'\n' for x in under)).hexdigest()
+            if before == after == occupant and seen == want:
+                sys.exit(0)
+            # The dialog's rows changed or aren't there: refused, as the whole-screen check refuses.
+            print('@@herdrdroid-card-refused@@', flush=True)
+            sys.exit(3)
         visible = b'\n'.join(rows(visible.split(b'\n'), SEEN.get('agent') == 'hermes'))
         if visible and not visible.endswith(b'\n'):
             visible += b'\n'

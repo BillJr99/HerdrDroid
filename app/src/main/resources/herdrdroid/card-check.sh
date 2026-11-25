@@ -5,6 +5,9 @@
 # Arguments: herdr, pane id, occupant digest, screen digest. No prompt text.
 # 2.2.8: a screen digest of "-" checks the occupant only, wherever the pane is scrolled (a message
 # queued behind a question goes only to its occupant): 0 when it matches, 5 when it doesn't, 4.
+# 2.2.8: a screen argument "r:<rows under>:<rows>:<digest>" compares only the dialog's rows
+# (cardRegionDigest in Herdr.kt): the same rows of this read, each with only its ends trimmed, and
+# the rows under them by their shape (a new dialog under the old one is a change).
 herdr=$1
 pane=$2
 occupant=$3
@@ -229,6 +232,20 @@ identity() {
 }
 
 anyscroll=0
+below=
+case $screen in
+  r:*)
+    rest=${screen#r:}
+    below=${rest%%:*}
+    rest=${rest#*:}
+    count=${rest%%:*}
+    want=${rest#*:}
+    case $below in '' | *[!0-9]*) { echo @@herdrdroid-card-refused@@; exit 3; } ;; esac
+    case $count in '' | *[!0-9]* | 0*) { echo @@herdrdroid-card-refused@@; exit 3; } ;; esac
+    [ ${#below} -le 6 ] && [ ${#count} -le 6 ] || { echo @@herdrdroid-card-refused@@; exit 3; }
+    hex64 "$want" || { echo @@herdrdroid-card-refused@@; exit 3; }
+    ;;
+esac
 if [ "$screen" = "-" ]; then
   anyscroll=1
   identity
@@ -319,6 +336,90 @@ END {
   }
 }
 '
+if [ -n "$below" ]; then
+  # The dialog's rows only: "start" past the screen's top means they aren't there (exit 3).
+  R='
+function word(c) { return c ~ /^[0-9A-Za-z]$/ }
+# cardTokens in Herdr.kt: one left-to-right scan, a match only where it stands on its own.
+function tokens(t, re, before, kind,   out, rest, st, en, m, ok, pre, nx) {
+  out = ""
+  while (1) {
+    if (!match(t, re)) return out t
+    st = RSTART; en = RSTART + RLENGTH
+    m = substr(t, st, RLENGTH)
+    nx = substr(t, en, 1)
+    pre = (st > 1) ? substr(t, st - 1, 1) : substr(out, length(out), 1)
+    ok = (nx == "" || !word(nx)) && (!before || pre == "" || !(word(pre) || pre == "."))
+    if (ok) {
+      if (kind == "counter") { match(m, /^[^0-9]*/); out = out substr(t, 1, st - 1) substr(m, 1, RLENGTH) "N" }
+      else out = out substr(t, 1, st - 1) "T"
+      t = substr(t, en)
+    } else {
+      out = out substr(t, 1, st)
+      t = substr(t, st + 1)
+    }
+  }
+}
+function text(t) {
+  if (!spun && match(t, /\342[\240-\243][\200-\277]|·|✢|✳|✶|✻|✽|◐|◓|◑|◒|◆|◇|◈|•/)) {
+    t = substr(t, 1, RSTART - 1) "*" substr(t, RSTART + RLENGTH)
+    spun = 1
+  }
+  t = tokens(t, "(⇣|↓) ?[0-9]+(\\.[0-9]+)?[kKM]?", 0, "counter")
+  t = tokens(t, "([0-9]+h ?)?([0-9]+m ?)?[0-9]+(\\.[0-9]+)?[smh]", 1, "time")
+  return t
+}
+{ r[NR] = $0 }
+END {
+  start = NR - below - count + 1
+  if (start < 1) exit 3
+  for (i = start; i <= NR - below; i++) {
+    x = r[i]
+    sub(/^[ \t\r\v\f]+/, "", x)
+    sub(/[ \t\r\v\f]+$/, "", x)
+    print x
+  }
+  # 2.2.8 (Codex review 4B): the rows under the dialog (cardUnderRow in Herdr.kt): each exactly, ends
+  # trimmed, except a running status row (Grok, Claude/Codex/Antigravity, Hermes shapes), where only
+  # its spinner glyph, running times and counter numbers are read as tokens; styles stay.
+  print "@@under@@"
+  for (i = NR - below + 1; i <= NR; i++) {
+    x = r[i]
+    sub(/^[ \t\r\v\f]+/, "", x)
+    sub(/[ \t\r\v\f]+$/, "", x)
+    t = x
+    gsub(/\033\[[0-9;?]*[ -\/]*[@-~]/, "", t)
+    sub(/^[ \t\r\v\f]+/, "", t)
+    sub(/[ \t\r\v\f]+$/, "", t)
+    if (t ~ /^(\342[\240-\243][\200-\277]|◆|◇|◈) .*\[stop\]$/ ||
+        t ~ /^(\342[\240-\243][\200-\277]|✻|✶|✳|✢|·|✽|◇|◆|•) .*\(.*esc to interrupt\)$/ ||
+        t ~ /^(─)+ \342[\240-\243][\200-\277] Working/) {
+      out = ""
+      spun = 0
+      while (match(x, /\033\[[0-9;?]*[ -\/]*[@-~]/)) {
+        # text() runs match() too: keep the place of this style first.
+        cs = RSTART; cl = RLENGTH
+        seg = text(substr(x, 1, cs - 1))
+        out = out seg substr(x, cs, cl)
+        x = substr(x, cs + cl)
+      }
+      x = out text(x)
+    }
+    print x
+  }
+}
+'
+  awk -v H="$hermes" "$T" "$v" > "$j" 2>/dev/null || exit 4
+  awk -v below="$below" -v count="$count" "$R" "$j" > "$v" 2>/dev/null
+  st=$?
+  [ "$st" -eq 3 ] && { echo @@herdrdroid-card-refused@@; exit 3; }
+  [ "$st" -eq 0 ] || exit 4
+  seen=$(sha < "$v")
+  hex64 "$seen" || exit 4
+  [ "$a" -eq 0 ] && [ "$b" -eq 0 ] && [ "$before" = "$id" ] && [ "$id" = "$occupant" ] && [ "$seen" = "$want" ] && exit 0
+  echo @@herdrdroid-card-refused@@
+  exit 3
+fi
 seen=$(awk -v H="$hermes" "$T" "$v" 2>/dev/null | sha)
 hex64 "$seen" || exit 4
 [ "$a" -eq 0 ] && [ "$b" -eq 0 ] && [ "$before" = "$id" ] && [ "$id" = "$occupant" ] && [ "$seen" = "$screen" ] && exit 0

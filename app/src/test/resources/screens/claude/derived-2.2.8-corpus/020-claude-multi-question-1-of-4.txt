@@ -1,0 +1,47 @@
+  Line 65 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 66 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 67 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 68 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 69 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 70 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 71 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 72 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 73 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 74 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 75 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 76 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 77 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 78 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 79 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 80 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 81 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 82 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 83 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 84 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 85 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 86 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 87 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 88 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+  Line 89 of an earlier answer, with enough words in it to wrap a little on a narrow pane.
+
+✻ Cooked for 0s · done 10:19 PM
+
+❯ Please ask me the questions.
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Backup  ☐ Restart  ☐ Follow-up  ☐ Checks  ✔ Submit  →
+
+│ The nightly report job is blocked only on a rollback path for its saved state, since the update rewrites the config, the local
+│ database and the scheduler state. The helper refused to copy private records. How should I make the rollback copy before upgrading?
+
+❯ 1. Private byte copy (Recommended)
+     Copy the whole state folder except caches into a private folder on this machine's own disk, never opened or read. Restoring it
+     rolls back exactly, and nothing leaves the machine.
+  2. Copy without private files
+     Copy the settings, the database and the schedule but skip private files. A rollback would need those left in place by hand.
+  3. Skip the backup
+     Upgrade without a copy. A rollback would mean reinstalling and setting it up again from the notes.
+  4. Type something.
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel

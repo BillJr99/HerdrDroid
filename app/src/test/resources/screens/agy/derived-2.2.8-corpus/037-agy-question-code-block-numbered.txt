@@ -1,0 +1,30 @@
+> Ask me before you change the build script.
+
+ Question 1/1: Build loop
+
+ The release build fails on its second step, after the cache is restored:
+
+ ```bash
+ # 1. check syntax
+ for f in src/*.py; do
+     python3 -m py_compile "$f" || exit 1
+ done
+ # 2. run test target
+ make -C build test JOBS=4
+ ```
+
+ ```python
+ # 1. single-call alternative
+ import compileall, sys
+ sys.exit(0 if compileall.compile_dir("src", quiet=1) else 1)
+ ```
+
+ Should I keep the loop as it is, or replace it with one compileall call?
+
+ ❯ 1. Keep the loop
+      Leave scripts/build.sh as it is; the first bad file stops the build.
+   2. Use compileall
+      Replace the loop with the Python call above and keep the make line.
+   3. Write-in
+
+ ↑/↓ Navigate · enter select · esc to cancel

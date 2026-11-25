@@ -607,7 +607,7 @@ CODE wrap
   | ssh -o BatchMode=yes -o ConnectTimeout=5 user@192.0.2.26 true; echo "EXIT:$?"
 OPTION Yes, and don't ask again for anything (always-approve mode)
 OPTION Yes, proceed
-OPTION No, reject (type to add feedback)
+OPTION No, reject ~ (type to add feedback)~
 ##### grok/captured-2026-11-15/python-approval.txt
 HEADLINE Show exact diff lines with markers
 CODE
@@ -615,10 +615,9 @@ CODE
   | from pathlib import Path
   | p = Path("/home/user/agents/grok/reviews/herdrdroid-1.4.3-fixes2.diff")
   | text = p.read_text()
-PROSE ... Ctrl-F to expand
 OPTION Yes, and don't ask again for anything (always-approve mode)
 OPTION Yes, proceed
-OPTION No, reject (type to add feedback)
+OPTION No, reject ~ (type to add feedback)~
 OPTION Never allow: python3 -
 ##### grok/captured-2026-11-15b/scan-approval.txt
 HEADLINE Scan recordings and compare published player
@@ -627,10 +626,9 @@ CODE
   | import gzip, json, re, pathlib
   | files = [
   | "/home/user/work/demo-course/viz/sessions/demo-docker-sharing.j
-PROSE ... Ctrl-F to expand
 OPTION Yes, and don't ask again for anything (always-approve mode)
 OPTION Yes, proceed
-OPTION No, reject (type to add feedback)
+OPTION No, reject ~ (type to add feedback)~
 OPTION Never allow: python3 -
 ##### grok/derived-1.4.9/0302-file-edit-approval.txt
 HEADLINE Edit src/app.py
@@ -641,7 +639,7 @@ DIFF
 OPTION Yes, and don't ask again for anything (always-approve mode)
 OPTION Yes, allow all edits during this session
 OPTION Yes, proceed
-OPTION No, reject (type to add feedback)
+OPTION No, reject ~ (type to add feedback)~
 ##### grok/derived-1.4.9/0303-mcp-tool-approval-with-scope.txt
 HEADLINE demo-notes: search_notes
 CODE wrap
@@ -649,7 +647,7 @@ CODE wrap
 OPTION Yes, and don't ask again for anything (always-approve mode)
 OPTION Yes, proceed
 OPTION Always allow: demo-notes/search_notes
-OPTION No, reject (type to add feedback)
+OPTION No, reject ~ (type to add feedback)~
 OPTION Never allow: demo-notes/search_notes
 ##### grok/derived-1.4.9/0305-question-card-ask-user-question.txt
 HEADLINE Which database should demo-box use?
@@ -708,7 +706,7 @@ CODE wrap
   | rm -f /tmp/hd-ui-attempt1.log /tmp/hd-ui-attempt1.err /tmp/hd-ci-a.zip /tmp/hd-ci-b.zip; rmdir /tmp/hd-ci-a /tmp/hd-ci-b 2>/dev/null; ls /tmp/hd-ui-attempt1.log /tmp/hd-ci-a.zip 2>&1 | head
 OPTION Yes, and don't ask again for anything (always-approve mode)
 OPTION Yes, proceed
-OPTION No, reject (type to add feedback)
+OPTION No, reject ~ (type to add feedback)~
 OPTION Never allow: rm -f /tmp/hd-ui-attempt1.log /tmp/hd-ui-attempt1.err
 ##### grok/live-2026-11-21/multirow-approval.txt
 HEADLINE List HerdrDroid source files and confirm commit
@@ -716,7 +714,7 @@ CODE wrap
   | find /home/user/src/app -type d \( -name keystore -o -name release -o -name build -o -name .git \) -prune -o -type f -print | sed 's|/home/user/src/app/||' | head -400; echo '---'; git -C /home/user/src/app rev-parse HEAD; git -C /home/user/src/app describe --tags --always 2>/dev/null | head -5
 OPTION Yes, and don't ask again for anything (always-approve mode)
 OPTION Yes, proceed
-OPTION No, reject (type to add feedback)
+OPTION No, reject ~ (type to add feedback)~
 OPTION Never allow: find /home/user/src/app -type
 ##### grok/live-2026-11-21b/heavy-box.txt
 HEADLINE Confirm the back arrow click line
@@ -724,7 +722,7 @@ CODE wrap
   | git -C /home/user/Documents/repos/HerdrDroid show 507e0344560ef35cbd6f843ff81c4aa499376ca7:app/src/main/java/com/billmongan/herdrdroid/ui/ServersScreen.kt | awk 'NR>=114 && NR<=120 {printf "%d:%s\n", NR, $0}'
 OPTION Yes, and don't ask again for anything (always-approve mode)
 OPTION Yes, proceed
-OPTION No, reject (type to add feedback)
+OPTION No, reject ~ (type to add feedback)~
 OPTION Never allow: git -C /home/user/Documents/repos/HerdrDroid show
 ##### grok/live-2026-11-21b/light-box.txt
 HEADLINE Confirm the back arrow click line
@@ -732,7 +730,7 @@ CODE wrap
   | git -C /home/user/Documents/repos/HerdrDroid show 507e0344560ef35cbd6f843ff81c4aa499376ca7:app/src/main/java/com/billmongan/herdrdroid/ui/ServersScreen.kt | awk 'NR>=114 && NR<=120 {printf "%d:%s\n", NR, $0}'
 OPTION Yes, and don't ask again for anything (always-approve mode)
 OPTION Yes, proceed
-OPTION No, reject (type to add feedback)
+OPTION No, reject ~ (type to add feedback)~
 OPTION Never allow: git -C /home/user/Documents/repos/HerdrDroid show
 ##### grok/live-2026-11-21b/no-box.txt
 HEADLINE Confirm the back arrow click line
@@ -740,7 +738,7 @@ CODE wrap
   | git -C /home/user/Documents/repos/HerdrDroid show 507e0344560ef35cbd6f843ff81c4aa499376ca7:app/src/main/java/com/billmongan/herdrdroid/ui/ServersScreen.kt | awk 'NR>=114 && NR<=120 {printf "%d:%s\n", NR, $0}'
 OPTION Yes, and don't ask again for anything (always-approve mode)
 OPTION Yes, proceed
-OPTION No, reject (type to add feedback)
+OPTION No, reject ~ (type to add feedback)~
 OPTION Never allow: git -C /home/user/Documents/repos/HerdrDroid show
 ##### hermes/derived-1.4.9/1001-dangerous-command-approval.txt
 HEADLINE ⚠️ Dangerous Command
