@@ -12,7 +12,50 @@ import kotlinx.coroutines.CancellationException
  */
 internal val DRAFT_CLEARABLE = setOf("claude", "codex", "hermes", "grok")
 
-internal fun canClearDraft(agent: String?): Boolean = agent?.lowercase() in DRAFT_CLEARABLE
+internal fun canClearDraft(agent: String?): Boolean = draftClearKey(agent) != null
+
+/**
+ * 2.2.8: the key Clear draft presses, per agent, or null where none is checked yet. Backspace for the
+ * agents above. Ctrl+U for Oh My Pi 19.0.1 ("tui.editor.deleteToLineStart") and Copilot 1.0.114
+ * ("delete from cursor to beginning of line"), the same key the app already presses there before a
+ * menu command (2.2.2); it empties one row, so it clears only a one-row draft ([clearableDraft]).
+ * Agy, Kiro, Vibe, Muse, pi and OpenCode show the draft with Send draft, but no Clear draft.
+ */
+internal fun draftClearKey(agent: String?): String? = when (agent?.lowercase()) {
+    in DRAFT_CLEARABLE -> "backspace"
+    "omp", "copilot" -> "ctrl+u"
+    else -> null
+}
+
+/** Whether Clear draft may run on [draft] in [agent]'s box: a Ctrl+U agent's draft must be one row. */
+internal fun clearableDraft(agent: String?, draft: ComposerDraft): Boolean {
+    val key = draftClearKey(agent) ?: return false
+    return !draft.menu && (key != "ctrl+u" || '\n' !in draft.text)
+}
+
+/**
+ * 2.2.8: the draft in [agent]'s input box on [screen], for every agent the app reads: the glyph
+ * composers ([composerDraftOf]), the boxes found by shape ([AgentComposers]: pi, Oh My Pi, Copilot)
+ * and OpenCode's ([openCodeComposerDraft]). Null when the box is empty, shows only a placeholder, or
+ * isn't found.
+ */
+internal fun paneDraftOf(screen: String, agent: String?): ComposerDraft? = when {
+    AgentComposers.handles(agent) -> AgentComposers.line(screen, agent)
+        ?.takeIf { it.isNotBlank() && it != AgentComposers.UNSURE_BLANK }
+        ?.let { ComposerDraft(it, bounded = true, menu = false) }
+    isOpenCode(agent) -> openCodeComposerDraft(screen)?.let { ComposerDraft(it, bounded = true, menu = false) }
+    else -> composerDraftOf(screen, agent)
+}
+
+/** 2.2.8: [agent]'s input box positively found empty on [screen] (a placeholder counts as empty). */
+internal fun paneBoxEmpty(screen: String?, agent: String?): Boolean {
+    if (screen.isNullOrBlank()) return false
+    return when {
+        AgentComposers.handles(agent) -> AgentComposers.line(screen, agent) == ""
+        isOpenCode(agent) -> openCodeComposerEmpty(screen)
+        else -> inputLineOf(screen, agent) == "" && composerDraftOf(screen, agent) == null
+    }
+}
 
 /**
  * A draft typed in a pane's input box at the computer, as the chat shows it, and the two things
@@ -78,11 +121,10 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
         if (visible.isNullOrBlank()) return null
         if (dismissibleUsageFrame(pane.agent, visible) != null) return null
         if (detectPrompt(forPhone(visible), pane.status == Status.NEEDS_YOU, pane.agent) != null) return null
-        return composerDraftOf(visible, pane.agent)
+        return paneDraftOf(visible, pane.agent)
     }
 
-    private fun emptyBox(pane: Pane, visible: String?): Boolean =
-        !visible.isNullOrBlank() && inputLineOf(visible, pane.agent) == "" && composerDraftOf(visible, pane.agent) == null
+    private fun emptyBox(pane: Pane, visible: String?): Boolean = paneBoxEmpty(visible, pane.agent)
 
     /** Presses Enter once, only if the box still holds [shownText]. */
     suspend fun send(server: String, shown: Pane, shownText: String, allowed: () -> Boolean, port: Port): Outcome =
@@ -134,10 +176,11 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
      * Never presses Enter.
      */
     suspend fun clear(server: String, shown: Pane, shownText: String, allowed: () -> Boolean, port: Port): Outcome {
-        if (!canClearDraft(shown.agent)) return Outcome.REFUSED
+        val key = draftClearKey(shown.agent) ?: return Outcome.REFUSED
         return guarded(server, shown, shownText, allowed, port) { _, draft ->
             // A suggestion list may be part of the box's buffer: nothing is typed then.
             if (draft.menu) return@guarded Outcome.NOT_SENDABLE
+            if (key == "ctrl+u") return@guarded clearLine(server, shown, draft, allowed, port)
             var left = shownText
             var pressed = false
             for (round in 1..MAX_CLEAR_ROUNDS) {
@@ -183,6 +226,35 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
             }
             Outcome.PARTIAL
         }
+    }
+
+    /**
+     * 2.2.8: Clear for a Ctrl+U agent: one Ctrl+U on a one-row draft, then reads until the box shows
+     * empty. Never Enter, never a second key.
+     */
+    private suspend fun clearLine(server: String, shown: Pane, draft: ComposerDraft, allowed: () -> Boolean, port: Port): Outcome {
+        if ('\n' in draft.text) return Outcome.NOT_SENDABLE
+        val permit = gate.open(server to shown.id, WritePermit(allowed)) ?: return Outcome.REFUSED
+        try {
+            if (!allowed()) return Outcome.REFUSED
+            port.keys(shown.id, listOf("ctrl+u"), permit)
+        } catch (e: WriteRevoked) {
+            return Outcome.REFUSED
+        } catch (c: CancellationException) {
+            if (permit.submitted) return Outcome.UNCERTAIN
+            throw c
+        } catch (e: Exception) {
+            return if (permit.submitted) Outcome.UNCERTAIN else Outcome.REFUSED
+        } finally {
+            gate.finish(server to shown.id, permit)
+        }
+        repeat(CONFIRM_READS) {
+            port.pause(SETTLE_MS)
+            val fresh = readOrNull { port.pane(shown.id) }
+            val after = readOrNull { port.viewport(shown.id) }
+            if (fresh != null && ready(shown, fresh) && emptyBox(fresh, after)) return Outcome.CLEARED
+        }
+        return Outcome.UNCERTAIN
     }
 
     private suspend fun guarded(

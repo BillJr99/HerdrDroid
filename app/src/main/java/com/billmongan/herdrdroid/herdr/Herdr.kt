@@ -3413,6 +3413,38 @@ internal fun openCodeSessionComposerEmpty(screen: String): Boolean {
     }
     return (top until mode).all(::empty)
 }
+/**
+ * 2.2.8: the text typed in OpenCode's box, read the way [openCodeSessionComposerEmpty] finds the box
+ * (the "Build · <model>" row, its bar column and its bottom edge), or null when the box is empty,
+ * shows only its grey placeholder, or isn't found. Only the box's own columns count, so a popup drawn
+ * to its right is not read as text. A draft of more than one row makes the box taller.
+ */
+internal fun openCodeComposerDraft(screen: String): String? {
+    val rawRows = screen.lines().map { it.replace("\r", "") }.takeLast(40)
+    val rows = rawRows.map { it.replace(ANSI_SEQ, "") }
+    val mode = openCodeComposerMode(rows)
+    if (mode < 3) return null
+    val bar = rows[mode].indexOfFirst { it == '┃' || it == '│' }
+    val edge = rows.subList(mode + 1, rows.size).firstOrNull { it.trimStart().startsWith("╹") } ?: return null
+    val width = edge.lastIndexOf('▀') + 1
+    if (bar < 0 || width <= bar + 1 || edge.indexOf('╹') != bar) return null
+    fun inBox(r: String) = r.length > bar && r[bar] == rows[mode][bar] && r.substring(0, bar).isBlank()
+    var top = mode
+    while (top > 0 && mode - top <= MAX_DRAFT_ROWS && inBox(rows[top - 1])) top--
+    if (mode - top < 3) return null
+    if (openCodeSessionComposerEmpty(screen)) return null
+    val text = (top until mode).map { i ->
+        val cut = rows[i].take(width).drop(bar + 1)
+        // The grey placeholder on the home screen is no text.
+        if (OPENCODE_PLACEHOLDER.matches(cut.trim())) {
+            val chars = styledChars(rawRows[i])
+            val plain = chars.joinToString("") { it.ch.toString() } == rows[i]
+            if (plain && chars.subList(bar + 1, minOf(width, chars.size)).all { it.ch.isWhitespace() || it.grey || it.faint }) "" else cut.trim()
+        } else cut.trim()
+    }.joinToString("\n").trim('\n', ' ')
+    return text.ifBlank { null }
+}
+
 private val OPENCODE_PLACEHOLDER = Regex("""^Ask anything(?:\.\.\.|…)(?: "[^"]*")?$""")
 
 /**
