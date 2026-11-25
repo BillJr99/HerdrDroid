@@ -4872,8 +4872,10 @@ internal fun cardScreenDigest(raw: String): String {
  * The dialog's rows are the rows from its question down to its last option, found in the very read
  * the card was checked against ([cardRegion]); the check on the computer takes the same rows of its
  * own read (the same count, the same number of rows under them: a pane's screen keeps its height) and
- * compares them, each with only its ends trimmed. Rows outside
- * the dialog (a spinner, running times, a token counter, a header, a footer) never count, for any agent.
+ * compares them, each with only its ends trimmed. Rows above
+ * the dialog (a spinner, running times, a token counter, a header) never count, for any agent. The
+ * rows under it count by their shape only ([cardUnderRow], Codex's review 4B): a new dialog drawn
+ * under the old one changes them, a ticking counter or spinner there doesn't.
  * The rows are first taken as [cardScreenRows] gives them, so the rules kept there still hold inside.
  * When the dialog's rows can't be found, the whole screen is compared as before ([cardScreenDigest]).
  */
@@ -4930,13 +4932,27 @@ internal fun cardRegion(raw: String, p: Prompt): CardRegion? {
 
 private val CODEX_UPDATE_KEY = Regex("""^(?:›\s*)?(\d)\.\s+\S""")
 
+/**
+ * 2.2.8 (Codex's review 4B): a row under the dialog as the guard takes it. Those rows decide which
+ * dialog owns the keys (a new dialog drawn under the old one takes them), so they count too, but
+ * only by their shape: styles dropped, ends trimmed, every digit read as 0 and a spinner's glyph as
+ * "*", so a running time, a token counter or a spinner there is no change while new text is.
+ */
+private val CARD_UNDER_GLYPH = Regex("[\u2800-\u28FF·✢✳✶✻✽◐◓◑◒]")
+internal fun cardUnderRow(row: String): String =
+    CARD_UNDER_GLYPH.replace(cardRegionRow(CARD_CSI.replace(row, "")).replace(Regex("[0-9]"), "0"), "*")
+
+/** The line between the dialog's rows and the rows under it in the digest. */
+internal const val CARD_UNDER_MARK = "@@under@@"
+
 /** The digest of [r]'s rows in [raw], as [CARD_SEND_CHECK] and card-check.sh compute it; null when they aren't there. */
 internal fun cardRegionDigest(raw: String, r: CardRegion): String? {
     if ('\u0000' in raw) return null
     val rows = cardScreenRows(cardRows(raw))
     val start = rows.size - r.below - r.count
     if (r.count < 1 || r.below < 0 || start < 0) return null
-    val t = rows.subList(start, rows.size - r.below).joinToString("") { cardRegionRow(it) + "\n" }
+    val t = rows.subList(start, rows.size - r.below).joinToString("") { cardRegionRow(it) + "\n" } +
+        CARD_UNDER_MARK + "\n" + rows.subList(rows.size - r.below, rows.size).joinToString("") { cardUnderRow(it) + "\n" }
     return sha256Hex(t.toByteArray(Charsets.UTF_8))
 }
 
@@ -4996,6 +5012,12 @@ internal val CARD_SEND_CHECK = """
     BOX_BOTTOM = re.compile('\u2570'.encode('utf-8') + b'(?:' + '\u2500'.encode('utf-8') + b')+' + '\u256f'.encode('utf-8') + b'$')
     def shown(line):
         return re.sub(rb'\x1b\[[0-9;?]*[ -/]*[@-~]', b'', line).lower().strip(b' \t\r\x0b\x0c')
+    DIGIT = re.compile(rb'[0-9]')
+    GLYPH = re.compile(rb'\xe2[\xa0-\xa3][\x80-\xbf]|' + b'|'.join(re.escape(c.encode('utf-8')) for c in
+                       '\u00b7\u2722\u2733\u2736\u273b\u273d\u25d0\u25d3\u25d1\u25d2'))
+    def shape(line):
+        t = re.sub(rb'\x1b\[[0-9;?]*[ -/]*[@-~]', b'', line).strip(b' \t\r\x0b\x0c')
+        return GLYPH.sub(b'*', DIGIT.sub(b'0', t))
     def timer(line, t):
         return re.sub(rb'(?s)^(.*)\([0-9]+s\)', rb'\1(Ns)', line, count=1) if TIMER_LINE.match(t) else line
     V = '\u2502'.encode('utf-8')
@@ -5081,7 +5103,10 @@ internal val CARD_SEND_CHECK = """
             seen = None
             if start >= 0:
                 seg = r[start:len(r) - below]
-                seen = hashlib.sha256(b''.join(x.strip(b' \t\r\x0b\x0c') + b'\n' for x in seg)).hexdigest()
+                # Codex's review 4B: the rows under the dialog by their shape (cardUnderRow in Herdr.kt).
+                under = r[len(r) - below:]
+                seen = hashlib.sha256(b''.join(x.strip(b' \t\r\x0b\x0c') + b'\n' for x in seg) + b'@@under@@\n' +
+                                      b''.join(shape(x) + b'\n' for x in under)).hexdigest()
             if before == after == occupant and seen == want:
                 sys.exit(0)
             # The dialog's rows changed or aren't there: refused, as the whole-screen check refuses.

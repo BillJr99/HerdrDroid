@@ -233,10 +233,16 @@ class CardRegion228Test {
                 val start = rows.size - r.below - r.count
                 val end = rows.size - r.below - 1
                 fun with(i: Int, row: String) = rows.toMutableList().also { it[i] = row }.joinToString("\n") + if (s.endsWith("\n")) "\n" else ""
-                // A spinner and running times above the dialog, or a counter under it.
+                // A spinner and running times above the dialog.
                 for (t in listOf("⠋ Working… 12s ⇣1.2k [stop]", "⠙ Working… 13s ⇣1.3k [stop]")) {
                     if (start > 0) assertTrue("$path above", cardGuardScreenMatches(with(0, t), guard))
-                    if (r.below > 0) assertTrue("$path below", cardGuardScreenMatches(with(rows.size - 1, t), guard))
+                }
+                // Codex's review 4B: under it, a counter ticking is no change, but a new row (a new dialog) is.
+                if (r.below > 0) {
+                    val tickGuard = cardGuardScreen(with(rows.size - 1, "⠋ Working… 12s ⇣1.2k [stop]"), p)
+                    assertTrue("$path below", tickGuard.startsWith("r:"))
+                    assertTrue("$path below tick", cardGuardScreenMatches(with(rows.size - 1, "⠙ Working… 13s ⇣1.3k [stop]"), tickGuard))
+                    assertFalse("$path below new dialog", cardGuardScreenMatches(with(rows.size - 1, "❯ 1. Delete everything"), guard))
                 }
                 // The region is the parser's own rows, exactly (Codex's review 4B).
                 assertEquals(path, p.dialogRows!!.rows, rows.subList(start, end + 1).map { cardRegionRow(stripAnsi(it)) })
@@ -270,7 +276,7 @@ class CardRegion228Test {
 
     private val getJson = """{"result":{"pane":{"pane_id":"p1","tab_id":"t1","workspace_id":"w1","agent":"grok","agent_status":"blocked","cwd":"/w","terminal_id":"term-1","scroll":{"offset_from_bottom":0}}}}"""
 
-    private fun runCheck(python: Boolean, guardScreen: String, live: String, agent: String = "grok"): Int {
+    private fun runCheck(python: Boolean, guardScreen: String, live: String, agent: String = "grok", prompt: Prompt? = null): Int {
         val sh = listOf("/bin/sh", "/usr/bin/sh").map { File(it) }.firstOrNull { it.canExecute() }
         assumeTrue(sh != null)
         val dir = java.nio.file.Files.createTempDirectory("hd228-region").toFile()
@@ -280,7 +286,7 @@ class CardRegion228Test {
             val herdr = File(dir, "herdr")
             herdr.writeText("#!/bin/sh\ncase \"\$2\" in get) /bin/cat '${dir.path}/get.json' ;; read) /bin/cat '${dir.path}/screen.txt' ;; *) : ;; esac\n")
             herdr.setExecutable(true)
-            val g = CardGuard(cardOccupantDigest(JSONObject(getJson).getJSONObject("result").getJSONObject("pane")), cardGuardScreen(guardScreen, card(guardScreen, agent)))
+            val g = CardGuard(cardOccupantDigest(JSONObject(getJson).getJSONObject("result").getJSONObject("pane")), cardGuardScreen(guardScreen, prompt ?: card(guardScreen, agent)))
             assertTrue(g.screen.startsWith("r:"))
             val h = Herdr(HerdrSsh("127.0.0.1", 1, "u", Credentials(null, null), null, { null }), herdr.path, Backend.TUI, null)
             val c = h.cardSendCommand("p1", CardInput.Keys(listOf("enter")), g, shellOnly = !python).let {
@@ -319,7 +325,6 @@ class CardRegion228Test {
             }
         }
     }
-
     // ---- agy's GROKTHINK review (on 8edb9ec) and Codex's review 4B (the whole branch).
 
     private fun plain(name: String) = stripAnsi(grok(name))
@@ -376,6 +381,64 @@ class CardRegion228Test {
         assertTrue(s.contains("◆ Thinking..."))
         assertTrue(grokWorkingBelowAnyQuestion(s))
         assertNull(detectPrompt(s, true, "grok"))
+    }
+
+    private fun withRow(s: String, i: Int, row: String): String {
+        val rows = cardRows(s).toMutableList()
+        rows[i] = row
+        return rows.joinToString("\n") + if (s.endsWith("\n")) "\n" else ""
+    }
+
+    /** The last row under the dialog that holds text, in [s]. */
+    private fun lastUnder(s: String, p: Prompt): Int {
+        val r = checkNotNull(cardRegion(s, p))
+        val rows = cardRows(s)
+        return (rows.size - r.below until rows.size).last { stripAnsi(rows[it]).isNotBlank() }
+    }
+
+    /**
+     * Codex 4B HIGH: a new dialog drawn under the old one while the old rows stay put takes the keys, so
+     * the rows under the dialog count, by their shape: a counter or spinner ticking there is no change.
+     */
+    @Test fun aNewDialogUnderTheOldOneIsAChange() {
+        for (name in listOf(whole, scoped)) {
+            val s = grok(name)
+            val p = card(s)
+            val guard = cardGuardScreen(s, p)
+            assertTrue(guard, guard.startsWith("r:"))
+            val i = lastUnder(s, p)
+            assertFalse(name, cardGuardScreenMatches(withRow(s, i, "  ❯ 1. Delete the build cache"), guard))
+            assertFalse(name, cardGuardScreenMatches(withRow(s, i, stripAnsi(cardRows(s)[i]) + " │ y:approve all"), guard))
+            // A counter and a spinner glyph on the footer row tick: no change (never Grok's running row,
+            // which a waiting approval draws above its box).
+            val foot = stripAnsi(cardRows(s)[i])
+            val a = withRow(s, i, "$foot  ⠋ ✻ 12s · 1.2k")
+            val b = withRow(s, i, "$foot  ⠙ ✶ 13s · 1.9k")
+            // The card as read before the footer changed (its rows the same).
+            val ga = cardGuardScreen(a, p)
+            assertTrue(name, ga.startsWith("r:"))
+            assertTrue(name, cardGuardScreenMatches(b, ga))
+        }
+    }
+
+    @Test fun bothChecksRefuseANewDialogUnderTheOldOne() {
+        val hasPython = listOf("/usr/bin/python3", "/bin/python3").any { File(it).canExecute() }
+        for (python in listOfNotNull(false, true.takeIf { hasPython })) {
+            for (name in listOf(whole, scoped)) {
+                val s = grok(name)
+                val i = lastUnder(s, card(s))
+                assertEquals("$name python=$python new dialog", CARD_CHANGED_EXIT, runCheck(python, s, withRow(s, i, "  ❯ 1. Delete the build cache")))
+                val foot = stripAnsi(cardRows(s)[i])
+                val a = withRow(s, i, "$foot  ⠋ ✻ 12s · 1.2k")
+                val b = withRow(s, i, "$foot  ⠙ ✶ 13s · 1.9k")
+                assertEquals("$name python=$python tick under", 0, runCheck(python, a, b, prompt = card(s)))
+            }
+            val c = codexUpdate()
+            val foot = cardRows(c).indexOfLast { stripAnsi(it).contains("enter continue") }
+            assertTrue(foot > 0)
+            assertEquals("python=$python codex row under", CARD_CHANGED_EXIT,
+                runCheck(python, c, withRow(c, foot, stripAnsi(cardRows(c)[foot]) + " · y yes to all"), "codex"))
+        }
     }
 
     /**
