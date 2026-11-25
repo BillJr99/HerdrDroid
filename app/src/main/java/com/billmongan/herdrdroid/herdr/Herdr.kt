@@ -806,6 +806,31 @@ class Herdr internal constructor(
         runWrite(cmd("pane", "send-keys", paneId, "enter"), expectedConnection = expectedConnection)
     }
 
+    /**
+     * 2.2.8 (from Muse's review): the background key (Ctrl+B) for [step], in one command on the
+     * computer behind the occupant check ([occupantCheckCommand], bound to [occupant]) and a fresh
+     * read of the screen ([BACKGROUND_CHECK]): it goes only while that screen still shows the step's
+     * hint and no dialog. True when it went; false when the screen check refused (nothing typed).
+     * [OccupantChanged] or [CardCheckFailed] when nothing was typed for another reason;
+     * [DeliveryUncertain] when the key may have gone. Never on herdr-core (no occupant check there).
+     */
+    internal suspend fun sendBackgroundKey(paneId: String, step: BackgroundStep, occupant: String, connection: Any): Boolean {
+        if (core) return false
+        val check = "$PY -c ${shq(BACKGROUND_CHECK)} $herdr ${shq(paneId)} ${shq(step.check)}"
+        val full = occupantCheckCommand(paneId, occupant) + " && " + check + " && echo $OCCUPANT_PASSED_MARK && " +
+            cmd("pane", "send-keys", paneId, Backgrounding.KEY)
+        val r = runWriteResult(full, connection, null)
+        if (r.exit == 0) return true
+        val lines = r.out.lines().map { it.trim() }
+        val why = (r.err.ifBlank { r.out }).trim().lines().lastOrNull { it.isNotBlank() && it.trim() != OCCUPANT_PASSED_MARK } ?: "exit ${r.exit}"
+        when {
+            OCCUPANT_PASSED_MARK in lines -> throw DeliveryUncertain(why)
+            r.exit == BACKGROUND_REFUSED_EXIT && BACKGROUND_REFUSED_MARK in lines -> return false
+            r.exit == OCCUPANT_CHANGED_EXIT && OCCUPANT_REFUSED_MARK in lines -> throw OccupantChanged()
+            else -> throw CardCheckFailed()
+        }
+    }
+
     suspend fun sendKeys(paneId: String, vararg keys: String, expectedConnection: Any? = null) =
         if (core) runWrite(hcCmd("keys", paneId, *keys), expectedConnection = expectedConnection)
         else runWrite(cmd("pane", "send-keys", paneId, *keys), expectedConnection = expectedConnection)

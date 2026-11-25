@@ -7014,7 +7014,10 @@ class AppViewModel internal constructor(
         when (route) {
             com.billmongan.herdrdroid.herdr.SendNowRoute.NORMAL -> dispatchQueued(item, target)
             com.billmongan.herdrdroid.herdr.SendNowRoute.FORCE_CONFIRM -> sendNowConfirm = item
-            com.billmongan.herdrdroid.herdr.SendNowRoute.WAIT_FOR_IDLE -> {
+            com.billmongan.herdrdroid.herdr.SendNowRoute.WAIT_FOR_IDLE -> if (backgroundSupport(target.agent, target.agentName) == null) {
+                // 2.2.8: Grok and Agy: move the running command to the background, then send once idle.
+                backgroundThenSendWhenIdle(item, target)
+            } else {
                 val why = com.billmongan.herdrdroid.herdr.sendNowWaitText(target.agentName)
                 updateQueued(item.id) { it.copy(note = why) }
                 flash(why)
@@ -7071,6 +7074,29 @@ class AppViewModel internal constructor(
             })
     }
 
+    /**
+     * 2.2.8: Send immediately on a queued message for an agent that takes no input while it works but
+     * can move its running command to the background (Grok, Agy): [runBackgrounder] until the agent is
+     * idle, then the message goes once with every guard. It stays queued if the move can't be shown.
+     */
+    private fun backgroundThenSendWhenIdle(item: QueuedPrompt, target: Pane) {
+        val client = herdr ?: return
+        val server = current?.id
+        val token = System.nanoTime()
+        updateQueued(item.id) { it.copy(sending = true, sendingSince = System.currentTimeMillis(), sendToken = token, note = "Moving the running task to the background…") }
+        viewModelScope.launch {
+            val outcome = runBackgrounder(client, server, target, pushLimits) { s -> !com.billmongan.herdrdroid.herdr.agentWorking(pane(target.id)?.status ?: Status.UNKNOWN, s) }
+            val now = queuedById(item.id)?.takeIf { it.sending && it.sendToken == token } ?: return@launch
+            if (outcome == com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.DONE) {
+                val p = pane(target.id)?.takeIf { it.sameCardOccupant(target) }
+                if (p != null && current?.id == server) { dispatchQueued(now, p, token); return@launch }
+            }
+            val why = com.billmongan.herdrdroid.herdr.backgroundOutcomeText(outcome, target.agentName)?.replace("The message is still in its queue.", "")?.trim()
+                ?: "the pane changed"
+            updateQueued(item.id) { if (it.sendToken == token) it.copy(sending = false, sendToken = 0L, note = "Not sent: $why Still queued.") else it }
+        }
+    }
+
     /** How often, and how many times, the screen is read after Ctrl+B for the task to show in the background. */
     internal var backgroundCheckMs = 700L
     private val BACKGROUND_CHECKS = 4
@@ -7089,6 +7115,7 @@ class AppViewModel internal constructor(
         fun fail(why: String) = updateQueued(item.id) { if (it.sendToken == token) it.copy(sending = false, sendToken = 0L, note = "Not sent: $why. Still queued.") else it }
         act(target.id, "Couldn't move the task to the background", input = true) { h ->
             if (!mine()) return@act
+            val connection = h.connectionIdentity
             try {
                 val lines = sendReadLines(target.agent)
                 suspend fun fresh(): String? = runCatching { h.readStyled(target.id, lines) }.getOrNull()?.takeIf { it.isNotBlank() }
@@ -7096,6 +7123,8 @@ class AppViewModel internal constructor(
                 val now = pane(target.id)?.takeIf { it.sameCardOccupant(target) } ?: return@act fail("the pane changed")
                 if (checkedSendBlocked(now, before, null) || usageDialogShown(now.agent, before)) return@act fail("a question or panel is open in it")
                 holdReason(target.id, before)?.let { return@act fail(it) }
+                val bound = connection?.let { c -> h.boundOccupant(target.id, c) }?.takeIf { it.first.sameCardOccupant(target) }
+                    ?: return@act fail("the pane changed")
                 if (!com.billmongan.herdrdroid.herdr.claudeBackgroundHint(before)) {
                     // The command finished, or went to the background on its own, since the chat's read.
                     if (com.billmongan.herdrdroid.herdr.agentWorking(now.status, before)) {
@@ -7104,7 +7133,9 @@ class AppViewModel internal constructor(
                     } else dispatchQueued(item, now, token)
                     return@act
                 }
-                h.sendKeys(target.id, com.billmongan.herdrdroid.herdr.Backgrounding.KEY)
+                // 2.2.8 (Muse's review): behind the computer's own check of the occupant and the screen.
+                if (!h.sendBackgroundKey(target.id, com.billmongan.herdrdroid.herdr.BackgroundStep.CLAUDE, bound.second, checkNotNull(connection)))
+                    return@act fail("the running command finished, or a question opened, before Ctrl+B")
                 com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${target.id}: send now pressed Ctrl+B; checking the task moved to the background")
                 var moved = false
                 for (i in 0 until BACKGROUND_CHECKS) {
@@ -7180,35 +7211,60 @@ class AppViewModel internal constructor(
         if (id in pushingSends) return
         pushingSends = pushingSends + id
         viewModelScope.launch {
-            val port = object : com.billmongan.herdrdroid.herdr.Backgrounder.Port {
-                fun same() = herdr === client && current?.id == server && link == Link.CONNECTED
-                override suspend fun screen(): String? =
-                    if (!same()) null else quietly { h -> if (h === client) h.readStyled(paneId, sendReadLines(target.agent)) else null }?.takeIf { it.isNotBlank() }
-                override fun blocked(screen: String): Boolean {
-                    val p = pane(paneId)?.takeIf { it.sameCardOccupant(target) } ?: return true
-                    return !same() || hasPendingQuestion(p) || checkedSendBlocked(p, screen, null) || usageDialogShown(p.agent, screen)
-                }
-                override fun done(screen: String): Boolean =
-                    pendingSends.none { it.id == id } || !com.billmongan.herdrdroid.herdr.agentWorking(pane(paneId)?.status ?: Status.UNKNOWN, screen)
-                override suspend fun press() {
-                    com.billmongan.herdrdroid.diag.DiagLog.log("send", "to $paneId: send immediately pressed Ctrl+B")
-                    quietly { h -> if (h === client) { h.sendKeys(paneId, com.billmongan.herdrdroid.herdr.Backgrounding.KEY); true } else null }
-                        ?: throw IllegalStateException("the key could not be sent")
-                }
-                override suspend fun pause(ms: Long) = delay(ms)
-            }
             val outcome = try {
-                com.billmongan.herdrdroid.herdr.Backgrounder(port, pushLimits).run()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.UNREADABLE
+                runBackgrounder(client, server, target, pushLimits) { pendingSends.none { it.id == id } || !com.billmongan.herdrdroid.herdr.agentWorking(pane(paneId)?.status ?: Status.UNKNOWN, it) }
             } finally {
                 pushingSends = pushingSends - id
             }
             com.billmongan.herdrdroid.diag.DiagLog.log("send", "to $paneId: send immediately ${outcome.name.lowercase()}")
             com.billmongan.herdrdroid.herdr.backgroundOutcomeText(outcome, target.agentName)?.let { flash(it) }
             if (current?.id == server) readPane(paneId)
+        }
+    }
+
+    /**
+     * 2.2.8: a [com.billmongan.herdrdroid.herdr.Backgrounder] run on [target] until [done]. Every read is
+     * fresh and checked here (the occupant, a question, a panel, the server and the link); every key
+     * goes through [Herdr.sendBackgroundKey], bound to the occupant digest read at the start, so the
+     * computer types it only while its own read still shows the step's hint and no dialog.
+     */
+    private suspend fun runBackgrounder(
+        client: Herdr, server: String?, target: Pane, limits: com.billmongan.herdrdroid.herdr.Backgrounder.Limits,
+        onPressed: (com.billmongan.herdrdroid.herdr.BackgroundStep) -> Unit = {},
+        done: (String) -> Boolean,
+    ): com.billmongan.herdrdroid.herdr.Backgrounder.Outcome {
+        val paneId = target.id
+        val connection = client.connectionIdentity ?: return com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.UNREADABLE
+        fun same() = herdr === client && client.connectionIdentity === connection && current?.id == server && link == Link.CONNECTED
+        val bound = quietly { h -> if (h === client) h.boundOccupant(paneId, connection) else null }
+            ?.takeIf { it.first.sameCardOccupant(target) } ?: return com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.BLOCKED
+        val port = object : com.billmongan.herdrdroid.herdr.Backgrounder.Port {
+            override suspend fun screen(): String? =
+                if (!same()) null else quietly { h -> if (h === client) h.readStyled(paneId, sendReadLines(target.agent)) else null }?.takeIf { it.isNotBlank() }
+            override fun blocked(screen: String): Boolean {
+                val p = pane(paneId)?.takeIf { it.sameCardOccupant(target) } ?: return true
+                return !same() || hasPendingQuestion(p) || checkedSendBlocked(p, screen, null) || usageDialogShown(p.agent, screen)
+            }
+            override fun done(screen: String) = done(screen)
+            override suspend fun press(step: com.billmongan.herdrdroid.herdr.BackgroundStep): Boolean {
+                if (!same()) return false
+                val went = quietly { h -> if (h === client) h.sendBackgroundKey(paneId, step, bound.second, connection) else null } ?: false
+                com.billmongan.herdrdroid.diag.DiagLog.log("send", "to $paneId: Ctrl+B for ${step.check} ${if (went) "went" else "refused by the check"}")
+                if (went) onPressed(step)
+                return went
+            }
+            override suspend fun pause(ms: Long) = delay(ms)
+        }
+        return try {
+            com.billmongan.herdrdroid.herdr.Backgrounder(target.agent, port, limits).run()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: com.billmongan.herdrdroid.herdr.OccupantChanged) {
+            com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.BLOCKED
+        } catch (e: com.billmongan.herdrdroid.herdr.DeliveryUncertain) {
+            com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.STUCK
+        } catch (e: Exception) {
+            com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.UNREADABLE
         }
     }
 
@@ -7241,32 +7297,51 @@ class AppViewModel internal constructor(
         return com.billmongan.herdrdroid.herdr.shellPlaces(p?.agent, workScreens[paneId], procs, movedToBackground[paneId]?.first.orEmpty())
     }
 
+    /** The page's Background buttons in flight, by pane. */
+    var backgroundingPanes by mutableStateOf<Set<String>>(emptySet())
+        private set
+
     /**
-     * The page's Background button (2.2.8): Ctrl+B only when a fresh read shows a foreground command
-     * and nothing open over it; the shell is marked Background at once, and the next reads confirm it.
+     * The page's Background button (2.2.8; Muse's review: never a blind Ctrl+B). Only for agents whose
+     * move the screen shows ([backgroundSupport]); others say why and type nothing. Each key goes
+     * through [runBackgrounder] (fresh reads, the computer's own check of the occupant and the screen
+     * right before it). A shell the screen showed for certain in the foreground is marked Background
+     * at once, and the next reads confirm it.
      */
     fun backgroundForeground(paneId: String) {
         val p = pane(paneId) ?: return
-        // Never into an open question or approval, for any agent.
+        backgroundSupport(p.agent, p.agentName)?.let { flash(it); return }
         if (hasPendingQuestion(p)) { flash("Not sent: ${p.agentName} has a question open. Answer it first."); return }
-        if (!p.agent.equals("claude", true)) { sendKeys(paneId, com.billmongan.herdrdroid.herdr.Backgrounding.KEY); return }
-        act(paneId, "Couldn't move the task to the background", input = true) { h ->
-            val s = h.readStyled(paneId, sendReadLines(p.agent))
-            val now = pane(paneId)?.takeIf { it.sameCardOccupant(p) } ?: return@act
-            if (hasPendingQuestion(now) || checkedSendBlocked(now, s, null) || usageDialogShown(now.agent, s)) {
-                flash("Not sent: ${p.agentName} has a question or panel open.")
-                return@act
+        val client = herdr ?: return
+        if (paneId in backgroundingPanes) return
+        val server = current?.id
+        backgroundingPanes = backgroundingPanes + paneId
+        viewModelScope.launch {
+            var pressed: com.billmongan.herdrdroid.herdr.BackgroundStep? = null
+            var fg: Set<Int> = emptySet()
+            val outcome = try {
+                runBackgrounder(client, server, p, com.billmongan.herdrdroid.herdr.Backgrounder.Limits(maxPresses = 2, maxReads = 8, pollMs = 700),
+                    onPressed = { pressed = it }) { s ->
+                    workScreens = workScreens + (paneId to s)
+                    val step = com.billmongan.herdrdroid.herdr.backgroundStep(p.agent, s)
+                    val last = pressed
+                    // Before any key: the shells this screen shows in the foreground for certain.
+                    if (last == null) fg = com.billmongan.herdrdroid.herdr.shellPlaces(p.agent, s, work[paneId]?.activeProcs(p.agent).orEmpty())
+                        .filterValues { it == com.billmongan.herdrdroid.herdr.RunPlace.FOREGROUND }.keys
+                    // Moved: the hint the last key answered is gone (Agy: its confirmation is gone too).
+                    last != null && step != last && step != com.billmongan.herdrdroid.herdr.BackgroundStep.AGY_CONFIRM
+                }
+            } finally {
+                backgroundingPanes = backgroundingPanes - paneId
             }
-            workScreens = workScreens + (paneId to s)
-            if (!com.billmongan.herdrdroid.herdr.claudeBackgroundHint(s)) {
-                flash("Nothing is running in the foreground in ${p.agentName} just now.")
-                return@act
-            }
-            val fg = com.billmongan.herdrdroid.herdr.shellPlaces(p.agent, s, work[paneId]?.activeProcs(p.agent).orEmpty())
-                .filterValues { it == com.billmongan.herdrdroid.herdr.RunPlace.FOREGROUND }.keys
-            h.sendKeys(paneId, com.billmongan.herdrdroid.herdr.Backgrounding.KEY)
-            movedToBackground = movedToBackground + (paneId to (fg to System.currentTimeMillis()))
-            refreshWork(paneId)
+            if (outcome == com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.DONE && fg.isNotEmpty())
+                movedToBackground = movedToBackground + (paneId to (fg to System.currentTimeMillis()))
+            flash(when (outcome) {
+                com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.DONE -> "Moved to the background."
+                com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.TIMED_OUT -> "Nothing running in the foreground in ${p.agentName} could be moved just now."
+                else -> com.billmongan.herdrdroid.herdr.backgroundOutcomeText(outcome, p.agentName) ?: ""
+            })
+            if (current?.id == server) refreshWork(paneId)
         }
     }
 
