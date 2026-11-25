@@ -44,12 +44,12 @@ Agents on other servers: ${names.joinToString(", ")}. The phone shows your messa
  * an app restart does not send it again. Stored as JSON through [load] and [save].
  */
 internal class NoticeLedger(private val load: () -> String, private val save: (String) -> Unit) {
-    data class Entry(val session: String, val fingerprint: String, val at: Long)
+    data class Entry(val session: String, val fingerprint: String, val at: Long, val accepted: Boolean)
 
     private val entries: MutableMap<String, Entry> = runCatching {
         val o = JSONObject(load().ifBlank { "{}" })
         o.keys().asSequence().associateWith { k ->
-            o.getJSONObject(k).let { Entry(it.getString("s"), it.getString("f"), it.getLong("at")) }
+            o.getJSONObject(k).let { Entry(it.getString("s"), it.getString("f"), it.getLong("at"), it.optBoolean("accepted")) }
         }.toMutableMap()
     }.getOrDefault(mutableMapOf())
 
@@ -60,7 +60,7 @@ internal class NoticeLedger(private val load: () -> String, private val save: (S
         // Old panes are forgotten after 30 days.
         entries.entries.removeAll { now - it.value.at > 30L * 24 * 3_600_000 }
         save(JSONObject().apply {
-            entries.forEach { (k, e) -> put(k, JSONObject().put("s", e.session).put("f", e.fingerprint).put("at", e.at)) }
+            entries.forEach { (k, e) -> put(k, JSONObject().put("s", e.session).put("f", e.fingerprint).put("at", e.at).put("accepted", e.accepted)) }
         }.toString())
     }
 }
@@ -74,7 +74,7 @@ internal class NoticeLedger(private val load: () -> String, private val save: (S
 internal class CrossServerNotifier(
     private val ledger: NoticeLedger,
     private val clock: () -> Long,
-    val maxTries: Int = 5,
+    val maxTries: Int = 2,
     private val retryGapMs: Long = 120_000,
     private val hourMs: Long = 3_600_000,
 ) {
@@ -103,11 +103,11 @@ internal class CrossServerNotifier(
     }
 
     /** Records a sent (or possibly sent) notice so it is never sent twice. */
-    fun sent(c: Candidate) {
+    fun sent(c: Candidate, accepted: Boolean = true) {
         val now = clock()
         tries.remove(c.key)
         gaveUp.remove(c.key)
-        ledger.put(c.key, NoticeLedger.Entry(c.session, c.fingerprint, now), now)
+        ledger.put(c.key, NoticeLedger.Entry(c.session, c.fingerprint, now, accepted), now)
     }
 
     /** Counts a refused attempt. True when this was the last try, so the pane gets a notice. */

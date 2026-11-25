@@ -250,16 +250,41 @@ class CrossServerNoticeDeliveryTest {
         assertEquals(1, laptop.writes.size)
     }
 
-    @Test fun aDraftAtTheComputerIsRetriedThenGivenUpWithAPaneNotice() {
+    @Test fun aDraftAtTheComputerDoesNotProduceAFailedDeliveryWarning() {
         laptop2.screen["w2:p9"] = "❯ half typed"
         vm.changeAgentMessaging(true)
         for (i in 1..vm.notifier.maxTries) { tick(); now += 121_000 }
         assertEquals(listOf("w2:p5"), laptop2.writes.map { it.substringAfter("'prompt' '").substringBefore("'") })
-        val notice = vm.sendNotices.single { it.serverId == "laptop2" && it.paneId == "w2:p9" }
-        assertTrue(notice.text.contains("could not tell this agent"))
-        now += 5 * 3_600_000
+        assertFalse(vm.sendNotices.any { it.serverId == "laptop2" && it.paneId == "w2:p9" })
+        laptop2.screen["w2:p9"] = "❯ "
         tick()
-        assertEquals(1, laptop2.writes.size)
+        assertEquals(2, laptop2.writes.size)
+    }
+
+    @Test fun aProvenMissingTargetGetsOneRetryThenAPaneSpecificWarning() {
+        laptop2.promptResult["w2:p9"] = ExecResult(1,
+            """{"id":"cli:agent:prompt","error":{"code":"agent_not_found","message":"agent target not found"}}""", "")
+        vm.changeAgentMessaging(true)
+        tick()
+        assertFalse(vm.sendNotices.any { it.paneId == "w2:p9" })
+        now += 121_000
+        tick()
+        val notice = vm.sendNotices.single { it.serverId == "laptop2" && it.paneId == "w2:p9" }
+        assertTrue(notice.text.contains("hermes on laptop2"))
+        assertTrue(notice.text.contains("did not recognize"))
+        now += 121_000
+        tick()
+        assertEquals(2, laptop2.writes.count { "'w2:p9'" in it })
+    }
+
+    @Test fun anUnknownWriteFailureNeverRetriesOrClaimsVerifiedRefusal() {
+        laptop2.promptResult["w2:p9"] = ExecResult(1, "", "unexpected disconnect")
+        vm.changeAgentMessaging(true)
+        tick()
+        now += 121_000
+        tick()
+        assertEquals(1, laptop2.writes.count { "'w2:p9'" in it })
+        assertFalse(vm.sendNotices.any { it.paneId == "w2:p9" })
     }
 
     @Test fun agentsOverTheQuotaLimitWaitAndUnknownUsageIsSent() {
@@ -353,6 +378,7 @@ class CrossServerNoticeDeliveryTest {
         val status = mutableMapOf<String, String>()
         val screen = mutableMapOf<String, String>()
         val writes = mutableListOf<String>()
+        val promptResult = mutableMapOf<String, ExecResult>()
 
         private fun json(r: Row) = """{"pane_id":"${r.id}","workspace_id":"${r.id.substringBefore(':', "w1")}","tab_id":"${r.tab}","agent":"${r.agent}","agent_session":{"agent":"${r.agent}","kind":"id","source":"herdr:${r.agent}","value":"${r.session}"},"agent_status":"${status[r.id] ?: "idle"}","cwd":"/fixture","terminal_id":"term-${r.id}","scroll":{"offset_from_bottom":0}}"""
         private fun tabs() = rows.joinToString(",") { """{"tab_id":"${it.tab}","label":"${it.label}"}""" }
@@ -370,7 +396,7 @@ class CrossServerNoticeDeliveryTest {
             return when {
                 "'pane' 'get'" in command && id != null ->
                     ExecResult(0, """{"result":{"pane":${json(rows.single { it.id == id })}}}""", "")
-                "'agent' 'prompt'" in command -> { writes += command; ExecResult(0, "", "") }
+                "'agent' 'prompt'" in command -> { writes += command; id?.let(promptResult::get) ?: ExecResult(0, "", "") }
                 "'pane' 'read'" in command && id != null -> ExecResult(0, screen[id] ?: "❯ ", "")
                 else -> ExecResult(1, "", "not in this fixture: $command")
             }
