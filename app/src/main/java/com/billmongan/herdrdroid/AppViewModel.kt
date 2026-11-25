@@ -8219,11 +8219,11 @@ internal class BoundOccupantChanged : Exception("the pane changed")
 /** 2.2.8: why a bound send that failed after its write began is kept, not sent again by itself. */
 internal const val MAY_HAVE_SENT = "it may have reached the agent; check the agent before sending it again"
 
-/** 2.2.8: a card answer whose keys failed after the check passed. */
 /** 2.2.8: an answer refused before anything was sent because another agent or session is in the pane. */
 internal const val OCCUPANT_REFUSAL = "Not sent. Another agent or session is in this pane now."
 
 /** 2.2.8: agents whose approval or Ask dialog waits while herdr may call them working: the Questions view reads them too. */
 internal val QUESTION_CANDIDATE_AGENTS = setOf("omp", "pi")
 
+/** 2.2.8: a card answer whose keys failed after the check passed. */
 internal const val CARD_MAY_HAVE_SENT = "Could not confirm delivery: the answer may have been sent. Check the pane before answering again."
