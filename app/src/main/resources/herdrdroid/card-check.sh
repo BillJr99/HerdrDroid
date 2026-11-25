@@ -337,7 +337,7 @@ END {
     print x
   }
   # 2.2.8 (Codex review 4B): the rows under the dialog (cardUnderRow in Herdr.kt): each exactly, ends
-  # trimmed, except a running status row (a spinner glyph, a space, a running time), which counts
+  # trimmed, except a running status row (Grok, Claude/Codex/Antigravity, Hermes shapes), which counts
   # by its shape: styles dropped, each spinner glyph "*", each running time "T", each counter "⇣N",
   # any other digit 0.
   print "@@under@@"
@@ -347,8 +347,10 @@ END {
     gsub(/\033\[[0-9;?]*[ -\/]*[@-~]/, "", t)
     sub(/^[ \t\r\v\f]+/, "", t)
     sub(/[ \t\r\v\f]+$/, "", t)
-    if (t ~ /^(\342[\240-\243][\200-\277]|·|✢|✳|✶|✻|✽|◐|◓|◑|◒)[ \t].*[0-9][smh]/) {
-      gsub(/\342[\240-\243][\200-\277]|·|✢|✳|✶|✻|✽|◐|◓|◑|◒/, "*", t)
+    if (t ~ /^(\342[\240-\243][\200-\277]|◆|◇|◈) .*\[stop\]$/ ||
+        t ~ /^(\342[\240-\243][\200-\277]|✻|✶|✳|✢|·|✽|◇|◆|•) .*\(.*esc to interrupt\)$/ ||
+        t ~ /^(─)+ \342[\240-\243][\200-\277] Working/) {
+      gsub(/\342[\240-\243][\200-\277]|·|✢|✳|✶|✻|✽|◐|◓|◑|◒|◆|◇|◈|•/, "*", t)
       gsub(/⇣ ?[0-9.]+[kKM]?/, "⇣N", t)
       gsub(/([0-9]+h ?)?([0-9]+m ?)?[0-9]+(\.[0-9]+)?[smh]/, "T", t)
       gsub(/[0-9]/, "0", t)

@@ -552,8 +552,8 @@ class CardRegion228Test {
             assertFalse(name, cardGuardScreenMatches(withRow(s, i, row.replaceFirst("Tab:next option", "\u001b[7mTab:next option\u001b[27m")), guard))
             // A running status row under it ticks freely (the card as read before it appeared).
             val last = cardRows(s).size - 1
-            val a = withRow(s, last, "  ⠋ Working… 12s · ⇣1.2k")
-            val b = withRow(s, last, "  ⠙ Working… 13s · ⇣1.9k")
+            val a = withRow(s, last, "  ⠋ Working… 12s · ⇣1.2k [stop]")
+            val b = withRow(s, last, "  ⠙ Working… 13s · ⇣1.9k [stop]")
             val ga = cardGuardScreen(a, p)
             assertTrue(name, ga.startsWith("r:"))
             assertTrue(name, cardGuardScreenMatches(b, ga))
@@ -568,8 +568,8 @@ class CardRegion228Test {
                 val i = lastUnder(s, card(s))
                 assertEquals("$name python=$python new dialog", CARD_CHANGED_EXIT, runCheck(python, s, withRow(s, i, "  ❯ 1. Delete the build cache")))
                 val last = cardRows(s).size - 1
-                val a = withRow(s, last, "  ⠋ Working… 12s · ⇣1.2k")
-                val b = withRow(s, last, "  ⠙ Working… 13s · ⇣1.9k")
+                val a = withRow(s, last, "  ⠋ Working… 12s · ⇣1.2k [stop]")
+                val b = withRow(s, last, "  ⠙ Working… 13s · ⇣1.9k [stop]")
                 assertEquals("$name python=$python tick under", 0, runCheck(python, a, b, prompt = card(s)))
                 // Codex's per-commit review of 8c0125d: a non-status row under the dialog counts exactly.
                 val row = cardRows(s)[i]
@@ -585,12 +585,46 @@ class CardRegion228Test {
         }
     }
 
+    /**
+     * Codex's per-commit review of dce009c (HIGH): a status row is each agent's own running row, never any
+     * row that starts with a glyph; every other row under the dialog counts exactly, in the app and both checks.
+     */
+    @Test fun onlyEachAgentsOwnRunningRowIsAStatusRow() {
+        val status = listOf(
+            "⠧ Thinking… 44s   22m58s ⇣121k [stop]", "◆ Check SSH to devbox in batch mode… 59s   2m47s ⇣61.9k [↓][stop]",
+            "⠸ Run cleanup check… 3s  [stop]", "✻ Working… (14s · esc to interrupt)", "◇ Calling tools (17m 14s · esc to interrupt)",
+            "• Working (12s • esc to interrupt)", "── ⠹ Working… · 1m 2s ──────── Check the calendar setup ─",
+        )
+        for (r in status) assertTrue(r, CARD_STATUS_ROW.containsMatchIn(r))
+        val notStatus = listOf(
+            "✻ 1. Yes, delete it (5s)", "⠋ 2. Allow for 5m", "· Step 2 of 5 · 3m", "◆ Ran command · Run the unit tests · ✓ · 41s · ctrl+o",
+            "✻ Worked for 0s · done 10:53 PM", "• 1. Allow once (12s)", "⠋ Delete in 5s? (y/n)", "◆ Thought for 3.4s",
+        )
+        for (r in notStatus) {
+            assertFalse(r, CARD_STATUS_ROW.containsMatchIn(r))
+            assertEquals(r, r, cardUnderRow(r))
+        }
+        val s = grok(whole)
+        val p = card(s)
+        val last = cardRows(s).size - 1
+        val a = withRow(s, last, "  ✻ 1. Yes, delete it (5s)")
+        val b = withRow(s, last, "  ✻ 2. Yes, delete it (5s)")
+        val ga = cardGuardScreen(a, p)
+        assertFalse(cardGuardScreenMatches(b, ga))
+        val hasPython = listOf("/usr/bin/python3", "/bin/python3").any { File(it).canExecute() }
+        for (python in listOfNotNull(false, true.takeIf { hasPython })) {
+            assertEquals("python=$python", CARD_CHANGED_EXIT, runCheck(python, a, b, prompt = p))
+            assertEquals("python=$python same", 0, runCheck(python, a, a, prompt = p))
+        }
+    }
+
     /** Running status rows that grow a digit or a unit: before and after (Codex's per-commit review of 8c0125d). */
     private val rollovers = listOf(
-        "  ⠋ Working… 9s · ⇣9k" to "  ⠙ Working… 10s · ⇣10.2k",
-        "  ⠋ Working… 59s" to "  ⠙ Working… 1m 0s",
-        "  ✻ Running 59m59s ⇣999k" to "  ✶ Running 1h 0m 0s ⇣1.0M",
-        "  ⠧ Thinking… 0.9s" to "  ⠏ Thinking… 12.5s",
+        "  ⠋ Working… 9s · ⇣9k [stop]" to "  ⠙ Working… 10s · ⇣10.2k [stop]",
+        "  ⠋ Working… 59s [stop]" to "  ⠙ Working… 1m 0s [stop]",
+        "  ✻ Running… (59m59s · ↓ 999k tokens · esc to interrupt)" to "  ✶ Running… (1h 0m 0s · ↓ 998k tokens · esc to interrupt)",
+        "  ⠧ Thinking… 0.9s   9m59s ⇣9.9k [↓][stop]" to "  ⠏ Thinking… 12.5s   10m0s ⇣10k [↓][stop]",
+        "── ⠹ Working… · 59s ──────── Check the build ─" to "── ⠼ Working… · 1m 0s ──────── Check the build ─",
     )
 
     /**
@@ -608,7 +642,7 @@ class CardRegion228Test {
             assertTrue("$a -> $b", cardGuardScreenMatches(withRow(s, last, b), ga))
             assertFalse("$a words", cardGuardScreenMatches(withRow(s, last, "$b now deleting"), ga))
         }
-        assertEquals(cardUnderRow("⠋ Working… 59s"), cardUnderRow("⠙ Working… 1m 0s"))
+        assertEquals(cardUnderRow("⠋ Working… 59s [stop]"), cardUnderRow("⠙ Working… 1m 0s [stop]"))
         // Not a status row (no spinner first): exact.
         assertNotEquals(cardUnderRow("Working… 59s"), cardUnderRow("Working… 1m 0s"))
         val hasPython = listOf("/usr/bin/python3", "/bin/python3").any { File(it).canExecute() }
