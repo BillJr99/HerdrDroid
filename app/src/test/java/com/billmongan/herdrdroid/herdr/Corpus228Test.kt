@@ -71,6 +71,25 @@ class Corpus228Test {
     }
 
     /**
+     * Codex's per-commit review of fe63209 (MEDIUM): a "(…)" row joins the option above it only when it
+     * starts in the label's own column, and a radio row never joins, even under an open "(".
+     */
+    @Test fun onlyTheLabelsOwnWrappedRowJoinsIt() {
+        val base = "Run the cleanup?\n❯ 1. Yes, proceed\n  2. Yes, and allow for this folder\n     (/home/user/work)\n  3. No\n\nEsc to cancel\n"
+        val p = checkNotNull(detectPrompt(base, true, null))
+        assertEquals("Yes, and allow for this folder (/home/user/work)", p.choices[1].label)
+        // A "(…)" row of other output, not in the label's column: its own row.
+        val other = base.replace("     (/home/user/work)", "(exit 0)")
+        val q = checkNotNull(detectPrompt(other, true, null))
+        assertEquals("Yes, and allow for this folder", q.choices[1].label)
+        // An open "(" never takes a radio row under it.
+        val radio = "  ┃  ›  Run it\n  ┃  │ ls\n  ┃\n  ┃  1 (●) Yes, proceed\n  ┃  2 (○) No, reject (type\n" +
+            "  ┃  (○) Yes, and don't ask again for anything (always-approve mode)\n  ┃\n\n  1/2:select  │  Tab:next option\n"
+        val r = checkNotNull(detectPrompt(radio, true, "grok"))
+        assertTrue(r.choices.map { it.label }.toString(), r.choices.none { it.label.contains("(○)") })
+    }
+
+    /**
      * Codex's per-commit review of fe63209 (HIGH): Grok's always-approve label cut off at any point from
      * "Yes, and" on is blocked; whole labels with their own scope stay usable.
      */

@@ -4187,14 +4187,22 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
     val numbered = run.map { (i, k, label) ->
         var full = label
         var j = i + 1
+        // Where the label starts on its row: a wrapped row of it starts in the same column.
+        val labelCol = option.find(lines[i])?.let { m -> (m.groups[2] ?: m.groups[6])?.range?.first } ?: -1
         while (j < lines.size && option.find(lines[j]) == null) {
             val next = clean(lines[j])
+            // A radio row of its own ("(○) Yes, and don't ask again …") is never part of the label above
+            // it, whatever else holds (Codex's per-commit review of fe63209).
+            if (next.isEmpty() || WRAP_RADIO_ROW.containsMatchIn(next) || GROK_UNNUMBERED_ALWAYS.matches(lines[j])) break
             // A key hint under the last option ("ctrl+g to edit in editor") is not part of it.
             // 2.2.8 (agy's corpus): or it is the label's own "(…)" tail, wrapped onto its own row in a
-            // narrow pane: Grok's "(always-approve mode)", Antigravity's "(Persist to settings.json)".
-            if (next.isEmpty() || KEY_HINT_LINE.containsMatchIn(next) ||
+            // narrow pane: Grok's "(always-approve mode)", Antigravity's "(Persist to settings.json)",
+            // and only when it starts in the label's own column (Codex's per-commit review: a "(…)"
+            // row of other output is not the label's).
+            val nextCol = lines[j].indexOfFirst { it !in " \t│┃|" }
+            if (KEY_HINT_LINE.containsMatchIn(next) ||
                 !(full.count { it == '(' } > full.count { it == ')' } || next.first().isLowerCase() ||
-                    (next.startsWith("(") && next.endsWith(")") && !WRAP_RADIO_ROW.containsMatchIn(next)))) break
+                    (next.startsWith("(") && next.endsWith(")") && labelCol >= 0 && nextCol == labelCol))) break
             full = "$full $next"; j++
         }
         lastOptionEnd = j - 1
