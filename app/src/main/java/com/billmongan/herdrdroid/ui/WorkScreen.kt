@@ -167,7 +167,10 @@ private fun WorkList(vm: AppViewModel, paneId: String) {
             if (runningTasks.isNotEmpty() || activeProcs.isNotEmpty()) {
                 item { SectionTitle("Shells", "${activeProcs.size} running") }
                 if (activeProcs.isNotEmpty() && com.billmongan.herdrdroid.herdr.Backgrounding.supported(pane?.agent)) item {
-                    BackgroundButton(vm, paneId, pane?.agentName ?: "The agent")
+                    // 2.2.8: only where the screen shows the move; elsewhere, why not.
+                    val off = com.billmongan.herdrdroid.herdr.backgroundSupport(pane?.agent, pane?.agentName ?: "The agent")
+                    if (off == null) BackgroundButton(vm, paneId, pane?.agentName ?: "The agent")
+                    else Text(off, color = Palette.Muted, fontSize = 12.sp)
                 }
                 items(runningTasks, key = { "t:" + it.id }) { t ->
                     WorkRow(Palette.Blue, t.title, "Background task · running · output ${t.kb} KB") { vm.screen = Screen.Work(paneId, "task", t.file, t.title) }
@@ -246,16 +249,17 @@ private fun WorkRow(dot: androidx.compose.ui.graphics.Color, title: String, deta
  */
 @Composable
 private fun BackgroundButton(vm: AppViewModel, paneId: String, agentName: String) {
-    var sent by remember { mutableStateOf(false) }
+    val busy = paneId in vm.backgroundingPanes
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         OutlinedButton(
-            // 2.2.8: checked first (nothing open over it, a foreground command shown), then marked at once.
-            onClick = { vm.backgroundForeground(paneId); sent = true },
+            // 2.2.8: each key checked on the computer first (the same occupant, the hint still shown, no dialog).
+            onClick = { vm.backgroundForeground(paneId) },
+            enabled = !busy,
             modifier = Modifier.fillMaxWidth(),
-        ) { Text("Background it") }
+        ) { Text(if (busy) "Moving to the background…" else "Background it") }
         Text(
-            if (sent) "Sent Ctrl+B. If a command was running in the foreground, $agentName moved it to the background."
-            else "Sends Ctrl+B, $agentName's key for moving the command it is running in the foreground to the background, so it can go on with other work.",
+            "Sends Ctrl+B, $agentName's key for moving the command it is running in the foreground to the background, " +
+                "only while its screen shows one and nothing is open over it.",
             color = Palette.Muted, fontSize = 12.sp,
         )
     }
