@@ -128,8 +128,11 @@ internal fun hermesClassicClarify(plain: String): Prompt? {
     // Review 3 (Codex): the input row, not the hint alone, decides. The editing marker "✎", or any text in
     // the input row, means the composer takes text (a frame drawn mid-change can pair it with the older
     // choice hint), so a digit would be typed, not picked: that card is Terminal only.
-    val typing = CLASSIC_TYPING_HINT.matches(hintRow) || !CLASSIC_CHOOSING.matches(lines[input].trim())
-    if (!typing && !CLASSIC_CHOICE_HINT.matches(hintRow)) return null
+    // Review 4 (Codex): Hermes's own hint sentence must sit right above the input row, whatever the input
+    // row shows; any other row there (a stale panel above other output) is no card at all.
+    val typingHint = CLASSIC_TYPING_HINT.matches(hintRow)
+    if (!typingHint && !CLASSIC_CHOICE_HINT.matches(hintRow)) return null
+    val typing = typingHint || !CLASSIC_CHOOSING.matches(lines[input].trim())
     val bottom = (hint - 1 downTo 0).firstOrNull { lines[it].isNotBlank() } ?: return null
     if (!lines[bottom].trim().let { it.startsWith("╰") && it.endsWith("╯") && it.drop(1).dropLast(1).all { c -> c == '─' } }) return null
     val top = (bottom - 1 downTo 0).firstOrNull { lines[it].trimStart().startsWith("╭") } ?: return null
@@ -174,3 +177,16 @@ internal fun hermesClassicClarify(plain: String): Prompt? {
 
 private fun terminalClarify(question: String?) = Prompt(question ?: "Hermes needs your input", emptyList(),
     region = listOf("Open Terminal to answer this Hermes question."), terminalReview = true, hermesClarify = true)
+
+/**
+ * Review 4 (Codex): the classic clarify panel is the newest box on [plain] and Hermes's input row ends
+ * the screen, but [hermesClassicClarify] could not prove the panel live (other output sits between the
+ * panel and the input row, so it is an old panel). No parser may read its rows as a menu then: no card.
+ */
+internal fun hermesStaleClassicPanel(plain: String): Boolean {
+    val lines = plain.lines().takeLast(80).map { it.trim() }
+    val input = lines.indexOfLast { it.isNotBlank() }
+    if (input < 0 || !CLASSIC_INPUT.matches(lines[input])) return false
+    val top = lines.indexOfLast { CLASSIC_TOP.matches(it) }
+    return top >= 0 && (top + 1 until input).none { lines[it].startsWith("╭") } && hermesClassicClarify(plain) == null
+}
