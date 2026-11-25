@@ -3744,6 +3744,48 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     return if (p != null && agent.equals("grok", true)) grokApproval(plain, p) else p
 }
 
+/**
+ * 2.2.8 (Bill: codex "sat blocked" on its own update prompt, which the app showed nothing for): Codex's
+ * "Update available · <from> → <to>" prompt, its release-notes row, then "› 1. Update now (runs `…`)",
+ * "2. Skip", "3. Skip until next version" and the footer "enter continue · esc skip". A card with the
+ * three options, "Update now" with the exact command it runs; answered with the arrows from the
+ * highlighted row and Enter, under the usual check. Only with that footer as the screen's last row
+ * (blank rows aside), the heading over it and a single highlight; otherwise null.
+ */
+private val CODEX_UPDATE_HEAD = Regex("""^Update available · \S+ → \S+$""")
+private val CODEX_UPDATE_FOOTER = Regex("""^enter continue · esc skip$""")
+private val CODEX_UPDATE_OPTION = Regex("""^(›\s*)?(\d)\.\s+(\S.*)$""")
+
+internal fun codexUpdatePrompt(text: String): Prompt? {
+    val rows = text.lines().takeLast(80).map { it.trim() }
+    val footer = rows.indexOfLast { it.isNotBlank() }
+    if (footer < 0 || !CODEX_UPDATE_FOOTER.matches(rows[footer])) return null
+    val head = (footer - 1 downTo maxOf(0, footer - 30)).firstOrNull { CODEX_UPDATE_HEAD.matches(rows[it]) } ?: return null
+    val notes = mutableListOf<String>()
+    val options = mutableListOf<Triple<String, String, Boolean>>()
+    for (i in head + 1 until footer) {
+        val r = rows[i]
+        if (r.isBlank()) continue
+        val m = CODEX_UPDATE_OPTION.matchEntire(r)
+        when {
+            m != null -> options += Triple(m.groupValues[2], m.groupValues[3].trim(), m.groupValues[1].isNotEmpty())
+            // A long option the terminal wrapped goes on its row, as the terminal cut it.
+            options.isNotEmpty() -> options[options.size - 1] = options.last().let { Triple(it.first, it.second + r, it.third) }
+            else -> notes += r
+        }
+    }
+    if (options.size < 2 || options.map { it.first } != (1..options.size).map { it.toString() } || options.count { it.third } != 1) return null
+    // "1.2.0 → 1.3.0" reads "1.2.0 to 1.3.0": a lone arrow on a card or alert reads as a row mark.
+    val heading = rows[head].replace(" → ", " to ")
+    val lines = listOf(QLine(heading)) + notes.map { QLine(it) }
+    return Prompt(
+        (listOf(heading) + notes).joinToString(" "),
+        options.map { Choice(it.second, it.first, false) },
+        selected = options.single { it.third }.first,
+        parts = questionParts(lines),
+    )
+}
+
 /** 2.2.8: Grok's "… Ctrl+F to expand" row inside its approval box: the command is cut there. */
 internal val GROK_EXPAND_HINT = Regex("""^(?:…|\.\.\.)\s*ctrl[-+]f to expand$""", RegexOption.IGNORE_CASE)
 private val GROK_RADIO_ROW = Regex("""^\s*┃?\s*\d{1,2}\s+\([○●]\)\s+\S""")
@@ -3843,6 +3885,7 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
     // 2.1.4: Claude's /btw panel is a side answer, not a question.
     if ((agent == null || agent.equals("claude", true)) && claudeBtwOverlay(text) != null) return null
     if (agent.equals("claude", true)) claudeBackgroundList(text)?.let { return it }
+    if (agent.equals("codex", true)) codexUpdatePrompt(text)?.let { return it }
     if (agent.equals("codex", true)) {
         val rows = text.lines().takeLast(80)
         fun hints(row: String) = row.split('|').map(String::trim)
@@ -4116,7 +4159,7 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
                 // Grok's question card starts its question with a "?" icon (1.4.9).
                 val row = if (gutter) c.trimStart { it in GROK_GUTTER || it == ' ' }.trimEnd().removeSuffix("·").trimEnd()
                     else if (isCmd && tl.startsWith("┃")) c.trimEnd().removeSuffix("·").trimEnd() else c
-                if (row.any(Char::isLetterOrDigit) && !row.contains("narrow scope") && !(grokRows && GROK_EXPAND_HINT.matches(row.trim()))) got.add(0, QLine(row.trimStart('›', '❯', ' ').replace(Regex("""^\?\s+"""), ""), isCmd, bar = !isCmd && tl.startsWith("│"), indent = bodyCol))
+                if (row.any(Char::isLetterOrDigit) && !row.contains("narrow scope") && !row.contains("widen scope") && !(grokRows && GROK_EXPAND_HINT.matches(row.trim()))) got.add(0, QLine(row.trimStart('›', '❯', ' ').replace(Regex("""^\?\s+"""), ""), isCmd, bar = !isCmd && tl.startsWith("│"), indent = bodyCol))
                 i--
             }
             // A "┆" row goes on the line above only when that row ends in Grok's "·" wrap mark; else

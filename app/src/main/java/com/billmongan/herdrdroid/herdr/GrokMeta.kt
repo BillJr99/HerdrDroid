@@ -48,7 +48,8 @@ object GrokMeta {
     private val KEYS = Regex("""^\S+:\S+(?: \S+)*(?:\s+│\s+\S+:\S+(?: \S+)*)+$""")
 
     // Box rows that are only a key hint: "... Ctrl-F to expand", "← → narrow scope".
-    private val BOX_HINT = Regex("""^(?:(?:\.\.\.|…)\s*Ctrl[-+]\w+ to \w+|←\s*→\s+.*)$""")
+    // 2.2.8: and "← widen scope" (Grok 4.7's scope row).
+    private val BOX_HINT = Regex("""^(?:(?:\.\.\.|…)\s*Ctrl[-+]\w+ to \w+|←\s*→\s+.*|←\s+widen scope)$""")
     private val BOX_CHOICE = Regex("""^(\d{1,2})\s+\(([●○])\)\s+(\S.*)$""")
 
     /** Grok's meta line [t] (trimmed) as an activity step, or null when it is Grok's own text. */
