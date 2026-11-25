@@ -313,9 +313,10 @@ class PaneDraftTest {
     }
 
     @Test fun `clear is refused without a known safe clear or for a changed occupant`() = runBlocking {
-        val pi = shown.copy(agent = "pi")
+        // 2.2.8: pi's Backspace was checked live; an agent with no checked key (gemini) still gets no Clear.
+        val pi = shown.copy(agent = "gemini")
         val unknown = Host(pi, listOf(draftScreen, emptyScreen))
-        assertFalse(canClearDraft("pi"))
+        assertFalse(canClearDraft("gemini"))
         assertEquals(PaneDraftAction.Outcome.REFUSED, action().clear("srv", pi, draftText, { true }, unknown))
         assertTrue(unknown.writes.isEmpty())
         for (agent in listOf("claude", "codex", "hermes", "grok")) assertTrue(canClearDraft(agent))

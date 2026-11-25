@@ -2259,6 +2259,8 @@ private fun withoutClaudeAgentList(rows: List<String>): List<String> {
     return rows.subList(0, start)
 }
 
+/** One of Agy's running tasks under its box ("  ● [08:05:16] ! sleep 120 running"). */
+private val AGY_TASK_ROW = Regex("""^\s*● \[\d{1,2}:\d{2}(:\d{2})?\] """)
 private val DRAFT_FRAMED = Regex("""^[\s ]*([│┃|]).*\1[\s ]*$""")
 private val DRAFT_FRAME_EDGE = Regex("""^[\s ]*[│┃|]""")
 private val DRAFT_BOTTOM_EDGE = Regex("""^[\s ]*[╰└]""")
@@ -2352,8 +2354,12 @@ internal fun composerDraftOf(screen: String, agent: String? = null): ComposerDra
     for (c in candidates.asReversed()) {
         val open = openSpan(c - 1) ?: continue
         val closes = (c + 1 until minOf(rows.size, c + 1 + MAX_DRAFT_ROWS)).filter { i -> span(i)?.let { sameSpan(it, open) } == true }
-        val close = closes.lastOrNull { footer(it) != null } ?: continue
-        val under = footer(close) ?: continue
+        // 2.2.8: Agy draws its running tasks ("  ● [08:05:16] ! sleep 120 running") between two rules
+        // under its box: the box ends at the first rule then, not the last (captured live, 1.5.17).
+        val agyTasks = agent?.lowercase() == "agy" && closes.size >= 2 && footer(closes.last()) != null &&
+            (closes.first() + 1 until closes.last()).all { rows[it].isBlank() || span(it) != null || AGY_TASK_ROW.containsMatchIn(rows[it]) }
+        val close = (if (agyTasks) closes.first() else closes.lastOrNull { footer(it) != null }) ?: continue
+        val under = if (agyTasks) rows.drop(close + 1) else footer(close) ?: continue
         val rest = (c + 1 until close).toList()
         return build(c, rest, bounded = closes.first() == close, menu = menuIn(under) || rest.any { DRAFT_MENU_ROW.matches(rows[it]) })
     }

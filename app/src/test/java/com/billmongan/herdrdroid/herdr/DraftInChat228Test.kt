@@ -86,15 +86,30 @@ class DraftInChat228Test {
     }
 
     @Test fun `clear keys per agent`() {
-        for (a in listOf("claude", "codex", "hermes", "grok")) assertEquals(a, "backspace", draftClearKey(a))
+        // 2.2.8 (Bill: "verify Clear live"): agy, kiro, vibe, muse, pi and opencode checked in a throwaway pane.
+        for (a in listOf("claude", "codex", "hermes", "grok", "agy", "kiro", "vibe", "muse", "pi", "opencode")) assertEquals(a, "backspace", draftClearKey(a))
         for (a in listOf("omp", "copilot")) assertEquals(a, "ctrl+u", draftClearKey(a))
-        for (a in listOf("agy", "kiro", "vibe", "muse", "pi", "opencode", null)) assertNull("$a", draftClearKey(a))
+        for (a in listOf("gemini", "cursor", null)) assertNull("$a", draftClearKey(a))
         // Ctrl+U empties one row, so a draft of several rows has no Clear there.
         assertTrue(clearableDraft("omp", ComposerDraft("one row", true)))
         assertFalse(clearableDraft("omp", ComposerDraft("one\ntwo", true)))
         assertTrue(clearableDraft("claude", ComposerDraft("one\ntwo", true)))
         assertFalse(clearableDraft("claude", ComposerDraft("/c", true, menu = true)))
-        assertFalse(clearableDraft("kiro", ComposerDraft("x", true)))
+        assertTrue(clearableDraft("kiro", ComposerDraft("x", true)))
+        assertFalse(clearableDraft("gemini", ComposerDraft("x", true)))
+    }
+
+    private fun probe(agent: String, name: String) = res("/screens/$agent/live-2026-11-25-probe/$name.ansi")
+
+    @Test fun `drafts typed live in a throwaway pane read as the draft, and the cleared boxes as empty`() {
+        // 2.2.8: "alpha beta gamma" typed, then 16 Backspaces (Ctrl+U for omp and copilot), 2026-11-25.
+        val names = mapOf("agy" to "agy", "muse" to "muse", "opencode" to "oc", "kiro" to "kiro", "vibe" to "vibe", "pi" to "pi",
+            "omp" to "omp", "copilot" to "copilot")
+        for ((agent, n) in names) {
+            assertEquals(agent, "alpha beta gamma", paneDraftOf(probe(agent, "$n-draft"), agent)?.text)
+            assertNull(agent, paneDraftOf(probe(agent, "$n-draft-cleared"), agent))
+        }
+        for (a in listOf("omp", "pi", "opencode")) assertTrue(a, paneBoxEmpty(probe(a, (if (a == "opencode") "oc" else a) + "-draft-cleared"), a))
     }
 
     private val ompPane = Pane("w2:p1", "w2:t1", "w2", "omp", Status.IDLE, "Oh My Pi", "/home/u", scrollOffset = 0,

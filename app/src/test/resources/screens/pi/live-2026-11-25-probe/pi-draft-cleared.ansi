@@ -1,0 +1,47 @@
+
+ [0m[38;2;228;138;122m[48;2;79;142;179m▀[0m[38;2;228;138;122m▀█[0m  [0m[38;2;126;126;126mv1.6.0[0m                                                                                                                          
+ [0m[38;2;79;142;179m█▀[0m [0m[38;2;234;182;93m█[0m [0m[38;2;126;126;126mescape[0m[38;2;156;156;156m interrupt · [0m[38;2;126;126;126mctrl+c/ctrl+d[0m[38;2;156;156;156m clear/exit · [0m[38;2;126;126;126m/[0m[38;2;156;156;156m commands · [0m[38;2;126;126;126m![0m[38;2;156;156;156m bash · [0m[38;2;126;126;126mctrl+o[0m[38;2;156;156;156m more[0m                                                 
+ [0m[38;2;126;126;126mPress ctrl+o to show full startup help and loaded resources.[0m                                                                         
+                                                                                                                                      
+ [0m[38;2;126;126;126mPi can explain its own features and look up its docs. Ask it how to use or extend Pi.[0m                                                
+
+[0m[38;2;190;150;67m[Skills][0m                                                                                                                              
+[0m[38;2;126;126;126m  avoid-ai-writing, bill-kanban, bill-writing-style, council, coursegen, elements-of-style, execplan, herdr-gpui-browser,             [0m
+[0m[38;2;126;126;126mread-the-damn-docs, example-course-repo-lifecycle, example-semester-calendar, verified-finish, webide-exercise-gen,                   [0m
+[0m[38;2;126;126;126mwriting-for-clarity[0m                                                                                                                   
+
+[0m[38;2;190;150;67m[Extensions][0m                                                                                                                          
+[0m[38;2;126;126;126m  @billjr99/pi-openai-compat, bill-approval-gate.ts, bill-rm-gate.ts, herdr-agent-state.ts[0m                                            
+
+
+ [0m[38;2;126;126;126mOpenAI-compat: Vercel AI Gateway, Fireworks AI, B.AI, Atria ASI, Unbiased AI, Kilo AI, ModelScope, Aion Labs, Agnes AI, TokenRouter, [0m
+ [0m[38;2;126;126;126mXiaomi MiMo, xKiro, TeamoRouter, Token Harbor, GMI Cloud, Together AI, Venice AI, Open Math Model (Open Math OS), OpenCode Zen,      [0m
+ [0m[38;2;126;126;126mOllama (local, keyless), Cloudflare Workers AI, MiniMax, Z.ai, OpenRouter, NVIDIA NIM, Meta Muse, AIHubMix, Ollama Cloud, DeepSeek,  [0m
+ [0m[38;2;126;126;126mOpenAI, Anthropic (Claude), Jetstream2 (IU / ACCESS), xAI (Grok), Hugging Face, Moonshot (Kimi), Nous Research Portal, llmproxy      [0m
+ [0m[38;2;126;126;126m(local), GitHub Models available in /model[0m                                                                                           
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[0m[38;2;107;107;107m──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[0m[7m [0m                                                                                                                                     
+[0m[38;2;107;107;107m──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[0m[38;2;126;126;126m~/scratch/hd228f-probe (master)[0m
+[0m[38;2;126;126;126m0.0%/128k (auto)                                                                             (compat-llmproxy) llmproxy/flagship__free[0m
