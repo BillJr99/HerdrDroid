@@ -7247,6 +7247,8 @@ class AppViewModel internal constructor(
      */
     fun backgroundForeground(paneId: String) {
         val p = pane(paneId) ?: return
+        // Never into an open question or approval, for any agent.
+        if (hasPendingQuestion(p)) { flash("Not sent: ${p.agentName} has a question open. Answer it first."); return }
         if (!p.agent.equals("claude", true)) { sendKeys(paneId, com.billmongan.herdrdroid.herdr.Backgrounding.KEY); return }
         act(paneId, "Couldn't move the task to the background", input = true) { h ->
             val s = h.readStyled(paneId, sendReadLines(p.agent))
