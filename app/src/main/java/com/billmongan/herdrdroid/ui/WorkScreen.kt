@@ -2,6 +2,7 @@ package com.billmongan.herdrdroid.ui
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -60,6 +61,8 @@ import com.billmongan.herdrdroid.transcript.Transcript
 import com.billmongan.herdrdroid.transcript.rowsOf
 import kotlinx.coroutines.delay
 import org.json.JSONObject
+import com.billmongan.herdrdroid.herdr.RunPlace
+import com.billmongan.herdrdroid.herdr.subagentPlace
 
 /**
  * What runs under an agent: its subagents and background tasks (Claude, from its own files) and
@@ -89,7 +92,7 @@ private fun WorkHeader(title: String, subtitle: String, onBack: () -> Unit, acti
 }
 
 @Composable
-private fun ProcRow(p: ProcInfo, keep: Set<Int>, agent: String?, onClick: () -> Unit) {
+private fun ProcRow(p: ProcInfo, keep: Set<Int>, agent: String?, place: RunPlace = RunPlace.UNKNOWN, onClick: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 6.dp, horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -98,6 +101,7 @@ private fun ProcRow(p: ProcInfo, keep: Set<Int>, agent: String?, onClick: () -> 
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(p.name, color = Palette.Ink, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1)
+                PlaceBadge(place)
                 if (p.pid in keep) Text("  ${if (p.depth == 0) "pane shell" else if (p.name.contains(agent ?: "\u0000", true)) "the agent" else "launcher"}",
                     color = Palette.Muted, fontSize = 12.sp, maxLines = 1)
             }
@@ -108,6 +112,20 @@ private fun ProcRow(p: ProcInfo, keep: Set<Int>, agent: String?, onClick: () -> 
     }
 }
 
+/** 2.2.8: "Foreground" or "Background", as the agent's own screen shows it; nothing when unknown. */
+@Composable
+private fun PlaceBadge(place: RunPlace) {
+    if (place == RunPlace.UNKNOWN) return
+    val fg = place == RunPlace.FOREGROUND
+    Text(
+        if (fg) "Foreground" else "Background",
+        color = if (fg) Palette.OrangeInk else Palette.Blue, fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
+        modifier = Modifier.padding(start = 6.dp).background(if (fg) Palette.Card else Palette.BlueSoft, RoundedCornerShape(6.dp))
+            .border(1.dp, if (fg) Palette.OrangeInk else Palette.Blue, RoundedCornerShape(6.dp)).padding(horizontal = 5.dp, vertical = 1.dp),
+        maxLines = 1,
+    )
+}
+
 private fun ago(epochSec: Long): String = ageText((System.currentTimeMillis() / 1000 - epochSec).coerceAtLeast(0)) + " ago"
 
 @Composable
@@ -116,6 +134,8 @@ private fun WorkList(vm: AppViewModel, paneId: String) {
     LaunchedEffect(paneId) {
         while (true) {
             vm.refreshWork(paneId)
+            // 2.2.8: the screen too, for each shell's and subagent's Foreground or Background mark.
+            vm.refreshWorkScreen(paneId)
             delay(3_000)
         }
     }
@@ -128,6 +148,8 @@ private fun WorkList(vm: AppViewModel, paneId: String) {
             return@Column
         }
         val keep = remember(w) { protectedPids(w, pane?.agent) }
+        val places = vm.shellPlaces(paneId)
+        val screenNow = vm.workScreens[paneId]
         val activeProcs = remember(w) { w.activeProcs(pane?.agent) }
         val activePids = activeProcs.map { it.pid }.toSet()
         val ended = vm.endedProcs[paneId].orEmpty()
@@ -150,14 +172,16 @@ private fun WorkList(vm: AppViewModel, paneId: String) {
                 items(runningTasks, key = { "t:" + it.id }) { t ->
                     WorkRow(Palette.Blue, t.title, "Background task · running · output ${t.kb} KB") { vm.screen = Screen.Work(paneId, "task", t.file, t.title) }
                 }
-                items(activeProcs, key = { "ap:" + it.pid }) { p -> ProcRow(p, keep, pane?.agent) { asking = p } }
+                items(activeProcs, key = { "ap:" + it.pid }) { p -> ProcRow(p, keep, pane?.agent, places[p.pid] ?: RunPlace.UNKNOWN) { asking = p } }
             }
             // ---- Subagents -------------------------------------------------------------------
             val runningSubs = w.subagents.filter { it.active }
             if (runningSubs.isNotEmpty()) {
                 item { SectionTitle("Subagents", "${runningSubs.size} running") }
                 items(runningSubs, key = { "s:" + it.id }) { a ->
-                    WorkRow(Palette.Blue, a.title, "Subagent · running · updated ${ago(a.updated)} · ${a.kb} KB") { vm.screen = Screen.Work(paneId, "sub", a.file, a.title) }
+                    val place = subagentPlace(pane?.agent, screenNow, a.title)
+                    val where = when (place) { RunPlace.FOREGROUND -> " · foreground"; RunPlace.BACKGROUND -> " · background"; else -> "" }
+                    WorkRow(Palette.Blue, a.title, "Subagent · running$where · updated ${ago(a.updated)} · ${a.kb} KB") { vm.screen = Screen.Work(paneId, "sub", a.file, a.title) }
                 }
             }
             // ---- Finished --------------------------------------------------------------------
@@ -225,7 +249,8 @@ private fun BackgroundButton(vm: AppViewModel, paneId: String, agentName: String
     var sent by remember { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         OutlinedButton(
-            onClick = { vm.sendKeys(paneId, com.billmongan.herdrdroid.herdr.Backgrounding.KEY); sent = true },
+            // 2.2.8: checked first (nothing open over it, a foreground command shown), then marked at once.
+            onClick = { vm.backgroundForeground(paneId); sent = true },
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Background it") }
         Text(
