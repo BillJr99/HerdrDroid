@@ -3757,7 +3757,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     return if (p != null && agent.equals("grok", true)) grokApproval(plain, p) else p
 }
 
-private val GROK_THINKING_PANEL = Regex("""^\s*┃\s*◆\s+Thinking…?\s*$""")
+private val GROK_THINKING_PANEL = Regex("""^\s*┃\s*◆\s+Thinking(?:…|\.\.\.)?\s*$""")
 private val GROK_SELECT_FOOTER = Regex("""^\s*\d+/\d+:select\b""")
 /** A row in the "┃" gutter (the thinking panel's body, an approval box's rows). */
 private val GROK_GUTTER_ROW = Regex("""^\s*┃""")
