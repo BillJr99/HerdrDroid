@@ -327,14 +327,26 @@ internal fun claudeReviewPreview(text: String, parsed: Prompt?): Prompt? {
     } else null
     if (top == null) return null
     val body = rows.subList(if (ask) top + 1 else top, footer)
-    val labels = body.mapNotNull { row ->
+    val previewColumn = if (ask) body.indexOfFirst { row ->
+        row.indexOf('┌').takeIf { it > 0 }?.let { col ->
+            CLAUDE_PREVIEW_OPTION.matches(row.take(col)) && row.substring(col).matches(Regex("┌─+┐\\s*"))
+        } == true
+    }.takeIf { it >= 0 }?.let { i ->
+        val col = body[i].indexOf('┌')
+        val end = body.drop(i + 1).indexOfFirst { it.getOrNull(col) != '│' }
+        col.takeIf { end > 0 && body.getOrNull(i + 1 + end)?.getOrNull(col) == '└' }
+    } else null
+    val visible = if (previewColumn == null) body else body.map { row ->
+        if (row.getOrNull(previewColumn) in listOf('┌', '│', '└')) row.take(previewColumn) else row
+    }
+    val labels = visible.mapNotNull { row ->
         CLAUDE_PREVIEW_OPTION.matchEntire(row)?.groupValues?.get(1)?.trim()
     }
-    val heading = body.firstOrNull { it.isNotBlank() }?.trim() ?: return null
+    val heading = visible.firstOrNull { it.isNotBlank() }?.trim() ?: return null
     val shownLabels = (parsed?.choices?.map { it.label }.orEmpty() + labels).distinct()
     val parts = parsed?.shownParts() ?: questionParts(listOf(QLine(heading)))
     val knownDetails = parts.blocks.map { it.text }.toSet()
-    val blocks = parts.blocks + body.asSequence()
+    val blocks = parts.blocks + visible.asSequence()
         .map { row -> CLAUDE_PREVIEW_OPTION.matchEntire(row)?.groupValues?.get(1)?.trim() ?: row.trim() }
         .filter { it.isNotBlank() && it !in knownDetails && it !in shownLabels }
         .map { QBlock(QKind.TEXT, it) }.toList() +
