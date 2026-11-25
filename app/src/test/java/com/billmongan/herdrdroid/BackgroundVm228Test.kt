@@ -21,7 +21,6 @@ import com.billmongan.herdrdroid.store.Server
 import kotlinx.coroutines.cancel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
-import org.junit.Ignore
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -330,7 +329,6 @@ class BackgroundVm228Test {
         assertEquals(emptyList<String>(), keys)
     }
 
-    @Ignore("BUG: Clear checks pane identity after the viewport read but does not bind Ctrl+E/Ctrl+U to that viewport.")
     @Test fun clearDoesNotTouchAReplacementDraftAfterTheViewportRead() = fixture("omp", ompDraft()) {
         status(Status.IDLE)
         afterRead = { frame = frame.replace("alpha beta gamma", "another draft") }

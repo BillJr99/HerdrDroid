@@ -195,6 +195,9 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
                     ?: return@guarded if (pressed) Outcome.UNCERTAIN else Outcome.REFUSED
                 try {
                     if (!allowed()) return@guarded if (pressed) Outcome.UNCERTAIN else Outcome.REFUSED
+                    // 2.2.8 (Codex's VM tests): the box is read once more, with the permit open, right
+                    // before the keys, and must still hold what is left of the shown draft.
+                    if (!boxStillHolds(shown, left, port)) return@guarded if (pressed) Outcome.UNCERTAIN else Outcome.CHANGED
                     port.keys(shown.id, List(count) { "backspace" }, permit)
                     pressed = true
                 } catch (e: WriteRevoked) {
@@ -237,11 +240,23 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
      * 2.2.8: Clear for a Ctrl+U agent: Ctrl+E then Ctrl+U on a one-row draft, in one write, then reads
      * until the box shows empty. Never Enter, never a second write.
      */
+    /**
+     * The last read before a Clear key: the box shows exactly [expected] (trailing spaces aside), bounded,
+     * with no list under it. Residual window, as for Send draft: one SSH round trip to the key.
+     */
+    private suspend fun boxStillHolds(shown: Pane, expected: String, port: Port): Boolean {
+        val last = port.viewport(shown.id) ?: return false
+        val still = draftOn(shown, last) ?: return false
+        return still.bounded && !still.menu && still.text.trimEnd() == expected.trimEnd()
+    }
+
     private suspend fun clearLine(server: String, shown: Pane, draft: ComposerDraft, allowed: () -> Boolean, port: Port): Outcome {
         if ('\n' in draft.text) return Outcome.NOT_SENDABLE
         val permit = gate.open(server to shown.id, WritePermit(allowed)) ?: return Outcome.REFUSED
         try {
             if (!allowed()) return Outcome.REFUSED
+            // 2.2.8 (Codex's VM tests): a replacement draft typed after the first read is never cleared.
+            if (!boxStillHolds(shown, draft.text, port)) return Outcome.CHANGED
             port.keys(shown.id, LINE_CLEAR_KEYS, permit)
         } catch (e: WriteRevoked) {
             return Outcome.REFUSED
