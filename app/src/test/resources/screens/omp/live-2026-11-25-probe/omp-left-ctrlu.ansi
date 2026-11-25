@@ -1,0 +1,47 @@
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_bulk_import_contacts, mcp__mcpproxy_qualtrics_check_export_status, mcp__mcpproxy_qualtrics_copy_survey,      [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_create_anonymous_link, mcp__mcpproxy_qualtrics_create_block,                                                 [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_create_email_distribution, mcp__mcpproxy_qualtrics_create_library_message,                                   [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_create_mailing_list, mcp__mcpproxy_qualtrics_create_question, mcp__mcpproxy_qualtrics_create_quota,          [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_create_quota_group, mcp__mcpproxy_qualtrics_create_reminder, mcp__mcpproxy_qualtrics_create_response,        [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_create_survey, mcp__mcpproxy_qualtrics_create_survey_version, mcp__mcpproxy_qualtrics_create_thank_you,      [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_create_webhook, mcp__mcpproxy_qualtrics_deactivate_survey, mcp__mcpproxy_qualtrics_delete_block,             [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_delete_distribution, mcp__mcpproxy_qualtrics_delete_flow_element,                                            [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_delete_library_graphic, mcp__mcpproxy_qualtrics_delete_library_message,                                      [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_delete_mailing_list, mcp__mcpproxy_qualtrics_delete_question, mcp__mcpproxy_qualtrics_delete_quota,          [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_delete_quota_group, mcp__mcpproxy_qualtrics_delete_response, mcp__mcpproxy_qualtrics_delete_survey,          [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_delete_webhook, mcp__mcpproxy_qualtrics_download_export_file, mcp__mcpproxy_qualtrics_estimate_export_size,  [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_export_responses, mcp__mcpproxy_qualtrics_export_responses_filtered, mcp__mcpproxy_qualtrics_get_block,      [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_get_contact, mcp__mcpproxy_qualtrics_get_distribution, mcp__mcpproxy_qualtrics_get_distribution_history,     [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_get_library_message, mcp__mcpproxy_qualtrics_get_mailing_list, mcp__mcpproxy_qualtrics_get_question,         [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_get_question_template, mcp__mcpproxy_qualtrics_get_quota, mcp__mcpproxy_qualtrics_get_quota_group,           [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_get_response, mcp__mcpproxy_qualtrics_get_survey, mcp__mcpproxy_qualtrics_get_survey_flow,                   [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_get_survey_languages, mcp__mcpproxy_qualtrics_get_survey_metadata,                                           [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_get_survey_options, mcp__mcpproxy_qualtrics_get_survey_translations,                                         [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_get_survey_version, mcp__mcpproxy_qualtrics_get_user, mcp__mcpproxy_qualtrics_import_survey_docx,            [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_import_survey_from_url, mcp__mcpproxy_qualtrics_import_survey_qsf,                                           [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_import_survey_text, mcp__mcpproxy_qualtrics_insert_flow_element, mcp__mcpproxy_qualtrics_list_blocks,        [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_list_contacts, mcp__mcpproxy_qualtrics_list_directories, mcp__mcpproxy_qualtrics_list_distribution_links,    [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_list_distributions, mcp__mcpproxy_qualtrics_list_embedded_data, mcp__mcpproxy_qualtrics_list_libraries,      [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_list_library_blocks, mcp__mcpproxy_qualtrics_list_library_messages,                                          [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_list_library_questions, mcp__mcpproxy_qualtrics_list_library_surveys,                                        [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_list_mailing_lists, mcp__mcpproxy_qualtrics_list_questions, mcp__mcpproxy_qualtrics_list_quota_groups,       [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_list_quotas, mcp__mcpproxy_qualtrics_list_survey_versions, mcp__mcpproxy_qualtrics_list_surveys,             [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_list_users, mcp__mcpproxy_qualtrics_list_web_services, mcp__mcpproxy_qualtrics_list_webhooks,                [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_move_flow_element, mcp__mcpproxy_qualtrics_piped_text_reference,                                             [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_qualtrics_api_request, mcp__mcpproxy_qualtrics_remove_contact, mcp__mcpproxy_qualtrics_update_block,         [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_update_contact, mcp__mcpproxy_qualtrics_update_flow_element, mcp__mcpproxy_qualtrics_update_library_message, [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_update_mailing_list, mcp__mcpproxy_qualtrics_update_question, mcp__mcpproxy_qualtrics_update_quota,          [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_update_quota_group, mcp__mcpproxy_qualtrics_update_response, mcp__mcpproxy_qualtrics_update_survey,          [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_update_survey_flow, mcp__mcpproxy_qualtrics_update_survey_languages,                                         [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_update_survey_metadata, mcp__mcpproxy_qualtrics_update_survey_options,                                       [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_update_survey_translations, mcp__mcpproxy_qualtrics_upload_library_graphic,                                  [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_qualtrics_validate_survey_design, mcp__mcpproxy_tracking_get_status, mcp__mcpproxy_tracking_register,                  [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_example_courses_example_build_designation_index, mcp__mcpproxy_example_courses_example_check_schedule_conflicts,       [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_example_courses_example_discover_filters, mcp__mcpproxy_example_courses_example_get_course,                            [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_example_courses_example_get_section, mcp__mcpproxy_example_courses_example_list_designations,                          [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_example_courses_example_list_subjects, mcp__mcpproxy_example_courses_example_list_terms,                               [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_example_courses_example_probe, mcp__mcpproxy_example_courses_example_search_catalog,                                   [0m
+ [0m[38;2;107;114;128mmcp__mcpproxy_example_courses_example_search_sections, mcp__mcpproxy_example_courses_example_selftest[0m                                
+
+[0m[48;2;15;18;22m [0m[38;2;107;114;128m[48;2;15;18;22mπ[0m[48;2;15;18;22m [0m[38;2;42;48;56m[48;2;15;18;22m>[0m[48;2;15;18;22m [0m[38;2;0;180;255m[48;2;15;18;22m⬢ llmproxy/flagship__free[0m[48;2;15;18;22m [0m[38;2;42;48;56m[48;2;15;18;22m>[0m[48;2;15;18;22m [0m[38;2;232;236;244m[48;2;15;18;22m📁 ~/scratch/hd228f-probe[0m[48;2;15;18;22m [0m[38;2;42;48;56m[48;2;15;18;22m>[0m[48;2;15;18;22m [0m[38;2;255;179;71m[48;2;15;18;22m⑂ master [0m[38;2;156;163;176m[48;2;15;18;22m?3[0m[48;2;15;18;22m [0m[38;2;15;18;22m▶[0m[38;2;0;180;255m───────────────26%[0m[38;2;42;48;56m───────────────────────[0m[38;2;156;163;176m╎[0m[38;2;42;48;56m─────[0m[38;2;57;152;191m┃[0m[38;2;42;48;56m───────[0m[38;2;57;152;191m128K[0m[38;2;42;48;56m─[0m
+[0m[38;2;74;80;88m╰─ [0m[38;2;229;229;231m gamma[0m                                                                                                                             

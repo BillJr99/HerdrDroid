@@ -10,16 +10,16 @@ import kotlinx.coroutines.CancellationException
  * Grok (the app already clears Grok's box this way before /privacy). Other agents show the draft
  * and Send draft, but no Clear draft, until their box is checked the same way.
  */
-internal val DRAFT_CLEARABLE = setOf("claude", "codex", "hermes", "grok")
+internal val DRAFT_CLEARABLE = setOf("claude", "codex", "hermes", "grok", "agy", "kiro", "vibe", "muse", "pi", "opencode")
 
 internal fun canClearDraft(agent: String?): Boolean = draftClearKey(agent) != null
 
 /**
- * 2.2.8: the key Clear draft presses, per agent, or null where none is checked yet. Backspace for the
- * agents above. Ctrl+U for Oh My Pi 19.0.1 ("tui.editor.deleteToLineStart") and Copilot 1.0.114
- * ("delete from cursor to beginning of line"), the same key the app already presses there before a
- * menu command (2.2.2); it empties one row, so it clears only a one-row draft ([clearableDraft]).
- * Agy, Kiro, Vibe, Muse, pi and OpenCode show the draft with Send draft, but no Clear draft.
+ * 2.2.8: the key Clear draft presses, per agent, or null where none is checked. Backspace for the
+ * agents above, and for Agy 1.5.17, Kiro, Vibe 3.1.2, Muse Code 1.4.24, pi 1.6.0 and OpenCode 2.3.2,
+ * each checked live in a throwaway pane (2026-11-25): "alpha beta gamma" typed, 16 Backspaces, the
+ * box empty and nothing else changed. Ctrl+U for Oh My Pi 19.0.1 and Copilot 1.0.114
+ * (checked live too), which empties one row only ([clearableDraft]).
  */
 internal fun draftClearKey(agent: String?): String? = when (agent?.lowercase()) {
     in DRAFT_CLEARABLE -> "backspace"
