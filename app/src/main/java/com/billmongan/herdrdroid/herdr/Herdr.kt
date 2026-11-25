@@ -1374,7 +1374,11 @@ private fun isChrome(line: String): Boolean {
     return boxy * 2 >= t.length
 }
 
-data class Choice(val label: String, val keys: String, val pressEnter: Boolean)
+/**
+ * One option of a card. [ambiguous] (2.2.8, Codex's per-commit review of a1314cd): the pane cut its
+ * label off so that it could be the agent's approve-everything option; it is never sent ([blockedChoiceReason]).
+ */
+data class Choice(val label: String, val keys: String, val pressEnter: Boolean, val ambiguous: Boolean = false)
 /**
  * A question on screen. [selected] is the number of the highlighted menu option (the ❯ line),
  * when there is one: answers then move the highlight with the arrow keys and press Enter instead
@@ -3987,8 +3991,18 @@ private fun grokAlwaysCutOff(label: String): Boolean {
     return l.length >= "Yes, and".length && GROK_ALWAYS_FULL.startsWith(l, ignoreCase = true)
 }
 
+/** Why [c] could be Grok's always-approve option cut off: a start of its label, short of the whole of it. */
+internal fun grokCouldBeAlways(label: String): Boolean {
+    val l = label.trim().trimEnd('…', '.').trim()
+    return l.isNotEmpty() && l.length < GROK_ALWAYS_FULL.length && GROK_ALWAYS_FULL.startsWith(l, ignoreCase = true)
+}
+
+internal const val AMBIGUOUS_CHOICE_REASON =
+    "Not sent: the pane cut this option's label off, so it could be the one that approves everything. Widen the pane, or use the terminal."
+
 fun blockedChoiceReason(c: Choice): String? =
-    if (c.keys == GROK_ALWAYS_APPROVE || c.label.contains("always-approve mode", ignoreCase = true) ||
+    if (c.ambiguous) AMBIGUOUS_CHOICE_REASON
+    else if (c.keys == GROK_ALWAYS_APPROVE || c.label.contains("always-approve mode", ignoreCase = true) ||
         // 2.2.8 (agy's corpus): Grok's label with its "(always-approve mode)" tail cut off by a narrow pane.
         GROK_ALWAYS_HEAD.matches(c.label.trim()) || grokAlwaysCutOff(c.label))
         "Not offered here: it switches the agent to approve everything without asking. Use the terminal if you really mean to."
@@ -4001,8 +4015,13 @@ fun blockedChoiceReason(c: Choice): String? =
  * (always-approve mode)" row, which the card shows disabled ([blockedChoiceReason]). A box whose
  * command is cut ("… Ctrl+F to expand") gives a [Prompt.clipped] card.
  */
-internal fun grokApproval(plain: String, p: Prompt): Prompt {
-    if (p.choices.isEmpty() || p.terminalReview) return p
+internal fun grokApproval(plain: String, parsed: Prompt): Prompt {
+    if (parsed.choices.isEmpty() || parsed.terminalReview) return parsed
+    // Codex's per-commit review of a1314cd (HIGH): Grok draws no plain "Yes" and no option that is only
+    // the start of its always-approve one, so a label cut off anywhere inside that one ("Yes", "Yes,
+    // a…", "Yes, and don't ask again f…") is ambiguous: shown, never sent.
+    val p = if (parsed.choices.none { grokCouldBeAlways(it.label) }) parsed
+        else parsed.copy(choices = parsed.choices.map { if (grokCouldBeAlways(it.label)) it.copy(ambiguous = true) else it }).withSpanOf(parsed)
     val rows = plain.lines()
     val last = rows.indexOfLast { GROK_RADIO_ROW.containsMatchIn(it) }
     if (last < 0) return p
