@@ -5059,10 +5059,10 @@ private val CODEX_UPDATE_KEY = Regex("""^(?:›\s*)?(\d)\.\s+\S""")
  * dialog owns the keys (a new dialog drawn under the old one takes them), so they count too.
  * Codex's per-commit review of 8c0125d: each counts exactly as it is (styles and all, only its ends
  * trimmed: a changed shortcut or a highlight shown only in colour is a change), except a running
- * status row ([CARD_STATUS_ROW]), which counts by
- * its shape: styles dropped, a spinner's glyph as "*", each whole running time ("9s", "10s", "1m 0s",
- * "22m58s") as "T", each token counter ("⇣1.2k") as "⇣N", and any other digit as 0, so a time or
- * counter growing a digit or a unit is no change either.
+ * status row ([CARD_STATUS_ROW]), where only its moving parts are read as tokens (Codex's per-commit
+ * review of d2895b5): its spinner's glyph (the first one) as "*", each whole running time ("9s", "10s",
+ * "1m 0s", "22m58s"; never part of a word or a number) as "T", and each token counter's number
+ * ("⇣1.2k", "↓ 999k") as "N". Every other character and every style stays as it is.
  */
 private val CARD_UNDER_GLYPH = Regex("[\u2800-\u28FF·✢✳✶✻✽◐◓◑◒◆◇◈•]")
 /**
@@ -5075,12 +5075,50 @@ private val CARD_UNDER_GLYPH = Regex("[\u2800-\u28FF·✢✳✶✻✽◐◓◑�
  */
 internal val CARD_STATUS_ROW = Regex("^(?:(?:[\u2800-\u28FF]|◆|◇|◈) .*\\[stop]$|(?:[\u2800-\u28FF]|✻|✶|✳|✢|·|✽|◇|◆|•) .*\\(.*esc to interrupt\\)$|─+ [\u2800-\u28FF] Working)")
 internal fun cardUnderRow(row: String): String {
-    val shown = cardRegionRow(CARD_CSI.replace(row, ""))
-    if (!CARD_STATUS_ROW.containsMatchIn(shown)) return cardRegionRow(row)
-    return CARD_UNDER_GLYPH.replace(shown, "*").replace(CARD_COUNTER, "⇣N").replace(CARD_RUN_TIME, "T").replace(Regex("[0-9]"), "0")
+    val trimmed = cardRegionRow(row)
+    if (!CARD_STATUS_ROW.containsMatchIn(cardRegionRow(CARD_CSI.replace(row, "")))) return trimmed
+    // Each run of text between two styles on its own: the styles stay where they are.
+    val out = StringBuilder()
+    var spun = false
+    var pos = 0
+    fun text(t: String) {
+        var x = t
+        if (!spun) CARD_UNDER_GLYPH.find(x)?.let { m -> x = x.replaceRange(m.range, "*"); spun = true }
+        x = cardTokens(x, CARD_COUNTER, false) { m -> m.value.takeWhile { !it.isDigit() } + "N" }
+        x = cardTokens(x, CARD_RUN_TIME, true) { "T" }
+        out.append(x)
+    }
+    for (m in CARD_CSI.findAll(trimmed)) {
+        text(trimmed.substring(pos, m.range.first))
+        out.append(m.value)
+        pos = m.range.last + 1
+    }
+    text(trimmed.substring(pos))
+    return out.toString()
 }
-private val CARD_COUNTER = Regex("⇣ ?[0-9.]+[kKM]?")
+private val CARD_COUNTER = Regex("[⇣↓] ?[0-9]+(\\.[0-9]+)?[kKM]?")
 private val CARD_RUN_TIME = Regex("([0-9]+h ?)?([0-9]+m ?)?[0-9]+(\\.[0-9]+)?[smh]")
+private fun cardWordChar(c: Char) = c in '0'..'9' || c in 'a'..'z' || c in 'A'..'Z'
+
+/**
+ * [t] with each match of [re] that stands on its own (no letter or digit right after it, and with
+ * [before], none or a "." right before it) replaced by [to]. One left-to-right scan: a match that
+ * doesn't stand on its own keeps its first character and the scan goes on from the next one, exactly
+ * as [CARD_SEND_CHECK] and card-check.sh scan.
+ */
+private fun cardTokens(t: String, re: Regex, before: Boolean, to: (MatchResult) -> String): String {
+    val out = StringBuilder()
+    var i = 0
+    while (true) {
+        val m = re.find(t, i)
+        if (m == null) { out.append(t, i, t.length); break }
+        val st = m.range.first
+        val en = m.range.last + 1
+        val ok = (en == t.length || !cardWordChar(t[en])) && (!before || st == 0 || !(cardWordChar(t[st - 1]) || t[st - 1] == '.'))
+        if (ok) { out.append(t, i, st).append(to(m)); i = en } else { out.append(t, i, st + 1); i = st + 1 }
+    }
+    return out.toString()
+}
 
 /** The line between the dialog's rows and the rows under it in the digest. */
 internal const val CARD_UNDER_MARK = "@@under@@"
@@ -5162,15 +5200,46 @@ internal val CARD_SEND_CHECK = """
     STATUS = re.compile(rb'^(?:(?:' + SPIN + b'|' + alt('\u25c6\u25c7\u25c8') + rb') .*\[stop\]$|(?:' + SPIN + b'|' +
                         alt('\u273b\u2736\u2733\u2722\u00b7\u273d\u25c7\u25c6\u2022') + rb') .*\(.*esc to interrupt\)$|' +
                         b'(?:' + '\u2500'.encode('utf-8') + b')+ ' + SPIN + b' Working)')
+    CSI = re.compile(rb'\x1b\[[0-9;?]*[ -/]*[@-~]')
+    COUNTER = re.compile(rb'(?:' + alt('\u21e3\u2193') + rb') ?[0-9]+(\.[0-9]+)?[kKM]?')
+    RUNTIME = re.compile(rb'([0-9]+h ?)?([0-9]+m ?)?[0-9]+(\.[0-9]+)?[smh]')
+    WORD = b'0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'
+    def tokens(t, rx, before, to):
+        # cardTokens in Herdr.kt: one left-to-right scan, a match only where it stands on its own.
+        out = b''
+        i = 0
+        while True:
+            m = rx.search(t, i)
+            if m is None:
+                return out + t[i:]
+            st, en = m.start(), m.end()
+            ok = (en == len(t) or t[en] not in WORD) and (not before or st == 0 or not (t[st - 1] in WORD or t[st - 1:st] == b'.'))
+            if ok:
+                out += t[i:st] + to(m.group(0))
+                i = en
+            else:
+                out += t[i:st + 1]
+                i = st + 1
     def shape(line):
-        # cardUnderRow in Herdr.kt: a running status row by its shape, every other row exactly.
-        t = re.sub(rb'\x1b\[[0-9;?]*[ -/]*[@-~]', b'', line).strip(b' \t\r\x0b\x0c')
-        if not STATUS.search(t):
-            return line.strip(b' \t\r\x0b\x0c')
-        t = GLYPH.sub(b'*', t)
-        t = re.sub('\u21e3'.encode('utf-8') + rb' ?[0-9.]+[kKM]?', '\u21e3N'.encode('utf-8'), t)
-        t = re.sub(rb'([0-9]+h ?)?([0-9]+m ?)?[0-9]+(\.[0-9]+)?[smh]', b'T', t)
-        return DIGIT.sub(b'0', t)
+        # cardUnderRow in Herdr.kt: a running status row's moving parts as tokens, every other byte as it is.
+        x = line.strip(b' \t\r\x0b\x0c')
+        if not STATUS.search(CSI.sub(b'', x).strip(b' \t\r\x0b\x0c')):
+            return x
+        out = b''
+        spun = False
+        for k, seg in enumerate(re.split(rb'(\x1b\[[0-9;?]*[ -/]*[@-~])', x)):
+            if k % 2:
+                out += seg
+                continue
+            if not spun:
+                g = GLYPH.search(seg)
+                if g:
+                    seg = seg[:g.start()] + b'*' + seg[g.end():]
+                    spun = True
+            seg = tokens(seg, COUNTER, False, lambda v: re.match(rb'[^0-9]*', v).group(0) + b'N')
+            seg = tokens(seg, RUNTIME, True, lambda v: b'T')
+            out += seg
+        return out
     def timer(line, t):
         return re.sub(rb'(?s)^(.*)\([0-9]+s\)', rb'\1(Ns)', line, count=1) if TIMER_LINE.match(t) else line
     V = '\u2502'.encode('utf-8')

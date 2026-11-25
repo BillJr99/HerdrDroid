@@ -326,6 +326,36 @@ END {
 if [ -n "$below" ]; then
   # The dialog's rows only: "start" past the screen's top means they aren't there (exit 3).
   R='
+function word(c) { return c ~ /^[0-9A-Za-z]$/ }
+# cardTokens in Herdr.kt: one left-to-right scan, a match only where it stands on its own.
+function tokens(t, re, before, kind,   out, rest, st, en, m, ok, pre, nx) {
+  out = ""
+  while (1) {
+    if (!match(t, re)) return out t
+    st = RSTART; en = RSTART + RLENGTH
+    m = substr(t, st, RLENGTH)
+    nx = substr(t, en, 1)
+    pre = (st > 1) ? substr(t, st - 1, 1) : substr(out, length(out), 1)
+    ok = (nx == "" || !word(nx)) && (!before || pre == "" || !(word(pre) || pre == "."))
+    if (ok) {
+      if (kind == "counter") { match(m, /^[^0-9]*/); out = out substr(t, 1, st - 1) substr(m, 1, RLENGTH) "N" }
+      else out = out substr(t, 1, st - 1) "T"
+      t = substr(t, en)
+    } else {
+      out = out substr(t, 1, st)
+      t = substr(t, st + 1)
+    }
+  }
+}
+function text(t) {
+  if (!spun && match(t, /\342[\240-\243][\200-\277]|·|✢|✳|✶|✻|✽|◐|◓|◑|◒|◆|◇|◈|•/)) {
+    t = substr(t, 1, RSTART - 1) "*" substr(t, RSTART + RLENGTH)
+    spun = 1
+  }
+  t = tokens(t, "(⇣|↓) ?[0-9]+(\\.[0-9]+)?[kKM]?", 0, "counter")
+  t = tokens(t, "([0-9]+h ?)?([0-9]+m ?)?[0-9]+(\\.[0-9]+)?[smh]", 1, "time")
+  return t
+}
 { r[NR] = $0 }
 END {
   start = NR - below - count + 1
@@ -337,12 +367,13 @@ END {
     print x
   }
   # 2.2.8 (Codex review 4B): the rows under the dialog (cardUnderRow in Herdr.kt): each exactly, ends
-  # trimmed, except a running status row (Grok, Claude/Codex/Antigravity, Hermes shapes), which counts
-  # by its shape: styles dropped, each spinner glyph "*", each running time "T", each counter "⇣N",
-  # any other digit 0.
+  # trimmed, except a running status row (Grok, Claude/Codex/Antigravity, Hermes shapes), where only
+  # its spinner glyph, running times and counter numbers are read as tokens; styles stay.
   print "@@under@@"
   for (i = NR - below + 1; i <= NR; i++) {
     x = r[i]
+    sub(/^[ \t\r\v\f]+/, "", x)
+    sub(/[ \t\r\v\f]+$/, "", x)
     t = x
     gsub(/\033\[[0-9;?]*[ -\/]*[@-~]/, "", t)
     sub(/^[ \t\r\v\f]+/, "", t)
@@ -350,16 +381,18 @@ END {
     if (t ~ /^(\342[\240-\243][\200-\277]|◆|◇|◈) .*\[stop\]$/ ||
         t ~ /^(\342[\240-\243][\200-\277]|✻|✶|✳|✢|·|✽|◇|◆|•) .*\(.*esc to interrupt\)$/ ||
         t ~ /^(─)+ \342[\240-\243][\200-\277] Working/) {
-      gsub(/\342[\240-\243][\200-\277]|·|✢|✳|✶|✻|✽|◐|◓|◑|◒|◆|◇|◈|•/, "*", t)
-      gsub(/⇣ ?[0-9.]+[kKM]?/, "⇣N", t)
-      gsub(/([0-9]+h ?)?([0-9]+m ?)?[0-9]+(\.[0-9]+)?[smh]/, "T", t)
-      gsub(/[0-9]/, "0", t)
-      print t
-    } else {
-      sub(/^[ \t\r\v\f]+/, "", x)
-      sub(/[ \t\r\v\f]+$/, "", x)
-      print x
+      out = ""
+      spun = 0
+      while (match(x, /\033\[[0-9;?]*[ -\/]*[@-~]/)) {
+        # text() runs match() too: keep the place of this style first.
+        cs = RSTART; cl = RLENGTH
+        seg = text(substr(x, 1, cs - 1))
+        out = out seg substr(x, cs, cl)
+        x = substr(x, cs + cl)
+      }
+      x = out text(x)
     }
+    print x
   }
 }
 '
