@@ -3794,6 +3794,14 @@ internal fun grokPlanOrTrustBottom(rows: List<String>): Int {
     return if (above.size == 2 && GROK_TRUST_NO.matches(rows[above[0]]) && GROK_TRUST_YES.matches(rows[above[1]]) &&
         above[0] - above[1] == 1) last else -1
 }
+/** A Grok approval box's title row in the "┃" gutter: "┃  ›  List the build cache". */
+private val GROK_BOX_TITLE = Regex("""^\s*┃\s*›\s+\S""")
+
+/** A row that starts a Grok dialog in the thinking panel's gutter (never thought text). */
+private fun grokDialogBoundary(r: String): Boolean =
+    GROK_BOX_TITLE.containsMatchIn(r) || GROK_RADIO_ROW.containsMatchIn(r) || GROK_UNNUMBERED_ALWAYS.matches(r) ||
+        MENU_OPTION_ROW.find(r)?.groupValues?.get(1)?.isNotBlank() == true
+
 private val GROK_COMPOSER_TOP = Regex("""^\s*╭─+╮\s*$""")
 private val GROK_COMPOSER_ROW = Regex("""^\s*│\s*❯""")
 private val GROK_COMPOSER_BOTTOM = Regex("""^\s*╰""")
@@ -3821,9 +3829,23 @@ internal fun grokWorkingBelowAnyQuestion(plain: String): Boolean {
     // Its rows are never question rows.
     val composer = BooleanArray(rows.size)
     if (GROK_THINKING_PANEL.matches(rows[running])) {
-        composer[running] = true
-        while (running + 1 < rows.size && GROK_GUTTER_ROW.containsMatchIn(rows[running + 1]) &&
-            !GROK_RADIO_ROW.containsMatchIn(rows[running + 1]) && !GROK_UNNUMBERED_ALWAYS.matches(rows[running + 1])) composer[++running] = true
+        val top = running
+        // Codex's per-commit review of 7d6950b: the panel ends at a dialog's own boundary in the same
+        // gutter: a box title ("┃  ›  Title"), a radio row, a highlighted option row ("┃  ❯ 1. Yes").
+        var end = top
+        while (end + 1 < rows.size && GROK_GUTTER_ROW.containsMatchIn(rows[end + 1]) && !grokDialogBoundary(rows[end + 1])) end++
+        // And with a dialog's footer under it ("1/2:select", Grok's own key row), its last numbered run
+        // is that dialog's options, not thought.
+        if ((end + 1 until rows.size).any { GROK_SELECT_FOOTER.containsMatchIn(rows[it]) }) {
+            var k = end
+            while (k > top && MENU_OPTION_ROW.find(rows[k]) == null) k--
+            if (k > top) {
+                while (k - 1 > top && MENU_OPTION_ROW.find(rows[k - 1]) != null) k--
+                end = k - 1
+            }
+        }
+        for (i in top..end) composer[i] = true
+        running = end
     }
     // The message box: its top edge, the "│ ❯" row, the rest of a draft, its bottom edge; never past
     // the first row outside its frame (Codex's per-commit review: a box drawn without its bottom edge

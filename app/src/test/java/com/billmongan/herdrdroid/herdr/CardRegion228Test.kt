@@ -426,6 +426,25 @@ class CardRegion228Test {
         assertFalse(grokWorkingBelowAnyQuestion("$none\n  ○ Opt in"))
     }
 
+    /**
+     * Codex's per-commit review of 7d6950b (MEDIUM): the thinking panel ends where a dialog starts in the
+     * same "┃" gutter: a highlighted option row, a box title, or a numbered run with a select footer under it.
+     */
+    @Test fun aLiveMenuInTheThinkingPanelsGutterIsStillAQuestion() {
+        val base = narrowStatus.replace(plain("thinking-panel.ansi"), "")
+        assertTrue(base.contains(thoughtRow))
+        val marked = base.replace(thoughtRow, "$thoughtRow\n  ┃  ❯ 1. Yes, proceed\n  ┃    2. No, reject")
+        assertFalse(grokWorkingBelowAnyQuestion(marked))
+        val titled = base.replace(thoughtRow, "$thoughtRow\n  ┃  ›  List the build cache\n  ┃  │ ls -la build/cache\n  ┃  1. Yes, proceed\n  ┃  2. No, reject")
+        assertFalse(grokWorkingBelowAnyQuestion(titled))
+        val footed = base.replace(thoughtRow, "$thoughtRow\n  ┃  1. Yes, proceed\n  ┃  2. No, reject") +
+            "\n  1/2:select  │  Tab:next option  │  Esc:scrollback\n"
+        assertFalse(grokWorkingBelowAnyQuestion(footed))
+        // Numbered points in the thought, with no footer or highlight, are still thought.
+        val points = base.replace(thoughtRow, "$thoughtRow\n  ┃  1. Check the lock.\n  ┃  2. Run the cleanup.")
+        assertTrue(grokWorkingBelowAnyQuestion(points))
+    }
+
     /** agy LOW: the thinking panel's title with three dots, as a narrow or plain terminal draws it. */
     @Test fun groksThinkingPanelWithThreeDotsIsNoQuestion() {
         val s = narrowStatus.replace(plain("thinking-under-stale-approval.ansi"), "").replace("◆ Thinking…", "◆ Thinking...")
