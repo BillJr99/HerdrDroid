@@ -3997,6 +3997,9 @@ private fun wideCodePoint(cp: Int): Boolean = cp in 0x1100..0x115F || cp in 0x2E
     cp in 0xF900..0xFAFF || cp in 0xFE30..0xFE4F || cp in 0xFF00..0xFF60 || cp in 0xFFE0..0xFFE6 || cp in 0x1F300..0x1FAFF ||
     cp in 0x20000..0x3FFFD
 
+/** An option's own key hint at the end of its label: "(p)", "(esc)", "(y)". */
+private val OPTION_KEY_TAIL = Regex("""\((?:[a-z]|esc)\)$""")
+
 /** A radio row of its own ("(○) Yes, and don't ask again …"), never the label tail above it. */
 private val WRAP_RADIO_ROW = Regex("""^\([○●◯◉]\)""")
 /** Grok's always-approve option in full. */
@@ -4306,9 +4309,13 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
             // column, counted as the terminal draws it (a tab to the next multiple of 8).
             val nextCol = lines[j].indexOfFirst { it !in " \t│┃|" }.let { if (it < 0) -1 else displayColumn(lines[j], it) }
             val parenRow = next.startsWith("(")
+            // agy's re-review (MEDIUM): Codex's narrow pane wraps an option before its own key hint
+            // ("2. Yes, and don't ask again for commands that start with" over "`python3 -` in … (p)"):
+            // a row in the label's column that ends with the key hint the label still lacks is its rest.
+            val keyTail = labelCol >= 0 && nextCol == labelCol && OPTION_KEY_TAIL.containsMatchIn(next) && !OPTION_KEY_TAIL.containsMatchIn(full)
             if (KEY_HINT_LINE.containsMatchIn(next) || (parenRow && (labelCol < 0 || nextCol != labelCol)) ||
                 !(full.count { it == '(' } > full.count { it == ')' } || next.first().isLowerCase() ||
-                    (parenRow && next.endsWith(")")))) break
+                    (parenRow && next.endsWith(")")) || keyTail)) break
             full = "$full $next"; j++
         }
         lastOptionEnd = j - 1
