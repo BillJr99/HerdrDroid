@@ -31,6 +31,15 @@ class RunningPillTest {
         assertEquals(true, pill.active)
     }
 
+    @Test fun aProcessOnlyReadDoesNotReportZeroCodexSubagents() {
+        val work = WorkInfo(emptyList(), emptyList(), emptyList(), agentOwnedOnly = true)
+        val pill = runningPill(work, "codex", 0)!!
+        assertEquals("? sub", pill.label)
+        assertEquals("0 observed shells; subagent count unavailable", pill.description)
+        assertEquals(false, pill.active)
+        assertEquals("1 sh - ? sub", runningPill(work.copy(procs = listOf(proc)), "codex", 0)!!.label)
+    }
+
     @Test fun finishedWorkKeepsAMutedWayIn() {
         val pill = runningPill(WorkInfo(emptyList(), listOf(sub(false)), listOf(task(false)), agentOwnedOnly = true), null, 1)!!
         assertEquals("3 done", pill.label)

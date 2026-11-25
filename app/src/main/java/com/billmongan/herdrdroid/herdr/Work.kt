@@ -23,6 +23,12 @@ data class WorkInfo(val procs: List<ProcInfo>, val subagents: List<SubagentInfo>
 ) {
     val activeSubagents get() = subagents.count { it.active }
     val runningTasks get() = tasks.count { it.running }
+    /** A process list alone cannot establish an empty subagent list. */
+    fun subagentCount(agent: String?): Int? = when {
+        activeSubagents > 0 -> activeSubagents
+        agent.isNullOrBlank() -> 0
+        else -> null
+    }
     /** Processes other than the pane's shell, a launcher and the agent: what the agent started. */
     fun childProcs(agent: String?): Int = if (agentOwnedOnly) procs.size
         else (protectedPids(this, agent)).let { keep -> procs.count { it.pid !in keep } }
