@@ -6,8 +6,7 @@
 # 2.2.8: a screen digest of "-" checks the occupant only, wherever the pane is scrolled (a message
 # queued behind a question goes only to its occupant): 0 when it matches, 5 when it doesn't, 4.
 # 2.2.8: a screen argument "r:<rows under>:<rows>:<digest>" compares only the dialog's rows
-# (cardRegionDigest in Herdr.kt): the same rows of this read, each with its runs of whitespace
-# made one space and its ends trimmed.
+# (cardRegionDigest in Herdr.kt): the same rows of this read, each with only its ends trimmed.
 herdr=$1
 pane=$2
 occupant=$3
@@ -332,9 +331,8 @@ END {
   if (start < 1) exit 3
   for (i = start; i <= NR - below; i++) {
     x = r[i]
-    gsub(/[ \t\r\v\f]+/, " ", x)
-    sub(/^ /, "", x)
-    sub(/ $/, "", x)
+    sub(/^[ \t\r\v\f]+/, "", x)
+    sub(/[ \t\r\v\f]+$/, "", x)
     print x
   }
 }
