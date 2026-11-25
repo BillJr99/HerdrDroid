@@ -256,8 +256,63 @@ class QuestionsViewVm228Test {
         assertEquals(0, vm.openQuestionCount())
     }
 
-    private fun fixture(agent: String = "codex", frame: String = command("alpha"), test: Fixture.() -> Unit) {
-        val f = Fixture(agent, frame)
+    @Test fun aDialogThatKeepsChangingSaysSoWithOpenPane() = fixture {
+        var n = 0
+        onVisible = { frame = command("step-${n++}") }
+        runBlocking { vm.questionsFeed.refreshNow() }
+        val e = vm.questionsFeed.entries.single()
+        assertEquals(EntryState.UNREAD, e.state)
+        assertEquals(com.billmongan.herdrdroid.questions.QuestionsAggregator.KEPT_CHANGING_NOTE, e.note)
+        assertNull(e.target)
+    }
+
+    @Test fun aHerdrCoreServerSaysWhyWithoutReadingThePane() = fixture(backend = Backend.CORE) {
+        runBlocking { vm.questionsFeed.refreshNow() }
+        val e = vm.questionsFeed.entries.single()
+        assertEquals(EntryState.UNREAD, e.state)
+        assertTrue(e.note.orEmpty(), e.note.orEmpty().contains("can't show the pane's screen"))
+        assertEquals(0, visibleReads)
+    }
+
+    @Test fun aPaneWithNoAgentIdentitySaysWhyWithoutReadingIt() = fixture {
+        terminal = null
+        status(Status.NEEDS_YOU)
+        runBlocking { vm.questionsFeed.refreshNow() }
+        val e = vm.questionsFeed.entries.single()
+        assertEquals(EntryState.UNREAD, e.state)
+        assertTrue(e.note.orEmpty(), e.note.orEmpty().contains("can't tell which agent"))
+        assertEquals(0, visibleReads)
+        assertEquals(0, paneGets)
+    }
+
+    /** Muse's quota warning shows its highlight only in colour: read with styles, the entry answers from it. */
+    @Test fun aMuseQuotaWarningKeepsItsColourHighlight() = fixture("muse", museStyled(1)) {
+        runBlocking { vm.questionsFeed.refreshNow() }
+        val e = vm.questionsFeed.entries.single()
+        assertEquals(EntryState.READY, e.state)
+        val card = e.prompt!!
+        assertTrue(card.museQuota)
+        val both = card.choices.first { it.label.startsWith("Both") }
+        vm.answerChoice("p1", card, both, target = e.target as AppViewModel.CardTarget, feedback = feedbackFor(e))
+        settle()
+        assertEquals("moved from the highlight the styled read showed", listOf("down down enter"), sent)
+    }
+
+    /** A Claude dialog taller than the screen: rebuilt whole from the history, as its card is. */
+    @Test fun aTallClaudeDialogIsRebuiltWhole() = fixture("claude", tallScrolled) {
+        recent = tallHistory
+        runBlocking { vm.questionsFeed.refreshNow() }
+        val e = vm.questionsFeed.entries.single()
+        assertEquals(EntryState.READY, e.state)
+        val card = e.prompt!!
+        assertTrue("the whole dialog, not its visible tail", !card.topOffScreen)
+        val command = checkNotNull(card.shownParts().command).lines()
+        assertEquals("cd /home/user/scratch && python3 - <<'EOF'", command.first())
+        assertEquals("EOF", command.last())
+    }
+
+    private fun fixture(agent: String = "codex", frame: String = command("alpha"), backend: Backend = Backend.TUI, test: Fixture.() -> Unit) {
+        val f = Fixture(agent, frame, backend)
         try {
             f.test()
         } finally {
@@ -267,17 +322,21 @@ class QuestionsViewVm228Test {
         }
     }
 
-    private class Fixture(val agent: String, var frame: String) : Herdr.Commands {
+    private class Fixture(val agent: String, var frame: String, backend: Backend) : Herdr.Commands {
         val vm = AppViewModel(ApplicationProvider.getApplicationContext<Application>())
         private val server = Server(id = "fixture-q", name = "FixtureQ", host = "127.0.0.1", port = 1, user = "fixq", herdrPath = "/fixture/herdr")
         private val ssh = HerdrSsh(server.host, server.port, server.user, Credentials(null, null), null, { null })
         override var connection: Any? = Any()
-        var terminal = "t1"
+        var terminal: String? = "t1"
+        /** The pane's recent history (`--source recent`), when it differs from the screen. */
+        var recent: String? = null
         val sent = mutableListOf<String>()
         var afterSend: String? = null
         var failAfterSend = false
         var visibleReads = 0
         var paneGets = 0
+        /** Runs at each read of the screen, for a screen that changes between reads. */
+        var onVisible: (() -> Unit)? = null
         var scrolled = 0
         var cardChecks = 0
         var cardChecksRefused = 0
@@ -285,7 +344,7 @@ class QuestionsViewVm228Test {
         private var statusNow = Status.NEEDS_YOU
 
         init {
-            field("herdr").set(vm, Herdr(ssh, server.herdrPath, Backend.TUI, null, this))
+            field("herdr").set(vm, Herdr(ssh, server.herdrPath, backend, null, this))
             state("current", server)
             status(Status.NEEDS_YOU)
             field("lastWorkAt").setLong(vm, Long.MAX_VALUE)
@@ -366,8 +425,8 @@ class QuestionsViewVm228Test {
             }
             return when {
                 command.endsWith("'pane' 'get' 'p1'") -> { paneGets++; ok("""{"result":{"pane":$pane}}""") }
-                command.contains("'pane' 'read' 'p1' '--source' 'recent'") -> ok(frame)
-                command.contains("'pane' 'read' 'p1' '--source' 'visible'") -> { visibleReads++; ok(frame) }
+                command.contains("'pane' 'read' 'p1' '--source' 'recent'") -> ok(recent ?: frame)
+                command.contains("'pane' 'read' 'p1' '--source' 'visible'") -> { visibleReads++; onVisible?.invoke(); ok(frame) }
                 command.contains("'pane' 'send-keys' 'p1' ") -> {
                     sent += command.substringAfter("'p1' ").replace("'", "")
                     afterSend?.let { frame = it }
@@ -380,7 +439,7 @@ class QuestionsViewVm228Test {
 
         private val pane get() = """{"pane_id":"p1","workspace_id":"w1","tab_id":"tab","agent":"$agent","agent_status":"${when (statusNow) {
             Status.IDLE -> "idle"; Status.DONE -> "done"; Status.WORKING -> "working"; else -> "blocked"
-        }}","cwd":"/fixture","terminal_id":"$terminal","scroll":{"offset_from_bottom":$scrolled}}"""
+        }}","cwd":"/fixture","terminal_id":${terminal?.let { "\"$it\"" } ?: "null"},"scroll":{"offset_from_bottom":$scrolled}}"""
         private fun ok(out: String) = ExecResult(0, out, "")
         private fun field(name: String) = AppViewModel::class.java.getDeclaredField(name).apply { isAccessible = true }
         @Suppress("UNCHECKED_CAST")
@@ -388,6 +447,30 @@ class QuestionsViewVm228Test {
     }
 
     private companion object {
+        val museQuota = checkNotNull(QuestionsViewVm228Test::class.java.getResource("/screens/muse/derived-2.1.0/quota-fast-full.txt")).readText()
+
+        /** The warning read with styles: option [hi] bold and blue, the others plain (as SuccessiveCardAnswerTest draws it). */
+        fun museStyled(hi: Int?): String {
+            var n = 0
+            return museQuota.lines().joinToString("\n") { row ->
+                if (com.billmongan.herdrdroid.herdr.MUSE_QUOTA_TITLES.any { row.trimStart().startsWith(it) } && row.startsWith("  ") && !row.startsWith("    ")) {
+                    n++
+                    if (n == hi) "  \u001B[1;38;2;120;170;255m${row.trimStart()}\u001B[0m" else "  \u001B[38;2;230;230;230m${row.trimStart()}\u001B[0m"
+                } else row
+            }
+        }
+
+        // The tall Claude permission dialog of TallDialog227Test: its top scrolled off, its history whole.
+        val tallScrolled = checkNotNull(QuestionsViewVm228Test::class.java.getResource("/screens/claude/derived-2.1.330-tall/scrolled-ask.txt")).readText()
+        val tallHistory: String = run {
+            val dashed = tallScrolled.lines().first { it.startsWith("╌") }
+            val rule = "─".repeat(dashed.trimEnd().length)
+            val hidden = listOf(" │ cd /home/user/scratch && python3 - <<'EOF'", " │ # capture test for a tall permission prompt") +
+                (1..45).map { " │ # filler row $it" }
+            (listOf("● I'll run the probe now.", "", rule, " Bash command · from the general-purpose agent",
+                " Print canned probe text for prompt capture test", dashed) + hidden + tallScrolled.trimEnd('\n').lines()).joinToString("\n")
+        }
+
         val ompBox = checkNotNull(QuestionsViewVm228Test::class.java.getResource("/screens/omp/synthetic-2.2.8-approval/approval-three.ansi")).readText()
         fun command(arg: String) = """
             Would you like to run the following command?
