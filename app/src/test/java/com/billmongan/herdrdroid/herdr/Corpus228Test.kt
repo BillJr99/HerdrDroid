@@ -70,6 +70,24 @@ class Corpus228Test {
             c.choices.any { it.label == "Yes, and don't ask again for `python3` in this directory (/home/user/work/demo-repo)" })
     }
 
+    /**
+     * Codex's per-commit review of fe63209 (HIGH): Grok's always-approve label cut off at any point from
+     * "Yes, and" on is blocked; whole labels with their own scope stay usable.
+     */
+    @Test fun aCutOffAlwaysApproveLabelIsBlockedAtEveryPoint() {
+        val full = "Yes, and don't ask again for anything (always-approve mode)"
+        for (n in "Yes, and".length..full.length) {
+            val cut = full.take(n)
+            assertNotNull(cut, blockedChoiceReason(Choice(cut, "1", false)))
+            assertNotNull("$cut…", blockedChoiceReason(Choice("$cut…", "1", false)))
+        }
+        for (ok in listOf("Yes", "Yes, proceed", "No, reject (type to add feedback)", "Never allow: ls -la",
+                "Yes, and don't ask again for mkdir commands in /tmp/t", "Yes, and don't ask again for these files (a)",
+                "Yes, and don't ask again for commands that start with `pytest -q` (p)")) {
+            assertNull(ok, blockedChoiceReason(Choice(ok, "2", false)))
+        }
+    }
+
     @Test fun theCorpusReadsAsItsIndexSays() {
         val all = cases()
         assertEquals(54, all.size)

@@ -3934,11 +3934,24 @@ const val GROK_ALWAYS_APPROVE = "grok:always-approve"
 /** A radio row of its own ("(○) Yes, and don't ask again …"), never the label tail above it. */
 private val WRAP_RADIO_ROW = Regex("""^\([○●◯◉]\)""")
 private val GROK_ALWAYS_HEAD = Regex("""Yes, and don't ask again for anything\b.*""", RegexOption.IGNORE_CASE)
+/** Grok's always-approve option in full. */
+private const val GROK_ALWAYS_FULL = "Yes, and don't ask again for anything (always-approve mode)"
+
+/**
+ * Codex's per-commit review of fe63209 (HIGH): a label the pane cut off anywhere inside Grok's
+ * always-approve option ("Yes, and", "Yes, and don't ask again f") can't show what it approves, so it
+ * is blocked too; a label that goes on past that point with its own scope ("… for mkdir commands in
+ * /tmp/t") is not a cut-off one and stays usable.
+ */
+private fun grokAlwaysCutOff(label: String): Boolean {
+    val l = label.trim().trimEnd('…', '.').trim()
+    return l.length >= "Yes, and".length && GROK_ALWAYS_FULL.startsWith(l, ignoreCase = true)
+}
 
 fun blockedChoiceReason(c: Choice): String? =
     if (c.keys == GROK_ALWAYS_APPROVE || c.label.contains("always-approve mode", ignoreCase = true) ||
         // 2.2.8 (agy's corpus): Grok's label with its "(always-approve mode)" tail cut off by a narrow pane.
-        GROK_ALWAYS_HEAD.matches(c.label.trim()))
+        GROK_ALWAYS_HEAD.matches(c.label.trim()) || grokAlwaysCutOff(c.label))
         "Not offered here: it switches the agent to approve everything without asking. Use the terminal if you really mean to."
     else null
 
