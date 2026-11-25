@@ -33,7 +33,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,7 +52,6 @@ import com.billmongan.herdrdroid.herdr.Status
 import com.billmongan.herdrdroid.questions.EntryState
 import com.billmongan.herdrdroid.questions.QuestionEntry
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 
 /*
  * 2.2.8 (Bill, 2026-11-24): the Questions view, opened from the drawer's Questions item. Every open
@@ -108,13 +106,12 @@ fun QuestionsScreen(vm: AppViewModel) {
     LaunchedEffect(Unit) { while (true) { now = System.currentTimeMillis(); delay(15_000) } }
     BackHandler(enabled = !vm.drawerOpen) { vm.goHome() }
     var typing by remember { mutableStateOf<TypedAnswer?>(null) }
-    val scope = rememberCoroutineScope()
     Column(Modifier.fillMaxSize().background(Palette.Ground).systemBarsPadding()) {
         Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { vm.drawerOpen = true }) { Icon(Icons.Filled.Menu, contentDescription = "All agents", tint = Palette.Ink) }
             Text("Questions", color = Palette.Ink, fontSize = 18.sp, fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.padding(start = 10.dp).weight(1f))
-            IconButton(onClick = { scope.launch { feed.refreshNow() } }) { Icon(Icons.Filled.Refresh, contentDescription = "Refresh questions", tint = Palette.Ink) }
+            IconButton(onClick = { feed.poke() }) { Icon(Icons.Filled.Refresh, contentDescription = "Refresh questions", tint = Palette.Ink) }
         }
         vm.notice?.let { ErrorBanner(it) { vm.notice = null } }
         QuestionsList(

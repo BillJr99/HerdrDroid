@@ -158,4 +158,21 @@ class QuestionsAggregatorTest {
         agg.update(emptyList())
         assertEquals(EntryState.ANSWERED, agg.entry(a.key)?.state)
     }
+
+    @Test fun anOlderReadFinishingAfterANewerOneDoesNotOverwriteIt() {
+        val s = src("open", "p1")
+        agg.update(listOf(s))
+        val older = agg.beginRead(s.key)
+        val newer = agg.beginRead(s.key)
+        agg.applyRead(s, QuestionRead(prompt("Second?", "Allow", "Deny"), "new"), newer)
+        agg.applyRead(s, QuestionRead(prompt("First?", "Yes", "No"), "old"), older)
+        assertEquals("Second?", agg.entry(s.key)?.prompt?.question)
+        assertEquals("new", agg.entry(s.key)?.target)
+        // Nor an older "no question" read: the newer question stays.
+        val stale = agg.beginRead(s.key)
+        agg.applyRead(s, QuestionRead(prompt("Third?", "A"), "third"), agg.beginRead(s.key))
+        agg.applyRead(s, QuestionRead(null, null), stale)
+        assertEquals(EntryState.READY, agg.entry(s.key)?.state)
+        assertEquals("Third?", agg.entry(s.key)?.prompt?.question)
+    }
 }
