@@ -260,11 +260,16 @@ class OpenCodeAlert212Test {
             emit(button(shown, label, isKey = label == null))
             assertTrue("$label: ${fake.writes()}", fake.writes().isEmpty())
         }
-        // The same command still answers.
+        // The same command still answers (Bill, 2026-11-25: Always allow only after the app's own
+        // confirmation, so never from the alert).
+        val always = Fake(focused(frame, "Allow once"), status = "done")
+        open(always)
+        emit(button(shown, "Always allow"))
+        assertTrue(always.writes().toString(), always.writes().isEmpty())
         val fake = Fake(focused(frame, "Allow once"), status = "done")
         open(fake)
-        emit(button(shown, "Always allow"))
-        assertEquals(listOf("'send-keys' 'w1:p1' 'right' 'enter'"), fake.writes().map { it.substringAfter("'pane' ") })
+        emit(button(shown, "Allow once"))
+        assertEquals(1, fake.writes().size)
     }
 
     private val question = res("/screens/opencode/live-2026-11-21/question-2.3.2.txt")

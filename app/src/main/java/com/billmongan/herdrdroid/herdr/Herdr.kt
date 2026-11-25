@@ -3999,7 +3999,6 @@ private fun wideCodePoint(cp: Int): Boolean = cp in 0x1100..0x115F || cp in 0x2E
 
 /** A radio row of its own ("(○) Yes, and don't ask again …"), never the label tail above it. */
 private val WRAP_RADIO_ROW = Regex("""^\([○●◯◉]\)""")
-private val GROK_ALWAYS_HEAD = Regex("""Yes, and don't ask again for anything\b.*""", RegexOption.IGNORE_CASE)
 /** Grok's always-approve option in full. */
 private const val GROK_ALWAYS_FULL = "Yes, and don't ask again for anything (always-approve mode)"
 
@@ -4009,10 +4008,8 @@ private const val GROK_ALWAYS_FULL = "Yes, and don't ask again for anything (alw
  * is blocked too; a label that goes on past that point with its own scope ("… for mkdir commands in
  * /tmp/t") is not a cut-off one and stays usable.
  */
-private fun grokAlwaysCutOff(label: String): Boolean {
-    val l = label.trim().trimEnd('…', '.').trim()
-    return l.length >= "Yes, and".length && GROK_ALWAYS_FULL.startsWith(l, ignoreCase = true)
-}
+private fun grokAlwaysCutOff(label: String): Boolean =
+    label.trim().trimEnd('…', '.').trim().length >= "Yes, and".length && grokCouldBeAlways(label)
 
 /** Why [c] could be Grok's always-approve option cut off: a start of its label, short of the whole of it. */
 internal fun grokCouldBeAlways(label: String): Boolean {
@@ -4023,13 +4020,38 @@ internal fun grokCouldBeAlways(label: String): Boolean {
 internal const val AMBIGUOUS_CHOICE_REASON =
     "Not sent: the pane cut this option's label off, so it could be the one that approves everything. Widen the pane, or use the terminal."
 
-fun blockedChoiceReason(c: Choice): String? =
-    if (c.ambiguous) AMBIGUOUS_CHOICE_REASON
-    else if (c.keys == GROK_ALWAYS_APPROVE || c.label.contains("always-approve mode", ignoreCase = true) ||
-        // 2.2.8 (agy's corpus): Grok's label with its "(always-approve mode)" tail cut off by a narrow pane.
-        GROK_ALWAYS_HEAD.matches(c.label.trim()) || grokAlwaysCutOff(c.label))
-        "Not offered here: it switches the agent to approve everything without asking. Use the terminal if you really mean to."
-    else null
+/**
+ * Why [c] is never sent from the app, or null. Bill (2026-11-25): an approve-from-now-on option is
+ * offered behind its own confirmation ([approveAllAsk]); only what the app can't show or reach is
+ * never sent: a label cut off so it could be the approve-everything option ([Choice.ambiguous], or a
+ * cut-off start of Grok's), and Grok's unnumbered always-approve row, which no key the app sends selects.
+ */
+fun blockedChoiceReason(c: Choice): String? = when {
+    c.ambiguous || grokAlwaysCutOff(c.label) -> AMBIGUOUS_CHOICE_REASON
+    c.keys == GROK_ALWAYS_APPROVE ->
+        "Not sent: the app can't select this row with keys. It switches the agent to approve everything; use the terminal if you really mean to."
+    else -> null
+}
+
+/**
+ * Bill (2026-11-25): an option that approves from now on, on any agent (Grok's "Yes, and don't ask
+ * again for anything", Claude's and Codex's "don't ask again", "always", Oh My Pi's "for this session",
+ * OpenCode's "Always allow", Hermes's allowlist), and any option the app won't send: a tap opens
+ * "Approve everything from now on?" with its full label first.
+ */
+fun approvesFromNowOn(c: Choice): Boolean =
+    c.ambiguous || c.keys == GROK_ALWAYS_APPROVE || grantsStandingPermission(c.label) || blockedChoiceReason(c) != null
+
+/** The confirmation for [c] on [p]: its full label, the keys Confirm sends, or why it can't be sent. */
+data class ApproveAllAsk(val label: String, val keys: List<String>?, val reason: String?)
+
+/** [approvesFromNowOn]'s confirmation for [c] on the card [p], or null when [c] needs none. */
+fun approveAllAsk(p: Prompt, c: Choice): ApproveAllAsk? {
+    if (!approvesFromNowOn(c)) return null
+    val keys = if (blockedChoiceReason(c) == null) menuKeys(p, c) else null
+    val reason = blockedChoiceReason(c) ?: if (keys == null) "Not sent: the app can't tell which keys pick this option. Use the terminal." else null
+    return ApproveAllAsk(c.label, keys, reason)
+}
 
 /**
  * 2.2.8 (Bill: "grok has a question but keeps saying it changed and won't send"): Grok 4.7's approval
