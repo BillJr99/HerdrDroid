@@ -3974,6 +3974,29 @@ const val GROK_ALWAYS_APPROVE = "grok:always-approve"
  * done without Bill's say (the shared rules): the card shows it disabled, alerts and voice leave it
  * out, and an answer for it is refused.
  */
+/**
+ * The column [s] draws its character at [index] in, as a terminal lays it out: a tab moves to the next
+ * multiple of 8, a wide character (CJK, an emoji) takes two columns, every other character one.
+ */
+internal fun displayColumn(s: String, index: Int): Int {
+    var col = 0
+    var i = 0
+    while (i < index && i < s.length) {
+        val cp = s.codePointAt(i)
+        col = when {
+            cp == '\t'.code -> (col / 8 + 1) * 8
+            wideCodePoint(cp) -> col + 2
+            else -> col + 1
+        }
+        i += Character.charCount(cp)
+    }
+    return col
+}
+
+private fun wideCodePoint(cp: Int): Boolean = cp in 0x1100..0x115F || cp in 0x2E80..0xA4CF || cp in 0xAC00..0xD7A3 ||
+    cp in 0xF900..0xFAFF || cp in 0xFE30..0xFE4F || cp in 0xFF00..0xFF60 || cp in 0xFFE0..0xFFE6 || cp in 0x1F300..0x1FAFF ||
+    cp in 0x20000..0x3FFFD
+
 /** A radio row of its own ("(○) Yes, and don't ask again …"), never the label tail above it. */
 private val WRAP_RADIO_ROW = Regex("""^\([○●◯◉]\)""")
 private val GROK_ALWAYS_HEAD = Regex("""Yes, and don't ask again for anything\b.*""", RegexOption.IGNORE_CASE)
@@ -4245,8 +4268,8 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
     val numbered = run.map { (i, k, label) ->
         var full = label
         var j = i + 1
-        // Where the label starts on its row: a wrapped row of it starts in the same column.
-        val labelCol = option.find(lines[i])?.let { m -> (m.groups[2] ?: m.groups[6])?.range?.first } ?: -1
+        // Where the label starts on its row, as the terminal draws it: a wrapped row of it starts in the same column.
+        val labelCol = option.find(lines[i])?.let { m -> (m.groups[2] ?: m.groups[6])?.range?.first?.let { displayColumn(lines[i], it) } } ?: -1
         while (j < lines.size && option.find(lines[j]) == null) {
             val next = clean(lines[j])
             // A radio row of its own ("(○) Yes, and don't ask again …") is never part of the label above
@@ -4257,10 +4280,13 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
             // narrow pane: Grok's "(always-approve mode)", Antigravity's "(Persist to settings.json)",
             // and only when it starts in the label's own column (Codex's per-commit review: a "(…)"
             // row of other output is not the label's).
-            val nextCol = lines[j].indexOfFirst { it !in " \t│┃|" }
-            if (KEY_HINT_LINE.containsMatchIn(next) ||
+            // Codex's per-commit review of 5672ba8: on every path, a "(…)" row joins only in the label's
+            // column, counted as the terminal draws it (a tab to the next multiple of 8).
+            val nextCol = lines[j].indexOfFirst { it !in " \t│┃|" }.let { if (it < 0) -1 else displayColumn(lines[j], it) }
+            val parenRow = next.startsWith("(")
+            if (KEY_HINT_LINE.containsMatchIn(next) || (parenRow && (labelCol < 0 || nextCol != labelCol)) ||
                 !(full.count { it == '(' } > full.count { it == ')' } || next.first().isLowerCase() ||
-                    (next.startsWith("(") && next.endsWith(")") && labelCol >= 0 && nextCol == labelCol))) break
+                    (parenRow && next.endsWith(")")))) break
             full = "$full $next"; j++
         }
         lastOptionEnd = j - 1

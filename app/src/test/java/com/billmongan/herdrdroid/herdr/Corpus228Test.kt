@@ -74,6 +74,25 @@ class Corpus228Test {
     }
 
     /**
+     * Codex's per-commit reviews of a1314cd and 5672ba8 (MEDIUM): a "(…)" row joins the option above it
+     * only in the label's own column on every path (an open "(" included), counted as the terminal
+     * draws it: tabs to the next multiple of 8, wide characters as two.
+     */
+    @Test fun aParenRowJoinsOnlyInTheLabelsColumnOnEveryPath() {
+        val open = "Run the cleanup?\n❯ 1. Yes, proceed\n  2. Yes, and allow (for this folder\n     (/home/user/work))\n  3. No\n\nEsc to cancel\n"
+        assertEquals("Yes, and allow (for this folder (/home/user/work))", checkNotNull(detectPrompt(open, true, null)).choices[1].label)
+        val misaligned = open.replace("     (/home/user/work))", "(/home/user/work))")
+        assertEquals("Yes, and allow (for this folder", checkNotNull(detectPrompt(misaligned, true, null)).choices[1].label)
+        // A tab before the number: the label starts in column 11 as drawn, and so does its tail.
+        val tabbed = "Run the cleanup?\n❯ 1. Yes, proceed\n\t2. Yes, and allow for this folder\n           (/home/user/work)\n  3. No\n\nEsc to cancel\n"
+        assertEquals("Yes, and allow for this folder (/home/user/work)", checkNotNull(detectPrompt(tabbed, true, null)).choices[1].label)
+        assertEquals(11, displayColumn("\t2. Yes", 4))
+        // Wide characters count two columns.
+        assertEquals(4, displayColumn("全部x", 2))
+        assertEquals(3, displayColumn("\uD83D\uDCC1 x", 3))
+    }
+
+    /**
      * Codex's per-commit review of a1314cd (HIGH): on a Grok card, an option whose label the pane cut off
      * anywhere inside the always-approve one ("Yes", "Yes, a…", "Yes, and don't ask again f") is
      * ambiguous and never sent; Grok's own whole options stay usable.
