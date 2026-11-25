@@ -221,9 +221,10 @@ class Corpus228Test {
         }
     }
 
-    @Test fun ompSubmitReadyShowsItsSingleChoice() {
+    @Test fun ompSubmitFocusWithTypedOtherOnlyOffersCancel() {
         val prompt = checkNotNull(detectPrompt(stripAnsi(res("040-omp-ask-submit-ready.txt")), true, "omp"))
-        assertEquals(listOf("Submit"), prompt.choices.map { it.label })
+        assertEquals(OmpAsk.TERMINAL_SUBMIT, prompt.question)
+        assertEquals(listOf(OmpAsk.CANCEL_LABEL), prompt.choices.map { it.label })
     }
 
     @Test fun theCorpusReadsAsItsIndexSays() {
