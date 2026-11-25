@@ -483,6 +483,13 @@ class CardRegion228Test {
         val footed = base.replace(thoughtRow, "$thoughtRow\n  ┃  1. Yes, proceed\n  ┃  2. No, reject") +
             "\n  1/2:select  │  Tab:next option  │  Esc:scrollback\n"
         assertFalse(grokWorkingBelowAnyQuestion(footed))
+        // Codex's per-commit review of 894e44b (MEDIUM): one quoted highlighted row in the thought is
+        // thought, and a footer detached from the panel by other output doesn't make its list a menu.
+        val quoted = base.replace(thoughtRow, "$thoughtRow\n  ┃  ❯ 1. Yes, proceed is what the box will show.\n  ┃  Then I run it.")
+        assertTrue(grokWorkingBelowAnyQuestion(quoted))
+        val detached = base.replace(thoughtRow, "$thoughtRow\n  ┃  1. Check the lock.\n  ┃  2. Run the cleanup.") +
+            "\n     ◈ Ran 1 command\n\n  1/2:select  │  Tab:next option\n\n   ⠧ Thinking… 50s [stop]\n"
+        assertTrue(grokWorkingBelowAnyQuestion(detached))
         // Numbered points in the thought, with no footer or highlight, are still thought.
         val points = base.replace(thoughtRow, "$thoughtRow\n  ┃  1. Check the lock.\n  ┃  2. Run the cleanup.")
         assertTrue(grokWorkingBelowAnyQuestion(points))

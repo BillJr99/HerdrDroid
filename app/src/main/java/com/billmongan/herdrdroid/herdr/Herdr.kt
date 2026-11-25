@@ -3810,10 +3810,19 @@ internal fun grokPlanOrTrustBottom(rows: List<String>): Int {
 /** A Grok approval box's title row in the "┃" gutter: "┃  ›  List the build cache". */
 private val GROK_BOX_TITLE = Regex("""^\s*┃\s*›\s+\S""")
 
-/** A row that starts a Grok dialog in the thinking panel's gutter (never thought text). */
-private fun grokDialogBoundary(r: String): Boolean =
-    GROK_BOX_TITLE.containsMatchIn(r) || GROK_RADIO_ROW.containsMatchIn(r) || GROK_UNNUMBERED_ALWAYS.matches(r) ||
-        MENU_OPTION_ROW.find(r)?.groupValues?.get(1)?.isNotBlank() == true
+/**
+ * Whether [rows] at [i] starts a Grok dialog in the thinking panel's gutter (never thought text): a box
+ * title, a radio row, the always row, or a highlighted option row with the next option right under it
+ * (one highlighted row alone, as thought may quote it, is not a menu).
+ */
+private fun grokDialogBoundary(rows: List<String>, i: Int): Boolean {
+    val r = rows[i]
+    if (GROK_BOX_TITLE.containsMatchIn(r) || GROK_RADIO_ROW.containsMatchIn(r) || GROK_UNNUMBERED_ALWAYS.matches(r)) return true
+    val m = MENU_OPTION_ROW.find(r) ?: return false
+    if (m.groupValues[1].isBlank()) return false
+    val next = rows.getOrNull(i + 1)?.let { MENU_OPTION_ROW.find(it) } ?: return false
+    return menuOptionKey(next).toIntOrNull() == menuOptionKey(m).toIntOrNull()?.plus(1)
+}
 
 private val GROK_COMPOSER_TOP = Regex("""^\s*╭─+╮\s*$""")
 private val GROK_COMPOSER_ROW = Regex("""^\s*│\s*❯""")
@@ -3846,17 +3855,9 @@ internal fun grokWorkingBelowAnyQuestion(plain: String): Boolean {
         // Codex's per-commit review of 7d6950b: the panel ends at a dialog's own boundary in the same
         // gutter: a box title ("┃  ›  Title"), a radio row, a highlighted option row ("┃  ❯ 1. Yes").
         var end = top
-        while (end + 1 < rows.size && GROK_GUTTER_ROW.containsMatchIn(rows[end + 1]) && !grokDialogBoundary(rows[end + 1])) end++
-        // And with a dialog's footer under it ("1/2:select", Grok's own key row), its last numbered run
-        // is that dialog's options, not thought.
-        if ((end + 1 until rows.size).any { GROK_SELECT_FOOTER.containsMatchIn(rows[it]) }) {
-            var k = end
-            while (k > top && MENU_OPTION_ROW.find(rows[k]) == null) k--
-            if (k > top) {
-                while (k - 1 > top && MENU_OPTION_ROW.find(rows[k - 1]) != null) k--
-                end = k - 1
-            }
-        }
+        while (end + 1 < rows.size && GROK_GUTTER_ROW.containsMatchIn(rows[end + 1]) && !grokDialogBoundary(rows, end + 1)) end++
+        // (Codex's per-commit review of 894e44b: no footer elsewhere on the screen decides it. A select
+        // footer under the panel is a question row of its own below it.)
         for (i in top..end) composer[i] = true
         running = end
     }
