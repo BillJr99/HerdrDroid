@@ -4996,13 +4996,19 @@ private val CODEX_UPDATE_KEY = Regex("""^(?:›\s*)?(\d)\.\s+\S""")
 
 /**
  * 2.2.8 (Codex's review 4B): a row under the dialog as the guard takes it. Those rows decide which
- * dialog owns the keys (a new dialog drawn under the old one takes them), so they count too, but
- * only by their shape: styles dropped, ends trimmed, every digit read as 0 and a spinner's glyph as
- * "*", so a running time, a token counter or a spinner there is no change while new text is.
+ * dialog owns the keys (a new dialog drawn under the old one takes them), so they count too.
+ * Codex's per-commit review of 8c0125d: each counts exactly as it is (styles and all, only its ends
+ * trimmed: a changed shortcut or a highlight shown only in colour is a change), except a running
+ * status row ([CARD_STATUS_ROW]: a spinner's glyph, a space, then a running time), which counts by
+ * its shape: styles dropped, every digit read as 0, a spinner's glyph as "*".
  */
 private val CARD_UNDER_GLYPH = Regex("[\u2800-\u28FF·✢✳✶✻✽◐◓◑◒]")
-internal fun cardUnderRow(row: String): String =
-    CARD_UNDER_GLYPH.replace(cardRegionRow(CARD_CSI.replace(row, "")).replace(Regex("[0-9]"), "0"), "*")
+internal val CARD_STATUS_ROW = Regex("^[\u2800-\u28FF·✢✳✶✻✽◐◓◑◒][ \t].*[0-9][smh]")
+internal fun cardUnderRow(row: String): String {
+    val shown = cardRegionRow(CARD_CSI.replace(row, ""))
+    if (!CARD_STATUS_ROW.containsMatchIn(shown)) return cardRegionRow(row)
+    return CARD_UNDER_GLYPH.replace(shown.replace(Regex("[0-9]"), "0"), "*")
+}
 
 /** The line between the dialog's rows and the rows under it in the digest. */
 internal const val CARD_UNDER_MARK = "@@under@@"
@@ -5077,8 +5083,12 @@ internal val CARD_SEND_CHECK = """
     DIGIT = re.compile(rb'[0-9]')
     GLYPH = re.compile(rb'\xe2[\xa0-\xa3][\x80-\xbf]|' + b'|'.join(re.escape(c.encode('utf-8')) for c in
                        '\u00b7\u2722\u2733\u2736\u273b\u273d\u25d0\u25d3\u25d1\u25d2'))
+    STATUS = re.compile(rb'^(?:' + GLYPH.pattern + rb')[ \t].*[0-9][smh]')
     def shape(line):
+        # cardUnderRow in Herdr.kt: a running status row by its shape, every other row exactly.
         t = re.sub(rb'\x1b\[[0-9;?]*[ -/]*[@-~]', b'', line).strip(b' \t\r\x0b\x0c')
+        if not STATUS.search(t):
+            return line.strip(b' \t\r\x0b\x0c')
         return GLYPH.sub(b'*', DIGIT.sub(b'0', t))
     def timer(line, t):
         return re.sub(rb'(?s)^(.*)\([0-9]+s\)', rb'\1(Ns)', line, count=1) if TIMER_LINE.match(t) else line
