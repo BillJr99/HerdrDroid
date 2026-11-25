@@ -1521,7 +1521,11 @@ data class Prompt(
     internal val clipped: Boolean = false,
     /** AGY subagent Bash approval takes only the explicitly displayed Ctrl+K shortcut. */
     internal val agyApproval: Boolean = false,
+    /** Kiro advertises its exact one-time approval keys on this page. */
+    internal val kiroOnceShortcuts: Boolean = false,
 ) {
+    internal val guardedShortcutApproval: Boolean get() = agyApproval || kiroOnceShortcuts
+
     /**
      * 2.2.8 (Grok's review 4; Codex's review 4B): the exact rows the parser read the dialog from, from
      * the question's first row down to the last option's last row, for the card's guard ([cardRegion]);
@@ -2806,6 +2810,10 @@ private val SHORTCUT_LABEL = Regex("""\(([a-z])\)\s*$""")
 fun menuKeys(prompt: Prompt, choice: Choice): List<String>? {
     if (prompt.terminalReview) return null
     if (prompt.agyApproval) return listOf("ctrl+k").takeIf { choice in prompt.choices && choice.keys == "ctrl+k" }
+    if (prompt.kiroOnceShortcuts && choice in prompt.choices) when (choice.label) {
+        "Allow once" -> return listOf("y")
+        "Deny once" -> return listOf("n")
+    }
     if (prompt.claudeCheckboxAction != null) {
         val rows = prompt.answerRows()
         val from = rows.indexOfFirst { it.keys == prompt.selected }
@@ -3833,6 +3841,7 @@ private fun hermesLiveApprovalBox(text: String): String? {
 fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version: String? = null): Prompt? {
     val plain = stripAnsi(text)
     if (agent.equals("agy", true)) agySubagentApproval(plain)?.let { return it }
+    if (ruleAgent(agent) in setOf("kiro", "kiro-cli")) kiroApprovalShortcuts(plain)?.let { return it }
     if (agent.equals("hermes", true)) hermesUsageEnd(plain)?.let { end ->
         // A report supersedes any old question above it, not a new card below it. A close
         // hint alone is not a question, even when herdr still reports that it is blocked.
