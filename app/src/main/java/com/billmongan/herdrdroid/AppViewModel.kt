@@ -7212,6 +7212,62 @@ class AppViewModel internal constructor(
         }
     }
 
+    // -- Foreground and background on the Running under page (2.2.8) ----------------------------
+
+    /** The pane's latest screen read for the Running under page, by pane id. */
+    var workScreens by mutableStateOf<Map<String, String>>(emptyMap())
+        private set
+    /** Pids the Background button just moved, and when, until a read confirms or a timeout. */
+    var movedToBackground by mutableStateOf<Map<String, Pair<Set<Int>, Long>>>(emptyMap())
+        private set
+
+    /** Reads the pane's screen for the page's Foreground and Background marks (Claude Code only). */
+    suspend fun refreshWorkScreen(paneId: String) {
+        val p = pane(paneId) ?: return
+        if (!p.agent.equals("claude", true)) return
+        val s = quietly { h -> h.readStyled(paneId, sendReadLines(p.agent)) }?.takeIf { it.isNotBlank() } ?: return
+        workScreens = workScreens + (paneId to s)
+        // A read with no foreground command confirms the move; after 10 s the read alone decides.
+        movedToBackground[paneId]?.let { (_, at) ->
+            if (!com.billmongan.herdrdroid.herdr.claudeBackgroundHint(s) || System.currentTimeMillis() - at > 10_000)
+                movedToBackground = movedToBackground - paneId
+        }
+    }
+
+    /** Where each shell under [paneId] runs, with the Background button's move shown at once. */
+    internal fun shellPlaces(paneId: String): Map<Int, com.billmongan.herdrdroid.herdr.RunPlace> {
+        val p = pane(paneId)
+        val procs = work[paneId]?.activeProcs(p?.agent).orEmpty()
+        return com.billmongan.herdrdroid.herdr.shellPlaces(p?.agent, workScreens[paneId], procs, movedToBackground[paneId]?.first.orEmpty())
+    }
+
+    /**
+     * The page's Background button (2.2.8): Ctrl+B only when a fresh read shows a foreground command
+     * and nothing open over it; the shell is marked Background at once, and the next reads confirm it.
+     */
+    fun backgroundForeground(paneId: String) {
+        val p = pane(paneId) ?: return
+        if (!p.agent.equals("claude", true)) { sendKeys(paneId, com.billmongan.herdrdroid.herdr.Backgrounding.KEY); return }
+        act(paneId, "Couldn't move the task to the background", input = true) { h ->
+            val s = h.readStyled(paneId, sendReadLines(p.agent))
+            val now = pane(paneId)?.takeIf { it.sameCardOccupant(p) } ?: return@act
+            if (hasPendingQuestion(now) || checkedSendBlocked(now, s, null) || usageDialogShown(now.agent, s)) {
+                flash("Not sent: ${p.agentName} has a question or panel open.")
+                return@act
+            }
+            workScreens = workScreens + (paneId to s)
+            if (!com.billmongan.herdrdroid.herdr.claudeBackgroundHint(s)) {
+                flash("Nothing is running in the foreground in ${p.agentName} just now.")
+                return@act
+            }
+            val fg = com.billmongan.herdrdroid.herdr.shellPlaces(p.agent, s, work[paneId]?.activeProcs(p.agent).orEmpty())
+                .filterValues { it == com.billmongan.herdrdroid.herdr.RunPlace.FOREGROUND }.keys
+            h.sendKeys(paneId, com.billmongan.herdrdroid.herdr.Backgrounding.KEY)
+            movedToBackground = movedToBackground + (paneId to (fg to System.currentTimeMillis()))
+            refreshWork(paneId)
+        }
+    }
+
     // -- Work under a pane ---------------------------------------------------------------------------
 
     /** The latest read of each pane's processes, subagents and background tasks. */

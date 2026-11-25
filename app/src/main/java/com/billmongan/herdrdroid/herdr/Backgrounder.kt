@@ -97,3 +97,54 @@ internal fun backgroundOutcomeText(outcome: Backgrounder.Outcome, agentName: Str
     Backgrounder.Outcome.STUCK -> "Ctrl+B didn't move $agentName's running command to the background. The message is still in its queue."
     Backgrounder.Outcome.TIMED_OUT -> "$agentName hasn't taken the message yet. It is still in its queue."
 }
+
+/** Where a shell or subagent under a pane runs, as its agent's screen shows it (2.2.8). */
+internal enum class RunPlace { FOREGROUND, BACKGROUND, UNKNOWN }
+
+private val CLAUDE_HELPER_ROW = Regex("""^ {2}[◯○◉] (\S+)\s{2,}(.+?)(?:\s{2,}.*)?$""")
+
+/**
+ * The descriptions of Claude Code's background helpers in the list it draws under its input box
+ * ("  ◯ general-purpose  Watching CI workflow run    16m 39s · ↓ 1"). The "● main" row is the session.
+ */
+internal fun claudeBackgroundHelpers(screen: String): List<String> =
+    stripAnsi(screen).lines().mapNotNull { CLAUDE_HELPER_ROW.matchEntire(it.trimEnd())?.groupValues?.get(2)?.trim() }
+
+private fun norm(t: String) = t.filter { it.isLetterOrDigit() }.lowercase()
+
+/**
+ * Where a Claude subagent titled [title] runs: in the background when Claude's helper list shows it,
+ * in the foreground when the list is there without it, unknown with no list or for other agents.
+ */
+internal fun subagentPlace(agent: String?, screen: String?, title: String): RunPlace {
+    if (!agent.equals("claude", true) || screen.isNullOrBlank()) return RunPlace.UNKNOWN
+    val helpers = claudeBackgroundHelpers(screen)
+    if (helpers.isEmpty()) return RunPlace.UNKNOWN
+    val t = norm(title)
+    if (t.isEmpty()) return RunPlace.UNKNOWN
+    return if (helpers.any { h -> norm(h).let { it.isNotEmpty() && (t.startsWith(it.take(24)) || it.startsWith(t.take(24))) } })
+        RunPlace.BACKGROUND else RunPlace.FOREGROUND
+}
+
+/**
+ * Where each running shell [procs] runs, by pid. Claude Code only: with its foreground hint on the
+ * screen, the newest top-level shell is in the foreground and the rest in the background; with no
+ * hint, all of them are in the background. [backgrounded]: pids the app just moved with Ctrl+B,
+ * shown in the background until a read says otherwise. Other agents: unknown.
+ */
+internal fun shellPlaces(agent: String?, screen: String?, procs: List<ProcInfo>, backgrounded: Set<Int> = emptySet()): Map<Int, RunPlace> {
+    if (!agent.equals("claude", true) || screen.isNullOrBlank() || procs.isEmpty()) return procs.associate { it.pid to RunPlace.UNKNOWN }
+    val top = procs.minOf { it.depth }
+    val roots = procs.filter { it.depth == top }
+    // The newest shell holds the hint; one the app just moved stays in the background until a read clears the hint.
+    val fg = if (claudeBackgroundHint(screen)) roots.minByOrNull { it.ageSec }?.takeIf { it.pid !in backgrounded } else null
+    // A child shows where its top-level shell runs.
+    val byPid = procs.associateBy { it.pid }
+    fun root(p: ProcInfo): ProcInfo {
+        var at = p
+        var guard = 0
+        while (at.depth > top && guard++ < 16) at = byPid[at.ppid] ?: break
+        return at
+    }
+    return procs.associate { p -> p.pid to if (fg != null && root(p).pid == fg.pid) RunPlace.FOREGROUND else RunPlace.BACKGROUND }
+}
