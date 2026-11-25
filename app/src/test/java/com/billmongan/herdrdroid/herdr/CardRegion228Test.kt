@@ -479,12 +479,15 @@ class CardRegion228Test {
             val i = lastUnder(s, p)
             assertFalse(name, cardGuardScreenMatches(withRow(s, i, "  ❯ 1. Delete the build cache"), guard))
             assertFalse(name, cardGuardScreenMatches(withRow(s, i, stripAnsi(cardRows(s)[i]) + " │ y:approve all"), guard))
-            // A counter and a spinner glyph on the footer row tick: no change (never Grok's running row,
-            // which a waiting approval draws above its box).
-            val foot = stripAnsi(cardRows(s)[i])
-            val a = withRow(s, i, "$foot  ⠋ ✻ 12s · 1.2k")
-            val b = withRow(s, i, "$foot  ⠙ ✶ 13s · 1.9k")
-            // The card as read before the footer changed (its rows the same).
+            // Codex's per-commit review of 8c0125d (HIGH): every other row under the dialog counts exactly:
+            // a shortcut's number, or a highlight shown only in colour.
+            val row = cardRows(s)[i]
+            assertFalse(name, cardGuardScreenMatches(withRow(s, i, row.replaceFirst(Regex("""m\d\u001b"""), "m9\u001b")), guard))
+            assertFalse(name, cardGuardScreenMatches(withRow(s, i, row.replaceFirst("Tab:next option", "\u001b[7mTab:next option\u001b[27m")), guard))
+            // A running status row under it ticks freely (the card as read before it appeared).
+            val last = cardRows(s).size - 1
+            val a = withRow(s, last, "  ⠋ Working… 12s · ⇣1.2k")
+            val b = withRow(s, last, "  ⠙ Working… 13s · ⇣1.9k")
             val ga = cardGuardScreen(a, p)
             assertTrue(name, ga.startsWith("r:"))
             assertTrue(name, cardGuardScreenMatches(b, ga))
@@ -498,10 +501,15 @@ class CardRegion228Test {
                 val s = grok(name)
                 val i = lastUnder(s, card(s))
                 assertEquals("$name python=$python new dialog", CARD_CHANGED_EXIT, runCheck(python, s, withRow(s, i, "  ❯ 1. Delete the build cache")))
-                val foot = stripAnsi(cardRows(s)[i])
-                val a = withRow(s, i, "$foot  ⠋ ✻ 12s · 1.2k")
-                val b = withRow(s, i, "$foot  ⠙ ✶ 13s · 1.9k")
+                val last = cardRows(s).size - 1
+                val a = withRow(s, last, "  ⠋ Working… 12s · ⇣1.2k")
+                val b = withRow(s, last, "  ⠙ Working… 13s · ⇣1.9k")
                 assertEquals("$name python=$python tick under", 0, runCheck(python, a, b, prompt = card(s)))
+                // Codex's per-commit review of 8c0125d: a non-status row under the dialog counts exactly.
+                val row = cardRows(s)[i]
+                assertEquals("$name python=$python shortcut", CARD_CHANGED_EXIT, runCheck(python, s, withRow(s, i, row.replaceFirst(Regex("""m\d\u001b"""), "m9\u001b"))))
+                assertEquals("$name python=$python colour", CARD_CHANGED_EXIT,
+                    runCheck(python, s, withRow(s, i, row.replaceFirst("Tab:next option", "\u001b[7mTab:next option\u001b[27m"))))
             }
             val c = codexUpdate()
             val foot = cardRows(c).indexOfLast { stripAnsi(it).contains("enter continue") }

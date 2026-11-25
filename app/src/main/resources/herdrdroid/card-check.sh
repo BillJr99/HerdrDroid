@@ -336,17 +336,25 @@ END {
     sub(/[ \t\r\v\f]+$/, "", x)
     print x
   }
-  # 2.2.8 (Codex review 4B): the rows under the dialog by their shape (cardUnderRow in Herdr.kt):
-  # styles dropped, ends trimmed, each digit 0, each spinner glyph "*".
+  # 2.2.8 (Codex review 4B): the rows under the dialog (cardUnderRow in Herdr.kt): each exactly, ends
+  # trimmed, except a running status row (a spinner glyph, a space, a running time), which counts
+  # by its shape: styles dropped, each digit 0, each spinner glyph "*".
   print "@@under@@"
   for (i = NR - below + 1; i <= NR; i++) {
     x = r[i]
-    gsub(/\033\[[0-9;?]*[ -\/]*[@-~]/, "", x)
-    sub(/^[ \t\r\v\f]+/, "", x)
-    sub(/[ \t\r\v\f]+$/, "", x)
-    gsub(/[0-9]/, "0", x)
-    gsub(/\342[\240-\243][\200-\277]|·|✢|✳|✶|✻|✽|◐|◓|◑|◒/, "*", x)
-    print x
+    t = x
+    gsub(/\033\[[0-9;?]*[ -\/]*[@-~]/, "", t)
+    sub(/^[ \t\r\v\f]+/, "", t)
+    sub(/[ \t\r\v\f]+$/, "", t)
+    if (t ~ /^(\342[\240-\243][\200-\277]|·|✢|✳|✶|✻|✽|◐|◓|◑|◒)[ \t].*[0-9][smh]/) {
+      gsub(/[0-9]/, "0", t)
+      gsub(/\342[\240-\243][\200-\277]|·|✢|✳|✶|✻|✽|◐|◓|◑|◒/, "*", t)
+      print t
+    } else {
+      sub(/^[ \t\r\v\f]+/, "", x)
+      sub(/[ \t\r\v\f]+$/, "", x)
+      print x
+    }
   }
 }
 '
