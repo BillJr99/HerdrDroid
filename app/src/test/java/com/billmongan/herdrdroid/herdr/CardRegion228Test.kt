@@ -81,6 +81,87 @@ class CardRegion228Test {
         }
     }
 
+    // ---- Grok 4.7's newer box: a scope row, a fourth option, and a command taller than the screen.
+
+    private val scoped = "approval-scope-clipped.ansi"
+    private val tall = "approval-scope-tall.ansi"
+    private fun tick2(s: String, n: Int) = s.replace("3m10s", "3m${10 + n}s").replace("8m38s", "8m${38 + n}s")
+        .replace("⇣112k", "⇣${112 + n}k").replace("112k / 256k", "${112 + n}k / 256k")
+
+    @Test fun grokNewerBoxHasNeverAllowAsAButtonAndNoScopeRowInTheQuestion() {
+        for (name in listOf(scoped, tall)) {
+            val p = card(grok(name))
+            assertEquals(name, listOf("Yes, proceed", "No, reject (type to add feedback)", "Never allow: ls -la",
+                "Yes, and don't ask again for anything (always-approve mode)"), p.choices.map { it.label })
+            assertNull(blockedChoiceReason(p.choices[2]))
+            assertNotNull(blockedChoiceReason(p.choices[3]))
+            assertEquals(listOf("down", "down", "enter"), menuKeys(p, p.choices[2]))
+            assertFalse(name, p.question.contains("widen scope"))
+            val guard = cardGuardScreen(grok(name), p)
+            assertTrue(name, guard.startsWith("r:"))
+            assertFalse("$name never allow", cardGuardScreenMatches(grok(name).replace("Never allow: ls -la", "Never allow: ls -l"), guard))
+        }
+        assertTrue(card(grok(scoped)).clipped)
+        val s = grok(scoped)
+        val guard = cardGuardScreen(s, card(s))
+        for (n in 1..3) assertTrue("ticking status row", cardGuardScreenMatches(tick2(s, n), guard))
+    }
+
+    /** After Ctrl+F the command can be taller than the screen, its title scrolled off: still a card that can be answered. */
+    @Test fun grokExpandedCommandTallerThanTheScreenIsStillAnswerable() {
+        val s = grok(tall)
+        val p = card(s)
+        assertFalse(p.clipped)
+        assertFalse(p.terminalReview)
+        assertTrue(p.question, p.question.contains("echo step-29"))
+        assertTrue(p.question, p.question.contains("12 more rows"))
+        val guard = cardGuardScreen(s, p)
+        assertTrue(guard, guard.startsWith("r:"))
+        assertTrue(cardGuardScreenMatches(s, guard))
+        assertFalse(cardGuardScreenMatches(s.replace("echo step-29", "echo step-2X"), guard))
+    }
+
+    // ---- Codex's own update prompt.
+
+    private fun codexUpdate() = checkNotNull(javaClass.getResource("/screens/codex/synthetic-2.2.8-update/update-prompt.ansi")).readText()
+
+    @Test fun codexUpdatePromptIsACardWithTheExactCommand() {
+        val s = codexUpdate()
+        for (blocked in listOf(false, true)) {
+            val p = checkNotNull(detectPrompt(stripAnsi(s), blocked, "codex")) { "blocked=$blocked" }
+            assertFalse(p.terminalReview)
+            assertEquals(listOf("1", "2", "3"), p.choices.map { it.keys })
+            assertEquals("Update now (runs `sh -c 's=\$(curl -fsSL https://example.com/demo-cli/install.sh) && DEMO_NON_INTERACTIVE=1 eval \"\$s\"'`)", p.choices[0].label)
+            assertEquals(listOf("Skip", "Skip until next version"), p.choices.drop(1).map { it.label })
+            assertEquals("1", p.selected)
+            assertEquals(listOf("enter"), menuKeys(p, p.choices[0]))
+            assertEquals(listOf("down", "enter"), menuKeys(p, p.choices[1]))
+            assertTrue(p.question, p.question.startsWith("Update available · 1.2.0 to 1.3.0"))
+            val guard = cardGuardScreen(s, p)
+            assertTrue(guard, guard.startsWith("r:"))
+            assertFalse(cardGuardScreenMatches(s.replace("install.sh", "other.sh"), guard))
+            assertFalse(cardGuardScreenMatches(s.replace("› 1. Update", "  1. Update").replace("  2. Skip\r", "› 2. Skip\r"), guard))
+        }
+        // Without its footer, or with something under it, it is not this prompt.
+        assertNull(codexUpdatePrompt(stripAnsi(s).replace("enter continue · esc skip", "")))
+        assertNull(codexUpdatePrompt(stripAnsi(s) + "\n› a new message"))
+    }
+
+    @Test fun bothChecksHandleGroksNewerBoxAndCodexsUpdatePrompt() {
+        val hasPython = listOf("/usr/bin/python3", "/bin/python3").any { File(it).canExecute() }
+        for (python in listOfNotNull(false, true.takeIf { hasPython })) {
+            val s = grok(scoped)
+            assertEquals("python=$python tick", 0, runCheck(python, s, tick2(s, 2)))
+            assertEquals("python=$python never", CARD_CHANGED_EXIT, runCheck(python, s, s.replace("Never allow: ls -la", "Never allow: ls -l")))
+            val t = grok(tall)
+            assertEquals("python=$python tall", 0, runCheck(python, t, t))
+            assertEquals("python=$python tall changed", CARD_CHANGED_EXIT, runCheck(python, t, t.replace("echo step-29", "echo step-2X")))
+            val c = codexUpdate()
+            assertEquals("python=$python codex", 0, runCheck(python, c, c, "codex"))
+            assertEquals("python=$python codex changed", CARD_CHANGED_EXIT, runCheck(python, c, c.replace("install.sh", "other.sh"), "codex"))
+        }
+    }
+
     // ---- every agent: rows outside the dialog never count; the dialog's own rows always do.
 
     private fun fixtures(agent: String): List<Pair<String, String>> {
@@ -134,7 +215,7 @@ class CardRegion228Test {
 
     private val getJson = """{"result":{"pane":{"pane_id":"p1","tab_id":"t1","workspace_id":"w1","agent":"grok","agent_status":"blocked","cwd":"/w","terminal_id":"term-1","scroll":{"offset_from_bottom":0}}}}"""
 
-    private fun runCheck(python: Boolean, guardScreen: String, live: String): Int {
+    private fun runCheck(python: Boolean, guardScreen: String, live: String, agent: String = "grok"): Int {
         val sh = listOf("/bin/sh", "/usr/bin/sh").map { File(it) }.firstOrNull { it.canExecute() }
         assumeTrue(sh != null)
         val dir = java.nio.file.Files.createTempDirectory("hd228-region").toFile()
@@ -144,7 +225,7 @@ class CardRegion228Test {
             val herdr = File(dir, "herdr")
             herdr.writeText("#!/bin/sh\ncase \"\$2\" in get) /bin/cat '${dir.path}/get.json' ;; read) /bin/cat '${dir.path}/screen.txt' ;; *) : ;; esac\n")
             herdr.setExecutable(true)
-            val g = CardGuard(cardOccupantDigest(JSONObject(getJson).getJSONObject("result").getJSONObject("pane")), cardGuardScreen(guardScreen, card(guardScreen)))
+            val g = CardGuard(cardOccupantDigest(JSONObject(getJson).getJSONObject("result").getJSONObject("pane")), cardGuardScreen(guardScreen, card(guardScreen, agent)))
             assertTrue(g.screen.startsWith("r:"))
             val h = Herdr(HerdrSsh("127.0.0.1", 1, "u", Credentials(null, null), null, { null }), herdr.path, Backend.TUI, null)
             val c = h.cardSendCommand("p1", CardInput.Keys(listOf("enter")), g, shellOnly = !python).let {
