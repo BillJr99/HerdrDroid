@@ -908,7 +908,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                                 text = q.text,
                                 note = q.note,
                                 onRemove = { vm.cancelQueued(q) },
-                                sendLabel = "Send immediately",
+                                sendLabel = "Send when ready",
                                 onSend = { vm.sendQueuedImmediately(q) },
                                 sendEnabled = canSend,
                                 // 2.2.7: long-press for Send now (Ctrl+B first where Claude shows its background hint).
