@@ -386,6 +386,24 @@ class CardRegion228Test {
     }
 
     /**
+     * Codex's per-commit review of 573e426 (MEDIUM): the card parser and the running filter take the same
+     * whole plan footer; a partial one is no card, with or without a running row above it.
+     */
+    @Test fun aPartialPlanFooterIsNoCard() {
+        val plan = checkNotNull(javaClass.getResource("/screens/grok/derived-1.4.9/0306-plan-approval.txt")).readText()
+        val whole = plan.lines().last { it.isNotBlank() }
+        assertTrue(GROK_PLAN_FOOTER_ROW.matches(whole))
+        for (part in listOf("  a:approve  │  s:request changes", "  a:approve  │  c:comment  │  q:quit plan", "  a:approve  │  s:request changes  │  c:comment")) {
+            val s = plan.replace(whole, part)
+            for (running in listOf("", "   ⠧ Planning… 12s   3m02s ⇣4.1k [stop]\n\n")) {
+                assertNull("$part running=${running.isNotEmpty()}", detectPrompt(running + s, true, "grok"))
+                assertNull(part, detectLetterMenu(running + s, true))
+            }
+        }
+        assertNotNull(detectLetterMenu(plan, true))
+    }
+
+    /**
      * Codex's per-commit review of 573e426 (MEDIUM): a live folder trust prompt with one more row of its
      * own UI under its hint (a footer) is still a card under a running row; running output there is not.
      */

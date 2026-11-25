@@ -2678,8 +2678,9 @@ fun detectLetterMenu(text: String, blocked: Boolean): Prompt? {
     val lines = text.lines().map { it.trimEnd() }.filter { it.isNotBlank() }.takeLast(14)
     if (lines.isEmpty()) return null
     val foot = lines.last()
-    // The plan review's own footer row, its keys between "│" bars: never prose that mentions them.
-    if (Regex("""^\s*a:approve\s+│""").containsMatchIn(foot)) {
+    // The plan review's own whole footer row (GROK_PLAN_FOOTER_ROW, the running filter's own rule):
+    // never prose that mentions its keys, and never a partial footer (Codex's per-commit review of 573e426).
+    if (GROK_PLAN_FOOTER_ROW.matches(foot)) {
         val pairs = Regex("""\b([a-z]):([a-z][a-z ]*[a-z])""").findAll(foot).map { it.groupValues[1] to it.groupValues[2] }
             .filter { (k, _) -> k in setOf("a", "s", "c", "q") }.toList()
         if (pairs.size < 2) return null
