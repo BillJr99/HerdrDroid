@@ -1776,7 +1776,7 @@ internal fun PromptCard(
                     }
                 }
             }
-            if (!p.hermesClarify && !p.openCodePermission && !sending && !(p.choices.isEmpty() && p.region == listOf(com.billmongan.herdrdroid.herdr.UNREAD_SCREEN))) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (!p.agyApproval && !p.hermesClarify && !p.openCodePermission && !sending && !(p.choices.isEmpty() && p.region == listOf(com.billmongan.herdrdroid.herdr.UNREAD_SCREEN))) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 KeyButton("Esc") { onKey("esc") }
                 // OpenCode's question dialog takes Esc ("esc dismiss") and its digits, nothing else from here (2.1.2).
                 if (p.openCodeQuestionFrame == null) {
@@ -1785,7 +1785,7 @@ internal fun PromptCard(
                     KeyButton("Ctrl+C", danger = true) { onKey("ctrl+c") }
                 }
             }
-            if (!p.hermesClarify && !p.openCodePermission && p.openCodeQuestionFrame == null) TextButton(onClick = onTypeAnswer, enabled = !sending, modifier = Modifier.fillMaxWidth()) { Text("Type a different answer") }
+            if (!p.agyApproval && !p.hermesClarify && !p.openCodePermission && p.openCodeQuestionFrame == null) TextButton(onClick = onTypeAnswer, enabled = !sending, modifier = Modifier.fillMaxWidth()) { Text("Type a different answer") }
             onShowTerminal?.let { show -> TextButton(onClick = show, modifier = Modifier.fillMaxWidth()) { Text("Show terminal") } }
             if (!p.hermesClarify) Text(
                 "Each button types its key into the tab, exactly as if you typed it there. For any other " +

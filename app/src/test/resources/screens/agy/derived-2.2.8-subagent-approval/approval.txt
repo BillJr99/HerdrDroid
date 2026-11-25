@@ -1,0 +1,4 @@
+ ┃ research needs approval for Bash
+ ┃ ───────────
+ ┃ ● Bash(printf sample-only)
+ ┃ ctrl+k approve · alt+j manage

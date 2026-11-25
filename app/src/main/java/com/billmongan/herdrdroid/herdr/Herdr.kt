@@ -1519,6 +1519,8 @@ data class Prompt(
      * only Ctrl+F, which expands it in Grok's own box, after which the card reads it again.
      */
     internal val clipped: Boolean = false,
+    /** AGY subagent Bash approval takes only the explicitly displayed Ctrl+K shortcut. */
+    internal val agyApproval: Boolean = false,
 ) {
     /**
      * 2.2.8 (Grok's review 4; Codex's review 4B): the exact rows the parser read the dialog from, from
@@ -2803,6 +2805,7 @@ private val SHORTCUT_LABEL = Regex("""\(([a-z])\)\s*$""")
 /** The keys that pick [choice]: arrows from the highlighted option, then Enter; null to type it. */
 fun menuKeys(prompt: Prompt, choice: Choice): List<String>? {
     if (prompt.terminalReview) return null
+    if (prompt.agyApproval) return listOf("ctrl+k").takeIf { choice in prompt.choices && choice.keys == "ctrl+k" }
     if (prompt.claudeCheckboxAction != null) {
         val rows = prompt.answerRows()
         val from = rows.indexOfFirst { it.keys == prompt.selected }
@@ -2961,6 +2964,7 @@ internal fun screenWatchPanes(list: List<Pane>, herdrStates: Map<String, Status>
 internal fun screenAskable(list: List<Pane>): List<Pane> = list.filter {
     (it.agent == "claude" && it.status != Status.NEEDS_YOU) ||
         (isOpenCode(it.agent) && it.status in setOf(Status.DONE, Status.IDLE)) ||
+        (it.agent == "agy" && !it.isProbe && it.status == Status.WORKING) ||
         // 2.2.7: herdr can call Hermes done or idle through a whole turn and through an approval.
         (it.agent == "hermes" && it.status != Status.NEEDS_YOU)
 }
@@ -2988,12 +2992,13 @@ internal fun markScreenNeedsYou(list: List<Pane>, tails: Map<String, String>): L
         val why = when {
             tail == null -> null
             p.agent == "claude" -> claudeNeedsYouReason(tail)
+            p.agent == "agy" -> "a subagent approval is open".takeIf { agySubagentApproval(tail) != null }
             isOpenCode(p.agent) -> openCodeNeedsYouReason(tail)
             else -> null
         }
         when {
             why == null -> p
-            isOpenCode(p.agent) -> {
+            isOpenCode(p.agent) || p.agent == "agy" -> {
                 com.billmongan.herdrdroid.diag.DiagLog.log("prompt", "${p.id}: $why while herdr says ${p.status.name.lowercase()}; showing it as needs you, sends unchanged")
                 p.copy(status = Status.NEEDS_YOU, screenNeedsYouFrom = p.status)
             }
@@ -3827,6 +3832,7 @@ private fun hermesLiveApprovalBox(text: String): String? {
 
 fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version: String? = null): Prompt? {
     val plain = stripAnsi(text)
+    if (agent.equals("agy", true)) agySubagentApproval(plain)?.let { return it }
     if (agent.equals("hermes", true)) hermesUsageEnd(plain)?.let { end ->
         // A report supersedes any old question above it, not a new card below it. A close
         // hint alone is not a question, even when herdr still reports that it is blocked.

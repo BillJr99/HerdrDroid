@@ -5510,8 +5510,9 @@ class AppViewModel internal constructor(
         /** Whether the fresh card is still the one shown; the dialog's own rule for Oh My Pi's Submit steps. */
         fits: (Prompt, Prompt) -> Boolean = ::cardAnswerStillFits,
     ): Pair<Prompt, com.billmongan.herdrdroid.herdr.CardGuard?>? {
-        if (shown.terminalReview || !isCurrent(h)) return null
-        val guardedChoice = shown.hermesClarify || shown.openCodeQuestionFrame != null
+        if (shown.terminalReview || !isCurrent(h) ||
+            shown.agyApproval && (h.backend != Backend.TUI || !hasStableOccupant(pane))) return null
+        val guardedChoice = shown.agyApproval || shown.hermesClarify || shown.openCodeQuestionFrame != null
         if (guardedChoice && (!foreground || h.backend != Backend.TUI || pane.scrollOffset != 0 ||
                 !com.billmongan.herdrdroid.herdr.hasStableOccupant(pane))) return null
         val (currentPane, occupant) = h.cardPaneGuarded(pane.id, connection) ?: return null
@@ -5549,6 +5550,7 @@ class AppViewModel internal constructor(
         /** 2.2.8: told why nothing was sent (the Questions view shows it on the entry). */
         feedback: ((String) -> Unit)? = null,
     ) {
+        if (prompt.agyApproval) return
         // OpenCode's question dialog (2.1.2): Esc dismisses it; no other key goes in from the card.
         if (prompt.openCodeQuestionFrame != null && key != "esc") { flash("Not sent. Refresh the question or open the terminal to answer."); feedback?.invoke("Not sent. Refresh the question or open the terminal to answer."); return }
         var guard: com.billmongan.herdrdroid.herdr.CardGuard? = null
@@ -5879,6 +5881,10 @@ class AppViewModel internal constructor(
                 report("Not sent. Open Terminal to verify the selected row.")
                 return@answerOnce
             }
+            if (fresh.agyApproval && (guard == null || keys != listOf("ctrl+k") || voiceAllowed != null)) {
+                report("Not sent. Open AGY in Terminal to verify the approval.")
+                return@answerOnce
+            }
             if (fresh.hermesClarify && (keys == null || voiceAllowed != null)) {
                 report("Not sent. Open Chat to choose an answer.")
                 return@answerOnce
@@ -6022,6 +6028,7 @@ class AppViewModel internal constructor(
         feedback: ((String) -> Unit)? = null,
         delivered: () -> Unit,
     ) {
+        if (prompt.agyApproval) return
         // OpenCode's question (2.1.2): only its own answer row takes text, opened by that row's digit.
         if (prompt.openCodeQuestionFrame != null) {
             if (prompt.openCodeCustom == null || choice?.keys != prompt.openCodeCustom) { flash("Not sent. Refresh the question or open the terminal to answer."); feedback?.invoke("Not sent. Refresh the question or open the terminal to answer."); return }

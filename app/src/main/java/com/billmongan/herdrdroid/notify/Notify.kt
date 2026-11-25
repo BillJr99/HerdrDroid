@@ -165,7 +165,7 @@ internal fun alertOptionsSig(choices: List<Choice>): String =
  * named in the alert's text for the question card that tapping the alert opens.
  */
 internal fun alertPlan(prompt: com.billmongan.herdrdroid.herdr.Prompt, terminalReview: Boolean = prompt.terminalReview, reply: Boolean = true): AlertPlan {
-    if (terminalReview || prompt.terminalReview || prompt.clipped) return AlertPlan(emptyList(), emptyList())
+    if (terminalReview || prompt.terminalReview || prompt.clipped || prompt.agyApproval) return AlertPlan(emptyList(), emptyList())
     val escChoice = prompt.choices.firstOrNull { com.billmongan.herdrdroid.herdr.menuKeys(prompt, it) == listOf("esc") }
     // 2.1.4: "Type something." and "Chat about this" are one "Type your answer" reply button.
     val merged = com.billmongan.herdrdroid.herdr.typedChatPair(prompt.choices)?.first
@@ -198,7 +198,7 @@ internal fun alertPlan(prompt: com.billmongan.herdrdroid.herdr.Prompt, terminalR
  * gets Esc only.
  */
 internal fun notificationOffersReply(prompt: com.billmongan.herdrdroid.herdr.Prompt?): Boolean =
-    prompt?.claudeBackground != true && prompt?.openCodePermission != true && prompt?.museQuota != true && prompt?.hermesClarify != true
+    prompt?.agyApproval != true && prompt?.claudeBackground != true && prompt?.openCodePermission != true && prompt?.museQuota != true && prompt?.hermesClarify != true
 
 /**
  * The keys an alert button sends to an OpenCode permission (2.1.2), from [now], the strict styled
@@ -223,7 +223,7 @@ internal fun openCodePermissionAlertKeys(now: com.billmongan.herdrdroid.herdr.Pr
 fun notificationAnswerStillFits(now: com.billmongan.herdrdroid.herdr.Prompt?, a: NotifyAction): Boolean {
     // 2.1.2: Hermes's clarify and OpenCode's question dialog are answered from alerts too, through
     // the guarded checks in the app; a screen only Terminal can answer never is.
-    if (now == null || now.terminalReview) return false
+    if (now == null || now.terminalReview || now.agyApproval) return false
     val sameQuestion = now.question.filterNot { it.isWhitespace() } == a.question.filterNot { it.isWhitespace() }
     if (!sameQuestion) return false
     // The same set of options as the alert's (2.1.2), for its Esc as much as its options, and the
