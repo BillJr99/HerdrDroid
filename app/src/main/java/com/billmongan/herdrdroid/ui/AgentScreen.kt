@@ -498,6 +498,30 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         )
     }
 
+    // Bill (2026-11-25): an approve-from-now-on option is confirmed here first, with its full label;
+    // one the app can't show whole or reach only says why, and has no Confirm.
+    vm.approveAllPending?.takeIf { it.paneId == paneId && it.serverId == vm.current?.id }?.let { pending ->
+        val ask = pending.ask
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { vm.cancelApproveAll() },
+            modifier = Modifier.semantics { contentDescription = "Approve everything from now on" }.testTag("approve-all-dialog"),
+            title = { Text(if (ask.reason == null) "Approve everything from now on?" else "Not sent from here") },
+            text = {
+                Column {
+                    Text("\u201c${ask.label}\u201d", color = Palette.Ink, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(8.dp))
+                    Text(ask.reason ?: "${pane?.agentName ?: "The agent"} will do this again without asking you. Nothing is sent until you confirm.",
+                        color = Palette.Ink)
+                }
+            },
+            confirmButton = {
+                if (ask.reason == null) TextButton(onClick = { vm.confirmApproveAll() }, modifier = Modifier.testTag("approve-all-confirm")) { Text("Confirm") }
+                else TextButton(onClick = { vm.cancelApproveAll() }, modifier = Modifier.testTag("approve-all-close")) { Text("Close") }
+            },
+            dismissButton = if (ask.reason == null) ({ TextButton(onClick = { vm.cancelApproveAll() }, modifier = Modifier.testTag("approve-all-cancel")) { Text("Cancel") } }) else null,
+        )
+    }
+
     // 2.2.7 (pre-review L8): an attachment's path goes into this pane's message box as it is now,
     // once the computer has the whole file, even after a Retry from another screen.
     vm.attachedPath?.takeIf { it.serverId == vm.current?.id && it.paneId == paneId }?.let { a ->
@@ -1654,12 +1678,13 @@ internal fun PromptCard(
                 if (com.billmongan.herdrdroid.herdr.typedChatPair(allRows) != null)
                     Text("\u201cChat about this\u201d isn't offered here; use Terminal for it.", color = Palette.Muted, fontSize = 12.5.sp)
                 com.billmongan.herdrdroid.herdr.shownChoices(allRows).forEach { c ->
-                    // 2.2.8: shown, but never one tap (approve-everything): disabled, with the reason.
+                    // 2.2.8: shown, but never sent (cut off, or a row no key reaches), with the reason; a tap
+                    // says why in the approve-everything dialog (Bill, 2026-11-25).
                     val blocked = com.billmongan.herdrdroid.herdr.blockedChoiceReason(c)
                     if (blocked != null) {
                         OutlinedButton(
-                            enabled = false,
-                            onClick = {},
+                            enabled = !readOnlyPreview && !sending,
+                            onClick = { onChoice(c) },
                             shape = RoundedCornerShape(14.dp),
                             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
                             modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp).testTag("choice-blocked"),

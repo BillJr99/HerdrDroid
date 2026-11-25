@@ -47,8 +47,9 @@ class CardRegion228Test {
         }
         // The feedback hint reads as a quieter hint, not as part of the answer.
         assertEquals("No, reject" to " (type to add feedback)", CardFormat.labelParts("No, reject (type to add feedback)"))
-        // The older layout's numbered always-approve row is blocked the same way.
-        assertNotNull(blockedChoiceReason(Choice("Yes, and don't ask again for anything (always-approve mode)", "1", false)))
+        // The older layout's numbered always-approve row (Bill, 2026-11-25): confirmed first, never one tap.
+        assertNull(blockedChoiceReason(Choice("Yes, and don't ask again for anything (always-approve mode)", "1", false)))
+        assertTrue(approvesFromNowOn(Choice("Yes, and don't ask again for anything (always-approve mode)", "1", false)))
     }
 
     @Test fun aClippedCommandIsShownWholeBeforeItCanBeAnswered() {

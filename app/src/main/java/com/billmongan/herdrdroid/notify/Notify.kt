@@ -169,7 +169,7 @@ internal fun alertPlan(prompt: com.billmongan.herdrdroid.herdr.Prompt, terminalR
     val escChoice = prompt.choices.firstOrNull { com.billmongan.herdrdroid.herdr.menuKeys(prompt, it) == listOf("esc") }
     // 2.1.4: "Type something." and "Chat about this" are one "Type your answer" reply button.
     val merged = com.billmongan.herdrdroid.herdr.typedChatPair(prompt.choices)?.first
-    // 2.2.8: an option the card shows disabled (approve-everything) is never an alert button.
+    // 2.2.8: an option the card shows disabled (never sent) is never an alert button.
     val answers = com.billmongan.herdrdroid.herdr.shownChoices(prompt.choices).filter { com.billmongan.herdrdroid.herdr.blockedChoiceReason(it) == null }.map { c ->
         if (c == merged && reply) return@map AlertButton(com.billmongan.herdrdroid.herdr.TYPED_ANSWER_LABEL, choice = c, typed = true)
         // 2.2.2: the button reads the label as the card shows it (no marker, gutter or hint); its answer keeps c.label.
@@ -404,6 +404,9 @@ object Notify {
             val c = button.choice
             when {
                 button.typed && c != null -> b.addAction(typedReplyAction(ctx, serverId, paneId, agent, agentKind, question, c, options, identity))
+                // Bill (2026-11-25): an approve-from-now-on option is confirmed in the app first: its
+                // button opens the question card, where tapping it asks "Approve everything from now on?".
+                c != null && com.billmongan.herdrdroid.herdr.approvesFromNowOn(c) -> b.addAction(0, button.title, openIntent(ctx, serverId, paneId))
                 c != null -> {
                     val n = slot++
                     val i = Intent(ctx, ActionReceiver::class.java)

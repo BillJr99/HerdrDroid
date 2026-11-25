@@ -61,8 +61,10 @@ class Corpus228Test {
         val g = checkNotNull(detectPrompt(res("018-grok-narrow-wrapped-options-code.txt"), true, "grok"))
         val always = g.choices.single { it.label.startsWith("Yes, and don't ask again for anything") }
         assertEquals("Yes, and don't ask again for anything (always-approve mode)", always.label)
-        // Never one tap, and not even when the pane cut the tail off.
-        assertNotNull(blockedChoiceReason(always))
+        // Never one tap (Bill, 2026-11-25: confirmed first, with its keys), and never sent when the pane cut the tail off.
+        val ask = checkNotNull(approveAllAsk(g, always))
+        assertNull(ask.reason)
+        assertNotNull(ask.keys)
         assertNotNull(blockedChoiceReason(Choice("Yes, and don't ask again for anything", "1", false)))
         assertNull(blockedChoiceReason(Choice("Yes, and don't ask again for mkdir commands in /tmp/t", "2", false)))
         val a = checkNotNull(detectPrompt(res("036-agy-command-approval-wrapped-options.txt"), true, "agy"))
@@ -142,7 +144,10 @@ class Corpus228Test {
      */
     @Test fun aCutOffAlwaysApproveLabelIsBlockedAtEveryPoint() {
         val full = "Yes, and don't ask again for anything (always-approve mode)"
-        for (n in "Yes, and".length..full.length) {
+        // Bill (2026-11-25): the whole label is confirmed first, never blocked; every cut-off start is.
+        assertNull(blockedChoiceReason(Choice(full, "1", false)))
+        assertTrue(approvesFromNowOn(Choice(full, "1", false)))
+        for (n in "Yes, and".length until full.length) {
             val cut = full.take(n)
             assertNotNull(cut, blockedChoiceReason(Choice(cut, "1", false)))
             assertNotNull("$cut…", blockedChoiceReason(Choice("$cut…", "1", false)))
@@ -151,6 +156,34 @@ class Corpus228Test {
                 "Yes, and don't ask again for mkdir commands in /tmp/t", "Yes, and don't ask again for these files (a)",
                 "Yes, and don't ask again for commands that start with `pytest -q` (p)")) {
             assertNull(ok, blockedChoiceReason(Choice(ok, "2", false)))
+        }
+    }
+
+    /**
+     * Bill (2026-11-25): each agent's approve-from-now-on option asks "Approve everything from now on?"
+     * first, with keys to send on Confirm; its ordinary options don't ask.
+     */
+    @Test fun everyAgentsAlwaysOptionAsksFirst() {
+        val cases = listOf(
+            "grok" to "/screens/grok/captured-2026-11-15b/scan-approval.txt",
+            "claude" to "/screens/claude/captured-2026-11-13/bash-permission.txt",
+            "codex" to "/screens/codex/captured-2026-11-13/run-command.txt",
+            "copilot" to "/screens/corpus-2.2.8/052-copilot-run-command-approval.txt",
+            "opencode" to "/screens/corpus-2.2.8/049-opencode-permission-shell.txt",
+            "hermes" to "/screens/corpus-2.2.8/045-hermes-dangerous-command-countdown.txt",
+            "omp" to "/screens/corpus-2.2.8/041-omp-allow-tool-approval.txt",
+        )
+        for ((agent, path) in cases) {
+            val p = checkNotNull(detectPrompt(stripAnsi(checkNotNull(javaClass.getResource(path)).readText()), true, agent)) { path }
+            val always = p.choices.filter { grantsStandingPermission(it.label) }
+            assertTrue("$agent ${p.choices.map { it.label }}", always.isNotEmpty())
+            for (c in always) {
+                val ask = checkNotNull(approveAllAsk(p, c)) { "$agent ${c.label}" }
+                assertEquals(c.label, ask.label)
+                if (ask.reason == null) assertEquals("$agent ${c.label}", menuKeys(p, c), ask.keys)
+            }
+            for (c in p.choices.filter { !grantsStandingPermission(it.label) && blockedChoiceReason(it) == null && !it.ambiguous })
+                assertNull("$agent ${c.label}", approveAllAsk(p, c))
         }
     }
 

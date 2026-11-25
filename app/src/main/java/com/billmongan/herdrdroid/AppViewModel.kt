@@ -5525,9 +5525,36 @@ class AppViewModel internal constructor(
         }
     }
 
+    /**
+     * Bill (2026-11-25): a tapped approve-from-now-on option waiting on "Approve everything from now on?"
+     * ([com.billmongan.herdrdroid.herdr.approveAllAsk]); nothing is sent until [confirmApproveAll].
+     */
+    internal data class ApproveAllPending(
+        val paneId: String, val serverId: String?, val prompt: Prompt, val choice: Choice, val target: CardTarget?,
+        val ask: com.billmongan.herdrdroid.herdr.ApproveAllAsk, val feedback: ((String) -> Unit)?,
+    )
+    internal var approveAllPending by mutableStateOf<ApproveAllPending?>(null)
+        private set
+
+    /** Cancel on the confirmation: nothing is sent. */
+    fun cancelApproveAll() { approveAllPending = null }
+
+    /**
+     * Confirm on the confirmation: the option goes as any card answer does, under the same check of the
+     * dialog right before its keys, so a label that changed since the card is no send: the card is
+     * redrawn. A label the app can't show whole or reach is never sent from here.
+     */
+    fun confirmApproveAll() {
+        val p = approveAllPending ?: return
+        approveAllPending = null
+        if (p.ask.reason != null || p.ask.keys == null || p.serverId != current?.id) return
+        answerChoice(p.paneId, p.prompt, p.choice, target = p.target, feedback = p.feedback, confirmed = true)
+    }
+
     internal fun answerChoice(paneId: String, prompt: Prompt, choice: Choice,
         voiceAllowed: (() -> Boolean)? = null,
-        target: CardTarget? = cardTarget(paneId), feedback: ((String) -> Unit)? = null,
+        target: CardTarget? = cardTarget(paneId), confirmed: Boolean = false,
+        feedback: ((String) -> Unit)? = null,
     ) {
         // The answer goes into the history only once it was sent (1.3.2, from a code review).
         if (prompt.terminalReview) return
@@ -5549,7 +5576,14 @@ class AppViewModel internal constructor(
             return
         }
         fun report(message: String) { flash(message); feedback?.invoke(message) }
-        // 2.2.8: never sent from the app: approve-everything, or an answer to a command the card can't show whole.
+        // Bill (2026-11-25): an approve-from-now-on option asks "Approve everything from now on?" first;
+        // voice never answers one. One the app can't show whole or reach is never sent.
+        val ask = com.billmongan.herdrdroid.herdr.approveAllAsk(prompt, choice)
+        if (ask != null && (!confirmed || voiceAllowed != null)) {
+            if (voiceAllowed != null) { report(ask.reason ?: "Not sent by voice: it approves from now on. Use the card."); return }
+            approveAllPending = ApproveAllPending(paneId, current?.id, prompt, choice, target, ask, feedback)
+            return
+        }
         com.billmongan.herdrdroid.herdr.blockedChoiceReason(choice)?.let { report(it); return }
         if (prompt.clipped) { report(CLIPPED_NOTE); return }
         val agentName = pane(paneId)?.agentName ?: "the agent"
@@ -6455,9 +6489,11 @@ class AppViewModel internal constructor(
         // The same depth and agent the alert was made with (1.4.2, from review).
         val now = detectPrompt(text, blocked = true, agent = a.agent)
         // 2.2.8: an alert never approves everything, nor answers a command the agent shows only in part.
-        if (now != null && (now.clipped || now.choices.firstOrNull { it.keys == a.keys }?.let { com.billmongan.herdrdroid.herdr.blockedChoiceReason(it) } != null)) {
+        // Bill (2026-11-25): an approve-from-now-on option is only ever sent after the app's own confirmation.
+        if (now != null && (now.clipped || now.choices.firstOrNull { it.keys == a.keys }?.let { com.billmongan.herdrdroid.herdr.approvesFromNowOn(it) } == true)) {
             Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
-                if (now.clipped) "The agent shows only part of the command, so nothing was sent. Open the app to see it whole." else "That option isn't offered from an alert, so nothing was sent.")
+                if (now.clipped) "The agent shows only part of the command, so nothing was sent. Open the app to see it whole."
+                else "That option approves from now on, so it is confirmed in the app first. Nothing was sent.")
             return
         }
         // An OpenCode permission (2.1.2): only Esc, Reject, or Allow once moved to from the highlight

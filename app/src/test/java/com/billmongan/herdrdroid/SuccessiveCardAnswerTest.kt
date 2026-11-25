@@ -229,7 +229,12 @@ class SuccessiveCardAnswerTest {
         answer(card, index = 0)
         assertEquals(CLIPPED_NOTE, vm.notice)
         answer(card, index = 2)
-        assertEquals(com.billmongan.herdrdroid.herdr.blockedChoiceReason(card.choices[2]), vm.notice)
+        // Bill (2026-11-25): the tap asks first; Grok's unnumbered row is one no key reaches, so the
+        // dialog only says why, and its Confirm (were it pressed) sends nothing.
+        val ask = checkNotNull(vm.approveAllPending).ask
+        assertEquals(com.billmongan.herdrdroid.herdr.blockedChoiceReason(card.choices[2]), ask.reason)
+        vm.confirmApproveAll()
+        drainUntil { !vm.answerInFlight("p1") }
         assertTrue(sent.isEmpty())
         afterSend = grokScreen("approval-whole.ansi")
         vm.answerCardKey(vm.cardTarget("p1"), card, "ctrl+f", "Pressed Ctrl+F")
@@ -241,6 +246,86 @@ class SuccessiveCardAnswerTest {
         afterSend = null
         answer(expanded, index = 2)
         assertTrue("always-approve still not sent", sent.isEmpty())
+    }
+
+    private fun res(path: String) = checkNotNull(javaClass.getResource(path)) { path }.readText()
+    private val grokScan get() = res("/screens/corpus-2.2.8/001-grok-live-approval-status-above.txt")
+    private val grokAlways = "Yes, and don't ask again for anything (always-approve mode)"
+
+    /**
+     * Bill (2026-11-25): an approve-from-now-on option asks "Approve everything from now on?" first:
+     * Cancel sends nothing, Confirm sends exactly that option's keys, under the usual check.
+     */
+    @Test fun grokAlwaysApproveAsksFirstThenConfirmSendsItsKeys() = fixture("grok", grokScan) {
+        readSelectedPane()
+        val card = displayed()
+        val i = card.choices.indexOfFirst { it.label == grokAlways }
+        assertTrue(i >= 0)
+        answer(card, index = i)
+        val ask = checkNotNull(vm.approveAllPending).ask
+        assertEquals(grokAlways, ask.label)
+        assertNull(ask.reason)
+        assertEquals(com.billmongan.herdrdroid.herdr.menuKeys(card, card.choices[i]), ask.keys)
+        assertTrue(sent.isEmpty())
+        vm.cancelApproveAll()
+        drainUntil { !vm.answerInFlight("p1") }
+        assertNull(vm.approveAllPending)
+        assertTrue("cancel sends nothing", sent.isEmpty())
+        answer(card, index = i)
+        vm.confirmApproveAll()
+        drainUntil { !vm.answerInFlight("p1") }
+        assertEquals(listOf(checkNotNull(ask.keys).joinToString(" ")), sent)
+    }
+
+    @Test fun claudeAndCodexStandingPermissionsAskFirstThenConfirmSendsTheirKeys() {
+        for ((agent, path) in listOf("claude" to "/screens/claude/captured-2026-11-13/bash-permission.txt",
+                "codex" to "/screens/codex/captured-2026-11-13/run-command.txt")) fixture(agent, res(path)) {
+            readSelectedPane()
+            val card = displayed()
+            val i = card.choices.indexOfFirst { com.billmongan.herdrdroid.herdr.grantsStandingPermission(it.label) }
+            assertTrue(agent, i >= 0)
+            answer(card, index = i)
+            val ask = checkNotNull(vm.approveAllPending) { agent }.ask
+            assertNull(agent, ask.reason)
+            assertTrue(agent, sent.isEmpty())
+            vm.confirmApproveAll()
+            drainUntil { !vm.answerInFlight("p1") }
+            assertEquals(agent, listOf(checkNotNull(ask.keys).joinToString(" ")), sent)
+            // An ordinary option still goes in one tap.
+            sent.clear()
+            readSelectedPane()
+            val again = displayed()
+            answer(again, index = 0)
+            assertNull(agent, vm.approveAllPending)
+        }
+    }
+
+    /** Bill (2026-11-25): the label changed between the card and Confirm: the card is redrawn, nothing sent. */
+    @Test fun aChangedLabelAtConfirmRedrawsInsteadOfSending() = fixture("grok", grokScan) {
+        readSelectedPane()
+        val card = displayed()
+        answer(card, index = card.choices.indexOfFirst { it.label == grokAlways })
+        checkNotNull(vm.approveAllPending)
+        frame = frame.replace("Yes, and don't ask again for anything", "Yes, and don't ask again for this folder")
+        vm.confirmApproveAll()
+        drainUntil { !vm.answerInFlight("p1") }
+        assertTrue(sent.isEmpty())
+        assertEquals(CARD_UPDATED_NOTE, vm.notice)
+    }
+
+    /** Bill (2026-11-25): a cut-off label is never sent from the dialog, which says why. */
+    @Test fun aCutOffAlwaysApproveLabelOnlyExplains() = fixture("grok", grokScan.replace(grokAlways, "Yes, and don't ask again f…")) {
+        readSelectedPane()
+        val card = displayed()
+        val i = card.choices.indexOfFirst { it.label.startsWith("Yes, and don't ask again f") }
+        assertTrue(card.choices.map { it.label }.toString(), i >= 0)
+        answer(card, index = i)
+        val ask = checkNotNull(vm.approveAllPending).ask
+        assertNotNull(ask.reason)
+        assertNull(ask.keys)
+        vm.confirmApproveAll()
+        drainUntil { !vm.answerInFlight("p1") }
+        assertTrue(sent.isEmpty())
     }
 
     private fun ompScreen(name: String) = checkNotNull(javaClass.getResource("/screens/omp/live-2026-11-24-ask/$name")) { name }.readText()
