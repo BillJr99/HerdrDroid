@@ -238,6 +238,8 @@ class CardRegion228Test {
                     if (start > 0) assertTrue("$path above", cardGuardScreenMatches(with(0, t), guard))
                     if (r.below > 0) assertTrue("$path below", cardGuardScreenMatches(with(rows.size - 1, t), guard))
                 }
+                // The region is the parser's own rows, exactly (Codex's review 4B).
+                assertEquals(path, p.dialogRows!!.rows, rows.subList(start, end + 1).map { cardRegionRow(stripAnsi(it)) })
                 // Whitespace inside a row is not a change.
                 // Spaces after a row's end are not a change (Grok's review 4: spaces inside it are).
                 assertTrue("$path trailing spaces", cardGuardScreenMatches(with(end, rows[end] + "   "), guard))
@@ -374,5 +376,33 @@ class CardRegion228Test {
         assertTrue(s.contains("◆ Thinking..."))
         assertTrue(grokWorkingBelowAnyQuestion(s))
         assertNull(detectPrompt(s, true, "grok"))
+    }
+
+    /**
+     * Codex 4B MEDIUM: the guard takes the parser's own rows. When they are on the screen twice (an older
+     * copy of the same dialog), which one the parser read isn't proven: the whole screen is compared.
+     */
+    @Test fun theGuardTakesTheParsersOwnRowsOrTheWholeScreen() {
+        val live = "Run the cleanup?\n  echo one\n❯ 1. Ok\n  2. No,\n  and stop\n\nEsc to cancel\n"
+        val q = checkNotNull(detectPrompt(live, true, null))
+        val d = checkNotNull(q.dialogRows)
+        assertEquals(listOf("Run the cleanup?", "echo one", "❯ 1. Ok", "2. No,", "and stop"), d.rows)
+        assertEquals(listOf(2, 3), d.options)
+        val r = checkNotNull(cardRegion(live, q))
+        assertEquals(5, r.count)
+        // The parser's rows twice on the screen (an older copy of the same dialog): not proven, so the whole screen.
+        val twice = live.replace("\nEsc to cancel\n", "\n") + "\n" + live
+        assertNull(cardRegion(twice, q))
+        assertFalse(cardGuardScreen(twice, q).startsWith("r:"))
+        assertTrue(cardGuardScreenMatches(twice, cardGuardScreen(twice, q)))
+        // Rows the parser read that are no longer on the screen: whole screen.
+        assertNull(cardRegion(live.replace("echo one", "echo two"), q))
+        // A card whose option keys don't match the rows: whole screen.
+        assertNull(cardRegion(live, q.copy(choices = q.choices.reversed()).withSpanOf(q)))
+        // Codex's update prompt: its wrapped first option and every option row, as the parser read them.
+        val c = stripAnsi(codexUpdate())
+        val cp = checkNotNull(detectPrompt(c, true, "codex"))
+        assertEquals(cp.choices.size, checkNotNull(cp.dialogRows).options.size)
+        assertNotNull(cardRegion(codexUpdate(), cp))
     }
 }

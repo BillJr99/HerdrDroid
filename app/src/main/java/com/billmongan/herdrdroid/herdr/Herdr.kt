@@ -1454,15 +1454,16 @@ data class Prompt(
     internal val clipped: Boolean = false,
 ) {
     /**
-     * 2.2.8 (Grok's review 4): how many screen rows above the first option row the question the parser
-     * read starts, for the card's guard ([cardRegion]); null when the question wasn't read as one block.
-     * Where the dialog sits on the screen, not what it asks: not part of the card's identity (equality,
-     * [copy]), so the same question read at another scroll is the same card. [withSpanOf] carries it.
+     * 2.2.8 (Grok's review 4; Codex's review 4B): the exact rows the parser read the dialog from, from
+     * the question's first row down to the last option's last row, for the card's guard ([cardRegion]);
+     * null when the question wasn't read as one block. Where the dialog sits on the screen, not what it
+     * asks: not part of the card's identity (equality, [copy]), so the same question read at another
+     * scroll is the same card. [withSpanOf] carries it.
      */
-    internal var questionSpan: Int? = null
+    internal var dialogRows: DialogRows? = null
 
-    /** This card with [other]'s [questionSpan] (a [copy] of a parsed card made in a parser). */
-    internal fun withSpanOf(other: Prompt): Prompt = also { it.questionSpan = other.questionSpan }
+    /** This card with [other]'s [dialogRows] (a [copy] of a parsed card made in a parser). */
+    internal fun withSpanOf(other: Prompt): Prompt = also { it.dialogRows = other.dialogRows }
 
     /**
      * Never an empty card (1.4.2): a prompt with no choices always has something to show, the
@@ -3835,15 +3836,16 @@ internal fun codexUpdatePrompt(text: String): Prompt? {
     val head = (footer - 1 downTo maxOf(0, footer - 30)).firstOrNull { CODEX_UPDATE_HEAD.matches(rows[it]) } ?: return null
     val notes = mutableListOf<String>()
     val options = mutableListOf<Triple<String, String, Boolean>>()
-    var firstOption = -1
+    val optionAt = mutableListOf<Int>()
+    var lastRow = -1
     for (i in head + 1 until footer) {
         val r = rows[i]
         if (r.isBlank()) continue
         val m = CODEX_UPDATE_OPTION.matchEntire(r)
         when {
-            m != null -> { if (firstOption < 0) firstOption = i; options += Triple(m.groupValues[2], m.groupValues[3].trim(), m.groupValues[1].isNotEmpty()) }
+            m != null -> { optionAt += i; lastRow = i; options += Triple(m.groupValues[2], m.groupValues[3].trim(), m.groupValues[1].isNotEmpty()) }
             // A long option the terminal wrapped goes on its row, as the terminal cut it.
-            options.isNotEmpty() -> options[options.size - 1] = options.last().let { Triple(it.first, it.second + r, it.third) }
+            options.isNotEmpty() -> { lastRow = i; options[options.size - 1] = options.last().let { Triple(it.first, it.second + r, it.third) } }
             else -> notes += r
         }
     }
@@ -3856,7 +3858,10 @@ internal fun codexUpdatePrompt(text: String): Prompt? {
         options.map { Choice(it.second, it.first, false) },
         selected = options.single { it.third }.first,
         parts = questionParts(lines),
-    ).also { it.questionSpan = firstOption - head }
+    ).also { p ->
+        val screen = text.lines().takeLast(80)
+        p.dialogRows = DialogRows(screen.subList(head, lastRow + 1).map { cardRegionRow(it) }, optionAt.map { it - head })
+    }
 }
 
 /** 2.2.8: Grok's "… Ctrl+F to expand" row inside its approval box: the command is cut there. */
@@ -4074,6 +4079,8 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
         pastDialog = true
     }
     lines = raw.filter { it.isNotBlank() }.takeLast(40)
+    // 2.2.8 (Codex's review 4B): the row of raw each of lines is, so the guard gets the parser's own rows.
+    val rawAt = raw.indices.filter { raw[it].isNotBlank() }.takeLast(40)
     val activeText = raw.joinToString("\n")
     val dialogAt = raw.indexOfLast { parseTabBar(clean(it)) != null }
     // "❯ 1. Yes", "  2. Yes, and don't ask again for …" (labels can be long; up to 200 characters).
@@ -4103,6 +4110,8 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
     // An option's label wrapped onto the next line goes on there (1.4.9, from Grok's review: Copilot's
     // "(Manual" over "Approval for this session; …)"): the next line, when it is not an option row, while a
     // "(" is still open or it starts in lower case. A description under it (capitalised, its own sentence) is not.
+    // The last option's last row (its label wrapped), in lines: the bottom of the dialog the guard checks.
+    var lastOptionEnd = -1
     val numbered = run.map { (i, k, label) ->
         var full = label
         var j = i + 1
@@ -4113,6 +4122,7 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
                 !(full.count { it == '(' } > full.count { it == ')' } || next.first().isLowerCase())) break
             full = "$full $next"; j++
         }
+        lastOptionEnd = j - 1
         Choice(full, k, false)
     }.distinctBy { it.keys }
     // The question: the text just above the first choice (up to four lines, skipping frame
@@ -4385,7 +4395,15 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
             lines.takeLast(4).any { CODEX_FOOTER.containsMatchIn(it) || MUSE_CARD_FOOTER.containsMatchIn(it) }
         return Prompt(question ?: "Choose an option", numbered, selected, escRejects = vibeCard, parts = parts, multi = multi,
             shortcuts = shortcuts, approvalIdentity = approvalIdentity, claudeCheckboxAction = checkboxAction, topOffScreen = topOff)
-            .also { it.questionSpan = if (aboveText != null && walkTop in 0..firstOption) firstOption - walkTop else null }
+            .also { p ->
+                // 2.2.8 (Codex's review 4B): the parser's exact rows, the question block it read down to the
+                // last option's last row, with each option's own row; none when they can't be mapped.
+                val bottom = rawAt.getOrNull(lastOptionEnd) ?: -1
+                val at = run.map { rawAt.getOrNull(it.first) ?: -1 }
+                p.dialogRows = if (aboveText != null && walkTop in 0..firstOption && firstOption == at.firstOrNull() &&
+                    bottom >= firstOption && at.all { it in walkTop..bottom } && run.size == numbered.size)
+                    DialogRows(raw.subList(walkTop, bottom + 1).map { cardRegionRow(it) }, at.map { it - walkTop }) else null
+            }
     }
 
     val yn = Regex("""[(\[]\s*[yY](?:es)?\s*/\s*[nN]o?\s*[)\]]""")
@@ -4874,43 +4892,43 @@ internal fun cardRegionRow(row: String): String = row.trim { it == ' ' || it == 
 internal val MENU_OPTION_ROW = Regex("""^[\s│┃|]*([❯›>▶➤⟩→]\s*)?(\[[ xX✓✔]\]\s+)?(?:(\d{1,2})(?:[.)]|\s+(\([○●◯◉]\)))|\[(\d{1,2})\])\s+(.{1,200}?)[\s│┃|]*$""")
 internal fun menuOptionKey(m: MatchResult) = m.groupValues[3].ifEmpty { m.groupValues[5] }
 internal fun menuOptionLabel(m: MatchResult) = (m.groupValues[2] + m.groupValues[6]).trim()
-private fun regionClean(s: String) = s.trim().trim('│', '┃', '|', '╭', '╰', '╮', '╯', '─', ' ').trim()
 
 /**
- * The dialog's rows in [raw] for the card [p] (2.2.8, Grok's review 4): anchored on the option rows
- * themselves, the screen's last run of numbered rows read as the parser reads them, each one the
- * card's own option (its key, and the start of its label); the last option's wrapped rows under it;
- * and above, exactly the question block the parser read ([Prompt.questionSpan] rows). Null (the whole
- * screen is compared) when any of that doesn't hold: options the generic menu rows don't draw, a
- * question not read as one block, or a row that isn't the card's own option.
+ * 2.2.8 (Codex's review 4B): the dialog as the parser read it. [rows]: each screen row from the
+ * question's first row down to the last option's last row, as [cardRegionRow] gives it (no styles);
+ * [options]: where each of the card's options is among them.
+ */
+internal data class DialogRows(val rows: List<String>, val options: List<Int>)
+
+/**
+ * The dialog's rows in [raw] for the card [p] (2.2.8, Grok's review 4; Codex's review 4B): exactly
+ * the rows the parser read ([Prompt.dialogRows]), found once and only once on the screen, each
+ * option row there the card's own option by its key. Null (the whole screen is compared) when they
+ * aren't there, are there twice (an older copy of the same dialog), or a row isn't the card's option.
  */
 internal fun cardRegion(raw: String, p: Prompt): CardRegion? {
     if ('\u0000' in raw || p.terminalReview || p.readingQuestion || p.unreadQuestion) return null
-    val span = p.questionSpan ?: return null
+    val d = p.dialogRows ?: return null
+    if (d.rows.isEmpty()) return null
     val rows = cardRows(raw)
-    val plain = rows.map(::stripAnsi)
+    val plain = rows.map { cardRegionRow(stripAnsi(it)) }
     // Options the dialog draws (the card's own rows, such as Oh My Pi's typed steer, have a ":" key).
     val options = p.choices.filter { ':' !in it.keys }
-    if (options.isEmpty()) return null
-    val run = mutableListOf<Triple<Int, String, String>>()
-    for (i in plain.indices) {
-        val m = MENU_OPTION_ROW.find(plain[i]) ?: continue
-        val k = menuOptionKey(m)
-        if (run.isNotEmpty() && k.toInt() != run.last().second.toInt() + 1) run.clear()
-        run += Triple(i, k, menuOptionLabel(m))
+    if (options.isEmpty() || options.size != d.options.size) return null
+    val n = d.rows.size
+    val at = (0..plain.size - n).filter { i -> (0 until n).all { plain[i + it] == d.rows[it] } }
+    val top = at.singleOrNull() ?: return null
+    for ((o, c) in d.options.zip(options)) {
+        val m = MENU_OPTION_ROW.find(plain[top + o])
+        // Codex's update prompt draws "› 1. Update now" (CODEX_UPDATE_OPTION), the same numbers.
+        val k = m?.let(::menuOptionKey) ?: CODEX_UPDATE_KEY.find(plain[top + o])?.groupValues?.get(1)
+        if (k != c.keys) return null
     }
-    if (run.size != options.size) return null
-    for ((r, c) in run.zip(options)) if (r.second != c.keys || r.third.isEmpty() || !c.label.startsWith(r.third)) return null
-    val first = run.first().first
-    var bottom = run.last().first
-    // The last option's label wrapped onto the rows under it.
-    val last = options.last().label
-    while (bottom + 1 < plain.size && regionClean(plain[bottom + 1]).let { it.isNotEmpty() && last.contains(it) && !last.startsWith(it) } &&
-        MENU_OPTION_ROW.find(plain[bottom + 1]) == null) bottom++
-    val top = first - span
-    if (span < 0 || top < 0) return null
-    return CardRegion(rows.size - 1 - bottom, bottom - top + 1)
+    val bottom = top + n - 1
+    return CardRegion(rows.size - 1 - bottom, n)
 }
+
+private val CODEX_UPDATE_KEY = Regex("""^(?:›\s*)?(\d)\.\s+\S""")
 
 /** The digest of [r]'s rows in [raw], as [CARD_SEND_CHECK] and card-check.sh compute it; null when they aren't there. */
 internal fun cardRegionDigest(raw: String, r: CardRegion): String? {
