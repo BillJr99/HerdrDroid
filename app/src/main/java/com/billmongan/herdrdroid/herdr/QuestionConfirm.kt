@@ -336,6 +336,22 @@ internal fun withoutClaudeAskPreview(rows: List<String>): List<String> {
     return rows.mapIndexed { i, row -> if (i in start..end) row.take(col).trimEnd() else row }
 }
 
+/** A viewport can start partway through the option list, after its question and tab have scrolled off. */
+internal fun claudeClippedAskReview(text: String): Prompt? {
+    val rows = withoutClaudeChromeUnderDialog(stripAnsi(text)).lines()
+    val footer = rows.indexOfLast { it.isNotBlank() }
+    if (footer < 0 || !claudeAskFooter(rows[footer])) return null
+    val body = rows.take(footer).dropWhile { it.isBlank() }
+    if (body.isEmpty() || !CLAUDE_PREVIEW_OPTION.matches(body.first())) return null
+    val options = body.filter(CLAUDE_PREVIEW_OPTION::matches)
+    if (options.size < 2 || options.none { it.trimStart().startsWith('❯') }) return null
+    val heading = "Claude question (top off screen)"
+    val parts = questionParts(listOf(QLine(heading)))
+    val details = body.filter { it.isNotBlank() }.map { QBlock(QKind.TEXT, it.trim()) }
+    return Prompt(heading, emptyList(), region = body + rows[footer],
+        terminalReview = true, parts = parts.copy(blocks = details))
+}
+
 /** Keep an identifiable Claude dialog readable without making unconfirmed choices actionable. */
 internal fun claudeReviewPreview(text: String, parsed: Prompt?): Prompt? {
     val rows = withoutClaudeChromeUnderDialog(stripAnsi(text)).lines().takeLast(80)
@@ -347,7 +363,7 @@ internal fun claudeReviewPreview(text: String, parsed: Prompt?): Prompt? {
     } else if (claudePermissionFooterAtBottom(text)) {
         (footer - 1 downTo 0).firstOrNull { isDialogHeaderRow(rows[it]) }
     } else null
-    if (top == null) return null
+    if (top == null) return if (ask) claudeClippedAskReview(text) else null
     val body = rows.subList(if (ask) top + 1 else top, footer)
     val visible = if (ask) withoutClaudeAskPreview(rows).subList(top + 1, footer) else body
     val labels = visible.mapNotNull { row ->

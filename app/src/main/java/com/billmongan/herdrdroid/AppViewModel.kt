@@ -2529,7 +2529,7 @@ class AppViewModel internal constructor(
             val livePrompt = liveCandidate?.takeIf {
                 verifyOpenCode || it.codexQuestion ||
                     (it.choices.isNotEmpty() && !it.terminalReview && (!requireCodexApprovalIdentity || it.approvalIdentity != null)) ||
-                    ((requireCodexApprovalIdentity || verifyHermesUsage) && it.terminalReview)
+                    ((requireCodexApprovalIdentity || verifyHermesUsage || agent.equals("claude", true)) && it.terminalReview)
             }
             val liveReport = verifyHermesUsage && liveCard != null && hermesUsageEnd(liveCard) != null
             val recentReport = verifyHermesUsage && hermesUsageEnd(recent) != null
@@ -2550,7 +2550,9 @@ class AppViewModel internal constructor(
             val unprovenAnswered = unprovenPreview && liveCard != null
             if (unprovenAnswered && livePrompt == null) com.billmongan.herdrdroid.diag.DiagLog.log("prompt",
                 "$paneId: the live screen shows no dialog; the recent read's is not used")
-            val useLive = liveCard != null && (livePrompt != null || unprovenAnswered || verifyPi && preview != null || liveReport || recentReport || verifiedUsage != null || recentClarify || codexQuestionCleared || verifyOpenCode &&
+            val recentClippedClaudeAsk = agent.equals("claude", true) && preview?.terminalReview == true &&
+                com.billmongan.herdrdroid.herdr.claudeClippedAskReview(recent) != null
+            val useLive = liveCard != null && (livePrompt != null || recentClippedClaudeAsk || unprovenAnswered || verifyPi && preview != null || liveReport || recentReport || verifiedUsage != null || recentClarify || codexQuestionCleared || verifyOpenCode &&
                 (blocked || preview != null || openCodeBackgroundDrawer(agent, recent) || openCodeBackgroundDrawer(agent, liveCard)))
             val shownText = if (useLive) checkNotNull(liveCard) else recent
             // 2.2.7: a Claude dialog taller than the screen is completed from the pane's history when that proves it (herdr/TallDialog.kt).
