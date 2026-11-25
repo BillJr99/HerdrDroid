@@ -62,13 +62,13 @@ class QuestionsFeedTest {
         val read = mutableListOf<String>()
         val feed = QuestionsFeed(this, { listed }, { read += it.key; QuestionRead(prompt("Q ${it.key}", "Yes"), null) }, { false }) { now }
         feed.refreshNow()
-        feed.holdUi(p1.key)
+        feed.holdPress(p1.key)
         listed = listOf(p1, p2)
         now += 10_000
         feed.refreshNow()
         assertEquals(listOf("open|p1", "other|p2"), read)
         assertEquals(listOf("open|p1", "other|p2"), feed.entries.map { it.key })
-        feed.releaseUi(p1.key)
+        feed.releasePress(p1.key)
         feed.refreshNow()
         assertEquals(listOf("open|p1", "other|p2", "open|p1"), read)
         assertFalse(feed.visible)
@@ -98,8 +98,55 @@ class QuestionsFeedTest {
         first.join()
         assertEquals("the panes just read are not read again", 2, reads)
         assertEquals(2, maxInRead)
-        // The first round (before and after its reads) and one more round with nothing due: never one per tap.
-        assertEquals(3, sourcesAsked)
+        // The first round (once, then once per read as it lands) and one more round with nothing due: never one per tap.
+        assertEquals(4, sourcesAsked)
         assertEquals(listOf(EntryState.READY, EntryState.READY), feed.entries.map { it.state })
+    }
+
+    @Test fun aPressAndATypedAnswerHoldApartAndHidingClearsBoth() = runBlocking {
+        val p1 = src("open", "p1")
+        var listed = listOf(p1)
+        val feed = QuestionsFeed(this, { listed }, { QuestionRead(prompt("Q", "Yes"), null) }, { false }) { now }
+        feed.refreshNow()
+        feed.holdTyping(p1.key)
+        feed.holdPress(p1.key)
+        feed.releasePress(p1.key)
+        listed = emptyList()
+        feed.refreshNow()
+        assertEquals("the typed answer still holds it", EntryState.READY, feed.entries.single().state)
+        // The view is hidden with the box open (its dispose never ran): nothing is held or kept.
+        feed.hide()
+        assertTrue(feed.entries.isEmpty())
+        assertFalse(feed.isHeldByUi(p1.key))
+        listed = listOf(p1)
+        feed.refreshNow()
+        assertEquals(EntryState.READY, feed.entries.single().state)
+        feed.releaseTyping(p1.key)
+        listed = emptyList()
+        feed.refreshNow()
+        assertEquals(EntryState.ANSWERED, feed.entries.single().state)
+    }
+
+    @Test fun aSlowServerDoesNotHoldBackAnotherServersQuestion() = runBlocking {
+        val fast = src("open", "fast")
+        val slow = src("slow", "s1")
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val feed = QuestionsFeed(this, { listOf(fast, slow) }, {
+            if (it.key == slow.key) gate.await()
+            QuestionRead(prompt("Q ${it.key}", "Yes"), null)
+        }, { false }, readTimeoutMs = 60_000) { now }
+        val round = launch { feed.refreshNow() }
+        while (feed.entries.none { it.key == fast.key && it.state == EntryState.READY }) kotlinx.coroutines.yield()
+        assertEquals("the fast one shows while the slow one is still out", EntryState.READING, feed.entries.single { it.key == slow.key }.state)
+        gate.complete(Unit)
+        round.join()
+        assertTrue(feed.entries.all { it.state == EntryState.READY })
+    }
+
+    @Test fun aReadThatHangsCountsAsFailedAfterItsTime() = runBlocking {
+        val s1 = src("open", "p1")
+        val feed = QuestionsFeed(this, { listOf(s1) }, { kotlinx.coroutines.awaitCancellation() }, { false }, readTimeoutMs = 50) { now }
+        feed.refreshNow()
+        assertEquals(EntryState.UNREAD, feed.entries.single().state)
     }
 }
