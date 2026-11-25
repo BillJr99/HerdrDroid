@@ -97,7 +97,19 @@ class LongTextSend227Test {
             |{"result":{"tabs":[]}}
         """.trimMargin())
 
-        override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult = when {
+        override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult {
+            // 2.2.8: the occupant check before a bound write, as the computer runs it, then the write.
+            Regex("""(?s)'p1' '([0-9a-f]{64})' '-'.*\) && (.*)$""").find(command)?.takeIf { "herdrdroid-check" in command }?.let { m ->
+                if (com.billmongan.herdrdroid.herdr.cardOccupantDigest(org.json.JSONObject(pane)) != m.groupValues[1])
+                    return ExecResult(com.billmongan.herdrdroid.herdr.OCCUPANT_CHANGED_EXIT, "", "")
+                var last = ok("")
+                for (part in m.groupValues[2].split(" && ")) { last = direct(part); if (last.exit != 0) break }
+                return last
+            }
+            return direct(command)
+        }
+
+        private fun direct(command: String): ExecResult = when {
             command.endsWith("'pane' 'get' 'p1'") -> ok("""{"result":{"pane":$pane}}""")
             command.contains("'pane' 'read' 'p1'") -> ok(idle)
             command.contains("'agent' 'prompt' 'p1' ") || command.contains("'pane' 'send-text' 'p1' ") -> {

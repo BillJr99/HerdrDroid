@@ -3,6 +3,8 @@
 # Herdr.kt, and byte for byte the same digests: 0 when the pane's occupant (read before and after
 # the screen) and its screen match $3 and $4, 3 when anything changed, 4 when it couldn't check.
 # Arguments: herdr, pane id, occupant digest, screen digest. No prompt text.
+# 2.2.8: a screen digest of "-" checks the occupant only, wherever the pane is scrolled (a message
+# queued behind a question goes only to its occupant): 0 when it matches, 5 when it doesn't, 4.
 herdr=$1
 pane=$2
 occupant=$3
@@ -176,7 +178,8 @@ END {
   if (ENVIRON["MODE"] == "status") {
     if (!(type[P SUBSEP "pane_id"] == "s" && !odd[P SUBSEP "pane_id"] && val[P SUBSEP "pane_id"] == ENVIRON["WANT"])) exit 3
     S = P SUBSEP "scroll"
-    if (type[S] == "o") { if (!zero(S SUBSEP "offset_from_bottom")) exit 3 }
+    if (ENVIRON["ANYSCROLL"] == "1") { }
+    else if (type[S] == "o") { if (!zero(S SUBSEP "offset_from_bottom")) exit 3 }
     else if (falsy(S)) exit 3
     else err()
     for (i = 1; i <= 7; i++) if (used(P SUBSEP F[i])) err()
@@ -214,7 +217,7 @@ nul() { ! tr -d '\000' < "$1" | cmp -s - "$1"; }
 identity() {
   "$herdr" pane get "$pane" > "$j" 2>/dev/null || return 4
   nul "$j" && return 4
-  MODE=status WANT=$pane awk "$J" "$j" 2>/dev/null
+  MODE=status WANT=$pane ANYSCROLL=$anyscroll awk "$J" "$j" 2>/dev/null
   st=$?
   [ "$st" -eq 0 ] || { [ "$st" -eq 3 ] && return 3; return 4; }
   id=$(MODE=ser awk "$J" "$j" 2>/dev/null | sha)
@@ -222,6 +225,19 @@ identity() {
   return 0
 }
 
+anyscroll=0
+if [ "$screen" = "-" ]; then
+  anyscroll=1
+  identity
+  a=$?
+  [ "$a" -eq 4 ] && exit 4
+  before=$id
+  identity
+  b=$?
+  [ "$b" -eq 4 ] && exit 4
+  [ "$a" -eq 0 ] && [ "$b" -eq 0 ] && [ "$before" = "$id" ] && [ "$id" = "$occupant" ] && exit 0
+  exit 5
+fi
 identity
 a=$?
 [ "$a" -eq 4 ] && exit 4
