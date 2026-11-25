@@ -54,6 +54,17 @@ class GrokPrivacyTest {
         assertEquals(p, detectPrompt(dialog, blocked = false))
     }
 
+    @Test fun framedDialogBelowARunningRowRemainsAQuestion() {
+        val running = "⠧ Thinking… 4s [stop]"
+        val screen = "$running\n$dialog"
+        assertFalse(grokWorkingBelowAnyQuestion(screen))
+        val card = checkNotNull(detectPrompt(screen, blocked = false, agent = "grok"))
+        assertEquals(listOf("Opt in", "Opt out"), card.choices.map { it.label })
+        assertEquals("2", card.selected)
+        assertTrue(grokWorkingBelowAnyQuestion("$dialog\n$running"))
+        assertNull(detectPrompt("$dialog\n$running", blocked = true, agent = "grok"))
+    }
+
     @Test fun grokInputBox() {
         assertEquals("", grokInputText(banner))
         assertEquals("/usage", grokInputText(banner.replace("│ ❯                                                        │", "│ ❯ /usage                                                 │")))
