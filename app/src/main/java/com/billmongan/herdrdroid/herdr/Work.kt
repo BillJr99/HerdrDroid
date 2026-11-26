@@ -186,3 +186,6 @@ internal fun visibleBackgroundShellCount(agent: String?, screen: String): Int? {
 }
 
 private val workComposerRule = Regex("─{20,}")
+
+/** Work belongs to the occupying terminal and session, as well as its pane ID. */
+internal fun Pane.sameWorkIdentity(other: Pane): Boolean = !isProbe && !other.isProbe && sameOccupant(this, other)
