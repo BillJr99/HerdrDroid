@@ -567,9 +567,9 @@ class Herdr internal constructor(
      */
     suspend fun readVisible(paneId: String): String = readVisible(paneId, preserveGlyphs = false)
 
-    internal suspend fun readVisible(paneId: String, preserveGlyphs: Boolean): String =
-        if (core) read(paneId, 60, preserveGlyphs) else screenText(
-            runNow(visibleSnapshot(paneId, ansi = preserveGlyphs), timeoutSeconds = 5), preserveGlyphs,
+    internal suspend fun readVisible(paneId: String, preserveGlyphs: Boolean, expectedConnection: Any? = null): String =
+        if (core) read(paneId, 60, preserveGlyphs, expectedConnection) else screenText(
+            runNow(visibleSnapshot(paneId, ansi = preserveGlyphs), timeoutSeconds = 5, expectedConnection = expectedConnection), preserveGlyphs,
         )
 
     private fun screenText(text: String, preserveGlyphs: Boolean) = if (preserveGlyphs) stripAnsi(text) else forPhone(text)
@@ -606,13 +606,13 @@ class Herdr internal constructor(
             null
         }
 
-    suspend fun read(paneId: String, lines: Int = 200, preserveGlyphs: Boolean = false): String =
-        if (core) screenText(runNow(hcCmd("read", paneId, "--lines", lines.toString()), timeoutSeconds = 5), preserveGlyphs)
+    suspend fun read(paneId: String, lines: Int = 200, preserveGlyphs: Boolean = false, expectedConnection: Any? = null): String =
+        if (core) screenText(runNow(hcCmd("read", paneId, "--lines", lines.toString()), timeoutSeconds = 5, expectedConnection = expectedConnection), preserveGlyphs)
         else try {
-            screenText(runNow(recentSnapshot(paneId, lines), timeoutSeconds = 5), preserveGlyphs)
+            screenText(runNow(recentSnapshot(paneId, lines), timeoutSeconds = 5, expectedConnection = expectedConnection), preserveGlyphs)
         } catch (e: HerdrError) {
-            if (e.exit == -2) throw e
-            screenText(runNow(visibleSnapshot(paneId, ansi = preserveGlyphs, lines = lines), timeoutSeconds = 5), preserveGlyphs)
+            if (e.exit == -2 || e.isMissingPane(paneId)) throw e
+            screenText(runNow(visibleSnapshot(paneId, ansi = preserveGlyphs, lines = lines), timeoutSeconds = 5, expectedConnection = expectedConnection), preserveGlyphs)
         }
 
     /**
@@ -868,6 +868,60 @@ class Herdr internal constructor(
     suspend fun sendKeys(paneId: String, vararg keys: String, expectedConnection: Any? = null) =
         if (core) runWrite(hcCmd("keys", paneId, *keys), expectedConnection = expectedConnection)
         else runWrite(cmd("pane", "send-keys", paneId, *keys), expectedConnection = expectedConnection)
+
+    /**
+     * Terminal keys target a specific terminal, even when Herdr changes its public pane ID.
+     * Only Herdr's explicit lookup rejection establishes that no key could have been sent.
+     */
+    internal suspend fun sendTerminalKeys(pane: Pane, keys: List<String>, connection: Any, stillCurrent: () -> Boolean) {
+        fun checkTarget() {
+            if (connectionIdentity !== connection || !stillCurrent())
+                throw HerdrError("the computer, connection, or open terminal changed. Open the terminal and try again.", 1)
+        }
+        checkTarget()
+        if (core) {
+            sendKeys(pane.id, *keys.toTypedArray(), expectedConnection = connection)
+            return
+        }
+        suspend fun dispatch(live: Pair<Pane, String>): Boolean {
+            val (target, digest) = live
+            checkTarget()
+            val command = occupantCheckCommand(target.id, digest) + " && echo $OCCUPANT_PASSED_MARK && " +
+                cmd("pane", "send-keys", target.id, *keys.toTypedArray())
+            val result = runWriteResult(command, connection, permit = null)
+            if (result.exit == 0) return true
+            val lines = result.out.lines().map { it.trim() }
+            val why = result.err.ifBlank { result.out }.lineSequence().map { it.trim() }
+                .lastOrNull { it.isNotEmpty() && it != OCCUPANT_PASSED_MARK } ?: "exit ${result.exit}"
+            val problem = HerdrError(why, result.exit)
+            if (OCCUPANT_PASSED_MARK in lines) {
+                if (problem.isMissingPane(target.id)) return false
+                throw DeliveryUncertain(why)
+            }
+            if (result.exit == -2) throw DeliveryUncertain(why)
+            throw HerdrError("the terminal could not be verified. Reopen it from the pane list.", result.exit)
+        }
+        val original = try { boundOccupant(pane.id, connection) } catch (e: HerdrError) {
+            if (!e.isMissingPane(pane.id)) throw e
+            null
+        }
+        if (original != null && pane.matchesTerminal(original.first) && dispatch(original)) return
+        checkTarget()
+        val target = resolveTerminalPane(pane, connection)
+        val verified = try { boundOccupant(target.id, connection) } catch (e: HerdrError) {
+            if (!e.isMissingPane(target.id)) throw e
+            null
+        }
+        if (verified == null || !pane.matchesTerminal(verified.first) || !dispatch(verified)) throw terminalUnavailable()
+    }
+
+    internal suspend fun resolveTerminalPane(pane: Pane, connection: Any): Pane =
+        panesOn(connection).singleOrNull { pane.matchesTerminal(it) } ?: throw terminalUnavailable()
+
+    private fun Pane.matchesTerminal(now: Pane): Boolean {
+        if (agent != now.agent || sessionId != now.sessionId) return false
+        return if (terminalId != null) terminalId == now.terminalId else sessionId != null && cwd == now.cwd
+    }
 
     private fun exactViewportCheck(paneId: String, viewport: String, requireBottom: Boolean = false): String {
         val digest = sha256Hex(viewport.toByteArray(Charsets.UTF_8))
@@ -1392,6 +1446,7 @@ internal suspend fun recoverPaneRead(
     visible: suspend () -> String,
     shortRecent: suspend () -> String,
     pause: suspend () -> Unit = { kotlinx.coroutines.delay(180) },
+    stopOnMissing: String? = null,
 ): String {
     var problem = HerdrError("the screen came back empty", -2)
     for ((index, read) in listOf(recent, visible, shortRecent).withIndex()) {
@@ -1400,6 +1455,7 @@ internal suspend fun recoverPaneRead(
             val text = read()
             if (text.isNotBlank()) return text
         } catch (e: HerdrError) {
+            if (stopOnMissing != null && e.isMissingPane(stopOnMissing)) throw e
             problem = e
         }
     }
@@ -1407,6 +1463,17 @@ internal suspend fun recoverPaneRead(
 }
 
 class HerdrError(message: String, val exit: Int) : Exception(message)
+
+/** Herdr rejects this lookup before any terminal key is attempted. Other failures are ambiguous. */
+internal fun HerdrError.isMissingPane(id: String): Boolean {
+    if (exit != 1) return false
+    val response = runCatching { JSONObject(message.orEmpty()).optJSONObject("error") }.getOrNull() ?: return false
+    return response.optString("code") == "pane_not_found" &&
+        response.optString("message") in setOf("pane $id not found", "pane not found")
+}
+
+internal fun terminalUnavailable() =
+    HerdrError("this terminal is no longer available on the connected computer. Reopen it from the pane list.", 1)
 
 /** A file or folder name typed on the phone, or null when it has a slash, is empty, or is "." or "..". */
 fun safeName(name: String): String? {

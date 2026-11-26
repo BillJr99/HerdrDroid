@@ -271,7 +271,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
 
     /** Sends one key with whatever modifiers are on, then lets go of the one-shot ones. */
     fun press(key: String) {
-        vm.sendKeys(paneId, chord(ctrl, alt, key))
+        vm.sendTerminalKeys(paneId, pane, draftServer, chord(ctrl, alt, key))
         if (ctrl == Hold.ONCE) ctrl = Hold.OFF
         if (alt == Hold.ONCE) alt = Hold.OFF
     }
@@ -1224,7 +1224,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             title = { Text("Send Ctrl+C?") },
             text = { Text("This interrupts whatever ${pane?.agentName ?: "the tab"} is doing right now.") },
             confirmButton = {
-                Button(onClick = { confirmCtrlC = false; vm.sendKeys(paneId, "ctrl+c") }) { Text("Interrupt") }
+                Button(onClick = { confirmCtrlC = false; vm.sendTerminalKeys(paneId, pane, draftServer, "ctrl+c") }) { Text("Interrupt") }
             },
             dismissButton = { TextButton(onClick = { confirmCtrlC = false }) { Text("Cancel") } },
         )
