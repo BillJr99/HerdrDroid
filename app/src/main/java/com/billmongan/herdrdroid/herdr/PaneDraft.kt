@@ -75,10 +75,8 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
         suspend fun pane(id: String): Pane?
         /** The pane's live screen with its styles, or null when it can't be read. */
         suspend fun viewport(id: String): String?
-        /** Keys that the transport starts only while [permit] is open. */
-        suspend fun keys(id: String, keys: List<String>, permit: WritePermit)
-        /** Clear only while the host still sees the viewport the app verified. */
-        suspend fun clearKeys(id: String, keys: List<String>, viewport: String, permit: WritePermit): Boolean
+        /** Type keys only while the permit is open and the host still sees the verified viewport. */
+        suspend fun checkedKeys(id: String, keys: List<String>, viewport: String, permit: WritePermit): Boolean
         /** Time for the agent to redraw before the next read. */
         suspend fun pause(ms: Long)
     }
@@ -141,14 +139,8 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
             val permit = gate.open(server to shown.id, WritePermit(allowed)) ?: return@guarded Outcome.REFUSED
             try {
                 if (!allowed()) return@guarded Outcome.REFUSED
-                // 2.1.1 (2.1.0 acceptance, D5c trial 6): an edit at the computer landed 179 ms before
-                // Enter, after the guarded check, and the changed text went. So the box is read once
-                // more here, inside the pane's dispatch lane and with the permit open, as the very
-                // last step before Enter, and compared with the exact text that was shown.
-                // Residual window, which no remote check can close: from this read leaving herdr to
-                // Enter reaching the agent (one SSH round trip plus the key write, typically well
-                // under a second). Text typed at the computer inside that window is submitted with
-                // the draft; the result is then UNCERTAIN unless the box is seen empty afterwards.
+                // Re-read inside the dispatch lane. The host also checks that exact viewport
+                // in the same command immediately before Enter.
                 val last = port.viewport(shown.id) ?: return@guarded Outcome.REFUSED
                 if (!allowed()) return@guarded Outcome.REFUSED
                 val still = draftOn(fresh, last)
@@ -156,7 +148,7 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
                 if (!still.bounded) return@guarded Outcome.REFUSED
                 if (still.text != shownText) return@guarded Outcome.CHANGED
                 if (draftSendBlock(still, fresh.status, fresh.agentName) != null) return@guarded Outcome.NOT_SENDABLE
-                port.keys(shown.id, listOf("enter"), permit)
+                if (!port.checkedKeys(shown.id, listOf("enter"), last, permit)) return@guarded Outcome.CHANGED
             } catch (e: WriteRevoked) {
                 return@guarded Outcome.REFUSED
             } catch (c: CancellationException) {
@@ -201,7 +193,7 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
                     // before the keys, and must still hold what is left of the shown draft.
                     val viewport = verifiedViewport(shown, left, port)
                         ?: return@guarded if (pressed) Outcome.UNCERTAIN else Outcome.CHANGED
-                    if (!port.clearKeys(shown.id, List(count) { "backspace" }, viewport, permit))
+                    if (!port.checkedKeys(shown.id, List(count) { "backspace" }, viewport, permit))
                         return@guarded if (pressed) Outcome.UNCERTAIN else Outcome.CHANGED
                     pressed = true
                 } catch (e: WriteRevoked) {
@@ -261,7 +253,7 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
             if (!allowed()) return Outcome.REFUSED
             // 2.2.8 (Codex's VM tests): a replacement draft typed after the first read is never cleared.
             val viewport = verifiedViewport(shown, draft.text, port) ?: return Outcome.CHANGED
-            if (!port.clearKeys(shown.id, LINE_CLEAR_KEYS, viewport, permit)) return Outcome.CHANGED
+            if (!port.checkedKeys(shown.id, LINE_CLEAR_KEYS, viewport, permit)) return Outcome.CHANGED
         } catch (e: WriteRevoked) {
             return Outcome.REFUSED
         } catch (c: CancellationException) {
