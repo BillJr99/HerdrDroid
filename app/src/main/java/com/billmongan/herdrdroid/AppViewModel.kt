@@ -6823,7 +6823,8 @@ class AppViewModel internal constructor(
                     !notificationAnswerStillFits(now, a) ||
                     choice?.let { com.billmongan.herdrdroid.herdr.approvesFromNowOn(it) ||
                         com.billmongan.herdrdroid.herdr.blockedChoiceReason(it) != null } == true ||
-                    a.keys == com.billmongan.herdrdroid.herdr.OMP_STEER || a.keys.startsWith("grok-privacy:")) {
+                    a.keys == com.billmongan.herdrdroid.herdr.OMP_STEER ||
+                    a.keys == com.billmongan.herdrdroid.herdr.OmpAsk.SUBMIT || a.keys.startsWith("grok-privacy:")) {
                     refuse("This option must be answered in the app.")
                     return
                 }
