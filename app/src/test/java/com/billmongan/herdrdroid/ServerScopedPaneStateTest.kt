@@ -124,7 +124,7 @@ class ServerScopedPaneStateTest {
         vm.screen = Screen.Agent(source.pane.id)
         vm.changeAgentMessaging(true)
         source.connection = null
-        source.recent = fixtureMessageFrame("K7P3QX", "hello")
+        source.recent = "⏺ " + fixtureMessageFrame("K7P3QX", "hello")
         vm.readPane(source.pane.id)
         assertTrue(vm.crossServerCardsFor(source.pane.id).isEmpty())
         source.connection = Any()
