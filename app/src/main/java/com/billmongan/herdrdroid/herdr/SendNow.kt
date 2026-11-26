@@ -76,7 +76,7 @@ internal fun codexSteeringReady(screen: String): Boolean {
     val input = rows.indexOfLast { it.startsWith("›") }
     if (input < 1 || rows.getOrNull(input + 1)?.isBlank() != true) return false
     val above = rows.take(input).lastOrNull { it.isNotBlank() } ?: return false
-    if (!Regex("""^• Working \(.*esc to interrupt\)$""").matches(above)) return false
+    if (!Regex("""^[•◦] Working \([^)]* • esc to interrupt\)$""").matches(above)) return false
     val footer = rows.drop(input + 2).filter { it.isNotBlank() }
     if (footer.size !in 1..3 || footer.any { !it.startsWith("  ") } ||
         !footer.last().trimStart().startsWith("← for agents")) return false
