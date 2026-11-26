@@ -1,6 +1,7 @@
 package com.billmongan.herdrdroid.herdr
 
 import com.billmongan.herdrdroid.ssh.ConnectionChanged
+import com.billmongan.herdrdroid.ssh.LinkDown
 import kotlinx.coroutines.CancellationException
 
 /**
@@ -79,6 +80,9 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
         suspend fun checkedKeys(id: String, keys: List<String>, viewport: String, permit: WritePermit): Boolean
         /** Time for the agent to redraw before the next read. */
         suspend fun pause(ms: Long)
+
+        /** Notify the current connection owner without discarding the write outcome. */
+        fun linkLost(error: LinkDown) {}
     }
 
     enum class Outcome {
@@ -142,12 +146,13 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
                 // Re-read inside the dispatch lane. The host also checks that exact viewport
                 // in the same command immediately before Enter.
                 val last = port.viewport(shown.id) ?: return@guarded Outcome.REFUSED
-                if (!allowed()) return@guarded Outcome.REFUSED
-                val still = draftOn(fresh, last)
-                    ?: return@guarded if (emptyBox(fresh, last)) Outcome.CHANGED else Outcome.REFUSED
+                val current = port.pane(shown.id)
+                if (!allowed() || current == null || !ready(shown, current)) return@guarded Outcome.REFUSED
+                val still = draftOn(current, last)
+                    ?: return@guarded if (emptyBox(current, last)) Outcome.CHANGED else Outcome.REFUSED
                 if (!still.bounded) return@guarded Outcome.REFUSED
                 if (still.text != shownText) return@guarded Outcome.CHANGED
-                if (draftSendBlock(still, fresh.status, fresh.agentName) != null) return@guarded Outcome.NOT_SENDABLE
+                if (draftSendBlock(still, current.status, current.agentName) != null) return@guarded Outcome.NOT_SENDABLE
                 if (!port.checkedKeys(shown.id, listOf("enter"), last, permit)) return@guarded Outcome.CHANGED
             } catch (e: WriteRevoked) {
                 return@guarded Outcome.REFUSED
@@ -155,6 +160,7 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
                 if (permit.submitted) return@guarded Outcome.UNCERTAIN
                 throw c
             } catch (e: Exception) {
+                if (e is LinkDown) port.linkLost(e)
                 return@guarded if (permit.submitted) Outcome.UNCERTAIN else Outcome.REFUSED
             } finally {
                 gate.finish(server to shown.id, permit)
@@ -202,6 +208,7 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
                     if (pressed || permit.submitted) return@guarded Outcome.UNCERTAIN
                     throw c
                 } catch (e: Exception) {
+                    if (e is LinkDown) port.linkLost(e)
                     return@guarded if (pressed || permit.submitted) Outcome.UNCERTAIN else Outcome.REFUSED
                 } finally {
                     gate.finish(server to shown.id, permit)
@@ -260,6 +267,7 @@ internal class PaneDraftAction(private val dispatch: PaneDispatch, private val g
             if (permit.submitted) return Outcome.UNCERTAIN
             throw c
         } catch (e: Exception) {
+            if (e is LinkDown) port.linkLost(e)
             return if (permit.submitted) Outcome.UNCERTAIN else Outcome.REFUSED
         } finally {
             gate.finish(server to shown.id, permit)
