@@ -7303,13 +7303,25 @@ class AppViewModel internal constructor(
      * Holds a message until the pane's agent is ready, then sends it. [behindQuestion]: queued while a
      * question is open (2.2.8), so bound to the pane's occupant now.
      */
-    fun enqueue(paneId: String, text: String, behindQuestion: Boolean = false) {
-        val serverId = current?.id ?: return
-        if (text.isBlank()) return
+    fun enqueue(
+        paneId: String,
+        text: String,
+        behindQuestion: Boolean = false,
+        displayedPane: Pane? = null,
+        displayedServer: String? = null,
+    ): Boolean {
+        val serverId = current?.id ?: return false
+        if (text.isBlank()) return false
         val now = pane(paneId)
+        if (behindQuestion && (displayedServer != serverId || displayedPane == null ||
+                (displayedPane.terminalId.isNullOrBlank() && displayedPane.sessionId.isNullOrBlank()) ||
+                now?.sameCardOccupant(displayedPane) != true)) {
+            flashNote(QUEUED_OCCUPANT_CHANGED)
+            return false
+        }
         queued = queued + QueuedPrompt(System.nanoTime(), serverId, paneId, text, now?.takeIf { it.agent == "hermes" },
-            occupant = now?.takeIf { behindQuestion })
-        if (queueJob?.isActive == true) return
+            occupant = displayedPane?.takeIf { behindQuestion })
+        if (queueJob?.isActive == true) return true
         queueJob = viewModelScope.launch {
             while (isActive && queued.isNotEmpty()) {
                 delay(3_000)
@@ -7334,6 +7346,7 @@ class AppViewModel internal constructor(
                 }
             }
         }
+        return true
     }
 
     /** Skip this app's idle wait. Normal screen and input guards still apply. */
@@ -7773,12 +7786,15 @@ class AppViewModel internal constructor(
         if (p.isProbe || !p.agent.equals("claude", true)) return
         val client = herdr ?: return
         val connection = client.connectionIdentity
-        val s = quietly { h -> h.readStyled(paneId, sendReadLines(p.agent)) }?.takeIf { it.isNotBlank() } ?: return
-        if (herdr !== client || client.connectionIdentity !== connection || pane(paneId)?.sameWorkIdentity(p) != true) return
-        workScreens = workScreens + (paneId to s)
-        // A read with no foreground command confirms the move; after 10 s the read alone decides.
+        val server = current?.id
+        val s = quietly { h -> h.readStyled(paneId, sendReadLines(p.agent)) }?.takeIf { it.isNotBlank() }
+        if (herdr !== client || client.connectionIdentity !== connection || current?.id != server ||
+            pane(paneId)?.sameWorkIdentity(p) != true) return
+        workScreens = if (s == null) workScreens - paneId else workScreens + (paneId to s)
+        // A read with no foreground command confirms the move. The prediction expires even if the read fails.
         movedToBackground[paneId]?.let { (_, at) ->
-            if (!com.billmongan.herdrdroid.herdr.claudeBackgroundHint(s) || System.currentTimeMillis() - at > 10_000)
+            if (System.currentTimeMillis() - at > 10_000 ||
+                (s != null && !com.billmongan.herdrdroid.herdr.claudeBackgroundHint(s)))
                 movedToBackground = movedToBackground - paneId
         }
     }

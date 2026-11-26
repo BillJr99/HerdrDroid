@@ -19,6 +19,7 @@ import com.billmongan.herdrdroid.ssh.ExecResult
 import com.billmongan.herdrdroid.ssh.HerdrSsh
 import com.billmongan.herdrdroid.store.Server
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -92,6 +93,12 @@ class BackgroundVm228Test {
             vm.screen = Screen.Agent("p1")
             vm.pushLimits = Backgrounder.Limits(maxPresses = 3, maxReads = 10, pollMs = 10)
             shadowOf(Looper.getMainLooper()).idle()
+        }
+
+        fun refreshWorkScreen() {
+            val read = vm.viewModelScope.launch { vm.refreshWorkScreen("p1") }
+            drain()
+            assertTrue(read.isCompleted)
         }
 
         fun status(s: Status) {
@@ -185,6 +192,23 @@ class BackgroundVm228Test {
             state("pendingSends", listOf(p))
             return p
         }
+    }
+
+    @Test fun blankReadClearsOldWorkScreen() = fixture("claude", fg) {
+        refreshWorkScreen()
+        assertEquals(fg, vm.workScreens["p1"])
+        frame = " "
+        refreshWorkScreen()
+        assertTrue(vm.workScreens.isEmpty())
+    }
+
+    @Test fun oldOccupantReadDoesNotReplaceCurrentWorkScreen() = fixture("claude", fg) {
+        afterRead = {
+            terminal = "replacement"
+            status(Status.WORKING)
+        }
+        refreshWorkScreen()
+        assertTrue(vm.workScreens.isEmpty())
     }
 
     @Test fun backgroundOnTheRunningPageGoesOnceThroughTheCheckedKey() = fixture("claude", fg) {
