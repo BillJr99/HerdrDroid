@@ -127,6 +127,17 @@ esac
         }
     }
 
+    @Test fun duplicatedGrokDialogKeepsClippingAndTheWholeScreenGuard() {
+        val dialog = checkNotNull(javaClass.getResource(
+            "/screens/grok/synthetic-2.2.8-approval/approval-clipped.ansi",
+        )).readText()
+        val screen = "$dialog\n$dialog"
+        val card = checkNotNull(detectPrompt(screen, true, "grok"))
+        assertTrue(card.clipped)
+        assertTrue(com.billmongan.herdrdroid.notify.alertPlan(card).buttons.isEmpty())
+        assertFalse(cardGuardScreen(screen, card).startsWith("r:"))
+    }
+
     @Test fun standingPermissionTargetMayContainBlock() {
         assertTrue(grantsStandingPermission("Yes, allow all edits to block.kt during this session"))
         assertFalse(grantsStandingPermission("Block, do not allow these edits"))
