@@ -65,7 +65,9 @@ internal fun extendFramedDialog(screen: String, history: String, blocked: Boolea
         val body = d.drop(startTab)
         if (body.size > TALL_DIALOG_MAX_LINES || body.dropLast(1).any { claudeAskFooter(it) }) return null
         // The earlier rows must contain the first option of this dialog, not a stray tab label.
-        if (d.subList(startTab + 1, start).none { CLAUDE_FIRST_ASK_OPTION.matches(it) }) return null
+        val leadingOptions = if (claudeClippedCheckboxRows(b) != null) body.dropLast(1)
+            else d.subList(startTab + 1, start)
+        if (leadingOptions.none { CLAUDE_FIRST_ASK_OPTION.matches(it) }) return null
         val candidate = (listOf(TALL_ASK_MARK) + body).joinToString("\n")
         return candidate.takeIf { rebuiltClaudeAsk(it) != null }
     }

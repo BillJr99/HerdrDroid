@@ -339,20 +339,46 @@ internal fun withoutClaudeAskPreview(rows: List<String>): List<String> {
 
 private val CLAUDE_CLIPPED_OPTION = Regex("""^\s*([❯›]?)\s*(\d{1,2})[.)]\s+\S.*$""")
 
+private val CLAUDE_CLIPPED_CHECKBOX = Regex("""^\s*([❯›]?)\s*(\d{1,2})\. \[[ xX✓✔]\] \S.*$""")
+private val CLAUDE_CLIPPED_CHAT = Regex("""^\s*(\d{1,2})\. Chat about this$""")
+
+/** Checkbox dialogs end with their own Submit, rule, and separately numbered chat action. */
+internal fun claudeClippedCheckboxRows(frame: List<String>): List<String>? {
+    val rows = frame.filter { it.isNotBlank() }
+    if (rows.size < 6 || !claudeAskFooter(rows.last())) return null
+    if (rows.dropLast(1).any { claudeAskTab(it) || claudeAskFooter(it) }) return null
+    val chat = CLAUDE_CLIPPED_CHAT.matchEntire(rows[rows.lastIndex - 1]) ?: return null
+    if (!CLAUDE_DIALOG_TOP_RULE.matches(rows[rows.lastIndex - 2])) return null
+    if (rows[rows.lastIndex - 3].trim() != "Submit") return null
+    val body = rows.dropLast(4)
+    val first = body.indexOfFirst { CLAUDE_CLIPPED_CHECKBOX.matches(it) }
+    if (first < 0 || body.take(first).any { it.isNotBlank() && !it.startsWith("│ ") }) return null
+    val options = body.drop(first).mapNotNull(CLAUDE_CLIPPED_CHECKBOX::matchEntire)
+    if (options.size < 2 || options.count { it.groupValues[1].isNotEmpty() } != 1) return null
+    val firstNumber = options.first().groupValues[2].toInt()
+    val nextNumber = firstNumber + options.size
+    if (firstNumber < 1 || options.map { it.groupValues[2].toInt() } != (firstNumber until nextNumber).toList() ||
+        chat.groupValues[1].toInt() != nextNumber) return null
+    return body.drop(first)
+}
+
 /** A viewport can start partway through the option list, after its question and tab have scrolled off. */
 internal fun claudeClippedAskReview(text: String): Prompt? {
     val rows = withoutClaudeChromeUnderDialog(stripAnsi(text)).lines()
     val footer = rows.indexOfLast { it.isNotBlank() }
     if (footer < 0 || !claudeAskFooter(rows[footer])) return null
-    val body = rows.take(footer).dropWhile { it.isBlank() }
-    val first = CLAUDE_CLIPPED_OPTION.matchEntire(body.firstOrNull() ?: return null) ?: return null
-    // An ordinary numbered message starts at one. A real tab or an older Ask footer
-    // proves this is a mixed viewport, so leave it to the regular dialog parser.
-    val firstNumber = first.groupValues[2].toInt()
-    if (firstNumber < 2 || body.any { claudeAskTab(it) || claudeAskFooter(it) }) return null
-    val options = body.mapNotNull(CLAUDE_CLIPPED_OPTION::matchEntire)
-    if (options.size < 2 || options.count { it.groupValues[1].isNotEmpty() } != 1) return null
-    if (options.map { it.groupValues[2].toInt() } != (firstNumber until firstNumber + options.size).toList()) return null
+    val above = rows.take(footer).dropWhile { it.isBlank() }
+    val body = claudeClippedCheckboxRows(above + rows[footer]) ?: run {
+        val first = CLAUDE_CLIPPED_OPTION.matchEntire(above.firstOrNull() ?: return null) ?: return null
+        // An ordinary numbered message starts at one. A real tab or an older Ask footer
+        // proves this is a mixed viewport, so leave it to the regular dialog parser.
+        val firstNumber = first.groupValues[2].toInt()
+        if (firstNumber < 2 || above.any { claudeAskTab(it) || claudeAskFooter(it) }) return null
+        val options = above.mapNotNull(CLAUDE_CLIPPED_OPTION::matchEntire)
+        if (options.size < 2 || options.count { it.groupValues[1].isNotEmpty() } != 1) return null
+        if (options.map { it.groupValues[2].toInt() } != (firstNumber until firstNumber + options.size).toList()) return null
+        above
+    }
     val heading = "Claude question (top off screen)"
     val parts = questionParts(listOf(QLine(heading)))
     val details = body.filter { it.isNotBlank() }.map { QBlock(QKind.TEXT, it.trim()) }
