@@ -1534,8 +1534,10 @@ data class Prompt(
     internal val agyApproval: Boolean = false,
     /** Kiro advertises its exact one-time approval keys on this page. */
     internal val kiroOnceShortcuts: Boolean = false,
+    /** A proven Claude Code model control uses only keys named by its own picker. */
+    internal val claudeModelControl: Boolean = false,
 ) {
-    internal val guardedShortcutApproval: Boolean get() = agyApproval || kiroOnceShortcuts
+    internal val guardedShortcutApproval: Boolean get() = agyApproval || kiroOnceShortcuts || claudeModelControl
     internal val historyReviewOnly: Boolean get() = topOffScreen || rebuiltTallDialog
 
     /**
@@ -2838,6 +2840,7 @@ private val SHORTCUT_LABEL = Regex("""\(([a-z])\)\s*$""")
 /** The keys that pick [choice]: arrows from the highlighted option, then Enter; null to type it. */
 fun menuKeys(prompt: Prompt, choice: Choice): List<String>? {
     if (prompt.terminalReview || prompt.historyReviewOnly) return null
+    if (prompt.claudeModelControl) return claudeModelKeys(prompt, choice)
     if (prompt.agyApproval) return listOf("ctrl+k").takeIf { choice in prompt.choices && choice.keys == "ctrl+k" }
     if (prompt.kiroOnceShortcuts && choice in prompt.choices) when (choice.label) {
         "Allow once" -> return listOf("y")
@@ -3874,6 +3877,7 @@ private fun hermesLiveApprovalBox(text: String): String? {
 fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version: String? = null): Prompt? {
     val plain = stripAnsi(text)
     if (agent.equals("claude", true)) {
+        claudeModelCard(plain)?.let { return it }
         rebuiltClaudeAsk(plain)?.let { return it }
         claudeClippedAskReview(plain)?.let { return it }
     }
