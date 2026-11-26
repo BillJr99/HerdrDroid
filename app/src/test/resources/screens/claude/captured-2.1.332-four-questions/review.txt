@@ -1,0 +1,25 @@
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Sample 1  ☒ Sample 2  ☒ Sample 3  ☒ Sample 4  ✔ Submit  →
+
+Review your answers
+
+ │ ● Question 1: choose the options for the sample case. This invented scenario compares ordinary choices for a public fixture. This
+ │   invented scenario compares ordinary choices for a public fixture. This invented scenario compares ordinary choices for a public
+ │   fixture. This invented scenario compares ordinary choices for a public fixture. This invented scenario compares ordinary choices
+ │   for a public fixture. This invented scenario compares ordinary choices for a public fixture. This invented scenario compares?
+   → Option 1.1
+ │ ● Question 2: choose the options for the sample case. This invented scenario compares ordinary choices for a public fixture. This
+ │   invented scenario compares ordinary choices for a public fixture. This invented scenario compares ordinary choices for a public
+ │   fixture. This invented scenario compares ordinary choices for a public fixtu?
+   → Option 2.1
+ │ ● Question 3: choose the options for the sample case. This invented scenario compares ordi?
+   → Option 3.1
+ │ ● Question 4: choose the options for the sample case. This invented scenario compares ordinary choices for a public fixture. This
+ │   invented scenario compares ordinary choices for a public fixture. This invented scenario compares ordinary choices for a public
+ │   fixture. This invented scenario compares ordinary choices for a public fixture. This invented scenario compares ordinary choices
+ │   for a public fixture. This invented scenario compares ordinary choices for a public fixture. This invented scenario compares
+ │   ordinary choices for a public fixture. This invented scenario compares ordin?
+   → Option 4.2
+
+❯ 1. Submit answers
+  2. Cancel
