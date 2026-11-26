@@ -17,6 +17,19 @@ class CodexSteering228Test {
         assertEquals(null, backgroundStep("codex", screen))
     }
 
+    @Test fun busyComposerKeepsTheDraftSeparateFromItsFooterAndViewportPadding() {
+        val empty = capture("empty")
+        assertEquals(null, paneDraftOf(empty + "\n  \n", "codex"))
+        assertTrue(paneBoxEmpty(empty + "\n  \n", "codex"))
+        val draft = capture("draft")
+        assertEquals("Follow-up fixture text", paneDraftOf(draft, "codex")?.text)
+        val multiline = draft.replaceFirst("Follow-up fixture text", "Follow-up fixture text\n\n  second paragraph")
+        assertEquals("Follow-up fixture text\n\nsecond paragraph", paneDraftOf(multiline, "codex")?.text)
+        val withoutFooter = draft.substringBefore("Follow-up fixture text") +
+            "Follow-up fixture text\n\n  tab to queue message\n"
+        assertEquals("Follow-up fixture text\n\ntab to queue message", paneDraftOf(withoutFooter, "codex")?.text)
+    }
+
     @Test fun aRealDraftOrMissingWorkingFrameDoesNotAllowSteering() {
         val screen = capture("draft")
         assertTrue(stripAnsi(screen).contains("tab to queue message"))

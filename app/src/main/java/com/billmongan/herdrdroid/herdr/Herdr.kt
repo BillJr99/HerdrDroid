@@ -2525,7 +2525,15 @@ internal fun composerDraftOf(screen: String, agent: String? = null): ComposerDra
     if (below.count { it.isNotBlank() } > 3 + MAX_DRAFT_ROWS) return null
     if (agent?.lowercase() == "codex") {
         // Codex: the draft's rows are indented under it, then a blank row, then its footer block.
-        val lastBlank = below.indexOfLast { it.isBlank() }
+        // A viewport may end with blank padding. Only ignore it when the native footer is
+        // present, so a blank in a multiline draft is not mistaken for the box's end.
+        val content = below.dropLastWhile { it.isBlank() }
+        val footerRow = rawRows.getOrNull(c + content.size)?.trim()
+        val nativeFooter = footerRow?.let {
+            it.startsWith("\u001B[1m←\u001B[0m for agents") ||
+                it == "\u001B[1mtab\u001B[0m to queue message"
+        } == true
+        val lastBlank = (if (nativeFooter) content else below).indexOfLast { it.isBlank() }
         val tail = below.drop(lastBlank + 1)
         if (lastBlank in 0..MAX_DRAFT_ROWS && tail.count { it.isNotBlank() } <= 3 &&
             below.take(lastBlank).all { it.isBlank() || it.startsWith("  ") }) {
