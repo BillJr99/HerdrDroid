@@ -209,18 +209,41 @@ class OpenCodeAlert212Test {
             NotifyAction(server.id, "w1:p1", "1", false, "Another question", label = "Allow once", agent = "opencode")))
     }
 
-    @Test fun allowOnceFromTheAlertPressesEnterAfterTheStrictRead() {
+    @Test fun allowOnceFromTheAlertPressesEnterAfterTheLiveRead() {
         val fake = Fake(focused(frame, "Allow once"), status = "done")
         open(fake)
-        emit(NotifyAction(server.id, "w1:p1", "1", false, "Permission required", label = "Allow once", agent = "opencode"))
-        assertTrue(fake.commands.any { "'--source' 'recent'" in it && "'--lines' '80'" in it && "'--format' 'ansi'" in it })
+        emit(button(checkNotNull(detectPrompt(frame, true, "opencode")), "Allow once"))
+        assertTrue(fake.commands.any { "'--source' 'visible'" in it && "'--format' 'ansi'" in it })
         assertEquals(listOf("'send-keys' 'w1:p1' 'enter'"), fake.writes().map { it.substringAfter("'pane' ") })
+    }
+
+    @Test fun recentApprovalCannotAuthorizeAnotherLivePermission() {
+        val shown = checkNotNull(detectPrompt(frame, blocked = true, agent = "opencode"))
+        val replacement = frame.replace("echo hi > ~/scratch/x", "printf other")
+        assertTrue(frame != replacement)
+        val fake = Fake(focused(replacement, "Always allow"), status = "done")
+        fake.recent = focused(frame, "Allow once")
+        open(fake)
+        emit(button(shown, "Allow once"))
+        assertTrue(fake.commands.any { "'--source' 'visible'" in it })
+        assertTrue(fake.commands.none { "'--source' 'recent'" in it })
+        assertTrue(fake.writes().isEmpty())
+    }
+
+    @Test fun replacingAnApprovalAtTheHostRefusesTheAlertKeys() {
+        val shown = checkNotNull(detectPrompt(frame, blocked = true, agent = "opencode"))
+        val fake = Fake(focused(frame, "Allow once"), status = "done")
+        fake.beforeGuard = { fake.screen = focused(frame.replace("echo hi > ~/scratch/x", "printf other"), "Always allow") }
+        open(fake)
+        emit(button(shown, "Allow once"))
+        assertTrue(fake.commands.any { "herdrdroid-check" in it })
+        assertTrue(fake.writes().isEmpty())
     }
 
     @Test fun rejectFromTheAlertPressesEsc() {
         val fake = Fake(frame, status = "done")
         open(fake)
-        emit(NotifyAction(server.id, "w1:p1", "3", false, "Permission required", label = "Reject", agent = "opencode"))
+        emit(button(checkNotNull(detectPrompt(frame, true, "opencode")), "Reject"))
         assertEquals(listOf("'send-keys' 'w1:p1' 'esc'"), fake.writes().map { it.substringAfter("'pane' ") })
     }
 
@@ -228,21 +251,21 @@ class OpenCodeAlert212Test {
         // Plain text: no highlight, so Allow once is refused (no typed "1").
         Fake(frame, status = "done").let { fake ->
             open(fake)
-            emit(NotifyAction(server.id, "w1:p1", "1", false, "Permission required", label = "Allow once", agent = "opencode"))
+            emit(button(checkNotNull(detectPrompt(frame, true, "opencode")), "Allow once"))
             assertTrue(fake.writes().toString(), fake.writes().isEmpty())
         }
-        // The strict read times out: refused, with no card-recovery fallback read.
+        // The viewport read times out: refused, with no recent-history fallback.
         Fake(focused(frame, "Allow once"), status = "done").let { fake ->
-            fake.timeoutLines = 80
+            fake.visibleFails = true
             open(fake)
-            emit(NotifyAction(server.id, "w1:p1", "1", false, "Permission required", label = "Allow once", agent = "opencode"))
+            emit(button(checkNotNull(detectPrompt(frame, true, "opencode")), "Allow once"))
             assertTrue(fake.writes().toString(), fake.writes().isEmpty())
             assertTrue(fake.commands.none { "'--lines' '40'" in it })
         }
         // A blank read: refused.
         Fake("\n\n   \n", status = "done").let { fake ->
             open(fake)
-            emit(NotifyAction(server.id, "w1:p1", "3", false, "Permission required", label = "Reject", agent = "opencode"))
+            emit(button(checkNotNull(detectPrompt(frame, true, "opencode")), "Reject"))
             assertTrue(fake.writes().toString(), fake.writes().isEmpty())
         }
         // The dialog went away: refused.
@@ -298,7 +321,7 @@ class OpenCodeAlert212Test {
         val fake = Fake(question, status = "done")
         open(fake)
         emit(button(shown, "Postgres"))
-        assertTrue(fake.commands.any { "'--source' 'recent'" in it && "'--lines' '80'" in it && "'--format' 'ansi'" in it })
+        assertTrue(fake.commands.any { "'--source' 'visible'" in it && "'--format' 'ansi'" in it })
         assertEquals(listOf("'send-keys' 'w1:p1' '2'"), fake.writes().map { it.substringAfter("'pane' ") })
     }
 
@@ -349,8 +372,8 @@ class OpenCodeAlert212Test {
             settle()
             assertEquals(listOf(
                 "'send-keys' 'w1:p1' '3'",
-                "'send-text' 'w1:p1' 'MariaDB' && echo @@herdrdroid-text-pasted@@ && " +
-                    "'/fixture/herdr' 'pane' 'send-keys' 'w1:p1' 'enter'",
+                "'send-text' 'w1:p1' 'MariaDB'",
+                "'send-keys' 'w1:p1' 'enter'",
             ), fake.writes().map { it.substringAfter("'pane' ") })
         }
     }
@@ -398,10 +421,12 @@ class OpenCodeAlert212Test {
         private val claudeJson = """{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t2","agent":"claude","agent_status":"idle","cwd":"/fixture","terminal_id":"t2","scroll":{"offset_from_bottom":0}}"""
         private val listJson = if (withClaude) "$paneJson,$claudeJson" else paneJson
         val commands = java.util.Collections.synchronizedList(mutableListOf<String>())
-        @Volatile var timeoutLines: Int? = null
+        @Volatile var visibleFails = false
+        @Volatile var recent: String? = null
+        @Volatile var beforeGuard: (() -> Unit)? = null
         /** The screen after the first key goes in (2.1.2: OpenCode's own answer row opening). */
         @Volatile var afterKeys: String? = null
-        fun writes() = commands.filter { "'agent' 'prompt'" in it || "'send-text'" in it || "'send-keys'" in it || "'send'" in it }
+        fun writes() = commands.filter { "herdrdroid-check" !in it }.filter { "'agent' 'prompt'" in it || "'send-text'" in it || "'send-keys'" in it || "'send'" in it }
 
         override suspend fun bulk(command: String): ExecResult = answer(command)
         override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult = answer(command)
@@ -410,6 +435,8 @@ class OpenCodeAlert212Test {
 
         private fun answer(command: String): ExecResult {
             commands += command
+            if (" && echo @@herdrdroid-card-passed@@ && " in command) beforeGuard?.invoke()
+            runAlertFixtureGuard(command, "w1:p1", paneJson, screen, ::answer)?.let { return it }
             return when {
                 "'pane' 'list'" in command -> ok("""{"result":{"panes":[$listJson]}}
 @@herdrdroid-tabs@@
@@ -419,10 +446,9 @@ class OpenCodeAlert212Test {
                 })
                 "'pane' 'get' 'w1:p1'" in command -> ok("""{"result":{"pane":$paneJson}}""")
                 "'--source' 'recent'" in command -> {
-                    if (lines(command) == timeoutLines) return ExecResult(-2, "", "timed out")
-                    ok(screen.lines().takeLast(lines(command)).joinToString("\n"))
+                    ok((recent ?: screen).lines().takeLast(lines(command)).joinToString("\n"))
                 }
-                "'--source' 'visible'" in command -> ok(screen)
+                "'--source' 'visible'" in command -> if (visibleFails) ExecResult(-2, "", "timed out") else ok(screen)
                 "'agent' 'prompt'" in command || "'send-text'" in command || "'send-keys'" in command || "'send'" in command -> {
                     if ("'send-keys'" in command) afterKeys?.let { screen = it; afterKeys = null }
                     ok("")

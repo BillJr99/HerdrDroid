@@ -243,7 +243,7 @@ class CrossServerHermesDestinationTest {
 
     private suspend fun frame(to: String, text: String = exact): AppViewModel.CrossServerCard {
         vm.readPane("p1")
-        source.frame = fixtureMessageFrame(code, text, to)
+        source.frame = "⏺ " + fixtureMessageFrame(code, text, to)
         vm.readPane("p1")
         return vm.crossServerCardsFor("p1").single().also { assertEquals(text, it.text) }
     }

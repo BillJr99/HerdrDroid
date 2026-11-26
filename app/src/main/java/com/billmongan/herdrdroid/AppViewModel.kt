@@ -5591,6 +5591,7 @@ class AppViewModel internal constructor(
     }
 
     internal fun questionsHidden() {
+        if (approveAllPending?.target?.questionsVisit?.let { it >= 0 } == true) cancelApproveAll()
         questionsVisit++
         questionsFeed.hide()
         tuneFleet()
@@ -6754,7 +6755,9 @@ class AppViewModel internal constructor(
                 refuse("The active question could not be verified.")
                 return
             }
-            if (recentAnswerAge(a.serverId, a.paneId) { cardAnswerStillFits(it, now) } != null) {
+            if (recentAnswerAge(a.serverId, a.paneId) {
+                    if (a.isReply) cardAnswerStillFits(it, now) else notificationAnswerStillFits(it, a)
+                } != null) {
                 Notify.sending(app, a.serverId, a.paneId, "Already answered", "")
                 return
             }
@@ -6815,7 +6818,9 @@ class AppViewModel internal constructor(
                 input = com.billmongan.herdrdroid.herdr.CardInput.Text(text, enter = true)
             } else {
                 val choice = now.choices.firstOrNull { it.keys == a.keys }
-                if (!notificationAnswerStillFits(now, a) ||
+                if (a.identity != com.billmongan.herdrdroid.notify.alertIdentity(now) ||
+                    a.options != com.billmongan.herdrdroid.notify.alertOptionsSig(now.choices) ||
+                    !notificationAnswerStillFits(now, a) ||
                     choice?.let { com.billmongan.herdrdroid.herdr.approvesFromNowOn(it) ||
                         com.billmongan.herdrdroid.herdr.blockedChoiceReason(it) != null } == true ||
                     a.keys == com.billmongan.herdrdroid.herdr.OMP_STEER || a.keys.startsWith("grok-privacy:")) {
