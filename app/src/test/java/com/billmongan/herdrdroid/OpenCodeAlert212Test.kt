@@ -140,7 +140,7 @@ class OpenCodeAlert212Test {
         // A pane herdr itself reports blocked keeps its own (typed) route.
         val herdrBlocked = shown.copy(screenNeedsYouFrom = null)
         fake.client.sendMessage(herdrBlocked, "HD212E_BLOCKED")
-        assertEquals("herdr pane send-text + enter", fake.client.lastSendRoute)
+        assertEquals("herdr pane run", fake.client.lastSendRoute)
     }
 
     @Test fun herdrCoreKeepsItsUnforcedSend() = runBlocking {
@@ -505,7 +505,7 @@ class OpenCodeAlert212Test {
         @Volatile var beforeGuard: (() -> Unit)? = null
         /** The screen after the first key goes in (2.1.2: OpenCode's own answer row opening). */
         @Volatile var afterKeys: String? = null
-        fun writes() = commands.filter { "herdrdroid-check" !in it }.filter { "'agent' 'prompt'" in it || "'send-text'" in it || "'send-keys'" in it || "'send'" in it }
+        fun writes() = commands.filter { "herdrdroid-check" !in it }.filter { "'agent' 'prompt'" in it || "'pane' 'run'" in it || "'send-text'" in it || "'send-keys'" in it || "'send'" in it }
 
         override suspend fun bulk(command: String): ExecResult = answer(command)
         override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult = answer(command)
@@ -528,7 +528,7 @@ class OpenCodeAlert212Test {
                     ok((recent ?: screen).lines().takeLast(lines(command)).joinToString("\n"))
                 }
                 "'--source' 'visible'" in command -> if (visibleFails) ExecResult(-2, "", "timed out") else ok(screen)
-                "'agent' 'prompt'" in command || "'send-text'" in command || "'send-keys'" in command || "'send'" in command -> {
+                "'agent' 'prompt'" in command || "'pane' 'run'" in command || "'send-text'" in command || "'send-keys'" in command || "'send'" in command -> {
                     if ("'send-keys'" in command) afterKeys?.let { screen = it; afterKeys = null }
                     ok("")
                 }

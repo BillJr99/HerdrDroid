@@ -1848,6 +1848,12 @@ class SuccessiveCardAnswerTest {
                     sent += "prompt:" + command.substringAfter("'p1' ").removeSurrounding("'")
                     ok("")
                 }
+                command.contains("'pane' 'run' 'p1' ") -> {
+                    sent += "text:" + command.substringAfter("'p1' ").removeSurrounding("'")
+                    sent += "enter"
+                    afterSend?.let { frame = it }
+                    if (failAfterSend) ExecResult(1, "", "fixture lost acknowledgement") else ok("")
+                }
                 command.contains("'pane' 'send-text' 'p1' ") &&
                     command.contains(" && echo @@herdrdroid-text-pasted@@ && ") -> {
                     val text = command.substringAfter("'p1' ").substringBefore(" && echo @@herdrdroid-text-pasted@@ && ")

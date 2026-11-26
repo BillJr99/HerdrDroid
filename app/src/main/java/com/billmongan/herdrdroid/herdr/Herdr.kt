@@ -778,7 +778,7 @@ class Herdr internal constructor(
         lastSendRoute = when {
             core -> "hc send"
             pane.agent != null && status != Status.NEEDS_YOU -> "herdr agent prompt"
-            else -> "herdr pane send-text + enter"
+            else -> "herdr pane run"
         }
         // 2.2.7 (Bill: "make sure herdrdroid can tell omp about the cross server session"): Oh My Pi
         // and Copilot draw no cursor, so a blank box may hold typed spaces; their own delete-to-line-start
@@ -799,10 +799,10 @@ class Herdr internal constructor(
             } catch (e: HerdrError) {
                 if (!allowTerminalFallback) throw e
                 // Fall through to typing it in, which works in any pane.
-                lastSendRoute = "agent prompt refused; typed with send-text + enter"
+                lastSendRoute = "agent prompt refused; submitted with pane run"
             }
         }
-        if (occupant != null) { write(cmd("pane", "send-text", pane.id, text) + " && " + cmd("pane", "send-keys", pane.id, "enter")); return }
+        if (occupant != null) { write(terminalSubmitCommand(pane.id, text)); return }
         typeAndEnter(pane.id, text, expectedConnection)
     }
 
@@ -816,12 +816,25 @@ class Herdr internal constructor(
         return runWrite(hcCmd("keys", paneId, *keys.toTypedArray()), expectedConnection = expectedConnection)
     }
 
-    /** Paste and submit in one host operation so a phone-side failure cannot strand the paste. */
+    private fun terminalSubmitCommand(paneId: String, text: String) = cmd("pane", "run", paneId, text)
+
+    /**
+     * Submit text and Enter as one native input request. A lost acknowledgement cannot authorize
+     * a retry or clearing a draft whose origin the app cannot prove.
+     */
     suspend fun typeAndEnter(paneId: String, text: String, expectedConnection: Any? = null, settleMillis: Int = 0) {
         if (core) { runWrite(hcCmd("send", "--force", paneId, text), expectedConnection = expectedConnection); return }
         require(settleMillis in 0..1_000)
-        val pause = if (settleMillis == 0) "" else
-            "sleep ${settleMillis / 1_000}.${(settleMillis % 1_000).toString().padStart(3, '0')} && "
+        if (settleMillis == 0) {
+            val result = runWriteResult(terminalSubmitCommand(paneId, text), expectedConnection, null)
+            if (result.exit == 0) return
+            val problem = HerdrError(result.terminalFailureMessage(), result.exit)
+            if (problem.isMissingPane(paneId)) throw problem
+            throw DeliveryUncertain("The terminal submission could not be confirmed.")
+        }
+        // The Grok picker needs its slash command to settle before Enter. This explicit legacy
+        // path cannot treat a failure after the paste as permission to touch the composer again.
+        val pause = "sleep ${settleMillis / 1_000}.${(settleMillis % 1_000).toString().padStart(3, '0')} && "
         val paste = cmd("pane", "send-text", paneId, text)
         val submit = cmd("pane", "send-keys", paneId, "enter")
         val result = runWriteResult("$paste && echo $PASTED_MARK && $pause$submit", expectedConnection, null)
