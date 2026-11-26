@@ -349,7 +349,7 @@ class HerdrSsh(
     private val bulkLock = Mutex()
     @Volatile private var client: SSHClient? = null
     internal val connectionIdentity: Any? get() = client
-    private var bridge: WsBridge? = null
+    @Volatile private var bridge: WsBridge? = null
 
     /**
      * 2.2.5: the algorithms the last key exchange settled on (names only), for the diagnostic log.
@@ -370,43 +370,44 @@ class HerdrSsh(
     internal var newClient: (DefaultConfig) -> SSHClient = { SSHClient(it) }
 
     /**
-     * 2.2.8 (Codex's review 1): [close] is for good, and it covers a connection still being opened.
-     * The client is registered here before its TCP connect; [close] disconnects it, and [open] checks
-     * again after the connect, after the sign-in and as it publishes, so a connection that finished
-     * after the close is disconnected and is never kept or counted. Guarded by [gate].
+     * Reset and close both detach an opening client and bridge. Connection publication uses the
+     * same gate, so an invalidated attempt is never installed or counted.
      */
     private val gate = Any()
     @Volatile private var closedForGood = false
     private var opening: SSHClient? = null
     private var openingBridge: WsBridge? = null
 
-    /** Ends an open that [close] overtook: its socket and bridge go, and nothing is kept or counted. */
-    private fun abandonIfClosed(c: SSHClient, b: WsBridge?) {
-        if (!closedForGood) return
-        runCatching { c.disconnect() }
-        b?.close()
-        DiagLog.log("ssh", "closed while connecting; the new connection was dropped")
-        throw LinkDown(IllegalStateException("The connection was closed"))
+    /** A reset or close detaches this attempt before disconnecting its resources. */
+    private fun verifyOpening(c: SSHClient) {
+        if (closedForGood) throw LinkDown(IllegalStateException("The connection was closed"))
+        if (opening !== c) throw ConnectionChanged()
     }
 
     private fun open(): SSHClient {
-        if (closedForGood) throw LinkDown(IllegalStateException("The connection was closed"))
-        client?.let { if (it.isConnected && it.isAuthenticated && bridge?.isOpen != false) return it }
-        client?.let { old -> old.runCatching { disconnect() }; SshCounts.closed(diagServerId, old) }
-        client = null
-        bridge?.close()
-        bridge = null
         val verifier = PinnedVerifier(pinnedFingerprint)
-        val c = newClient(config())
-        synchronized(gate) {
+        val (c, old, oldBridge) = synchronized(gate) {
             if (closedForGood) throw LinkDown(IllegalStateException("The connection was closed"))
-            opening = c
+            client?.let { if (it.isConnected && it.isAuthenticated && bridge?.isOpen != false) return it }
+            val next = newClient(config())
+            val stale = client
+            val staleBridge = bridge
+            stale?.let { SshCounts.closed(diagServerId, it) }
+            client = null
+            bridge = null
+            opening = next
             openingBridge = null
+            Triple(next, stale, staleBridge)
         }
         try {
+            old?.runCatching { disconnect() }
+            oldBridge?.close()
+            synchronized(gate) { verifyOpening(c) }
             return openWith(c, verifier)
         } finally {
-            synchronized(gate) { if (opening === c) { opening = null; openingBridge = null } }
+            synchronized(gate) {
+                if (opening === c) { opening = null; openingBridge = null }
+            }
         }
     }
 
@@ -431,9 +432,10 @@ class HerdrSsh(
             if (wsUrl != null) {
                 val opened = WsBridge.open(wsUrl)
                 b = opened
-                synchronized(gate) { openingBridge = opened }
-                abandonIfClosed(c, opened)
-                bridge = opened
+                synchronized(gate) {
+                    verifyOpening(c)
+                    openingBridge = opened
+                }
                 t0 = System.currentTimeMillis()
                 DiagLog.log("ssh", "sshj connecting to ${opened.host}:${opened.port} (the WebSocket bridge)")
                 c.connect(opened.host, opened.port)
@@ -443,17 +445,16 @@ class HerdrSsh(
                 c.connect(host, port)
             }
             connectedAt = System.currentTimeMillis()
-            abandonIfClosed(c, b)
+            synchronized(gate) { verifyOpening(c) }
             DiagLog.log("ssh", "key exchange done; server says \"${c.transport.serverVersion}\"; host key ${verifier.seen}")
             DiagLog.log("ssh", "negotiated over $transportName: ${negotiated ?: "unknown"}")
         } catch (e: Exception) {
-            if (closedForGood) { runCatching { c.disconnect() }; b?.close(); throw e as? LinkDown ?: LinkDown(e) }
-            val seen = verifier.seen
-            DiagLog.log("ssh", "connect failed: ${DiagLog.describe(e)}; host key seen: ${seen ?: "none"}")
             runCatching { c.disconnect() }
             b?.close()
-            bridge?.close()
-            bridge = null
+            if (e is ConnectionChanged || e is LinkDown) throw e
+            synchronized(gate) { verifyOpening(c) }
+            val seen = verifier.seen
+            DiagLog.log("ssh", "connect failed: ${DiagLog.describe(e)}; host key seen: ${seen ?: "none"}")
             when {
                 seen != null && pinnedFingerprint == null -> throw UnconfirmedHostKey(seen)
                 seen != null && pinnedFingerprint != seen -> throw HostKeyChanged(pinnedFingerprint!!, seen)
@@ -462,7 +463,7 @@ class HerdrSsh(
         }
         try {
             c.auth(user, methods(c))
-            abandonIfClosed(c, b)
+            synchronized(gate) { verifyOpening(c) }
             DiagLog.log("ssh", "signed in")
             // 2.2.6: each stage's time, after the TCP connect (or from the bridge being ready).
             val tcp = lastTcpMs
@@ -483,10 +484,10 @@ class HerdrSsh(
                 choice.reason, choice.mss, if (choice.mss == null) null else lastMssSet == true,
             ))
         } catch (e: Exception) {
-            // A close during the sign-in: the late socket is dropped, whatever the sign-in did.
-            if (closedForGood) { runCatching { c.disconnect() }; b?.close(); throw e as? LinkDown ?: LinkDown(e) }
             runCatching { c.disconnect() }
-            bridge?.close(); bridge = null
+            b?.close()
+            if (e is ConnectionChanged || e is LinkDown) throw e
+            synchronized(gate) { verifyOpening(c) }
             when (e) {
                 is UserAuthException -> {
                     DiagLog.log("ssh", "sign-in refused: ${DiagLog.describe(e)}")
@@ -496,15 +497,20 @@ class HerdrSsh(
                 else -> throw LinkDown(e)
             }
         }
-        c.connection.keepAlive.keepAliveInterval = KEEPALIVE_SECONDS
-        // Published and counted under the gate: a close either sees it (and closes it) or came first.
-        synchronized(gate) {
-            abandonIfClosed(c, b)
-            client = c
-            opening = null
-            openingBridge = null
-            // 2.2.8: every connection the app holds, per server, for the log and the leak tests.
-            SshCounts.opened(diagServerId, c)
+        try {
+            c.connection.keepAlive.keepAliveInterval = KEEPALIVE_SECONDS
+            synchronized(gate) {
+                verifyOpening(c)
+                bridge = b
+                client = c
+                opening = null
+                openingBridge = null
+                SshCounts.opened(diagServerId, c)
+            }
+        } catch (e: Exception) {
+            runCatching { c.disconnect() }
+            b?.close()
+            throw e
         }
         DiagLog.log("ssh", "connections open to this server: ${SshCounts.openNow(diagServerId)}")
         return c
@@ -661,11 +667,14 @@ class HerdrSsh(
     private suspend fun discard(connection: SSHClient?) {
         if (connection == null) return // open() already handled its own failure.
         lock.withLock {
-            if (client === connection) {
-                connection.runCatching { disconnect() }
-                SshCounts.closed(diagServerId, connection)
+            val staleBridge = synchronized(gate) {
+                if (client !== connection) return@withLock
                 client = null
+                SshCounts.closed(diagServerId, connection)
+                bridge.also { bridge = null }
             }
+            connection.runCatching { disconnect() }
+            staleBridge?.close()
         }
     }
 
@@ -771,29 +780,30 @@ class HerdrSsh(
         }
     }
 
-    /** Drops the socket so the next command opens a fresh one, without waiting on a dead connection. */
-    fun reset() {
-        client?.let { old -> old.runCatching { disconnect() }; SshCounts.closed(diagServerId, old) }
-        client = null
-        bridge?.close()
-        bridge = null
-    }
+    /** Drops the published connection and any open in flight. The next command can reconnect. */
+    fun reset() = dropConnections(permanent = false)
 
     /** True when this connection goes over a WebSocket. */
     val overWebSocket: Boolean get() = wsUrl != null
 
-    /**
-     * Closes this connection for good (2.2.8, Codex's review 1): one still being opened is
-     * disconnected too, and any later command fails as a lost link without opening another.
-     */
-    fun close() {
-        val (late, lateBridge) = synchronized(gate) {
-            closedForGood = true
-            (opening to openingBridge).also { opening = null; openingBridge = null }
+    /** Closes this connection for good, including an open in flight. */
+    fun close() = dropConnections(permanent = true)
+
+    private fun dropConnections(permanent: Boolean) {
+        val (clientsToClose, bridgesToClose) = synchronized(gate) {
+            if (permanent) closedForGood = true
+            val clients = listOfNotNull(client, opening)
+            val bridges = listOfNotNull(bridge, openingBridge)
+            client?.let { SshCounts.closed(diagServerId, it) }
+            client = null
+            bridge = null
+            opening = null
+            openingBridge = null
+            clients to bridges
         }
-        late?.runCatching { disconnect() }
-        lateBridge?.close()
-        reset()
+        // Another open may start after a reset. Close only the resources detached above.
+        clientsToClose.forEach { c -> runCatching { c.disconnect() } }
+        bridgesToClose.forEach { it.close() }
     }
 
     /** Opens (or keeps) the connection and runs nothing on it: the connection tests' seam. */
