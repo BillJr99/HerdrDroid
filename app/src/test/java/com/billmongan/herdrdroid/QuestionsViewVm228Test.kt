@@ -99,6 +99,22 @@ class QuestionsViewVm228Test {
         assertNotNull(vm.questionsCardTarget("p1"))
     }
 
+    @Test fun leavingQuestionsDiscardsPendingStandingApproval() = fixture("grok", checkNotNull(javaClass.getResource(
+        "/screens/grok/derived-2.2.8-corpus/001-grok-live-approval-status-above.txt"
+    )).readText()) {
+        val entry = readEntry()
+        val prompt = checkNotNull(entry.prompt)
+        val choice = prompt.choices.single { it.label.contains("always-approve mode") }
+        vm.answerChoice("p1", prompt, choice, target = entry.target as AppViewModel.CardTarget)
+        assertNotNull(vm.approveAllPending)
+        assertTrue(sent.isEmpty())
+        vm.screen = Screen.Home
+        assertNull(vm.approveAllPending)
+        vm.confirmApproveAll()
+        settle()
+        assertTrue(sent.isEmpty())
+    }
+
     @Test fun aDialogClosedBetweenTheListAndTheTapSendsNothing() = fixture {
         val e = readEntry()
         frame = "Ran the command.\n› "
