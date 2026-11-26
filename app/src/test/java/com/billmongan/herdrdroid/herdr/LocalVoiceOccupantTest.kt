@@ -11,12 +11,14 @@ class LocalVoiceOccupantTest {
     private class Fake(var current: Pane?) : LocalPromptSend.Port {
         var afterViewport: () -> Unit = {}
         var reads = 0
+        var refuseAtHost = false
         val writes = mutableListOf<Pair<String, String>>()
         override suspend fun pane(id: String): Pane? { reads++; return current?.takeIf { it.id == id } }
         override suspend fun viewport(id: String): String { afterViewport(); return "❯ " }
         override fun blocked(fresh: Pane, viewport: String) = false
         override suspend fun send(fresh: Pane, text: String, permit: WritePermit) {
             permit.admit()
+            if (refuseAtHost) throw CardChanged()
             writes += fresh.id to text
         }
     }
@@ -61,6 +63,15 @@ class LocalVoiceOccupantTest {
         assertNotEquals(Occupant.of(pane), Occupant.of(pane.copy(sessionId = "session-2")))
         // Status and title are not identity: a busy redraw does not invalidate a draft.
         assertEquals(Occupant.of(pane), Occupant.of(pane.copy(status = Status.WORKING, title = "other")))
+    }
+
+    @Test fun aGuardedBusySubmissionStopsOnHostRefusal() = runBlocking {
+        val working = pane.copy(status = Status.WORKING)
+        val fake = Fake(working).apply { refuseAtHost = true }
+        val r = sender.send("local", Occupant.of(working), "Check the build", { true }, fake, allowWorking = true)
+        assertEquals(LocalPromptSend.Outcome.REFUSED, r.outcome)
+        assertEquals(2, fake.reads)
+        assertTrue(fake.writes.isEmpty())
     }
 
     @Test fun `a pane being closed refuses before any read`() = runBlocking {

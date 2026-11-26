@@ -80,7 +80,7 @@ internal fun codexSteeringReady(screen: String): Boolean {
 
 internal fun codexSteeringText(text: String): Boolean =
     text.isNotBlank() && text.trimStart().first() !in "/!$" &&
-        text.none { it.isISOControl() && it != '\n' } && LongText.plan(text) is LongText.Plan.Single
+        text.none { it.isISOControl() } && LongText.plan(text) is LongText.Plan.Single
 
 internal fun nativeQueuedSendAvailable(agent: String?, status: Status, screen: String): Boolean =
     sendNowRoute(agent, status, screen) != SendNowRoute.WAIT_FOR_IDLE ||

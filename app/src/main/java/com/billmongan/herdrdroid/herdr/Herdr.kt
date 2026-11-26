@@ -433,6 +433,7 @@ class Herdr internal constructor(
             when (input) {
                 is CardInput.Keys -> if (permit != null) sendPermittedKeys(paneId, input.keys, connection, permit)
                     else sendKeys(paneId, *input.keys.toTypedArray(), expectedConnection = connection)
+                is CardInput.Submit -> error("Atomic submission requires a guarded Herdr TUI pane")
                 is CardInput.Text -> {
                     require(permit == null)
                     if (input.enter) typeAndEnter(paneId, input.text, connection) else sendText(paneId, input.text, connection)
@@ -470,6 +471,8 @@ class Herdr internal constructor(
         val check = checkCommand(paneId, guard.occupant, guard.screen, shellOnly)
         val send = when (input) {
             is CardInput.Keys -> cmd("pane", "send-keys", paneId, *input.keys.toTypedArray())
+            // pane run sends the literal argument and Enter in one pane.send_input request.
+            is CardInput.Submit -> cmd("pane", "run", paneId, input.text)
             is CardInput.Text -> cmd("pane", "send-text", paneId, input.text) +
                 (if (input.enter) " && " + cmd("pane", "send-keys", paneId, "enter") else "")
         }
@@ -5153,6 +5156,7 @@ internal fun inboxUploadCommand(rel: String, size: Int): String {
 internal sealed class CardInput {
     data class Keys(val keys: List<String>) : CardInput()
     data class Text(val text: String, val enter: Boolean) : CardInput()
+    data class Submit(val text: String) : CardInput()
 }
 
 /** The pane's occupant digest and its screen digest, as the card's last read saw them (hex SHA-256). */

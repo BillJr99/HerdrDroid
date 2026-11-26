@@ -62,6 +62,8 @@ internal class LocalPromptSend(private val dispatch: PaneDispatch, private val g
             throw c
         } catch (_: WriteRevoked) {
             return refused
+        } catch (e: CardChanged) {
+            return Result(Outcome.REFUSED, e)
         } catch (e: ConnectionChanged) {
             return Result(if (permit.submitted) Outcome.UNCERTAIN else Outcome.CONNECTION_CHANGED, e)
         } catch (e: Exception) {
