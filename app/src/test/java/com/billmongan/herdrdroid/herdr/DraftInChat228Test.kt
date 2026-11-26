@@ -128,13 +128,13 @@ class DraftInChat228Test {
         val writes = mutableListOf<List<String>>()
         override suspend fun pane(id: String) = ompPane
         override suspend fun viewport(id: String) = if (text.isEmpty()) live("omp") else typed("omp", text)
-        override suspend fun keys(id: String, keys: List<String>, permit: WritePermit) {
+        private fun recordKeys(keys: List<String>, permit: WritePermit) {
             permit.admit()
             writes += keys
             if (obeys && keys == LINE_CLEAR_KEYS) text = ""
         }
-        override suspend fun clearKeys(id: String, keys: List<String>, viewport: String, permit: WritePermit): Boolean {
-            keys(id, keys, permit)
+        override suspend fun checkedKeys(id: String, keys: List<String>, viewport: String, permit: WritePermit): Boolean {
+            recordKeys(keys, permit)
             return true
         }
         override suspend fun pause(ms: Long) {}
@@ -154,9 +154,9 @@ class DraftInChat228Test {
             var sent = false
             override suspend fun pane(id: String) = ompPane
             override suspend fun viewport(id: String) = if (sent) live("omp") else typed("omp", "fix the build")
-            override suspend fun keys(id: String, keys: List<String>, permit: WritePermit) { permit.admit(); assertEquals(listOf("enter"), keys); sent = true }
-            override suspend fun clearKeys(id: String, keys: List<String>, viewport: String, permit: WritePermit): Boolean {
-                keys(id, keys, permit)
+            private fun recordKeys(keys: List<String>, permit: WritePermit) { permit.admit(); assertEquals(listOf("enter"), keys); sent = true }
+            override suspend fun checkedKeys(id: String, keys: List<String>, viewport: String, permit: WritePermit): Boolean {
+                recordKeys(keys, permit)
                 return true
             }
             override suspend fun pause(ms: Long) {}

@@ -4,6 +4,7 @@ import com.billmongan.herdrdroid.OUTERMOST_RULE
 import com.billmongan.herdrdroid.IdleMainLooperRule
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
@@ -26,10 +27,11 @@ class PaneDraftCardTest {
     private val cleared = mutableListOf<String>()
     private val text = androidx.compose.runtime.mutableStateOf("first line\nsecond line")
 
-    private fun show(canAct: Boolean = true, canClear: Boolean = true, sendNote: String? = null) = rule.setContent {
-        val t = text.value
+    private fun show(canAct: Boolean = true, canClear: Boolean = true, sendNote: String? = null,
+                     verified: Boolean = true, holdNote: String? = null, blockedNote: String? = null) = rule.setContent {
+        val t = text.value.takeIf { verified }
         PaneDraftCard("Hermes", draft = t, text = t, canAct = canAct, canClear = canClear, busy = null, sendNote = sendNote,
-            onSend = { sends++ }, onClear = { clears++; cleared += it }, onShowTerminal = {})
+            onSend = { sends++ }, onClear = { clears++; cleared += it }, onShowTerminal = {}, holdNote = holdNote, blockedNote = blockedNote)
     }
 
     @Test fun confirmClearsTheCapturedDraftAndADraftChangeDismissesIt() {
@@ -47,9 +49,9 @@ class PaneDraftCardTest {
         assertEquals(1, clears)
     }
 
-    @Test fun aSendNoteReplacesSendDraft() {
+    @Test fun aSendNoteDisablesSendDraft() {
         show(sendNote = "Send draft is off: Enter could pick a highlighted command or suggestion instead.")
-        rule.onAllNodesWithText("Send draft").assertCountEquals(0)
+        rule.onNodeWithTag("pane-draft-send").assertIsNotEnabled()
         rule.onNodeWithTag("pane-draft-clear").assertIsDisplayed()
     }
 
@@ -73,13 +75,40 @@ class PaneDraftCardTest {
     @Test fun noClearWithoutAKnownSafeClear() {
         show(canClear = false)
         rule.onNodeWithText("Send draft").assertIsDisplayed()
-        rule.onAllNodesWithText("Clear draft").assertCountEquals(0)
+        rule.onNodeWithTag("pane-draft-clear").assertIsNotEnabled()
     }
 
-    @Test fun anUnboundedDraftOffersOnlyTheTerminal() {
+    @Test fun anUnboundedDraftOffersDisabledActionsAndTheTerminal() {
         show(canAct = false)
         rule.onNodeWithText("Show terminal").assertIsDisplayed()
-        rule.onAllNodesWithText("Send draft").assertCountEquals(0)
-        rule.onAllNodesWithText("Clear draft").assertCountEquals(0)
+        rule.onNodeWithTag("pane-draft-send").assertIsNotEnabled()
+        rule.onNodeWithTag("pane-draft-clear").assertIsNotEnabled()
+    }
+
+    @Test fun aHeldSendShowsActionsDisabledWhileTheDraftIsUnverified() {
+        show(verified = false, holdNote = "A held message is waiting for this draft.")
+        rule.onNodeWithText("A held message is waiting for this draft.").assertIsDisplayed()
+        rule.onNodeWithText("Waiting for a verified view of the draft.").assertIsDisplayed()
+        rule.onNodeWithTag("pane-draft-send").assertIsNotEnabled()
+        rule.onNodeWithTag("pane-draft-clear").assertIsNotEnabled()
+    }
+
+    @Test fun aQueuedMessageOffersTheVerifiedDraftActions() {
+        show(holdNote = "A queued message is waiting for this draft.")
+        rule.onNodeWithText("A queued message is waiting for this draft.").assertIsDisplayed()
+        rule.onNodeWithTag("pane-draft-send").performClick()
+        rule.onNodeWithTag("pane-draft-clear").performClick()
+        rule.onNodeWithTag("pane-draft-confirm-clear").performClick()
+        assertEquals(1, sends)
+        assertEquals(1, clears)
+    }
+
+    @Test fun anOpenQuestionShowsBothActionsButNeverTypesIntoIt() {
+        show(verified = false, blockedNote = "Answer the open question before sending or clearing the draft.")
+        rule.onNodeWithTag("pane-draft-send").assertIsNotEnabled()
+        rule.onNodeWithTag("pane-draft-clear").assertIsNotEnabled()
+        rule.onNodeWithText("Answer the open question before sending or clearing the draft.").assertIsDisplayed()
+        rule.onAllNodesWithText("Clear the draft?").assertCountEquals(0)
+        assertEquals(0, sends + clears)
     }
 }

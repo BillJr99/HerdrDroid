@@ -36,13 +36,13 @@ class PaneDraftRaceTest {
             if (writes.isNotEmpty()) return afterEnter
             return beforeEnter[minOf(reads++, beforeEnter.size - 1)]
         }
-        override suspend fun keys(id: String, keys: List<String>, permit: WritePermit) {
+        private fun recordKeys(keys: List<String>, permit: WritePermit) {
             permit.admit()
             events += "keys:" + keys.joinToString(",")
             writes += keys
         }
-        override suspend fun clearKeys(id: String, keys: List<String>, viewport: String, permit: WritePermit): Boolean {
-            keys(id, keys, permit)
+        override suspend fun checkedKeys(id: String, keys: List<String>, viewport: String, permit: WritePermit): Boolean {
+            recordKeys(keys, permit)
             return true
         }
         override suspend fun pause(ms: Long) {}

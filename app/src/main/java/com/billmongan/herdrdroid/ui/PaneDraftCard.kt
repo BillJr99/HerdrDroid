@@ -45,8 +45,8 @@ import androidx.compose.ui.unit.sp
 @Composable
 internal fun <T> PaneDraftCard(
     agent: String,
-    draft: T,
-    text: String,
+    draft: T?,
+    text: String?,
     canAct: Boolean,
     canClear: Boolean,
     busy: String?,
@@ -54,9 +54,15 @@ internal fun <T> PaneDraftCard(
     onSend: (T) -> Unit,
     onClear: (T) -> Unit,
     onShowTerminal: () -> Unit,
+    holdNote: String? = null,
+    blockedNote: String? = null,
 ) {
     var confirmClear by remember { mutableStateOf<Pair<T, String>?>(null) }
-    LaunchedEffect(text) { if (confirmClear?.second != text) confirmClear = null }
+    val interact = canAct && draft != null && text != null && blockedNote == null
+    LaunchedEffect(draft, text, interact, canClear) {
+        if (!interact || !canClear || confirmClear?.let { it.first != draft || it.second != text } == true)
+            confirmClear = null
+    }
     Surface(
         shape = RoundedCornerShape(14.dp), color = Palette.BlueSoft, border = BorderStroke(1.dp, Palette.Blue),
         modifier = Modifier.fillMaxWidth().testTag("pane-draft-card"),
@@ -68,36 +74,43 @@ internal fun <T> PaneDraftCard(
                     "Messages from the app wait until it is sent or cleared.",
                 color = Palette.Muted, fontSize = 12.5.sp,
             )
-            Surface(shape = RoundedCornerShape(8.dp), color = Palette.Card, border = BorderStroke(1.dp, Palette.Line)) {
-                SelectionContainer {
-                    Text(
-                        text, fontFamily = FontFamily.Monospace, fontSize = 13.sp, color = Palette.Ink,
-                        modifier = Modifier.fillMaxWidth().heightIn(max = 180.dp).verticalScroll(rememberScrollState())
-                            .padding(10.dp).testTag("pane-draft-text"),
-                    )
-                }
-            }
-            if (!canAct) {
-                Text(
-                    "The app can't see where this draft ends, so it won't send or clear it from here.",
-                    color = Palette.Muted, fontSize = 12.5.sp,
-                )
-                TextButton(onClick = onShowTerminal) { Text("Show terminal") }
-            } else {
-                if (sendNote != null) Text(sendNote, color = Palette.Muted, fontSize = 12.5.sp)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (sendNote == null) Button(onClick = { onSend(draft) }, enabled = busy == null) {
-                        Text(if (busy == "send") "Sending…" else "Send draft")
-                    }
-                    if (canClear) OutlinedButton(onClick = { confirmClear = draft to text }, enabled = busy == null,
-                        modifier = Modifier.testTag("pane-draft-clear")) {
-                        Text(if (busy == "clear") "Clearing…" else "Clear draft")
+            if (holdNote != null) Text(holdNote, color = Palette.Muted, fontSize = 12.5.sp)
+            if (text != null) {
+                Surface(shape = RoundedCornerShape(8.dp), color = Palette.Card, border = BorderStroke(1.dp, Palette.Line)) {
+                    SelectionContainer {
+                        Text(
+                            text, fontFamily = FontFamily.Monospace, fontSize = 13.sp, color = Palette.Ink,
+                            modifier = Modifier.fillMaxWidth().heightIn(max = 180.dp).verticalScroll(rememberScrollState())
+                                .padding(10.dp).testTag("pane-draft-text"),
+                        )
                     }
                 }
             }
+            val reason = blockedNote ?: when {
+                draft == null || text == null -> "Waiting for a verified view of the draft."
+                !canAct -> "The app can't verify the complete draft or its pane occupant."
+                else -> null
+            }
+            if (reason != null) Text(reason, color = Palette.Muted, fontSize = 12.5.sp)
+            if (sendNote != null && reason == null) Text(sendNote, color = Palette.Muted, fontSize = 12.5.sp)
+            if (!canClear && reason == null)
+                Text("Clear draft is unavailable because the app can't verify a safe clear for this draft.",
+                    color = Palette.Muted, fontSize = 12.5.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { if (interact && sendNote == null && draft != null) onSend(draft) },
+                    enabled = interact && sendNote == null && busy == null,
+                    modifier = Modifier.testTag("pane-draft-send")) {
+                    Text(if (busy == "send") "Sending…" else "Send draft")
+                }
+                OutlinedButton(onClick = { if (interact && canClear && draft != null && text != null) confirmClear = draft to text },
+                    enabled = interact && canClear && busy == null, modifier = Modifier.testTag("pane-draft-clear")) {
+                    Text(if (busy == "clear") "Clearing…" else "Clear draft")
+                }
+            }
+            if (reason != null || !canClear) TextButton(onClick = onShowTerminal) { Text("Show terminal") }
         }
     }
-    confirmClear?.let { (captured, capturedText) ->
+    confirmClear?.takeIf { interact && canClear && it.first == draft && it.second == text }?.let { (captured, capturedText) ->
         AlertDialog(
             onDismissRequest = { confirmClear = null },
             title = { Text("Clear the draft?") },
