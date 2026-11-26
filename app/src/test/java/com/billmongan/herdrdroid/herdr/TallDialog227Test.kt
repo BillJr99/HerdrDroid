@@ -169,6 +169,32 @@ class TallDialog227Test {
         assertEquals(live, completeTallDialog(live, true, null) { (head + footer + live).joinToString("\n") })
     }
 
+    @Test fun aClippedQuestionRecoversEvenWhenTheFirstOptionIsStillVisible() = runBlocking {
+        val footer = "Enter to select · ↑/↓ to navigate · Esc to cancel"
+        val live = listOf("      last wrapped question line", "❯ 1. Blue", "  2. Gold", "  3. Silver", footer)
+            .joinToString("\n")
+        val head = listOf("☐ Sample", "Which color should the sample use?")
+        val history = (head + (1..220).map { "      Question row $it" } + live.lines()).joinToString("\n")
+        val partial = checkNotNull(detectPrompt(live, false, "claude")).forCard()
+        assertTrue(partial.topOffScreen)
+        assertTrue(partial.terminalReview)
+        assertTrue(partial.choices.isEmpty())
+        assertTrue(partial.shownParts().details.any { it.contains("Blue") })
+        val reads = mutableListOf<Int>()
+        val rebuilt = completeTallDialog(live, false, null) { n ->
+            reads += n
+            history.lines().takeLast(n).joinToString("\n")
+        }
+        assertEquals(listOf(200, 600), reads)
+        val card = checkNotNull(detectPrompt(rebuilt, false, "claude")).forCard()
+        assertEquals("Which color should the sample use?", card.question)
+        assertTrue(card.shownParts().details.contains("Question row 1"))
+        assertTrue(card.shownParts().details.containsAll(listOf("Blue", "Gold", "Silver")))
+        assertTrue(card.terminalReview)
+        assertTrue(card.choices.isEmpty())
+        assertEquals(live, completeTallDialog(live, false, null) { history.replace("Blue", "Red") })
+    }
+
     @Test fun aShortHistoryStopsAfterOneReadAndADialogThatFitsIsNotReadAgain() {
         val short = history(listOf(" │ # one more row"))
         assertEquals(listOf(200), complete(200 to short, 600 to short).second)
