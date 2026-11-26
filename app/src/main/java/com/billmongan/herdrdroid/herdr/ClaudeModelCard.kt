@@ -42,10 +42,27 @@ private fun claudeModelConfirmation(rows: List<String>): Prompt? {
         claudeModelControl = true)
 }
 
+/** The unavailable /fast panel in Claude Code 2.1.332. */
+private fun claudeFastUnavailable(rows: List<String>): Prompt? {
+    val title = rows.indexOfLast { it.trim() == "↯ Fast mode" }
+    if (title <= 0 || !CONFIRM_RULE.matches(rows[title - 1])) return null
+    val frame = rows.drop(title - 1)
+    val content = frame.drop(2).map(String::trim).filter(String::isNotEmpty)
+    val details = content.dropLast(3).joinToString(" ")
+    if (details != "High-speed mode for Opus 5.5. Draws from usage credits at a higher rate. Separate rate limits apply." ||
+        content.takeLast(3) != listOf("✘ Fast mode is currently unavailable",
+            "Learn more: https://code.claude.com/docs/en/fast-mode", "Esc to cancel")) return null
+    return Prompt("Fast mode", listOf(Choice("Cancel", "esc", false)), region = frame,
+        parts = QuestionParts(emptyList(), listOf(QBlock(QKind.HEADING, "Fast mode")) +
+            content.dropLast(1).map { QBlock(QKind.TEXT, it) }),
+        claudeModelControl = true)
+}
+
 /** Claude's complete /model picker at the bottom of the current screen. */
 internal fun claudeModelCard(screen: String): Prompt? {
     val rows = screen.lines().dropLastWhile(String::isBlank).map(String::trimEnd)
     claudeModelConfirmation(rows)?.let { return it }
+    claudeFastUnavailable(rows)?.let { return it }
     val top = rows.indexOfLast { it.trim() == "Select model" }
     if (top == -1) return null
     val frame = rows.subList(top, rows.size)

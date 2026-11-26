@@ -32,6 +32,21 @@ class ClaudeModelCard228Test {
         assertNull(detectPrompt(screen + "\n❯ A later message", false, "claude", "2.1.332"))
     }
 
+    @Test fun capturedUnavailableFastModeOnlyOffersGuardedCancel() {
+        val screen = checkNotNull(javaClass.getResource(
+            "/screens/claude/captured-2.1.332-fast-unavailable/screen.ansi"
+        )).readText()
+        val prompt = card(screen)
+        assertTrue(prompt.guardedShortcutApproval)
+        assertEquals(listOf("esc"), menuKeys(prompt, prompt.choices.single()))
+        val digest = cardGuardScreen(screen, prompt, "claude")
+        val changed = screen.replace("currently unavailable", "available")
+        assertFalse(cardGuardScreenMatches(changed, digest, "claude"))
+        assertTrue(detectPrompt(changed, false, "claude", "2.1.332")?.choices.orEmpty().isEmpty())
+        assertTrue(detectPrompt(screen + "\n❯ A later message", false, "claude", "2.1.332")
+            ?.choices.orEmpty().isEmpty())
+    }
+
     @Test fun capturedPickerShowsModelsAndSessionOnlyActions() {
         val prompt = card()
         assertTrue(prompt.claudeModelControl)
