@@ -4302,7 +4302,9 @@ internal fun grokApproval(plain: String, parsed: Prompt): Prompt {
     val options = dialog.options.map { dialog.rows[it] }
     if (options.isEmpty() || options.any { !GROK_RADIO_ROW.containsMatchIn(it) }) return parsed
     val plainRows = rows.map(::cardRegionRow)
-    val start = (0..rows.size - dialog.rows.size).singleOrNull { i ->
+    // The dialog parser selected the newest option run. An identical older copy in scrollback
+    // still forces the whole-screen send guard, but must not hide the live clipping indicator.
+    val start = (0..rows.size - dialog.rows.size).lastOrNull { i ->
         dialog.rows.indices.all { j -> dialog.rows[j] == plainRows[i + j] }
     } ?: return parsed
     val first = start + dialog.options.first()
