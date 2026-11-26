@@ -80,6 +80,8 @@ internal object AgentComposers {
     }
 
     /** Oh My Pi's hints right-aligned in an empty box (its "learned" tips): "shift+tab to change thinking effort", "← to see 2 running agents". */
+    private val OMP_SLASH_QUERY = Regex("""^/[\w.-]*$""")
+    private val OMP_SLASH_OPTION = Regex("""^\s*[›❯→>]\s+/[\w.-]+(?:\s+.*)?$""")
     private val OMP_HINT = Regex("""^\s{2,}(?:\S+ to change thinking effort|\S+ to see \d+ running agents?)$""")
 
     /**
@@ -98,6 +100,9 @@ internal object AgentComposers {
         val more = r.subList(prompt + 1, last + 1)
         if (more.any { it.isNotBlank() && !it.startsWith("   ") }) return null
         val first = r[prompt].removePrefix("╰─")
+        // The editor renders its select list after all input rows. A selected slash command
+        // belongs to that list, even when redraw puts it within the usual continuation indent.
+        if (OMP_SLASH_QUERY.matches(first.trim()) && more.any(OMP_SLASH_OPTION::matches)) return null
         val styledHint = raw[prompt].contains('\u001B') && first.isNotBlank() && hintStyled(raw[prompt])
         val text = if (more.all { it.isBlank() } && (OMP_HINT.matches(first) && !raw[prompt].contains('\u001B') || styledHint)) ""
             else (listOf(first.trim()) + more.map { it.trim() }).joinToString("\n").trim()

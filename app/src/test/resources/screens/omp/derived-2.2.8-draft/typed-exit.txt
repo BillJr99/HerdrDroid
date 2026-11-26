@@ -1,0 +1,3 @@
+Earlier output may mention /exit Exit the app.
+ π > ⬢ sample-model > 📁 demo ▶──────────────────
+╰─ /exit

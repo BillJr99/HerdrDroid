@@ -85,6 +85,24 @@ class DraftInChat228Test {
         assertFalse(paneBoxEmpty(null, "codex"))
     }
 
+    // Synthetic menus are based on the real composer frames and the harnesses' option renderers.
+    @Test fun `slash menus are not drafts or proven empty composers`() {
+        for (agent in listOf("opencode", "omp")) {
+            val menu = res("/screens/$agent/derived-2.2.8-draft/slash-menu.txt")
+            assertNull(agent, paneDraftOf(menu, agent))
+            assertNull(agent, inputLineOf(menu, agent, menuWrite = true))
+            assertFalse(agent, paneBoxEmpty(menu, agent))
+        }
+    }
+
+    @Test fun `literal exit in the editable row is the full draft when the menu is closed`() {
+        for (agent in listOf("opencode", "omp")) {
+            val draft = res("/screens/$agent/derived-2.2.8-draft/typed-exit.txt")
+            assertEquals(agent, "/exit", paneDraftOf(draft, agent)?.text)
+        }
+        assertEquals("/exit Exit the app", paneDraftOf(typed("opencode", "/exit Exit the app"), "opencode")?.text)
+    }
+
     @Test fun `clear keys per agent`() {
         // 2.2.8 (Bill: "verify Clear live"): agy, kiro, vibe, muse, pi and opencode checked in a throwaway pane.
         for (a in listOf("claude", "codex", "hermes", "grok", "agy", "kiro", "vibe", "muse", "pi", "opencode")) assertEquals(a, "backspace", draftClearKey(a))

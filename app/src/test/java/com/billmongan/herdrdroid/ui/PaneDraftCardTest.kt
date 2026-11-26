@@ -49,6 +49,16 @@ class PaneDraftCardTest {
         assertEquals(1, clears)
     }
 
+    @Test fun aVerifiedSlashDraftShowsTheExactTextInChatAndBeforeClear() {
+        text.value = "/exit"
+        show()
+        rule.onNodeWithText("/exit").assertIsDisplayed()
+        rule.onNodeWithTag("pane-draft-clear").performClick()
+        rule.onNodeWithTag("pane-draft-confirm-text").assertIsDisplayed()
+        rule.onNodeWithTag("pane-draft-confirm-clear").performClick()
+        assertEquals(listOf("/exit"), cleared)
+    }
+
     @Test fun aSendNoteDisablesSendDraft() {
         show(sendNote = "Send draft is off: Enter could pick a highlighted command or suggestion instead.")
         rule.onNodeWithTag("pane-draft-send").assertIsNotEnabled()
