@@ -69,6 +69,8 @@ internal fun sendNowRoute(agent: String?, status: Status, screen: String): SendN
 internal fun sendNowWaitText(agentName: String) =
     "$agentName can't take a message while it works, so this one stays queued and goes when $agentName is idle."
 
+internal val CODEX_WORKING_ROW = Regex("""^[•◦] Working \(([0-9]+h )?([0-9]+m )?[0-9]+s • esc to interrupt\)$""")
+
 /** Installed Codex 0.172.0 uses Enter to steer and Tab to queue during this working composer view. */
 internal fun codexSteeringReady(screen: String): Boolean {
     val raw = screen.trimEnd().lines().takeLast(12)
@@ -76,7 +78,7 @@ internal fun codexSteeringReady(screen: String): Boolean {
     val input = rows.indexOfLast { it.startsWith("›") }
     if (input < 1 || rows.getOrNull(input + 1)?.isBlank() != true) return false
     val above = rows.take(input).lastOrNull { it.isNotBlank() } ?: return false
-    if (!Regex("""^[•◦] Working \([^)]* • esc to interrupt\)$""").matches(above)) return false
+    if (!CODEX_WORKING_ROW.matches(above)) return false
     val footer = rows.drop(input + 2).filter { it.isNotBlank() }
     if (footer.size !in 1..3 || footer.any { !it.startsWith("  ") } ||
         !footer.last().trimStart().startsWith("← for agents")) return false

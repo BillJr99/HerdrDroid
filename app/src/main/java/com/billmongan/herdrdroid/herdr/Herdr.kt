@@ -5409,6 +5409,17 @@ internal fun cardScreenDigest(raw: String, agent: String? = null): String {
     return sha256Hex(t.toByteArray(Charsets.UTF_8))
 }
 
+/** Compare everything except the verified Codex working clock and its spinner. */
+internal fun codexSteeringGuard(raw: String): String? {
+    if ('\u0000' in raw || !codexSteeringReady(raw)) return null
+    val rows = cardRows(raw)
+    val at = rows.indexOfLast { CODEX_WORKING_ROW.matches(stripAnsi(it).trimEnd()) }
+    if (at < 0) return null
+    val payload = rows.mapIndexed { i, row -> if (i == at) "<codex-working>" else row }
+        .joinToString("\n", postfix = "\n")
+    return "c:${rows.lastIndex - at}:${sha256Hex(payload.toByteArray(Charsets.UTF_8))}"
+}
+
 /**
  * 2.2.8 (Bill: "I don't like the 'question changed, won't send' in general; just render the question
  * and then give the buttons so that can't happen"): the guard compares the dialog, not the screen.
@@ -5733,6 +5744,8 @@ internal val CARD_SEND_CHECK = """
             else:
                 out.append(timer(line, t[i]))
         return out
+    codex = re.fullmatch(r'c:([0-9]{1,6}):([0-9a-f]{64})', screen)
+    CODEX_WORKING = re.compile(r'[•◦] Working \(([0-9]+h )?([0-9]+m )?[0-9]+s • esc to interrupt\)'.encode())
     # 2.2.8: "r:<rows under>:<rows>:<digest>" compares the dialog's rows only (cardGuardScreen).
     REGION = None
     m = re.fullmatch(r'r:([0-9]{1,6}):([1-9][0-9]{0,5}):([0-9a-f]{64})', screen)
@@ -5756,6 +5769,20 @@ internal val CARD_SEND_CHECK = """
         if b'\x00' in visible:
             print('@@herdrdroid-card-refused@@', flush=True)
             sys.exit(3)  # a NUL never matches (the shell check can't hold one); as cardScreenDigest
+        if codex is not None:
+            lines = visible.split(b'\n')
+            if visible.endswith(b'\n'):
+                lines.pop()
+            at = len(lines) - 1 - int(codex.group(1))
+            if SEEN.get('agent') == 'codex' and at >= 0 and CODEX_WORKING.fullmatch(
+                re.sub(rb'\x1b\[[0-9;?]*[ -/]*[@-~]', b'', lines[at]).rstrip(b' \t\r\v\f')
+            ):
+                lines[at] = b'<codex-working>'
+                seen = hashlib.sha256(b'\n'.join(lines) + b'\n').hexdigest()
+                if before == after == occupant and seen == codex.group(2):
+                    sys.exit(0)
+            print('@@herdrdroid-card-refused@@', flush=True)
+            sys.exit(3)
         if REGION is not None:
             # 2.2.8: the dialog's rows only, each with only its ends trimmed (cardRegionDigest in Herdr.kt).
             below, count, want = REGION

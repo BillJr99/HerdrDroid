@@ -233,7 +233,15 @@ identity() {
 
 anyscroll=0
 below=
+codex_below=
 case $screen in
+  c:*)
+    rest=${screen#c:}
+    codex_below=${rest%%:*}
+    want=${rest#*:}
+    case $codex_below in '' | *[!0-9]*) { echo @@herdrdroid-card-refused@@; exit 3; } ;; esac
+    [ ${#codex_below} -le 6 ] && hex64 "$want" || { echo @@herdrdroid-card-refused@@; exit 3; }
+    ;;
   r:*)
     rest=${screen#r:}
     below=${rest%%:*}
@@ -269,6 +277,25 @@ b=$?
 [ "$b" -eq 4 ] && exit 4
 # A NUL in the screen never matches (cardScreenDigest; the Python check exits 3 too).
 nul "$v" && { echo @@herdrdroid-card-refused@@; exit 3; }
+if [ -n "$codex_below" ]; then
+  agent=$(MODE=ser awk "$J" "$j" 2>/dev/null | sed -n 4p)
+  seen=$(awk -v below="$codex_below" '
+    { raw[NR] = $0 }
+    END {
+      at = NR - below
+      if (at < 1) exit 3
+      t = raw[at]
+      gsub(/\033\[[0-9;?]*[ -\/]*[@-~]/, "", t)
+      sub(/[ \t\r\v\f]+$/, "", t)
+      if (t !~ /^(•|◦) Working \(([0-9]+h )?([0-9]+m )?[0-9]+s • esc to interrupt\)$/) exit 3
+      for (i = 1; i <= NR; i++) print (i == at ? "<codex-working>" : raw[i])
+    }
+  ' "$v" | sha)
+  [ "$a" -eq 0 ] && [ "$b" -eq 0 ] && [ "$before" = "$id" ] &&
+    [ "$id" = "$occupant" ] && [ "$agent" = "5:codex" ] && [ "$seen" = "$want" ] && exit 0
+  echo @@herdrdroid-card-refused@@
+  exit 3
+fi
 # Hermes's countdown (cardTimerLine in Herdr.kt), and Oh My Pi's two running rows only around its
 # approval box (cardScreenRows): every row of the box counts as it is.
 T='
