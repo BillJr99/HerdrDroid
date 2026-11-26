@@ -20,9 +20,16 @@ class CodexSteering228Test {
     @Test fun aRealDraftOrMissingWorkingFrameDoesNotAllowSteering() {
         val screen = capture("draft")
         assertTrue(stripAnsi(screen).contains("tab to queue message"))
-        assertFalse(codexSteeringReady(screen))
-        assertFalse(nativeQueuedSendAvailable("codex", Status.WORKING, screen))
-        assertFalse(codexSteeringReady(capture("empty").replace("esc to interrupt", "done")))
+        assertFalse("a typed draft", codexSteeringReady(screen))
+        assertFalse("the busy menu stays hidden while a draft is present",
+            nativeQueuedSendAvailable("codex", Status.WORKING, screen))
+        val empty = capture("empty")
+        val withoutStatus = empty.replace(" to interrupt", " to dismiss")
+        assertFalse(stripAnsi(withoutStatus).contains("esc to interrupt"))
+        assertFalse("a changed running hint", codexSteeringReady(withoutStatus))
+        assertFalse("typed text with the empty composer's footer",
+            codexSteeringReady(empty.replace("Ask Codex to do anything", "Another draft")))
+        assertFalse("placeholder words without the native style", codexSteeringReady(stripAnsi(empty)))
     }
 
     @Test fun steeringAcceptsChatAndRefusesShellCommandsOrControlKeys() {
