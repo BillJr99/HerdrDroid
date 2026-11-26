@@ -77,6 +77,37 @@ class CloseDuringOpen228Test {
         assertEquals(0, SshCounts.openedEver("close-race"))
     }
 
+    @Test fun aRecoverableResetDropsAnOpeningConnectionAndLetsTheNextOpenSucceed() {
+        for (duringAuth in listOf(false, true)) {
+            val server = "reset-opening-$duringAuth"
+            val ssh = ssh(server)
+            val made = mutableListOf<Stand>()
+            ssh.newClient = { cfg ->
+                val first = made.isEmpty()
+                Stand(cfg,
+                    { if (first && !duringAuth) ssh.reset() },
+                    { if (first && duringAuth) ssh.reset() },
+                ).also { made += it }
+            }
+            try {
+                val first = runCatching { runBlocking { ssh.openOnly() } }
+                assertTrue("the invalidated open is refused", first.exceptionOrNull() is ConnectionChanged)
+                assertTrue("the old socket is dropped", made.single().disconnects >= 1)
+                assertEquals(0, SshCounts.openNow(server))
+                assertEquals(0, SshCounts.openedEver(server))
+                assertFalse("reset is not permanent", ssh.isClosed)
+                val replacement = runBlocking { ssh.openOnly() }
+                assertSame(made[1], replacement)
+                assertEquals(2, made.size)
+                assertEquals(1, SshCounts.openNow(server))
+                assertSame(replacement, runBlocking { ssh.openOnly() })
+            } finally {
+                ssh.close()
+            }
+            assertEquals(0, SshCounts.openNow(server))
+        }
+    }
+
     /** A connection opened before the close is counted, and the close takes the count back to zero. */
     @Test fun aCloseAfterTheOpenClosesWhatItHolds() {
         SshCounts.clear()
