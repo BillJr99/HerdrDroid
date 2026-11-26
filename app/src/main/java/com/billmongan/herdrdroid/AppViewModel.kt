@@ -5261,10 +5261,11 @@ class AppViewModel internal constructor(
         } catch (_: Exception) {
             null
         }
-        val baseline = kotlinx.coroutines.withTimeoutOrNull(2_500) {
-            if (safely(current) == true) safely { read("") } else null
-        }
-        val receipt = com.billmongan.herdrdroid.herdr.NoticeReceipt.begin(pane.sessionId, baseline) ?: return null
+        val receipt = kotlinx.coroutines.withTimeoutOrNull(2_500) {
+            com.billmongan.herdrdroid.herdr.NoticeReceipt.capture(pane.sessionId) { cursor ->
+                if (safely(current) == true) safely { read(cursor) } else null
+            }
+        } ?: return null
         return {
             com.billmongan.herdrdroid.herdr.confirmNotice(receipt, text, { safely(current) == true }) { cursor ->
                 safely { read(cursor) }
