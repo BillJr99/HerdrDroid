@@ -2621,7 +2621,8 @@ class AppViewModel internal constructor(
             val recentClaudeModel = preview?.claudeModelControl == true
             val recentCodexCard = agent == "codex" && preview != null && client?.backend == Backend.TUI
             val recentCodexQuestion = recentCodexCard && preview?.codexQuestion == true
-            val shownCodexCard = recentCodexCard && paneTextPane == paneId &&
+            // A blank screen on opening is not a previously shown card, even when Codex is blocked.
+            val shownCodexCard = recentCodexCard && paneTextPane == paneId && paneText.isNotBlank() &&
                 detectPrompt(paneText, blocked, agent, version) != null
             val requireCodexApprovalIdentity = (missingCodexCard && preview?.terminalReview != true) || recentCodexQuestion
             val unfinishedChoicePreview = agent in setOf("claude", "agy") &&
