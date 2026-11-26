@@ -445,7 +445,7 @@ class OpenCodeAlert212Test {
     }
 
     /** One OpenCode pane (and optionally a Claude pane) on a fake herdr; reads give the last N lines of [screen]. */
-    private class Fake(@Volatile var screen: String, status: String, withClaude: Boolean = false, core: Boolean = false) : Herdr.Commands {
+    private class Fake(@Volatile var screen: String, private val status: String, withClaude: Boolean = false, core: Boolean = false) : Herdr.Commands {
         val ssh = HerdrSsh("127.0.0.1", 2, "fake", Credentials(null, null), null, { null })
         val client = Herdr(ssh, "/fixture/herdr", if (core) Backend.CORE else Backend.TUI, if (core) "/fixture/hc" else null, this)
         override var connection: Any? = Any()
