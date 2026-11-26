@@ -22,6 +22,13 @@ class OmpApproval228Test {
         p.startsWith("⎋") || p.contains("▶─") || p == "╰─"
     }.joinToString("\n")
 
+    @Test fun syntheticSteerActionIsNeverANotificationButton() {
+        val prompt = Prompt("Allow this tool?", listOf(Choice("Allow once", "y", false),
+            Choice(OMP_STEER_LABEL, OMP_STEER, false)))
+        val plan = com.billmongan.herdrdroid.notify.alertPlan(prompt)
+        assertTrue(plan.buttons.none { it.choice?.keys == OMP_STEER })
+    }
+
     @Test fun theCardShowsOnlyTheOptionsWhateverHerdrReports() {
         for ((name, labels) in listOf(three to listOf("Approve", "Approve bash for this session", "Deny"), two to listOf("Approve", "Deny"))) {
             for (s in listOf(screen(name), withoutChrome(screen(name)))) {

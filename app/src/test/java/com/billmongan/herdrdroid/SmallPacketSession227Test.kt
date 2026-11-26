@@ -137,6 +137,15 @@ class SmallPacketSession227Test {
         assertNull(vm.healthFor("another"))
     }
 
+    @Test fun backgroundClosesTheWebSocketAndMarksTheLinkReconnecting() {
+        signedIn()
+        state("current", server.copy(wsUrl = "ws://127.0.0.1:1"))
+        state("foreground", true)
+        vm.onBackground()
+        assertEquals(Link.RECONNECTING, vm.link)
+        assertEquals("Reconnecting", vm.healthFor(server.id)?.line)
+    }
+
     @Test fun aNetworkChangeEndsTheSessionsSmallPacketsAndArmsTheFallbackAgain() {
         DiagLog.clear()
         val ssh = signedIn()

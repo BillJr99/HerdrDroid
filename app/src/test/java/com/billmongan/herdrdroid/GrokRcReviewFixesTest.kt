@@ -175,6 +175,16 @@ class GrokRcReviewFixesTest {
         assertTrue(failed.all { n -> (n.actions ?: emptyArray()).none { it.title.toString() == "Reply" } })
     }
 
+    @Test fun modelPickerCannotWriteIntoAnApproval() {
+        val fake = Fake("Allow the change? [y/n]", status = "blocked")
+        open(b, fake)
+        var pickerStarted = false
+        vm.runCommand(fake.pane.id, "/model") { pickerStarted = true }
+        idle()
+        assertFalse(pickerStarted)
+        assertTrue(fake.writes().isEmpty())
+    }
+
     // ---- M1: a tap belongs to the server it was made on --------------------------------------
 
     @Test fun aSendTappedWithNoServerOpenIsDroppedNotRunOnTheNextOne() {
