@@ -90,6 +90,8 @@ object OmpAsk {
         val top = lines.indexOfLast { HEADER.matches(it) }
         if (top < 0) return null
         val h = HEADER.matchEntire(lines[top])!!
+        val answeredCount = h.groupValues[1].toIntOrNull() ?: return null
+        val total = h.groupValues[2].toIntOrNull() ?: return null
         val bottom = (top + 1 until lines.size).firstOrNull { lines[it].trimStart().startsWith("╰") } ?: return null
         // Grok's review: only a live dialog, the bottom-most thing on screen: under it only blank
         // rows and the agent's own status rows. An old box above newer output is history.
@@ -111,7 +113,7 @@ object OmpAsk {
         fun close() {
             if (!open) return
             val chosenText = chosenAt?.let(options::getOrNull) ?: chosen
-            questions += Question(num, clean(text.toString()), answered, options.map(::clean), chosenText?.let(::clean), radios, cursor, chosenAt
+            questions += Question(num, clean(text.toString()), answered, options.map(::clean), chosenText?.let(::clean), radios, cursor, chosenAt)
             open = false
         }
         // 2.2.8 (Bill: "make sure all the question text is visible and well formatted especially
@@ -157,7 +159,8 @@ object OmpAsk {
             val submit = SUBMIT_ROW.matchEntire(t)
             if (submit != null) { close(); submitSeen = true; onSubmit = submit.groupValues[1].isNotEmpty(); continue }
             val q = if (!row.startsWith(" ")) QUESTION.matchEntire(t) else null
-            if (q != null && q.groupValues[2].toInt() == (if (open) num else questions.lastOrNull()?.number ?: 0) + 1) {
+            val number = q?.let { it.groupValues[2].toIntOrNull() ?: return null }
+            if (q != null && number == (if (open) num else questions.lastOrNull()?.number ?: 0) + 1) {
                 close()
                 if (para.isNotEmpty()) { lead += clean(para.toString()); para = StringBuilder() }
                 num = q.groupValues[2].toInt(); text = StringBuilder(q.groupValues[3]); answered = q.groupValues[1].isNotEmpty()
@@ -199,7 +202,7 @@ object OmpAsk {
         code?.let { lead += "```\n$it\n```" }
         if (questions.isEmpty() || !submitSeen) return null
         if (questions.map { it.number } != (1..questions.size).toList()) return null
-        return Dialog(lead, questions, h.groupValues[1].toInt(), h.groupValues[2].toInt(), onSubmit)
+        return Dialog(lead, questions, answeredCount, total, onSubmit)
     }
 
     /** The card for the dialog on [plain], or null when there is none (or it isn't all on screen). */

@@ -7,6 +7,12 @@ import org.junit.Test
 class OmpAsk227Test {
     private fun screen(name: String) = checkNotNull(javaClass.getResource("/screens/omp/live-2026-11-24-ask/$name")) { name }.readText()
 
+    @Test fun anOverflowingQuestionNumberOrHeaderIsRefused() {
+        val frame = stripAnsi(screen("ask-open-other.ansi"))
+        assertNull(OmpAsk.parse(frame.replace(Regex("""Ask · \d+ of"""), "Ask · 999999999999 of")))
+        assertNull(OmpAsk.parse(frame.replace("3. project-x builds", "999999999999. project-x builds")))
+    }
+
     @Test fun aFramedAskDoesNotNeedItsSyntheticCancelActionOnScreen() {
         val frame = screen("ask-open-other.ansi")
         for (agent in listOf("omp", "pi")) {
