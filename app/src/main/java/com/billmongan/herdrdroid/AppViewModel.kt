@@ -7256,8 +7256,8 @@ class AppViewModel internal constructor(
             }
             override fun done(screen: String) = done(screen)
             override suspend fun press(step: com.billmongan.herdrdroid.herdr.BackgroundStep, viewport: String): Boolean {
-                if (!same()) return false
-                val went = quietly { h -> if (h === client) h.sendBackgroundKey(paneId, step, viewport, bound.second, connection) else null } ?: false
+                if (!canPoll || !same()) return false
+                val went = client.sendBackgroundKey(paneId, step, viewport, bound.second, connection)
                 com.billmongan.herdrdroid.diag.DiagLog.log("send", "to $paneId: Ctrl+B for ${step.check} ${if (went) "went" else "refused by the check"}")
                 if (went) onPressed(step)
                 return went
@@ -7269,9 +7269,11 @@ class AppViewModel internal constructor(
         } catch (e: CancellationException) {
             throw e
         } catch (e: com.billmongan.herdrdroid.herdr.OccupantChanged) {
-            com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.BLOCKED
+            com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.TARGET_CHANGED
         } catch (e: com.billmongan.herdrdroid.herdr.DeliveryUncertain) {
-            com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.STUCK
+            com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.UNCERTAIN
+        } catch (e: com.billmongan.herdrdroid.herdr.CardCheckFailed) {
+            com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.CHECK_FAILED
         } catch (e: Exception) {
             com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.UNREADABLE
         }
