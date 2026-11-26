@@ -81,7 +81,7 @@ internal fun codexSteeringReady(screen: String): Boolean {
     if (footer.size !in 1..3 || footer.any { !it.startsWith("  ") } ||
         !footer.last().trimStart().startsWith("← for agents")) return false
     val prompt = rows[input].removePrefix("›").trimStart()
-    return prompt.isEmpty() || isComposerHint("codex", prompt) && isPlaceholderText(raw[input], prompt, "codex")
+    return isComposerHint("codex", prompt) && isPlaceholderText(raw[input], prompt, "codex")
 }
 
 internal fun codexSteeringText(text: String): Boolean =
