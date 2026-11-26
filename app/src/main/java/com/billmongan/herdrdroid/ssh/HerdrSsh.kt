@@ -2,6 +2,9 @@ package com.billmongan.herdrdroid.ssh
 
 import com.hierynomus.sshj.key.KeyAlgorithm
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -23,6 +26,8 @@ import net.schmizz.sshj.userauth.password.PasswordFinder
 import net.schmizz.sshj.userauth.password.Resource
 import net.schmizz.sshj.connection.channel.direct.Parameters
 import com.billmongan.herdrdroid.diag.DiagLog
+import java.io.IOException
+import java.io.InputStream
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.security.MessageDigest
@@ -66,6 +71,21 @@ class WriteCommand private constructor() : kotlin.coroutines.AbstractCoroutineCo
 }
 
 data class ExecResult(val exit: Int, val out: String, val err: String)
+
+/** Reads a streaming SSH channel without waiting for the peer to print when cancelled. */
+internal suspend fun readFollowLines(input: InputStream, onLine: suspend (String) -> Unit) {
+    val reader = input.bufferedReader(Charsets.UTF_8)
+    while (true) {
+        val line = try {
+            runInterruptible(Dispatchers.IO) { reader.readLine() }
+        } catch (error: IOException) {
+            // SSHJ reports an interrupted channel read as InterruptedIOException.
+            currentCoroutineContext().ensureActive()
+            throw error
+        } ?: return
+        if (line.isNotBlank()) onLine(line)
+    }
+}
 
 /** A command still running when its time was up; its channel was closed (1.3.0). */
 class CommandTimeout(seconds: Long) : Exception("$PREFIX $seconds s") {
@@ -693,22 +713,15 @@ class HerdrSsh(
     suspend fun execStream(command: String, input: ByteArray, onLine: suspend (String) -> Unit): Int = withContext(Dispatchers.IO) {
         val c = lock.withLock { open() }
         val session = c.startSession()
-        val job = coroutineContext[kotlinx.coroutines.Job]
-        val handle = job?.invokeOnCompletion { runCatching { session.close() } }
         try {
             val cmd = session.exec(command)
             cmd.outputStream.use { it.write(input); it.flush() }
             // Drain stderr too, so a reader that writes warnings can't fill that pipe and stall (1.3.0).
             kotlin.concurrent.thread(isDaemon = true, name = "ssh-follow-err") { Capped(MAX_ERR).drain(cmd.errorStream) }
-            val reader = cmd.inputStream.bufferedReader(Charsets.UTF_8)
-            while (true) {
-                val line = reader.readLine() ?: break
-                if (line.isNotBlank()) onLine(line)
-            }
+            readFollowLines(cmd.inputStream, onLine)
             cmd.join(5, TimeUnit.SECONDS)
             cmd.exitStatus ?: -1
         } finally {
-            handle?.dispose()
             runCatching { session.close() }
         }
     }
