@@ -97,6 +97,10 @@ class ClaudeReviewPreview228Test {
         assertNull(claudeReviewPreview(clippedOptions + "\n❯ A new request", null))
         assertNull(claudeReviewPreview("❯ A pasted list\n" + clippedOptions, null))
         assertNull(claudeReviewPreview(clippedOptions.replace("❯ 3.", "  3."), null))
+        assertNull(claudeReviewPreview(clippedOptions.replace("❯ 3.", "❯ 5."), null))
+        assertNull(claudeReviewPreview(clippedOptions.replaceFirst("2. Blue", "1. Blue"), null))
+        val answered = capture("tabbed") + "\n" + clippedOptions
+        assertNull(claudeClippedAskReview(answered))
     }
 
     @Test fun aClosedOrUnframedDialogDoesNotProduceAPreview() {

@@ -336,15 +336,22 @@ internal fun withoutClaudeAskPreview(rows: List<String>): List<String> {
     return rows.mapIndexed { i, row -> if (i in start..end) row.take(col).trimEnd() else row }
 }
 
+private val CLAUDE_CLIPPED_OPTION = Regex("""^\s*([❯›]?)\s*(\d{1,2})[.)]\s+\S.*$""")
+
 /** A viewport can start partway through the option list, after its question and tab have scrolled off. */
 internal fun claudeClippedAskReview(text: String): Prompt? {
     val rows = withoutClaudeChromeUnderDialog(stripAnsi(text)).lines()
     val footer = rows.indexOfLast { it.isNotBlank() }
     if (footer < 0 || !claudeAskFooter(rows[footer])) return null
     val body = rows.take(footer).dropWhile { it.isBlank() }
-    if (body.isEmpty() || !CLAUDE_PREVIEW_OPTION.matches(body.first())) return null
-    val options = body.filter(CLAUDE_PREVIEW_OPTION::matches)
-    if (options.size < 2 || options.none { it.trimStart().startsWith('❯') }) return null
+    val first = CLAUDE_CLIPPED_OPTION.matchEntire(body.firstOrNull() ?: return null) ?: return null
+    // An ordinary numbered message starts at one. A real tab or an older Ask footer
+    // proves this is a mixed viewport, so leave it to the regular dialog parser.
+    val firstNumber = first.groupValues[2].toInt()
+    if (firstNumber < 2 || body.any { claudeAskTab(it) || claudeAskFooter(it) }) return null
+    val options = body.mapNotNull(CLAUDE_CLIPPED_OPTION::matchEntire)
+    if (options.size < 2 || options.count { it.groupValues[1].isNotEmpty() } != 1) return null
+    if (options.map { it.groupValues[2].toInt() } != (firstNumber until firstNumber + options.size).toList()) return null
     val heading = "Claude question (top off screen)"
     val parts = questionParts(listOf(QLine(heading)))
     val details = body.filter { it.isNotBlank() }.map { QBlock(QKind.TEXT, it.trim()) }
