@@ -55,6 +55,25 @@ class BackgroundWork(unittest.TestCase):
             self.assertEqual([3, 4], [p["pid"] for p in reader.active_shells(procs, "codex")])
             self.assertEqual([], reader.active_shells(procs[:2] + procs[4:], "codex"))
 
+    def test_subagent_zero_requires_a_readable_metadata_directory(self):
+        with tempfile.TemporaryDirectory() as home:
+            reader = load(home)
+            log = Path(home, "fixture.jsonl")
+            log.touch()
+            subagents = log.with_suffix("") / "subagents"
+            with (
+                patch.object(reader, "pane_procs", return_value=([], set())),
+                patch.object(reader, "claude_work_log", return_value=str(log)),
+                patch.object(reader, "claude_tasks", return_value=[]),
+            ):
+                self.assertNotIn("subagents_verified", reader.pane_work("p", "claude", home))
+                subagents.mkdir(parents=True)
+                result = reader.pane_work("p", "claude", home)
+                self.assertTrue(result["subagents_verified"])
+                self.assertEqual([], result["subagents"])
+                with patch.object(reader.os, "listdir", side_effect=PermissionError()):
+                    self.assertNotIn("subagents_verified", reader.pane_work("p", "claude", home))
+
     def test_same_directory_activity_needs_one_verified_parent_and_clears_on_completion(self):
         with tempfile.TemporaryDirectory() as home:
             reader = load(home)

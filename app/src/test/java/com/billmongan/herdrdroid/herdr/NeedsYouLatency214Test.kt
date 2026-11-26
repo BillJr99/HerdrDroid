@@ -168,6 +168,35 @@ class NeedsYouLatency214Test {
         assertEquals(listOf("c1"), push.screens(f.client, shown).map { it.id })
     }
 
+    @Test fun aQuietScreenDoesNotFollowThePaneIdToAnotherServerOrOccupant() = runBlocking {
+        val first = Fake()
+        first.status["c1"] = "working"
+        first.waitOut = "@@scr c1\n"
+        val shown = first.client.panes()
+        val push = StatusPush { 1000L }
+        push.round(first.client, shown, NeedsYouCadence.PUSH_WAIT_MS) { shown }
+        assertTrue(push.screens(first.client, shown).isEmpty())
+
+        val replacement = shown.map { it.copy(terminalId = "replacement") }
+        assertEquals(listOf("c1"), push.screens(first.client, replacement).map { it.id })
+
+        push.round(first.client, shown, NeedsYouCadence.PUSH_WAIT_MS) { shown }
+        assertTrue(push.screens(first.client, shown).isEmpty())
+        val other = Fake()
+        other.status["c1"] = "working"
+        assertEquals(listOf("c1"), push.screens(other.client, other.client.panes()).map { it.id })
+    }
+
+    @Test fun aScreenWakeCannotQuietAClosedPaneId() = runBlocking {
+        val f = Fake()
+        f.status["c1"] = "working"
+        f.waitOut = "@@scr c1\n"
+        val shown = f.client.panes()
+        val push = StatusPush { 1000L }
+        push.round(f.client, shown, NeedsYouCadence.PUSH_WAIT_MS) { emptyList() }
+        assertEquals(listOf("c1"), push.screens(f.client, shown).map { it.id })
+    }
+
     @Test fun herdrCoreAndNoAgentsRunNoWait() = runBlocking {
         val core = Fake(core = true)
         assertNull(core.client.waitForWake(listOf(pane("c1", "claude")), 25_000))
