@@ -9,7 +9,7 @@ private val PICKER_RULE = Regex("""^─{20,}\s*$""")
 private const val MORE_FOOTER = "Enter to expand · Esc to cancel"
 private const val MORE_ROW = "▸   More models"
 private const val PICKER_INTRO = "Your pick is the default for new sessions. For other models, use --model."
-private val EFFORT_CONTROL = Regex("""^[◐●]\s+(?:Low|Medium|High|XHigh|Max) effort(?: \(default\))? ←/→ to adjust$""", RegexOption.IGNORE_CASE)
+private val EFFORT_CONTROL = Regex("""^[○◔◑◐◕●◉]\s+(?:Low|Medium|High|XHigh|Max) effort(?: \(default\))? ←/→ to adjust$""", RegexOption.IGNORE_CASE)
 private val FAST_HINT = Regex("""^Use /fast to turn o(?:n|ff) fast mode(?: \([^()]+\))?\.$""")
 private const val EFFORT_DOWN = "claude-model-effort-down"
 private const val EFFORT_UP = "claude-model-effort-up"
@@ -20,13 +20,17 @@ private fun pickerLabel(body: String) = body.split(Regex("""\s{2,}"""), limit = 
 /** Claude's complete /model picker at the bottom of the current screen. */
 internal fun claudeModelCard(screen: String): Prompt? {
     val rows = screen.lines().dropLastWhile(String::isBlank).map(String::trimEnd)
-    val footer = rows.lastOrNull()?.trim() ?: return null
-    val expanding = footer == MORE_FOOTER
-    if (!expanding && footer !in PICKER_FOOTER) return null
     val top = rows.indexOfLast { it.trim() == "Select model" }
     if (top == -1) return null
     val frame = rows.subList(top, rows.size)
-    val body = frame.drop(1).dropLast(1).filterNot(String::isBlank)
+    val content = frame.drop(1).filterNot(String::isBlank)
+    val footerSize = (1..minOf(3, content.size)).firstOrNull { size ->
+        val text = content.takeLast(size).joinToString(" ", transform = String::trim)
+        text == MORE_FOOTER || text in PICKER_FOOTER
+    }
+    val footer = footerSize?.let { content.takeLast(it).joinToString(" ", transform = String::trim) }
+    val expanding = footer == MORE_FOOTER
+    val body = content.dropLast(footerSize ?: 0)
     val firstOption = body.indexOfFirst(PICKER_OPTION::matches)
     val options = body.drop(firstOption.coerceAtLeast(0)).takeWhile(PICKER_OPTION::matches)
         .map { checkNotNull(PICKER_OPTION.matchEntire(it)) }
@@ -36,6 +40,14 @@ internal fun claudeModelCard(screen: String): Prompt? {
         body.map { QBlock(QKind.TEXT, it.trim()) })
     val review = Prompt("Select model", emptyList(), region = frame, terminalReview = true,
         parts = parts, claudeModelControl = true)
+    if (footer == null) {
+        // Prevent the generic numbered menu from treating a clipped picker as safe to submit.
+        val pickerAtBottom = top > 0 && PICKER_RULE.matches(rows[top - 1]) && options.isNotEmpty() &&
+            context.all { it == MORE_ROW || it == "❯ $MORE_ROW" ||
+                EFFORT_CONTROL.matches(it) || FAST_HINT.matches(it) ||
+                (PICKER_FOOTER + MORE_FOOTER).any { footerText -> it.isNotBlank() && footerText.contains(it) } }
+        return review.takeIf { pickerAtBottom }
+    }
     if (top == 0 || !PICKER_RULE.matches(rows[top - 1]) ||
         firstOption < 0 || body.take(firstOption).any { it.trim() != PICKER_INTRO } ||
         options.size !in 2..20 || options.map { it.groupValues[2].toInt() } != (1..options.size).toList() ||

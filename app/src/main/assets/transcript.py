@@ -1752,10 +1752,12 @@ def claude_work_log(cwd, session, pid):
     return next(iter(logs)) if len(logs) == 1 else None
 
 
-def claude_subagents(log, now, titles=True):
-    sdir = os.path.splitext(log)[0]
+def claude_subagents(log, now, titles=True, paths=None):
+    if paths is None:
+        sdir = os.path.splitext(log)[0]
+        paths = glob.glob(os.path.join(sdir, "subagents", "agent-*.jsonl"))
     out = []
-    fs = sorted(glob.glob(os.path.join(sdir, "subagents", "agent-*.jsonl")), key=mtime, reverse=True)[:30]
+    fs = sorted(paths, key=mtime, reverse=True)[:30]
     for f in fs:
         st = os.stat(f)
         title = None
@@ -1899,7 +1901,15 @@ def pane_work(pane, agent, cwd, session=""):
     if agent == "claude" and cwd:
         log = claude_work_log(cwd, session, agent_pid(procs, agent))
         if log:
-            work["subagents"] = claude_subagents(log, now)
+            directory = os.path.join(os.path.splitext(log)[0], "subagents")
+            try:
+                paths = [os.path.join(directory, name) for name in os.listdir(directory)
+                         if name.startswith("agent-") and name.endswith(".jsonl")]
+                work["subagents"] = claude_subagents(log, now, paths=paths)
+                work["subagents_verified"] = True
+            except OSError:
+                # A missing or unreadable metadata directory is not evidence of zero agents.
+                pass
             work["tasks"] = claude_tasks(cwd, log, open_files_of(pids))
     return work
 

@@ -48,6 +48,26 @@ class ClaudeModelCard228Test {
         assertTrue(card(more.replace("❯ ▸", "  ▸")).choices.isEmpty())
     }
 
+    @Test fun wrappedModelFooterKeepsGuardedSessionOnlyKeys() {
+        val wrapped = frame.replace(
+            "s to use this session only · Enter to save · Esc to cancel",
+            "Enter to set as default · s to use this session only\n    · Esc to cancel",
+        )
+        val prompt = card(wrapped)
+        assertTrue(prompt.claudeModelControl)
+        assertTrue(prompt.guardedShortcutApproval)
+        assertEquals(listOf("up", "s"), menuKeys(prompt, prompt.choices[1]))
+        val clipped = card(wrapped.substringBefore("· Esc to cancel"))
+        assertTrue(clipped.claudeModelControl && clipped.terminalReview)
+        assertTrue(clipped.choices.isEmpty())
+    }
+
+    @Test fun lowEffortGlyphStillExposesEffortAndModelControls() {
+        val low = card(frame.replace("◐ Medium effort (default)", "◔ Low effort"))
+        assertFalse(low.terminalReview)
+        assertEquals(listOf("right"), menuKeys(low, low.choices.first { it.label == "Raise effort" }))
+    }
+
     @Test fun changedOptionsEffortOrFocusInvalidateTheShownPicker() {
         val shown = card()
         for (fresh in listOf(

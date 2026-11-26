@@ -148,7 +148,7 @@ suspend fun readBtwToEnd(
         if (!scrollDown(view)) break
         settle()
         val next = read() ?: break
-        if (next.question != first.question || !next.complete) break
+        if (next == view || next.question != first.question || !next.complete) break
         rows = mergeBtwRows(rows, next.body)
         view = next
     }

@@ -148,6 +148,17 @@ class ClaudeBtw214Test {
         assertTrue(view.rows.none { it.startsWith("Point 21:") })
     }
 
+    @Test fun aScrollWithoutProgressStopsAndKeepsTheMoreFlag() = runBlocking {
+        val frame = checkNotNull(claudeBtwOverlay(top))
+        val (read, reads) = reader(frame)
+        var scrolls = 0
+        val result = checkNotNull(readBtwToEnd(read, settle = {}, scrollDown = { scrolls++; true }))
+        assertEquals(1, scrolls)
+        assertEquals(3, reads())
+        assertEquals(frame.body, result.rows)
+        assertTrue(result.more)
+    }
+
     // ---- kept in the chat history ----------------------------------------------------------------
 
     @Test fun theExchangeIsKeptAndSurvivesTheStore() {

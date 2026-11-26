@@ -21,12 +21,13 @@ data class TaskInfo(val id: String, val file: String, val title: String, val upd
 data class WorkInfo(val procs: List<ProcInfo>, val subagents: List<SubagentInfo>, val tasks: List<TaskInfo>,
     val agentOwnedOnly: Boolean = false,
     val reportedBackgroundShells: Int? = null,
+    val subagentsVerified: Boolean = false,
 ) {
     val activeSubagents get() = subagents.count { it.active }
     val runningTasks get() = tasks.count { it.running }
     /** A process list alone cannot establish an empty subagent list. */
     fun subagentCount(agent: String?): Int? = when {
-        activeSubagents > 0 -> activeSubagents
+        subagentsVerified || subagents.isNotEmpty() -> activeSubagents
         agent.isNullOrBlank() -> 0
         else -> null
     }
@@ -87,6 +88,7 @@ fun parseWork(json: String): WorkInfo {
             TaskInfo(it.optString("id"), it.optString("file"), it.optString("title"), it.optLong("updated"), it.optBoolean("running"), it.optInt("kb"))
         },
         agentOwnedOnly = agentOwnedOnly,
+        subagentsVerified = o.optBoolean("subagents_verified"),
     )
 }
 

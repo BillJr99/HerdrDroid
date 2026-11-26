@@ -115,8 +115,18 @@ internal val USAGE_OVERLAY_SNAPSHOT = """
     key = sys.argv[6] if len(sys.argv) > 6 else 'esc'
     if key not in ('esc', 'down'):
         sys.exit(0)
-    ALIASES = {'agy': ('agy', 'antigravity', 'antigravity-cli', 'antigravity_cli', 'gemini-antigravity'),
-               'grok': ('grok', 'grok-cli', 'grok-build')}
+    ALIASES = {
+        'agy': ('agy', 'antigravity', 'antigravity-cli', 'antigravity_cli', 'gemini-antigravity'),
+        'claude': ('claude', 'claude-code', 'claude_code', 'claudecode'),
+        'codex': ('codex', 'codex-cli', 'openai-codex'),
+        'grok': ('grok', 'grok-cli', 'grok-build'),
+        'copilot': ('copilot', 'copilot-cli', 'github-copilot', 'gh-copilot'),
+        'omp': ('omp', 'oh-my-pi', 'ohmypi'),
+        'pi': ('pi', 'pi-agent', 'pi-coding-agent'),
+        'kiro': ('kiro', 'kiro-cli', 'kiro-cli-chat'),
+        'vibe': ('vibe', 'vibe-rs', 'mistral-vibe', 'vibe-acp'),
+        'muse': ('muse', 'muse-code', 'meta-muse', 'muse-cli'),
+    }
     def call(*args):
         return subprocess.check_output([herdr, 'pane', *args], text=True)
     def metadata():
