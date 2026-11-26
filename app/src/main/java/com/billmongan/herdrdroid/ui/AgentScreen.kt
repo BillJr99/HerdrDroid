@@ -273,7 +273,12 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     }
 
     // Terminal text and its key target come from the same occupant-checked read.
-    val terminalControls = fullTerminal || vm.showKeys || ctrl != Hold.OFF || alt != Hold.OFF || commandScreen != null
+    val screenView = !structured && !live
+    val backgroundAvailable = pane?.let {
+        com.billmongan.herdrdroid.herdr.backgroundSupport(it.agent, it.agentName) == null
+    } == true
+    val terminalControls = screenView || vm.showKeys || ctrl != Hold.OFF || alt != Hold.OFF ||
+        commandScreen != null || menu && backgroundAvailable || paneId in vm.backgroundingPanes
     LaunchedEffect(vm, paneId, draftServer, terminalControls, screenReadable) {
         if (terminalControls) while (screenReadable && canReadScreen()) {
             vm.readTerminalPane(paneId)
@@ -396,7 +401,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             }
         }
     }
-    val scrollingScreenText = if (fullTerminal) terminalFrame?.text.orEmpty() else screenText
+    val scrollingScreenText = if (screenView) terminalFrame?.text.orEmpty() else screenText
     LaunchedEffect(scrollingScreenText, structured, termFollow) {
         if (!structured && termFollow && !scroll.isScrollInProgress) scroll.scrollTo(scroll.maxValue)
     }
@@ -685,11 +690,10 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     })
                     DropdownMenuItem(text = { Text("Export pane screen") }, onClick = { menu = false; exportingScreen = true })
                     DropdownMenuItem(text = { Text("Pane reads…") }, onClick = { menu = false; showingPaneReads = true })
-                    // The agent's own key for moving a running command to the background (Ctrl+B),
-                    // offered only for agents where that is what the key does.
-                    if (com.billmongan.herdrdroid.herdr.Backgrounding.supported(pane?.agent)) DropdownMenuItem(
+                    if (backgroundAvailable) DropdownMenuItem(
                         text = { Text("Background task (Ctrl+B)") },
-                        onClick = { menu = false; vm.sendKeys(paneId, com.billmongan.herdrdroid.herdr.Backgrounding.KEY) },
+                        enabled = terminalFrame?.live?.id == paneId,
+                        onClick = { menu = false; vm.backgroundTerminalTask(paneId, terminalFrame) },
                     )
                     if (pane?.agent != null) DropdownMenuItem(text = { Text("Close session…", color = Palette.OrangeInk) }, onClick = { menu = false; closingSession = true })
                     if (structured && vm.transcriptItems.isNotEmpty()) {
@@ -859,8 +863,9 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     .padding(horizontal = 16.dp, vertical = 14.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                // 2.2.0: until this visit's reads settle, the pane's last settled screen (display only).
-                val text = screenText.ifBlank { vm.heldScreenText(paneId).orEmpty() }
+                // Screen chat and the keypad use the same verified frame. Never show an unbound
+                // recent read in its place, even while waiting for the first checked frame.
+                val text = terminalFrame?.text.orEmpty()
                 if (fullTerminal) {
                     // The terminal view (1.4.8: before, a pane with no good read yet showed the same note as
                     // the card, so Show terminal looked like it did nothing).
@@ -875,7 +880,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     Text("Loading the chat…", color = Palette.Muted, fontSize = 15.sp)
                 } else if (text.isBlank()) {
                     // Say why the screen isn't there, rather than "Loading…" for ever (1.4.2).
-                    Text(vm.paneReadProblem?.let { "The app couldn't read this pane's screen yet ($it). It keeps trying." } ?: "Loading…",
+                    Text(vm.terminalReadProblem?.let { "The app couldn't read this pane's screen yet ($it). It keeps trying." } ?: "Loading…",
                         color = Palette.Muted, fontSize = 15.sp)
                 } else {
                     // Agents without a readable log (Antigravity, Kiro) keep their question history here (1.3.0).
@@ -1202,7 +1207,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     }
     pickerMenu?.let { menuNow ->
         AlertDialog(
-            onDismissRequest = { pickerMenu = null; vm.sendKeys(paneId, "esc") },
+            onDismissRequest = { pickerMenu = null },
             title = { Text(menuNow.question.lines().firstOrNull()?.take(80)?.ifBlank { null } ?: if (pickerWhat == "session") "Choose a session" else "Choose a model") },
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1219,7 +1224,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 }
             },
             confirmButton = {},
-            dismissButton = { TextButton(onClick = { pickerMenu = null; vm.sendKeys(paneId, "esc") }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { pickerMenu = null; fullTerminal = true; vm.setKeysShown(true) }) { Text("Show terminal") } },
         )
     }
     if (readingPicker) {

@@ -231,6 +231,33 @@ class BackgroundVm228Test {
         assertEquals(listOf("ctrl+b"), keys)
     }
 
+    @Test fun terminalBackgroundRequiresAndUsesTheVerifiedFrame() = fixture("claude", fg) {
+        vm.backgroundTerminalTask("p1", null)
+        drain(rounds = 10)
+        assertTrue(keys.isEmpty())
+
+        val read = vm.viewModelScope.launch { vm.readTerminalPane("p1") }
+        drain(rounds = 10)
+        assertTrue(read.isCompleted)
+        val shown = checkNotNull(vm.terminalFrame("p1"))
+        afterCtrlB = moved
+        vm.backgroundTerminalTask("p1", shown)
+        drain()
+        assertEquals(listOf("ctrl+b"), keys)
+    }
+
+    @Test fun terminalBackgroundRefusesWhenThePaintedFrameIsClearedBeforePress() = fixture("claude", fg) {
+        val read = vm.viewModelScope.launch { vm.readTerminalPane("p1") }
+        drain(rounds = 10)
+        assertTrue(read.isCompleted)
+        val shown = checkNotNull(vm.terminalFrame("p1"))
+        afterRead = { vm.clearTerminalFrame() }
+        vm.backgroundTerminalTask("p1", shown)
+        drain()
+        assertTrue(keys.isEmpty())
+        assertEquals(0, checks)
+    }
+
     @Test fun backgroundForAnAgentWhoseMoveCantBeSeenTypesNothing() {
         for (agent in listOf("opencode", "muse", "codex")) fixture(agent, fg) {
             vm.backgroundForeground("p1")

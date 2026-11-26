@@ -4574,10 +4574,13 @@ class AppViewModel internal constructor(
         terminalReadProblem = if (result == null) problem ?: "the terminal could not be verified" else null
     }
 
+    private fun terminalFrameMatches(paneId: String, frame: TerminalFrame?, client: Herdr) =
+        frame != null && frame.source.isCurrent(client) &&
+            terminalFrame(paneId)?.let { com.billmongan.herdrdroid.herdr.sameOccupant(frame.live, it.live) } == true
+
     /** Keys use the same verified terminal that supplied the displayed screen. */
     internal fun sendTerminalKeys(paneId: String, frame: TerminalFrame?, vararg keys: String) {
-        fun stillShowing(h: Herdr) = frame != null && frame.source.isCurrent(h) &&
-            terminalFrame(paneId)?.let { com.billmongan.herdrdroid.herdr.sameOccupant(frame.live, it.live) } == true
+        fun stillShowing(h: Herdr) = terminalFrameMatches(paneId, frame, h)
         if (frame == null || !stillShowing(frame.source.client)) {
             error = "Couldn't send the key: wait for a verified read of this terminal and try again."
             return
@@ -7879,13 +7882,15 @@ class AppViewModel internal constructor(
     private suspend fun runBackgrounder(
         client: Herdr, server: String?, target: Pane, limits: com.billmongan.herdrdroid.herdr.Backgrounder.Limits,
         onPressed: (com.billmongan.herdrdroid.herdr.BackgroundStep) -> Unit = {},
+        permitted: () -> Boolean = { true },
         done: (String) -> Boolean,
     ): com.billmongan.herdrdroid.herdr.Backgrounder.Outcome {
         val paneId = target.id
         val lane = (server ?: return com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.UNREADABLE) to paneId
         val connection = client.connectionIdentity ?: return com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.UNREADABLE
-        fun same() = !locked && foreground && herdr === client && client.connectionIdentity === connection &&
+        fun same() = permitted() && !locked && foreground && herdr === client && client.connectionIdentity === connection &&
             current?.id == server && link == Link.CONNECTED
+        if (!same()) return com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.TARGET_CHANGED
         val bound = quietly { h -> if (h === client) h.boundOccupant(paneId, connection) else null }
             ?.takeIf { it.first.sameCardOccupant(target) && it.first.scrollOffset == 0 } ?: return com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.BLOCKED
         val port = object : com.billmongan.herdrdroid.herdr.Backgrounder.Port {
@@ -7900,7 +7905,8 @@ class AppViewModel internal constructor(
                 val release = paneDispatch.tryAcquire(lane) ?: throw com.billmongan.herdrdroid.herdr.CardCheckFailed()
                 try {
                     if (!canPoll || blocked(viewport)) return false
-                    val permit = writeGate.open(lane) ?: throw com.billmongan.herdrdroid.herdr.CardCheckFailed()
+                    val permit = writeGate.open(lane, com.billmongan.herdrdroid.herdr.WritePermit(::same))
+                        ?: throw com.billmongan.herdrdroid.herdr.CardCheckFailed()
                     try {
                         val went = client.sendBackgroundKey(paneId, step, viewport, bound.second, connection, permit)
                         com.billmongan.herdrdroid.diag.DiagLog.log("send", "to $paneId: Ctrl+B for ${step.check} ${if (went) "went" else "refused by the check"}")
@@ -7979,7 +7985,17 @@ class AppViewModel internal constructor(
      * right before it). A shell the screen showed for certain in the foreground is marked Background
      * at once, and the next reads confirm it.
      */
-    fun backgroundForeground(paneId: String) {
+    fun backgroundForeground(paneId: String) = backgroundForeground(paneId) { true }
+
+    internal fun backgroundTerminalTask(paneId: String, frame: TerminalFrame?) {
+        if (frame == null || frame.live.id != paneId || !terminalFrameMatches(paneId, frame, frame.source.client)) {
+            flash("Wait for a verified read of this pane before moving its task.")
+            return
+        }
+        backgroundForeground(paneId) { terminalFrameMatches(paneId, frame, frame.source.client) }
+    }
+
+    private fun backgroundForeground(paneId: String, permitted: () -> Boolean) {
         val p = pane(paneId) ?: return
         backgroundSupport(p.agent, p.agentName)?.let { flash(it); return }
         if (hasPendingQuestion(p)) { flash("Not sent: ${p.agentName} has a question open. Answer it first."); return }
@@ -7992,7 +8008,7 @@ class AppViewModel internal constructor(
             var fg: Set<Int> = emptySet()
             val outcome = try {
                 runBackgrounder(client, server, p, com.billmongan.herdrdroid.herdr.Backgrounder.Limits(maxPresses = 2, maxReads = 8, pollMs = 700),
-                    onPressed = { pressed = it }) { s ->
+                    onPressed = { pressed = it }, permitted = permitted) { s ->
                     workScreens = workScreens + (paneId to s)
                     val step = com.billmongan.herdrdroid.herdr.backgroundStep(p.agent, s)
                     val last = pressed
