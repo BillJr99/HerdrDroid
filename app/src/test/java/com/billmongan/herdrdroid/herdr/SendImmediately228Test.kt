@@ -7,6 +7,8 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.TimeUnit
+import kotlin.io.path.createTempDirectory
 
 /**
  * 2.2.8 (Bill, 2026-11-25: "add send immediately to that menu which would background all foreground
@@ -126,6 +128,55 @@ class SendImmediately228Test {
         assertFalse(backgroundCheckPasses(BackgroundStep.AGY_CONFIRM, probe("agy", "agy-running")))
         assertFalse(backgroundCheckPasses(BackgroundStep.AGY_ARM, probe("agy", "agy-after-ctrlb")))
         assertTrue(BACKGROUND_CHECK.contains(BACKGROUND_REFUSED_MARK))
+    }
+
+    @Test fun `generated host check agrees with the app on captures and dialog boundaries`() {
+        val dir = createTempDirectory("background-check-228").toFile()
+        try {
+            val helper = dir.resolve("fixture-herdr")
+            val snapshot = dir.resolve("fixture-herdr.screen")
+            helper.writeText("""
+                #!/bin/sh
+                [ "$*" = 'pane read fixture:p1 --source visible' ] || exit 9
+                cat -- "$0.screen"
+            """.trimIndent() + "\n")
+            assertTrue(helper.setExecutable(true))
+
+            data class Sample(val agent: String, val frame: String, val expected: BackgroundStep?)
+            val claudeRunning = probe("claude", "claude-fg1")
+            val samples = listOf(
+                Sample("claude", claudeRunning, BackgroundStep.CLAUDE),
+                Sample("claude", probe("claude", "claude-after-ctrlb"), null),
+                Sample("claude", claudeRunning.trimEnd() + "\n Esc to cancel", null),
+                Sample("grok", probe("grok", "grok-running"), BackgroundStep.GROK),
+                Sample("grok", probe("grok", "grok-after-ctrlb"), null),
+                Sample("agy", probe("agy", "agy-running"), BackgroundStep.AGY_ARM),
+                Sample("agy", probe("agy", "agy-after-ctrlb"), BackgroundStep.AGY_CONFIRM),
+                Sample("agy", probe("agy", "agy-draft"), null),
+            )
+            for ((agent, frame, expected) in samples) {
+                assertEquals(agent, expected, backgroundStep(agent, frame))
+                snapshot.writeText(frame)
+                for (step in BackgroundStep.entries.filter { it.check == agent || it.check.startsWith("$agent-") }) {
+                    val process = ProcessBuilder("/usr/bin/python3", "-c", BACKGROUND_CHECK,
+                        helper.path, "fixture:p1", step.check).redirectErrorStream(true).start()
+                    assertTrue("host check timed out", process.waitFor(12, TimeUnit.SECONDS))
+                    val output = process.inputStream.bufferedReader().readText().trim()
+                    val allowed = expected == step
+                    assertEquals(step.check, allowed, backgroundCheckPasses(step, frame))
+                    assertEquals("$agent ${step.check}: $output", if (allowed) 0 else BACKGROUND_REFUSED_EXIT, process.exitValue())
+                    assertEquals(if (allowed) "" else BACKGROUND_REFUSED_MARK, output)
+                }
+            }
+
+            assertTrue(snapshot.delete())
+            val process = ProcessBuilder("/usr/bin/python3", "-c", BACKGROUND_CHECK,
+                helper.path, "fixture:p1", BackgroundStep.CLAUDE.check).redirectErrorStream(true).start()
+            assertTrue("host check timed out", process.waitFor(12, TimeUnit.SECONDS))
+            assertEquals(4, process.exitValue())
+        } finally {
+            dir.deleteRecursively()
+        }
     }
 
     @Test fun `a dialog that opens between the read and the key gets no key`() = runBlocking {
