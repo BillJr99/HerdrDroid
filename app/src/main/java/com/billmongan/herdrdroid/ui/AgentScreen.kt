@@ -396,7 +396,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             }
         }
     }
-    LaunchedEffect(screenText, structured, termFollow) {
+    val scrollingScreenText = if (fullTerminal) terminalFrame?.text.orEmpty() else screenText
+    LaunchedEffect(scrollingScreenText, structured, termFollow) {
         if (!structured && termFollow && !scroll.isScrollInProgress) scroll.scrollTo(scroll.maxValue)
     }
     val onZoom by rememberUpdatedState<(Float) -> Unit> { z -> pinch = (pinch * z) }
@@ -910,7 +911,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 promptCard()
             }
             if (vm.paneUpdating(paneId) && !fullTerminal) UpdatingChip(Modifier.align(Alignment.TopCenter).padding(top = 4.dp))
-            if (!termFollow && screenText.isNotBlank()) {
+            if (!termFollow && scrollingScreenText.isNotBlank()) {
                 Surface(
                     shape = RoundedCornerShape(20.dp), color = Palette.Card, border = BorderStroke(1.dp, Palette.Line), shadowElevation = 4.dp,
                     modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp)
