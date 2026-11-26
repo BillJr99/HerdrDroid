@@ -1,0 +1,5 @@
+card: options
+blocked: true
+heading: Do you want to proceed?
+options: Yes | No
+source: Claude Code 2.1.332 with a running fixture helper above the live approval
