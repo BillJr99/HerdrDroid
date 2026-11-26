@@ -137,6 +137,9 @@ fun QuestionsScreen(vm: AppViewModel) {
             onType = { e, p, c -> typing = TypedAnswer(e, p, c) },
         )
     }
+    vm.approveAllPending?.takeIf {
+        front && it.serverId == vm.current?.id && it.target?.questionsVisit?.let { visit -> visit >= 0 } == true
+    }?.let { ApproveAllDialog(vm, it, it.target?.pane?.agentName) }
     val typingProbe = typing?.entry?.source?.let { vm.probePane(it.serverId, it.pane.id) } == true
     LaunchedEffect(typingProbe) { if (typingProbe) typing = null }
     typing?.takeUnless { typingProbe }?.let { t ->

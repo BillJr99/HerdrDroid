@@ -255,7 +255,10 @@ class AppViewModel internal constructor(
             if (!inServersFlow(value)) serversOrigin = null
             chatVisit.navigate((currentScreen as? Screen.Agent)?.paneId, (value as? Screen.Agent)?.paneId)
             // 2.2.8: every way into or out of the Questions view starts a new visit of it, so its targets go stale.
-            if ((currentScreen == Screen.Questions) != (value == Screen.Questions)) questionsVisit++
+            if ((currentScreen == Screen.Questions) != (value == Screen.Questions)) {
+                questionsVisit++
+                if (approveAllPending?.target?.questionsVisit?.let { it >= 0 } == true) cancelApproveAll()
+            }
             currentScreen = value
         }
     var servers by mutableStateOf(store.all().sortedBy { it.label.lowercase() })
@@ -428,11 +431,15 @@ class AppViewModel internal constructor(
      * session that works is never listed as "Can't reach it".
      */
     fun healthFor(serverId: String): ServerHealth? {
-        if (serverId == current?.id && link == Link.CONNECTED && herdr != null) {
+        if (serverId == current?.id && herdr != null) {
+            val at = serverHealth[serverId]?.at ?: 0L
+            if (link != Link.CONNECTED) return ServerHealth(
+                if (link == Link.RECONNECTING) Health.CHECKING else Health.DOWN,
+                if (link == Link.RECONNECTING) "Reconnecting" else "Can't reach it", at,
+            )
             val list = panes
             val need = list.count { it.status == Status.NEEDS_YOU }
             val w = list.count { it.status == Status.WORKING }
-            val at = serverHealth[serverId]?.at ?: 0L
             return if (need > 0) ServerHealth(Health.NEEDS_YOU, "$need need you · $w working", at)
             else ServerHealth(Health.UP, if (w > 0) "Up · $w working" else "Up · agents idle", at)
         }
@@ -919,7 +926,14 @@ class AppViewModel internal constructor(
     }
 
     fun connect(server: Server, password: String?, remember: Boolean, openAgent: Boolean = false, voice: Boolean = false) {
-        if (connecting) return
+        if (connecting) {
+            val want = pendingOpen
+            cancelConnect()
+            pendingOpen = want
+        }
+        pendingHostKey = null
+        pendingBackendChoice = null
+        needPasswordFor = null
         connecting = true
         error = null
         val run = ++connectRun
@@ -943,6 +957,11 @@ class AppViewModel internal constructor(
                 parkJob?.cancel()
                 val reused = kept != null && runCatching { kotlinx.coroutines.withTimeout(6_000) { kept.herdr.check() } }.isSuccess
                 if (kept != null && !reused) kept.ssh.close()
+                if (!isActive || run != connectRun) {
+                    if (reused) kept?.ssh?.close()
+                    s.close()
+                    return@launch
+                }
                 val sNow: HerdrSsh
                 val h: Herdr
                 if (reused) {
@@ -958,6 +977,7 @@ class AppViewModel internal constructor(
                     // answers is the sign-in's (login); after, the probe's.
                     stage = com.billmongan.herdrdroid.diag.LinkDiag.Stage.PROBE
                     val found = detectBackend(s, server.herdrPath)
+                    if (!isActive || run != connectRun) { s.close(); return@launch }
                     com.billmongan.herdrdroid.diag.LinkDiag.stage(run.toLong(), server.id, com.billmongan.herdrdroid.diag.LinkDiag.Stage.LOGIN, "ok", System.currentTimeMillis() - t0,
                         mapOf("transport" to s.transportName, "algs" to s.negotiated?.let { "[" + it + "]" }))
                     val backend = when (server.backend) {
@@ -993,13 +1013,14 @@ class AppViewModel internal constructor(
                             h.check()
                             break
                         } catch (e: LinkDown) {
-                            if (!server.overWebSocket || ++tries > 4) throw e
+                            if (!isActive || run != connectRun || !server.overWebSocket || ++tries > 4) throw e
                             connectNote = "The server didn't answer yet (it may be waking up). Trying again in ${wait / 1000} s…"
                             delay(wait)
                             wait *= 2
                         }
                     }
                 }
+                if (!isActive || run != connectRun) { sNow.close(); return@launch }
                 connectNote = null
                 com.billmongan.herdrdroid.diag.LinkDiag.stage(run.toLong(), server.id, com.billmongan.herdrdroid.diag.LinkDiag.Stage.CHANNEL, "ok", System.currentTimeMillis() - t0,
                     mapOf("reused" to reused, "transport" to sNow.transportName, "backend" to h.backend.name.lowercase()))
@@ -1060,14 +1081,17 @@ class AppViewModel internal constructor(
                     openAgent -> bestAgent()?.let { openPane(it, "after connecting") } ?: run { screen = Screen.Tabs; drawerOpen = true }
                 }
             } catch (e: UnconfirmedHostKey) {
+                if (!isActive || run != connectRun) { s.close(); return@launch }
                 com.billmongan.herdrdroid.diag.LinkDiag.stage(run.toLong(), server.id, stage, "failed", System.currentTimeMillis() - t0, mapOf("error" to "UnconfirmedHostKey"))
                 s.close()
                 pendingHostKey = PendingHostKey(server, password, remember, e.fingerprint)
             } catch (e: HostKeyChanged) {
+                if (!isActive || run != connectRun) { s.close(); return@launch }
                 com.billmongan.herdrdroid.diag.LinkDiag.stage(run.toLong(), server.id, stage, "failed", System.currentTimeMillis() - t0, mapOf("error" to "HostKeyChanged"))
                 s.close()
                 error = hostKeyMessage(e)
             } catch (e: AuthRejected) {
+                if (!isActive || run != connectRun) { s.close(); return@launch }
                 com.billmongan.herdrdroid.diag.LinkDiag.stage(run.toLong(), server.id, stage, "failed", System.currentTimeMillis() - t0, mapOf("error" to "AuthRejected"))
                 s.close()
                 if (server.overWebSocket) {
@@ -1085,6 +1109,7 @@ class AppViewModel internal constructor(
                 s.close()
                 throw c
             } catch (e: Exception) {
+                if (!isActive || run != connectRun) { s.close(); return@launch }
                 com.billmongan.herdrdroid.diag.LinkDiag.stage(run.toLong(), server.id, stage, "failed", System.currentTimeMillis() - t0,
                     mapOf("error" to com.billmongan.herdrdroid.diag.LinkDiag.errorClass(e), "cause" to e.cause?.let { com.billmongan.herdrdroid.diag.LinkDiag.errorClass(it) }, "exit" to (e as? HerdrError)?.exit))
                 s.close()
@@ -1156,6 +1181,10 @@ class AppViewModel internal constructor(
                 // 2.2.8 (Bill: "I'm surprised by how many SSH connections HerdrDroid creates"): a server the
                 // watcher already holds a live connection to is checked on that one, not on a new one.
                 val watched = if (s.id == current?.id) null else fleet?.herdr(s.id)?.takeIf { it.connectionIdentity != null }
+                if (s.id == current?.id && herdr != null && link != Link.CONNECTED) {
+                    healthFor(s.id)?.let { serverHealth = serverHealth + (s.id to it.copy(at = now)) }
+                    return@launch
+                }
                 val panes: List<Pane>? = if (s.id == current?.id && herdr != null) panes
                 else if (watched != null) runCatching {
                     com.billmongan.herdrdroid.ssh.SshCounts.reused(s.id)
@@ -1543,11 +1572,15 @@ class AppViewModel internal constructor(
         // Keystore authentication and any lock already in effect are unchanged.
         if (!handsFreeActive) refreshAppLock()
         if (watchOthers && herdr != null) fleet?.watch(watchable())
-        if (herdr != null && backgroundAt > 0 && System.currentTimeMillis() - backgroundAt > 8_000) {
-            ssh?.reset()
-            // 2.2.7 (Grok's review of 8fab7a9): a deliberate reconnect, never a drop that falls back.
-            linkLost(null, "resume")
+        if (herdr != null && backgroundAt > 0) {
+            if (current?.overWebSocket == true) {
+                if (link != Link.CONNECTED) startReconnect()
+            } else if (System.currentTimeMillis() - backgroundAt > 8_000) {
+                ssh?.reset()
+                linkLost(null, "resume")
+            }
         }
+        backgroundAt = 0L
         agentMessagingForeground = true
         updateAgentMessagingSession()
     }
@@ -1585,6 +1618,7 @@ class AppViewModel internal constructor(
             hermes?.close()
             hermes = null
             ssh?.reset()
+            linkLost(null, "background")
         }
     }
 
@@ -1635,6 +1669,7 @@ class AppViewModel internal constructor(
                 try {
                     ssh?.reset()
                     h.check()
+                    if (!isActive || herdr !== h || !foreground && current?.overWebSocket == true) return@launch
                     linkSession?.let { it.reconnectSuccesses++ }
                     com.billmongan.herdrdroid.diag.DiagLog.log("link", com.billmongan.herdrdroid.diag.LinkStats.reconnectLine(
                         current?.id, attempt, backoff, reconnectReason, "ok", System.currentTimeMillis() - tryAt))
@@ -1648,12 +1683,15 @@ class AppViewModel internal constructor(
                 } catch (c: CancellationException) {
                     throw c
                 } catch (e: AuthRejected) {
+                    if (!isActive || herdr !== h || !foreground && current?.overWebSocket == true) return@launch
                     stopForProblem(authMessage(current, null, e))
                     return@launch
                 } catch (e: HostKeyChanged) {
+                    if (!isActive || herdr !== h || !foreground && current?.overWebSocket == true) return@launch
                     stopForProblem(hostKeyMessage(e))
                     return@launch
                 } catch (e: Exception) {
+                    if (!isActive || herdr !== h || !foreground && current?.overWebSocket == true) return@launch
                     // Each failed try once, then (a long outage) every tenth.
                     if (attempt <= 5 || attempt % 10 == 0) com.billmongan.herdrdroid.diag.DiagLog.log("link", com.billmongan.herdrdroid.diag.LinkStats.reconnectLine(
                         current?.id, attempt, backoff, reconnectReason, "failed", System.currentTimeMillis() - tryAt, e))
@@ -6967,7 +7005,7 @@ class AppViewModel internal constructor(
     fun switchTo(serverId: String, paneId: String?, voice: Boolean = false) {
         if (serverId == current?.id && herdr != null) { paneId?.let { openPane(it, "drawer") }; return }
         val s = servers.firstOrNull { it.id == serverId } ?: return
-        if (!canSignInSilently(s)) { screen = Screen.Servers; return }
+        if (!canSignInSilently(s)) { cancelConnect(); screen = Screen.Servers; return }
         // If that server doesn't answer, come back to the agent you were on (its connection is
         // parked, so this is quick) rather than leaving an empty screen or the server list.
         val backServer = current
@@ -6975,13 +7013,17 @@ class AppViewModel internal constructor(
         pendingOpen = paneId
         if (current != null) disconnectQuietly()
         connect(s, savedPassword(s), remember = false, openAgent = true, voice = voice)
+        val run = connectRun
+        val job = connectJob
         viewModelScope.launch {
-            connectJob?.join()
-            if (current == null && backServer != null && pendingHostKey == null && pendingBackendChoice == null) {
+            job?.join()
+            if (run == connectRun && current == null && backServer != null && pendingHostKey == null && pendingBackendChoice == null) {
                 val why = error
                 pendingOpen = backPane
                 connect(backServer, savedPassword(backServer), remember = false, openAgent = true)
+                val fallbackRun = connectRun
                 connectJob?.join()
+                if (fallbackRun != connectRun) return@launch
                 error = "${s.label} didn't answer" + (why?.let { ": $it" } ?: ".")
             }
         }
@@ -8465,13 +8507,17 @@ class AppViewModel internal constructor(
     // -- Model -------------------------------------------------------------------------------------
 
     /** Types a model command into an idle pane and presses Enter (the agent's own picker answers it). */
-    fun runCommand(paneId: String, command: String) {
-        val p = pane(paneId) ?: return
-        if (p.status == Status.WORKING) {
-            error = "${p.agentName} is working. Change the model once it's done."
-            return
+    fun runCommand(paneId: String, command: String, sent: () -> Unit = {}) {
+        val p = paneIdle(paneId, "Change the model") ?: return
+        if (p.status != Status.IDLE && p.status != Status.DONE) return
+        val t = menuTarget(p) ?: return
+        viewModelScope.launch {
+            val why = controlling(paneId, "model") {
+                menuWrite(paneId, t.occupant, t.h, t.connection, t.server, MenuInput.Command(command))
+            }
+            if (why != null) menuRefused(paneId, "Change the model", why)
+            else if (herdr === t.h && t.connection === t.h.connectionIdentity && (screen as? Screen.Agent)?.paneId == paneId) sent()
         }
-        answer(paneId, command, pressEnter = true)
     }
 
     // -- Forwarding -------------------------------------------------------------------------------
