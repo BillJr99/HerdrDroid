@@ -15,6 +15,23 @@ class ClaudeModelCard228Test {
 
     private fun card(screen: String = frame) = checkNotNull(detectPrompt(screen, false, "claude", "2.1.332"))
 
+    @Test fun capturedModelConfirmationUsesFocusedEnterAndEscape() {
+        val screen = checkNotNull(javaClass.getResource(
+            "/screens/claude/captured-2.1.332-model-confirm/screen.ansi"
+        )).readText()
+        val prompt = card(screen)
+        assertTrue(prompt.guardedShortcutApproval)
+        assertFalse(prompt.terminalReview)
+        assertEquals(listOf("Yes, switch to Haiku 5.5", "No, go back"), prompt.choices.map { it.label })
+        assertEquals(listOf("enter"), menuKeys(prompt, prompt.choices[0]))
+        assertEquals(listOf("esc"), menuKeys(prompt, prompt.choices[1]))
+        val digest = cardGuardScreen(screen, prompt, "claude")
+        assertFalse(cardGuardScreenMatches(screen.replace("Haiku 5.5", "Sonnet 5.5"), digest, "claude"))
+        assertTrue(card(screen.trimEnd().substringBeforeLast('\n')).terminalReview)
+        assertNull(claudeModelCard("Switch model?\nHere is an example"))
+        assertNull(detectPrompt(screen + "\n❯ A later message", false, "claude", "2.1.332"))
+    }
+
     @Test fun capturedPickerShowsModelsAndSessionOnlyActions() {
         val prompt = card()
         assertTrue(prompt.claudeModelControl)

@@ -6,6 +6,10 @@ private val PICKER_FOOTER = setOf(
     "Enter to set as default · s to use this session only · Esc to cancel",
 )
 private val PICKER_RULE = Regex("""^─{20,}\s*$""")
+private val CONFIRM_RULE = Regex("""^▔{20,}$""")
+private val SWITCH_CONFIRM = Regex("""^❯ 1\. (Yes, switch to \S.*)$""")
+private const val SWITCH_HOOK = "A PreModelSwitch hook asked you to confirm"
+private const val SWITCH_FOOTER = "Enter to confirm · Esc to cancel"
 private const val MORE_FOOTER = "Enter to expand · Esc to cancel"
 private const val MORE_ROW = "▸   More models"
 private const val PICKER_INTRO = "Your pick is the default for new sessions. For other models, use --model."
@@ -17,9 +21,31 @@ private const val EFFORT_UP = "claude-model-effort-up"
 private fun pickerLabel(body: String) = body.split(Regex("""\s{2,}"""), limit = 2)
     .first().trim().trimEnd('✔').trimEnd()
 
+/** The numbered confirmation used by Claude's PreModelSwitch hook. */
+private fun claudeModelConfirmation(rows: List<String>): Prompt? {
+    val title = rows.indexOfLast { it.trim() == "Switch model?" }
+    if (title <= 0 || !CONFIRM_RULE.matches(rows[title - 1])) return null
+    val frame = rows.drop(title - 1)
+    val content = frame.drop(1).map(String::trim).filter(String::isNotEmpty)
+    if (content.getOrNull(1) != SWITCH_HOOK) return null
+    // Without the footer, only a viewport that ends on the known choice is a clipped panel.
+    val hasFooter = content.last() == SWITCH_FOOTER
+    if (!hasFooter && content.last() !in setOf("2. No, go back", "❯ 2. No, go back")) return null
+    val confirm = content.getOrNull(content.size - 3)?.let(SWITCH_CONFIRM::matchEntire)
+    val choices = if (confirm != null && content.getOrNull(content.size - 2) == "2. No, go back" &&
+        hasFooter) {
+        listOf(Choice(confirm.groupValues[1], "enter", false), Choice("No, go back", "esc", false))
+    } else emptyList()
+    return Prompt("Switch model?", choices, region = frame, terminalReview = choices.isEmpty(),
+        parts = QuestionParts(emptyList(), listOf(QBlock(QKind.HEADING, "Switch model?")) +
+            content.drop(1).dropLast(1).map { QBlock(QKind.TEXT, it) }),
+        claudeModelControl = true)
+}
+
 /** Claude's complete /model picker at the bottom of the current screen. */
 internal fun claudeModelCard(screen: String): Prompt? {
     val rows = screen.lines().dropLastWhile(String::isBlank).map(String::trimEnd)
+    claudeModelConfirmation(rows)?.let { return it }
     val top = rows.indexOfLast { it.trim() == "Select model" }
     if (top == -1) return null
     val frame = rows.subList(top, rows.size)
