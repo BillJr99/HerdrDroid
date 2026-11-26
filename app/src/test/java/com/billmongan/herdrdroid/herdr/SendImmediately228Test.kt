@@ -6,7 +6,9 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Test
+import java.io.File
 import java.util.concurrent.TimeUnit
 import kotlin.io.path.createTempDirectory
 
@@ -131,6 +133,13 @@ class SendImmediately228Test {
     }
 
     @Test fun `generated host check agrees with the app on captures and dialog boundaries`() {
+        val configured = System.getenv("HERDRDROID_TEST_PYTHON")?.takeIf { it.isNotBlank() }?.let(::File)
+        if (configured != null) assertTrue("HERDRDROID_TEST_PYTHON must point to an executable file",
+            configured.isFile && configured.canExecute())
+        val python = configured ?: System.getenv("PATH").orEmpty().split(File.pathSeparator)
+            .filter { it.isNotBlank() }.map { File(it, "python3") }.firstOrNull { it.isFile && it.canExecute() }
+        assumeTrue("Generated background guard parity requires python3 on PATH or HERDRDROID_TEST_PYTHON", python != null)
+        val executable = checkNotNull(python).absolutePath
         val dir = createTempDirectory("background-check-228").toFile()
         try {
             val helper = dir.resolve("fixture-herdr")
@@ -158,7 +167,7 @@ class SendImmediately228Test {
                 assertEquals(agent, expected, backgroundStep(agent, frame))
                 snapshot.writeText(frame)
                 for (step in BackgroundStep.entries.filter { it.check == agent || it.check.startsWith("$agent-") }) {
-                    val process = ProcessBuilder("/usr/bin/python3", "-c", BACKGROUND_CHECK,
+                    val process = ProcessBuilder(executable, "-c", BACKGROUND_CHECK,
                         helper.path, "fixture:p1", step.check).redirectErrorStream(true).start()
                     assertTrue("host check timed out", process.waitFor(12, TimeUnit.SECONDS))
                     val output = process.inputStream.bufferedReader().readText().trim()
@@ -170,7 +179,7 @@ class SendImmediately228Test {
             }
 
             assertTrue(snapshot.delete())
-            val process = ProcessBuilder("/usr/bin/python3", "-c", BACKGROUND_CHECK,
+            val process = ProcessBuilder(executable, "-c", BACKGROUND_CHECK,
                 helper.path, "fixture:p1", BackgroundStep.CLAUDE.check).redirectErrorStream(true).start()
             assertTrue("host check timed out", process.waitFor(12, TimeUnit.SECONDS))
             assertEquals(4, process.exitValue())
