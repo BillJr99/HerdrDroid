@@ -245,8 +245,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     fun canReadScreen() = vm.inFront && !vm.locked && vm.link == Link.CONNECTED &&
         (vm.screen as? Screen.Agent)?.paneId == paneId
     val screenReadable = canReadScreen()
-    LaunchedEffect(vm, paneId, structured, screenReadable, pane?.status == Status.NEEDS_YOU) {
-        while (screenReadable && canReadScreen()) {
+    LaunchedEffect(vm, paneId, structured, fullTerminal, screenReadable, pane?.status == Status.NEEDS_YOU) {
+        while (!fullTerminal && screenReadable && canReadScreen()) {
             readScreen(paneId)
             kotlinx.coroutines.delay(when {
                 vm.pane(paneId)?.status == Status.NEEDS_YOU -> 750L
@@ -272,9 +272,22 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         }
     }
 
+    // Terminal text and its key target come from the same occupant-checked read.
+    val terminalControls = fullTerminal || vm.showKeys || ctrl != Hold.OFF || alt != Hold.OFF || commandScreen != null
+    LaunchedEffect(vm, paneId, draftServer, terminalControls, screenReadable) {
+        if (terminalControls) while (screenReadable && canReadScreen()) {
+            vm.readTerminalPane(paneId)
+            kotlinx.coroutines.delay(if (vm.pane(paneId)?.status == Status.NEEDS_YOU) 750 else 1_500)
+        }
+    }
+    androidx.compose.runtime.DisposableEffect(vm, paneId, draftServer, terminalControls) {
+        onDispose { vm.clearTerminalFrame() }
+    }
+    val terminalFrame = vm.terminalFrame(paneId)
+
     /** Sends one key with whatever modifiers are on, then lets go of the one-shot ones. */
     fun press(key: String) {
-        vm.sendTerminalKeys(paneId, pane, draftServer, chord(ctrl, alt, key))
+        vm.sendTerminalKeys(paneId, terminalFrame, chord(ctrl, alt, key))
         if (ctrl == Hold.ONCE) ctrl = Hold.OFF
         if (alt == Hold.ONCE) alt = Hold.OFF
     }
@@ -850,7 +863,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 if (fullTerminal) {
                     // The terminal view (1.4.8: before, a pane with no good read yet showed the same note as
                     // the card, so Show terminal looked like it did nothing).
-                    TerminalView(text, vm.paneReadProblem, liveSize)
+                    TerminalView(terminalFrame?.text.orEmpty(), vm.terminalReadProblem, liveSize)
                 } else if (identity.loading && vm.paneReadProblem == null) {
                     // 2.2.7: the agent is not known yet, so neither its chat nor a guessed screen view
                     // shows; the real view draws once the pane list says which agent this is.
@@ -978,7 +991,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 }
             }
             if (fullTerminal) {
-                val found = remember(liveScreenText) { screenLinks(liveScreenText) }
+                val found = remember(terminalFrame?.text) { screenLinks(terminalFrame?.text.orEmpty()) }
                 if (commandScreen != null || found.urls.isNotEmpty() || found.codes.isNotEmpty()) {
                     val clipboard = LocalClipboardManager.current
                     Row(
@@ -1227,7 +1240,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             title = { Text("Send Ctrl+C?") },
             text = { Text("This interrupts whatever ${pane?.agentName ?: "the tab"} is doing right now.") },
             confirmButton = {
-                Button(onClick = { confirmCtrlC = false; vm.sendTerminalKeys(paneId, pane, draftServer, "ctrl+c") }) { Text("Interrupt") }
+                Button(onClick = { confirmCtrlC = false; vm.sendTerminalKeys(paneId, terminalFrame, "ctrl+c") }) { Text("Interrupt") }
             },
             dismissButton = { TextButton(onClick = { confirmCtrlC = false }) { Text("Cancel") } },
         )

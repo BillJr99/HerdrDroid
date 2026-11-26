@@ -4536,16 +4536,55 @@ class AppViewModel internal constructor(
         }
     }
 
-    /** The phone's terminal keys belong to the pane and server the user saw at the tap. */
-    internal fun sendTerminalKeys(paneId: String, shown: Pane?, server: String?, vararg keys: String) {
-        val target = cardTarget(paneId)
-        if (target == null || target.server != server || shown == null || !target.pane.sameCardOccupant(shown)) {
-            error = "Couldn't send the key: reopen this terminal on the connected computer and try again."
+    internal data class TerminalFrame(val source: CardTarget, val live: Pane, val text: String)
+    private var paintedTerminal by mutableStateOf<TerminalFrame?>(null)
+    internal var terminalReadProblem by mutableStateOf<String?>(null)
+        private set
+    private var terminalReadSequence = 0L
+    private var lastTerminalRead = 0L
+
+    internal fun terminalFrame(paneId: String): TerminalFrame? =
+        paintedTerminal?.takeIf { it.source.pane.id == paneId && it.source.isCurrent(it.source.client) }
+
+    internal fun clearTerminalFrame() {
+        lastTerminalRead = ++terminalReadSequence
+        paintedTerminal = null
+        terminalReadProblem = null
+    }
+
+    internal suspend fun readTerminalPane(paneId: String) {
+        val target = cardTarget(paneId) ?: return
+        val attempt = ++terminalReadSequence
+        fun isCurrent() = attempt > lastTerminalRead && target.isCurrent(target.client)
+        var problem: String? = null
+        val result = quietly { h ->
+            if (h !== target.client || !isCurrent()) return@quietly null
+            try {
+                h.readTerminalFrame(target.pane, target.connection) { live ->
+                    readPaneScreen(h, live.id, 200, live.scrollOffset, target.connection)
+                }
+            } catch (e: HerdrError) {
+                problem = e.message?.take(120)
+                null
+            }
+        }
+        if (!isCurrent()) return
+        lastTerminalRead = attempt
+        paintedTerminal = result?.let { (live, text) -> TerminalFrame(target, live, text) }
+        terminalReadProblem = if (result == null) problem ?: "the terminal could not be verified" else null
+    }
+
+    /** Keys use the same verified terminal that supplied the displayed screen. */
+    internal fun sendTerminalKeys(paneId: String, frame: TerminalFrame?, vararg keys: String) {
+        fun stillShowing(h: Herdr) = frame != null && frame.source.isCurrent(h) &&
+            terminalFrame(paneId)?.let { com.billmongan.herdrdroid.herdr.sameOccupant(frame.live, it.live) } == true
+        if (frame == null || !stillShowing(frame.source.client)) {
+            error = "Couldn't send the key: wait for a verified read of this terminal and try again."
             return
         }
         act(paneId, "Couldn't send the key", input = true) { h ->
-            h.sendTerminalKeys(shown, keys.toList(), target.connection) { target.isCurrent(h) }
-            if (target.isCurrent(h)) readPane(paneId)
+            h.sendTerminalKeys(frame.live, keys.toList(), frame.source.connection) { stillShowing(h) }
+            if (stillShowing(h)) readTerminalPane(paneId)
         }
     }
 

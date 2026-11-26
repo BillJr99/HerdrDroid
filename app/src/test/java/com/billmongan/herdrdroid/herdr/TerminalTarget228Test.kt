@@ -54,6 +54,42 @@ class TerminalTarget228Test {
         }
     }
 
+    @Test fun aReusedPublicIdPaintsOnlyTheVerifiedOriginalTerminal() = runBlocking {
+        val remote = Remote().apply { panes = listOf(replacement, moved) }
+        val read = mutableListOf<String>()
+        val (target, text) = remote.client.readTerminalFrame(selected, remote.connection) { pane ->
+            read += pane.id
+            "original screen"
+        }
+        assertEquals(listOf(moved.id), read)
+        assertEquals(moved.id, target.id)
+        assertEquals("original screen", text)
+        remote.client.sendTerminalKeys(target, listOf("down"), remote.connection) { true }
+        assertEquals(listOf(moved.id), remote.sends)
+    }
+
+    @Test fun anOccupantChangedDuringReadCanNeverSupplyAPaintedFrame() = runBlocking {
+        val remote = Remote()
+        val failure = runCatching {
+            remote.client.readTerminalFrame(selected, remote.connection) {
+                remote.panes = listOf(replacement)
+                "replacement screen"
+            }
+        }.exceptionOrNull()
+        assertTrue(failure is HerdrError)
+        assertTrue(remote.sends.isEmpty())
+    }
+
+    @Test fun theWritePermitRefusesAVisitChangeAtAdmission() = runBlocking {
+        val remote = Remote()
+        var validations = 0
+        val failure = runCatching {
+            remote.client.sendTerminalKeys(selected, listOf("down"), remote.connection) { ++validations < 3 }
+        }.exceptionOrNull()
+        assertTrue(failure is WriteRevoked)
+        assertTrue(remote.sends.isEmpty())
+    }
+
     @Test fun terminalKeysResolveAwayFromAReusedPaneId() = runBlocking {
         val remote = Remote().apply { panes = listOf(replacement, moved) }
         remote.client.sendTerminalKeys(selected, listOf("down"), remote.connection) { true }

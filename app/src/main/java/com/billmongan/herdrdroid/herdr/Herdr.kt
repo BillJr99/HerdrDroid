@@ -869,6 +869,28 @@ class Herdr internal constructor(
         if (core) runWrite(hcCmd("keys", paneId, *keys), expectedConnection = expectedConnection)
         else runWrite(cmd("pane", "send-keys", paneId, *keys), expectedConnection = expectedConnection)
 
+    /** Bracket the screen read so an unrelated occupant at a reused public ID is never painted. */
+    internal suspend fun readTerminalFrame(pane: Pane, connection: Any, read: suspend (Pane) -> String): Pair<Pane, String> {
+        if (core) return pane to read(pane)
+        suspend fun lookup(id: String): Pane? = try {
+            relayPane(id, connection)
+        } catch (e: HerdrError) {
+            if (!e.isMissingPane(id)) throw e
+            null
+        }
+        val original = lookup(pane.id)
+        val live = original?.takeIf { pane.matchesTerminal(it) } ?: run {
+            val resolved = resolveTerminalPane(pane, connection)
+            lookup(resolved.id)?.takeIf { pane.matchesTerminal(it) } ?: throw terminalUnavailable()
+        }
+        val screen = try { read(live) } catch (e: HerdrError) {
+            if (!e.isMissingPane(live.id)) throw e
+            throw terminalUnavailable()
+        }
+        if (lookup(live.id)?.let { sameOccupant(live, it) } != true) throw terminalUnavailable()
+        return live to screen
+    }
+
     /**
      * Terminal keys target a specific terminal, even when Herdr changes its public pane ID.
      * Only Herdr's explicit lookup rejection establishes that no key could have been sent.
@@ -878,9 +900,10 @@ class Herdr internal constructor(
             if (connectionIdentity !== connection || !stillCurrent())
                 throw HerdrError("the computer, connection, or open terminal changed. Open the terminal and try again.", 1)
         }
+        fun permit() = WritePermit { connectionIdentity === connection && stillCurrent() }
         checkTarget()
         if (core) {
-            sendKeys(pane.id, *keys.toTypedArray(), expectedConnection = connection)
+            runWrite(hcCmd("keys", pane.id, *keys.toTypedArray()), expectedConnection = connection, permit = permit())
             return
         }
         suspend fun dispatch(live: Pair<Pane, String>): Boolean {
@@ -888,7 +911,7 @@ class Herdr internal constructor(
             checkTarget()
             val command = occupantCheckCommand(target.id, digest) + " && echo $OCCUPANT_PASSED_MARK && " +
                 cmd("pane", "send-keys", target.id, *keys.toTypedArray())
-            val result = runWriteResult(command, connection, permit = null)
+            val result = runWriteResult(command, connection, permit = permit())
             if (result.exit == 0) return true
             val lines = result.out.lines().map { it.trim() }
             val why = result.terminalFailureMessage()
