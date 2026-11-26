@@ -170,7 +170,11 @@ internal fun alertPlan(prompt: com.billmongan.herdrdroid.herdr.Prompt, terminalR
     // 2.1.4: "Type something." and "Chat about this" are one "Type your answer" reply button.
     val merged = com.billmongan.herdrdroid.herdr.typedChatPair(prompt.choices)?.first
     // 2.2.8: an option the card shows disabled (never sent) is never an alert button.
-    val answers = com.billmongan.herdrdroid.herdr.shownChoices(prompt.choices).filter { com.billmongan.herdrdroid.herdr.blockedChoiceReason(it) == null }.map { c ->
+    val answers = com.billmongan.herdrdroid.herdr.shownChoices(prompt.choices).filter {
+        com.billmongan.herdrdroid.herdr.blockedChoiceReason(it) == null &&
+            it.keys != com.billmongan.herdrdroid.herdr.OMP_STEER &&
+            !it.keys.startsWith("grok-privacy:")
+    }.map { c ->
         if (c == merged && reply) return@map AlertButton(com.billmongan.herdrdroid.herdr.TYPED_ANSWER_LABEL, choice = c, typed = true)
         // 2.2.2: the button reads the label as the card shows it (no marker, gutter or hint); its answer keeps c.label.
         val display = com.billmongan.herdrdroid.ui.QuestionText.label(if (c == merged) c.label else com.billmongan.herdrdroid.herdr.shownChoiceLabel(prompt.choices, c), c.keys)

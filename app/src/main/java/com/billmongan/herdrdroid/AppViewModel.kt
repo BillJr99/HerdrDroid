@@ -4518,17 +4518,6 @@ class AppViewModel internal constructor(
             shortRecent = { h.read(paneId, 40, preserveGlyphs = true) },
         )
 
-    /**
-     * The notification Reply's check (Grok re-review H1, 2.1.1): the 80-line read alone, with no
-     * card-recovery fallback. Null when it fails.
-     */
-    private suspend fun strictNotifyRead(h: Herdr, paneId: String): String? =
-        try { h.read(paneId, NOTIFY_READ_LINES, preserveGlyphs = true) } catch (_: HerdrError) { null }
-
-    /** [strictNotifyRead] with its styles kept (2.1.2), for an OpenCode alert's answer. Null when it fails. */
-    private suspend fun strictStyledNotifyRead(h: Herdr, paneId: String): String? =
-        try { h.readStrictStyled(paneId, NOTIFY_READ_LINES) } catch (_: HerdrError) { null }
-
     /** Read fresh output for the card before accepting an answer. */
     private suspend fun readForCard(h: Herdr, paneId: String, lines: Int = 80): String? =
         try { readPaneScreen(h, paneId, lines) } catch (_: HerdrError) { null }
@@ -6657,40 +6646,44 @@ class AppViewModel internal constructor(
         if (!locked) startBackgroundChecks()
     }
 
-    /**
-     * Whether [p] can take a guarded answer from an alert (2.1.2): the herdr TUI backend, its live
-     * screen at the bottom (no scrollback), and a stable occupant, as a chat card requires.
-     */
-    private fun guardedAlertPane(h: Herdr, p: Pane): Boolean =
-        h.backend == Backend.TUI && p.scrollOffset == 0 && com.billmongan.herdrdroid.herdr.hasStableOccupant(p)
+    private data class AlertViewport(val pane: Pane, val raw: String, val occupant: String) {
+        fun prompt() = detectPrompt(
+            if (isOpenCode(pane.agent) || pane.agent.equals("muse", true)) raw
+            else com.billmongan.herdrdroid.herdr.stripAnsi(raw),
+            blocked = true, agent = pane.agent,
+        )
+        fun guard(prompt: Prompt?) = com.billmongan.herdrdroid.herdr.CardGuard(
+            occupant, com.billmongan.herdrdroid.herdr.cardGuardScreen(raw, prompt, pane.agent),
+        )
+    }
 
-    /**
-     * Why an alert's answer to a guarded question [now] (Hermes's clarify, OpenCode's question
-     * dialog, Muse's quota warning) is not sent, or null to send [nav] (2.1.2).
-     */
-    private suspend fun guardedAlertRefusal(h: Herdr, a: NotifyAction, now: Prompt, nav: List<String>?): String? {
-        val unsure = "The app couldn't confirm this question is still the one on screen, so nothing was sent."
-        if (a.isKey) {
-            // Esc only where the card offers it: not Hermes's clarify, whose card leaves cancelling to Terminal.
-            if (now.hermesClarify || a.keys != "esc") return unsure
-        } else {
-            if (nav.isNullOrEmpty()) return if (now.museQuota) "The app couldn't see which option Muse has highlighted, so nothing was sent." else unsure
-            val allowed = if (now.museQuota) setOf("up", "down", "left", "right", "enter") else null
-            if (allowed != null && nav.any { it !in allowed }) return unsure
-            // A digit only where the card itself types one (numberKeys).
-            if (allowed == null && (!now.numberKeys || nav.size != 1)) return unsure
+    private fun alertSourceCurrent(h: Herdr, server: String, connection: Any): Boolean =
+        !locked && h.connectionIdentity === connection &&
+            if (server == current?.id) herdr === h && link == Link.CONNECTED else fleet?.herdr(server) === h
+
+    private suspend fun readAlertViewport(h: Herdr, a: NotifyAction, connection: Any): AlertViewport? {
+        if (h.backend != Backend.TUI || !alertSourceCurrent(h, a.serverId, connection)) return null
+        val (pane, occupant) = h.cardPaneGuarded(a.paneId, connection) ?: return null
+        if (occupant == null || !hasStableOccupant(pane) ||
+            a.agent != null && !a.agent.equals(pane.agent, true)) return null
+        val raw = h.readStyledViewport(a.paneId, connection)
+        if (!alertSourceCurrent(h, a.serverId, connection) || com.billmongan.herdrdroid.herdr.stripAnsi(raw).isBlank()) return null
+        return AlertViewport(pane, raw, occupant)
+    }
+
+    private suspend fun sendAlertInput(h: Herdr, a: NotifyAction, connection: Any, view: AlertViewport,
+        prompt: Prompt?, input: com.billmongan.herdrdroid.herdr.CardInput) {
+        if (!alertSourceCurrent(h, a.serverId, connection) || probePane(a.serverId, a.paneId))
+            throw com.billmongan.herdrdroid.herdr.CardCheckFailed()
+        // Bound to precisely this viewport and occupant on the host, under the same connection.
+        val lane = a.serverId to a.paneId
+        val permit = writeGate.open(lane) ?: throw com.billmongan.herdrdroid.herdr.CardCheckFailed()
+        try {
+            h.sendCardInput(a.paneId, input, view.guard(prompt), connection, permit,
+                shellOnly = a.serverId in noPython3, onShellFallback = { shellCheckFallback(a.serverId) })
+        } finally {
+            writeGate.finish(lane, permit)
         }
-        if (now.hermesClarify || now.openCodeQuestionFrame != null) {
-            val pane = runCatching { h.panes().firstOrNull { it.id == a.paneId } }.getOrNull() ?: return unsure
-            if (!guardedAlertPane(h, pane)) return unsure
-            if (now.hermesClarify) {
-                // The strict read (no card-recovery fallback) must show the same question too.
-                val strict = strictNotifyRead(h, a.paneId)?.takeUnless { it.isBlank() } ?: return "The pane's screen couldn't be read, so the answer wasn't sent."
-                val again = detectPrompt(strict, blocked = true, agent = a.agent)
-                if (!cardAnswerStillFits(now, again)) return unsure
-            }
-        }
-        return null
     }
 
     /** A notification button: answer only if the same question is still on screen. */
@@ -6725,251 +6718,131 @@ class AppViewModel internal constructor(
             return
         }
         try {
-            answerFromNotificationNow(h, a, app, serverLabel) { notifyAnswered[key] = System.currentTimeMillis() }
+            answerFromNotificationNow(h, a, app) { notifyAnswered[key] = System.currentTimeMillis() }
         } finally {
             answeringCards = answeringCards - flight
             release()
         }
     }
 
-    /**
-     * The merged "Type your answer" alert button (2.1.4): the reply is typed through the question's
-     * typed row ("Type something.") only when the strict read shows the same question, the same
-     * options and the same identity as the alert, and the same typed row paired with "Chat about
-     * this". The highlight is moved to that row from where the live screen has it (never a fixed
-     * digit), the screen is read again to confirm it is there, then the text and Enter go in.
-     * Nothing is ever sent for the "Chat about this" row.
-     */
-    private suspend fun answerTypedFromAlert(h: Herdr, a: NotifyAction, p: Pane, fresh: Prompt?, app: Application, answered: () -> Unit) {
-        fun norm(s: String) = s.filterNot(Char::isWhitespace)
-        val text = a.keys.trim()
-        val same = fresh != null && !fresh.terminalReview && a.question.isNotBlank() && norm(fresh.question) == norm(a.question) &&
-            a.identity == com.billmongan.herdrdroid.notify.alertIdentity(fresh) &&
-            a.options == com.billmongan.herdrdroid.notify.alertOptionsSig(fresh.choices)
-        val row = fresh?.let { com.billmongan.herdrdroid.herdr.typedChatPair(it.choices)?.first }
-            ?.takeIf { it.keys == a.typedRow && norm(it.label) == norm(a.label) }
-        val typed = same && row != null && text.isNotEmpty() && text.none { it == '\n' || it == '\r' } && guardedAlertPane(h, p) &&
-            typeThroughRow(h, p, fresh!!, row) { text }
-        if (!typed) {
-            com.billmongan.herdrdroid.diag.DiagLog.log("answer", "${p.id}: alert typed answer not sent")
-            Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
-                if (same) "The app couldn't move to the answer row for this question, so your reply wasn't typed."
-                else "The question changed before your reply arrived, so nothing was sent.")
-            return
-        }
-        answered()
-        Notify.sending(app, a.serverId, a.paneId, "Answered", text.take(40))
-        withContext(Dispatchers.Main) { noteAnswer(a.paneId, fresh, text, a.serverId) }
-    }
-
-    /** Moves the highlight to [row] from where [fresh] has it, checks it got there, then types (2.1.4). */
-    internal suspend fun typeThroughRow(h: Herdr, p: Pane, fresh: Prompt, row: Choice, text: () -> String): Boolean {
-        // A menu answered by digits has no arrow route to check: typed only when the row is already highlighted.
-        if (fresh.numberKeys && fresh.selected != row.keys) return false
-        val move = (if (fresh.numberKeys) emptyList() else com.billmongan.herdrdroid.herdr.moveKeys(fresh, row)) ?: return false
-        if (move.isNotEmpty()) {
-            h.sendKeys(p.id, *move.toTypedArray())
-            delay(300)
-            val after = strictNotifyRead(h, p.id)?.takeUnless { it.isBlank() } ?: return false
-            val moved = detectPrompt(after, true, p.agent) ?: return false
-            if (moved.question.filterNot(Char::isWhitespace) != fresh.question.filterNot(Char::isWhitespace)) return false
-            val again = moved.choices.firstOrNull { it.keys == row.keys && it.label == row.label } ?: return false
-            if (com.billmongan.herdrdroid.herdr.moveKeys(moved, again)?.isEmpty() != true) return false
-        }
-        h.typeAndEnter(p.id, text())
-        return true
-    }
-
-    /** When each question (server, pane, question text) was last answered from its alert. */
+    /** When each question was last answered from its alert (or a write may have reached it). */
     private val notifyAnswered = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
-    private suspend fun answerFromNotificationNow(h: Herdr, a: NotifyAction, app: Application, serverLabel: String, answered: () -> Unit) {
-        // A typed reply: sent as a message (as the answer when the agent is waiting on a question).
-        if (a.isReply) {
-            var claudePane = a.agent.equals("claude", true)
-            runCatching {
-                val p = h.panes().firstOrNull { it.id == a.paneId } ?: return
-                claudePane = claudePane || p.agent.equals("claude", true)
-                // 2.1.1 (Grok's RC review, H1): read the screen again for every agent. Typed text on
-                // Claude's sessions list starts a new session ("describe a task for a new session"),
-                // and a card that takes no typed answer is never typed into from an alert.
-                // Grok re-review H1 (strict notification read): only the 80-line read counts. Card
-                // recovery's 40-line fallback can cut the sessions-list hint (line 6 of 47) off and
-                // look like an ordinary box, so a failed or blank read refuses the reply.
-                val fresh = strictNotifyRead(h, p.id)
-                if (fresh.isNullOrBlank()) {
-                    com.billmongan.herdrdroid.diag.DiagLog.log("answer", "${p.id}: alert reply refused, the screen couldn't be read")
-                    Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
-                        "The pane's screen couldn't be read, so the reply wasn't sent.")
-                    return
-                }
-                // 2.1.4: an agent's usage dialog takes no typing (Grok swallows it), and a usage dialog
-                // the app left open is closed first; the reply is never typed into either.
-                if (usageDialogShown(p.agent, fresh) || (a.serverId == current?.id && usageLeftOpen(p.id))) {
-                    com.billmongan.herdrdroid.diag.DiagLog.log("answer", "${p.id}: alert reply refused, a usage screen is open")
-                    if (a.serverId == current?.id) withContext(Dispatchers.Main) {
-                        closeAppUsage(p.id, "an alert reply was waiting") ?: if (p.status != Status.WORKING)
-                            closeInfoPanel(a.serverId, p.id, "an alert reply was waiting") else null
-                    }
-                    Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
-                        "${p.agentName}'s usage screen is open, so your reply wasn't typed. Close it with Esc first.")
-                    return
-                }
-                val freshCard = detectPrompt(fresh, p.status == Status.NEEDS_YOU, p.agent)
-                if (a.typedRow.isNotEmpty()) {
-                    answerTypedFromAlert(h, a, p, freshCard, app, answered)
-                    return
-                }
-                // 2.1.2: OpenCode's question takes typed text only on its own answer row, opened by
-                // that row's digit after the same checks as its options.
-                if (freshCard?.openCodeQuestionFrame != null) {
-                    // The same question and the same whole frame as the alert's (Grok's RC review HIGH).
-                    val same = a.question.isNotBlank() && freshCard.question.filterNot(Char::isWhitespace) == a.question.filterNot(Char::isWhitespace) &&
-                        a.identity == com.billmongan.herdrdroid.notify.alertIdentity(freshCard) &&
-                        a.options == com.billmongan.herdrdroid.notify.alertOptionsSig(freshCard.choices)
-                    val typed = same && freshCard.openCodeCustom != null && guardedAlertPane(h, p) &&
-                        typeOpenCodeCustom(h, p.id, freshCard, a.keys, null) { strictStyledNotifyRead(h, p.id) }
-                    if (!typed) {
-                        com.billmongan.herdrdroid.diag.DiagLog.log("answer", "${p.id}: alert reply to OpenCode's question not sent")
-                        Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
-                            if (same) "The app couldn't open OpenCode's answer row for this question, so your reply wasn't typed."
-                            else "The question changed before your reply arrived, so nothing was sent.")
-                        return
-                    }
-                    answered()
-                    Notify.sending(app, a.serverId, a.paneId, "Answered", a.keys.take(40))
-                    withContext(Dispatchers.Main) { noteAnswer(a.paneId, freshCard, a.keys, a.serverId) }
-                    return
-                }
-                // A typed reply goes only where the screen asks for typing (2.1.2): a question with
-                // options now on screen takes one of them, not text.
-                if (freshCard != null && freshCard.choices.isNotEmpty()) {
-                    com.billmongan.herdrdroid.diag.DiagLog.log("answer", "${p.id}: alert reply refused, the screen shows a question with options")
-                    Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
-                        "The pane is showing a question with options now, so your reply wasn't typed. Open the app to choose.")
-                    return
-                }
-                if (freshCard?.let { !com.billmongan.herdrdroid.notify.notificationOffersReply(it) || it.terminalReview || it.museQuota || it.openCodePermission } == true) {
-                    com.billmongan.herdrdroid.diag.DiagLog.log("answer", "${p.id}: alert reply refused, the screen takes no typed reply")
-                    Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
-                        if (freshCard?.claudeBackground == true) "Claude's sessions list is on screen, so the reply wasn't sent. Return to the session first."
-                        else "The pane doesn't take a typed reply just now, so it wasn't sent.")
-                    return
-                }
-                if (p.agent?.lowercase() in setOf("codex", "hermes")) {
-                    val current = freshCard
-                    if (current == null || current.terminalReview || current.hermesClarify || current.question.filterNot(Char::isWhitespace) !=
-                        a.question.filterNot(Char::isWhitespace)) {
-                        Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer", "The active question could not be verified.")
-                        return
-                    }
-                }
-                h.sendMessage(p, a.keys)
-                answered()
-                withContext(Dispatchers.Main) { noteAnswer(a.paneId, null, a.keys, a.serverId) }  // after the send
-                if (a.serverId == current?.id && transcriptPane == a.paneId) {
-                    lastSentAt = System.currentTimeMillis()
-                    markSent(a.serverId, a.paneId, a.keys)
-                }
-            }.onFailure {
-                Notify.needsYou(app, a.serverId, servers.firstOrNull { it.id == a.serverId }?.label ?: "", a.paneId, "The agent",
-                    "Your reply couldn't be sent (${it.message}). Open the app to send it.", emptyList(),
-                    // Grok re-review H1: no second Reply into a Claude pane whose screen wasn't proven safe.
-                    reply = !claudePane)
-            }
-            return
-        }
-        // 2.1.2: an OpenCode alert is answered only from the strict 80-line read (no card-recovery
-        // fallback), with its styles kept so a permission's highlighted button can be seen.
-        // 2.1.2: Muse's quota warning shows its highlight only in colour, so its alert reads with styles too.
-        val styled = isOpenCode(a.agent) || a.agent.equals("muse", true)
-        val text = if (styled) runCatching { strictStyledNotifyRead(h, a.paneId) }.getOrNull()
-            else runCatching { readForCard(h, a.paneId, NOTIFY_READ_LINES) }.getOrNull()
-        if (text.isNullOrBlank() || com.billmongan.herdrdroid.herdr.stripAnsi(text).isBlank()) {
-            // Not "the question changed": the app couldn't see (1.4.2, from review).
-            Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer", "The pane's screen couldn't be read, so the answer wasn't sent.")
-            return
-        }
-        // The same depth and agent the alert was made with (1.4.2, from review).
-        val now = detectPrompt(text, blocked = true, agent = a.agent)
-        // 2.2.8: an alert never approves everything, nor answers a command the agent shows only in part.
-        // Bill (2026-11-25): an approve-from-now-on option is only ever sent after the app's own confirmation.
-        if (now != null && (now.clipped || now.choices.firstOrNull { it.keys == a.keys }?.let { com.billmongan.herdrdroid.herdr.approvesFromNowOn(it) } == true)) {
-            Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
-                if (now.clipped) "The agent shows only part of the command, so nothing was sent. Open the app to see it whole."
-                else "That option approves from now on, so it is confirmed in the app first. Nothing was sent.")
-            return
-        }
-        // An OpenCode permission (2.1.2): only Esc, Reject, or Allow once moved to from the highlight
-        // this read shows; never Always allow, never a typed digit.
-        val permissionKeys = now?.takeIf { it.openCodePermission }?.let { com.billmongan.herdrdroid.notify.openCodePermissionAlertKeys(it, a) }
-        if (now != null && now.openCodePermission && permissionKeys == null && notificationAnswerStillFits(now, a)) {
-            com.billmongan.herdrdroid.diag.DiagLog.log("answer", "${a.paneId}: OpenCode permission alert not answered, no highlighted button in the strict read")
-            Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
-                "The app couldn't see which button OpenCode has highlighted, so nothing was sent.")
-            return
-        }
-        if (now == null || (now.openCodePermission && permissionKeys == null) || !notificationAnswerStillFits(now, a)) {
-            // The question's words still on screen but not read as that card: say the app couldn't
-            // tell, rather than that it changed.
-            val plain = com.billmongan.herdrdroid.herdr.stripAnsi(text)
-            val stillThere = a.question.isNotBlank() && plain.filterNot { it.isWhitespace() }.contains(a.question.filterNot { it.isWhitespace() }.take(60))
-            Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
-                if (stillThere) "The app couldn't match your answer to the question on screen, so nothing was sent."
-                else "The question changed before your answer arrived, so nothing was sent.")
-            return
-        }
-        // 2.1.2: the questions a chat card answers only through guarded checks (Hermes's clarify,
-        // OpenCode's question dialog, Muse's quota warning) take from an alert only the keys their card
-        // would send: the option's digit or the arrows from the highlight this strict read shows.
-        val navKeys = if (!a.isKey) now.choices.firstOrNull { it.keys == a.keys }?.let { c -> com.billmongan.herdrdroid.herdr.menuKeys(now, c) } else null
-        val guardedAlert = now.hermesClarify || now.openCodeQuestionFrame != null || now.museQuota
-        if (guardedAlert) {
-            val why = guardedAlertRefusal(h, a, now, navKeys)
-            if (why != null) {
-                com.billmongan.herdrdroid.diag.DiagLog.log("answer", "${a.paneId}: alert answer not sent: $why")
-                Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer", why)
-                return
-            }
-        }
-        // A notification carries only question/option text, not the tab or exact command identity.
-        // If its button still fits the previous card, the alert can't prove it's for the new one.
-        val age = recentAnswerAge(a.serverId, a.paneId) { notificationAnswerStillFits(it, a) }
-        if (age != null) {
-            com.billmongan.herdrdroid.diag.DiagLog.log("answer", "${a.paneId}: alert also fits a card answered ${age / 1000} s ago; not sent twice")
-            Notify.sending(app, a.serverId, a.paneId, "Already answered", "")
-            return
-        }
-        var sent = false
-        rememberCardAnswer(a.serverId, a.paneId, now)
+    private suspend fun answerFromNotificationNow(h: Herdr, a: NotifyAction, app: Application, answered: () -> Unit) {
+        fun refuse(reason: String) = Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer", reason)
         try {
-            val label = now.choices.firstOrNull { it.keys == a.keys }?.label ?: if (a.isKey) "Pressed ${a.keys}" else a.keys
-            if (a.keys.startsWith("grok-privacy:")) {
-                val problem = answerGrokPrivacy(h, a.paneId, optIn = a.keys == com.billmongan.herdrdroid.herdr.GROK_PRIVACY_IN)
-                sent = problem == null
-                if (sent) { Notify.sending(app, a.serverId, a.paneId, "Answered", label); withContext(Dispatchers.Main) { noteAnswer(a.paneId, now, label, a.serverId) } }
-                else Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer", problem!!)
+            val connection = h.connectionIdentity ?: run { refuse("The pane's connection could not be verified."); return }
+            val initial = readAlertViewport(h, a, connection) ?: run {
+                refuse("The pane's live screen could not be verified.")
                 return
             }
-            val nav = navKeys
-            if (permissionKeys != null) h.sendKeys(a.paneId, *permissionKeys.toTypedArray())
-            else if (nav != null) h.sendKeys(a.paneId, *nav.toTypedArray())
-            else if (a.isKey) h.sendKeys(a.paneId, a.keys)
-            else if (a.pressEnter) h.typeAndEnter(a.paneId, a.keys)
-            else h.sendText(a.paneId, a.keys)
-            sent = true
+            val now = initial.prompt()
+            if (usageDialogShown(initial.pane.agent, initial.raw) || a.serverId == current?.id && usageLeftOpen(a.paneId)) {
+                refuse("${initial.pane.agentName}'s usage screen is open. Close it before answering.")
+                return
+            }
+            if (now == null || now.terminalReview || now.historyReviewOnly || now.clipped || now.guardedShortcutApproval) {
+                refuse("The active question could not be verified.")
+                return
+            }
+            if (recentAnswerAge(a.serverId, a.paneId) { cardAnswerStillFits(it, now) } != null) {
+                Notify.sending(app, a.serverId, a.paneId, "Already answered", "")
+                return
+            }
+            val label: String
+            var destination = initial
+            var destinationPrompt: Prompt? = now
+            val input: com.billmongan.herdrdroid.herdr.CardInput
+            if (a.isReply) {
+                fun norm(value: String) = value.filterNot(Char::isWhitespace)
+                val text = a.keys.trim()
+                val matches = a.question.isNotBlank() && norm(now.question) == norm(a.question) &&
+                    a.identity == com.billmongan.herdrdroid.notify.alertIdentity(now) &&
+                    a.options == com.billmongan.herdrdroid.notify.alertOptionsSig(now.choices)
+                if (!matches || !com.billmongan.herdrdroid.notify.notificationOffersReply(now) ||
+                    text.isEmpty() || text.any(Char::isISOControl)) {
+                    refuse("The active question or its typed reply could not be verified.")
+                    return
+                }
+                if (a.typedRow.isNotEmpty()) {
+                    val row = com.billmongan.herdrdroid.herdr.typedChatPair(now.choices)?.first
+                        ?.takeIf { it.keys == a.typedRow && norm(it.label) == norm(a.label) }
+                    if (row == null || now.numberKeys && now.selected != row.keys) {
+                        refuse("The typed answer row could not be verified.")
+                        return
+                    }
+                    val move = if (now.numberKeys) emptyList() else com.billmongan.herdrdroid.herdr.moveKeys(now, row)
+                    if (move == null) { refuse("The typed answer row could not be verified."); return }
+                    if (move.isNotEmpty()) {
+                        sendAlertInput(h, a, connection, initial, now, com.billmongan.herdrdroid.herdr.CardInput.Keys(move))
+                        delay(300)
+                        val reread = readAlertViewport(h, a, connection)
+                        val live = reread?.prompt()
+                        if (reread == null || reread.occupant != initial.occupant || live == null ||
+                            !cardAnswerStillFits(now, live) || com.billmongan.herdrdroid.herdr.moveKeys(live, row)?.isEmpty() != true) {
+                            refuse("The typed answer row could not be verified after moving.")
+                            return
+                        }
+                        destination = reread
+                        destinationPrompt = live
+                    }
+                } else if (now.openCodeQuestionFrame != null) {
+                    val digit = now.openCodeCustom ?: run { refuse("The typed answer row could not be verified."); return }
+                    sendAlertInput(h, a, connection, initial, now, com.billmongan.herdrdroid.herdr.CardInput.Keys(listOf(digit)))
+                    delay(300)
+                    val reread = readAlertViewport(h, a, connection)
+                    if (reread == null || reread.occupant != initial.occupant ||
+                        com.billmongan.herdrdroid.herdr.openCodeQuestionEditing(reread.raw)?.let(::norm) != norm(now.question)) {
+                        refuse("OpenCode's typed answer row could not be verified.")
+                        return
+                    }
+                    destination = reread
+                    destinationPrompt = null
+                } else if (now.choices.isNotEmpty()) {
+                    refuse("This question has options. Open the app to choose one.")
+                    return
+                }
+                label = text
+                input = com.billmongan.herdrdroid.herdr.CardInput.Text(text, enter = true)
+            } else {
+                val choice = now.choices.firstOrNull { it.keys == a.keys }
+                if (!notificationAnswerStillFits(now, a) ||
+                    choice?.let { com.billmongan.herdrdroid.herdr.approvesFromNowOn(it) ||
+                        com.billmongan.herdrdroid.herdr.blockedChoiceReason(it) != null } == true ||
+                    a.keys == com.billmongan.herdrdroid.herdr.OMP_STEER || a.keys.startsWith("grok-privacy:")) {
+                    refuse("This option must be answered in the app.")
+                    return
+                }
+                val keys = when {
+                    now.openCodePermission -> com.billmongan.herdrdroid.notify.openCodePermissionAlertKeys(now, a)
+                    a.isKey -> listOf("esc").takeIf { a.keys == "esc" && !now.hermesClarify }
+                    choice != null -> com.billmongan.herdrdroid.herdr.menuKeys(now, choice)
+                    else -> null
+                }
+                if (keys != null) {
+                    input = com.billmongan.herdrdroid.herdr.CardInput.Keys(keys)
+                } else if (!a.isKey && choice != null && !now.openCodePermission && now.openCodeQuestionFrame == null &&
+                    !now.hermesClarify && !now.museQuota && now.claudeCheckboxAction == null) {
+                    input = com.billmongan.herdrdroid.herdr.CardInput.Text(choice.keys, choice.pressEnter)
+                } else {
+                    refuse("The active option could not be verified.")
+                    return
+                }
+                label = choice?.label ?: "Pressed Esc"
+            }
+            sendAlertInput(h, a, connection, destination, destinationPrompt, input)
+            rememberCardAnswer(a.serverId, a.paneId, now)
             answered()
-            Notify.sending(app, a.serverId, a.paneId, "Answered", label)
-            // Recorded once it was sent (1.3.2); a failure here is not a failed answer.
-            runCatching { withContext(Dispatchers.Main) { noteAnswer(a.paneId, now, label, a.serverId) } }
+            Notify.sending(app, a.serverId, a.paneId, "Answered", label.take(40))
+            runCatching { noteAnswer(a.paneId, now, label, a.serverId) }
         } catch (c: CancellationException) {
-            // The alert never stays on "Sending" (1.4.2, from review).
-            Notify.sending(app, a.serverId, a.paneId, if (sent) "Answered" else "Open HerdrDroid to answer", if (sent) "" else "The answer wasn't sent.")
+            refuse("The answer could not be confirmed.")
             throw c
-        } catch (e: Exception) {
-            // Only a send that didn't go out is reported, so answering again can't send it twice.
-            if (!sent) Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
-                "Your answer couldn't be sent (${e.message ?: e.javaClass.simpleName}).")
+        } catch (_: com.billmongan.herdrdroid.herdr.DeliveryUncertain) {
+            answered()
+            refuse("The answer may have been sent. Check the pane before answering again.")
+        } catch (_: Exception) {
+            refuse("The active question, pane or connection could not be verified.")
         }
     }
 
@@ -7003,7 +6876,11 @@ class AppViewModel internal constructor(
 
     /** Switches to another watched server from the "needs you" list. */
     fun switchTo(serverId: String, paneId: String?, voice: Boolean = false) {
-        if (serverId == current?.id && herdr != null) { paneId?.let { openPane(it, "drawer") }; return }
+        if (serverId == current?.id && herdr != null) {
+            if (connecting) cancelConnect()
+            paneId?.let { openPane(it, "drawer") }
+            return
+        }
         val s = servers.firstOrNull { it.id == serverId } ?: return
         if (!canSignInSilently(s)) { cancelConnect(); screen = Screen.Servers; return }
         // If that server doesn't answer, come back to the agent you were on (its connection is
