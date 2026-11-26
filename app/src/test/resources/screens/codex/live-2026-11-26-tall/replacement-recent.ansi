@@ -1,0 +1,35 @@
+
+  [1mWould you like to run the following command?[0m
+
+  Environment: [1mlocal[0m
+
+  Reason: [3mSynthetic long approval fixture. Cancel without executing.[0m
+
+  $ /usr/bin/printf '%s\n' replaced-000 replaced-001 replaced-002 replaced-003
+  replaced-004 replaced-005 replaced-006 replaced-007 replaced-008 replaced-009
+  replaced-010 replaced-011 replaced-012 replaced-013 replaced-014 replaced-015
+  replaced-016 replaced-017 replaced-018 replaced-019 replaced-020 replaced-021
+  replaced-022 replaced-023 replaced-024 replaced-025 replaced-026 replaced-027
+  replaced-028 replaced-029 replaced-030 replaced-031 replaced-032 replaced-033
+  replaced-034 replaced-035 replaced-036 replaced-037 replaced-038 replaced-039
+  replaced-040 replaced-041 replaced-042 replaced-043 replaced-044 replaced-045
+  replaced-046 replaced-047 replaced-048 replaced-049 replaced-050 replaced-051
+  replaced-052 replaced-053 replaced-054 replaced-055 replaced-056 replaced-057
+  replaced-058 replaced-059 replaced-060 replaced-061 replaced-062 replaced-063
+  replaced-064 replaced-065 replaced-066 replaced-067 replaced-068 replaced-069
+  replaced-070 replaced-071 replaced-072 replaced-073 replaced-074 replaced-075
+  replaced-076 replaced-077 replaced-078 replaced-079 replaced-080 replaced-081
+  replaced-082 replaced-083 replaced-084 replaced-085 replaced-086 replaced-087
+  replaced-088 replaced-089 replaced-090 replaced-091 replaced-092 replaced-093
+  replaced-094 replaced-095 replaced-096 replaced-097 replaced-098 replaced-099
+  replaced-100 replaced-101 replaced-102 replaced-103 replaced-104 replaced-105
+  replaced-106 replaced-107 replaced-108 replaced-109 replaced-110 replaced-111
+  replaced-112 replaced-113 replaced-114 replaced-115 replaced-116 replaced-117
+  replaced-118 replaced-119 replaced-120 replaced-121 replaced-122 replaced-123
+  replaced-124 replaced-125 replaced-126 replaced-127 replaced-128 replaced-129
+  replaced-130 replaced-131 replaced-132 replaced-133 replaced-134 replaced-135
+  [2m[… 77 lines] [0;1m^a[0;2m view all                                                           [0m
+[1;7m› 1. Yes, proceed (y)
+[0m  2. Yes, and don't ask again for commands that start with `/usr/bin/printf "%s\\n"
+     replaced-000 replaced-001 replaced-002 replaced-003 replaced-004 replaced-005
+  [2mPress [0;1menter[0;2m to confirm or [0;1mesc[0;2m to cancel
