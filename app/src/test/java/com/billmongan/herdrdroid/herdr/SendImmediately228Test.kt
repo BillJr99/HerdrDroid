@@ -89,7 +89,11 @@ class SendImmediately228Test {
     @Test fun `which agents send immediately, and why the others don't`() {
         // 2.2.8 (Bill: "capture screens first"): Claude, Grok and Agy show the move; OpenCode and Muse don't.
         for (a in listOf("claude", "grok", "agy")) assertNull(a, backgroundSupport(a, a))
-        for (a in listOf("opencode", "muse")) assertTrue(a, backgroundSupport(a, a)!!.contains("Ctrl+B"))
+        for (a in listOf("opencode", "OpenCode-custom")) {
+            assertEquals("The app can’t verify a shortcut that moves a running OpenCode task to the background. Use Terminal.",
+                backgroundSupport(a, "OpenCode"))
+        }
+        assertTrue(backgroundSupport("muse", "Muse")!!.contains("Ctrl+B"))
         for (a in listOf("codex", "omp", "pi", "copilot", "kiro", "vibe", "hermes")) assertTrue(a, backgroundSupport(a, a)!!.contains("no key"))
         assertTrue(foregroundHint("claude", withHint))
         assertFalse(foregroundHint("grok", withHint))

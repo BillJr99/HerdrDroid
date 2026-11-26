@@ -225,9 +225,10 @@ internal const val BACKGROUND_REFUSED_EXIT = 6
  * Whether the app can move [agent]'s foreground work to the background for Send immediately, and if
  * not, why (2.2.8). Null: it can.
  */
-internal fun backgroundSupport(agent: String?, agentName: String): String? = when (agent?.lowercase()) {
+internal fun backgroundSupport(agent: String?, agentName: String): String? = when (ruleAgent(agent)) {
     "claude", "grok", "agy" -> null
-    "opencode", "muse" ->
+    "opencode" -> "The app can’t verify a shortcut that moves a running $agentName task to the background. Use Terminal."
+    "muse" ->
         "$agentName takes Ctrl+B, but its screen shows no sign a command moved, so the app can't check it. Use Terminal."
     else -> "$agentName has no key that moves a running task to the background, so this waits until it is idle."
 }
