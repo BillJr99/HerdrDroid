@@ -6573,6 +6573,22 @@ class AppViewModel internal constructor(
     /** Each pane's running alert confirmation (2.2.2), "server|pane" to job: one at a time per pane. */
     private val alertJobs = HashMap<String, Job>()
 
+    private suspend fun readCodexAlertViewport(h: Herdr, pane: Pane, connection: Any): String? {
+        if (h.backend != Backend.TUI || pane.scrollOffset?.let { it != 0 } == true) return null
+        return try {
+            if (h.cardPane(pane.id, connection)?.sameCardOccupant(pane) != true) return null
+            h.readCardViewport(pane.id, connection, timeoutSeconds = 3).takeUnless { it.isBlank() }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun codexAlertIsQueued(text: String): Boolean =
+        com.billmongan.herdrdroid.herdr.codexFollowUpRows(text).isNotEmpty() &&
+            detectPrompt(text, blocked = true, agent = "codex") == null
+
     internal fun noticeChanges(serverId: String, serverLabel: String, seen: List<Pane>, client: () -> Herdr?) {
         if (!watching) {
             alertOrigins.keys.removeAll { it.first == serverId }
@@ -6590,6 +6606,22 @@ class AppViewModel internal constructor(
                 if (Notify.isShowing(app, serverId, p.id)) Notify.clear(app, serverId, p.id)
                 continue
             }
+            val codexWaiting = p.agent.equals("codex", true) && p.status == Status.NEEDS_YOU
+            if (before == p.status && codexWaiting &&
+                alertJobs[key]?.isActive != true && Notify.isShowing(app, serverId, p.id)) {
+                alertJobs[key] = viewModelScope.launch {
+                    val h = client() ?: return@launch
+                    val connection = h.connectionIdentity ?: return@launch
+                    val live = readCodexAlertViewport(h, p, connection) ?: return@launch
+                    if (!isActive || !watching || lastStatus[key] != Status.NEEDS_YOU ||
+                        h !== client() || h.connectionIdentity !== connection || probePane(serverId, p.id)) return@launch
+                    if (codexAlertIsQueued(live)) {
+                        alertOrigins.remove(serverId to p.id)
+                        Notify.clear(app, serverId, p.id)
+                    }
+                }
+                continue
+            }
             if (before == null || before == p.status || p.agent == null) continue
             // A new state ends both the old read and its authority to answer.
             alertOrigins.remove(serverId to p.id)
@@ -6602,7 +6634,15 @@ class AppViewModel internal constructor(
                     // alert carries is computed from the same text the tap compares it with.
                     val alertClient = client()
                     val alertConnection = alertClient?.connectionIdentity
-                    var text = runCatching { alertClient?.read(p.id, NOTIFY_READ_LINES, preserveGlyphs = true) }.getOrNull().orEmpty()
+                    val live = if (codexWaiting && alertClient != null && alertConnection != null)
+                        readCodexAlertViewport(alertClient, p, alertConnection) else null
+                    if (!isActive || probePane(serverId, p.id)) return@launch
+                    if (live != null && (alertClient !== client() || alertClient?.connectionIdentity !== alertConnection)) return@launch
+                    if (live != null && codexAlertIsQueued(live)) {
+                        Notify.clear(app, serverId, p.id)
+                        return@launch
+                    }
+                    var text = live ?: runCatching { alertClient?.read(p.id, NOTIFY_READ_LINES, preserveGlyphs = true) }.getOrNull().orEmpty()
                     if (!isActive || probePane(serverId, p.id)) return@launch
                     // A screen that couldn't be read: one plain notice, no question and no Reply (1.4.2, from review).
                     if (text.isBlank()) { Notify.unread(app, serverId, serverLabel, p.id, p.agentName); return@launch }
@@ -6635,7 +6675,14 @@ class AppViewModel internal constructor(
                             delay(com.billmongan.herdrdroid.herdr.ALERT_CONFIRM_PAUSE_MS)
                             if (!stillWanted()) null
                             // A failed read is skipped, not the end: the next one may confirm.
-                            else runCatching { alertClient?.read(p.id, NOTIFY_READ_LINES, preserveGlyphs = true) }.getOrNull().orEmpty()
+                            else if (codexWaiting && alertClient != null && alertConnection != null) {
+                                val next = readCodexAlertViewport(alertClient, p, alertConnection)
+                                if (next != null && stillWanted() && alertClient === client() &&
+                                    alertClient.connectionIdentity === alertConnection && codexAlertIsQueued(next)) {
+                                    Notify.clear(app, serverId, p.id)
+                                }
+                                next.orEmpty()
+                            } else runCatching { alertClient?.read(p.id, NOTIFY_READ_LINES, preserveGlyphs = true) }.getOrNull().orEmpty()
                         }
                         if (got == null || !stillWanted()) {
                             com.billmongan.herdrdroid.diag.DiagLog.log("watch", "${p.id}: question not confirmed, or the alert was opened or dismissed; the alert stays as it is")

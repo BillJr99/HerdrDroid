@@ -172,6 +172,50 @@ class OpenCodeAlert212Test {
         Notify.clear(app, server.id, ordinary.id)
     }
 
+    @Test fun codexQueuedViewportWithdrawsAnAlertEvenWhileNativeStatusIsStillBlocked() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        Notify.channels(app)
+        vm.changeWatching(true)
+        val queued = res("/screens/codex/derived-2.2.8-queued-inputs/queued-inputs.txt")
+        val fake = Fake(queued, status = "blocked", agent = "codex")
+        val blocked = pane("codex", Status.NEEDS_YOU)
+        val poll = { vm.noticeChanges(server.id, server.label, listOf(blocked)) { fake.client } }
+        poll()
+        Notify.unread(app, server.id, server.label, blocked.id, blocked.agentName)
+        try {
+            fake.visibleFails = true
+            poll()
+            shadowOf(Looper.getMainLooper()).idle()
+            assertTrue(Notify.isShowing(app, server.id, blocked.id))
+            fake.visibleFails = false
+            poll()
+            shadowOf(Looper.getMainLooper()).idle()
+            assertFalse(Notify.isShowing(app, server.id, blocked.id))
+            val reads = fake.commands.size
+            poll()
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(reads, fake.commands.size)
+        } finally {
+            Notify.clear(app, server.id, blocked.id)
+        }
+    }
+
+    @Test fun codexBlockedTransitionWithAQueuedViewportDoesNotPostAnAlert() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        Notify.channels(app)
+        vm.changeWatching(true)
+        val queued = res("/screens/codex/derived-2.2.8-queued-inputs/queued-inputs.txt")
+        val fake = Fake(queued, status = "blocked", agent = "codex")
+        val working = pane("codex", Status.WORKING)
+        vm.noticeChanges(server.id, server.label, listOf(working)) { fake.client }
+        vm.noticeChanges(server.id, server.label, listOf(working.copy(status = Status.NEEDS_YOU))) { fake.client }
+        shadowOf(Looper.getMainLooper()).idle()
+        assertTrue(fake.commands.any { "'--source' 'visible'" in it })
+        assertFalse(Notify.isShowing(app, server.id, working.id))
+    }
+
     @Test fun theAlertOffersEveryButtonWithNoReply() {
         val app = ApplicationProvider.getApplicationContext<Application>()
         shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
@@ -445,12 +489,14 @@ class OpenCodeAlert212Test {
     }
 
     /** One OpenCode pane (and optionally a Claude pane) on a fake herdr; reads give the last N lines of [screen]. */
-    private class Fake(@Volatile var screen: String, private val status: String, withClaude: Boolean = false, core: Boolean = false) : Herdr.Commands {
+    private class Fake(@Volatile var screen: String, private val status: String, withClaude: Boolean = false, core: Boolean = false,
+        private val agent: String = "opencode",
+    ) : Herdr.Commands {
         val ssh = HerdrSsh("127.0.0.1", 2, "fake", Credentials(null, null), null, { null })
         val client = Herdr(ssh, "/fixture/herdr", if (core) Backend.CORE else Backend.TUI, if (core) "/fixture/hc" else null, this)
         override var connection: Any? = Any()
         var terminal = "t1"
-        private val paneJson get() = """{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1","agent":"opencode","agent_status":"$status","screen_detection_skipped":true,"cwd":"/fixture","terminal_id":"$terminal","scroll":{"offset_from_bottom":0}}"""
+        private val paneJson get() = """{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1","agent":"$agent","agent_status":"$status","screen_detection_skipped":true,"cwd":"/fixture","terminal_id":"$terminal","scroll":{"offset_from_bottom":0}}"""
         private val claudeJson = """{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t2","agent":"claude","agent_status":"idle","cwd":"/fixture","terminal_id":"t2","scroll":{"offset_from_bottom":0}}"""
         private val listJson = if (withClaude) "$paneJson,$claudeJson" else paneJson
         val commands = java.util.Collections.synchronizedList(mutableListOf<String>())
