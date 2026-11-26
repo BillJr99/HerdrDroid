@@ -951,10 +951,13 @@ class AppViewModel internal constructor(
                 // it is used again at once after one quick check, with no sign-in or detection.
                 // Or the watcher's own live connection to it, so switching servers from the drawer
                 // is quick too.
-                val kept = parked?.takeIf { it.serverId == server.id && System.currentTimeMillis() - it.at < PARK_MILLIS }
-                    ?: fleet?.take(server.id)?.let { (fs, fh) -> Parked(server.id, fs, fh, fh.backend, System.currentTimeMillis()) }
+                val previous = parked
                 parked = null
                 parkJob?.cancel()
+                val fromPark = previous?.takeIf { it.serverId == server.id && System.currentTimeMillis() - it.at < PARK_MILLIS }
+                if (fromPark == null) previous?.ssh?.close()
+                val kept = fromPark
+                    ?: fleet?.take(server.id)?.let { (fs, fh) -> Parked(server.id, fs, fh, fh.backend, System.currentTimeMillis()) }
                 val reused = kept != null && runCatching { kotlinx.coroutines.withTimeout(6_000) { kept.herdr.check() } }.isSuccess
                 if (kept != null && !reused) kept.ssh.close()
                 if (!isActive || run != connectRun) {
