@@ -123,6 +123,42 @@ class Corpus228Test {
         assertNull(blockedChoiceReason(Choice("Yes, allow", "1", false)))
     }
 
+    @Test fun truncatedGrokApprovalIsBlockedInLightAndUnboxedLayouts() {
+        val boxed = """
+            ╭────────────────────────────────────────────────╮
+            │  ›  List the sample values                     │
+            │  │ printf sample                               │
+            │                                                │
+            │  1 (○) Yes, a…                                 │
+            │  2 (●) Yes, proceed                            │
+            │  3 (○) No, reject (type to add feedback)        │
+            │  4 (○) Never allow: list sample values          │
+            │                                                │
+            ╰────────────────────────────────────────────────╯
+
+            1/4:select  │  Tab:next option  │  Esc:scrollback
+        """.trimIndent()
+        val plain = """
+            List the sample values: printf sample
+
+            1 (○) Yes, a…
+            2 (●) Yes, proceed
+            3 (○) No, reject (type to add feedback)
+            4 (○) Never allow: list
+                  sample values
+
+            1/4:select
+                │  Tab:next option  │  Esc:scrollback
+        """.trimIndent()
+        for (screen in listOf(boxed, plain)) {
+            val card = checkNotNull(detectPrompt(screen, true, "grok"))
+            val cut = card.choices.single { it.keys == "1" }
+            assertEquals(AMBIGUOUS_CHOICE_REASON, blockedChoiceReason(cut))
+            assertNull(approveAllAsk(card, cut)?.keys)
+            assertNull(blockedChoiceReason(card.choices.single { it.keys == "2" }))
+        }
+    }
+
     @Test fun ordinaryGrokYesAnswersStaySelectable() {
         val plain = checkNotNull(detectPrompt("Continue reviewing the sample? [y/n]", true, "grok"))
         assertEquals(listOf("y", "n"), plain.choices.map { it.keys })
