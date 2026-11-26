@@ -104,7 +104,7 @@ internal fun crossServerProposalFrames(output: String, agent: String?, items: Li
     }
     return candidates.filter { frame ->
         val sameCode = replies.filter { it.code == frame.code }
-        if (sameCode.isNotEmpty()) sameCode.all { it == frame } else frame in marked
+        if (items.isNotEmpty()) sameCode.isNotEmpty() && sameCode.all { it == frame } else frame in marked
     }
 }
 
