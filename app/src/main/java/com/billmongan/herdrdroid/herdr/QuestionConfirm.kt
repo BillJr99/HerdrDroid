@@ -312,11 +312,11 @@ internal suspend fun confirmByReads(first: String, firstPrompt: Prompt, agent: S
 private val CLAUDE_SINGLE_TAB = Regex("""^☐\s+\S.{0,24}$""")
 private val CLAUDE_PREVIEW_OPTION = Regex("""^\s*[❯›]?\s*\d{1,2}[.)]\s+(\S.*)$""")
 
-private fun claudeAskFooter(row: String): Boolean = row.trim().let {
+internal fun claudeAskFooter(row: String): Boolean = row.trim().let {
     it.startsWith("Enter to select · ") && it.endsWith(" · Esc to cancel") && "to navigate" in it
 }
 
-private fun claudeAskTab(row: String): Boolean = parseTabBar(row) != null || CLAUDE_SINGLE_TAB.matches(row.trim())
+internal fun claudeAskTab(row: String): Boolean = parseTabBar(row) != null || CLAUDE_SINGLE_TAB.matches(row.trim())
 
 private val CLAUDE_PREVIEW_TOP = Regex("""┌─+┐\s*""")
 
@@ -356,12 +356,12 @@ internal fun claudeClippedAskReview(text: String): Prompt? {
     val parts = questionParts(listOf(QLine(heading)))
     val details = body.filter { it.isNotBlank() }.map { QBlock(QKind.TEXT, it.trim()) }
     return Prompt(heading, emptyList(), region = body + rows[footer],
-        terminalReview = true, parts = parts.copy(blocks = details))
+        terminalReview = true, topOffScreen = true, parts = parts.copy(blocks = details))
 }
 
 /** Keep an identifiable Claude dialog readable without making unconfirmed choices actionable. */
-internal fun claudeReviewPreview(text: String, parsed: Prompt?): Prompt? {
-    val rows = withoutClaudeChromeUnderDialog(stripAnsi(text)).lines().takeLast(80)
+internal fun claudeReviewPreview(text: String, parsed: Prompt?, maxRows: Int = 80): Prompt? {
+    val rows = withoutClaudeChromeUnderDialog(stripAnsi(text)).lines().takeLast(maxRows)
     val footer = rows.indexOfLast { it.isNotBlank() }
     if (footer < 0) return null
     val ask = claudeAskFooter(rows[footer])
