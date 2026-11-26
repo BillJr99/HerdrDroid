@@ -2640,7 +2640,21 @@ class AppViewModel internal constructor(
             !usageDialogShown(agent, text) &&
             (now.scrollOffset ?: 0) == 0 && (!com.billmongan.herdrdroid.herdr.inputLineOf(text, agent).isNullOrEmpty() ||
                 com.billmongan.herdrdroid.herdr.paneDraftOf(text, agent) != null)
-        if (!eligible) { if (stillShown()) { paneDraft = null; draftReadFor = null }; return }
+        if (!eligible) {
+            if (stillShown()) {
+                val previous = paneDraft
+                val waitingQuestion = question != null || now?.status == Status.NEEDS_YOU
+                // A question can cover a draft already verified in this same visit. Keep its
+                // existence for the disabled chat card only until we can read the composer again.
+                val heldByQuestion = waitingQuestion && owner != null && previous != null &&
+                    owner.isCurrent(owner.client) && owner.client === previous.target.client &&
+                    owner.connection === previous.target.connection && owner.visit == previous.target.visit &&
+                    owner.pane.sameCardOccupant(previous.target.pane)
+                if (!heldByQuestion) paneDraft = null
+                draftReadFor = null
+            }
+            return
+        }
         val o = checkNotNull(owner)
         val plain = com.billmongan.herdrdroid.herdr.paneDraftOf(text, agent)?.text
             ?: com.billmongan.herdrdroid.herdr.inputLineOf(text, agent)
@@ -3918,6 +3932,8 @@ class AppViewModel internal constructor(
 
     /** Why a send waits for a draft at the computer (2.1.0): the chat's draft card shows it, with Send draft and Clear draft. */
     private val DRAFT_HOLD = "a draft is typed in its input box at the computer (the chat's Draft in the pane card can send or clear it)"
+
+    internal fun isPaneDraftHold(note: String?): Boolean = note?.contains(DRAFT_HOLD) == true
 
     /**
      * [failed] (2.2.7, Send now on a queued message): when set, a send that a guard refuses is not
