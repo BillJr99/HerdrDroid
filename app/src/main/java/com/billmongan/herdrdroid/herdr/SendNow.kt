@@ -12,11 +12,10 @@ package com.billmongan.herdrdroid.herdr
  *   the hint gone (or the agent idle) before the message is sent once.
  * - [SendNowRoute.FORCE_CONFIRM]: Claude Code is working with no such hint: the 2.2.2 Force Send
  *   confirmation, since Claude takes text typed during a turn after its current step.
- * - [SendNowRoute.WAIT_FOR_IDLE]: any other agent that is working; the message stays queued.
+ *   Codex also supports confirmed steering from its verified working composer.
+ * - [SendNowRoute.WAIT_FOR_IDLE]: other working agents stay queued unless their background action is supported.
  *
- * Only Claude Code has a backgrounding state the screen proves (its hint, seen in captures); the
- * other agents with a Ctrl+B ([Backgrounding]) draw no verified hint, so Send now never presses it
- * for them.
+ * Grok and Antigravity follow the separate guarded background route in the view model.
  */
 internal enum class SendNowRoute { NORMAL, BACKGROUND_THEN_SEND, FORCE_CONFIRM, WAIT_FOR_IDLE }
 
@@ -62,10 +61,27 @@ internal fun agentWorking(status: Status, screen: String): Boolean =
 internal fun sendNowRoute(agent: String?, status: Status, screen: String): SendNowRoute = when {
     !agentWorking(status, screen) -> SendNowRoute.NORMAL
     agent.equals("claude", true) && claudeBackgroundHint(screen) -> SendNowRoute.BACKGROUND_THEN_SEND
-    takesInputDuringBackgroundWork(agent) -> SendNowRoute.FORCE_CONFIRM
+    (takesInputDuringBackgroundWork(agent) || agent == "codex" && codexSteeringReady(screen)) -> SendNowRoute.FORCE_CONFIRM
     else -> SendNowRoute.WAIT_FOR_IDLE
 }
 
 /** Why Send now keeps a message queued for an agent that takes no input while it works. */
 internal fun sendNowWaitText(agentName: String) =
     "$agentName can't take a message while it works, so this one stays queued and goes when $agentName is idle."
+
+/** Installed Codex 0.172.0 uses Enter to steer and Tab to queue during this working composer view. */
+internal fun codexSteeringReady(screen: String): Boolean {
+    val rows = stripAnsi(screen).lines().filter { it.isNotBlank() }.takeLast(12)
+    val input = rows.indexOfLast { it.trimStart().startsWith("›") }
+    if (input < 1 || !Regex("""^• Working \(.*esc to interrupt\)$""").matches(rows[input - 1].trim())) return false
+    return inputLineOf(screen, "codex") == "" && composerDraftOf(screen, "codex") == null &&
+        rows.drop(input + 1).any { it.trimStart().startsWith("← for agents") }
+}
+
+internal fun codexSteeringText(text: String): Boolean =
+    text.isNotBlank() && text.trimStart().first() !in "/!$" &&
+        text.none { it.isISOControl() && it != '\n' } && LongText.plan(text) is LongText.Plan.Single
+
+internal fun nativeQueuedSendAvailable(agent: String?, status: Status, screen: String): Boolean =
+    sendNowRoute(agent, status, screen) != SendNowRoute.WAIT_FOR_IDLE ||
+        backgroundSupport(agent, "") == null

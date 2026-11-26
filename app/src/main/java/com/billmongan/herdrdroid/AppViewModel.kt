@@ -3570,6 +3570,7 @@ class AppViewModel internal constructor(
             flash("Not sent: that pane isn't open on the computer just now.")
             return
         }
+        if (target.status == Status.WORKING && !takesInputDuringBackgroundWork(target.agent)) return
         if (p.bound != null && !p.bound.occupant.sameCardOccupant(target)) { dismissPending(id); occupantMovedDuringSend(p.bound); return }
         if (p.hermesTarget?.sameCardOccupant(target) == false || hasPendingQuestion(target) || waitingForHermesComposer(target.id)) return
         val then = heldThen[id] ?: {}
@@ -7404,7 +7405,12 @@ class AppViewModel internal constructor(
         com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${target.id}: send now, route ${route.name.lowercase()}")
         when (route) {
             com.billmongan.herdrdroid.herdr.SendNowRoute.NORMAL -> dispatchQueued(item, target)
-            com.billmongan.herdrdroid.herdr.SendNowRoute.FORCE_CONFIRM -> sendNowConfirm = item
+            com.billmongan.herdrdroid.herdr.SendNowRoute.FORCE_CONFIRM -> {
+                if (target.agent == "codex") {
+                    sendNowConfirmConnection = herdr?.connectionIdentity
+                    sendNowConfirm = item.copy(occupant = target)
+                } else sendNowConfirm = item
+            }
             com.billmongan.herdrdroid.herdr.SendNowRoute.WAIT_FOR_IDLE -> if (backgroundSupport(target.agent, target.agentName) == null) {
                 // 2.2.8: Grok and Agy: move the running command to the background, then send once idle.
                 backgroundThenSendWhenIdle(item, target)
@@ -7419,15 +7425,90 @@ class AppViewModel internal constructor(
 
     /** Send anyway, from the Force Send confirmation: typed in while Claude works, taken after its current step. */
     fun confirmSendNow() {
-        val item = sendNowConfirm?.let { queuedById(it.id) }
-        sendNowConfirm = null
+        val confirmed = sendNowConfirm
+        val connection = sendNowConfirmConnection
+        val item = confirmed?.let { queuedById(it.id) }
+        cancelSendNow()
         if (item == null || item.inFlight() || item.serverId != current?.id) return
         val target = pane(item.paneId) ?: return
         if (link != Link.CONNECTED || hasPendingQuestion(target)) { flash("Reconnect or answer the pending question before sending."); return }
-        dispatchQueued(item, target)
+        val confirmedPane = confirmed?.occupant
+        if (confirmedPane?.agent == "codex") {
+            if (connection == null || herdr?.connectionIdentity !== connection ||
+                !confirmedPane.sameCardOccupant(target)) {
+                flash("Not sent: the Codex pane or connection changed. The message is still queued.")
+                return
+            }
+            steerQueuedCodex(item, target)
+        } else dispatchQueued(item, target)
     }
 
-    fun cancelSendNow() { sendNowConfirm = null }
+    private fun steerQueuedCodex(item: QueuedPrompt, target: Pane) {
+        val h = herdr ?: return
+        val connection = h.connectionIdentity ?: return
+        val server = current?.id ?: return
+        if (occupantChanged(item, target)) return
+        fun refused(why: String) {
+            updateQueued(item.id) { it.copy(sending = false, note = "Not sent: $why. Still queued.") }
+        }
+        if (h.backend != Backend.TUI || !com.billmongan.herdrdroid.herdr.codexSteeringText(item.text)) {
+            refused("Codex steering requires a short chat message and a live composer")
+            return
+        }
+        val token = System.nanoTime()
+        updateQueued(item.id) {
+            it.copy(sending = true, sendToken = token, sendingSince = System.currentTimeMillis(), needsTap = true, note = null)
+        }
+        fun ownsRow() = queuedById(item.id)?.sendToken == token
+        fun allowed() = ownsRow() && !locked && foreground && current?.id == server && herdr === h &&
+            h.connectionIdentity === connection && link == Link.CONNECTED
+        viewModelScope.launch {
+            var verifiedViewport: String? = null
+            var occupant: String? = null
+            val port = object : com.billmongan.herdrdroid.herdr.LocalPromptSend.Port {
+                override suspend fun pane(id: String): Pane? {
+                    val read = h.cardPaneGuarded(id, connection) ?: return null
+                    if (occupant != null && occupant != read.second) return null
+                    occupant = read.second
+                    return read.first
+                }
+                override suspend fun viewport(id: String) = h.readStyledViewport(id, connection)
+                override fun blocked(fresh: Pane, viewport: String): Boolean {
+                    if (fresh.status != Status.WORKING || blocksNormalSend(fresh, viewport) ||
+                        holdReason(fresh.id, viewport) != null ||
+                        !com.billmongan.herdrdroid.herdr.codexSteeringReady(viewport)) return true
+                    verifiedViewport = viewport
+                    return false
+                }
+                override suspend fun send(fresh: Pane, text: String, permit: WritePermit) {
+                    if (fresh.status != Status.WORKING || !allowed()) throw com.billmongan.herdrdroid.herdr.CardCheckFailed()
+                    val guard = com.billmongan.herdrdroid.herdr.CardGuard(
+                        checkNotNull(occupant), com.billmongan.herdrdroid.herdr.cardScreenDigest(checkNotNull(verifiedViewport), "codex"),
+                    )
+                    h.sendCardInput(fresh.id, com.billmongan.herdrdroid.herdr.CardInput.Text(text, enter = true), guard,
+                        connection, permit, shellOnly = server in noPython3)
+                }
+            }
+            val result = localPromptSend.send(server, com.billmongan.herdrdroid.herdr.Occupant.of(target),
+                item.text, ::allowed, port, allowWorking = true)
+            (result.failure as? LinkDown)?.let { if (herdr === h) linkLost(it) }
+            if (!ownsRow()) return@launch
+            when (result.outcome) {
+                com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.SENT -> queued = queued.filterNot { it.id == item.id }
+                com.billmongan.herdrdroid.herdr.LocalPromptSend.Outcome.UNCERTAIN -> updateQueued(item.id) {
+                    it.copy(sending = false, mayHaveSent = true, note = "Delivery unconfirmed. Check Codex before sending again.")
+                }
+                else -> refused("the live Codex composer or its occupant could not be verified")
+            }
+        }
+    }
+
+    private var sendNowConfirmConnection: Any? = null
+
+    fun cancelSendNow() {
+        sendNowConfirm = null
+        sendNowConfirmConnection = null
+    }
 
     /** 2.2.7 (pre-review L3): the queued message that may already have reached the agent, waiting on "Send it again?". */
     var resendConfirm by mutableStateOf<QueuedPrompt?>(null)

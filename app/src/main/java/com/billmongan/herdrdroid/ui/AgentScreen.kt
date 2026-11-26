@@ -510,7 +510,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             onDismissRequest = { vm.cancelSendNow() },
             modifier = Modifier.semantics { contentDescription = "Force send queued message" },
             title = { Text("Force send?") },
-            text = { Text(forceDialogText(pane?.agentName ?: "Claude", vm.current?.name ?: "this server"), color = Palette.Ink) },
+            text = { Text(if (pane?.agent == "codex") "Send this message into Codex's current turn?"
+                else forceDialogText(pane?.agentName ?: "Claude", vm.current?.name ?: "this server"), color = Palette.Ink) },
             confirmButton = { TextButton(onClick = { vm.confirmSendNow() }) { Text("Send anyway") } },
             dismissButton = { TextButton(onClick = { vm.cancelSendNow() }) { Text("Cancel") } },
         )
@@ -938,12 +939,14 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                                 // 2.2.8: named Send immediately there, with Share, for agents that background tasks.
                                 forceSendMenu = true,
                                 menuSendLabel = if (backgroundSupport(pane?.agent, pane?.agentName ?: "") == null) "Send immediately (background running tasks)" else "Send now",
-                                onMenuSend = { vm.sendQueuedNow(q) },
+                                onMenuSend = if (com.billmongan.herdrdroid.herdr.nativeQueuedSendAvailable(pane?.agent, status, liveScreenText))
+                                    ({ vm.sendQueuedNow(q) }) else null,
                             )
                         }
                     }
                     unsent.forEach { p ->
                         androidx.compose.runtime.key(p.id) {
+                            val canForcePending = status != Status.WORKING || pane?.agent == "claude"
                             PendingMessageRow(
                                 title = when {
                                     p.awaitingLink -> "Waiting to reconnect"
@@ -954,11 +957,12 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                                 note = p.held?.takeUnless { showChatDraft && vm.isPaneDraftHold(it) },
                                 onRemove = { vm.dismissPending(p.id) },
                                 sendLabel = when {
+                                    !canForcePending -> null
                                     p.waiting -> "Force send immediately"
                                     p.undelivered -> "Resend"
                                     else -> null
                                 },
-                                onSend = { vm.forceSendPending(p.id) },
+                                onSend = if (canForcePending) ({ vm.forceSendPending(p.id) }) else null,
                                 sendEnabled = vm.canForceSendPending && !usageBlocksInput && !waitingForHermes && prompt == null && !typingAnswer && status != Status.NEEDS_YOU,
                                 forceSendMenu = true,
                             )
@@ -1317,10 +1321,10 @@ internal fun PendingMessageRow(
             }
             if (forceSendMenu) {
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                    DropdownMenuItem(
+                    if (onMenuSend != null) DropdownMenuItem(
                         text = { Text(menuSendLabel) },
-                        enabled = sendEnabled && onMenuSend != null,
-                        onClick = { menu = false; onMenuSend?.invoke() },
+                        enabled = sendEnabled,
+                        onClick = { menu = false; onMenuSend() },
                     )
                     DropdownMenuItem(text = { Text("Copy") }, onClick = { menu = false; clipboard.setText(androidx.compose.ui.text.AnnotatedString(text)) })
                     // 2.2.8: Share through the Android share sheet.
