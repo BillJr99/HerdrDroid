@@ -4568,7 +4568,7 @@ class AppViewModel internal constructor(
     private suspend fun readOpenPaneScreen(h: Herdr, paneId: String, lines: Int, shown: Pane?,
                                            connection: Any?, stillOpen: () -> Boolean): Pair<String, Boolean> =
         try {
-            readPaneScreen(h, paneId, lines) to true
+            readPaneScreen(h, paneId, lines, connection = connection) to true
         } catch (e: HerdrError) {
             if (h.backend != Backend.TUI || !e.isMissingPane(paneId)) throw e
             if (shown == null || connection == null || !stillOpen()) throw terminalUnavailable()
