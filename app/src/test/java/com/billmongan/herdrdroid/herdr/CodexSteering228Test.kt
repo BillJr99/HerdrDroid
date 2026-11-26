@@ -30,5 +30,6 @@ class CodexSteering228Test {
         assertFalse(codexSteeringText(" /model"))
         assertFalse(codexSteeringText("! echo test"))
         assertFalse(codexSteeringText("hi\tthere"))
+        assertFalse(codexSteeringText("hi\nthere"))
     }
 }

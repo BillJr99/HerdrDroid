@@ -7485,7 +7485,7 @@ class AppViewModel internal constructor(
                     val guard = com.billmongan.herdrdroid.herdr.CardGuard(
                         checkNotNull(occupant), com.billmongan.herdrdroid.herdr.cardScreenDigest(checkNotNull(verifiedViewport), "codex"),
                     )
-                    h.sendCardInput(fresh.id, com.billmongan.herdrdroid.herdr.CardInput.Text(text, enter = true), guard,
+                    h.sendCardInput(fresh.id, com.billmongan.herdrdroid.herdr.CardInput.Submit(text), guard,
                         connection, permit, shellOnly = server in noPython3)
                 }
             }

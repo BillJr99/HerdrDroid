@@ -49,6 +49,16 @@ class CardSendCheck227Test {
         assertFalse("no prompt text in the check", c.contains("Allow once") || c.contains("Dangerous"))
     }
 
+    @Test fun guardedSubmitUsesOneNativeWriteAndNoSeparateEnter() = runBlocking {
+        val seam = Seam()
+        val g = guard()
+        client(seam).sendCardInput("p1", CardInput.Submit("Continue with plan B."), g, seam.connection!!)
+        val command = seam.writes.single()
+        assertTrue(command.endsWith("'pane' 'run' 'p1' 'Continue with plan B.'"))
+        assertTrue(command.indexOf(g.screen) < command.indexOf(CARD_PASSED_MARK))
+        assertFalse(command.contains("'send-text'") || command.contains("'send-keys'"))
+    }
+
     @Test fun aChangedPaneOrScreenIsNotSentAndSaysSo() = runBlocking<Unit> {
         val seam = Seam(CARD_CHANGED_EXIT, CARD_REFUSED_MARK + "\n")
         assertThrows(CardChanged::class.java) {
