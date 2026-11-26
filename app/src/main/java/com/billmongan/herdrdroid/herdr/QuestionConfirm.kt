@@ -50,16 +50,17 @@ internal fun readingAlertText(agent: String): String = "$agent is asking a quest
  * app's own words, or show a command for review only) and Claude's sessions-list card are not.
  */
 internal fun needsConfirmation(p: Prompt): Boolean =
-    !p.unreadQuestion && !p.readingQuestion && !p.claudeBackground &&
+    !p.unreadQuestion && !p.readingQuestion && !p.claudeBackground && !p.historyReviewOnly &&
         (p.choices.isNotEmpty() || (!p.terminalReview && p.region.orEmpty().any { it.isNotBlank() } && p.region != listOf(UNREAD_SCREEN)))
 
 /**
  * Parsers that prove their own frame before they return options: Hermes's clarify (its "ask N
  * questions" head and exact footer), OpenCode's native question and permission (an exact frame and a
- * styled live read), Muse's quota dialog (a styled read) and Grok's privacy dialog (its settings box).
+ * styled live read), Oh My Pi's boxed Ask, Muse's quota dialog (a styled read) and Grok's privacy
+ * dialog (its settings box).
  */
 private fun selfFramed(p: Prompt): Boolean =
-    p.hermesClarify || p.openCodeQuestionFrame != null || p.openCodePermission || p.numberKeys || p.museQuota || p == GROK_PRIVACY_PROMPT
+    p.ompAsk != null || p.guardedShortcutApproval || p.hermesClarify || p.openCodeQuestionFrame != null || p.openCodePermission || p.numberKeys || p.museQuota || p == GROK_PRIVACY_PROMPT
 
 /**
  * One read's card: [topped] when its top is proven (an edge from which the same card reads, with no
@@ -135,7 +136,8 @@ private fun widthOf(rows: List<String>) = rows.maxOfOrNull { it.trimEnd().length
  */
 internal fun dialogRead(rows: List<String>, p: Prompt, agent: String?, version: String?, blocked: Boolean): QuestionRead {
     val unproven = QuestionRead(p, topped = false, complete = false)
-    val heads = p.choices.map(::headOf)
+    // 2.2.8: the card's own "Type to deny and steer" is not a row of the dialog; its hint row is.
+    val heads = p.choices.filter { it.keys != OMP_STEER }.map(::headOf)
     if (heads.any { it.isEmpty() }) return unproven
     // Each option's row, from the last one up, each at or above the one after it.
     var at = rows.indexOfLast { letters(it).contains(heads.last()) && !isDialogFooterRow(it) }
@@ -282,7 +284,7 @@ internal fun shownCard(parsed: Prompt?, decision: CardDecision?, agent: String):
 internal fun alertCard(prompt: Prompt?, confirmed: Boolean, agent: String): Prompt? =
     if (prompt != null && needsConfirmation(prompt) && !confirmed)
         Prompt(readingAlertText(agent), emptyList(), terminalReview = true, readingQuestion = true)
-    else prompt
+    else if (prompt?.historyReviewOnly == true) prompt.forCard() else prompt
 
 /** How many more reads an alert may take to confirm its question, and the pause between them. */
 internal const val ALERT_CONFIRM_READS = 10
@@ -306,4 +308,112 @@ internal suspend fun confirmByReads(first: String, firstPrompt: Prompt, agent: S
         text = read() ?: return null
         p = if (text.isBlank()) null else detectPrompt(text, true, agent, version)
     }
+}
+
+private val CLAUDE_SINGLE_TAB = Regex("""^☐\s+\S.{0,24}$""")
+private val CLAUDE_PREVIEW_OPTION = Regex("""^\s*[❯›]?\s*\d{1,2}[.)]\s+(\S.*)$""")
+
+internal fun claudeAskFooter(row: String): Boolean = row.trim().let {
+    it.startsWith("Enter to select · ") && it.endsWith(" · Esc to cancel") && "to navigate" in it
+}
+
+internal fun claudeAskTab(row: String): Boolean = parseTabBar(row) != null || CLAUDE_SINGLE_TAB.matches(row.trim())
+
+private val CLAUDE_PREVIEW_TOP = Regex("""┌─+┐\s*""")
+
+/** Remove a complete right-hand preview only in a live Claude AskUserQuestion frame. */
+internal fun withoutClaudeAskPreview(rows: List<String>): List<String> {
+    val footer = rows.indexOfLast { it.isNotBlank() }
+    if (footer < 0 || !claudeAskFooter(rows[footer])) return rows
+    val tab = (footer - 1 downTo 0).firstOrNull { claudeAskTab(rows[it]) } ?: return rows
+    val start = (tab + 1 until footer).firstOrNull { i ->
+        val row = rows[i]
+        val col = row.indexOf('┌')
+        col > 0 && CLAUDE_PREVIEW_OPTION.matches(row.take(col)) && CLAUDE_PREVIEW_TOP.matches(row.substring(col))
+    } ?: return rows
+    val col = rows[start].indexOf('┌')
+    val end = (start + 1 until footer).firstOrNull { rows[it].getOrNull(col) != '│' } ?: return rows
+    if (end == start + 1 || rows[end].getOrNull(col) != '└') return rows
+    return rows.mapIndexed { i, row -> if (i in start..end) row.take(col).trimEnd() else row }
+}
+
+private val CLAUDE_CLIPPED_OPTION = Regex("""^\s*([❯›]?)\s*(\d{1,2})[.)]\s+\S.*$""")
+
+private val CLAUDE_CLIPPED_CHECKBOX = Regex("""^\s*([❯›]?)\s*(\d{1,2})\. \[[ xX✓✔]\] \S.*$""")
+private val CLAUDE_CLIPPED_CHAT = Regex("""^\s*([❯›]?)\s*(\d{1,2})\. Chat about this$""")
+private val CLAUDE_CLIPPED_ACTION = Regex("""^\s*([❯›]?)\s*(?:Next|Submit)$""")
+
+/** Checkbox dialogs end with their own Next or Submit, rule, and separately numbered chat action. */
+internal fun claudeClippedCheckboxRows(frame: List<String>): List<String>? {
+    val rows = frame.filter { it.isNotBlank() }.map { it.trimEnd() }
+    if (rows.size < 6 || !claudeAskFooter(rows.last())) return null
+    if (rows.dropLast(1).any { claudeAskTab(it) || claudeAskFooter(it) }) return null
+    val chat = CLAUDE_CLIPPED_CHAT.matchEntire(rows[rows.lastIndex - 1]) ?: return null
+    if (!CLAUDE_DIALOG_TOP_RULE.matches(rows[rows.lastIndex - 2])) return null
+    val action = CLAUDE_CLIPPED_ACTION.matchEntire(rows[rows.lastIndex - 3]) ?: return null
+    val body = rows.dropLast(4)
+    val first = body.indexOfFirst { CLAUDE_CLIPPED_CHECKBOX.matches(it) }
+    if (first < 0 || body.take(first).any { it.isNotBlank() && !it.startsWith("│ ") }) return null
+    val options = body.drop(first).mapNotNull(CLAUDE_CLIPPED_CHECKBOX::matchEntire)
+    val focused = (options + action + chat).count { it.groupValues[1].isNotEmpty() }
+    if (options.size < 2 || focused != 1) return null
+    val firstNumber = options.first().groupValues[2].toInt()
+    val nextNumber = firstNumber + options.size
+    if (firstNumber < 1 || options.map { it.groupValues[2].toInt() } != (firstNumber until nextNumber).toList() ||
+        chat.groupValues[2].toInt() != nextNumber) return null
+    return body.drop(first)
+}
+
+/** A viewport can start partway through the option list, after its question and tab have scrolled off. */
+internal fun claudeClippedAskReview(text: String): Prompt? {
+    val rows = withoutClaudeChromeUnderDialog(stripAnsi(text)).lines()
+    val footer = rows.indexOfLast { it.isNotBlank() }
+    if (footer < 0 || !claudeAskFooter(rows[footer])) return null
+    val above = rows.take(footer).dropWhile { it.isBlank() }
+    val body = claudeClippedCheckboxRows(above + rows[footer]) ?: run {
+        val first = CLAUDE_CLIPPED_OPTION.matchEntire(above.firstOrNull() ?: return null) ?: return null
+        // An ordinary numbered message starts at one. A real tab or an older Ask footer
+        // proves this is a mixed viewport, so leave it to the regular dialog parser.
+        val firstNumber = first.groupValues[2].toInt()
+        if (firstNumber < 2 || above.any { claudeAskTab(it) || claudeAskFooter(it) }) return null
+        val options = above.mapNotNull(CLAUDE_CLIPPED_OPTION::matchEntire)
+        if (options.size < 2 || options.count { it.groupValues[1].isNotEmpty() } != 1) return null
+        if (options.map { it.groupValues[2].toInt() } != (firstNumber until firstNumber + options.size).toList()) return null
+        above
+    }
+    val heading = "Claude question (top off screen)"
+    val parts = questionParts(listOf(QLine(heading)))
+    val details = body.filter { it.isNotBlank() }.map { QBlock(QKind.TEXT, it.trim()) }
+    return Prompt(heading, emptyList(), region = body + rows[footer],
+        terminalReview = true, topOffScreen = true, parts = parts.copy(blocks = details))
+}
+
+/** Keep an identifiable Claude dialog readable without making unconfirmed choices actionable. */
+internal fun claudeReviewPreview(text: String, parsed: Prompt?, maxRows: Int = 80): Prompt? {
+    val rows = withoutClaudeChromeUnderDialog(stripAnsi(text)).lines().takeLast(maxRows)
+    val footer = rows.indexOfLast { it.isNotBlank() }
+    if (footer < 0) return null
+    val ask = claudeAskFooter(rows[footer])
+    val top = if (ask) {
+        (footer - 1 downTo 0).firstOrNull { claudeAskTab(rows[it]) }
+    } else if (claudePermissionFooterAtBottom(text)) {
+        (footer - 1 downTo 0).firstOrNull { isDialogHeaderRow(rows[it]) }
+    } else null
+    if (top == null) return if (ask) claudeClippedAskReview(text) else null
+    val body = rows.subList(if (ask) top + 1 else top, footer)
+    val visible = if (ask) withoutClaudeAskPreview(rows).subList(top + 1, footer) else body
+    val labels = visible.mapNotNull { row ->
+        CLAUDE_PREVIEW_OPTION.matchEntire(row)?.groupValues?.get(1)?.trim()
+    }
+    val heading = visible.firstOrNull { it.isNotBlank() }?.trim() ?: return null
+    val shownLabels = (parsed?.choices?.map { it.label }.orEmpty() + labels).distinct()
+    val parts = parsed?.shownParts() ?: questionParts(listOf(QLine(heading)))
+    val knownDetails = parts.blocks.map { it.text }.toSet()
+    val blocks = parts.blocks + visible.asSequence()
+        .map { row -> CLAUDE_PREVIEW_OPTION.matchEntire(row)?.groupValues?.get(1)?.trim() ?: row.trim() }
+        .filter { it.isNotBlank() && it !in knownDetails && it !in shownLabels }
+        .map { QBlock(QKind.TEXT, it) }.toList() +
+        shownLabels.filterNot(knownDetails::contains).map { QBlock(QKind.TEXT, it) }
+    return Prompt(parsed?.question ?: heading, emptyList(), region = body,
+        terminalReview = true, parts = parts.copy(blocks = blocks))
 }

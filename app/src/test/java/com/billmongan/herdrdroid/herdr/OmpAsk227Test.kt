@@ -7,6 +7,34 @@ import org.junit.Test
 class OmpAsk227Test {
     private fun screen(name: String) = checkNotNull(javaClass.getResource("/screens/omp/live-2026-11-24-ask/$name")) { name }.readText()
 
+    @Test fun anOverflowingQuestionNumberOrHeaderIsRefused() {
+        val frame = stripAnsi(screen("ask-open-other.ansi"))
+        assertNull(OmpAsk.parse(frame.replace(Regex("""Ask · \d+ of"""), "Ask · 999999999999 of")))
+        assertNull(OmpAsk.parse(frame.replace("3. project-x builds", "999999999999. project-x builds")))
+    }
+
+    @Test fun aFramedAskDoesNotNeedItsSyntheticCancelActionOnScreen() {
+        val frame = screen("ask-open-other.ansi")
+        for (agent in listOf("omp", "pi")) {
+            val prompt = checkNotNull(detectPrompt(frame, true, agent))
+            assertNotNull(prompt.ompAsk)
+            assertTrue(prompt.choices.any { it.label == OmpAsk.CANCEL_LABEL })
+            val read = questionRead(frame, prompt, agent, null, blocked = true)
+            assertTrue(read.complete)
+            assertTrue(read.topped)
+        }
+    }
+
+    @Test fun aWrappedSelectedAnswerKeepsAllOfItsText() {
+        val frame = stripAnsi(screen("ask-open-other.ansi")).lines().flatMap { row ->
+            if ("◉ Leave as CHECK-FIRST" in row) {
+                listOf(row.replace("Leave as CHECK-FIRST", "Leave as"), "│     CHECK-FIRST │")
+            } else listOf(row)
+        }.joinToString("\n")
+        val prompt = checkNotNull(detectPrompt(frame, true, "omp"))
+        assertEquals("Leave as CHECK-FIRST", prompt.ompAsk?.answers?.get(2))
+    }
+
     @Test fun theOpenQuestionShowsWholeWithTheLeadAndEveryOtherQuestion() {
         for (agent in listOf("omp", "pi")) {
             val p = checkNotNull(detectPrompt(screen("ask-open-other.ansi"), blocked = true, agent = agent)) { agent }

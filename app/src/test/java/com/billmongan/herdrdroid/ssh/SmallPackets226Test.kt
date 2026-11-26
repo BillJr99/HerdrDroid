@@ -121,7 +121,7 @@ class SmallPackets226Test {
         // 2.2.6 diagnostics: direct TCP always gets the timing factory; it sets no MSS when off.
         assertNull(off.socketFactoryForNext()!!.mss)
 
-        val ws = HerdrSsh("unused", 0, "u", Credentials(null, null), null, { null }, "wss://bridge.invalid/ssh", 1200, "fixture", FakeOps())
+        val ws = HerdrSsh("unused", 0, "u", Credentials(null, null), null, { null }, "ws://127.0.0.1:1/ssh", 1200, "fixture", FakeOps())
         assertNull(ws.activeMss)
         assertNull(ws.socketFactoryForNext())
         ws.useSmallPackets(1200)

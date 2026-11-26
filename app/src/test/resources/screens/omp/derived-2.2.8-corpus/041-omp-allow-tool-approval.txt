@@ -1,0 +1,19 @@
+ The demo folder has the build notes and some JSON outputs. The build tool is installed elsewhere, so the next step
+ checks where it is.
+
+╭─── Finding build tool ────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│   command -v make                                                                                                                 │
+│     or find /opt -name tool -type f 🔇 err ⇡ first 5                                                                               │
+╰─── elapsed 3m46s ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+  ⎋ Finding build tool                                                                📱 DEMO1: Sample build task
+╭─ Allow tool: bash ────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Command: command -v make || ls /opt/tools 2>/dev/null | head -5                                                                   │
+│ ❯ Approve                                                                                                                         │
+│   Approve bash for this session                                                                                                   │
+│   Deny                                                                                                                            │
+├───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ ↑/↓ choose · ⏎ select · Ctrl+⏎/Ctrl+Q approve · ⎋ deny · Ctrl+O details · type to deny and steer                                  │
+╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ⠙ 4m > ⬢ sample/model > 📁 ~/work/demo ▶───────────────────────────────────────────────62%──────╎───────┃──────────128K─
+╰─

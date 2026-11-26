@@ -51,7 +51,7 @@ class UsageOverlayTest {
     }
 
     @Test fun serverSideGuardSendsOnlyForTheExactLiveSnapshot() {
-        assumeTrue(File("/usr/bin/python3").canExecute() && File("/proc/self/stat").isFile)
+        assumeTrue("needs /usr/bin/python3 and Linux /proc for the server-side guard script", File("/usr/bin/python3").canExecute() && File("/proc/self/stat").isFile)
         val root = tmp.newFolder()
         val fake = root.resolve("herdr")
         fake.writeText("""#!/usr/bin/python3
@@ -97,7 +97,7 @@ else:
             assertEquals(p.errorStream.bufferedReader().readText(), 0, p.waitFor())
             return out
         }
-        state()
+        state(agent = "claude-code")
         val shown = JSONObject(call())
         val digest = MessageDigest.getInstance("SHA-256").digest(shown.getString("visible").toByteArray()).joinToString("") { "%02x".format(it) }
         fun close() = call(shown.getString("occupant"), digest)
@@ -116,7 +116,7 @@ else:
         state(finalPid = 1) // Identical final frame, but a different occupant by the end of that read.
         assertEquals("", close())
         assertFalse(root.resolve("keys").exists())
-        state()
+        state(agent = "claude-code")
         assertEquals("sent", close())
         val recovered = JSONObject(call()).getString("visible")
         assertEquals("❯ existing draft", recovered.trim())

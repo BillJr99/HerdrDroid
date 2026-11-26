@@ -90,6 +90,8 @@ object OmpAsk {
         val top = lines.indexOfLast { HEADER.matches(it) }
         if (top < 0) return null
         val h = HEADER.matchEntire(lines[top])!!
+        val answeredCount = h.groupValues[1].toIntOrNull() ?: return null
+        val total = h.groupValues[2].toIntOrNull() ?: return null
         val bottom = (top + 1 until lines.size).firstOrNull { lines[it].trimStart().startsWith("╰") } ?: return null
         // Grok's review: only a live dialog, the bottom-most thing on screen: under it only blank
         // rows and the agent's own status rows. An old box above newer output is history.
@@ -110,11 +112,46 @@ object OmpAsk {
         var radios = false; var folded = false; var open = false
         fun close() {
             if (!open) return
-            questions += Question(num, clean(text.toString()), answered, options.map(::clean), chosen?.let(::clean), radios, cursor, chosenAt)
+            val chosenText = chosenAt?.let(options::getOrNull) ?: chosen
+            questions += Question(num, clean(text.toString()), answered, options.map(::clean), chosenText?.let(::clean), radios, cursor, chosenAt)
             open = false
         }
+        // 2.2.8 (Bill: "make sure all the question text is visible and well formatted especially
+        // code"): a fenced block in the lead keeps its rows, indentation and blank rows, joined by
+        // newlines, so the card shows it as code instead of one line of words.
+        var fence: StringBuilder? = null
+        var fenceCol = 0
+        // 2.2.8: rows indented four or more columns past the lead's margin right after a blank row
+        // (code drawn as Markdown, without fences) as a fenced block of their own.
+        var code: StringBuilder? = null
+        var codeCol = 0
+        var lastBlank = false
         for (row in rows) {
             val t = row.trim()
+            val pad = row.takeWhile { it == ' ' }.length
+            if (code != null) {
+                if (t.isNotEmpty() && pad >= 4) { code.append('\n').append(row.drop(minOf(codeCol, pad)).trimEnd()); continue }
+                lead += "```\n$code\n```"; code = null
+            }
+            if (questions.isEmpty() && !open && fence == null && lastBlank && t.isNotEmpty() && pad >= 4 && para.isEmpty() &&
+                lead.isNotEmpty() && !isFenceRow(t)) {
+                code = StringBuilder(row.drop(pad).trimEnd()); codeCol = pad; lastBlank = false; continue
+            }
+            lastBlank = t.isEmpty()
+            // An unclosed fence ends at the first question, which is never code.
+            if (fence != null && !row.startsWith(" ") && QUESTION.matchEntire(t)?.groupValues?.get(2) == "1") { lead += fence.toString(); fence = null }
+            if (questions.isEmpty() && !open && (fence != null || isFenceRow(t))) {
+                val f = fence
+                if (f == null) {
+                    if (para.isNotEmpty()) { lead += clean(para.toString()); para = StringBuilder() }
+                    fenceCol = row.indexOfFirst { it != ' ' }
+                    fence = StringBuilder(t)
+                } else {
+                    f.append('\n').append(row.drop(minOf(fenceCol, row.takeWhile { it == ' ' }.length)).trimEnd())
+                    if (isFenceRow(t)) { lead += f.toString(); fence = null }
+                }
+                continue
+            }
             if (t.isEmpty()) {
                 if (questions.isEmpty() && !open && para.isNotEmpty()) { lead += clean(para.toString()); para = StringBuilder() }
                 continue
@@ -122,7 +159,8 @@ object OmpAsk {
             val submit = SUBMIT_ROW.matchEntire(t)
             if (submit != null) { close(); submitSeen = true; onSubmit = submit.groupValues[1].isNotEmpty(); continue }
             val q = if (!row.startsWith(" ")) QUESTION.matchEntire(t) else null
-            if (q != null && q.groupValues[2].toInt() == (if (open) num else questions.lastOrNull()?.number ?: 0) + 1) {
+            val number = q?.let { it.groupValues[2].toIntOrNull() ?: return null }
+            if (q != null && number == (if (open) num else questions.lastOrNull()?.number ?: 0) + 1) {
                 close()
                 if (para.isNotEmpty()) { lead += clean(para.toString()); para = StringBuilder() }
                 num = q.groupValues[2].toInt(); text = StringBuilder(q.groupValues[3]); answered = q.groupValues[1].isNotEmpty()
@@ -160,9 +198,11 @@ object OmpAsk {
             else return null
         }
         close()
+        fence?.let { lead += it.toString() }
+        code?.let { lead += "```\n$it\n```" }
         if (questions.isEmpty() || !submitSeen) return null
         if (questions.map { it.number } != (1..questions.size).toList()) return null
-        return Dialog(lead, questions, h.groupValues[1].toInt(), h.groupValues[2].toInt(), onSubmit)
+        return Dialog(lead, questions, answeredCount, total, onSubmit)
     }
 
     /** The card for the dialog on [plain], or null when there is none (or it isn't all on screen). */

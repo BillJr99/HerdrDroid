@@ -1,0 +1,13 @@
+  Would you like to run the following command?
+  Environment: local
+  $ python3 - <<'PY'
+    # 1. load config
+    import json
+    # 2. print status
+    print("ok")
+    PY
+› 1. Yes, proceed (y)
+  2. Yes, and don't ask again for commands that start with
+     `python3 -` in /home/user/work/demo-repo (p)
+  3. No, and tell Codex what to do differently (esc)
+  Press enter to confirm or esc to cancel

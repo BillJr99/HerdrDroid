@@ -47,7 +47,7 @@ class PaneDiscovery225Test {
 
     @After fun close() {
         if (vmMade) {
-            vm.viewModelScope.cancel()
+            vm.clearForTest()
             shadowOf(Looper.getMainLooper()).idle()
         }
     }

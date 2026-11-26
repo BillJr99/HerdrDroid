@@ -1,0 +1,7 @@
+  │ /exit   Exit the app
+  ┃
+  ┃  /exit
+  ┃
+  ┃  Build · Sample Model
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  ctrl+p commands

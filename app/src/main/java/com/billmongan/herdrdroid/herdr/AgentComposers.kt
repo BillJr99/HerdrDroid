@@ -52,7 +52,8 @@ internal object AgentComposers {
         val r = raw.map { stripAnsi(it).trimEnd() }
         val bottom = r.indices.lastOrNull { PLAIN_RULE.matches(r[it]) } ?: return null
         val under = r.drop(bottom + 1)
-        if (under.count { it.isNotBlank() } !in 1..4 || under.any { PLAIN_RULE.matches(it.trim()) }) return null
+        if (under.count { it.isNotBlank() } !in 1..4 ||
+            under.any { PLAIN_RULE.matches(it.trim()) || completionRow(it) }) return null
         val top = (bottom - 1 downTo maxOf(0, bottom - 31)).firstOrNull { PLAIN_RULE.matches(r[it]) } ?: return null
         if (kotlin.math.abs(r[top].length - r[bottom].length) > 2 || bottom - top < 2) return null
         val text = r.subList(top + 1, bottom).joinToString("\n") { it.trim() }.trim()
@@ -72,7 +73,8 @@ internal object AgentComposers {
     internal fun copilot(screen: String): String? {
         val r = rows(screen)
         val bottom = r.indices.lastOrNull { COPILOT_BOTTOM.matches(r[it].trim()) } ?: return null
-        if (r.drop(bottom + 1).count { it.isNotBlank() } !in 1..3) return null
+        val under = r.drop(bottom + 1)
+        if (under.count { it.isNotBlank() } !in 1..3 || under.any(::completionRow)) return null
         val top = (bottom - 1 downTo maxOf(0, bottom - 31)).firstOrNull { COPILOT_TOP.matches(r[it].trim()) } ?: return null
         val inside = r.subList(top + 1, bottom)
         if (inside.isEmpty() || inside.any { !it.trimStart().startsWith("┃") }) return null
@@ -80,6 +82,10 @@ internal object AgentComposers {
     }
 
     /** Oh My Pi's hints right-aligned in an empty box (its "learned" tips): "shift+tab to change thinking effort", "← to see 2 running agents". */
+    private val COMPLETION_ROW = Regex("""^\s*(?:[›❯→>](?:\s|$)|[/@]\S+(?:\s{2,}|$))""")
+
+    private fun completionRow(row: String): Boolean = COMPLETION_ROW.containsMatchIn(row)
+
     private val OMP_HINT = Regex("""^\s{2,}(?:\S+ to change thinking effort|\S+ to see \d+ running agents?)$""")
 
     /**
@@ -98,17 +104,23 @@ internal object AgentComposers {
         val more = r.subList(prompt + 1, last + 1)
         if (more.any { it.isNotBlank() && !it.startsWith("   ") }) return null
         val first = r[prompt].removePrefix("╰─")
+        // A completion list can use the same indentation as editor continuations. Unknown
+        // ownership of those rows leaves the composer unavailable to Send and Clear.
+        if (more.any(::completionRow)) return null
         val styledHint = raw[prompt].contains('\u001B') && first.isNotBlank() && hintStyled(raw[prompt])
         val text = if (more.all { it.isBlank() } && (OMP_HINT.matches(first) && !raw[prompt].contains('\u001B') || styledHint)) ""
             else (listOf(first.trim()) + more.map { it.trim() }).joinToString("\n").trim()
         return text
     }
 
-    /** Every visible character after the gutter is drawn faint, italic, or as the accent-coloured key of the hint followed by faint text. */
+    /** The hint's label is faint or italic; the key before it can use another style. */
     private fun hintStyled(row: String): Boolean {
-        val plain = stripAnsi(row).removePrefix("╰─").trim()
-        if (!OMP_HINT.matches("  $plain")) return false
-        // The label after the key is drawn dim and italic ("\u001B[2m\u001B[3m…"); typed text never is.
-        return Regex("""\u001B\[[23]m[^\u001B]*to (?:change thinking effort|see)""").containsMatchIn(row)
+        val chars = styledChars(row)
+        val plain = chars.joinToString("") { it.ch.toString() }
+        val hint = plain.removePrefix("╰─")
+        if (!OMP_HINT.matches(hint.trimEnd())) return false
+        val labelStart = plain.indexOf(" to ") + 1
+        val label = chars.drop(labelStart).filterNot { it.ch.isWhitespace() }
+        return label.isNotEmpty() && label.all { it.faint || it.italic }
     }
 }

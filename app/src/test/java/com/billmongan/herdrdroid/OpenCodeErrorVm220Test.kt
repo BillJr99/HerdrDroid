@@ -41,7 +41,7 @@ class OpenCodeErrorVm220Test {
     private val error = checkNotNull(javaClass.getResource("/screens/opencode/live-2026-11-22-error/error.ansi")).readText()
 
     @After fun close() {
-        vm.viewModelScope.cancel()
+        vm.clearForTest()
         shadowOf(Looper.getMainLooper()).idle()
     }
 

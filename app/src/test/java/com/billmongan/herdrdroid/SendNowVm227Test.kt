@@ -34,12 +34,14 @@ class SendNowVm227Test {
         fun res(path: String) = checkNotNull(SendNowVm227Test::class.java.getResource(path)).readText().replace("\r", "")
         val working = res("/screens/claude/derived-2.1.330-shells/working-3-shells.ansi")
         val withHint = SendNowFixtures.withHint(working)
+        val codexBusy = res("/screens/codex/live-2026-11-26-busy/empty.ansi")
+        val codexDraft = res("/screens/codex/live-2026-11-26-busy/draft.ansi")
     }
 
     private fun fixture(agent: String, frame: String, test: Fixture.() -> Unit) {
         val f = Fixture(agent, frame)
         try { f.test() } finally {
-            f.vm.viewModelScope.cancel()
+            f.vm.clearForTest()
             shadowOf(Looper.getMainLooper()).idle()
         }
     }
@@ -56,6 +58,22 @@ class SendNowVm227Test {
         var failSends = false
         var dropAtCtrlB = false
         var statusNow = Status.WORKING
+        var terminal = "t1"
+        /**
+         * 2.2.8 (Codex's re-review 2): the terminal the computer reports for `pane get` and for the
+         * occupant check, when it differs from the app's list (null: the same as [terminal]).
+         */
+        var remoteTerminal: String? = null
+        /** The terminal only the occupant check on the computer sees (null: as `pane get`). */
+        var checkTerminal: String? = null
+        /** 2.2.8: the exit of an agent prompt write (it is still recorded): a write that fails after it began. */
+        var promptExit = 0
+        /** Occupant checks the computer ran, and how many refused. */
+        var occupantChecks = 0
+        var occupantRefused = 0
+        /** 2.2.8: runs as a screen read is answered (once), for a change while the send reads the pane. */
+        var duringRead: (() -> Unit)? = null
+        var duringCodexCheck: (() -> Unit)? = null
 
         init {
             field("herdr").set(vm, Herdr(ssh, server.herdrPath, Backend.TUI, null, this))
@@ -71,7 +89,7 @@ class SendNowVm227Test {
 
         fun status(s: Status) {
             statusNow = s
-            state("panes", listOf(Pane("p1", "tab", "w1", agent, s, "", "/fixture", terminalId = "t1")))
+            state("panes", listOf(Pane("p1", "tab", "w1", agent, s, "", "/fixture", terminalId = terminal, scrollOffset = 0)))
         }
 
         /** The chat's latest read of the pane, as the screen Send now first decides from. */
@@ -105,13 +123,43 @@ class SendNowVm227Test {
             |{"result":{"tabs":[]}}
         """.trimMargin())
 
-        override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult = when {
-            command.endsWith("'pane' 'get' 'p1'") -> ok("""{"result":{"pane":$pane}}""")
-            command.contains("'pane' 'read' 'p1'") -> ok(frame)
+        override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult {
+            // 2.2.8: the occupant check before a bound write, run as the computer would, then each write it guards.
+            Regex("""(?s)'p1' '([0-9a-f]{64})' '-'.*\) && (.*)$""").find(command)?.takeIf { "herdrdroid-check" in command }?.let { m ->
+                occupantChecks++
+                val now = com.billmongan.herdrdroid.herdr.cardOccupantDigest(org.json.JSONObject(paneOn(checkTerminal ?: remoteTerminal ?: terminal)))
+                if (now != m.groupValues[1]) { occupantRefused++; return ExecResult(com.billmongan.herdrdroid.herdr.OCCUPANT_CHANGED_EXIT, com.billmongan.herdrdroid.herdr.OCCUPANT_REFUSED_MARK + "\n", "") }
+                var out = ""
+                var last = ok("")
+                for (part in m.groupValues[2].split(" && ")) {
+                    if (part.startsWith("echo ")) { out += part.removePrefix("echo ") + "\n"; continue }
+                    last = direct(part); if (last.exit != 0) break
+                }
+                return last.copy(out = out + last.out)
+            }
+            if ("'pane' 'run' 'p1'" in command) {
+                duringCodexCheck?.invoke()
+                val exact = com.billmongan.herdrdroid.herdr.codexSteeringGuard(frame)
+                val who = com.billmongan.herdrdroid.herdr.cardOccupantDigest(
+                    org.json.JSONObject(paneOn(checkTerminal ?: remoteTerminal ?: terminal)),
+                )
+                if ("'$who' '$exact'" !in command) return ExecResult(
+                    com.billmongan.herdrdroid.herdr.CARD_CHANGED_EXIT,
+                    com.billmongan.herdrdroid.herdr.CARD_REFUSED_MARK + "\n", "",
+                )
+                writes += "submit:" + command.substringAfter("'pane' 'run' 'p1' ").removeSurrounding("'")
+                return ok(com.billmongan.herdrdroid.herdr.CARD_PASSED_MARK + "\n")
+            }
+            return direct(command)
+        }
+
+        private fun direct(command: String): ExecResult = when {
+            command.endsWith("'pane' 'get' 'p1'") -> ok("""{"result":{"pane":${paneOn(remoteTerminal ?: terminal)}}}""")
+            command.contains("'pane' 'read' 'p1'") -> { duringRead?.also { duringRead = null }?.invoke(); ok(frame) }
             command.contains("'agent' 'prompt' 'p1' ") -> {
                 if (failSends) ExecResult(1, "", "fixture refused") else {
                     writes += "prompt:" + command.substringAfter("'p1' ").removeSurrounding("'")
-                    ok("")
+                    if (promptExit != 0) ExecResult(promptExit, "", "fixture write lost") else ok("")
                 }
             }
             command.contains("'pane' 'send-text' 'p1' ") -> {
@@ -130,13 +178,250 @@ class SendNowVm227Test {
             else -> ok("")
         }
 
-        private val pane get() = """{"pane_id":"p1","workspace_id":"w1","tab_id":"tab","agent":"$agent","agent_status":"${when (statusNow) {
+        private val pane get() = paneOn(terminal)
+        private fun paneOn(t: String) = """{"pane_id":"p1","workspace_id":"w1","tab_id":"tab","agent":"$agent","agent_status":"${when (statusNow) {
             Status.IDLE -> "idle"; Status.DONE -> "done"; Status.WORKING -> "working"; else -> "blocked"
-        }}","cwd":"/fixture","terminal_id":"t1","scroll":{"offset_from_bottom":0}}"""
+        }}","cwd":"/fixture","terminal_id":"$t","scroll":{"offset_from_bottom":0}}"""
         private fun ok(out: String) = ExecResult(0, out, "")
         private fun field(name: String) = AppViewModel::class.java.getDeclaredField(name).apply { isAccessible = true }
         @Suppress("UNCHECKED_CAST")
         fun state(name: String, value: Any?) { (field("$name\$delegate").get(vm) as MutableState<Any?>).value = value }
+    }
+
+    @Test fun codexRealReadKeepsPlainScreenAndVerifiedBusySendMenu() = fixture("codex", codexBusy) {
+        kotlinx.coroutines.runBlocking { vm.readPane("p1") }
+        assertEquals("p1", vm.paneTextPane)
+        assertFalse(vm.paneText.contains('\u001b'))
+        assertTrue(vm.paneText.contains("Working"))
+        assertTrue(vm.queuedSendAvailable(vm.pane("p1"), Status.WORKING, vm.paneText))
+        vm.sendQueuedNow(queue("Switch to the small example."))
+        assertNotNull(vm.sendNowConfirm)
+        assertTrue(writes.isEmpty())
+    }
+
+    @Test fun codexBusySendProofExpiresOnReplacementOrUnprovenRead() = fixture("codex", codexBusy) {
+        kotlinx.coroutines.runBlocking { vm.readPane("p1") }
+        assertTrue(vm.queuedSendAvailable(vm.pane("p1"), Status.WORKING, vm.paneText))
+        terminal = "replacement"
+        status(Status.WORKING)
+        assertFalse(vm.queuedSendAvailable(vm.pane("p1"), Status.WORKING, vm.paneText))
+
+        kotlinx.coroutines.runBlocking { vm.readPane("p1") }
+        assertTrue(vm.queuedSendAvailable(vm.pane("p1"), Status.WORKING, vm.paneText))
+        frame = codexDraft
+        kotlinx.coroutines.runBlocking { vm.readPane("p1") }
+        assertFalse(vm.queuedSendAvailable(vm.pane("p1"), Status.WORKING, vm.paneText))
+        assertTrue(writes.isEmpty())
+    }
+
+    @Test fun codexTickBetweenAppReadAndHostCheckStillSendsOnce() = fixture("codex", codexBusy) {
+        kotlinx.coroutines.runBlocking { vm.readPane("p1") }
+        vm.sendQueuedNow(queue("Switch to the small example."))
+        duringCodexCheck = { frame = frame.replace("0s", "1s") }
+        vm.confirmSendNow()
+        drainUntil { vm.queued.isEmpty() }
+        assertEquals(listOf("submit:Switch to the small example."), writes)
+    }
+
+    @Test fun codexBusySendConfirmsAndUsesOneNativeSubmit() = fixture("codex", codexBusy) {
+        kotlinx.coroutines.runBlocking { vm.readPane("p1") }
+        vm.sendQueuedNow(queue("Switch to the small example."))
+        assertTrue(writes.isEmpty())
+        assertNotNull(vm.sendNowConfirm)
+        vm.confirmSendNow()
+        drainUntil { vm.queued.isEmpty() }
+        assertEquals(listOf("submit:Switch to the small example."), writes)
+    }
+
+    @Test fun codexDraftAppearingAtTheHostCheckLeavesTheQueueUntouched() = fixture("codex", codexBusy) {
+        kotlinx.coroutines.runBlocking { vm.readPane("p1") }
+        vm.sendQueuedNow(queue("Switch to the small example."))
+        assertNotNull(vm.sendNowConfirm)
+        duringCodexCheck = { frame = codexDraft }
+        vm.confirmSendNow()
+        drainUntil { vm.queued.single().note != null }
+        assertTrue(writes.isEmpty())
+        assertFalse(vm.queued.single().mayHaveSent)
+        assertTrue(vm.queued.single().note.orEmpty().contains("Still queued"))
+    }
+
+    /**
+     * 2.2.8 (Codex's review 1): a message sent while a question card is open waits, bound to the pane's
+     * occupant. Once the question is answered it goes, once, to that occupant.
+     */
+    @Test fun aMessageQueuedBehindACardGoesOnceAfterTheCard() = fixture("claude", working.replace("esc to interrupt", "")) {
+        status(Status.NEEDS_YOU)
+        shown()
+        vm.enqueue("p1", "after the question", behindQuestion = true, displayedPane = vm.pane("p1"), displayedServer = vm.current?.id)
+        repeat(2) { shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(4)); Thread.sleep(5) }
+        assertTrue("held while the question is open", writes.isEmpty())
+        status(Status.IDLE)
+        drainUntil { writes.isNotEmpty() }
+        repeat(3) { shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(4)); Thread.sleep(5) }
+        assertEquals("delivered once", listOf("prompt:after the question"), writes)
+        assertTrue(vm.queued.isEmpty())
+    }
+
+    @Test fun staleComposerTapDoesNotQueueForAReplacementOccupant() = fixture("claude", working) {
+        val displayed = vm.pane("p1")
+        val serverId = vm.current?.id
+        terminal = "replacement"
+        status(Status.NEEDS_YOU)
+        assertFalse(vm.enqueue("p1", "for the first session", behindQuestion = true,
+            displayedPane = displayed, displayedServer = serverId))
+        assertFalse(vm.enqueue("p1", "unattributed", behindQuestion = true))
+        assertTrue(vm.queued.isEmpty())
+        assertTrue(writes.isEmpty())
+    }
+
+    /** The same, with another session in the pane by then: nothing goes to it, and the text is back in the box. */
+    @Test fun aMessageQueuedBehindACardNeverGoesToAReplacement() = fixture("claude", working.replace("esc to interrupt", "")) {
+        status(Status.NEEDS_YOU)
+        shown()
+        vm.enqueue("p1", "for the first session only", behindQuestion = true, displayedPane = vm.pane("p1"), displayedServer = vm.current?.id)
+        assertNotNull(vm.queued.single().occupant)
+        terminal = "replacement"
+        status(Status.IDLE)
+        var noted = false
+        repeat(12) {
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(1)); Thread.sleep(5)
+            if (vm.notice == QUEUED_OCCUPANT_CHANGED) noted = true
+        }
+        assertTrue("nothing sent to the replacement", writes.isEmpty())
+        assertTrue(vm.queued.isEmpty())
+        assertEquals("for the first session only", vm.composerDraft("p1"))
+        assertTrue("the note says so", noted)
+        // Send now on a row bound to the old occupant sends nothing either.
+        terminal = "t1"
+        status(Status.NEEDS_YOU)
+        vm.setComposerDraft("p1", "")
+        vm.enqueue("p1", "second", behindQuestion = true, displayedPane = vm.pane("p1"), displayedServer = vm.current?.id)
+        terminal = "other"
+        status(Status.IDLE)
+        vm.sendQueuedNow(vm.queued.single())
+        drain()
+        assertTrue(writes.isEmpty())
+        assertEquals("second", vm.composerDraft("p1"))
+        // A message queued with no question open is not bound (as before 2.2.8).
+        vm.enqueue("p1", "unbound")
+        assertNull(vm.queued.single { it.text == "unbound" }.occupant)
+    }
+
+    /**
+     * 2.2.8 (Codex's re-review): the occupant is checked again at the write itself. Another session takes
+     * the pane while the send reads its screen: nothing is typed, and the text is back in the box.
+     */
+    @Test fun aBoundMessageIsCheckedAgainRightBeforeTheWrite() = fixture("claude", working.replace("esc to interrupt", "")) {
+        status(Status.IDLE)
+        shown()
+        vm.enqueue("p1", "only for the first session", behindQuestion = true, displayedPane = vm.pane("p1"), displayedServer = vm.current?.id)
+        duringRead = { terminal = "replacement"; status(Status.IDLE) }
+        vm.sendQueuedImmediately(vm.queued.single())
+        var noted = false
+        repeat(40) {
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100)); Thread.sleep(2)
+            if (vm.notice == QUEUED_OCCUPANT_CHANGED) noted = true
+        }
+        assertTrue("nothing typed to the replacement", writes.isEmpty())
+        assertTrue(vm.queued.isEmpty())
+        assertTrue(vm.pendingSends.isEmpty())
+        assertEquals("only for the first session", vm.composerDraft("p1"))
+        assertTrue(noted)
+    }
+
+    /**
+     * 2.2.8 (Codex's re-review 2): the computer's occupant changes while the app's pane list stays as it
+     * was. The send reads the occupant on its own connection: nothing is typed, the text is back in the box.
+     */
+    @Test fun aRemoteOccupantChangeTheListHasNotSeenStopsABoundSend() = fixture("claude", working.replace("esc to interrupt", "")) {
+        status(Status.IDLE)
+        shown()
+        vm.enqueue("p1", "only for the first session", behindQuestion = true, displayedPane = vm.pane("p1"), displayedServer = vm.current?.id)
+        remoteTerminal = "replacement"
+        vm.sendQueuedImmediately(vm.queued.single())
+        var noted = false
+        repeat(40) {
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100)); Thread.sleep(2)
+            if (vm.notice == QUEUED_OCCUPANT_CHANGED) noted = true
+        }
+        assertEquals("the app's list never saw it", "t1", vm.pane("p1")?.terminalId)
+        assertTrue("nothing typed to the replacement", writes.isEmpty())
+        assertTrue(vm.queued.isEmpty())
+        assertTrue(vm.pendingSends.isEmpty())
+        assertEquals("only for the first session", vm.composerDraft("p1"))
+        assertTrue(noted)
+    }
+
+    /** The same change, seen only by the check on the computer in the write's own command: refused there. */
+    @Test fun theComputerRefusesABoundWriteToAnotherOccupant() = fixture("claude", working.replace("esc to interrupt", "")) {
+        status(Status.IDLE)
+        shown()
+        vm.enqueue("p1", "only for the first session", behindQuestion = true, displayedPane = vm.pane("p1"), displayedServer = vm.current?.id)
+        checkTerminal = "replacement"
+        vm.sendQueuedImmediately(vm.queued.single())
+        var noted = false
+        repeat(40) {
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100)); Thread.sleep(2)
+            if (vm.notice == QUEUED_OCCUPANT_CHANGED) noted = true
+        }
+        assertEquals(1, occupantRefused)
+        assertTrue("nothing typed to the replacement", writes.isEmpty())
+        assertTrue(vm.queued.isEmpty())
+        assertTrue(vm.pendingSends.isEmpty())
+        assertEquals("only for the first session", vm.composerDraft("p1"))
+        assertTrue(noted)
+    }
+
+    /** With the occupant unchanged, the bound write goes once, behind the check on the computer. */
+    @Test fun aBoundWriteGoesBehindTheComputersCheck() = fixture("claude", working.replace("esc to interrupt", "")) {
+        status(Status.IDLE)
+        shown()
+        vm.enqueue("p1", "for this session", behindQuestion = true, displayedPane = vm.pane("p1"), displayedServer = vm.current?.id)
+        vm.sendQueuedImmediately(vm.queued.single())
+        drainUntil { writes.isNotEmpty() }
+        assertEquals(listOf("prompt:for this session"), writes)
+        assertEquals(1, occupantChecks)
+        assertEquals(0, occupantRefused)
+    }
+
+    /**
+     * 2.2.8 (Codex's re-review 3): the write itself fails with 5 after the check passed. That is not a
+     * refusal: the message may have gone in, so it is kept as maybe sent and never put back as unsent.
+     */
+    @Test fun aWriteThatFailsAfterTheCheckIsMaybeSentNotRestored() = fixture("claude", working.replace("esc to interrupt", "")) {
+        status(Status.IDLE)
+        shown()
+        promptExit = com.billmongan.herdrdroid.herdr.OCCUPANT_CHANGED_EXIT
+        // Send now: the queued row stays, marked as maybe sent.
+        vm.enqueue("p1", "maybe it went", behindQuestion = true, displayedPane = vm.pane("p1"), displayedServer = vm.current?.id)
+        vm.sendQueuedNow(vm.queued.single())
+        drainUntil { vm.queued.singleOrNull()?.mayHaveSent == true }
+        assertEquals(listOf("prompt:maybe it went"), writes)
+        assertTrue(vm.queued.single().note.orEmpty().startsWith("It may have reached the agent"))
+        assertEquals("not put back as unsent", "", vm.composerDraft("p1"))
+        assertTrue(vm.notice != QUEUED_OCCUPANT_CHANGED)
+        // The idle loop's route (Send immediately): the pending row shows it as maybe sent.
+        vm.cancelQueued(vm.queued.single())
+        writes.clear()
+        vm.enqueue("p1", "maybe again", behindQuestion = true, displayedPane = vm.pane("p1"), displayedServer = vm.current?.id)
+        vm.sendQueuedImmediately(vm.queued.single())
+        drainUntil { vm.pendingSends.any { it.held == MAY_HAVE_SENT } }
+        assertEquals(listOf("prompt:maybe again"), writes)
+        assertTrue(vm.pendingSends.single().undelivered)
+        assertEquals("", vm.composerDraft("p1"))
+        assertTrue(vm.queued.isEmpty())
+    }
+
+    /** The check's own refusal (its line, then 5) is still told apart: nothing typed, back in the box. */
+    @Test fun theChecksRefusalIsStillToldApart() = fixture("claude", working.replace("esc to interrupt", "")) {
+        status(Status.IDLE)
+        shown()
+        checkTerminal = "replacement"
+        vm.enqueue("p1", "not for the replacement", behindQuestion = true, displayedPane = vm.pane("p1"), displayedServer = vm.current?.id)
+        vm.sendQueuedNow(vm.queued.single())
+        drainUntil { vm.composerDraft("p1") == "not for the replacement" }
+        assertTrue(writes.isEmpty())
+        assertTrue(vm.queued.isEmpty())
     }
 
     @Test fun theFixtureScreensAreCleanWorkingClaudeScreens() {

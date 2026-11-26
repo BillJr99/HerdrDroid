@@ -1,0 +1,25 @@
+────────────────────────────────────────
+❯ Please check the sources before the build.
+────────────────────────────────────────
+╭────────────────────────────────────────────────────────────╮
+│ ⚠️  Dangerous Command                                      │
+│                                                            │
+│ python3 -B - <<'PY'                                        │
+│ import compileall, sys                                     │
+│ ok = compileall.compile_dir("src", quiet=1)                │
+│ if not ok:                                                 │
+│     sys.exit(1)                                            │
+│ PY                                                         │
+│                                                            │
+│ ❯ 1. Allow once                                            │
+│   2. Allow for this session                                │
+│   3. Add to permanent allowlist                            │
+│   4. Deny                                                  │
+│                                                            │
+│ script execution via heredoc                               │
+╰────────────────────────────────────────────────────────────╯
+  ↑/↓ to select, Enter to confirm  (58s)
+── ⠹ Working… · 1m 2s ──────────────────────────────────────────────────────────────────────────────────── Check the build ─
+⚠ ❯
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☤ gpt-6.2-sol · ~188K/500K · [████░░░░░░] ~38% · ◎ 89.7% · ◷ 4.3s · ↑ 21 t/s · 1.0d · ⏲ 1m · ~/agents/demo

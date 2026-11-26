@@ -49,7 +49,7 @@ class GrokRcReviewFixesTest {
     private val emptyClaude = "● Done.\n\n" + "─".repeat(60) + "\n❯ \n" + "─".repeat(60) + "\n  ? for shortcuts"
 
     @After fun close() {
-        vm.viewModelScope.cancel()
+        vm.clearForTest()
         shadowOf(Looper.getMainLooper()).idle()
     }
 
@@ -120,17 +120,24 @@ class GrokRcReviewFixesTest {
         val fake = Fake(sessionsList, status = "blocked")
         open(b, fake)
         idle()
-        assertTrue(AppBus.emit(NotifyAction(b.id, fake.pane.id, "HD211_REPLY", true, "", isReply = true)))
+        assertTrue(AppBus.emit(vm.bindFixtureAlert(NotifyAction(b.id, fake.pane.id, "HD211_REPLY", true, "", isReply = true), fake.client)))
         idle()
         assertTrue(fake.reads > 0)
         assertTrue(fake.writes().toString(), fake.writes().isEmpty())
     }
 
+    private fun replyTo(fake: Fake): NotifyAction {
+        val p = checkNotNull(detectPrompt(fake.screen, true, "claude"))
+        return NotifyAction(b.id, fake.pane.id, "HD211_REPLY", true, p.question, agent = "claude", isReply = true,
+            options = com.billmongan.herdrdroid.notify.alertOptionsSig(p.choices),
+            identity = com.billmongan.herdrdroid.notify.alertIdentity(p))
+    }
+
     @Test fun anAlertReplyStillGoesToAnOrdinaryClaudeQuestion() {
-        val fake = Fake("● Which file should I edit?\n\n" + "─".repeat(60) + "\n❯ \n" + "─".repeat(60) + "\n  ? for shortcuts", status = "blocked")
+        val fake = Fake("Which file should I edit?", status = "blocked")
         open(b, fake)
         idle()
-        assertTrue(AppBus.emit(NotifyAction(b.id, fake.pane.id, "HD211_REPLY", true, "", isReply = true)))
+        assertTrue(AppBus.emit(vm.bindFixtureAlert(replyTo(fake), fake.client)))
         idle()
         assertTrue(fake.writes().toString(), fake.writes().any { "HD211_REPLY" in it })
     }
@@ -144,10 +151,10 @@ class GrokRcReviewFixesTest {
         fake.timeoutLines = 80
         open(b, fake)
         idle()
-        assertTrue(AppBus.emit(NotifyAction(b.id, fake.pane.id, "HD211_REPLY", true, "", agent = "claude", isReply = true)))
+        assertTrue(AppBus.emit(vm.bindFixtureAlert(NotifyAction(b.id, fake.pane.id, "HD211_REPLY", true, "", agent = "claude", isReply = true), fake.client)))
         // Past card recovery's pause before its 40-line read.
         repeat(4) { shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(1)); Thread.sleep(5) }
-        assertTrue(fake.commands.any { "'--lines' '80'" in it })
+        assertTrue(fake.commands.none { "'--source' 'recent'" in it })
         assertTrue(fake.writes().toString(), fake.writes().isEmpty())
     }
 
@@ -156,16 +163,26 @@ class GrokRcReviewFixesTest {
         shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
         Notify.channels(app)
         val nm = shadowOf(app.getSystemService(NotificationManager::class.java))
-        val fake = Fake("● Which file should I edit?\n\n" + "─".repeat(60) + "\n❯ \n" + "─".repeat(60) + "\n  ? for shortcuts", status = "blocked")
+        val fake = Fake("Which file should I edit?", status = "blocked")
         fake.failSends = true
         open(b, fake)
         idle()
-        assertTrue(AppBus.emit(NotifyAction(b.id, fake.pane.id, "HD211_REPLY", true, "", agent = "claude", isReply = true)))
+        assertTrue(AppBus.emit(vm.bindFixtureAlert(replyTo(fake), fake.client)))
         idle()
         assertTrue(fake.writes().toString(), fake.writes().isNotEmpty())
-        val failed = nm.allNotifications.filter { n -> n.extras.getCharSequence("android.text")?.contains("couldn't be sent") == true }
+        val failed = nm.allNotifications.filter { n -> n.extras.getCharSequence("android.text")?.contains("may have been sent") == true }
         assertTrue(nm.allNotifications.map { it.extras.getCharSequence("android.text") }.toString(), failed.isNotEmpty())
         assertTrue(failed.all { n -> (n.actions ?: emptyArray()).none { it.title.toString() == "Reply" } })
+    }
+
+    @Test fun modelPickerCannotWriteIntoAnApproval() {
+        val fake = Fake("Allow the change? [y/n]", status = "blocked")
+        open(b, fake)
+        var pickerStarted = false
+        vm.runCommand(fake.pane.id, "/model") { pickerStarted = true }
+        idle()
+        assertFalse(pickerStarted)
+        assertTrue(fake.writes().isEmpty())
     }
 
     // ---- M1: a tap belongs to the server it was made on --------------------------------------
@@ -242,6 +259,7 @@ class GrokRcReviewFixesTest {
 
         private fun answer(command: String): ExecResult {
             commands += command
+            runAlertFixtureGuard(command, "w1:p1", paneJson, screen, ::answer)?.let { return it }
             return when {
                 "'pane' 'list'" in command -> ok("""{"result":{"panes":[$paneJson]}}
 @@herdrdroid-tabs@@

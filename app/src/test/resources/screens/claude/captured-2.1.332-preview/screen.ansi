@@ -1,0 +1,28 @@
+ ☐ Sample
+
+Which neutral sample layout should we use?
+
+❯ 1. Wide                         ┌──────────────────────────────────────────────────────┐
+  2. Tall                         │ +--------------------------------------------------+ │
+                                  │ |  Wide layout                                     | │
+                                  │ |                                                  | │
+                                  │ |  Content runs across the full width, with        | │
+                                  │ |  generous gutters between columns and roomy      | │
+                                  │ |  margins on both sides. Line length stays        | │
+                                  │ |  moderate so the eye can return to the start     | │
+                                  │ |  of each line easily, and extra whitespace       | │
+                                  │ |  between sections separates ideas clearly.       | │
+                                  │ |                                                  | │
+                                  │ |  [ Column A ]      [ Column B ]      [ Column C ]| │
+                                  │ |                                                  | │
+                                  │ |  Best for: wide monitors, side-by-side reading,  | │
+                                  │ |  and scanning many items at once.                | │
+                                  │ +--------------------------------------------------+ │
+                                  └──────────────────────────────────────────────────────┘
+
+                                  Notes: press n to add notes
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Chat about this
+
+Enter to select · ↑/↓ to navigate · n to add notes · Esc to cancel

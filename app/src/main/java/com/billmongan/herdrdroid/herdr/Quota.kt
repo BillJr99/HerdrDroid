@@ -98,7 +98,13 @@ fun vibeFooterUsage(screen: String): List<QuotaItem> {
  * "server_sent_no_usage") there is no allowance, and the card shows no usage.
  */
 fun museUsage(json: String): List<QuotaItem> {
-    val root = org.json.JSONObject(json.trim().lines().lastOrNull { it.trimStart().startsWith("{") } ?: return emptyList())
+    val root = try {
+        org.json.JSONObject(json.trim())
+    } catch (_: org.json.JSONException) {
+        json.lineSequence().map(String::trim).filter { it.startsWith("{") }.lastOrNull()?.let { line ->
+            try { org.json.JSONObject(line) } catch (_: org.json.JSONException) { null }
+        } ?: return emptyList()
+    }
     val a = root.optJSONObject("allowance") ?: return emptyList()
     val out = mutableListOf<QuotaItem>()
     for ((key, label) in listOf("window" to "Muse window", "weekly" to "Muse weekly")) {
@@ -560,6 +566,9 @@ fun footerModel(agent: String?, screen: String): String? {
     val lines = screen.lines().map { it.trimEnd() }.filter { it.isNotBlank() }.takeLast(12)
     fun lastMatch(r: Regex) = lines.asReversed().firstNotNullOfOrNull { r.find(it)?.groupValues?.get(1)?.trim() }
     val found = when (ruleAgent(agent)) {
+        // Explicit Claude model status or the completed switch acknowledgement, never the picker's highlight.
+        "claude" -> lastMatch(Regex("""^\s*(?:(?:⏵{1,2}|⏸)[^·]*·\s*)?Model:\s*((?:Opus|Sonnet|Haiku|Fable)\s+\d+(?:\.\d+)?(?:\s+\(1M(?: context)?\))?)\s*(?:·.*)?$""", RegexOption.IGNORE_CASE))
+            ?: lastMatch(Regex("""^\s*⎿[\s\p{Zs}]+Set model to\s+((?:Opus|Sonnet|Haiku|Fable)\s+\d+(?:\.\d+)?(?:\s+\(1M(?: context)?\))?)(?:\s+for this session only)?(?:\s+with (?:low|medium|high|xhigh|max) effort)?\s*[.!]?\s*$""", RegexOption.IGNORE_CASE))
         // "GPT-6.1-Sol default · ~/agents/codex"
         "codex" -> lastMatch(Regex("""^\s*(\S[^·]*?)\s+·\s+~"""))
             ?.replace(Regex("""\s+(default|minimal|low|medium|high|xhigh)$"""), " · $1")

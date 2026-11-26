@@ -136,9 +136,13 @@ class PaneDraftTest {
         var reads = 0
         override suspend fun pane(id: String) = pane
         override suspend fun viewport(id: String): String { reads++; return screens[minOf(writes.size, screens.size - 1)] }
-        override suspend fun keys(id: String, keys: List<String>, permit: WritePermit) {
+        private fun recordKeys(keys: List<String>, permit: WritePermit) {
             permit.admit()
             writes += keys
+        }
+        override suspend fun checkedKeys(id: String, keys: List<String>, viewport: String, permit: WritePermit): Boolean {
+            recordKeys(keys, permit)
+            return true
         }
         override suspend fun pause(ms: Long) {}
     }
@@ -220,11 +224,15 @@ class PaneDraftTest {
             val lines = text.split("\n")
             return hermes(*(listOf("❯ " + lines.first()) + lines.drop(1)).toTypedArray())
         }
-        override suspend fun keys(id: String, keys: List<String>, permit: WritePermit) {
+        private fun recordKeys(keys: List<String>, permit: WritePermit) {
             permit.admit()
             writes += keys
             val n = keys.size - (if (writes.size == 1) drop else 0) + (if (writes.size == 1) extra else 0)
             text = text.dropLast(n.coerceAtMost(text.length))
+        }
+        override suspend fun checkedKeys(id: String, keys: List<String>, viewport: String, permit: WritePermit): Boolean {
+            recordKeys(keys, permit)
+            return true
         }
         override suspend fun pause(ms: Long) {}
     }
@@ -313,9 +321,10 @@ class PaneDraftTest {
     }
 
     @Test fun `clear is refused without a known safe clear or for a changed occupant`() = runBlocking {
-        val pi = shown.copy(agent = "pi")
+        // 2.2.8: pi's Backspace was checked live; an agent with no checked key (gemini) still gets no Clear.
+        val pi = shown.copy(agent = "gemini")
         val unknown = Host(pi, listOf(draftScreen, emptyScreen))
-        assertFalse(canClearDraft("pi"))
+        assertFalse(canClearDraft("gemini"))
         assertEquals(PaneDraftAction.Outcome.REFUSED, action().clear("srv", pi, draftText, { true }, unknown))
         assertTrue(unknown.writes.isEmpty())
         for (agent in listOf("claude", "codex", "hermes", "grok")) assertTrue(canClearDraft(agent))

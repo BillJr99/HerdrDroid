@@ -38,7 +38,7 @@ class ClaudeBtwVm214Test {
     private val pgdn = screen("long-pgdn.txt")
 
     @After fun close() {
-        vm.viewModelScope.cancel()
+        vm.clearForTest()
         shadowOf(Looper.getMainLooper()).idle()
     }
 

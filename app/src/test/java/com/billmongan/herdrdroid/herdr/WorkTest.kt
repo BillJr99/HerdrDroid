@@ -23,6 +23,12 @@ class WorkTest {
  "tasks": [{"id": "b1", "file": "/tmp/claude-1000/x/s/tasks/b1.output", "title": "Build 0.5.0", "updated": 1, "running": true, "kb": 4}]}
 """
 
+    @Test fun noSubagentsIsDifferentFromAnUnverifiedCount() {
+        assertEquals(null, parseWork("""{"ok":true,"subagents":[]}""").subagentCount("claude"))
+        assertEquals(0, parseWork("""{"ok":true,"subagents":[],"subagents_verified":true}""").subagentCount("claude"))
+        assertEquals(0, parseWork("""{"ok":true,"subagents":[{"id":"finished","active":false}]}""").subagentCount("claude"))
+    }
+
     @Test fun parsesAndCounts() {
         val w = parseWork(json)
         assertEquals(5, w.procs.size)

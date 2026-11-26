@@ -3,6 +3,11 @@
 # Herdr.kt, and byte for byte the same digests: 0 when the pane's occupant (read before and after
 # the screen) and its screen match $3 and $4, 3 when anything changed, 4 when it couldn't check.
 # Arguments: herdr, pane id, occupant digest, screen digest. No prompt text.
+# 2.2.8: a screen digest of "-" checks the occupant only, wherever the pane is scrolled (a message
+# queued behind a question goes only to its occupant): 0 when it matches, 5 when it doesn't, 4.
+# 2.2.8: a screen argument "r:<rows under>:<rows>:<digest>" compares only the dialog's rows
+# (cardRegionDigest in Herdr.kt): the same rows of this read, each with only its ends trimmed, and
+# the rows under them by their shape (a new dialog under the old one is a change).
 herdr=$1
 pane=$2
 occupant=$3
@@ -176,7 +181,8 @@ END {
   if (ENVIRON["MODE"] == "status") {
     if (!(type[P SUBSEP "pane_id"] == "s" && !odd[P SUBSEP "pane_id"] && val[P SUBSEP "pane_id"] == ENVIRON["WANT"])) exit 3
     S = P SUBSEP "scroll"
-    if (type[S] == "o") { if (!zero(S SUBSEP "offset_from_bottom")) exit 3 }
+    if (ENVIRON["ANYSCROLL"] == "1") { }
+    else if (type[S] == "o") { if (!zero(S SUBSEP "offset_from_bottom")) exit 3 }
     else if (falsy(S)) exit 3
     else err()
     for (i = 1; i <= 7; i++) if (used(P SUBSEP F[i])) err()
@@ -214,14 +220,53 @@ nul() { ! tr -d '\000' < "$1" | cmp -s - "$1"; }
 identity() {
   "$herdr" pane get "$pane" > "$j" 2>/dev/null || return 4
   nul "$j" && return 4
-  MODE=status WANT=$pane awk "$J" "$j" 2>/dev/null
+  MODE=status WANT=$pane ANYSCROLL=$anyscroll awk "$J" "$j" 2>/dev/null
   st=$?
   [ "$st" -eq 0 ] || { [ "$st" -eq 3 ] && return 3; return 4; }
   id=$(MODE=ser awk "$J" "$j" 2>/dev/null | sha)
   hex64 "$id" || return 4
+  # The agent as herdr names it (the fourth occupant field): the Hermes composer rule is for "hermes" only.
+  hermes=0
+  [ "$(MODE=ser awk "$J" "$j" 2>/dev/null | sed -n 4p)" = "6:hermes" ] && hermes=1
   return 0
 }
 
+anyscroll=0
+below=
+codex_below=
+case $screen in
+  c:*)
+    rest=${screen#c:}
+    codex_below=${rest%%:*}
+    want=${rest#*:}
+    case $codex_below in '' | *[!0-9]*) { echo @@herdrdroid-card-refused@@; exit 3; } ;; esac
+    [ ${#codex_below} -le 6 ] && hex64 "$want" || { echo @@herdrdroid-card-refused@@; exit 3; }
+    ;;
+  r:*)
+    rest=${screen#r:}
+    below=${rest%%:*}
+    rest=${rest#*:}
+    count=${rest%%:*}
+    want=${rest#*:}
+    case $below in '' | *[!0-9]*) { echo @@herdrdroid-card-refused@@; exit 3; } ;; esac
+    case $count in '' | *[!0-9]* | 0*) { echo @@herdrdroid-card-refused@@; exit 3; } ;; esac
+    [ ${#below} -le 6 ] && [ ${#count} -le 6 ] || { echo @@herdrdroid-card-refused@@; exit 3; }
+    hex64 "$want" || { echo @@herdrdroid-card-refused@@; exit 3; }
+    ;;
+esac
+if [ "$screen" = "-" ]; then
+  anyscroll=1
+  identity
+  a=$?
+  [ "$a" -eq 4 ] && exit 4
+  before=$id
+  identity
+  b=$?
+  [ "$b" -eq 4 ] && exit 4
+  [ "$a" -eq 0 ] && [ "$b" -eq 0 ] && [ "$before" = "$id" ] && [ "$id" = "$occupant" ] && exit 0
+  echo @@herdrdroid-occupant-refused@@
+  exit 5
+fi
 identity
 a=$?
 [ "$a" -eq 4 ] && exit 4
@@ -231,24 +276,179 @@ identity
 b=$?
 [ "$b" -eq 4 ] && exit 4
 # A NUL in the screen never matches (cardScreenDigest; the Python check exits 3 too).
-nul "$v" && exit 3
-# Only the agent's own timer line (cardTimerLine in Herdr.kt): its last (Ns), nothing else.
+nul "$v" && { echo @@herdrdroid-card-refused@@; exit 3; }
+if [ -n "$codex_below" ]; then
+  agent=$(MODE=ser awk "$J" "$j" 2>/dev/null | sed -n 4p)
+  seen=$(awk -v below="$codex_below" '
+    { raw[NR] = $0 }
+    END {
+      at = NR - below
+      if (at < 1) exit 3
+      t = raw[at]
+      gsub(/\033\[[0-9;?]*[ -\/]*[@-~]/, "", t)
+      sub(/[ \t\r\v\f]+$/, "", t)
+      if (t !~ /^(•|◦) Working \(([0-9]+h )?([0-9]+m )?[0-9]+s • esc to interrupt\)$/) exit 3
+      for (i = 1; i <= NR; i++) print (i == at ? "<codex-working>" : raw[i])
+    }
+  ' "$v" | sha)
+  [ "$a" -eq 0 ] && [ "$b" -eq 0 ] && [ "$before" = "$id" ] &&
+    [ "$id" = "$occupant" ] && [ "$agent" = "5:codex" ] && [ "$seen" = "$want" ] && exit 0
+  echo @@herdrdroid-card-refused@@
+  exit 3
+fi
+# Hermes's countdown (cardTimerLine in Herdr.kt), and Oh My Pi's two running rows only around its
+# approval box (cardScreenRows): every row of the box counts as it is.
 T='
-{
-  t = $0
+function shown(x,   t) {
+  t = x
   gsub(/\033\[[0-9;?]*[ -\/]*[@-~]/, "", t)
   t = tolower(t)
   sub(/^[ \t\r\v\f]+/, "", t)
   sub(/[ \t\r\v\f]+$/, "", t)
-  if (t ~ /^(type [0-9\/]+, or )?↑\/↓ to select, enter to confirm[ \t\r\v\f]*\([0-9]+s\)$/ && match($0, /.*\([0-9]+s\)/)) {
-    head = substr($0, 1, RLENGTH)
+  return t
+}
+function timer(x, t,   head) {
+  if (t ~ /^((type [0-9\/]+, or )?↑\/↓ to select, enter to confirm|↑\/↓ to select, enter to lock, tab next question|type your answer and press enter)[ \t\r\v\f]*\([0-9]+s\)$/ && match(x, /.*\([0-9]+s\)/)) {
+    head = substr(x, 1, RLENGTH)
     sub(/\([0-9]+s\)$/, "(Ns)", head)
-    $0 = head substr($0, RLENGTH + 1)
+    x = head substr(x, RLENGTH + 1)
   }
-  print
+  return x
+}
+{ raw[NR] = $0; row[NR] = shown($0); if (row[NR] ~ /^╭─ allow tool: .*╮$/) { tops++; top = NR } }
+function boxrow(x) { return index(x, "│") == 1 || index(x, "├") == 1 }
+END {
+  # The one proven approval box (ompApprovalRegion in Herdr.kt), or none.
+  bottom = 0
+  elapsed = 0
+  if (tops == 1) {
+    for (i = top + 1; i <= NR; i++) {
+      if (row[i] ~ /^╰(─)+╯$/) { bottom = i; break }
+      if (!boxrow(row[i])) break
+    }
+    # A second bottom-shaped edge under the top: which one closes the box is not proven.
+    if (bottom) for (i = bottom + 1; i <= NR; i++) if (row[i] ~ /^╰(─)+╯$/) bottom = 0
+  }
+  if (bottom) {
+    lo = top - 3
+    if (lo < 1) lo = 1
+    for (i = top - 1; i >= lo; i--) {
+      if (row[i] ~ /^╰(─)+ elapsed [0-9hms.]+ (─)+╯$/) { elapsed = i; break }
+      if (index(row[i], "╭") == 1 || index(row[i], "╰") == 1 || boxrow(row[i])) break
+    }
+    if (elapsed) {
+      j = elapsed - 1
+      while (j >= 1 && index(row[j], "│") == 1) j--
+      if (j < 1 || index(row[j], "╭") != 1) elapsed = 0
+    }
+  }
+  # The Hermes composer under a live prompt (hermesComposerRows): its top rule and its footer only.
+  f = 0; hr = 0; hf = 0
+  for (i = NR; i >= 1; i--) if (row[i] != "") { f = i; break }
+  if (H == 1 && f >= 5 && row[f] ~ /^☤ [^ ]+ · ~?[0-9][0-9.,]*[km]?\/[0-9][0-9.,]*[km]?( · .*)?$/ && row[f - 1] ~ /^(─)+$/ && row[f - 2] ~ /^(⚠|\?|✎|🔐|🔑|⚙)(️)?[ \t]*(❯|›)([ \t].*)?$/ &&
+      row[f - 3] ~ /^──.*─$/ &&
+      row[f - 4] ~ /^((type [0-9\/]+, or )?↑\/↓ to select, enter to confirm|↑\/↓ to select, enter to lock, tab next question|type your answer and press enter)([ \t\r\v\f]*\([0-9]+s\))?$/) {
+    hr = f - 3; hf = f
+  }
+  for (i = 1; i <= NR; i++) {
+    x = raw[i]
+    if (i == hr) x = "<hermes-rule>"
+    else if (i == hf) x = "<hermes-footer>"
+    else if (!bottom) x = timer(x, row[i])
+    else if (i >= top && i <= bottom) x = x
+    else if (i == elapsed) sub(/elapsed [0-9hms.]+/, "elapsed N", x)
+    else if (i == bottom + 1 && row[i] ~ /^[^ ]+ ([^ ]+ )?> .* > 📁 [^ ]+ ▶─/) x = "<status>"
+    else x = timer(x, row[i])
+    print x
+  }
 }
 '
-seen=$(awk "$T" "$v" 2>/dev/null | sha)
+if [ -n "$below" ]; then
+  # The dialog's rows only: "start" past the screen's top means they aren't there (exit 3).
+  R='
+function word(c) { return c ~ /^[0-9A-Za-z]$/ }
+# cardTokens in Herdr.kt: one left-to-right scan, a match only where it stands on its own.
+function tokens(t, re, before, kind,   out, rest, st, en, m, ok, pre, nx) {
+  out = ""
+  while (1) {
+    if (!match(t, re)) return out t
+    st = RSTART; en = RSTART + RLENGTH
+    m = substr(t, st, RLENGTH)
+    nx = substr(t, en, 1)
+    pre = (st > 1) ? substr(t, st - 1, 1) : substr(out, length(out), 1)
+    ok = (nx == "" || !word(nx)) && (!before || pre == "" || !(word(pre) || pre == "."))
+    if (ok) {
+      if (kind == "counter") { match(m, /^[^0-9]*/); out = out substr(t, 1, st - 1) substr(m, 1, RLENGTH) "N" }
+      else out = out substr(t, 1, st - 1) "T"
+      t = substr(t, en)
+    } else {
+      out = out substr(t, 1, st)
+      t = substr(t, st + 1)
+    }
+  }
+}
+function text(t) {
+  if (!spun && match(t, /\342[\240-\243][\200-\277]|·|✢|✳|✶|✻|✽|◐|◓|◑|◒|◆|◇|◈|•/)) {
+    t = substr(t, 1, RSTART - 1) "*" substr(t, RSTART + RLENGTH)
+    spun = 1
+  }
+  t = tokens(t, "(⇣|↓) ?[0-9]+(\\.[0-9]+)?[kKM]?", 0, "counter")
+  t = tokens(t, "([0-9]+h ?)?([0-9]+m ?)?[0-9]+(\\.[0-9]+)?[smh]", 1, "time")
+  return t
+}
+{ r[NR] = $0 }
+END {
+  start = NR - below - count + 1
+  if (start < 1) exit 3
+  for (i = start; i <= NR - below; i++) {
+    x = r[i]
+    sub(/^[ \t\r\v\f]+/, "", x)
+    sub(/[ \t\r\v\f]+$/, "", x)
+    print x
+  }
+  # 2.2.8 (Codex review 4B): the rows under the dialog (cardUnderRow in Herdr.kt): each exactly, ends
+  # trimmed, except a running status row (Grok, Claude/Codex/Antigravity, Hermes shapes), where only
+  # its spinner glyph, running times and counter numbers are read as tokens; styles stay.
+  print "@@under@@"
+  for (i = NR - below + 1; i <= NR; i++) {
+    x = r[i]
+    sub(/^[ \t\r\v\f]+/, "", x)
+    sub(/[ \t\r\v\f]+$/, "", x)
+    t = x
+    gsub(/\033\[[0-9;?]*[ -\/]*[@-~]/, "", t)
+    sub(/^[ \t\r\v\f]+/, "", t)
+    sub(/[ \t\r\v\f]+$/, "", t)
+    if (t ~ /^(\342[\240-\243][\200-\277]|◆|◇|◈) .*\[stop\]$/ ||
+        t ~ /^(\342[\240-\243][\200-\277]|✻|✶|✳|✢|·|✽|◇|◆|•) .*\(.*esc to interrupt\)$/ ||
+        t ~ /^(─)+ \342[\240-\243][\200-\277] Working/) {
+      out = ""
+      spun = 0
+      while (match(x, /\033\[[0-9;?]*[ -\/]*[@-~]/)) {
+        # text() runs match() too: keep the place of this style first.
+        cs = RSTART; cl = RLENGTH
+        seg = text(substr(x, 1, cs - 1))
+        out = out seg substr(x, cs, cl)
+        x = substr(x, cs + cl)
+      }
+      x = out text(x)
+    }
+    print x
+  }
+}
+'
+  awk -v H="$hermes" "$T" "$v" > "$j" 2>/dev/null || exit 4
+  awk -v below="$below" -v count="$count" "$R" "$j" > "$v" 2>/dev/null
+  st=$?
+  [ "$st" -eq 3 ] && { echo @@herdrdroid-card-refused@@; exit 3; }
+  [ "$st" -eq 0 ] || exit 4
+  seen=$(sha < "$v")
+  hex64 "$seen" || exit 4
+  [ "$a" -eq 0 ] && [ "$b" -eq 0 ] && [ "$before" = "$id" ] && [ "$id" = "$occupant" ] && [ "$seen" = "$want" ] && exit 0
+  echo @@herdrdroid-card-refused@@
+  exit 3
+fi
+seen=$(awk -v H="$hermes" "$T" "$v" 2>/dev/null | sha)
 hex64 "$seen" || exit 4
 [ "$a" -eq 0 ] && [ "$b" -eq 0 ] && [ "$before" = "$id" ] && [ "$id" = "$occupant" ] && [ "$seen" = "$screen" ] && exit 0
+echo @@herdrdroid-card-refused@@
 exit 3

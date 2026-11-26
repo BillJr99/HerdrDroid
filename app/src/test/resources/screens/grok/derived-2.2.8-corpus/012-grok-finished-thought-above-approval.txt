@@ -1,0 +1,29 @@
+  ~/work/demo                                                                                            104k / 256k │ [Dashboard]
+
+     ❯ Check tests and fix any broken assertions.                                                                         3:12 PM
+
+     ◆ Thought for 6.2s
+
+     I reviewed tests/test_app.py. Before patching, I should:
+     1. Confirm current failures with pytest.
+     2. Update stale snapshots matching:
+     ```python
+     # 1. expected output
+     assert status == 200
+     ```
+
+     ◆ Running run unit tests
+
+   ◆ Run unit tests… 2s                                                                                          3m12s ⇣64.0k [↓][stop]
+
+  ┃
+  ┃  ›  Run unit tests
+  ┃  │ pytest -q tests/test_app.py
+  ┃  ← → narrow scope
+  ┃
+  ┃  1 (○) Yes, and don't ask again for anything (always-approve mode)
+  ┃  2 (●) Yes, proceed
+  ┃  3 (○) No, reject (type to add feedback)
+  ┃
+
+  1/3:select  │  Tab:next option  │  Ctrl+o:always-approve  │  Ctrl+c:cancel  │  Esc:scrollback

@@ -47,7 +47,7 @@ class SmallPacketSession227Test {
     private val fleetScope = CoroutineScope(SupervisorJob().apply { cancel() })
 
     @After fun close() {
-        vm.viewModelScope.cancel()
+        vm.clearForTest()
         fleetScope.cancel()
         shadowOf(Looper.getMainLooper()).idle()
     }
@@ -125,13 +125,25 @@ class SmallPacketSession227Test {
         state("serverHealth", mapOf(server.id to AppViewModel.ServerHealth(AppViewModel.Health.DOWN, "Can't reach it", 1L)))
         assertEquals(AppViewModel.Health.UP, vm.healthFor(server.id)?.health)
         assertEquals("Up · agents idle", vm.healthFor(server.id)?.line)
-        // While it reconnects the last check shows again; back connected, reachable at once.
+        state("serverHealth", mapOf(server.id to AppViewModel.ServerHealth(AppViewModel.Health.UP, "Up", 1L)))
         state("link", Link.RECONNECTING)
+        assertEquals(AppViewModel.Health.CHECKING, vm.healthFor(server.id)?.health)
+        assertEquals("Reconnecting", vm.healthFor(server.id)?.line)
+        state("link", Link.OFFLINE)
         assertEquals(AppViewModel.Health.DOWN, vm.healthFor(server.id)?.health)
         state("link", Link.CONNECTED)
         assertEquals(AppViewModel.Health.UP, vm.healthFor(server.id)?.health)
         // Another server keeps its own light.
         assertNull(vm.healthFor("another"))
+    }
+
+    @Test fun backgroundClosesTheWebSocketAndMarksTheLinkReconnecting() {
+        signedIn()
+        state("current", server.copy(wsUrl = "ws://127.0.0.1:1"))
+        state("foreground", true)
+        vm.onBackground()
+        assertEquals(Link.RECONNECTING, vm.link)
+        assertEquals("Reconnecting", vm.healthFor(server.id)?.line)
     }
 
     @Test fun aNetworkChangeEndsTheSessionsSmallPacketsAndArmsTheFallbackAgain() {

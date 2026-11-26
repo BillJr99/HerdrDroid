@@ -20,26 +20,25 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** 2.1.1: the card body on screen: folded code, Show raw, option descriptions. */
+/** 2.1.1: the card body on screen: code (2.2.8: never folded), Show raw, option descriptions. */
 @RunWith(AndroidJUnit4::class)
 class CardBodyTest {
     @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = IdleMainLooperRule()
     @get:Rule val rule = createComposeRule()
 
-    @Test fun longCodeFoldsAndShowRawGivesTheParserText() {
+    /** 2.2.8: a long script shows every line (no fold), and Show raw gives the parser's text. */
+    @Test fun longCodeShowsEveryLineAndShowRawGivesTheParserText() {
         val script = (1..12).joinToString("\n") { "echo line$it" }
         val parts = QuestionParts(emptyList(), listOf(QBlock(QKind.HEADING, "Run this?"), QBlock(QKind.COMMAND, script)))
         rule.setContent { CardBody(parts, null) }
         rule.onNodeWithTag("card-headline").assertIsDisplayed()
-        rule.onAllNodesWithText("echo line12", substring = true).assertCountEquals(0)
-        // Show raw first: once all 12 lines show, the toggle is below the test's small screen.
+        rule.onNodeWithText("echo line12", substring = true).assertExists()
+        rule.onAllNodesWithText("Show all 12 lines").assertCountEquals(0)
         rule.onNodeWithText("Show raw").performClick()
         rule.onAllNodesWithTag("card-raw", useUnmergedTree = true).assertCountEquals(2)
-        rule.onNodeWithText(script).assertIsDisplayed()
+        rule.onNodeWithText(script).assertExists()
         rule.onNodeWithText("Show formatted").performClick()
         rule.onAllNodesWithTag("card-raw", useUnmergedTree = true).assertCountEquals(0)
-        rule.onNodeWithText("Show all 12 lines").performClick()
-        rule.onNodeWithText("echo line12", substring = true).assertIsDisplayed()
     }
 
     @Test fun anEditShowsAsADiff() {

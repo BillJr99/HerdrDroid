@@ -1,0 +1,18 @@
+│ Create timestamp file                                                                │
+│ ──────────────────────────────────────────────────────────────────────────────────── │
+│ ╭──────────────────────────────────────────────────────────────────────────────────╮ │
+│ │ mkdir -p sub && date > sub/now.txt                                               │ │
+│ ╰──────────────────────────────────────────────────────────────────────────────────╯ │
+│                                                                                      │
+│ Do you want to run this command?                                                     │
+│                                                                                      │
+│ ❯ 1. Yes                                                                             │
+│   2. Yes, and don't ask again for `mkdir` in this directory (/tmp/t/copilot)         │
+│   3. No, and tell Copilot what to do differently (Esc to stop)                       │
+│                                                                                      │
+│ ↑/↓ to navigate · enter to select · esc to cancel                                    │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+│ Do you want to edit src/app.py?                                                      │
+│ ❯ 1. Yes                                                                             │
+│   2. No, and tell Copilot what to do differently (Esc to stop)                       │
+╰──────────────────────────────────────────────────────────────────────────────────────╯

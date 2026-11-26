@@ -3,6 +3,10 @@ package com.billmongan.herdrdroid
 import org.junit.Rule
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.billmongan.herdrdroid.herdr.*
+import com.billmongan.herdrdroid.transcript.LiveSession
+import com.billmongan.herdrdroid.transcript.TranscriptRead
+import kotlinx.coroutines.runBlocking
+import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -95,6 +99,90 @@ class CrossServerNoticeTest {
     private fun pane(session: String = "s1") = Pane("w2:p9", "t", "w2", "hermes", Status.IDLE, "", "/x", sessionId = session)
     private fun cand(text: String = "A", session: String = "s1", hold: Boolean = false) =
         CrossServerNotifier.Candidate("laptop2", pane(session), text, hold)
+
+    private val notice = "HerdrDroid notice fixture\nAgents on other servers: Sample on Example."
+    private fun row(key: String, text: String = notice, role: String = "user") =
+        JSONObject().put("k", key).put("t", role).put("text", text)
+    private fun history(vararg items: JSONObject, live: LiveSession = LiveSession("s1", "fixture", null, "test", false),
+                        reset: Boolean = false, more: Boolean = false, offset: Int = 42) =
+        TranscriptRead(true, null, """{"offset":$offset}""", reset, more, null, items.toList(), live = live)
+
+    @Test fun onlyANewExactUserEntryFromTheSameSessionConfirms() {
+        val before = checkNotNull(NoticeReceipt.begin("s1", history(row("old"))))
+        assertTrue(before.matches(history(row("new")), notice))
+        assertFalse(before.matches(history(row("old")), notice))
+        assertFalse(before.matches(history(row("new", role = "text")), notice))
+        assertFalse(before.matches(history(row("new", text = "$notice extra")), notice))
+        assertFalse(before.matches(history(row("new"), reset = true), notice))
+        assertFalse(before.matches(history(row("new"), live = LiveSession("s2", "fixture", null, "test", false)), notice))
+        assertFalse(before.matches(history(row("new"), live = LiveSession("s1", "other", null, "test", false)), notice))
+        assertFalse(before.matches(history(row("new"), live = LiveSession("s1", "fixture", null, "test", true)), notice))
+        assertNull(NoticeReceipt.begin("s1", history(more = true)))
+    }
+
+    @Test fun confirmationUsesACompletePagedBaselineAndRejectsOldEntries() = runBlocking {
+        val receipt = checkNotNull(NoticeReceipt.capture("s1") { cursor ->
+            when (cursor) {
+                "" -> history(row("old"), more = true)
+                """{"offset":42}""" -> history(row("last-old"), offset = 84)
+                else -> error("unexpected cursor: $cursor")
+            }
+        })
+        assertEquals("""{"offset":84}""", receipt.cursor)
+        assertFalse(receipt.matches(history(row("old")), notice))
+        assertFalse(receipt.matches(history(row("last-old")), notice))
+        assertTrue(receipt.matches(history(row("new")), notice))
+    }
+
+    @Test fun incompleteOrChangedPagedHistoryCannotBecomeABaseline() = runBlocking {
+        var reads = 0
+        assertNull(NoticeReceipt.capture("s1") { history(more = true, offset = ++reads) })
+        assertEquals(3, reads)
+        val first = history(more = true)
+        for (next in listOf(
+            history(offset = 84, reset = true),
+            history(offset = 84, live = LiveSession("s1", "elsewhere", null, "test", false)),
+            history(offset = 84, live = LiveSession("s2", "fixture", null, "test", false)),
+            history(more = true),
+        )) {
+            assertNull(NoticeReceipt.capture("s1") { if (it.isEmpty()) first else next })
+        }
+    }
+
+    @Test fun openCodeCanConfirmAfterRereadingItsBaselineTail() = runBlocking {
+        val before = checkNotNull(NoticeReceipt.capture("s1") {
+            history(row("tail"), more = it.isEmpty())
+        })
+        assertFalse(before.matches(history(row("tail")), notice))
+        assertTrue(before.matches(history(row("tail"), row("new")), notice))
+    }
+
+    @Test fun confirmationStopsOnReplacementAndHasABoundedReadCount() = runBlocking {
+        val before = checkNotNull(NoticeReceipt.begin("s1", history()))
+        var reads = 0
+        var current = true
+        assertFalse(confirmNotice(before, notice, { current }) {
+            reads++
+            current = false
+            history(row("new"))
+        })
+        assertEquals(1, reads)
+        reads = 0
+        assertFalse(confirmNotice(before, notice, { true }) {
+            reads++
+            null
+        })
+        assertEquals(3, reads)
+    }
+
+    @Test fun uncertainSendsDeduplicateWithoutConfirmingTheLedger() {
+        val n = notifier()
+        n.sent(cand())
+        assertFalse(NoticeLedger({ stored }, {}).get(cand().key)!!.confirmed)
+        assertEquals(CrossServerNotifier.Decision.ALREADY_SENT, n.decide(cand(), true))
+        n.sent(cand(), confirmed = true)
+        assertTrue(NoticeLedger({ stored }, {}).get(cand().key)!!.confirmed)
+    }
 
     @Test fun oncePerSessionAndReachableSet() {
         val n = notifier()

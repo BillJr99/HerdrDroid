@@ -56,7 +56,7 @@ class OpenCodeAlert212Test {
     private val composer = res("/screens/opencode/live-2026-11-20-composer/empty.ansi")
 
     @After fun close() {
-        vm.viewModelScope.cancel()
+        vm.clearForTest()
         shadowOf(Looper.getMainLooper()).idle()
     }
 
@@ -153,6 +153,69 @@ class OpenCodeAlert212Test {
 
     // ---- the alert ----------------------------------------------------------------------------
 
+    @Test fun probeTabStatusChangesDoNotReadOrPostAlerts() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        Notify.channels(app)
+        vm.changeWatching(true)
+        val probe = pane("opencode", Status.IDLE).copy(tabLabel = "probe-alert")
+        val ordinary = probe.copy(id = "ordinary-pane", title = "probe-title", tabLabel = "ordinary")
+        var reads = 0
+        val client = { reads++; null }
+        vm.noticeChanges(server.id, server.label, listOf(probe, ordinary), client)
+        vm.noticeChanges(server.id, server.label, listOf(probe.copy(status = Status.NEEDS_YOU),
+            ordinary.copy(status = Status.NEEDS_YOU)), client)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(1, reads)
+        assertFalse(Notify.isShowing(app, server.id, probe.id))
+        assertTrue(Notify.isShowing(app, server.id, ordinary.id))
+        Notify.clear(app, server.id, ordinary.id)
+    }
+
+    @Test fun codexQueuedViewportWithdrawsAnAlertEvenWhileNativeStatusIsStillBlocked() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        Notify.channels(app)
+        vm.changeWatching(true)
+        val queued = res("/screens/codex/derived-2.2.8-queued-inputs/queued-inputs.txt")
+        val fake = Fake(queued, status = "blocked", agent = "codex")
+        val blocked = pane("codex", Status.NEEDS_YOU)
+        val poll = { vm.noticeChanges(server.id, server.label, listOf(blocked)) { fake.client } }
+        poll()
+        Notify.unread(app, server.id, server.label, blocked.id, blocked.agentName)
+        try {
+            fake.visibleFails = true
+            poll()
+            shadowOf(Looper.getMainLooper()).idle()
+            assertTrue(Notify.isShowing(app, server.id, blocked.id))
+            fake.visibleFails = false
+            poll()
+            shadowOf(Looper.getMainLooper()).idle()
+            assertFalse(Notify.isShowing(app, server.id, blocked.id))
+            val reads = fake.commands.size
+            poll()
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(reads, fake.commands.size)
+        } finally {
+            Notify.clear(app, server.id, blocked.id)
+        }
+    }
+
+    @Test fun codexBlockedTransitionWithAQueuedViewportDoesNotPostAnAlert() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        Notify.channels(app)
+        vm.changeWatching(true)
+        val queued = res("/screens/codex/derived-2.2.8-queued-inputs/queued-inputs.txt")
+        val fake = Fake(queued, status = "blocked", agent = "codex")
+        val working = pane("codex", Status.WORKING)
+        vm.noticeChanges(server.id, server.label, listOf(working)) { fake.client }
+        vm.noticeChanges(server.id, server.label, listOf(working.copy(status = Status.NEEDS_YOU))) { fake.client }
+        shadowOf(Looper.getMainLooper()).idle()
+        assertTrue(fake.commands.any { "'--source' 'visible'" in it })
+        assertFalse(Notify.isShowing(app, server.id, working.id))
+    }
+
     @Test fun theAlertOffersEveryButtonWithNoReply() {
         val app = ApplicationProvider.getApplicationContext<Application>()
         shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
@@ -190,18 +253,72 @@ class OpenCodeAlert212Test {
             NotifyAction(server.id, "w1:p1", "1", false, "Another question", label = "Allow once", agent = "opencode")))
     }
 
-    @Test fun allowOnceFromTheAlertPressesEnterAfterTheStrictRead() {
+    @Test fun allowOnceFromTheAlertPressesEnterAfterTheLiveRead() {
         val fake = Fake(focused(frame, "Allow once"), status = "done")
         open(fake)
-        emit(NotifyAction(server.id, "w1:p1", "1", false, "Permission required", label = "Allow once", agent = "opencode"))
-        assertTrue(fake.commands.any { "'--source' 'recent'" in it && "'--lines' '80'" in it && "'--format' 'ansi'" in it })
+        emit(button(checkNotNull(detectPrompt(frame, true, "opencode")), "Allow once"))
+        assertTrue(fake.commands.any { "'--source' 'visible'" in it && "'--format' 'ansi'" in it })
         assertEquals(listOf("'send-keys' 'w1:p1' 'enter'"), fake.writes().map { it.substringAfter("'pane' ") })
+    }
+
+    @Test fun recentApprovalCannotAuthorizeAnotherLivePermission() {
+        val shown = checkNotNull(detectPrompt(frame, blocked = true, agent = "opencode"))
+        val replacement = frame.replace("echo hi > ~/scratch/x", "printf other")
+        assertTrue(frame != replacement)
+        val fake = Fake(focused(replacement, "Always allow"), status = "done")
+        fake.recent = focused(frame, "Allow once")
+        open(fake)
+        emit(button(shown, "Allow once"))
+        assertTrue(fake.commands.any { "'--source' 'visible'" in it })
+        assertTrue(fake.commands.none { "'--source' 'recent'" in it })
+        assertTrue(fake.writes().isEmpty())
+    }
+
+    @Test fun identicalAlertCannotAnswerAReplacementOccupant() {
+        val shown = checkNotNull(detectPrompt(frame, blocked = true, agent = "opencode"))
+        val fake = Fake(focused(frame, "Allow once"), status = "done")
+        open(fake)
+        val old = vm.bindFixtureAlert(button(shown, "Allow once"), fake.client)
+        fake.terminal = "replacement"
+        emit(old, postOrigin = false)
+        assertTrue(fake.commands.any { "'pane' 'get' 'w1:p1'" in it })
+        assertTrue(fake.writes().isEmpty())
+    }
+
+    @Test fun identicalAlertCannotAnswerAfterTheConnectionWasReplaced() {
+        val shown = checkNotNull(detectPrompt(frame, blocked = true, agent = "opencode"))
+        val fake = Fake(focused(frame, "Allow once"), status = "done")
+        open(fake)
+        val old = vm.bindFixtureAlert(button(shown, "Allow once"), fake.client)
+        fake.connection = Any()
+        emit(old, postOrigin = false)
+        assertTrue(fake.commands.none { "'pane' 'get' 'w1:p1'" in it })
+        assertTrue(fake.writes().isEmpty())
+    }
+
+    @Test fun actionWithoutAPostedOriginCannotSendKeys() {
+        val shown = checkNotNull(detectPrompt(frame, blocked = true, agent = "opencode"))
+        val fake = Fake(focused(frame, "Allow once"), status = "done")
+        open(fake)
+        emit(button(shown, "Allow once"), postOrigin = false)
+        assertTrue(fake.commands.none { "'pane' 'get' 'w1:p1'" in it })
+        assertTrue(fake.writes().isEmpty())
+    }
+
+    @Test fun replacingAnApprovalAtTheHostRefusesTheAlertKeys() {
+        val shown = checkNotNull(detectPrompt(frame, blocked = true, agent = "opencode"))
+        val fake = Fake(focused(frame, "Allow once"), status = "done")
+        fake.beforeGuard = { fake.screen = focused(frame.replace("echo hi > ~/scratch/x", "printf other"), "Always allow") }
+        open(fake)
+        emit(button(shown, "Allow once"))
+        assertTrue(fake.commands.any { "herdrdroid-check" in it })
+        assertTrue(fake.writes().isEmpty())
     }
 
     @Test fun rejectFromTheAlertPressesEsc() {
         val fake = Fake(frame, status = "done")
         open(fake)
-        emit(NotifyAction(server.id, "w1:p1", "3", false, "Permission required", label = "Reject", agent = "opencode"))
+        emit(button(checkNotNull(detectPrompt(frame, true, "opencode")), "Reject"))
         assertEquals(listOf("'send-keys' 'w1:p1' 'esc'"), fake.writes().map { it.substringAfter("'pane' ") })
     }
 
@@ -209,21 +326,21 @@ class OpenCodeAlert212Test {
         // Plain text: no highlight, so Allow once is refused (no typed "1").
         Fake(frame, status = "done").let { fake ->
             open(fake)
-            emit(NotifyAction(server.id, "w1:p1", "1", false, "Permission required", label = "Allow once", agent = "opencode"))
+            emit(button(checkNotNull(detectPrompt(frame, true, "opencode")), "Allow once"))
             assertTrue(fake.writes().toString(), fake.writes().isEmpty())
         }
-        // The strict read times out: refused, with no card-recovery fallback read.
+        // The viewport read times out: refused, with no recent-history fallback.
         Fake(focused(frame, "Allow once"), status = "done").let { fake ->
-            fake.timeoutLines = 80
+            fake.visibleFails = true
             open(fake)
-            emit(NotifyAction(server.id, "w1:p1", "1", false, "Permission required", label = "Allow once", agent = "opencode"))
+            emit(button(checkNotNull(detectPrompt(frame, true, "opencode")), "Allow once"))
             assertTrue(fake.writes().toString(), fake.writes().isEmpty())
             assertTrue(fake.commands.none { "'--lines' '40'" in it })
         }
         // A blank read: refused.
         Fake("\n\n   \n", status = "done").let { fake ->
             open(fake)
-            emit(NotifyAction(server.id, "w1:p1", "3", false, "Permission required", label = "Reject", agent = "opencode"))
+            emit(button(checkNotNull(detectPrompt(frame, true, "opencode")), "Reject"))
             assertTrue(fake.writes().toString(), fake.writes().isEmpty())
         }
         // The dialog went away: refused.
@@ -260,11 +377,16 @@ class OpenCodeAlert212Test {
             emit(button(shown, label, isKey = label == null))
             assertTrue("$label: ${fake.writes()}", fake.writes().isEmpty())
         }
-        // The same command still answers.
+        // The same command still answers (Bill, 2026-11-25: Always allow only after the app's own
+        // confirmation, so never from the alert).
+        val always = Fake(focused(frame, "Allow once"), status = "done")
+        open(always)
+        emit(button(shown, "Always allow"))
+        assertTrue(always.writes().toString(), always.writes().isEmpty())
         val fake = Fake(focused(frame, "Allow once"), status = "done")
         open(fake)
-        emit(button(shown, "Always allow"))
-        assertEquals(listOf("'send-keys' 'w1:p1' 'right' 'enter'"), fake.writes().map { it.substringAfter("'pane' ") })
+        emit(button(shown, "Allow once"))
+        assertEquals(1, fake.writes().size)
     }
 
     private val question = res("/screens/opencode/live-2026-11-21/question-2.3.2.txt")
@@ -274,7 +396,7 @@ class OpenCodeAlert212Test {
         val fake = Fake(question, status = "done")
         open(fake)
         emit(button(shown, "Postgres"))
-        assertTrue(fake.commands.any { "'--source' 'recent'" in it && "'--lines' '80'" in it && "'--format' 'ansi'" in it })
+        assertTrue(fake.commands.any { "'--source' 'visible'" in it && "'--format' 'ansi'" in it })
         assertEquals(listOf("'send-keys' 'w1:p1' '2'"), fake.writes().map { it.substringAfter("'pane' ") })
     }
 
@@ -323,8 +445,11 @@ class OpenCodeAlert212Test {
             emit(reply)
             // The text waits for the redraw after the digit (300 ms on the paused main clock).
             settle()
-            assertEquals(listOf("'send-keys' 'w1:p1' '3'", "'send-text' 'w1:p1' 'MariaDB'", "'send-keys' 'w1:p1' 'enter'"),
-                fake.writes().map { it.substringAfter("'pane' ") })
+            assertEquals(listOf(
+                "'send-keys' 'w1:p1' '3'",
+                "'send-text' 'w1:p1' 'MariaDB'",
+                "'send-keys' 'w1:p1' 'enter'",
+            ), fake.writes().map { it.substringAfter("'pane' ") })
         }
     }
 
@@ -348,8 +473,9 @@ class OpenCodeAlert212Test {
         idle()
     }
 
-    private fun emit(a: NotifyAction) {
-        assertTrue(AppBus.emit(a))
+    private fun emit(a: NotifyAction, postOrigin: Boolean = true) {
+        val client = field(vm, "herdr").get(vm) as Herdr
+        assertTrue(AppBus.emit(if (postOrigin) vm.bindFixtureAlert(a, client) else a))
         idle()
     }
 
@@ -363,18 +489,23 @@ class OpenCodeAlert212Test {
     }
 
     /** One OpenCode pane (and optionally a Claude pane) on a fake herdr; reads give the last N lines of [screen]. */
-    private class Fake(@Volatile var screen: String, status: String, withClaude: Boolean = false, core: Boolean = false) : Herdr.Commands {
+    private class Fake(@Volatile var screen: String, private val status: String, withClaude: Boolean = false, core: Boolean = false,
+        private val agent: String = "opencode",
+    ) : Herdr.Commands {
         val ssh = HerdrSsh("127.0.0.1", 2, "fake", Credentials(null, null), null, { null })
         val client = Herdr(ssh, "/fixture/herdr", if (core) Backend.CORE else Backend.TUI, if (core) "/fixture/hc" else null, this)
         override var connection: Any? = Any()
-        private val paneJson = """{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1","agent":"opencode","agent_status":"$status","screen_detection_skipped":true,"cwd":"/fixture","terminal_id":"t1","scroll":{"offset_from_bottom":0}}"""
+        var terminal = "t1"
+        private val paneJson get() = """{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1","agent":"$agent","agent_status":"$status","screen_detection_skipped":true,"cwd":"/fixture","terminal_id":"$terminal","scroll":{"offset_from_bottom":0}}"""
         private val claudeJson = """{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t2","agent":"claude","agent_status":"idle","cwd":"/fixture","terminal_id":"t2","scroll":{"offset_from_bottom":0}}"""
         private val listJson = if (withClaude) "$paneJson,$claudeJson" else paneJson
         val commands = java.util.Collections.synchronizedList(mutableListOf<String>())
-        @Volatile var timeoutLines: Int? = null
+        @Volatile var visibleFails = false
+        @Volatile var recent: String? = null
+        @Volatile var beforeGuard: (() -> Unit)? = null
         /** The screen after the first key goes in (2.1.2: OpenCode's own answer row opening). */
         @Volatile var afterKeys: String? = null
-        fun writes() = commands.filter { "'agent' 'prompt'" in it || "'send-text'" in it || "'send-keys'" in it || "'send'" in it }
+        fun writes() = commands.filter { "herdrdroid-check" !in it }.filter { "'agent' 'prompt'" in it || "'send-text'" in it || "'send-keys'" in it || "'send'" in it }
 
         override suspend fun bulk(command: String): ExecResult = answer(command)
         override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult = answer(command)
@@ -383,6 +514,8 @@ class OpenCodeAlert212Test {
 
         private fun answer(command: String): ExecResult {
             commands += command
+            if (" && echo @@herdrdroid-card-passed@@ && " in command) beforeGuard?.invoke()
+            runAlertFixtureGuard(command, "w1:p1", paneJson, screen, ::answer)?.let { return it }
             return when {
                 "'pane' 'list'" in command -> ok("""{"result":{"panes":[$listJson]}}
 @@herdrdroid-tabs@@
@@ -392,10 +525,9 @@ class OpenCodeAlert212Test {
                 })
                 "'pane' 'get' 'w1:p1'" in command -> ok("""{"result":{"pane":$paneJson}}""")
                 "'--source' 'recent'" in command -> {
-                    if (lines(command) == timeoutLines) return ExecResult(-2, "", "timed out")
-                    ok(screen.lines().takeLast(lines(command)).joinToString("\n"))
+                    ok((recent ?: screen).lines().takeLast(lines(command)).joinToString("\n"))
                 }
-                "'--source' 'visible'" in command -> ok(screen)
+                "'--source' 'visible'" in command -> if (visibleFails) ExecResult(-2, "", "timed out") else ok(screen)
                 "'agent' 'prompt'" in command || "'send-text'" in command || "'send-keys'" in command || "'send'" in command -> {
                     if ("'send-keys'" in command) afterKeys?.let { screen = it; afterKeys = null }
                     ok("")

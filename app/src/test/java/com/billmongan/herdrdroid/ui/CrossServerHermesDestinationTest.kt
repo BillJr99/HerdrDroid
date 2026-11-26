@@ -1,6 +1,7 @@
 package com.billmongan.herdrdroid.ui
 
 import com.billmongan.herdrdroid.OUTERMOST_RULE
+import com.billmongan.herdrdroid.clearForTest
 import com.billmongan.herdrdroid.IdleMainLooperRule
 import com.billmongan.herdrdroid.*
 
@@ -80,7 +81,7 @@ class CrossServerHermesDestinationTest {
     }
 
     @After fun close() {
-        rule.runOnUiThread { vm.viewModelScope.cancel() }
+        rule.runOnUiThread { vm.clearForTest() }
         shadowOf(Looper.getMainLooper()).idle()
     }
 
@@ -242,7 +243,7 @@ class CrossServerHermesDestinationTest {
 
     private suspend fun frame(to: String, text: String = exact): AppViewModel.CrossServerCard {
         vm.readPane("p1")
-        source.frame = fixtureMessageFrame(code, text, to)
+        source.frame = "⏺ Here is the request:\n" + fixtureMessageFrame(code, text, to).prependIndent("  ")
         vm.readPane("p1")
         return vm.crossServerCardsFor("p1").single().also { assertEquals(text, it.text) }
     }

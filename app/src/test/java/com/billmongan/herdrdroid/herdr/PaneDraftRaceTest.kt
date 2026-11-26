@@ -36,10 +36,14 @@ class PaneDraftRaceTest {
             if (writes.isNotEmpty()) return afterEnter
             return beforeEnter[minOf(reads++, beforeEnter.size - 1)]
         }
-        override suspend fun keys(id: String, keys: List<String>, permit: WritePermit) {
+        private fun recordKeys(keys: List<String>, permit: WritePermit) {
             permit.admit()
             events += "keys:" + keys.joinToString(",")
             writes += keys
+        }
+        override suspend fun checkedKeys(id: String, keys: List<String>, viewport: String, permit: WritePermit): Boolean {
+            recordKeys(keys, permit)
+            return true
         }
         override suspend fun pause(ms: Long) {}
     }
@@ -73,13 +77,13 @@ class PaneDraftRaceTest {
         }
     }
 
-    @Test fun `the last read is right before Enter, after the occupant check, and Enter goes once`() {
+    @Test fun `the latest viewport and pane status are verified before one Enter`() {
         val c = computer(draftScreen)
         assertEquals(PaneDraftAction.Outcome.SENT, send(c))
         assertEquals(listOf(listOf("enter")), c.writes)
         val enter = c.events.indexOf("keys:enter")
-        // pane, viewport (the check), pane (the occupant), viewport (the last read), Enter.
-        assertEquals(listOf("pane", "viewport", "pane", "viewport", "keys:enter"), c.events.subList(0, enter + 1))
+        // Verify the last viewport and its current pane status before Enter.
+        assertEquals(listOf("pane", "viewport", "pane", "viewport", "pane", "keys:enter"), c.events.subList(0, enter + 1))
     }
 
     @Test fun `a change after Enter is never followed by a second Enter`() {

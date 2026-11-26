@@ -46,6 +46,18 @@ class Release145Test {
         assertEquals("/exit", inputLineOf(museScreen(" /exit"), "muse"))
     }
 
+    @Test fun musesUsageParsesPrettyJsonAndACompactLineAfterDiagnostics() {
+        val json = """
+            {
+              "allowance": {"window": {"usedPercent": 23}, "weekly": {"usedPercent": 60}}
+            }
+        """.trimIndent()
+        val compactWithBanner = "Loading usage…\n" + json.lines().joinToString("")
+        assertEquals(listOf("Muse window", "Muse weekly"), museUsage(json).map { it.label })
+        assertEquals(museUsage(json), museUsage(compactWithBanner))
+        assertTrue(museUsage("{").isEmpty())
+    }
+
     @Test fun musesUsageFromItsCli() {
         val prof = QuotaProfiles.forAgent("muse")
         assertNotNull(prof)

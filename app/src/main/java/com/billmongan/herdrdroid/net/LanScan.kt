@@ -6,6 +6,7 @@ import android.net.NetworkCapabilities
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -67,7 +68,13 @@ object LanScan {
     suspend fun scan(context: Context, onProgress: (Int, Int) -> Unit, onFound: (LanHost) -> Unit) {
         val (ip, prefix) = localNetwork(context) ?: return
         val names = mutableMapOf<String, String>()
-        val nsd = runCatching { mdnsNames(context) }.getOrDefault(emptyMap())
+        val nsd = try {
+            mdnsNames(context)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            emptyMap()
+        }
         names.putAll(nsd)
         val hosts = subnetHosts(ip, prefix)
         var done = 0
@@ -126,9 +133,21 @@ object LanScan {
                 }
             }
         }
-        if (runCatching { nsd.discoverServices("_ssh._tcp.", NsdManager.PROTOCOL_DNS_SD, listener) }.isFailure) return emptyMap()
-        delay(3_000)
-        runCatching { nsd.stopServiceDiscovery(listener) }
+        collectLanDiscovery(
+            start = { nsd.discoverServices("_ssh._tcp.", NsdManager.PROTOCOL_DNS_SD, listener) },
+            waitForResults = { delay(3_000) },
+            stop = { nsd.stopServiceDiscovery(listener) },
+        )
         return out
+    }
+}
+
+/** Stop discovery when its collection window ends or the scan is cancelled. */
+internal suspend fun collectLanDiscovery(start: () -> Unit, waitForResults: suspend () -> Unit, stop: () -> Unit) {
+    start()
+    try {
+        waitForResults()
+    } finally {
+        runCatching { stop() }
     }
 }

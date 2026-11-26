@@ -57,14 +57,28 @@ internal object NeedsYouCadence {
 internal class StatusPush(private val now: () -> Long) {
     data class Round(val wake: Herdr.Wake?, val elapsedMs: Long)
 
-    /** Pane to (herdr's state when it went quiet, until when). */
-    private val quiet = mutableMapOf<String, Pair<Status?, Long>>()
+    private data class Quiet(val occupant: Occupant, val state: Status?, val until: Long)
+
+    private var owner: Herdr? = null
+    private var connection: Any? = null
+    private val quiet = mutableMapOf<String, Quiet>()
+
+    private fun adopt(h: Herdr) {
+        if (owner === h && connection === h.connectionIdentity) return
+        quiet.clear()
+        owner = h
+        connection = h.connectionIdentity
+    }
 
     /** The panes whose screens the next wait watches. */
     fun screens(h: Herdr, list: List<Pane>): List<Pane> {
+        adopt(h)
         val states = h.herdrStates
+        val panes = list.associateBy(Pane::id)
         val t = now()
-        quiet.entries.removeAll { (id, q) -> t >= q.second || states[id] != q.first }
+        quiet.entries.removeAll { (id, q) ->
+            t >= q.until || states[id] != q.state || panes[id]?.let(Occupant::of) != q.occupant
+        }
         return screenWatchPanes(list, states).filter { it.id !in quiet }
     }
 
@@ -74,11 +88,18 @@ internal class StatusPush(private val now: () -> Long) {
      */
     suspend fun round(h: Herdr, list: List<Pane>, waitMs: Long, refresh: suspend () -> List<Pane>?): Round {
         val start = now()
-        val wake = h.waitForWake(list, waitMs, screens(h, list))
+        val watched = screens(h, list)
+        val pinned = connection
+        val wake = h.waitForWake(list, waitMs, watched)
         if (wake != null) {
             val fresh = refresh()
-            if (wake.screen && fresh != null && fresh.firstOrNull { it.id == wake.paneId }?.status != Status.NEEDS_YOU) {
-                quiet[wake.paneId] = h.herdrStates[wake.paneId] to now() + NeedsYouCadence.SCREEN_QUIET_MS
+            val watchedPane = watched.firstOrNull { it.id == wake.paneId }
+            val currentPane = fresh?.firstOrNull { it.id == wake.paneId }
+            if (wake.screen && owner === h && pinned === connection && pinned === h.connectionIdentity &&
+                watchedPane != null && currentPane != null && sameOccupant(watchedPane, currentPane) &&
+                currentPane.status != Status.NEEDS_YOU) {
+                quiet[wake.paneId] = Quiet(Occupant.of(currentPane), h.herdrStates[wake.paneId],
+                    now() + NeedsYouCadence.SCREEN_QUIET_MS)
                 com.billmongan.herdrdroid.diag.DiagLog.log("watch", "${wake.paneId}: its screen matched a dialog footer, but nothing needs you; not watching its screen for a minute")
             }
         }

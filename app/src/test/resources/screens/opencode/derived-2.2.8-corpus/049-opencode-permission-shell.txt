@@ -1,0 +1,46 @@
+
+  ┃                                                                                           Fixture shell check
+  ┃  Run this one shell command and report what it printed.
+  ┃                                                                                           Context
+  ┃  echo hi > ~/scratch/x                                                                    1,234 tokens
+  ┃                                                                                           1% used
+
+                                                                                              MCP
+                                                                                              • fixture                   Connected
+     I will run it now.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  ┃
+  ┃  △ Permission required
+  ┃
+  ┃  $ echo hi > ~/scratch/x
+  ┃
+  ┃
+  ┃   Allow once   Always allow   Reject     ctrl+f fullscreen  ⇆ select  enter confirm
+  ┃

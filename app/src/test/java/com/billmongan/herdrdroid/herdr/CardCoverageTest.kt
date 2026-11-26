@@ -26,10 +26,11 @@ class CardCoverageTest {
     @Test fun groksTrustAndPlanAreAnsweredByLetters() {
         val trust = card("grok", "0307")
         assertEquals(listOf("y", "n"), trust.choices.map { it.keys })
-        assertEquals(listOf(null, null), keys(trust))  // typed as the letter itself
+        assertEquals(listOf(listOf("y"), listOf("n")), keys(trust))
         val plan = card("grok", "0306")
         assertEquals(listOf("a", "s", "c", "q"), plan.choices.map { it.keys })
         assertEquals("Approve", plan.choices.first().label)
+        assertEquals(listOf(listOf("a"), listOf("s"), listOf("c"), listOf("q")), keys(plan))
     }
 
     @Test fun hermesBracketedAndCheckboxRows() {

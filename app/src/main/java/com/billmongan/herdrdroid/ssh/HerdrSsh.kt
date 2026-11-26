@@ -2,6 +2,9 @@ package com.billmongan.herdrdroid.ssh
 
 import com.hierynomus.sshj.key.KeyAlgorithm
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -23,8 +26,8 @@ import net.schmizz.sshj.userauth.password.PasswordFinder
 import net.schmizz.sshj.userauth.password.Resource
 import net.schmizz.sshj.connection.channel.direct.Parameters
 import com.billmongan.herdrdroid.diag.DiagLog
-import java.net.InetSocketAddress
-import java.net.ServerSocket
+import java.io.IOException
+import java.io.InputStream
 import java.security.MessageDigest
 import java.security.PrivateKey
 import java.security.PublicKey
@@ -66,6 +69,21 @@ class WriteCommand private constructor() : kotlin.coroutines.AbstractCoroutineCo
 }
 
 data class ExecResult(val exit: Int, val out: String, val err: String)
+
+/** Reads a streaming SSH channel without waiting for the peer to print when cancelled. */
+internal suspend fun readFollowLines(input: InputStream, onLine: suspend (String) -> Unit) {
+    val reader = input.bufferedReader(Charsets.UTF_8)
+    while (true) {
+        val line = try {
+            runInterruptible(Dispatchers.IO) { reader.readLine() }
+        } catch (error: IOException) {
+            // SSHJ reports an interrupted channel read as InterruptedIOException.
+            currentCoroutineContext().ensureActive()
+            throw error
+        } ?: return
+        if (line.isNotBlank()) onLine(line)
+    }
+}
 
 /** A command still running when its time was up; its channel was closed (1.3.0). */
 class CommandTimeout(seconds: Long) : Exception("$PREFIX $seconds s") {
@@ -329,7 +347,7 @@ class HerdrSsh(
     private val bulkLock = Mutex()
     @Volatile private var client: SSHClient? = null
     internal val connectionIdentity: Any? get() = client
-    private var bridge: WsBridge? = null
+    @Volatile private var bridge: WsBridge? = null
 
     /**
      * 2.2.5: the algorithms the last key exchange settled on (names only), for the diagnostic log.
@@ -346,14 +364,53 @@ class HerdrSsh(
         keyAlgorithms = keyAlgorithms.map { if (it.name == "ecdsa-sha2-nistp256") neutralEcdsa(it) else it }
     }
 
+    /** Makes each connection's client: the real one, or a test's stand-in. */
+    internal var newClient: (DefaultConfig) -> SSHClient = { SSHClient(it) }
+
+    /**
+     * Reset and close both detach an opening client and bridge. Connection publication uses the
+     * same gate, so an invalidated attempt is never installed or counted.
+     */
+    private val gate = Any()
+    @Volatile private var closedForGood = false
+    private var opening: SSHClient? = null
+    private var openingBridge: WsBridge? = null
+
+    /** A reset or close detaches this attempt before disconnecting its resources. */
+    private fun verifyOpening(c: SSHClient) {
+        if (closedForGood) throw LinkDown(IllegalStateException("The connection was closed"))
+        if (opening !== c) throw ConnectionChanged()
+    }
+
     private fun open(): SSHClient {
-        client?.let { if (it.isConnected && it.isAuthenticated && bridge?.isOpen != false) return it }
-        client?.runCatching { disconnect() }
-        client = null
-        bridge?.close()
-        bridge = null
         val verifier = PinnedVerifier(pinnedFingerprint)
-        val c = SSHClient(config())
+        val (c, old, oldBridge) = synchronized(gate) {
+            if (closedForGood) throw LinkDown(IllegalStateException("The connection was closed"))
+            client?.let { if (it.isConnected && it.isAuthenticated && bridge?.isOpen != false) return it }
+            val next = newClient(config())
+            val stale = client
+            val staleBridge = bridge
+            stale?.let { SshCounts.closed(diagServerId, it) }
+            client = null
+            bridge = null
+            opening = next
+            openingBridge = null
+            Triple(next, stale, staleBridge)
+        }
+        try {
+            old?.runCatching { disconnect() }
+            oldBridge?.close()
+            synchronized(gate) { verifyOpening(c) }
+            return openWith(c, verifier)
+        } finally {
+            synchronized(gate) {
+                if (opening === c) { opening = null; openingBridge = null }
+            }
+        }
+    }
+
+    private fun openWith(c: SSHClient, verifier: PinnedVerifier): SSHClient {
+        var b: WsBridge? = null
         c.connectTimeout = 8_000
         c.timeout = 15_000
         c.addHostKeyVerifier(verifier)
@@ -371,25 +428,31 @@ class HerdrSsh(
         var connectedAt: Long? = null
         try {
             if (wsUrl != null) {
-                val b = WsBridge.open(wsUrl)
-                bridge = b
+                val opened = WsBridge.open(wsUrl)
+                b = opened
+                synchronized(gate) {
+                    verifyOpening(c)
+                    openingBridge = opened
+                }
                 t0 = System.currentTimeMillis()
-                DiagLog.log("ssh", "sshj connecting to ${b.host}:${b.port} (the WebSocket bridge)")
-                c.connect(b.host, b.port)
+                DiagLog.log("ssh", "sshj connecting to ${opened.host}:${opened.port} (the WebSocket bridge)")
+                c.connect(opened.host, opened.port)
             } else {
                 socketFactoryForNext(choice)?.let { c.socketFactory = it }
                 DiagLog.log("ssh", "sshj connecting over TCP" + (choice.mss?.let { " (small packets, MSS $it, ${choice.reason})" } ?: ""))
                 c.connect(host, port)
             }
             connectedAt = System.currentTimeMillis()
+            synchronized(gate) { verifyOpening(c) }
             DiagLog.log("ssh", "key exchange done; server says \"${c.transport.serverVersion}\"; host key ${verifier.seen}")
             DiagLog.log("ssh", "negotiated over $transportName: ${negotiated ?: "unknown"}")
         } catch (e: Exception) {
+            runCatching { c.disconnect() }
+            b?.close()
+            if (e is ConnectionChanged || e is LinkDown) throw e
+            synchronized(gate) { verifyOpening(c) }
             val seen = verifier.seen
             DiagLog.log("ssh", "connect failed: ${DiagLog.describe(e)}; host key seen: ${seen ?: "none"}")
-            runCatching { c.disconnect() }
-            bridge?.close()
-            bridge = null
             when {
                 seen != null && pinnedFingerprint == null -> throw UnconfirmedHostKey(seen)
                 seen != null && pinnedFingerprint != seen -> throw HostKeyChanged(pinnedFingerprint!!, seen)
@@ -398,6 +461,7 @@ class HerdrSsh(
         }
         try {
             c.auth(user, methods(c))
+            synchronized(gate) { verifyOpening(c) }
             DiagLog.log("ssh", "signed in")
             // 2.2.6: each stage's time, after the TCP connect (or from the bridge being ready).
             val tcp = lastTcpMs
@@ -417,22 +481,36 @@ class HerdrSsh(
                 negotiated, choice.net, com.billmongan.herdrdroid.diag.NetworkWatch.changes, KEEPALIVE_SECONDS,
                 choice.reason, choice.mss, if (choice.mss == null) null else lastMssSet == true,
             ))
-        } catch (e: UserAuthException) {
-            DiagLog.log("ssh", "sign-in refused: ${DiagLog.describe(e)}")
-            runCatching { c.disconnect() }
-            bridge?.close(); bridge = null
-            throw AuthRejected(e.message ?: "Sign-in was refused")
-        } catch (e: AuthRejected) {
-            runCatching { c.disconnect() }
-            bridge?.close(); bridge = null
-            throw e
         } catch (e: Exception) {
             runCatching { c.disconnect() }
-            bridge?.close(); bridge = null
-            throw LinkDown(e)
+            b?.close()
+            if (e is ConnectionChanged || e is LinkDown) throw e
+            synchronized(gate) { verifyOpening(c) }
+            when (e) {
+                is UserAuthException -> {
+                    DiagLog.log("ssh", "sign-in refused: ${DiagLog.describe(e)}")
+                    throw AuthRejected(e.message ?: "Sign-in was refused")
+                }
+                is AuthRejected -> throw e
+                else -> throw LinkDown(e)
+            }
         }
-        c.connection.keepAlive.keepAliveInterval = KEEPALIVE_SECONDS
-        client = c
+        try {
+            c.connection.keepAlive.keepAliveInterval = KEEPALIVE_SECONDS
+            synchronized(gate) {
+                verifyOpening(c)
+                bridge = b
+                client = c
+                opening = null
+                openingBridge = null
+                SshCounts.opened(diagServerId, c)
+            }
+        } catch (e: Exception) {
+            runCatching { c.disconnect() }
+            b?.close()
+            throw e
+        }
+        DiagLog.log("ssh", "connections open to this server: ${SshCounts.openNow(diagServerId)}")
         return c
     }
 
@@ -494,29 +572,44 @@ class HerdrSsh(
         trace?.started = true
         val cmd = try { session.exec(command) } catch (e: Exception) { runCatching { session.close() }; throw AfterStart(e) }
         try {
-            input?.let { b -> cmd.outputStream.use { it.write(b); it.flush() } }
+            val began = System.currentTimeMillis()
+            val beganNanos = System.nanoTime()
+            val budgetNanos = TimeUnit.SECONDS.toNanos(timeoutSeconds)
             val out = Capped(maxOut, meter)
             val err = Capped(MAX_ERR, meter)
             val t1 = kotlin.concurrent.thread(isDaemon = true, name = "ssh-out") { out.drain(cmd.inputStream) }
             val t2 = kotlin.concurrent.thread(isDaemon = true, name = "ssh-err") { err.drain(cmd.errorStream) }
-            val began = System.currentTimeMillis()
-            val deadline = began + timeoutSeconds * 1000
-            // 2.2.7: the pane list and chat log reads (never a write, nor a search, git or sessions
-            // script that may rightly stay quiet) with no first byte for a while tell the session.
+            val uploadFailure = java.util.concurrent.atomic.AtomicReference<Exception?>()
+            // The remote side can emit output before accepting input. Let the streams move together
+            // and close the same channel if the deadline expires while its writer is blocked.
+            val upload = input?.let { bytes ->
+                kotlin.concurrent.thread(isDaemon = true, name = "ssh-in") {
+                    try {
+                        cmd.outputStream.use { it.write(bytes); it.flush() }
+                    } catch (e: Exception) {
+                        uploadFailure.set(e)
+                    }
+                }
+            }
+            val workers = listOfNotNull(t1, t2, upload)
+            // Only pane-list and chat-log reads report a first-byte stall.
             val watch = firstByteStallListener?.takeIf { trace == null && label in FIRST_BYTE_WATCHED }
                 ?.let { l -> FirstByteWatch(SmallPacketFallback.FIRST_BYTE_STALL_MS, began, l) }
-            while ((t1.isAlive || t2.isAlive) && System.currentTimeMillis() < deadline && !out.over) {
-                t1.join(100); if (!t1.isAlive) t2.join(100)
+            while (!out.over && uploadFailure.get() == null && System.nanoTime() - beganNanos < budgetNanos) {
+                val active = workers.firstOrNull(Thread::isAlive) ?: break
+                active.join(100)
                 watch?.tick(System.currentTimeMillis(), meter.bytes())
             }
-            if (out.over || t1.isAlive || t2.isAlive) {
+            if (out.over || uploadFailure.get() != null || workers.any(Thread::isAlive)) {
+                val stalledUpload = upload?.isAlive == true && uploadFailure.get() == null
                 runCatching { session.close() }
-                t1.join(2_000); t2.join(2_000)
+                workers.forEach { it.join(2_000) }
                 if (out.over) throw OutputTooLarge(maxOut)
-                // Closing often lets both readers finish (a stream that was slow to close): then the
-                // command's own result stands (1.3.2, from a code review).
+                if (stalledUpload) throw CommandTimeout(timeoutSeconds)
+                uploadFailure.get()?.let { throw it }
+                // Closing can finish the output streams after a completed command's late exit status.
                 val exit = cmd.exitStatus
-                if (!t1.isAlive && !t2.isAlive && exit != null) return Triple(exit, out.bytes(), err.bytes())
+                if (workers.none(Thread::isAlive) && exit != null) return Triple(exit, out.bytes(), err.bytes())
                 throw CommandTimeout(timeoutSeconds)
             }
             cmd.join(5, TimeUnit.SECONDS)
@@ -587,10 +680,14 @@ class HerdrSsh(
     private suspend fun discard(connection: SSHClient?) {
         if (connection == null) return // open() already handled its own failure.
         lock.withLock {
-            if (client === connection) {
-                connection.runCatching { disconnect() }
+            val staleBridge = synchronized(gate) {
+                if (client !== connection) return@withLock
                 client = null
+                SshCounts.closed(diagServerId, connection)
+                bridge.also { bridge = null }
             }
+            connection.runCatching { disconnect() }
+            staleBridge?.close()
         }
     }
 
@@ -638,22 +735,15 @@ class HerdrSsh(
     suspend fun execStream(command: String, input: ByteArray, onLine: suspend (String) -> Unit): Int = withContext(Dispatchers.IO) {
         val c = lock.withLock { open() }
         val session = c.startSession()
-        val job = coroutineContext[kotlinx.coroutines.Job]
-        val handle = job?.invokeOnCompletion { runCatching { session.close() } }
         try {
             val cmd = session.exec(command)
             cmd.outputStream.use { it.write(input); it.flush() }
             // Drain stderr too, so a reader that writes warnings can't fill that pipe and stall (1.3.0).
             kotlin.concurrent.thread(isDaemon = true, name = "ssh-follow-err") { Capped(MAX_ERR).drain(cmd.errorStream) }
-            val reader = cmd.inputStream.bufferedReader(Charsets.UTF_8)
-            while (true) {
-                val line = reader.readLine() ?: break
-                if (line.isNotBlank()) onLine(line)
-            }
+            readFollowLines(cmd.inputStream, onLine)
             cmd.join(5, TimeUnit.SECONDS)
             cmd.exitStatus ?: -1
         } finally {
-            handle?.dispose()
             runCatching { session.close() }
         }
     }
@@ -690,31 +780,47 @@ class HerdrSsh(
      */
     suspend fun forward(remoteHost: String, remotePort: Int): Forward = withContext(Dispatchers.IO) {
         val c = lock.withLock { open() }
-        val ss = ServerSocket()
-        ss.reuseAddress = true
-        ss.bind(InetSocketAddress("127.0.0.1", 0))
-        val fwd = c.newLocalPortForwarder(Parameters("127.0.0.1", ss.localPort, remoteHost, remotePort), ss)
-        val t = Thread({ runCatching { fwd.listen() } }, "herdrdroid-forward-${ss.localPort}")
-        t.isDaemon = true
-        t.start()
-        Forward(ss.localPort) {
-            runCatching { fwd.close() }
-            runCatching { ss.close() }
+        val forward = startLoopbackForward { socket ->
+            c.newLocalPortForwarder(Parameters("127.0.0.1", socket.localPort, remoteHost, remotePort), socket).listen()
         }
+        if (client !== c) {
+            forward.close()
+            throw ConnectionChanged()
+        }
+        forward
     }
 
-    /** Drops the socket so the next command opens a fresh one, without waiting on a dead connection. */
-    fun reset() {
-        client?.runCatching { disconnect() }
-        client = null
-        bridge?.close()
-        bridge = null
-    }
+    /** Drops the published connection and any open in flight. The next command can reconnect. */
+    fun reset() = dropConnections(permanent = false)
 
     /** True when this connection goes over a WebSocket. */
     val overWebSocket: Boolean get() = wsUrl != null
 
-    fun close() = reset()
+    /** Closes this connection for good, including an open in flight. */
+    fun close() = dropConnections(permanent = true)
+
+    private fun dropConnections(permanent: Boolean) {
+        val (clientsToClose, bridgesToClose) = synchronized(gate) {
+            if (permanent) closedForGood = true
+            val clients = listOfNotNull(client, opening)
+            val bridges = listOfNotNull(bridge, openingBridge)
+            client?.let { SshCounts.closed(diagServerId, it) }
+            client = null
+            bridge = null
+            opening = null
+            openingBridge = null
+            clients to bridges
+        }
+        // Another open may start after a reset. Close only the resources detached above.
+        clientsToClose.forEach { c -> runCatching { c.disconnect() } }
+        bridgesToClose.forEach { it.close() }
+    }
+
+    /** Opens (or keeps) the connection and runs nothing on it: the connection tests' seam. */
+    internal suspend fun openOnly(): Any = withContext(Dispatchers.IO) { lock.withLock { open() } }
+
+    /** True once [close] ran. */
+    internal val isClosed: Boolean get() = closedForGood
 }
 
 /**
@@ -738,3 +844,30 @@ internal fun <T : Any> requireCurrentConnection(expected: Any, current: T?): T {
 
 /** 2.2.7: the labelled reads the no-first-byte fallback watches (the reads Bill's stall was on). */
 internal val FIRST_BYTE_WATCHED = setOf("list-read", "log-read")
+
+/**
+ * 2.2.8 (Bill: "I'm surprised by how many SSH connections HerdrDroid creates" and "be more robust
+ * about managing and closing stale connections"): the SSH connections the app has open, per server,
+ * with how many it ever opened and how many times a check reused one it already had. A connection
+ * is counted from its sign-in until it is disconnected (replaced, reset, closed or dropped after a
+ * failure). For the diagnostic log and the tests; memory only.
+ */
+internal object SshCounts {
+    private val open = java.util.concurrent.ConcurrentHashMap<String, MutableSet<Any>>()
+    private val opened = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger>()
+    private val reused = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger>()
+    private fun key(server: String?) = server ?: "?"
+
+    fun opened(server: String?, connection: Any) {
+        open.getOrPut(key(server)) { java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap()) } += connection
+        opened.getOrPut(key(server)) { java.util.concurrent.atomic.AtomicInteger() }.incrementAndGet()
+    }
+    fun closed(server: String?, connection: Any) { open[key(server)]?.remove(connection) }
+    fun reused(server: String?) { reused.getOrPut(key(server)) { java.util.concurrent.atomic.AtomicInteger() }.incrementAndGet() }
+    fun openNow(server: String?): Int = open[key(server)]?.size ?: 0
+    fun openedEver(server: String?): Int = opened[key(server)]?.get() ?: 0
+    fun reusedEver(server: String?): Int = reused[key(server)]?.get() ?: 0
+    /** Every server's open count, for the debug bundle. */
+    fun summary(): String = open.entries.joinToString(" ") { (k, v) -> "${com.billmongan.herdrdroid.diag.LinkDiag.serverTag(k)}=${v.size}" }
+    internal fun clear() { open.clear(); opened.clear(); reused.clear() }
+}

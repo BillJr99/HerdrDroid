@@ -3,7 +3,6 @@ package com.billmongan.herdrdroid
 import android.app.Application
 import android.os.Looper
 import androidx.compose.runtime.MutableState
-import com.billmongan.herdrdroid.herdr.fixtureMessageFrame
 import androidx.lifecycle.viewModelScope
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -38,7 +37,7 @@ class ServerScopedPaneStateTest {
     private val codex = Pane("w1:p1", "w1:t1", "w1", "codex", Status.IDLE, "Codex · 1", "/fixture", scrollOffset = 0, terminalId = "t1")
 
     @After fun close() {
-        vm.viewModelScope.cancel()
+        vm.clearForTest()
         shadowOf(Looper.getMainLooper()).idle()
     }
 
@@ -124,7 +123,7 @@ class ServerScopedPaneStateTest {
         vm.screen = Screen.Agent(source.pane.id)
         vm.changeAgentMessaging(true)
         source.connection = null
-        source.recent = fixtureMessageFrame("K7P3QX", "hello")
+        source.recent = fixtureClaudeReplyFrame("K7P3QX", "hello")
         vm.readPane(source.pane.id)
         assertTrue(vm.crossServerCardsFor(source.pane.id).isEmpty())
         source.connection = Any()

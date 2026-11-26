@@ -120,7 +120,8 @@ class SuccessiveCardAnswerTest {
             answer(card, checkNotNull(vm.paneTextTarget), index = 1)
             assertTrue(sent.isEmpty())
             assertEquals(1, cardChecksRefused)
-            assertEquals("The question changed; not sent.", vm.notice)
+            // 2.2.8: never "the question changed": the card shows what is on screen now, nothing typed.
+            assertEquals(CARD_UPDATED_NOTE, vm.notice)
             beforeCheck = null
             ansiOverride = null
             readSelectedPane()
@@ -165,6 +166,166 @@ class SuccessiveCardAnswerTest {
         speak("Switch to Claude")
         assertEquals("Opening Claude on Fixture.", spoken)
         assertEquals("fixture", vm.current?.id)
+    }
+
+    private fun grokScreen(name: String) = checkNotNull(javaClass.getResource("/screens/grok/synthetic-2.2.8-approval/$name")) { name }.readText()
+    private fun grokTick(s: String, n: Int) = s.replace("1m53s", "1m${53 + n}s").replace("7m33s", "7m${33 + n}s").replace("⇣196k", "⇣${196 + n}k")
+
+    /** 2.2.8 (Bill: "grok has a question but keeps saying it changed and won't send"): its running times tick between the read and the keys. */
+    @Test fun grokTimersTickingBetweenTheReadAndTheKeysStillSend() = fixture("grok", grokScreen("approval-whole.ansi")) {
+        readSelectedPane()
+        val card = displayed()
+        assertEquals("Yes, proceed", card.choices[0].label)
+        var n = 0
+        beforeCheck = { frame = grokTick(frame, ++n) }
+        answer(card, index = 1)
+        assertEquals(listOf("down enter"), sent)
+        assertEquals(0, cardChecksRefused)
+    }
+
+    /** 2.2.8 (Bill: "just render the question and then give the buttons"): a changed dialog at the send: nothing typed, the card shows it now. */
+    @Test fun aDialogChangedAtTheSendUpdatesTheCardAndSendsNothing() = fixture("grok", grokScreen("approval-whole.ansi")) {
+        readSelectedPane()
+        val card = displayed()
+        beforeCheck = { frame = frame.replace("ls -la build/cache", "ls -la build/other") }
+        answer(card, index = 0)
+        assertTrue(sent.isEmpty())
+        assertEquals(1, cardChecksRefused)
+        assertEquals(CARD_UPDATED_NOTE, vm.notice)
+        assertEquals("fixture" to "p1", vm.cardUpdatedAt)
+        assertTrue("the card shows the new command", displayed().question.contains("ls -la build/other"))
+        // Its fresh buttons answer it.
+        beforeCheck = null
+        answer(displayed(), index = 0)
+        assertEquals(listOf("enter"), sent)
+    }
+
+    /** 2.2.8: the dialog changed before the tap's read: the card shows it now, nothing typed. */
+    @Test fun aDialogChangedBeforeTheTapUpdatesTheCardAndSendsNothing() = fixture("grok", grokScreen("approval-whole.ansi")) {
+        readSelectedPane()
+        val card = displayed()
+        frame = frame.replace("Yes, proceed", "Yes, run it")
+        answer(card, index = 0)
+        assertTrue(sent.isEmpty())
+        assertEquals(CARD_UPDATED_NOTE, vm.notice)
+        assertEquals("Yes, run it", displayed().choices[0].label)
+    }
+
+    /** 2.2.8: the dialog is gone at the send: nothing typed, and the card goes with it. */
+    @Test fun aDialogGoneAtTheSendRemovesTheCard() = fixture("grok", grokScreen("approval-whole.ansi")) {
+        readSelectedPane()
+        val card = displayed()
+        beforeCheck = { frame = "  ~/work/demo\n\n  Listed the build cache.\n" }
+        answer(card, index = 0)
+        assertTrue(sent.isEmpty())
+        assertNull(detectPrompt(vm.paneText, blocked = false, agent = "grok"))
+    }
+
+    /** 2.2.8: approve-everything is never one tap, and a clipped command is expanded before it can be answered. */
+    @Test fun grokAlwaysApproveIsRefusedAndAClippedCommandExpandsFirst() = fixture("grok", grokScreen("approval-clipped.ansi")) {
+        readSelectedPane()
+        val card = displayed()
+        assertTrue(card.clipped)
+        answer(card, index = 0)
+        assertEquals(CLIPPED_NOTE, vm.notice)
+        answer(card, index = 2)
+        // Bill (2026-11-25): the tap asks first; Grok's unnumbered row is one no key reaches, so the
+        // dialog only says why, and its Confirm (were it pressed) sends nothing.
+        val ask = checkNotNull(vm.approveAllPending).ask
+        assertEquals(com.billmongan.herdrdroid.herdr.blockedChoiceReason(card.choices[2]), ask.reason)
+        vm.confirmApproveAll()
+        drainUntil { !vm.answerInFlight("p1") }
+        assertTrue(sent.isEmpty())
+        afterSend = grokScreen("approval-whole.ansi")
+        vm.answerCardKey(vm.cardTarget("p1"), card, "ctrl+f", "Pressed Ctrl+F")
+        drainUntil { !vm.answerInFlight("p1") }
+        assertEquals(listOf("ctrl+f"), sent)
+        val expanded = displayed()
+        assertFalse(expanded.clipped)
+        sent.clear()
+        afterSend = null
+        answer(expanded, index = 2)
+        assertTrue("always-approve still not sent", sent.isEmpty())
+    }
+
+    private fun res(path: String) = checkNotNull(javaClass.getResource(path)) { path }.readText()
+    private val grokScan get() = res("/screens/grok/derived-2.2.8-corpus/001-grok-live-approval-status-above.txt")
+    private val grokAlways = "Yes, and don't ask again for anything (always-approve mode)"
+
+    /**
+     * Bill (2026-11-25): an approve-from-now-on option asks "Approve everything from now on?" first:
+     * Cancel sends nothing, Confirm sends exactly that option's keys, under the usual check.
+     */
+    @Test fun grokAlwaysApproveAsksFirstThenConfirmSendsItsKeys() = fixture("grok", grokScan) {
+        readSelectedPane()
+        val card = displayed()
+        val i = card.choices.indexOfFirst { it.label == grokAlways }
+        assertTrue(i >= 0)
+        answer(card, index = i)
+        val ask = checkNotNull(vm.approveAllPending).ask
+        assertEquals(grokAlways, ask.label)
+        assertNull(ask.reason)
+        assertEquals(com.billmongan.herdrdroid.herdr.menuKeys(card, card.choices[i]), ask.keys)
+        assertTrue(sent.isEmpty())
+        vm.cancelApproveAll()
+        drainUntil { !vm.answerInFlight("p1") }
+        assertNull(vm.approveAllPending)
+        assertTrue("cancel sends nothing", sent.isEmpty())
+        answer(card, index = i)
+        vm.confirmApproveAll()
+        drainUntil { !vm.answerInFlight("p1") }
+        assertEquals(listOf(checkNotNull(ask.keys).joinToString(" ")), sent)
+    }
+
+    @Test fun claudeAndCodexStandingPermissionsAskFirstThenConfirmSendsTheirKeys() {
+        for ((agent, path) in listOf("claude" to "/screens/claude/captured-2026-11-13/bash-permission.txt",
+                "codex" to "/screens/codex/captured-2026-11-13/run-command.txt")) fixture(agent, res(path)) {
+            readSelectedPane()
+            val card = displayed()
+            val i = card.choices.indexOfFirst { com.billmongan.herdrdroid.herdr.grantsStandingPermission(it.label) }
+            assertTrue(agent, i >= 0)
+            answer(card, index = i)
+            val ask = checkNotNull(vm.approveAllPending) { agent }.ask
+            assertNull(agent, ask.reason)
+            assertTrue(agent, sent.isEmpty())
+            vm.confirmApproveAll()
+            drainUntil { !vm.answerInFlight("p1") }
+            assertEquals(agent, listOf(checkNotNull(ask.keys).joinToString(" ")), sent)
+            // An ordinary option still goes in one tap.
+            sent.clear()
+            readSelectedPane()
+            val again = displayed()
+            answer(again, index = 0)
+            assertNull(agent, vm.approveAllPending)
+        }
+    }
+
+    /** Bill (2026-11-25): the label changed between the card and Confirm: the card is redrawn, nothing sent. */
+    @Test fun aChangedLabelAtConfirmRedrawsInsteadOfSending() = fixture("grok", grokScan) {
+        readSelectedPane()
+        val card = displayed()
+        answer(card, index = card.choices.indexOfFirst { it.label == grokAlways })
+        checkNotNull(vm.approveAllPending)
+        frame = frame.replace("Yes, and don't ask again for anything", "Yes, and don't ask again for this folder")
+        vm.confirmApproveAll()
+        drainUntil { !vm.answerInFlight("p1") }
+        assertTrue(sent.isEmpty())
+        assertEquals(CARD_UPDATED_NOTE, vm.notice)
+    }
+
+    /** Bill (2026-11-25): a cut-off label is never sent from the dialog, which says why. */
+    @Test fun aCutOffAlwaysApproveLabelOnlyExplains() = fixture("grok", grokScan.replace(grokAlways, "Yes, and don't ask again f…")) {
+        readSelectedPane()
+        val card = displayed()
+        val i = card.choices.indexOfFirst { it.label.startsWith("Yes, and don't ask again f") }
+        assertTrue(card.choices.map { it.label }.toString(), i >= 0)
+        answer(card, index = i)
+        val ask = checkNotNull(vm.approveAllPending).ask
+        assertNotNull(ask.reason)
+        assertNull(ask.keys)
+        vm.confirmApproveAll()
+        drainUntil { !vm.answerInFlight("p1") }
+        assertTrue(sent.isEmpty())
     }
 
     private fun ompScreen(name: String) = checkNotNull(javaClass.getResource("/screens/omp/live-2026-11-24-ask/$name")) { name }.readText()
@@ -285,6 +446,93 @@ class SuccessiveCardAnswerTest {
         assertTrue(sent.isEmpty())
     }
 
+    /**
+     * 2.2.8 (Bill: "it said it couldn't read it although it looked like a fairly standard question"): when
+     * the recent read can't prove the dialog, the live screen is read, and its proven dialog is the card.
+     */
+    @Test fun anUnprovenRecentReadFallsBackToTheLiveScreen() = fixture("claude",
+        checkNotNull(javaClass.getResource("/screens/claude/synthetic-2.2.8-multiq/four-tabs-first.ansi")).readText()) {
+        val live = frame
+        val plain = com.billmongan.herdrdroid.herdr.stripAnsi(live).replace("\r", "").lines()
+        recentResult = ExecResult(0, (listOf("❯ a stray echoed message") + plain.dropWhile { !it.startsWith("❯ 1.") }).joinToString("\n"), "")
+        repeat(3) { readSelectedPane() }
+        val p = checkNotNull(vm.questionCardFor("p1", vm.cardParse("p1", vm.paneText), "Claude"))
+        assertEquals("Which step should run first in the sample build?", p.shownParts().heading)
+        assertFalse("the live screen, not the stray row", vm.paneText.contains("stray echoed"))
+        assertTrue(p.choices.isNotEmpty())
+        assertTrue(guardedVisibleReads > 0)
+    }
+
+    /** 2.2.8: Oh My Pi's approval box answered from the card while herdr calls it working: Deny, and a typed steer. */
+    @Test fun ompApprovalBoxAnswersWhileHerdrSaysWorking() {
+        val box = checkNotNull(javaClass.getResource("/screens/omp/synthetic-2.2.8-approval/approval-three.ansi")).readText()
+        fixture("omp", box) {
+            status(Status.WORKING)
+            readSelectedPane()
+            val card = checkNotNull(detectPrompt(vm.paneText, false, "omp")).forCard()
+            answer(card, checkNotNull(vm.cardTarget("p1")), index = card.choices.indexOfFirst { it.label == "Deny" })
+            assertEquals(listOf("down down enter"), sent)
+        }
+        fixture("omp", box) {
+            status(Status.WORKING)
+            readSelectedPane()
+            val card = checkNotNull(detectPrompt(vm.paneText, false, "omp")).forCard()
+            val steer = card.choices.single { it.keys == com.billmongan.herdrdroid.herdr.OMP_STEER }
+            vm.answerTyped(checkNotNull(vm.cardTarget("p1")), card, steer, "use the cached copy instead") {}
+            drainWithTime { !vm.answerInFlight("p1") }
+            assertEquals(listOf("text:use the cached copy instead", "enter"), sent)
+        }
+    }
+
+    /**
+     * 2.2.8 (Bill: "I can't send a message while a question card is open ... let me send it from the app
+     * at least"): a message sent while Oh My Pi's approval box is open waits in the app's queue; nothing is
+     * typed into the box (where typing would deny the tool and steer).
+     */
+    @Test fun aMessageWhileTheApprovalIsOpenWaitsAndTypesNothing() =
+        fixture("omp", checkNotNull(javaClass.getResource("/screens/omp/synthetic-2.2.8-approval/approval-three.ansi")).readText()) {
+            status(Status.WORKING)
+            readSelectedPane()
+            assertTrue(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+            vm.enqueue("p1", "also check the cache")
+            repeat(3) { shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(4)); Thread.sleep(5) }
+            assertTrue("nothing typed into the box", sent.isEmpty())
+            assertEquals(listOf("also check the cache"), vm.queued.filter { it.paneId == "p1" }.map { it.text })
+        }
+
+    /**
+     * 2.2.8 (Codex's review 1): the live read is the card even when it shows the dialog closed. A stale
+     * recent read with an unproven dialog, then a live screen with only the composer: no card, ever.
+     */
+    @Test fun aLiveComposerOutranksAStaleUnprovenRecentDialog() = fixture("claude",
+        "Earlier reply line.\n\n" + "─".repeat(40) + "\n❯ \n" + "─".repeat(40) + "\n  ? for shortcuts\n") {
+        val dialog = checkNotNull(javaClass.getResource("/screens/claude/synthetic-2.2.8-multiq/four-tabs-first.ansi")).readText()
+        val plain = com.billmongan.herdrdroid.herdr.stripAnsi(dialog).replace("\r", "").lines()
+        val tabs = plain.indexOfFirst { it.startsWith("←") }
+        val box = plain.indexOfFirst { it.startsWith("│") }
+        // Recent reads that show the options but can't prove the dialog: its top gone by in the
+        // scrollback, or a row of the chat in between. The one that parses with options is the case.
+        val shapes = listOf(
+            listOf("❯ a stray echoed message") + plain.dropWhile { !it.startsWith("❯ 1.") },
+            listOf("❯ a stray echoed message") + plain.drop(box),
+            plain.take(tabs + 1) + "❯ a stray echoed message" + plain.drop(tabs + 1),
+            plain.take(box) + "❯ a stray echoed message" + plain.drop(box),
+        ).map { it.joinToString("\n") }
+        val stale = checkNotNull(shapes.firstOrNull { r ->
+            val p = detectPrompt(r, true, "claude")?.forCard()
+            p != null && p.choices.isNotEmpty() && !p.terminalReview && !com.billmongan.herdrdroid.herdr.questionRead(r, p, "claude", null, true).topped
+        }) { "no unproven recent shape" }
+        recentResult = ExecResult(0, stale, "")
+        repeat(com.billmongan.herdrdroid.herdr.FALLBACK_READS + 4) {
+            readSelectedPane()
+            val card = vm.questionCardFor("p1", vm.cardParse("p1", vm.paneText), "Claude")
+            assertTrue("no card from the stale recent dialog (read ${it + 1})", card == null || card.choices.isEmpty())
+            assertFalse("the live screen, not the recent read (read ${it + 1})", vm.paneText.contains("stray echoed"))
+        }
+        assertTrue(guardedVisibleReads > 0)
+        assertTrue(sent.isEmpty())
+    }
+
     /** 2.2.7: the questions can always be left: Esc from the card. */
     @Test fun ompAskCanBeCancelled() = fixture("omp", ompScreen("ask-open-first.ansi")) {
         readSelectedPane()
@@ -304,7 +552,8 @@ class SuccessiveCardAnswerTest {
             answer(card, checkNotNull(vm.paneTextTarget), index = 1)
             assertTrue(sent.isEmpty())
             assertEquals(1, cardChecksRefused)
-            assertEquals("The question changed; not sent.", vm.notice)
+            // 2.2.8: never "the question changed": the card shows what is on screen now, nothing typed.
+            assertEquals(CARD_UPDATED_NOTE, vm.notice)
         }
 
     @Test fun hermesClarifyNeverSendsToChangedOrReplacementViewport() =
@@ -318,7 +567,7 @@ class SuccessiveCardAnswerTest {
                 original.replace("▸ 1.", "  1."), hermesComposer, "")) {
                 frame = changed
                 answer(card, target)
-                assertTrue(vm.notice.orEmpty().startsWith("Not sent."))
+                assertEquals("2.2.8: the card shows the question on screen now", CARD_UPDATED_NOTE, vm.notice)
             }
             frame = original
             terminal = "replacement"
@@ -337,7 +586,7 @@ class SuccessiveCardAnswerTest {
         frame = "$hermesClarify\n\n$approval"
 
         answer(clarify, target, index = 1)
-        assertTrue(vm.notice.orEmpty().startsWith("Not sent."))
+        assertEquals("2.2.8: the card shows the question on screen now", CARD_UPDATED_NOTE, vm.notice)
         readSelectedPane()
         val newer = displayed()
         assertTrue(newer.question, newer.question.contains("Dangerous Command"))
@@ -1031,6 +1280,18 @@ class SuccessiveCardAnswerTest {
         assertTrue(vm.notice.orEmpty(), vm.notice.orEmpty().startsWith("Not sent: the draft changed"))
     }
 
+    @Test fun sendDraftRefusesAReplacementAtTheHostGuard() = fixture("hermes", hermesBox("❯ first draft")) {
+        status(Status.IDLE)
+        readSelectedPane()
+        val draft = checkNotNull(vm.paneDraft)
+        beforeDraftCheck = { frame = hermesBox("❯ replacement draft") }
+        vm.sendPaneDraft(draft)
+        waitForDraftAction()
+        assertNull(beforeDraftCheck)
+        assertTrue(sent.isEmpty())
+        assertTrue(vm.notice.orEmpty().startsWith("Not sent: the draft changed"))
+    }
+
     @Test fun noDraftNoCardAndNoExtraRead() = fixture("hermes", hermesBox("❯ ")) {
         status(Status.IDLE)
         readSelectedPane()
@@ -1071,7 +1332,7 @@ class SuccessiveCardAnswerTest {
         )) {
             frame = changed
             answer(card, target, index = 1)
-            assertTrue(vm.notice.orEmpty().startsWith("Not sent."))
+            assertEquals("2.2.8: the card shows the question on screen now", CARD_UPDATED_NOTE, vm.notice)
         }
         frame = nativeQuestion(2)
         liveScrollOffset = 1
@@ -1345,7 +1606,7 @@ class SuccessiveCardAnswerTest {
         ansiRows = false
         answer(shown, checkNotNull(vm.paneTextTarget))
         assertTrue(sent.isEmpty())
-        assertTrue(vm.notice.orEmpty().startsWith("Not sent."))
+        assertEquals("2.2.8: the card shows the question on screen now", CARD_UPDATED_NOTE, vm.notice)
     }
 
     @Test fun approvalRecoveredAfterFailedRecentReadCanBeAnswered() =
@@ -1359,7 +1620,7 @@ class SuccessiveCardAnswerTest {
             recentResult = recent
             ansiRows = true
             readSelectedPane()
-            assertEquals(listOf(boundedVisible), discoveryVisibleReads)
+            assertEquals(listOf(boundedVisible), visibleReadsWithLineLimit)
             assertTrue(sent.isEmpty())
             val prompt = shownApproval()
             answer(prompt, checkNotNull(vm.paneTextTarget))
@@ -1375,7 +1636,7 @@ class SuccessiveCardAnswerTest {
         ansiRows = false
         answer(prompt, checkNotNull(vm.paneTextTarget))
         assertEquals(vm.notice, emptyList<String>(), sent)
-        assertTrue(vm.notice.orEmpty().startsWith("Not sent."))
+        assertEquals("2.2.8: the card shows the question on screen now", CARD_UPDATED_NOTE, vm.notice)
     }
 
     @Test fun staleApprovalCannotAnswerTheNewCommand() = fixture("codex", command("alpha-beta")) {
@@ -1383,7 +1644,7 @@ class SuccessiveCardAnswerTest {
         frame = command("alphabeta")
         answer(stale)
         assertTrue(sent.isEmpty())
-        assertTrue(vm.notice.orEmpty().startsWith("Not sent."))
+        assertEquals("2.2.8: the card shows the question on screen now", CARD_UPDATED_NOTE, vm.notice)
     }
 
     @Test fun staleTargetCannotAnswerAfterOccupantOrConnectionReplacement() = fixture("claude", firstStep) {
@@ -1392,13 +1653,13 @@ class SuccessiveCardAnswerTest {
         terminal = "t2" // Only the remote metadata has changed.
         answer(prompt, old)
         assertTrue(sent.isEmpty())
-        assertTrue(vm.notice.orEmpty().startsWith("Not sent."))
+        assertEquals("2.2.8: the card shows the question on screen now", CARD_UPDATED_NOTE, vm.notice)
 
         terminal = "t1"
         connection = Any()
         answer(prompt, old)
         assertTrue(sent.isEmpty())
-        assertTrue(vm.notice.orEmpty().startsWith("Not sent."))
+        assertEquals("2.2.8: the card shows the question on screen now", CARD_UPDATED_NOTE, vm.notice)
     }
 
     private fun bothMessagingSettings(agent: String, frame: String, test: Fixture.() -> Unit) {
@@ -1422,7 +1683,7 @@ class SuccessiveCardAnswerTest {
         try {
             f.test()
         } finally {
-            f.vm.viewModelScope.cancel()
+            f.vm.clearForTest()
             // Finish queued Compose snapshot dispatch before Robolectric resets the shared looper.
             shadowOf(Looper.getMainLooper()).idle()
         }
@@ -1441,7 +1702,7 @@ class SuccessiveCardAnswerTest {
         var liveScrollOffset = 0
         var recentReads = 0
         var recentResult: ExecResult? = null
-        val discoveryVisibleReads = mutableListOf<Boolean>()
+        val visibleReadsWithLineLimit = mutableListOf<Boolean>()
         var guardedVisibleReads = 0
         var spoken = ""
         private var speechDone: (() -> Unit)? = null
@@ -1487,10 +1748,13 @@ class SuccessiveCardAnswerTest {
 
         fun alert(prompt: Prompt) {
             val choice = prompt.choices.first()
-            val reads = recentReads
-            assertTrue(AppBus.emit(NotifyAction(server.id, "p1", choice.keys, choice.pressEnter, prompt.question,
-                label = choice.label, agent = agent)))
-            drainUntil { recentReads > reads && !vm.answerInFlight("p1") }
+            val reads = guardedVisibleReads
+            val h = field("herdr").get(vm) as Herdr
+            assertTrue(AppBus.emit(vm.bindFixtureAlert(NotifyAction(server.id, "p1", choice.keys, choice.pressEnter, prompt.question,
+                label = choice.label, agent = agent,
+                options = com.billmongan.herdrdroid.notify.alertOptionsSig(prompt.choices),
+                identity = com.billmongan.herdrdroid.notify.alertIdentity(prompt)), h)))
+            drainUntil { guardedVisibleReads > reads && !vm.answerInFlight("p1") }
         }
 
         /** [drainUntil], with the main looper's clock moving on, for answers that wait between keys. */
@@ -1528,6 +1792,7 @@ class SuccessiveCardAnswerTest {
         var cardChecksRefused = 0
         /** Runs as the check on the computer starts: what changed between the card's last read and the keys. */
         var beforeCheck: (() -> Unit)? = null
+        var beforeDraftCheck: (() -> Unit)? = null
         /** 2.2.7: the computer has no python3; how many answers each check took. */
         var pythonMissing = false
         var pythonChecks = 0
@@ -1535,38 +1800,63 @@ class SuccessiveCardAnswerTest {
 
         override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult {
             if (expectedConnection != null) assertSame(connection, expectedConnection)
+            if ("hashlib.sha256(screen)" in command) {
+                beforeDraftCheck?.also { beforeDraftCheck = null }?.invoke()
+                val occupant = Regex("""'p1' '([0-9a-f]{64})' '-'""").find(command)!!.groupValues[1]
+                val digest = Regex("""'p1' '([0-9a-f]{64})' && echo""").find(command)!!.groupValues[1]
+                val now = com.billmongan.herdrdroid.herdr.cardOccupantDigest(org.json.JSONObject(pane))
+                val visible = com.billmongan.herdrdroid.herdr.sha256Hex(ansiFrame().toByteArray())
+                if (now != occupant || visible != digest)
+                    return ExecResult(com.billmongan.herdrdroid.herdr.CARD_CHANGED_EXIT, com.billmongan.herdrdroid.herdr.CARD_REFUSED_MARK, "")
+                val send = command.substringAfter(" && echo ${com.billmongan.herdrdroid.herdr.OCCUPANT_PASSED_MARK} && ")
+                val result = immediate(send, timeoutSeconds, expectedConnection)
+                return result.copy(out = com.billmongan.herdrdroid.herdr.OCCUPANT_PASSED_MARK + "\n" + result.out)
+            }
             // 2.2.7: the check before a card's keys, run here as the computer would: against the
             // pane and screen as they are now, then each send it guards.
-            Regex("""(?s)'p1' '([0-9a-f]{64})' '([0-9a-f]{64})'.*\) && (.*)$""").find(command)?.takeIf { "herdrdroid-check" in command }?.let { m ->
+            Regex("""(?s)'p1' '([0-9a-f]{64})' '((?:r:[0-9]+:[0-9]+:)?[0-9a-f]{64})'.*\) && (.*)$""").find(command)?.takeIf { "herdrdroid-check" in command }?.let { m ->
                 // The Python check, failing over to the shell check (as the command does) when this computer has no python3.
                 val python = "def identity():" in command
                 if (python) pythonChecks++
                 val mark = if (python && pythonMissing) com.billmongan.herdrdroid.herdr.SHELL_CHECK_MARK + "\n" else ""
                 if (!python || pythonMissing) shellChecks++
                 beforeCheck?.invoke()
-                val now = com.billmongan.herdrdroid.herdr.CardGuard(
-                    com.billmongan.herdrdroid.herdr.cardOccupantDigest(org.json.JSONObject(pane)),
-                    com.billmongan.herdrdroid.herdr.cardScreenDigest(ansiFrame()))
-                if (now != com.billmongan.herdrdroid.herdr.CardGuard(m.groupValues[1], m.groupValues[2]) || liveScrollOffset != 0) {
+                // 2.2.8: the guard's dialog rows (or the whole screen) as the checks on the computer compare them.
+                val occupantNow = com.billmongan.herdrdroid.herdr.cardOccupantDigest(org.json.JSONObject(pane))
+                if (occupantNow != m.groupValues[1] || !com.billmongan.herdrdroid.herdr.cardGuardScreenMatches(ansiFrame(), m.groupValues[2]) || liveScrollOffset != 0) {
                     cardChecksRefused++
-                    return ExecResult(com.billmongan.herdrdroid.herdr.CARD_CHANGED_EXIT, mark, "")
+                    return ExecResult(com.billmongan.herdrdroid.herdr.CARD_CHANGED_EXIT, mark + com.billmongan.herdrdroid.herdr.CARD_REFUSED_MARK + "\n", "")
                 }
                 var last = ok("")
-                for (part in m.groupValues[3].split(" && ")) { last = immediate(part, timeoutSeconds, expectedConnection); if (last.exit != 0) break }
-                return last.copy(out = mark + last.out)
+                var echoed = ""
+                for (part in m.groupValues[3].split(" && ")) {
+                    if (part.startsWith("echo ")) { echoed += part.removePrefix("echo ") + "\n"; continue }
+                    last = immediate(part, timeoutSeconds, expectedConnection); if (last.exit != 0) break
+                }
+                return last.copy(out = mark + echoed + last.out)
             }
             return when {
                 command.endsWith("'pane' 'get' 'p1'") -> { onPaneGet?.invoke(); ok("""{"result":{"pane":$pane}}""") }
                 command.contains("'pane' 'read' 'p1' '--source' 'recent'") -> { recentReads++; recentResult ?: ok(ansiFrame()) }
                 command.contains("'pane' 'read' 'p1' '--source' 'visible'") -> {
-                    if (expectedConnection == null) discoveryVisibleReads += command.contains("'--lines'")
-                    else guardedVisibleReads++
+                    visibleReadsWithLineLimit += command.contains("'--lines'")
+                    if (expectedConnection != null) guardedVisibleReads++
                     ok(if (command.endsWith("'--format' 'ansi'")) ansiFrame() else frame)
                 }
                 command.contains("def occupant():") && command.endsWith("'/fixture/herdr' 'p1' '$agent'") -> ok("")
                 command.contains("'agent' 'prompt' 'p1' ") && agent == "hermes" -> {
                     sent += "prompt:" + command.substringAfter("'p1' ").removeSurrounding("'")
                     ok("")
+                }
+                command.contains("'pane' 'send-text' 'p1' ") &&
+                    command.contains(" && echo @@herdrdroid-text-pasted@@ && ") -> {
+                    val text = command.substringAfter("'p1' ").substringBefore(" && echo @@herdrdroid-text-pasted@@ && ")
+                    check(command.endsWith("'pane' 'send-keys' 'p1' 'enter'"))
+                    sent += "text:" + text.removeSurrounding("'")
+                    sent += "enter"
+                    afterSend?.let { frame = it }
+                    if (failAfterSend) ExecResult(1, "@@herdrdroid-text-pasted@@", "fixture lost acknowledgement")
+                    else ok("@@herdrdroid-text-pasted@@")
                 }
                 command.contains("'pane' 'send-text' 'p1' ") -> {
                     sent += "text:" + command.substringAfter("'p1' ").removeSurrounding("'")

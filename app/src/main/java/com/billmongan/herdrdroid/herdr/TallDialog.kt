@@ -12,8 +12,8 @@ package com.billmongan.herdrdroid.herdr
  * above the dialog, a different screen, or a stale copy of the screen's own top rows is refused, and
  * the card keeps the 2.2.4 note. The answer keys still come from the live dialog's options.
  */
-internal val TALL_DIALOG_READS = listOf(200, 400)
-internal const val TALL_DIALOG_MAX_LINES = 400
+internal val TALL_DIALOG_READS = listOf(200, 600, 2000)
+internal const val TALL_DIALOG_MAX_LINES = 2000
 
 /**
  * The first row of a dialog rebuilt from history (a word joiner alone, which draws as nothing): the
@@ -21,6 +21,12 @@ internal const val TALL_DIALOG_MAX_LINES = 400
  * rule) is ever taken for one (2.2.7 review).
  */
 internal const val TALL_DIALOG_MARK = "\u2060"
+private const val TALL_ASK_MARK = "\u2060\u2060"
+
+internal fun rebuiltClaudeAsk(text: String): Prompt? =
+    if (text.substringBefore('\n') == TALL_ASK_MARK)
+        claudeReviewPreview(text.substringAfter('\n'), null, TALL_DIALOG_MAX_LINES)?.copy(rebuiltTallDialog = true)
+    else null
 
 /** A rebuilt dialog: the mark, then the dialog's top rule, then its title row. */
 internal fun isRebuiltDialog(rows: List<String>): Boolean =
@@ -35,6 +41,8 @@ internal fun claudeDialogWindow(rows: List<String>, agent: String?): List<String
     if (agent.equals("claude", true) && rows.size > 80 && isRebuiltDialog(rows)) rows.takeLast(TALL_DIALOG_MAX_LINES + 1)
     else rows.takeLast(80)
 
+private val CLAUDE_FIRST_ASK_OPTION = Regex("""^\s*[❯›]?\s*1[.)]\s+\S.*$""")
+
 private fun screenRows(s: String) = stripAnsi(s).lines().map { it.replace("\r", "").trimEnd() }.dropLastWhile { it.isBlank() }
 
 /**
@@ -43,16 +51,27 @@ private fun screenRows(s: String) = stripAnsi(s).lines().map { it.replace("\r", 
  * screen, or null when the history does not prove it.
  */
 internal fun extendFramedDialog(screen: String, history: String, blocked: Boolean, version: String?): String? {
-    val base = detectPrompt(screen, blocked, "claude", version)?.takeIf { it.topOffScreen && it.choices.isNotEmpty() } ?: return null
+    val base = detectPrompt(screen, blocked, "claude", version)?.takeIf { it.topOffScreen } ?: return null
     val b = screenRows(screen)
     val d = screenRows(history)
-    if (b.isEmpty() || d.size <= b.size) return null
-    // The history must end with exactly this screen: the visible part is the dialog's bottom.
-    if (d.takeLast(b.size) != b) return null
+    if (b.isEmpty() || d.size <= b.size || d.takeLast(b.size) != b) return null
     val start = d.size - b.size
-    // The screen's own top rows again right above it are a redraw left in the history, not more of the command.
+    // The screen's own top rows again right above it are a redraw left in the history.
     val k = minOf(3, b.size, start)
     if (k >= 2 && d.subList(start - k, start) == b.subList(0, k)) return null
+    if (base.terminalReview) {
+        val startTab = (start - 1 downTo 0).firstOrNull { claudeAskTab(d[it]) || claudeAskFooter(d[it]) }
+            ?.takeIf { claudeAskTab(d[it]) } ?: return null
+        val body = d.drop(startTab)
+        if (body.size > TALL_DIALOG_MAX_LINES || body.dropLast(1).any { claudeAskFooter(it) }) return null
+        // The earlier rows must contain the first option of this dialog, not a stray tab label.
+        val leadingOptions = if (claudeClippedCheckboxRows(b) != null) body.dropLast(1)
+            else d.subList(startTab + 1, start)
+        if (leadingOptions.none { CLAUDE_FIRST_ASK_OPTION.matches(it) }) return null
+        val candidate = (listOf(TALL_ASK_MARK) + body).joinToString("\n")
+        return candidate.takeIf { rebuiltClaudeAsk(it) != null }
+    }
+    if (base.choices.isEmpty()) return null
     // The nearest top rule above the screen; the parser then proves every row from it down.
     val top = (start - 1 downTo 0).firstOrNull { CLAUDE_DIALOG_TOP_RULE.matches(d[it]) } ?: return null
     val candidate = (listOf(TALL_DIALOG_MARK) + d.drop(top)).joinToString("\n")
@@ -68,9 +87,10 @@ internal fun extendFramedDialog(screen: String, history: String, blocked: Boolea
  */
 internal suspend fun completeTallDialog(screen: String, blocked: Boolean, version: String?, read: suspend (Int) -> String?): String {
     val base = detectPrompt(screen, blocked, "claude", version) ?: return screen
-    if (!base.topOffScreen || base.choices.isEmpty()) return screen
+    if (!base.topOffScreen) return screen
     for (n in TALL_DIALOG_READS) {
         val history = read(n) ?: return screen
+        if (history.isBlank()) return screen
         extendFramedDialog(screen, history, blocked, version)?.let { return it }
         // The pane has no more history than this.
         if (screenRows(history).size < n - 1) return screen
@@ -100,6 +120,7 @@ internal fun tallDialogFits(shown: Prompt, fresh: Prompt): Boolean {
     var at = 0
     for (t in shownText) if (at < seenText.size && t == seenText[at]) at++
     if (at != seenText.size) return false
-    fun bare(p: Prompt) = p.copy(selected = null, question = "", parts = null, topOffScreen = false).forCard()
+    fun bare(p: Prompt) = p.copy(selected = null, question = "", parts = null, region = null,
+        topOffScreen = false, rebuiltTallDialog = false)
     return bare(shown) == bare(fresh)
 }

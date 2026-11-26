@@ -49,6 +49,8 @@ data class NotifyAction(
      * the typed row it answers through ([label] is that row's label). Empty for any other reply.
      */
     val typedRow: String = "",
+    /** In-process proof of the pane and connection that presented the notification. */
+    val origin: String = "",
 )
 
 /**
@@ -63,7 +65,8 @@ internal fun alertIdentity(p: com.billmongan.herdrdroid.herdr.Prompt): String {
     val material = p.approvalIdentity ?: p.openCodeQuestionFrame
         ?: (listOf(p.question) + p.choices.map { it.keys + ":" + it.label }).joinToString("\n")
     val norm = com.billmongan.herdrdroid.herdr.forPhone(material).filterNot(Char::isWhitespace)
-    return java.security.MessageDigest.getInstance("SHA-256").digest(norm.toByteArray())
+    val command = p.parts?.command?.let { "\u0000" + com.billmongan.herdrdroid.herdr.stripAnsi(it) }.orEmpty()
+    return java.security.MessageDigest.getInstance("SHA-256").digest((norm + command).toByteArray(Charsets.UTF_8))
         .joinToString("") { "%02x".format(it) }
 }
 
@@ -165,11 +168,17 @@ internal fun alertOptionsSig(choices: List<Choice>): String =
  * named in the alert's text for the question card that tapping the alert opens.
  */
 internal fun alertPlan(prompt: com.billmongan.herdrdroid.herdr.Prompt, terminalReview: Boolean = prompt.terminalReview, reply: Boolean = true): AlertPlan {
-    if (terminalReview || prompt.terminalReview) return AlertPlan(emptyList(), emptyList())
+    if (terminalReview || prompt.terminalReview || prompt.historyReviewOnly || prompt.clipped || prompt.guardedShortcutApproval) return AlertPlan(emptyList(), emptyList())
     val escChoice = prompt.choices.firstOrNull { com.billmongan.herdrdroid.herdr.menuKeys(prompt, it) == listOf("esc") }
     // 2.1.4: "Type something." and "Chat about this" are one "Type your answer" reply button.
     val merged = com.billmongan.herdrdroid.herdr.typedChatPair(prompt.choices)?.first
-    val answers = com.billmongan.herdrdroid.herdr.shownChoices(prompt.choices).map { c ->
+    // 2.2.8: an option the card shows disabled (never sent) is never an alert button.
+    val answers = com.billmongan.herdrdroid.herdr.shownChoices(prompt.choices).filter {
+        com.billmongan.herdrdroid.herdr.blockedChoiceReason(it) == null &&
+            it.keys != com.billmongan.herdrdroid.herdr.OMP_STEER &&
+            it.keys != com.billmongan.herdrdroid.herdr.OmpAsk.SUBMIT &&
+            !it.keys.startsWith("grok-privacy:")
+    }.map { c ->
         if (c == merged && reply) return@map AlertButton(com.billmongan.herdrdroid.herdr.TYPED_ANSWER_LABEL, choice = c, typed = true)
         // 2.2.2: the button reads the label as the card shows it (no marker, gutter or hint); its answer keeps c.label.
         val display = com.billmongan.herdrdroid.ui.QuestionText.label(if (c == merged) c.label else com.billmongan.herdrdroid.herdr.shownChoiceLabel(prompt.choices, c), c.keys)
@@ -197,7 +206,7 @@ internal fun alertPlan(prompt: com.billmongan.herdrdroid.herdr.Prompt, terminalR
  * gets Esc only.
  */
 internal fun notificationOffersReply(prompt: com.billmongan.herdrdroid.herdr.Prompt?): Boolean =
-    prompt?.claudeBackground != true && prompt?.openCodePermission != true && prompt?.museQuota != true && prompt?.hermesClarify != true
+    prompt?.guardedShortcutApproval != true && prompt?.claudeBackground != true && prompt?.openCodePermission != true && prompt?.museQuota != true && prompt?.hermesClarify != true
 
 /**
  * The keys an alert button sends to an OpenCode permission (2.1.2), from [now], the strict styled
@@ -222,7 +231,7 @@ internal fun openCodePermissionAlertKeys(now: com.billmongan.herdrdroid.herdr.Pr
 fun notificationAnswerStillFits(now: com.billmongan.herdrdroid.herdr.Prompt?, a: NotifyAction): Boolean {
     // 2.1.2: Hermes's clarify and OpenCode's question dialog are answered from alerts too, through
     // the guarded checks in the app; a screen only Terminal can answer never is.
-    if (now == null || now.terminalReview) return false
+    if (now == null || now.terminalReview || now.guardedShortcutApproval) return false
     val sameQuestion = now.question.filterNot { it.isWhitespace() } == a.question.filterNot { it.isWhitespace() }
     if (!sameQuestion) return false
     // The same set of options as the alert's (2.1.2), for its Esc as much as its options, and the
@@ -265,19 +274,18 @@ object Notify {
         ctx: Context, serverId: String, paneId: String, agent: String,
         /** Shown as one-tap quick replies above the keyboard; a choice's label answers with its keys. */
         quick: List<String> = emptyList(), choices: List<Choice> = emptyList(), question: String = "",
-        /** OpenCode's question (2.1.2): the reply types its own answer there, checked against this question. */
-        customQuestion: String? = null, options: String = "", identity: String = "", title: String = "Reply",
+        agentKind: String? = null, options: String = "", identity: String = "", title: String = "Reply", origin: String = "",
     ): NotificationCompat.Action {
         val input = androidx.core.app.RemoteInput.Builder(KEY_REPLY).setLabel("Reply to $agent")
             .apply { if (quick.isNotEmpty()) setChoices(quick.map { it.take(40) }.toTypedArray()) }.build()
         val i = Intent(ctx, ActionReceiver::class.java)
-            .forButton(serverId, paneId, if (choices.isEmpty() && question.isEmpty()) 5 else 4)
+            .forButton(serverId, paneId, if (choices.isEmpty() && question.isEmpty()) 5 else 4, identity, origin)
             .putExtra(EXTRA_SERVER, serverId).putExtra(EXTRA_PANE, paneId).putExtra("reply", true)
             .putExtra("question", question)
             .putExtra("cLabels", choices.map { it.label.take(40) }.toTypedArray())
             .putExtra("cKeys", choices.map { it.keys }.toTypedArray())
             .putExtra("cEnter", choices.map { it.pressEnter }.toBooleanArray())
-            .apply { if (customQuestion != null) putExtra("customQuestion", customQuestion).putExtra("options", options).putExtra("identity", identity).putExtra("agent", "opencode") }
+            .putExtra("options", options).putExtra("identity", identity).putExtra("agent", agentKind).putExtra("origin", origin)
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0)
         val pi = PendingIntent.getBroadcast(ctx, code(serverId, paneId, if (choices.isEmpty() && question.isEmpty()) 5 else 4), i, flags)
         return NotificationCompat.Action.Builder(0, title, pi).addRemoteInput(input).setAllowGeneratedReplies(false).build()
@@ -289,13 +297,13 @@ object Notify {
      * as the other buttons. Its own slot (6), so it never shares extras with Reply or an option.
      */
     private fun typedReplyAction(ctx: Context, serverId: String, paneId: String, agent: String, agentKind: String?, question: String,
-        row: Choice, options: String, identity: String): NotificationCompat.Action {
+        row: Choice, options: String, identity: String, origin: String): NotificationCompat.Action {
         val input = androidx.core.app.RemoteInput.Builder(KEY_REPLY).setLabel("Answer $agent").build()
         val i = Intent(ctx, ActionReceiver::class.java)
-            .forButton(serverId, paneId, 6)
+            .forButton(serverId, paneId, 6, identity, origin)
             .putExtra(EXTRA_SERVER, serverId).putExtra(EXTRA_PANE, paneId).putExtra("reply", true)
             .putExtra("question", question).putExtra("typedRow", row.keys).putExtra("label", row.label).putExtra("agent", agentKind)
-            .putExtra("options", options).putExtra("identity", identity)
+            .putExtra("options", options).putExtra("identity", identity).putExtra("origin", origin)
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0)
         val pi = PendingIntent.getBroadcast(ctx, code(serverId, paneId, 6), i, flags)
         return NotificationCompat.Action.Builder(0, com.billmongan.herdrdroid.herdr.TYPED_ANSWER_LABEL, pi).addRemoteInput(input).setAllowGeneratedReplies(false).build()
@@ -338,9 +346,9 @@ object Notify {
      * A data address naming the server, pane and button (1.4.2, from review): part of the
      * PendingIntent's identity, so two panes whose request codes happen to collide never share extras.
      */
-    private fun Intent.forButton(serverId: String, paneId: String, slot: Int): Intent =
+    private fun Intent.forButton(serverId: String, paneId: String, slot: Int, identity: String, origin: String): Intent =
         setData(android.net.Uri.Builder().scheme("herdrdroid").authority("answer")
-            .appendPath(serverId).appendPath(paneId).appendPath(slot.toString()).build())
+            .appendPath(serverId).appendPath(paneId).appendPath(slot.toString()).appendPath(identity).appendPath(origin).build())
 
     private fun openIntent(ctx: Context, serverId: String, paneId: String): PendingIntent {
         val i = Intent(ctx, MainActivity::class.java)
@@ -356,7 +364,7 @@ object Notify {
     fun needsYou(ctx: Context, serverId: String, serverLabel: String, paneId: String, agent: String, question: String, choices: List<Choice>, agentKind: String? = null, terminalReview: Boolean = false, reply: Boolean = true,
         prompt: com.billmongan.herdrdroid.herdr.Prompt? = null,
         /** 2.2.2: this replaces the neutral alert for the same question (same id), so it doesn't sound again. */
-        quietUpdate: Boolean = false) {
+        quietUpdate: Boolean = false, origin: String = "") {
         if (!allowed(ctx)) return
         // Past the fingerprint window (1.3.1): the alert still comes, without the question or the
         // answer buttons; opening it asks for the fingerprint first.
@@ -402,30 +410,33 @@ object Notify {
         for (button in plan.buttons) {
             val c = button.choice
             when {
-                button.typed && c != null -> b.addAction(typedReplyAction(ctx, serverId, paneId, agent, agentKind, question, c, options, identity))
+                button.typed && c != null -> b.addAction(typedReplyAction(ctx, serverId, paneId, agent, agentKind, question, c, options, identity, origin))
+                // Bill (2026-11-25): an approve-from-now-on option is confirmed in the app first: its
+                // button opens the question card, where tapping it asks "Approve everything from now on?".
+                c != null && com.billmongan.herdrdroid.herdr.approvesFromNowOn(c) -> b.addAction(0, button.title, openIntent(ctx, serverId, paneId))
                 c != null -> {
                     val n = slot++
                     val i = Intent(ctx, ActionReceiver::class.java)
-                        .forButton(serverId, paneId, n)
+                        .forButton(serverId, paneId, n, identity, origin)
                         .putExtra(EXTRA_SERVER, serverId).putExtra(EXTRA_PANE, paneId)
                         .putExtra("keys", c.keys).putExtra("enter", c.pressEnter).putExtra("question", question).putExtra("label", c.label).putExtra("agent", agentKind)
-                        .putExtra("options", options).putExtra("identity", identity)
+                        .putExtra("options", options).putExtra("identity", identity).putExtra("origin", origin)
                     val pi = PendingIntent.getBroadcast(ctx, code(serverId, paneId, n), i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
                     b.addAction(0, button.title, pi)
                 }
                 button.esc -> {
                     // Esc declines or dismisses the question, the same as the Esc key in the app.
                     val esc = Intent(ctx, ActionReceiver::class.java)
-                        .forButton(serverId, paneId, 3)
+                        .forButton(serverId, paneId, 3, identity, origin)
                         .putExtra(EXTRA_SERVER, serverId).putExtra(EXTRA_PANE, paneId)
                         .putExtra("keys", "esc").putExtra("isKey", true).putExtra("question", question).putExtra("agent", agentKind)
-                        .putExtra("options", options).putExtra("identity", identity)
+                        .putExtra("options", options).putExtra("identity", identity).putExtra("origin", origin)
                     b.addAction(0, "Esc", PendingIntent.getBroadcast(ctx, code(serverId, paneId, 3), esc, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
                 }
-                button.reply -> b.addAction(
-                    if (card.openCodeCustom != null) replyAction(ctx, serverId, paneId, agent, question = question, customQuestion = question, options = options, identity = identity, title = button.title)
-                    else replyAction(ctx, serverId, paneId, agent, question = question),
-                )
+                button.reply -> b.addAction(replyAction(
+                    ctx, serverId, paneId, agent, question = question, agentKind = agentKind,
+                    options = options, identity = identity, title = button.title, origin = origin,
+                ))
             }
         }
         runCatching { NotificationManagerCompat.from(ctx).notify(id(serverId, paneId), b.build()) }
@@ -541,6 +552,7 @@ class ActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val server = intent.getStringExtra(Notify.EXTRA_SERVER) ?: return
         val pane = intent.getStringExtra(Notify.EXTRA_PANE) ?: return
+        val origin = intent.getStringExtra("origin").orEmpty()
         if (intent.getBooleanExtra("reply", false)) {
             val text = androidx.core.app.RemoteInput.getResultsFromIntent(intent)?.getCharSequence(Notify.KEY_REPLY)?.toString()?.trim()
             val labels = intent.getStringArrayExtra("cLabels").orEmpty()
@@ -550,7 +562,7 @@ class ActionReceiver : BroadcastReceiver() {
                 // The merged "Type your answer" (2.1.4): typed through its row after the app's checks.
                 if (!text.isNullOrEmpty()) AppBus.emit(NotifyAction(server, pane, text, true, intent.getStringExtra("question").orEmpty(),
                     label = intent.getStringExtra("label").orEmpty(), agent = intent.getStringExtra("agent"), isReply = true,
-                    options = intent.getStringExtra("options").orEmpty(), identity = intent.getStringExtra("identity").orEmpty(), typedRow = typedRow))
+                    options = intent.getStringExtra("options").orEmpty(), identity = intent.getStringExtra("identity").orEmpty(), typedRow = typedRow, origin = origin))
             } else if (at >= 0) {
                 // A quick reply that is one of the agent's choices: answer with that choice's keys,
                 // checked against the same question, like the choice buttons.
@@ -558,9 +570,9 @@ class ActionReceiver : BroadcastReceiver() {
                     intent.getBooleanArrayExtra("cEnter")?.getOrNull(at) ?: false, intent.getStringExtra("question").orEmpty()))
             } else if (!text.isNullOrEmpty()) {
                 // OpenCode's question (2.1.2): the reply carries the question it answers, for the app to check.
-                val custom = intent.getStringExtra("customQuestion")
-                AppBus.emit(NotifyAction(server, pane, text, true, custom.orEmpty(), agent = intent.getStringExtra("agent"),
-                    isReply = true, options = intent.getStringExtra("options").orEmpty(), identity = intent.getStringExtra("identity").orEmpty()))
+                val question = intent.getStringExtra("question") ?: intent.getStringExtra("customQuestion")
+                AppBus.emit(NotifyAction(server, pane, text, true, question.orEmpty(), agent = intent.getStringExtra("agent"),
+                    isReply = true, options = intent.getStringExtra("options").orEmpty(), identity = intent.getStringExtra("identity").orEmpty(), origin = origin))
             }
             Notify.clear(context, server, pane)
             return
@@ -570,7 +582,7 @@ class ActionReceiver : BroadcastReceiver() {
             NotifyAction(
                 server, pane, intent.getStringExtra("keys").orEmpty(), intent.getBooleanExtra("enter", false),
                 intent.getStringExtra("question").orEmpty(), label = label, agent = intent.getStringExtra("agent"), isKey = intent.getBooleanExtra("isKey", false),
-                options = intent.getStringExtra("options").orEmpty(), identity = intent.getStringExtra("identity").orEmpty(),
+                options = intent.getStringExtra("options").orEmpty(), identity = intent.getStringExtra("identity").orEmpty(), origin = origin,
             ),
         )
         if (taken) Notify.sending(context, server, pane, "Sending your answer", if (label.isNotEmpty()) label else "Esc")

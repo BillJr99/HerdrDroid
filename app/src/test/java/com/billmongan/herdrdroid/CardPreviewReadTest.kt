@@ -33,6 +33,20 @@ import java.io.File
 @RunWith(AndroidJUnit4::class)
 class CardPreviewReadTest {
     @get:Rule val idleMainLooper = IdleMainLooperRule()
+    @Test fun queuedCodexInputClearsAVisibleCardOnTheNextPoll() = withFixture { f ->
+        val approval = resource("/screens/codex/synthetic-2.0/multiline-command-approval.txt")
+        f.select("codex", Status.WORKING)
+        f.frames(approval, approval)
+        repeat(2) { f.read() }
+        assertTrue(f.vm.cardParse("p1", f.vm.paneText)?.choices?.isNotEmpty() == true)
+
+        f.frames(approval, codexQueuedInputViewport)
+        f.read()
+        assertEquals(listOf("recent", "visible"), f.trace())
+        assertEquals(codexQueuedInputViewport, f.vm.paneText)
+        assertNull(f.vm.questionCardFor("p1", f.vm.cardParse("p1", f.vm.paneText), "codex"))
+    }
+
     @Test fun workingCodexFindsANativeQuestionMissingFromRecentOutput() = withFixture { f ->
         val recent = "Codex is preparing a response."
         f.select("codex", Status.WORKING)
@@ -241,7 +255,7 @@ class CardPreviewReadTest {
             assertEquals(0, fixture.ssh.execNow("true").exit)
             body(fixture)
         } finally {
-            fixture.vm.viewModelScope.cancel()
+            fixture.vm.clearForTest()
             fixture.ssh.close()
             shadowOf(Looper.getMainLooper()).idle()
         }

@@ -28,13 +28,13 @@ internal class LocalPromptSend(private val dispatch: PaneDispatch, private val g
 
     class Result(val outcome: Outcome, val failure: Exception? = null)
 
-    suspend fun send(server: String, expected: Occupant, text: String, allowed: () -> Boolean, port: Port): Result {
+    suspend fun send(server: String, expected: Occupant, text: String, allowed: () -> Boolean, port: Port, allowWorking: Boolean = false): Result {
         val refused = Result(Outcome.REFUSED)
         val key = server to expected.pane
         if (!expected.stable) return Result(Outcome.NO_IDENTITY)
         fun valid() = allowed() && !gate.isClosing(key)
         fun ready(p: Pane?) = p != null && Occupant.of(p) == expected &&
-            p.status in setOf(Status.IDLE, Status.DONE) && (p.scrollOffset ?: 0) == 0
+            (p.status == Status.IDLE || p.status == Status.DONE || allowWorking && p.status == Status.WORKING) && (p.scrollOffset ?: 0) == 0
         val release = dispatch.tryAcquire(key) ?: return refused
         val permit = gate.open(key) ?: run { release(); return refused }
         try {
@@ -62,6 +62,8 @@ internal class LocalPromptSend(private val dispatch: PaneDispatch, private val g
             throw c
         } catch (_: WriteRevoked) {
             return refused
+        } catch (e: CardChanged) {
+            return Result(Outcome.REFUSED, e)
         } catch (e: ConnectionChanged) {
             return Result(if (permit.submitted) Outcome.UNCERTAIN else Outcome.CONNECTION_CHANGED, e)
         } catch (e: Exception) {

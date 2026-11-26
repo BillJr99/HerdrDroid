@@ -1,6 +1,7 @@
 package com.billmongan.herdrdroid.ui
 
 import com.billmongan.herdrdroid.OUTERMOST_RULE
+import com.billmongan.herdrdroid.clearForTest
 import com.billmongan.herdrdroid.IdleMainLooperRule
 import com.billmongan.herdrdroid.*
 
@@ -29,6 +30,8 @@ import com.billmongan.herdrdroid.ui.CrossServerNoticeSettings
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.After
 import org.junit.Before
 import org.junit.Assert.*
@@ -85,7 +88,7 @@ class CrossServerNoticeDeliveryTest {
     private fun watch() = state(fleet, "states", mapOf(laptop2.server.id to FleetState(laptop2.server, laptop2.panes(), null, 0)))
 
     @After fun close() {
-        rule.runOnUiThread { vm.viewModelScope.cancel() }
+        rule.runOnUiThread { vm.clearForTest() }
         shadowOf(Looper.getMainLooper()).idle()
     }
 
@@ -104,6 +107,49 @@ class CrossServerNoticeDeliveryTest {
         }
         tick()
         assertEquals(1, laptop.writes.size)
+        assertEquals(2, laptop2.writes.size)
+    }
+
+    @Test fun disposableProbePanesAreNeitherNotifiedNorAdvertised() {
+        laptop.rows += Row("p2", "w1:t2", "probe-local", "claude", "s-probe-local")
+        laptop2.rows += Row("w2:p7", "w2:t7", "probe-remote", "claude", "s-probe-remote")
+        state(vm, "panes", laptop.panes())
+        watch()
+
+        vm.changeAgentMessaging(true)
+        tick()
+        assertEquals(1, laptop.writes.size)
+        assertEquals(2, laptop2.writes.size)
+        val writes = laptop.writes + laptop2.writes
+        assertTrue(writes.none { "probe-" in it || "'p2'" in it || "'w2:p7'" in it })
+    }
+
+    @Test fun openCodeAndAnAliasReceiveAndConfirmTheExactMultilineNotice() {
+        val primary = Row("w2:p8", "w2:t8", "opencode", "opencode", "s-primary")
+        val alias = Row("w2:p9", "w2:t9", "opencode-demo", "opencode-demo", "s-alias")
+        laptop2.rows.clear()
+        val rows = listOf(primary, alias)
+        laptop2.rows.addAll(rows)
+        val empty = checkNotNull(javaClass.getResource(
+            "/screens/opencode/live-2026-11-20-composer/empty.ansi")).readText()
+        val notice = checkNotNull(CrossServerNotice.text(listOf("Claude on laptop")))
+        assertTrue(notice.contains('\n'))
+        rows.forEach { row ->
+            laptop2.screen[row.id] = empty
+            laptop2.noticeHistory[row.id] = notice
+        }
+        watch()
+
+        vm.changeAgentMessaging(true)
+        tick()
+        val ledger = JSONObject(AppPrefs(app).crossServerNoticeLedger)
+        rows.forEach { row ->
+            val write = laptop2.writes.single { "'${row.id}'" in it }
+            assertTrue(write.contains(notice))
+            assertEquals(2, laptop2.noticeReads.count { it == row.id })
+            assertTrue(ledger.getJSONObject("${laptop2.server.id}|${row.id}").getBoolean("confirmed"))
+        }
+        tick()
         assertEquals(2, laptop2.writes.size)
     }
 
@@ -249,16 +295,41 @@ class CrossServerNoticeDeliveryTest {
         assertEquals(1, laptop.writes.size)
     }
 
-    @Test fun aDraftAtTheComputerIsRetriedThenGivenUpWithAPaneNotice() {
+    @Test fun aDraftAtTheComputerDoesNotProduceAFailedDeliveryWarning() {
         laptop2.screen["w2:p9"] = "❯ half typed"
         vm.changeAgentMessaging(true)
         for (i in 1..vm.notifier.maxTries) { tick(); now += 121_000 }
         assertEquals(listOf("w2:p5"), laptop2.writes.map { it.substringAfter("'prompt' '").substringBefore("'") })
-        val notice = vm.sendNotices.single { it.serverId == "laptop2" && it.paneId == "w2:p9" }
-        assertTrue(notice.text.contains("could not tell this agent"))
-        now += 5 * 3_600_000
+        assertFalse(vm.sendNotices.any { it.serverId == "laptop2" && it.paneId == "w2:p9" })
+        laptop2.screen["w2:p9"] = "❯ "
         tick()
-        assertEquals(1, laptop2.writes.size)
+        assertEquals(2, laptop2.writes.size)
+    }
+
+    @Test fun aProvenMissingTargetGetsOneRetryThenAPaneSpecificWarning() {
+        laptop2.promptResult["w2:p9"] = ExecResult(1,
+            """{"id":"cli:agent:prompt","error":{"code":"agent_not_found","message":"agent target not found"}}""", "")
+        vm.changeAgentMessaging(true)
+        tick()
+        assertFalse(vm.sendNotices.any { it.paneId == "w2:p9" })
+        now += 121_000
+        tick()
+        val notice = vm.sendNotices.single { it.serverId == "laptop2" && it.paneId == "w2:p9" }
+        assertTrue(notice.text.contains("hermes on laptop2"))
+        assertTrue(notice.text.contains("did not recognize"))
+        now += 121_000
+        tick()
+        assertEquals(2, laptop2.writes.count { "'w2:p9'" in it })
+    }
+
+    @Test fun anUnknownWriteFailureNeverRetriesOrClaimsVerifiedRefusal() {
+        laptop2.promptResult["w2:p9"] = ExecResult(1, "", "unexpected disconnect")
+        vm.changeAgentMessaging(true)
+        tick()
+        now += 121_000
+        tick()
+        assertEquals(1, laptop2.writes.count { "'w2:p9'" in it })
+        assertFalse(vm.sendNotices.any { it.paneId == "w2:p9" })
     }
 
     @Test fun agentsOverTheQuotaLimitWaitAndUnknownUsageIsSent() {
@@ -292,7 +363,7 @@ class CrossServerNoticeDeliveryTest {
         val restarted = AppViewModel(app)
         assertEquals(80, restarted.crossServerNoticeQuota)
         assertFalse(restarted.crossServerNotice)
-        restarted.viewModelScope.cancel()
+        restarted.clearForTest()
     }
 
     @Test fun whatWasSentIsNotSentAgainAfterARestart() {
@@ -312,7 +383,7 @@ class CrossServerNoticeDeliveryTest {
         field(restarted, "fleet").set(restarted, fleet)
         runBlocking { restarted.noticeTick() }
         assertEquals(3, laptop.writes.size + laptop2.writes.size)
-        restarted.viewModelScope.cancel()
+        restarted.clearForTest()
     }
 
     @Test fun settingsControls() {
@@ -352,6 +423,9 @@ class CrossServerNoticeDeliveryTest {
         val status = mutableMapOf<String, String>()
         val screen = mutableMapOf<String, String>()
         val writes = mutableListOf<String>()
+        val promptResult = mutableMapOf<String, ExecResult>()
+        val noticeHistory = mutableMapOf<String, String>()
+        val noticeReads = mutableListOf<String>()
 
         private fun json(r: Row) = """{"pane_id":"${r.id}","workspace_id":"${r.id.substringBefore(':', "w1")}","tab_id":"${r.tab}","agent":"${r.agent}","agent_session":{"agent":"${r.agent}","kind":"id","source":"herdr:${r.agent}","value":"${r.session}"},"agent_status":"${status[r.id] ?: "idle"}","cwd":"/fixture","terminal_id":"term-${r.id}","scroll":{"offset_from_bottom":0}}"""
         private fun tabs() = rows.joinToString(",") { """{"tab_id":"${it.tab}","label":"${it.label}"}""" }
@@ -362,14 +436,26 @@ class CrossServerNoticeDeliveryTest {
 @@herdrdroid-tabs@@
 {"result":{"tabs":[${tabs()}]}}""", "")
             else ExecResult(1, "", "not in this fixture")
-        override suspend fun input(command: String, input: ByteArray, expectedConnection: Any): ExecResult =
-            ExecResult(0, """{"ok":true,"busy":{${rows.joinToString(",") { "\"${it.id}\":0" }}}}""", "")
+        override suspend fun input(command: String, input: ByteArray, expectedConnection: Any): ExecResult {
+            if ("__workcounts__" in command)
+                return ExecResult(0, """{"ok":true,"busy":{${rows.joinToString(",") { "\"${it.id}\":0" }}}}""", "")
+            val row = rows.firstOrNull { "'${it.agent}'" in command && "\"hsid\":\"${it.session}\"" in command }
+                ?: return ExecResult(1, "", "no synthetic history for this request")
+            val text = noticeHistory[row.id] ?: return ExecResult(1, "", "no synthetic history for this pane")
+            noticeReads += row.id
+            val sent = writes.any { "'${row.id}'" in it }
+            val items = JSONArray()
+            if (sent) items.put(JSONObject().put("t", "user").put("text", text).put("k", "new-user-row"))
+            return ExecResult(0, JSONObject().put("ok", true).put("items", items)
+                .put("cur", JSONObject().put("pos", if (sent) 2 else 1))
+                .put("live", JSONObject().put("sid", row.session).put("db", "synthetic")).toString(), "")
+        }
         override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult {
             val id = rows.firstOrNull { "'${it.id}'" in command }?.id
             return when {
                 "'pane' 'get'" in command && id != null ->
                     ExecResult(0, """{"result":{"pane":${json(rows.single { it.id == id })}}}""", "")
-                "'agent' 'prompt'" in command -> { writes += command; ExecResult(0, "", "") }
+                "'agent' 'prompt'" in command -> { writes += command; id?.let(promptResult::get) ?: ExecResult(0, "", "") }
                 "'pane' 'read'" in command && id != null -> ExecResult(0, screen[id] ?: "❯ ", "")
                 else -> ExecResult(1, "", "not in this fixture: $command")
             }

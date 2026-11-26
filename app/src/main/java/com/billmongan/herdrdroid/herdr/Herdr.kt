@@ -46,6 +46,9 @@ data class Pane(
      */
     val openCodeStaleBlock: Boolean = false,
 ) {
+    /** Disposable probes use a reserved tab label, independent of pane titles and agent output. */
+    val isProbe: Boolean get() = tabLabel.startsWith("probe-")
+
     /** The status that picks how a message goes out: herdr's own, not the screen's (2.1.2). */
     val sendStatus: Status get() = screenNeedsYouFrom ?: status
 
@@ -206,13 +209,20 @@ class Herdr internal constructor(
     private suspend fun runWrite(command: String, timeoutSeconds: Long = 30, expectedConnection: Any? = null, permit: WritePermit? = null): String =
         kotlinx.coroutines.withContext(com.billmongan.herdrdroid.ssh.WriteCommand.MARK) { runNow(command, timeoutSeconds, expectedConnection, permit) }
 
+    /** 2.2.8: a write whose exit and output the caller reads itself (the bound send's markers). */
+    private suspend fun runWriteResult(command: String, expectedConnection: Any?, permit: WritePermit?): com.billmongan.herdrdroid.ssh.ExecResult =
+        kotlinx.coroutines.withContext(com.billmongan.herdrdroid.ssh.WriteCommand.MARK) {
+            commands?.let { permit.admit(); it.immediate(command, 30, expectedConnection) }
+                ?: ssh.execNow(command, 30, expectedConnection, permit)
+        }
+
     /** A command on the send lane: it doesn't wait behind reads. */
     private suspend fun runNow(command: String, timeoutSeconds: Long = 30, expectedConnection: Any? = null, permit: WritePermit? = null): String {
         // The test seam claims the permit itself, so fakes see the same no-write-after-revoke rule.
         val r = commands?.let { permit.admit(); it.immediate(command, timeoutSeconds, expectedConnection) }
             ?: ssh.execNow(command, timeoutSeconds, expectedConnection, permit)
         if (r.exit != 0) {
-            val msg = (r.err.ifBlank { r.out }).trim().lines().lastOrNull { it.isNotBlank() } ?: "exit ${r.exit}"
+            val msg = r.terminalFailureMessage()
             throw HerdrError(msg, r.exit)
         }
         return r.out
@@ -361,6 +371,9 @@ class Herdr internal constructor(
         override suspend fun pane(id: String, connection: Any) = relayPane(id, connection)
         override suspend fun viewport(id: String, connection: Any) =
             runNow(cmd("pane", "read", id, "--source", "visible", "--format", "ansi"), 5, connection)
+        override suspend fun noticeHistory(pane: Pane, cursor: String, connection: Any): TranscriptRead? =
+            this@Herdr.noticeHistory(pane, cursor, script, connection)
+
         override suspend fun hasWork(pane: Pane, connection: Any): Boolean {
             val arg = org.json.JSONArray(listOf(listOf(pane.id, pane.agent.orEmpty(), pane.cwd, pane.sessionId.orEmpty()))).toString()
             val command = "$PYZ __workcounts__ ${shq(arg)}"
@@ -380,7 +393,7 @@ class Herdr internal constructor(
         override suspend fun sendForced(pane: Pane, text: String, connection: Any, permit: WritePermit) =
             sendMessage(pane, text, allowTerminalFallback = false, expectedConnection = connection, permit = permit, busyOk = true)
         // 2.2.7: a message too long to type, as a checked file in this computer's inbox.
-        override suspend fun upload(name: String, bytes: ByteArray, connection: Any) = uploadVerified(name, bytes)
+        override suspend fun upload(name: String, bytes: ByteArray, connection: Any) = uploadVerified(name, bytes, connection)
     }
 
     /** No tab list, status enrichment, bulk lock, or reconnect during a card tap. */
@@ -420,6 +433,7 @@ class Herdr internal constructor(
             when (input) {
                 is CardInput.Keys -> if (permit != null) sendPermittedKeys(paneId, input.keys, connection, permit)
                     else sendKeys(paneId, *input.keys.toTypedArray(), expectedConnection = connection)
+                is CardInput.Submit -> error("Atomic submission requires a guarded Herdr TUI pane")
                 is CardInput.Text -> {
                     require(permit == null)
                     if (input.enter) typeAndEnter(paneId, input.text, connection) else sendText(paneId, input.text, connection)
@@ -433,12 +447,17 @@ class Herdr internal constructor(
             commands?.let { permit.admit(); it.immediate(cardSendCommand(paneId, input, guard, shellOnly), 30, connection) }
                 ?: ssh.execNow(cardSendCommand(paneId, input, guard, shellOnly), 30, connection, permit)
         }
-        if (!shellOnly && r.out.lines().any { it.trim() == SHELL_CHECK_MARK }) onShellFallback()
-        when (r.exit) {
-            0 -> return
-            CARD_CHANGED_EXIT -> throw CardChanged()
-            CARD_CHECK_FAILED_EXIT, 126, 127 -> throw CardCheckFailed()
-            else -> throw HerdrError((r.err.ifBlank { r.out }).trim().lines().lastOrNull { it.isNotBlank() } ?: "exit ${r.exit}", r.exit)
+        val lines = r.out.lines().map { it.trim() }
+        if (!shellOnly && SHELL_CHECK_MARK in lines) onShellFallback()
+        if (r.exit == 0) return
+        // 2.2.8 (Codex's re-review 6): after the passed line the keys had started: whatever the exit, a
+        // failure may have reached the pane ([DeliveryUncertain]). Before it, only the check's own refusal
+        // line with its exit means the question changed; anything else, the check failed.
+        val why = (r.err.ifBlank { r.out }).trim().lines().lastOrNull { it.isNotBlank() && it.trim() != CARD_PASSED_MARK } ?: "exit ${r.exit}"
+        when {
+            r.exit == -2 || CARD_PASSED_MARK in lines -> throw DeliveryUncertain(why)
+            r.exit == CARD_CHANGED_EXIT && CARD_REFUSED_MARK in lines -> throw CardChanged()
+            else -> throw CardCheckFailed()
         }
     }
 
@@ -449,17 +468,41 @@ class Herdr internal constructor(
      * [shellOnly]: the shell check alone.
      */
     internal fun cardSendCommand(paneId: String, input: CardInput, guard: CardGuard, shellOnly: Boolean = false): String {
-        val args = "$herdr ${shq(paneId)} ${shq(guard.occupant)} ${shq(guard.screen)}"
-        val shell = "sh -c ${shq(CARD_SEND_CHECK_SH)} herdrdroid-check $args"
-        val check = if (shellOnly) "( $shell )"
-            else "( $PY -c ${shq(CARD_SEND_CHECK)} $args; st=\$?; " +
-                "if [ \"\$st\" -eq 126 ] || [ \"\$st\" -eq 127 ]; then echo $SHELL_CHECK_MARK; $shell; else exit \"\$st\"; fi )"
+        val check = checkCommand(paneId, guard.occupant, guard.screen, shellOnly)
         val send = when (input) {
             is CardInput.Keys -> cmd("pane", "send-keys", paneId, *input.keys.toTypedArray())
+            // pane run sends the literal argument and Enter in one pane.send_input request.
+            is CardInput.Submit -> cmd("pane", "run", paneId, input.text)
             is CardInput.Text -> cmd("pane", "send-text", paneId, input.text) +
                 (if (input.enter) " && " + cmd("pane", "send-keys", paneId, "enter") else "")
         }
-        return "$check && $send"
+        // 2.2.8 (Codex's re-review 6): the passed line goes out just before the keys (see [sendCardInput]).
+        return "$check && echo $CARD_PASSED_MARK && $send"
+    }
+
+    /** The check before a write: [CARD_SEND_CHECK], failing over to [CARD_SEND_CHECK_SH] where python3 can't run. */
+    private fun checkCommand(paneId: String, occupant: String, screen: String, shellOnly: Boolean): String {
+        val args = "$herdr ${shq(paneId)} ${shq(occupant)} ${shq(screen)}"
+        val shell = "sh -c ${shq(CARD_SEND_CHECK_SH)} herdrdroid-check $args"
+        return if (shellOnly) "( $shell )"
+            else "( $PY -c ${shq(CARD_SEND_CHECK)} $args; st=\$?; " +
+                "if [ \"\$st\" -eq 126 ] || [ \"\$st\" -eq 127 ]; then echo $SHELL_CHECK_MARK; $shell; else exit \"\$st\"; fi )"
+    }
+
+    /**
+     * 2.2.8 (Codex's re-review 2): the occupant-only check, on the computer, in the same command as a
+     * write: its occupant digest must still be [occupant] ([cardOccupantDigest]), wherever the pane is
+     * scrolled, or the command exits [OCCUPANT_CHANGED_EXIT] before anything is typed.
+     */
+    internal fun occupantCheckCommand(paneId: String, occupant: String, shellOnly: Boolean = false) =
+        checkCommand(paneId, occupant, "-", shellOnly)
+
+    /** 2.2.8: [paneId]'s occupant as the computer reports it now, with its digest, on [connection] (any scroll). */
+    internal suspend fun boundOccupant(paneId: String, connection: Any): Pair<Pane, String>? {
+        if (core) return null
+        val p = JSONObject(runNow(cmd("pane", "get", paneId), 5, connection)).getJSONObject("result").getJSONObject("pane")
+        val pane = tuiPane(p).takeIf { it.id == paneId } ?: return null
+        return pane to cardOccupantDigest(p)
     }
 
     /** [cardPane], but a scrolled-back pane is returned with its offset rather than as null (2.2.2: the relay refuses it as SCROLLED). */
@@ -524,9 +567,9 @@ class Herdr internal constructor(
      */
     suspend fun readVisible(paneId: String): String = readVisible(paneId, preserveGlyphs = false)
 
-    internal suspend fun readVisible(paneId: String, preserveGlyphs: Boolean): String =
-        if (core) read(paneId, 60, preserveGlyphs) else screenText(
-            runNow(visibleSnapshot(paneId, ansi = preserveGlyphs), timeoutSeconds = 5), preserveGlyphs,
+    internal suspend fun readVisible(paneId: String, preserveGlyphs: Boolean, expectedConnection: Any? = null): String =
+        if (core) read(paneId, 60, preserveGlyphs, expectedConnection) else screenText(
+            runNow(visibleSnapshot(paneId, ansi = preserveGlyphs), timeoutSeconds = 5, expectedConnection = expectedConnection), preserveGlyphs,
         )
 
     private fun screenText(text: String, preserveGlyphs: Boolean) = if (preserveGlyphs) stripAnsi(text) else forPhone(text)
@@ -554,13 +597,22 @@ class Herdr internal constructor(
             runNow(visibleSnapshot(paneId, ansi = true, lines = lines), timeoutSeconds = 5)
         }
 
-    suspend fun read(paneId: String, lines: Int = 200, preserveGlyphs: Boolean = false): String =
-        if (core) screenText(runNow(hcCmd("read", paneId, "--lines", lines.toString()), timeoutSeconds = 5), preserveGlyphs)
-        else try {
-            screenText(runNow(recentSnapshot(paneId, lines), timeoutSeconds = 5), preserveGlyphs)
+    /** Bounded history from the same connection as the live card, without a visible-read fallback. */
+    internal suspend fun readCardHistory(paneId: String, lines: Int, connection: Any): String? =
+        if (core) null else try {
+            screenText(runNow(recentSnapshot(paneId, lines), timeoutSeconds = 5, expectedConnection = connection), true)
         } catch (e: HerdrError) {
             if (e.exit == -2) throw e
-            screenText(runNow(visibleSnapshot(paneId, ansi = preserveGlyphs, lines = lines), timeoutSeconds = 5), preserveGlyphs)
+            null
+        }
+
+    suspend fun read(paneId: String, lines: Int = 200, preserveGlyphs: Boolean = false, expectedConnection: Any? = null): String =
+        if (core) screenText(runNow(hcCmd("read", paneId, "--lines", lines.toString()), timeoutSeconds = 5, expectedConnection = expectedConnection), preserveGlyphs)
+        else try {
+            screenText(runNow(recentSnapshot(paneId, lines), timeoutSeconds = 5, expectedConnection = expectedConnection), preserveGlyphs)
+        } catch (e: HerdrError) {
+            if (e.exit == -2 || e.isMissingPane(paneId)) throw e
+            screenText(runNow(visibleSnapshot(paneId, ansi = preserveGlyphs, lines = lines), timeoutSeconds = 5, expectedConnection = expectedConnection), preserveGlyphs)
         }
 
     /**
@@ -614,7 +666,14 @@ class Herdr internal constructor(
         // The first wait's own status is the script's (1.4.1, from a second review: a trailing
         // "true" made a failed wait look like a timeout). 2.1.4: the waits still running are stopped
         // with their herdr processes, not only their subshells, so none is left behind on the computer.
-        return "pids=; ${body}wait -n 2>/dev/null; rc=\$?; for p in \$pids; do pkill -P \"\$p\" 2>/dev/null; done; kill \$pids 2>/dev/null; exit \$rc"
+        // 2.2.8 (Bill: a closed app's watch still held a `herdr agent wait` on the computer): a watchdog
+        // reads the command's standard input, which only ends when the phone closes the channel (the
+        // app closed, the link dropped, the wait was cancelled); then it stops every wait at once, so
+        // none outlives the phone's interest in it. It is stopped too when the waits end normally.
+        // (A background job's standard input is /dev/null unless it is given one, so it reads a copy, fd 3.)
+        val dog = "( cat <&3 >/dev/null 2>&1; for p in \$pids; do pkill -P \"\$p\" 2>/dev/null; done; kill \$pids 2>/dev/null ) >/dev/null 2>&1 & dog=\$!; "
+        return "exec 3<&0; pids=; ${body}${dog}wait -n 2>/dev/null; rc=\$?; for p in \$pids; do pkill -P \"\$p\" 2>/dev/null; done; kill \$pids 2>/dev/null; " +
+            "pkill -P \"\$dog\" 2>/dev/null; kill \$dog 2>/dev/null; exit \$rc"
     }
 
     /** Each agent's program version here (1.4.0): agent kind to version, for the parsers and the debug bundle. */
@@ -677,13 +736,38 @@ class Herdr internal constructor(
     internal suspend fun sendPermitted(pane: Pane, text: String, connection: Any, permit: WritePermit) =
         sendMessage(pane, text, allowTerminalFallback = false, expectedConnection = connection, permit = permit)
 
-    suspend fun sendMessage(pane: Pane, text: String, allowTerminalFallback: Boolean = true, expectedConnection: Any? = null) =
-        sendMessage(pane, text, allowTerminalFallback, expectedConnection, permit = null)
+    /**
+     * [occupant] (2.2.8): the pane's occupant digest the message is bound to. Each write then goes in one
+     * command behind [occupantCheckCommand], so the computer types it only into that occupant;
+     * [OccupantChanged] when another one is there, [CardCheckFailed] when the check couldn't run.
+     * [shellOnly]: this computer has no python3.
+     */
+    suspend fun sendMessage(pane: Pane, text: String, allowTerminalFallback: Boolean = true, expectedConnection: Any? = null,
+                            occupant: String? = null, shellOnly: Boolean = false) =
+        sendMessage(pane, text, allowTerminalFallback, expectedConnection, permit = null, occupant = occupant, shellOnly = shellOnly)
 
     private suspend fun sendMessage(
         pane: Pane, text: String, allowTerminalFallback: Boolean, expectedConnection: Any?, permit: WritePermit?,
-        busyOk: Boolean = false,
+        busyOk: Boolean = false, occupant: String? = null, shellOnly: Boolean = false,
     ) {
+        require(occupant == null || (!core && expectedConnection != null))
+        // 2.2.8: behind the occupant check, in the same command. Codex's re-review 3: the check's refusal
+        // is told by its own line, and the passed line goes out just before the first write, so a write
+        // step's exit (whatever its number) is never taken for a refusal: after that line, a failure is
+        // [DeliveryUncertain], never "nothing typed".
+        suspend fun write(command: String, permit: WritePermit? = null) {
+            if (occupant == null) { runWrite(command, expectedConnection = expectedConnection, permit = permit); return }
+            val full = occupantCheckCommand(pane.id, occupant, shellOnly) + " && echo $OCCUPANT_PASSED_MARK && " + command
+            val r = runWriteResult(full, expectedConnection, permit)
+            if (r.exit == 0) return
+            val lines = r.out.lines().map { it.trim() }
+            val why = (r.err.ifBlank { r.out }).trim().lines().lastOrNull { it.isNotBlank() && it.trim() != OCCUPANT_PASSED_MARK } ?: "exit ${r.exit}"
+            when {
+                r.exit == -2 || OCCUPANT_PASSED_MARK in lines -> throw DeliveryUncertain(why)
+                r.exit == OCCUPANT_CHANGED_EXIT && OCCUPANT_REFUSED_MARK in lines -> throw OccupantChanged()
+                else -> throw CardCheckFailed()
+            }
+        }
         // herdr's own status picks the route: an OpenCode pane marked needs-you from its screen
         // keeps the send it had (2.1.2).
         val status = pane.sendStatus
@@ -704,14 +788,13 @@ class Herdr internal constructor(
         if (core) {
             // hc send pastes and presses Enter; it refuses a terminal waiting on a question
             // unless forced, and a message sent then is meant as the answer.
-            if (status == Status.NEEDS_YOU) runWrite(hcCmd("send", "--force", pane.id, text))
+            if (status == Status.NEEDS_YOU) runWrite(hcCmd("send", "--force", pane.id, text), expectedConnection = expectedConnection, permit = permit)
             else runWrite((clear?.let { hcCmd("keys", pane.id, it) + " && " } ?: "") + hcCmd("send", pane.id, text), expectedConnection = expectedConnection, permit = permit)
             return
         }
         if (pane.agent != null && status != Status.NEEDS_YOU) {
             try {
-                runWrite((clear?.let { cmd("pane", "send-keys", pane.id, it) + " && " } ?: "") + cmd("agent", "prompt", pane.id, text),
-                    expectedConnection = expectedConnection, permit = permit)
+                write((clear?.let { cmd("pane", "send-keys", pane.id, it) + " && " } ?: "") + cmd("agent", "prompt", pane.id, text), permit)
                 return
             } catch (e: HerdrError) {
                 if (!allowTerminalFallback) throw e
@@ -719,8 +802,8 @@ class Herdr internal constructor(
                 lastSendRoute = "agent prompt refused; typed with send-text + enter"
             }
         }
-        runWrite(cmd("pane", "send-text", pane.id, text), expectedConnection = expectedConnection)
-        runWrite(cmd("pane", "send-keys", pane.id, "enter"), expectedConnection = expectedConnection)
+        if (occupant != null) { write(cmd("pane", "send-text", pane.id, text) + " && " + cmd("pane", "send-keys", pane.id, "enter")); return }
+        typeAndEnter(pane.id, text, expectedConnection)
     }
 
     /**
@@ -733,16 +816,153 @@ class Herdr internal constructor(
         return runWrite(hcCmd("keys", paneId, *keys.toTypedArray()), expectedConnection = expectedConnection)
     }
 
-    /** Types [text] and presses Enter: one paste-and-submit on herdr-core. */
-    suspend fun typeAndEnter(paneId: String, text: String, expectedConnection: Any? = null) {
+    /** Paste and submit in one host operation so a phone-side failure cannot strand the paste. */
+    suspend fun typeAndEnter(paneId: String, text: String, expectedConnection: Any? = null, settleMillis: Int = 0) {
         if (core) { runWrite(hcCmd("send", "--force", paneId, text), expectedConnection = expectedConnection); return }
-        runWrite(cmd("pane", "send-text", paneId, text), expectedConnection = expectedConnection)
-        runWrite(cmd("pane", "send-keys", paneId, "enter"), expectedConnection = expectedConnection)
+        require(settleMillis in 0..1_000)
+        val pause = if (settleMillis == 0) "" else
+            "sleep ${settleMillis / 1_000}.${(settleMillis % 1_000).toString().padStart(3, '0')} && "
+        val paste = cmd("pane", "send-text", paneId, text)
+        val submit = cmd("pane", "send-keys", paneId, "enter")
+        val result = runWriteResult("$paste && echo $PASTED_MARK && $pause$submit", expectedConnection, null)
+        if (result.exit == 0) return
+        if (result.exit == -2 || result.out.lineSequence().any { it.trim() == PASTED_MARK }) {
+            // The composer may contain this paste, the submitted message, or a newer user draft.
+            // Never clear or retry without proof of what the target now contains.
+            throw DeliveryUncertain("The paste or submission could not be confirmed.")
+        }
+        val message = result.err.ifBlank { result.out }.lineSequence().lastOrNull { it.isNotBlank() }?.trim()
+            ?: "exit ${result.exit}"
+        throw HerdrError(message, result.exit)
+    }
+
+    /**
+     * 2.2.8 (from Muse's review): the background key (Ctrl+B) for [step], in one command on the
+     * computer behind the occupant check ([occupantCheckCommand], bound to [occupant]) and a fresh
+     * read of the screen ([BACKGROUND_CHECK]): it goes only while that screen still shows the step's
+     * hint and no dialog. True when it went; false when the screen check refused (nothing typed).
+     * [OccupantChanged] or [CardCheckFailed] when nothing was typed for another reason;
+     * [DeliveryUncertain] when the key may have gone. Never on herdr-core (no occupant check there).
+     */
+    internal suspend fun sendBackgroundKey(
+        paneId: String, step: BackgroundStep, viewport: String, occupant: String, connection: Any, permit: WritePermit? = null,
+    ): Boolean {
+        if (core || viewport.isBlank()) return false
+        val check = "$PY -c ${shq(BACKGROUND_CHECK)} $herdr ${shq(paneId)} ${shq(step.check)}"
+        val full = occupantCheckCommand(paneId, occupant) + " && " + check + " && " +
+            exactViewportCheck(paneId, viewport, requireBottom = true) + " && echo $OCCUPANT_PASSED_MARK && " +
+            cmd("pane", "send-keys", paneId, Backgrounding.KEY)
+        val r = runWriteResult(full, connection, permit)
+        if (r.exit == 0) return true
+        val lines = r.out.lines().map { it.trim() }
+        val why = (r.err.ifBlank { r.out }).trim().lines().lastOrNull { it.isNotBlank() && it.trim() != OCCUPANT_PASSED_MARK } ?: "exit ${r.exit}"
+        when {
+            r.exit == -2 || OCCUPANT_PASSED_MARK in lines -> throw DeliveryUncertain(why)
+            r.exit == BACKGROUND_REFUSED_EXIT && BACKGROUND_REFUSED_MARK in lines -> return false
+            r.exit == CARD_CHANGED_EXIT && CARD_REFUSED_MARK in lines -> return false
+            r.exit == OCCUPANT_CHANGED_EXIT && OCCUPANT_REFUSED_MARK in lines -> throw OccupantChanged()
+            else -> throw CardCheckFailed()
+        }
     }
 
     suspend fun sendKeys(paneId: String, vararg keys: String, expectedConnection: Any? = null) =
         if (core) runWrite(hcCmd("keys", paneId, *keys), expectedConnection = expectedConnection)
         else runWrite(cmd("pane", "send-keys", paneId, *keys), expectedConnection = expectedConnection)
+
+    /** Bracket the screen read so an unrelated occupant at a reused public ID is never painted. */
+    internal suspend fun readTerminalFrame(pane: Pane, connection: Any, read: suspend (Pane) -> String): Pair<Pane, String> {
+        if (core) return pane to read(pane)
+        suspend fun lookup(id: String): Pane? = try {
+            relayPane(id, connection)
+        } catch (e: HerdrError) {
+            if (!e.isMissingPane(id)) throw e
+            null
+        }
+        val original = lookup(pane.id)
+        val live = original?.takeIf { pane.matchesTerminal(it) } ?: run {
+            val resolved = resolveTerminalPane(pane, connection)
+            lookup(resolved.id)?.takeIf { pane.matchesTerminal(it) } ?: throw terminalUnavailable()
+        }
+        val screen = try { read(live) } catch (e: HerdrError) {
+            if (!e.isMissingPane(live.id)) throw e
+            throw terminalUnavailable()
+        }
+        if (lookup(live.id)?.let { sameOccupant(live, it) } != true) throw terminalUnavailable()
+        return live to screen
+    }
+
+    /**
+     * Terminal keys target a specific terminal, even when Herdr changes its public pane ID.
+     * Only Herdr's explicit lookup rejection establishes that no key could have been sent.
+     */
+    internal suspend fun sendTerminalKeys(pane: Pane, keys: List<String>, connection: Any, stillCurrent: () -> Boolean) {
+        fun checkTarget() {
+            if (connectionIdentity !== connection || !stillCurrent())
+                throw HerdrError("the computer, connection, or open terminal changed. Open the terminal and try again.", 1)
+        }
+        fun permit() = WritePermit { connectionIdentity === connection && stillCurrent() }
+        checkTarget()
+        if (core) {
+            runWrite(hcCmd("keys", pane.id, *keys.toTypedArray()), expectedConnection = connection, permit = permit())
+            return
+        }
+        suspend fun dispatch(live: Pair<Pane, String>): Boolean {
+            val (target, digest) = live
+            checkTarget()
+            val command = occupantCheckCommand(target.id, digest) + " && echo $OCCUPANT_PASSED_MARK && " +
+                cmd("pane", "send-keys", target.id, *keys.toTypedArray())
+            val result = runWriteResult(command, connection, permit = permit())
+            if (result.exit == 0) return true
+            val lines = result.out.lines().map { it.trim() }
+            val why = result.terminalFailureMessage()
+            val problem = HerdrError(why, result.exit)
+            if (OCCUPANT_PASSED_MARK in lines) {
+                if (problem.isMissingPane(target.id)) return false
+                throw DeliveryUncertain(why)
+            }
+            if (result.exit == -2) throw DeliveryUncertain(why)
+            throw HerdrError("the terminal could not be verified. Reopen it from the pane list.", result.exit)
+        }
+        val original = try { boundOccupant(pane.id, connection) } catch (e: HerdrError) {
+            if (!e.isMissingPane(pane.id)) throw e
+            null
+        }
+        if (original != null && pane.matchesTerminal(original.first) && dispatch(original)) return
+        checkTarget()
+        val target = resolveTerminalPane(pane, connection)
+        val verified = try { boundOccupant(target.id, connection) } catch (e: HerdrError) {
+            if (!e.isMissingPane(target.id)) throw e
+            null
+        }
+        if (verified == null || !pane.matchesTerminal(verified.first) || !dispatch(verified)) throw terminalUnavailable()
+    }
+
+    internal suspend fun resolveTerminalPane(pane: Pane, connection: Any): Pane =
+        panesOn(connection).singleOrNull { pane.matchesTerminal(it) } ?: throw terminalUnavailable()
+
+    private fun Pane.matchesTerminal(now: Pane): Boolean {
+        if (agent != now.agent || sessionId != now.sessionId) return false
+        return if (terminalId != null) terminalId == now.terminalId else sessionId != null && cwd == now.cwd
+    }
+
+    private fun exactViewportCheck(paneId: String, viewport: String, requireBottom: Boolean = false): String {
+        val digest = sha256Hex(viewport.toByteArray(Charsets.UTF_8))
+        return "$PY -c ${shq(EXACT_VIEWPORT_CHECK)} $herdr ${shq(paneId)} ${shq(digest)}" + if (requireBottom) " bottom" else ""
+    }
+
+    /** Draft keys only after the host compares the app's last ANSI viewport byte for byte. */
+    internal suspend fun sendCheckedDraftKeys(
+        paneId: String, keys: List<String>, viewport: String, occupant: String, connection: Any, permit: WritePermit,
+    ): Boolean {
+        if (core || viewport.isBlank()) return false
+        val check = occupantCheckCommand(paneId, occupant) + " && " + exactViewportCheck(paneId, viewport)
+        val send = cmd("pane", "send-keys", paneId, *keys.toTypedArray())
+        val result = runWriteResult("$check && echo $OCCUPANT_PASSED_MARK && $send", connection, permit)
+        if (result.exit == 0) return true
+        val lines = result.out.lineSequence().map(String::trim).toSet()
+        if (result.exit == -2 || OCCUPANT_PASSED_MARK in lines) throw DeliveryUncertain("The draft key may have gone through.")
+        return false
+    }
 
     /** Keys that go only while [permit] is open; on herdr-core as `hc keys` (2.2.0: the mode menu works there too). */
     internal suspend fun sendPermittedKeys(paneId: String, keys: List<String>, connection: Any, permit: WritePermit) =
@@ -752,8 +972,8 @@ class Herdr internal constructor(
     private fun usageSnapshotCommand(paneId: String, agent: String) =
         "$PY -c ${shq(USAGE_OVERLAY_SNAPSHOT)} $herdr ${shq(paneId)} ${shq(agent)}"
 
-    internal suspend fun readUsageOverlay(paneId: String, agent: String, anyAgent: Boolean = false): UsageOverlay? =
-        (readUsageState(paneId, agent, anyAgent) as? UsageState.Open)?.overlay
+    internal suspend fun readUsageOverlay(paneId: String, agent: String, anyAgent: Boolean = false, expectedConnection: Any? = null): UsageOverlay? =
+        (readUsageState(paneId, agent, anyAgent, expectedConnection) as? UsageState.Open)?.overlay
 
     /** The guarded live snapshot (occupant digest and visible screen), or null when refused or unreadable. */
     private suspend fun panelSnapshot(paneId: String, agent: String): Pair<String, String>? {
@@ -780,10 +1000,10 @@ class Herdr internal constructor(
      * can't tell (the read was refused: the pane is working, scrolled back, or changed occupant;
      * or the dialog's hint is drawn in a layout the app doesn't know).
      */
-    internal suspend fun readUsageState(paneId: String, agent: String, anyAgent: Boolean = false): UsageState {
+    internal suspend fun readUsageState(paneId: String, agent: String, anyAgent: Boolean = false, expectedConnection: Any? = null): UsageState {
         // 2.2.1: [anyAgent] when a panel shows on a recent read of an agent outside the usage set.
         if (core || (agent !in USAGE_DIALOG_AGENTS && !anyAgent)) return UsageState.Unknown
-        val json = runNow(usageSnapshotCommand(paneId, agent), timeoutSeconds = 5).trim()
+        val json = runNow(usageSnapshotCommand(paneId, agent), timeoutSeconds = 5, expectedConnection = expectedConnection).trim()
         if (json.isEmpty()) return UsageState.Unknown
         val objectJson = runCatching { JSONObject(json) }.getOrNull() ?: return UsageState.Unknown
         val visible = objectJson.optString("visible")
@@ -792,25 +1012,25 @@ class Herdr internal constructor(
         return if (usageDialogHint(agent, visible) || visible.isBlank()) UsageState.Unknown else UsageState.Closed
     }
 
-    internal suspend fun closeUsageOverlay(paneId: String, agent: String, overlay: UsageOverlay): Boolean {
+    internal suspend fun closeUsageOverlay(paneId: String, agent: String, overlay: UsageOverlay, expectedConnection: Any? = null): Boolean {
         if (core || dismissibleUsageFrame(agent, overlay.visible) == null) return false
         val digest = java.security.MessageDigest.getInstance("SHA-256")
             .digest(overlay.visible.toByteArray()).joinToString("") { "%02x".format(it) }
         val expected = "${shq(overlay.occupant)} ${shq(digest)}"
         // Repeat the exact compare on the server, rather than sending an unguarded Escape over SSH.
         // Herdr does not expose an atomic compare-and-send; the final local CLI call is still separate.
-        return runWrite("${usageSnapshotCommand(paneId, agent)} $expected", timeoutSeconds = 5).trim() == "sent"
+        return runWrite("${usageSnapshotCommand(paneId, agent)} $expected", timeoutSeconds = 5, expectedConnection = expectedConnection).trim() == "sent"
     }
 
     /**
      * Scrolls Claude's /btw panel one step (2.1.4): Down, under the same server-side exact-snapshot
      * check as [closeUsageOverlay], so it goes only to the panel just read. Only for a panel the app opened.
      */
-    internal suspend fun scrollBtwOverlay(paneId: String, overlay: UsageOverlay): Boolean {
+    internal suspend fun scrollBtwOverlay(paneId: String, overlay: UsageOverlay, expectedConnection: Any? = null): Boolean {
         if (core || claudeBtwOverlay(overlay.visible) == null) return false
         val digest = java.security.MessageDigest.getInstance("SHA-256")
             .digest(overlay.visible.toByteArray()).joinToString("") { "%02x".format(it) }
-        return runWrite("${usageSnapshotCommand(paneId, "claude")} ${shq(overlay.occupant)} ${shq(digest)} down", timeoutSeconds = 5).trim() == "sent"
+        return runWrite("${usageSnapshotCommand(paneId, "claude")} ${shq(overlay.occupant)} ${shq(digest)} down", timeoutSeconds = 5, expectedConnection = expectedConnection).trim() == "sent"
     }
 
     /**
@@ -830,6 +1050,15 @@ class Herdr internal constructor(
             return TranscriptRead(false, why, "", false, false, null, emptyList())
         }
         return Transcript.parseRead(r.out)
+    }
+
+    /** A short receipt read bound to the notice's connection, with no automatic reconnect. */
+    internal suspend fun noticeHistory(pane: Pane, cursor: String, script: ByteArray, connection: Any): TranscriptRead? {
+        val agent = pane.agent ?: return null
+        val command = "$PYZ ${shq(agent)} ${shq(pane.cwd)} ${shq(Transcript.withLive(cursor, pane.id, pane.sessionId))}"
+        val input = z(script)
+        val result = commands?.input(command, input, connection) ?: ssh.execInput(command, input, 3, connection)
+        return if (result.exit == 0 && result.out.isNotBlank()) Transcript.parseRead(result.out) else null
     }
 
     /** One image inside an agent's log, fetched with the reader's image mode. */
@@ -879,7 +1108,7 @@ class Herdr internal constructor(
      * computer; a mismatch is written again once, then refused ([UploadMismatch]), so a message
      * never points at a missing or partial file. Logged with the inbox file name, size and result only.
      */
-    suspend fun uploadVerified(name: String, bytes: ByteArray): UploadReceipt {
+    suspend fun uploadVerified(name: String, bytes: ByteArray, expectedConnection: Any? = connectionIdentity): UploadReceipt {
         val safe = name.replace(Regex("[^A-Za-z0-9._-]"), "_").trim('_').take(80).ifBlank { "file" }
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
         val want = sha256Hex(bytes)
@@ -892,7 +1121,8 @@ class Herdr internal constructor(
         var last: String? = null
         // 2.2.7 (Codex's review): bound to the connection it started on (a replacement refuses it)
         // and counted as a send, so the small-packets fallback waits for it instead of cutting it.
-        val pinned = connectionIdentity
+        val pinned = expectedConnection
+        if (pinned != null && connectionIdentity !== pinned) throw com.billmongan.herdrdroid.ssh.ConnectionChanged()
         ssh.beginSend()
         try {
             for (attempt in 1..2) {
@@ -1238,6 +1468,7 @@ internal suspend fun recoverPaneRead(
     visible: suspend () -> String,
     shortRecent: suspend () -> String,
     pause: suspend () -> Unit = { kotlinx.coroutines.delay(180) },
+    stopOnMissing: String? = null,
 ): String {
     var problem = HerdrError("the screen came back empty", -2)
     for ((index, read) in listOf(recent, visible, shortRecent).withIndex()) {
@@ -1246,6 +1477,7 @@ internal suspend fun recoverPaneRead(
             val text = read()
             if (text.isNotBlank()) return text
         } catch (e: HerdrError) {
+            if (stopOnMissing != null && e.isMissingPane(stopOnMissing)) throw e
             problem = e
         }
     }
@@ -1253,6 +1485,27 @@ internal suspend fun recoverPaneRead(
 }
 
 class HerdrError(message: String, val exit: Int) : Exception(message)
+
+private fun com.billmongan.herdrdroid.ssh.ExecResult.terminalFailureMessage(): String {
+    val structured = if (exit == 1) (err.lineSequence() + out.lineSequence())
+        .map { it.trim() }.filter { it.startsWith("{") }
+        .filter { paneLookupError(it) != null }.distinct().take(2).toList().singleOrNull() else null
+    return structured ?: err.ifBlank { out }.lineSequence().map { it.trim() }
+        .lastOrNull { it.isNotEmpty() && it != OCCUPANT_PASSED_MARK } ?: "exit $exit"
+}
+
+private fun paneLookupError(line: String): String? =
+    runCatching { JSONObject(line).optJSONObject("error") }.getOrNull()
+        ?.takeIf { it.optString("code") == "pane_not_found" }?.optString("message")
+
+/** Herdr rejects this lookup before any terminal key is attempted. Other failures are ambiguous. */
+internal fun HerdrError.isMissingPane(id: String): Boolean {
+    if (exit != 1) return false
+    return paneLookupError(message.orEmpty()) in setOf("pane $id not found", "pane not found")
+}
+
+internal fun terminalUnavailable() =
+    HerdrError("this terminal is no longer available on the connected computer. Reopen it from the pane list.", 1)
 
 /** A file or folder name typed on the phone, or null when it has a slash, is empty, or is "." or "..". */
 fun safeName(name: String): String? {
@@ -1308,7 +1561,11 @@ private fun isChrome(line: String): Boolean {
     return boxy * 2 >= t.length
 }
 
-data class Choice(val label: String, val keys: String, val pressEnter: Boolean)
+/**
+ * One option of a card. [ambiguous] (2.2.8, Codex's per-commit review of a1314cd): the pane cut its
+ * label off so that it could be the agent's approve-everything option; it is never sent ([blockedChoiceReason]).
+ */
+data class Choice(val label: String, val keys: String, val pressEnter: Boolean, val ambiguous: Boolean = false)
 /**
  * A question on screen. [selected] is the number of the highlighted menu option (the ❯ line),
  * when there is one: answers then move the highlight with the arrow keys and press Enter instead
@@ -1378,14 +1635,51 @@ data class Prompt(
      * is partly off screen, and the dialog's top is the screen's top ([dialogRead]).
      */
     internal val topOffScreen: Boolean = false,
+    /** The complete display includes scrollback that the live send guard cannot verify. */
+    internal val rebuiltTallDialog: Boolean = false,
     /** 2.2.7: Oh My Pi's or pi's multi-question Ask dialog, as [OmpAsk] read it. */
     internal val ompAsk: OmpAsk.State? = null,
+    /**
+     * 2.2.8 (Bill: "grok has a question but keeps saying it changed"): Grok shows only part of the
+     * command ("… Ctrl+F to expand"). The card offers no answer until the command is shown whole:
+     * only Ctrl+F, which expands it in Grok's own box, after which the card reads it again.
+     */
+    internal val clipped: Boolean = false,
+    /** AGY subagent Bash approval takes only the explicitly displayed Ctrl+K shortcut. */
+    internal val agyApproval: Boolean = false,
+    /** Kiro advertises its exact one-time approval keys on this page. */
+    internal val kiroOnceShortcuts: Boolean = false,
+    /** A proven Claude Code model control uses only keys named by its own picker. */
+    internal val claudeModelControl: Boolean = false,
+    internal val letterKeys: Boolean = false,
 ) {
+    internal val guardedShortcutApproval: Boolean get() = agyApproval || kiroOnceShortcuts || claudeModelControl
+    internal val historyReviewOnly: Boolean get() = topOffScreen || rebuiltTallDialog
+
+    /**
+     * 2.2.8 (Grok's review 4; Codex's review 4B): the exact rows the parser read the dialog from, from
+     * the question's first row down to the last option's last row, for the card's guard ([cardRegion]);
+     * null when the question wasn't read as one block. Where the dialog sits on the screen, not what it
+     * asks: not part of the card's identity (equality, [copy]), so the same question read at another
+     * scroll is the same card. [withSpanOf] carries it.
+     */
+    internal var dialogRows: DialogRows? = null
+
+    /** This card with [other]'s [dialogRows] (a [copy] of a parsed card made in a parser). */
+    internal fun withSpanOf(other: Prompt): Prompt = also { it.dialogRows = other.dialogRows }
+
     /**
      * Never an empty card (1.4.2): a prompt with no choices always has something to show, the
      * screen region or, when the screen couldn't be read, a note saying so, with the generic keys.
      */
-    fun forCard(): Prompt = if (choices.isNotEmpty() || region.orEmpty().any { it.isNotBlank() }) this else copy(region = listOf(UNREAD_SCREEN))
+    fun forCard(): Prompt = when {
+        historyReviewOnly && !terminalReview -> copy(
+            choices = emptyList(), selected = null, terminalReview = true,
+            region = region ?: listOf(UNREAD_SCREEN),
+        )
+        choices.isNotEmpty() || region.orEmpty().any { it.isNotBlank() } -> this
+        else -> copy(region = listOf(UNREAD_SCREEN))
+    }
 
     /** [parts], or the same layout read from the question's text. */
     fun shownParts(): QuestionParts = parts ?: questionParts(listOf(QLine(question)))
@@ -1419,7 +1713,8 @@ internal fun unreadQuestionCard(agent: String): Prompt = Prompt(
 
 /** Dispatch identity, unlike history deduplication, must not discard punctuation or command text. */
 internal fun cardAnswerStillFits(shown: Prompt, fresh: Prompt?): Boolean =
-    !shown.terminalReview && !shown.readingQuestion && fresh != null && !fresh.terminalReview && !fresh.readingQuestion &&
+    !shown.terminalReview && !shown.historyReviewOnly && !shown.readingQuestion &&
+        fresh != null && !fresh.terminalReview && !fresh.historyReviewOnly && !fresh.readingQuestion &&
         shown.forCard().region != listOf(UNREAD_SCREEN) &&
         shown.copy(selected = null).forCard() == fresh.copy(selected = null).forCard()
 
@@ -1450,9 +1745,84 @@ data class QLine(val text: String, val cmd: Boolean = false, val gapBefore: Bool
                   * command block, so a multi-line command keeps its lines. [wraps]: Grok wrapped it
                   * ("·" at the end of the row); [cont]: it carries on the row above ("┆" gutter).
                   */
-                 val row: Boolean = false, val cont: Boolean = false, val wraps: Boolean = false)
+                 val row: Boolean = false, val cont: Boolean = false, val wraps: Boolean = false,
+                 /**
+                  * 2.2.8 (Bill: "make sure all the question text is visible and well formatted
+                  * especially code"): a row of a fenced block the agent wrote ("```bash" … "```"),
+                  * the fences too, kept as it is: its own line, its indentation, a blank row as "".
+                  */
+                 val fence: Boolean = false,
+                 /** 2.2.8: the column the row's text starts at, inside the dialog's frame, when known (-1 if not). */
+                 val indent: Int = -1)
+
+/** 2.2.8: how far up a question is read once it holds a code block or runs on inside its frame. */
+internal const val TALL_QUESTION_ROWS = 200
+
+/** 2.2.8: a row that opens or closes a fenced code block ("```", "```bash"). */
+internal fun isFenceRow(t: String): Boolean = t.trimStart().startsWith("```")
+
+/**
+ * 2.2.8: a dialog row's text and the column it starts at, without the dialog's frame ("│ ",
+ * "┃  ", a right-hand "│"): what a code block's indentation is measured from. (-1, "") for a
+ * row with nothing but frame.
+ */
+internal fun rowBody(row: String): Pair<Int, String> {
+    var r = row.trimEnd()
+    if (r.endsWith("│") || r.endsWith("┃")) r = r.dropLast(1).trimEnd()
+    val col = r.indexOfFirst { it != ' ' && it != '│' && it != '┃' }
+    return if (col < 0) -1 to "" else col to r.substring(col)
+}
+
+/**
+ * 2.2.8: each fenced block in [lines] with its rows' indentation given back, relative to the
+ * block's opening fence (or its least indented row when the opening fence is not in [lines]).
+ */
+internal fun withFenceIndent(lines: List<QLine>): List<QLine> {
+    val out = lines.toMutableList()
+    var i = 0
+    while (i < out.size) {
+        if (!out[i].fence) { i++; continue }
+        var j = i
+        while (j + 1 < out.size && out[j + 1].fence && !out[j + 1].gapBefore) j++
+        val known = (i..j).filter { out[it].text.isNotEmpty() && out[it].indent >= 0 }
+        val base = known.firstOrNull { isFenceRow(out[it].text) }?.let { out[it].indent } ?: known.minOfOrNull { out[it].indent } ?: 0
+        for (k in i..j) {
+            val q = out[k]
+            if (q.text.isNotEmpty() && q.indent > base && !isFenceRow(q.text)) out[k] = q.copy(text = " ".repeat(q.indent - base) + q.text)
+        }
+        i = j + 1
+    }
+    return out
+}
+
+/**
+ * 2.2.8: a dialog's question rows as [QLine]s, top to bottom: a fenced block row by row with its
+ * indentation and blank rows kept, every other row through [clean], a blank row a paragraph break.
+ */
+internal fun dialogQuestionLines(rows: List<String>, clean: (String) -> String): List<QLine> {
+    val got = mutableListOf<QLine>()
+    var gap = false
+    var inFence = false
+    for (r in rows) {
+        val (col, body) = rowBody(r)
+        val fenceRow = isFenceRow(body)
+        if (inFence || fenceRow) {
+            got += QLine(body.trimEnd(), gapBefore = gap && !inFence, fence = true, indent = col)
+            gap = false
+            if (fenceRow) inFence = !inFence
+            continue
+        }
+        val c = clean(r)
+        if (r.isBlank() || c.isEmpty()) { if (got.isNotEmpty()) gap = true; continue }
+        got += QLine(c, gapBefore = gap, indent = col)
+        gap = false
+    }
+    return withFenceIndent(got)
+}
 
 private val TAB_ITEM = Regex("""([☐☒✔✓☑])\s*([^☐☒✔✓☑←→]+)""")
+/** 2.2.8: a command that opens a heredoc at its end ("python3 -B - <<'PY'", "cat <<EOF"): the terminator in group 2. */
+private val HEREDOC_OPEN = Regex("""^\S.*<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1\s*$""")
 /** "Reason: …", "Environment: local", "Read: /path": a labelled line of context, never the heading. */
 private val LABEL_LINE = Regex("""^[A-Z][A-Za-z ]{0,24}:\s""")
 /** A piece of a path that ends in a file extension: "culus.json", "8.json". */
@@ -1486,7 +1856,7 @@ private fun claudeDescriptionAbove(t: String, next: QLine?): Boolean {
     if (next == null || t.isEmpty() || !t.first().isUpperCase() || !t.contains(' ')) return false
     if (SHELL_SIGN.containsMatchIn(t)) return false
     val n = next.text.trim()
-    return n.isNotEmpty() && (SHELL_SIGN.containsMatchIn(n) || n.first().isLowerCase())
+    return n.isNotEmpty() && (next.row || SHELL_SIGN.containsMatchIn(n) || n.first().isLowerCase())
 }
 
 /** Claude Code 2.1.329+'s dashed rules around a permission dialog's command, at the screen's left edge. */
@@ -1521,7 +1891,9 @@ internal class ClaudeFramed(val lines: List<QLine>, val topOffScreen: Boolean, /
  * above the command, chat above the dialog with no rule between) is not this layout: null, and the
  * generic walk reads it as before.
  */
-internal fun claudeFramedDialog(raw: List<String>, at: Int): ClaudeFramed? {
+private val CLAUDE_EDIT_DIFF_ROW = Regex("""^ {0,3}\d+ {1,6}(?:[-+] ?)?\S.*$""")
+
+internal fun claudeFramedDialog(raw: List<String>, at: Int, rebuilt: Boolean = false): ClaudeFramed? {
     var i = at - 1
     while (i >= 0 && raw[i].isBlank()) i--
     // The question: "Do you want to proceed?", right above the options (it may wrap over two rows).
@@ -1529,6 +1901,8 @@ internal fun claudeFramedDialog(raw: List<String>, at: Int): ClaudeFramed? {
         ?: return null
     if ((header..i).any { raw[it].isBlank() || CLAUDE_GUTTER_ROW.matches(raw[it]) }) return null
     val question = (header..i).map { raw[it].trim() }
+    val edit = question.first().startsWith("Do you want to make this edit")
+    fun commandRow(row: String) = if (edit) CLAUDE_EDIT_DIFF_ROW.matches(row) else CLAUDE_GUTTER_ROW.matches(row)
     // The explanation, up to the dashed rule under the command.
     var k = header - 1
     while (k >= 0 && !CLAUDE_DASHED_RULE.matches(raw[k])) {
@@ -1541,11 +1915,13 @@ internal fun claudeFramedDialog(raw: List<String>, at: Int): ClaudeFramed? {
     // The command's rows: each in the gutter, up to the dashed rule over the command or the screen's top.
     var j = below - 1
     while (j >= 0 && !CLAUDE_DASHED_RULE.matches(raw[j])) {
-        if (!CLAUDE_GUTTER_ROW.matches(raw[j])) return null
+        if (!commandRow(raw[j])) return null
         j--
     }
     val commandRows = (j + 1 until below).map { raw[it] }
-    if (commandRows.none { CLAUDE_GUTTER_ROW.find(it)?.groupValues?.get(1).orEmpty().isNotBlank() }) return null
+    if (commandRows.isEmpty() || !edit && commandRows.none {
+            CLAUDE_GUTTER_ROW.find(it)?.groupValues?.get(1).orEmpty().isNotBlank()
+        }) return null
     // Over the command: the title and the description, under the plain rule (or the screen's top).
     var titleRows = emptyList<String>()
     var topOff = j < 0
@@ -1562,7 +1938,10 @@ internal fun claudeFramedDialog(raw: List<String>, at: Int): ClaudeFramed? {
             topRow = t
             // A full dialog names its tool on its first row.
             val title = titleRows.firstOrNull() ?: return null
-            if (!CLAUDE_COMMAND_TITLE.matches(title) && !CLAUDE_REQUEST_SOURCE.containsMatchIn(title) && !COMMAND_INTRO.matches(title)) return null
+            if (edit) {
+                if (!rebuilt || title != "Edit file") return null
+            } else if (!CLAUDE_COMMAND_TITLE.matches(title) && !CLAUDE_REQUEST_SOURCE.containsMatchIn(title) &&
+                !COMMAND_INTRO.matches(title)) return null
         }
     }
     // The command, one line per row; a row that fills the frame wraps into the next.
@@ -1570,9 +1949,9 @@ internal fun claudeFramedDialog(raw: List<String>, at: Int): ClaudeFramed? {
     val command = mutableListOf<String>()
     var wrapped = false
     for (r in commandRows) {
-        val body = CLAUDE_GUTTER_ROW.find(r)?.groupValues?.get(1).orEmpty().trimEnd()
+        val body = if (edit) r.trimEnd() else CLAUDE_GUTTER_ROW.find(r)?.groupValues?.get(1).orEmpty().trimEnd()
         if (wrapped && command.isNotEmpty()) command[command.size - 1] = command.last() + body else command += body
-        wrapped = r.trimEnd().length >= width - 1
+        wrapped = !edit && r.trimEnd().length >= width - 1
     }
     val out = mutableListOf<QLine>()
     if (topOff) out += QLine(if (j < 0) CLAUDE_TOP_OFF_NOTE else CLAUDE_TITLE_OFF_NOTE)
@@ -1667,10 +2046,55 @@ private fun firstQuestionEnd(s: String): Int {
  * Terminal-wrapped lines join into one paragraph; a blank line, a "Label: " line or a line ending
  * in "?" starts a new one. No marker or box characters are kept.
  */
+/** 2.2.8: a row of prose: five or more words, ending a sentence or a lead-in. */
+private val SENTENCE_ROW = Regex("""^\S+(?:\s+\S+){4,}[.?!:]$""")
+/** 2.2.8: an approval's own question ("Run this command?", "Would you like to run the following command?", "Allow …?"). */
+private val APPROVAL_ASK = Regex("""^(?:Run this command\?|Would you like to run\b|Allow\b.*\?$|.*\brequires approval$)""", RegexOption.IGNORE_CASE)
+/** 2.2.8: a list item's first row ("- x", "• x", "1. x"), never the start of an indented code block. */
+private val LIST_ROW = Regex("""^(?:[-*•·◦]|\d{1,3}[.)])\s+\S""")
+
+/**
+ * 2.2.8 (Bill: "make sure all the question text is visible and well formatted especially code"):
+ * rows indented four or more columns past the question's margin right after a blank row (code a
+ * terminal drew as Markdown, without its fences) as a fenced block of their own, their relative
+ * indentation kept. The margin is where the question's sentences start; rows of unknown column,
+ * commands, list items and approval dialogs (whose command is indented under its title) are left
+ * as they are.
+ */
+private fun indentedRunsAsFences(lines: List<QLine>): List<QLine> {
+    // Claude's tab row sits left of its question's gutter: never the margin.
+    val known = lines.filter { !it.fence && !it.row && it.indent >= 0 && it.text.isNotBlank() && parseTabBar(it.text) == null }
+    if (known.size < 3) return lines
+    // An approval's command rows are indented under its title: they read as its command, as before.
+    if (lines.any { l -> l.cmd || l.text.trim().let { t -> t.startsWith("$ ") || t.startsWith("Do you want to ") ||
+            COMMAND_INTRO.matches(t) || CLAUDE_COMMAND_TITLE.matches(t) || CLAUDE_REQUEST_SOURCE.containsMatchIn(t) ||
+            TOOL_PERMISSION.matches(t) || APPROVAL_ASK.containsMatchIn(t) } }) return lines
+    // The margin: where the question's sentences start (several words ending in . ? ! or :).
+    val base = known.filter { SENTENCE_ROW.containsMatchIn(it.text.trim()) }.minOfOrNull { it.indent } ?: known.minOf { it.indent }
+    // Four columns in, as Markdown indents code; a detail indented by two ("  Host: …") stays text.
+    fun deep(q: QLine) = !q.fence && !q.row && !q.cmd && q.indent >= base + 4 && q.text.isNotBlank()
+    val out = mutableListOf<QLine>()
+    var i = 0
+    while (i < lines.size) {
+        val l = lines[i]
+        if (i > 0 && deep(l) && l.gapBefore && !LIST_ROW.containsMatchIn(l.text.trim())) {
+            var j = i
+            while (j + 1 < lines.size && deep(lines[j + 1])) j++
+            val col = (i..j).minOf { lines[it].indent }
+            out += QLine("```", gapBefore = true, fence = true, indent = col)
+            for (k in i..j) { val q = lines[k]; out += q.copy(text = " ".repeat(q.indent - col) + q.text.trim(), gapBefore = false, fence = true) }
+            out += QLine("```", fence = true, indent = col)
+            i = j + 1; continue
+        }
+        out += l; i++
+    }
+    return out
+}
+
 fun questionParts(lines: List<QLine>): QuestionParts {
     var tabs = emptyList<QTab>()
     val body = mutableListOf<QLine>()
-    for (l in lines) {
+    for (l in indentedRunsAsFences(lines)) {
         val bar = if (tabs.isEmpty()) parseTabBar(l.text) else null
         if (bar != null) {
             tabs = bar.first
@@ -1678,13 +2102,39 @@ fun questionParts(lines: List<QLine>): QuestionParts {
         } else body += l
     }
     /** [inPlace]: a path or address block that stays with its label among the context (1.4.2). */
-    class Para(var text: String, val cmd: Boolean, val inPlace: Boolean = false, val rows: Boolean = false)
+    class Para(var text: String, val cmd: Boolean, val inPlace: Boolean = false, val rows: Boolean = false,
+        /** 2.2.8: a fenced block, or a heredoc's body: its lines joined by newlines, never by spaces. */
+        val verbatim: Boolean = false)
     val paras = mutableListOf<Para>()
     var cmdNext = false
     // The current command block began with "$ ": its "│ ..." lines are the rest of it (1.4.8, from Grok's
     // review: Muse draws a script's lines under "$ python3 - <<'PY'" that way).
     var dollarBlock = false
+    // 2.2.8: an open heredoc ("python3 - <<'PY'"): its terminator and the opener's column.
+    var heredoc: String? = null
+    var heredocCol = -1
     for ((idx, l) in body.withIndex()) {
+        // 2.2.8: a fenced block the agent wrote, row by row as on the screen, in its place among the text.
+        if (l.fence) {
+            val last = paras.lastOrNull()
+            if (last != null && last.verbatim && !last.cmd && !l.gapBefore) last.text += "\n" + l.text.trimEnd()
+            else paras += Para(l.text.trimEnd(), false, verbatim = true)
+            cmdNext = false; dollarBlock = false; heredoc = null
+            continue
+        }
+        // 2.2.8: a heredoc's body, line by line with its indentation, up to its terminator (Hermes's
+        // "python3 -B - <<'PY'" over the script), instead of one line of words.
+        if (heredoc != null) {
+            val last = paras.last()
+            val t = l.text.trim()
+            if (l.gapBefore || t.isEmpty()) heredoc = null
+            else {
+                val pad = if (l.indent > heredocCol && heredocCol >= 0) " ".repeat(l.indent - heredocCol) else ""
+                last.text += "\n" + pad + t
+                if (t == heredoc) heredoc = null
+                continue
+            }
+        }
         // A Grok command row (2.1.4, Bill: "parse them nicely maybe as newlines"): a line of its own
         // in the command block, its indentation and every character kept, a ")" or "}" row too.
         if (l.row) {
@@ -1734,6 +2184,14 @@ fun questionParts(lines: List<QLine>): QuestionParts {
         dollarBlock = dollar != null || goesOn
         if (dollar != null) t = dollar.groupValues[1].trim()
         val last = paras.lastOrNull()
+        // 2.2.8: a line that opens a heredoc, not after "$ " (that block reads as before): the command,
+        // and its body on the lines under it.
+        val here = if (dollar == null && !goesOn && !l.cmd && l.indent >= 0) HEREDOC_OPEN.find(t) else null
+        if (here != null) {
+            paras += Para(t, true, verbatim = true)
+            heredoc = here.groupValues[2]; heredocCol = l.indent
+            continue
+        }
         if (isCmd) {
             if (last != null && last.cmd && !l.gapBefore && dollar == null) last.text += " " + t else paras += Para(t, true)
             continue
@@ -1751,12 +2209,12 @@ fun questionParts(lines: List<QLine>): QuestionParts {
         // over "Allow access to this file?"); a wrapped label line goes on in lower case.
         val afterLabel = last != null && LABEL_LINE.containsMatchIn(last.text) && t.first().isUpperCase()
         val bullet = l.text.trim().first() in "●•◆"
-        if (last == null || last.cmd || l.gapBefore || afterLabel || bullet || dialogQuestion || LABEL_LINE.containsMatchIn(t) || last.text.endsWith("?") || last.text.endsWith(":"))
+        if (last == null || last.cmd || last.verbatim || l.gapBefore || afterLabel || bullet || dialogQuestion || LABEL_LINE.containsMatchIn(t) || last.text.endsWith("?") || last.text.endsWith(":"))
             paras += Para(t, false)
         else last.text += " " + t
         if (TOOL_PERMISSION.matches(paras.last().text)) cmdNext = true
     }
-    val texts = paras.withIndex().filter { !it.value.cmd }
+    val texts = paras.withIndex().filter { !it.value.cmd && !it.value.verbatim }
     val pick = texts.firstOrNull { !LABEL_LINE.containsMatchIn(it.value.text) && firstQuestionEnd(it.value.text) > 0 }
         ?: texts.firstOrNull { !LABEL_LINE.containsMatchIn(it.value.text) } ?: texts.firstOrNull()
     // The heading first (with the explanation that followed it on the same paragraph), then the
@@ -1849,7 +2307,7 @@ fun isComposerHint(agent: String?, text: String): Boolean {
 fun inputLineOf(screen: String, agent: String? = null, menuWrite: Boolean = false): String? {
     // OpenCode draws no prompt glyph (2.1.5): its box, positively found empty, is an empty line;
     // otherwise nothing is judged, as before.
-    if (isOpenCode(agent) && openCodeComposerEmpty(screen)) return ""
+    if (isOpenCode(agent)) return if (openCodeComposerEmpty(screen)) "" else null
     // 2.2.2: pi, Oh My Pi and Copilot draw no prompt glyph either; their boxes are found by shape, and
     // a layout their reader doesn't know is no input line (never the generic glyph search below).
     // A blank Oh My Pi or Copilot box can hold typed spaces the screen can't show (no cursor cell), so
@@ -2039,6 +2497,8 @@ private fun withoutClaudeAgentList(rows: List<String>): List<String> {
     return rows.subList(0, start)
 }
 
+/** One of Agy's running tasks under its box ("  ● [08:05:16] ! sleep 120 running"). */
+private val AGY_TASK_ROW = Regex("""^\s*● \[\d{1,2}:\d{2}(:\d{2})?\] """)
 private val DRAFT_FRAMED = Regex("""^[\s ]*([│┃|]).*\1[\s ]*$""")
 private val DRAFT_FRAME_EDGE = Regex("""^[\s ]*[│┃|]""")
 private val DRAFT_BOTTOM_EDGE = Regex("""^[\s ]*[╰└]""")
@@ -2132,8 +2592,12 @@ internal fun composerDraftOf(screen: String, agent: String? = null): ComposerDra
     for (c in candidates.asReversed()) {
         val open = openSpan(c - 1) ?: continue
         val closes = (c + 1 until minOf(rows.size, c + 1 + MAX_DRAFT_ROWS)).filter { i -> span(i)?.let { sameSpan(it, open) } == true }
-        val close = closes.lastOrNull { footer(it) != null } ?: continue
-        val under = footer(close) ?: continue
+        // 2.2.8: Agy draws its running tasks ("  ● [08:05:16] ! sleep 120 running") between two rules
+        // under its box: the box ends at the first rule then, not the last (captured live, 1.5.17).
+        val agyTasks = agent?.lowercase() == "agy" && closes.size >= 2 && footer(closes.last()) != null &&
+            (closes.first() + 1 until closes.last()).all { rows[it].isBlank() || span(it) != null || AGY_TASK_ROW.containsMatchIn(rows[it]) }
+        val close = (if (agyTasks) closes.first() else closes.lastOrNull { footer(it) != null }) ?: continue
+        val under = if (agyTasks) rows.drop(close + 1) else footer(close) ?: continue
         val rest = (c + 1 until close).toList()
         return build(c, rest, bounded = closes.first() == close, menu = menuIn(under) || rest.any { DRAFT_MENU_ROW.matches(rows[it]) })
     }
@@ -2160,7 +2624,15 @@ internal fun composerDraftOf(screen: String, agent: String? = null): ComposerDra
     if (below.count { it.isNotBlank() } > 3 + MAX_DRAFT_ROWS) return null
     if (agent?.lowercase() == "codex") {
         // Codex: the draft's rows are indented under it, then a blank row, then its footer block.
-        val lastBlank = below.indexOfLast { it.isBlank() }
+        // A viewport may end with blank padding. Only ignore it when the native footer is
+        // present, so a blank in a multiline draft is not mistaken for the box's end.
+        val content = below.dropLastWhile { it.isBlank() }
+        val footerRow = rawRows.getOrNull(c + content.size)?.trim()
+        val nativeFooter = footerRow?.let {
+            it.startsWith("\u001B[1m←\u001B[0m for agents") ||
+                it == "\u001B[1mtab\u001B[0m to queue message"
+        } == true
+        val lastBlank = (if (nativeFooter) content else below).indexOfLast { it.isBlank() }
         val tail = below.drop(lastBlank + 1)
         if (lastBlank in 0..MAX_DRAFT_ROWS && tail.count { it.isNotBlank() } <= 3 &&
             below.take(lastBlank).all { it.isBlank() || it.startsWith("  ") }) {
@@ -2214,7 +2686,7 @@ internal fun composerBoxStart(screen: String, agent: String?): Int? {
 }
 
 /** One character of a styled row and how it is drawn (1.4.6). */
-private data class Styled(val ch: Char, val faint: Boolean, val italic: Boolean, val grey: Boolean, val background: List<Int>, val colored: Boolean = false, val reverse: Boolean = false)
+internal data class Styled(val ch: Char, val faint: Boolean, val italic: Boolean, val grey: Boolean, val background: List<Int>, val colored: Boolean = false, val reverse: Boolean = false)
 
 /** A colour that reads as grey: the three channels within 28 of each other, of middle brightness. */
 private fun greyRgb(r: Int, g: Int, b: Int): Boolean =
@@ -2229,7 +2701,7 @@ private fun grey256(n: Int): Boolean = when (n) {
 }
 
 /** The characters of a row with the SGR state each is drawn in; other escape sequences are dropped. */
-private fun styledChars(row: String): List<Styled> {
+internal fun styledChars(row: String): List<Styled> {
     val out = ArrayList<Styled>(row.length)
     var faint = false; var italic = false; var grey = false
     // A foreground colour other than the terminal's default is set (2.1.1).
@@ -2337,12 +2809,18 @@ private fun cursorBeforeHint(chars: List<Styled>, leadEnd: Int, start: Int, type
 // "approve all tools", "disable the sandbox", "for this repo" grant standing permission too.
 private val ALWAYS_LABEL = Regex("""\balways\b|don'?t ask again|\btrust\b|remainder of this session|always-approve|for this (session|conversation)|don'?t ask me again|(never|don'?t) show again|in the future|permanent|allowlist|allow rule|for the rest of|approve all|disable the sandbox|future similar|during this session|(from|for|in) this (project|repo)|auto-accept""", RegexOption.IGNORE_CASE)
 // 1.4.1 (from a code review): a refusal ("No, don't trust this", "Never allow") grants nothing.
-private val REFUSAL_LABEL = Regex("""^\W*(no|deny|reject|cancel|never|quit|don'?t (trust|allow))\b|\b(don'?t|do not|not|never) (trust|always)\b|\bdeny rule\b|\bblock\b""", RegexOption.IGNORE_CASE)
+private val REFUSAL_LABEL = Regex("""^\W*(no|deny|reject|cancel|never|quit|don'?t (trust|allow))\b|\b(don'?t|do not|not|never) (trust|always)\b|\bdeny rule\b|^\W*block\b""", RegexOption.IGNORE_CASE)
 // A curly apostrophe ("don’t ask again", Claude's MCP and skill rows) reads as a straight one (1.4.9).
 fun grantsStandingPermission(label: String): Boolean = label.replace('\u2019', '\'').let { ALWAYS_LABEL.containsMatchIn(it) && !REFUSAL_LABEL.containsMatchIn(it) }
 
 /** A choice that means "I'll type my own answer" ("Type something.", "Other", "Something else"), 1.4.0. */
-private val OTHER_LABEL = Regex("""^(type something\.?|other\b.*|something else.*|chat about this|type your own.*|enter (a |your )?custom.*)$""", RegexOption.IGNORE_CASE)
+/** 2.2.8: Oh My Pi's tool approval footer, and the card's typed answer that denies the tool and steers. */
+internal val OMP_APPROVAL_FOOTER = Regex("""↑/↓ choose · ⏎ select\b.*⎋ deny""")
+private val OMP_APPROVAL_INNER = ThreadLocal<Boolean>()
+const val OMP_STEER = "omp:steer"
+const val OMP_STEER_LABEL = "Type to deny and steer"
+
+private val OTHER_LABEL = Regex("""^(type to deny and steer|type something\.?|other\b.*|something else.*|chat about this|type your own.*|enter (a |your )?custom.*)$""", RegexOption.IGNORE_CASE)
 // A checkbox before it ("[ ] Type something.", 1.4.9 from Grok's review) is not part of the words.
 fun isTypedAnswerChoice(label: String): Boolean = OTHER_LABEL.matches(label.trim().replace(Regex("""^(\[[ xX✓✔]\]|[☐☑☒◻◼□■])\s+"""), ""))
 
@@ -2434,26 +2912,27 @@ fun detectLetterMenu(text: String, blocked: Boolean): Prompt? {
     val lines = text.lines().map { it.trimEnd() }.filter { it.isNotBlank() }.takeLast(14)
     if (lines.isEmpty()) return null
     val foot = lines.last()
-    if (Regex("""\ba:approve\b""").containsMatchIn(foot)) {
+    // The plan review's own whole footer row (GROK_PLAN_FOOTER_ROW, the running filter's own rule):
+    // never prose that mentions its keys, and never a partial footer (Codex's per-commit review of 573e426).
+    if (GROK_PLAN_FOOTER_ROW.matches(foot)) {
         val pairs = Regex("""\b([a-z]):([a-z][a-z ]*[a-z])""").findAll(foot).map { it.groupValues[1] to it.groupValues[2] }
             .filter { (k, _) -> k in setOf("a", "s", "c", "q") }.toList()
         if (pairs.size < 2) return null
         // The plan review's key line is the last line of the screen; nothing of the agent's own comes after it.
         val heading = lines.firstOrNull { it.trimStart().startsWith("#") }?.trim()?.trimStart('#')?.trim()
         return Prompt(heading?.let { "Approve the plan: $it?" } ?: "Approve the plan?",
-            pairs.map { (k, l) -> Choice(l.replaceFirstChar { it.uppercase() }, k, false) })
+            pairs.map { (k, l) -> Choice(l.replaceFirstChar { it.uppercase() }, k, false) }, letterKeys = true)
     }
     val row = Regex("""^\s*([a-z])\s{2,}(\S.{0,80})$""")
     val rows = lines.withIndex().filter { row.matches(it.value) }
     if (rows.size !in 2..6) return null
     // One run, near the bottom, with the letters named in the hint under it ("Enter or y to trust · n or Esc to quit").
-    if (rows.zipWithNext().any { (a, b) -> b.index != a.index + 1 } || rows.last().index < lines.size - 3) return null
+    if (rows.zipWithNext().any { (a, b) -> b.index != a.index + 1 } || !letterMenuTail(lines.drop(rows.last().index + 1))) return null
     val letters = rows.map { row.find(it.value)!!.groupValues[1] }
-    if (agentWentOn(lines.drop(rows.last().index + 1))) return null
     val hint = lines.drop(rows.last().index + 1).joinToString(" ")
     if (!blocked && letters.none { Regex("""\b$it\b""").containsMatchIn(hint) }) return null
     val question = lines.take(rows.first().index).lastOrNull { it.trim().endsWith("?") }?.trim() ?: "Choose"
-    return Prompt(question, rows.map { r -> row.find(r.value)!!.let { m -> Choice(m.groupValues[2].trim(), m.groupValues[1], false) } })
+    return Prompt(question, rows.map { r -> row.find(r.value)!!.let { m -> Choice(m.groupValues[2].trim(), m.groupValues[1], false) } }, letterKeys = true)
 }
 
 /**
@@ -2484,7 +2963,13 @@ private val SHORTCUT_LABEL = Regex("""\(([a-z])\)\s*$""")
 
 /** The keys that pick [choice]: arrows from the highlighted option, then Enter; null to type it. */
 fun menuKeys(prompt: Prompt, choice: Choice): List<String>? {
-    if (prompt.terminalReview) return null
+    if (prompt.terminalReview || prompt.historyReviewOnly) return null
+    if (prompt.claudeModelControl) return claudeModelKeys(prompt, choice)
+    if (prompt.agyApproval) return listOf("ctrl+k").takeIf { choice in prompt.choices && choice.keys == "ctrl+k" }
+    if (prompt.kiroOnceShortcuts && choice in prompt.choices) when (choice.label) {
+        "Allow once" -> return listOf("y")
+        "Deny once" -> return listOf("n")
+    }
     if (prompt.claudeCheckboxAction != null) {
         val rows = prompt.answerRows()
         val from = rows.indexOfFirst { it.keys == prompt.selected }
@@ -2493,7 +2978,7 @@ fun menuKeys(prompt: Prompt, choice: Choice): List<String>? {
         val key = if (to > from) "down" else "up"
         return List(kotlin.math.abs(to - from)) { key } + if (isCheckbox(choice.label)) "space" else "enter"
     }
-    if (prompt.numberKeys && choice in prompt.choices) return listOf(choice.keys)
+    if ((prompt.numberKeys || prompt.letterKeys) && choice in prompt.choices) return listOf(choice.keys)
     // "No, and tell Copilot what to do differently (Esc to stop)": Enter on that row does nothing in
     // Copilot, and in Codex and Claude it opens a feedback box; Esc answers it in all three. Vibe's
     // card says "Esc reject", and Esc rejects wherever its (invisible) highlight is.
@@ -2643,6 +3128,7 @@ internal fun screenWatchPanes(list: List<Pane>, herdrStates: Map<String, Status>
 internal fun screenAskable(list: List<Pane>): List<Pane> = list.filter {
     (it.agent == "claude" && it.status != Status.NEEDS_YOU) ||
         (isOpenCode(it.agent) && it.status in setOf(Status.DONE, Status.IDLE)) ||
+        (it.agent == "agy" && !it.isProbe && it.status == Status.WORKING) ||
         // 2.2.7: herdr can call Hermes done or idle through a whole turn and through an approval.
         (it.agent == "hermes" && it.status != Status.NEEDS_YOU)
 }
@@ -2670,12 +3156,17 @@ internal fun markScreenNeedsYou(list: List<Pane>, tails: Map<String, String>): L
         val why = when {
             tail == null -> null
             p.agent == "claude" -> claudeNeedsYouReason(tail)
+            p.agent == "agy" -> when {
+                agySubagentApproval(tail) != null -> "a subagent approval is open"
+                agySubagentQuestion(tail) != null -> "a subagent question needs attention"
+                else -> null
+            }
             isOpenCode(p.agent) -> openCodeNeedsYouReason(tail)
             else -> null
         }
         when {
             why == null -> p
-            isOpenCode(p.agent) -> {
+            isOpenCode(p.agent) || p.agent == "agy" -> {
                 com.billmongan.herdrdroid.diag.DiagLog.log("prompt", "${p.id}: $why while herdr says ${p.status.name.lowercase()}; showing it as needs you, sends unchanged")
                 p.copy(status = Status.NEEDS_YOU, screenNeedsYouFrom = p.status)
             }
@@ -2871,15 +3362,34 @@ fun detectUnnumberedMenu(text: String): Prompt? {
     // Kiro: "shell requires approval" under a rule, with the tool and command just above the rule
     // ("↓ Shell mkdir -p sub && date > sub/now.txt"). The question carries the command too.
     var kiroCmd: String? = null
+    // 2.2.8: a command on several rows ("↓ Shell for f in src/*.py; do" over its indented rows, down
+    // to the rule): every row, its indentation kept, on the card. The question still names the first.
+    var kiroRows: List<String>? = null
+    val tool = Regex("""^[↓•●▸]?\s*(Shell|Write|Edit|Read|Fetch|Web\w*|\w+Tool)\s+(.+)$""")
     if (question.endsWith("requires approval")) {
-        (top - 1 downTo maxOf(0, top - 8)).map { raw[it].trim() }
-            .firstNotNullOfOrNull { Regex("""^[↓•●▸]?\s*(Shell|Write|Edit|Read|Fetch|Web\w*|\w+Tool)\s+(.+)$""").find(it) }
+        val rule = (top - 1 downTo maxOf(0, top - 4)).firstOrNull { raw[it].trim().let { r -> r.length >= 3 && r.all { c -> c in "─━═" } } }
+        if (rule != null) {
+            var k = rule - 1
+            while (k >= 0 && k > rule - TALL_QUESTION_ROWS && raw[k].isNotBlank() && raw[k].first().isWhitespace() && tool.find(raw[k].trim()) == null) k--
+            val m = if (k in 0 until rule - 1 && raw[k].isNotBlank()) tool.find(raw[k].trim()) else null
+            if (m != null) {
+                // The rows under the first line keep their indentation relative to the least indented.
+                val col = (k + 1 until rule).minOf { j -> raw[j].indexOfFirst { !it.isWhitespace() } }
+                kiroRows = listOf(m.groupValues[2].trim()) + (k + 1 until rule).map { j ->
+                    val r = raw[j]; val c = r.indexOfFirst { !it.isWhitespace() }
+                    " ".repeat((c - col).coerceAtLeast(0)) + r.trim()
+                }
+            }
+        }
+        if (kiroRows != null) { kiroCmd = kiroRows!!.first(); question = "$question: $kiroCmd" }
+        else (top - 1 downTo maxOf(0, top - 8)).map { raw[it].trim() }
+            .firstNotNullOfOrNull { tool.find(it) }
             ?.let { m -> kiroCmd = m.groupValues[2].trim(); question = "$question: $kiroCmd" }
     }
     val selected = rows.indexOfFirst { it.first == at } + 1
     val parts = kiroCmd?.let { cmd ->
         val head = question.substringBefore(": ").replaceFirstChar { it.uppercase() }
-        QuestionParts(emptyList(), listOf(QBlock(QKind.HEADING, head), QBlock(QKind.COMMAND, cmd)))
+        QuestionParts(emptyList(), listOf(QBlock(QKind.HEADING, head), QBlock(QKind.COMMAND, kiroRows?.joinToString("\n") ?: cmd)))
     }
     return Prompt(question, labels.mapIndexed { i, l -> Choice(l, (i + 1).toString(), false) }, selected.toString(), parts = parts)
 }
@@ -3110,6 +3620,22 @@ internal fun openCodeBackgroundDrawer(agent: String?, screen: String): Boolean {
 private val OPENCODE_COMMANDS = Regex("""\bctrl\+p\s+commands\b""", RegexOption.IGNORE_CASE)
 private val OPENCODE_MODE = Regex("""^[┃│]\s+(Build|Plan)(?:\s+·)?\s+[^┃│]+[┃│]?.*$""")
 private val OPENCODE_EMPTY_HINT = Regex("""^\s*[┃│]\s+Ask anything(?:\.\.\.|…)\s*(?:[┃│].*)?$""")
+private val OPENCODE_SLASH_QUERY = Regex("""^/[\w.-]*$""")
+private val OPENCODE_SLASH_OPTION = Regex("""^\s*[┃│▏▎]\s+/[\w.-]+(?:\s{2,}\S.*| Exit the app\s*[┃│]?)$""")
+
+/** The slash list is drawn directly above OpenCode's composer, at the same left rail. */
+private fun openCodeSlashMenu(rows: List<String>, mode: Int, bar: Int, width: Int): Boolean {
+    val textRow = mode - 2
+    val query = rows[textRow].take(width).drop(bar + 1).trim()
+    if (!OPENCODE_SLASH_QUERY.matches(query)) return false
+    val option = (textRow - 1 downTo maxOf(0, textRow - 4)).firstOrNull { i ->
+        val row = rows[i].take(width).trimEnd()
+        row.isNotBlank() && row.trim() !in setOf("┃", "│") && !row.trimStart().startsWith("└")
+    } ?: return false
+    val row = rows[option].take(width).trimEnd()
+    if (row.indexOfFirst { !it.isWhitespace() } != bar) return false
+    return OPENCODE_SLASH_OPTION.matches(row)
+}
 
 /** The normal OpenCode composer draws model/mode above its commands footer, not modal controls. */
 private fun openCodeComposerMode(rows: List<String>): Int {
@@ -3120,6 +3646,40 @@ private fun openCodeComposerMode(rows: List<String>): Int {
             it.isBlank() || it.trimStart().startsWith("╹")
         }
     } ?: -1
+}
+
+/** Strip the right column only from a session frame whose composer and sidebar both identify it. */
+internal fun openCodeChatColumn(screen: String): String {
+    val rows = stripAnsi(screen).lines()
+    val tail = rows.takeLast(20)
+    val mode = openCodeComposerMode(tail)
+    if (mode < 0) return screen
+    val edge = tail.drop(mode + 1).firstOrNull { it.trimStart().startsWith("╹▀") } ?: return screen
+    val end = edge.lastIndexOf('▀') + 1
+    val width = displayColumn(edge, end)
+    if (width < 30 || edge.substring(end).isNotBlank()) return screen
+
+    fun split(row: String): Int {
+        var column = 0
+        var i = 0
+        while (i < row.length && column < width) {
+            val codePoint = row.codePointAt(i)
+            column = advanceDisplayColumn(column, codePoint)
+            i += Character.charCount(codePoint)
+        }
+        return i
+    }
+
+    val columns = rows.map { row -> split(row).let { row.take(it) to row.drop(it).trim() } }
+    val sidebar = columns.map { it.second }
+    val context = sidebar.indexOf("Context")
+    val usage = Regex("""[0-9][0-9,.]*% used""")
+    val tokens = Regex("""[0-9][0-9,.]* tokens""")
+    val hasContext = context >= 0 && sidebar.drop(context + 1).take(3).any(tokens::matches) &&
+        sidebar.drop(context + 1).take(3).any(usage::matches)
+    val mcp = sidebar.indexOf("MCP")
+    val hasMcp = mcp >= 0 && sidebar.drop(mcp + 1).take(3).any { it.startsWith("• ") }
+    return if (hasContext || hasMcp) columns.joinToString("\n") { it.first } else screen
 }
 
 /** A positively identified empty composer, required before typing despite stale blocked metadata. */
@@ -3168,6 +3728,39 @@ internal fun openCodeSessionComposerEmpty(screen: String): Boolean {
     }
     return (top until mode).all(::empty)
 }
+/**
+ * 2.2.8: the text typed in OpenCode's box, read the way [openCodeSessionComposerEmpty] finds the box
+ * (the "Build · <model>" row, its bar column and its bottom edge), or null when the box is empty,
+ * shows only its grey placeholder, has an open slash list, or isn't found. Only the box's own
+ * columns count. A draft of more than one row makes the box taller.
+ */
+internal fun openCodeComposerDraft(screen: String): String? {
+    val rawRows = screen.lines().map { it.replace("\r", "") }.takeLast(40)
+    val rows = rawRows.map { it.replace(ANSI_SEQ, "") }
+    val mode = openCodeComposerMode(rows)
+    if (mode < 3) return null
+    val bar = rows[mode].indexOfFirst { it == '┃' || it == '│' }
+    val edge = rows.subList(mode + 1, rows.size).firstOrNull { it.trimStart().startsWith("╹") } ?: return null
+    val width = edge.lastIndexOf('▀') + 1
+    if (bar < 0 || width <= bar + 1 || edge.indexOf('╹') != bar) return null
+    if (openCodeSlashMenu(rows, mode, bar, width)) return null
+    fun inBox(r: String) = r.length > bar && r[bar] == rows[mode][bar] && r.substring(0, bar).isBlank()
+    var top = mode
+    while (top > 0 && mode - top <= MAX_DRAFT_ROWS && inBox(rows[top - 1])) top--
+    if (mode - top < 3) return null
+    if (openCodeSessionComposerEmpty(screen)) return null
+    val text = (top until mode).map { i ->
+        val cut = rows[i].take(width).drop(bar + 1)
+        // The grey placeholder on the home screen is no text.
+        if (OPENCODE_PLACEHOLDER.matches(cut.trim())) {
+            val chars = styledChars(rawRows[i])
+            val plain = chars.joinToString("") { it.ch.toString() } == rows[i]
+            if (plain && chars.subList(bar + 1, minOf(width, chars.size)).all { it.ch.isWhitespace() || it.grey || it.faint }) "" else cut.trim()
+        } else cut.trim()
+    }.joinToString("\n").trim('\n', ' ')
+    return text.ifBlank { null }
+}
+
 private val OPENCODE_PLACEHOLDER = Regex("""^Ask anything(?:\.\.\.|…)(?: "[^"]*")?$""")
 
 /**
@@ -3198,7 +3791,7 @@ private fun detectOpenCodePermission(styled: String, text: String): Prompt? {
     }
     val hint = OPENCODE_PERMISSION_HINT.find(clean(rows[footer]))
     val title = (footer downTo maxOf(0, footer - 60)).firstOrNull { OPENCODE_PERMISSION_TITLE.matches(clean(rows[it])) }
-    if (title == null && (hint == null || !clean(rows[footer]).contains("Allow once"))) return null
+    if (title == null && hint == null) return null
     // A shell command wrapped inside the dialog can start a row with ">" (">/dev/null 2>&1"): it is
     // the command being asked about, not an input row under the dialog (2.1.2).
     val command = title?.let { t -> (t + 1..footer).firstOrNull { clean(rows[it]).startsWith("$ ") } }
@@ -3456,8 +4049,51 @@ private fun hermesLiveApprovalBox(text: String): String? {
     return lines.subList(top, bottom + 1).joinToString("\n")
 }
 
+/**
+ * Native Codex queue rows can contain arbitrary user text, including numbered menu options.
+ * Keep their positions but take them out of prompt parsing. A wrapped input is four-space
+ * indented, and the compositor returns to its own row when the queue ends.
+ */
+internal fun codexFollowUpRows(text: String): Set<Int> {
+    val rows = stripAnsi(text).lines()
+    val masked = mutableSetOf<Int>()
+    fun inputRow(row: String): Boolean = row.startsWith("  ↳ ")
+    fun continuation(row: String): Boolean = row.isNotBlank() && row.startsWith("    ")
+    for ((index, row) in rows.withIndex()) {
+        when {
+            row.trimEnd() == "• Queued follow-up inputs" && rows.getOrNull(index + 1)?.let(::inputRow) == true -> {
+                val end = (index + 1 until rows.size).firstOrNull { !inputRow(rows[it]) && !continuation(rows[it]) }
+                    ?: rows.size
+                masked += index until end
+            }
+            row.trimEnd() == "    shift+← edit last queued message" -> {
+                // A recent read may start below the heading. Require at least one input
+                // marker before treating its indented text as a clipped queue.
+                val start = (index - 1 downTo 0).firstOrNull { !inputRow(rows[it]) && !continuation(rows[it]) }
+                    ?.plus(1) ?: 0
+                val firstInput = (start until index).firstOrNull { inputRow(rows[it]) } ?: continue
+                masked += firstInput..index
+            }
+        }
+    }
+    return masked
+}
+
 fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version: String? = null): Prompt? {
-    val plain = stripAnsi(text)
+    val unstyled = stripAnsi(text)
+    val queueRows = if (agent.equals("codex", true)) codexFollowUpRows(unstyled) else emptySet()
+    val plain = if (queueRows.isEmpty()) unstyled
+        else unstyled.lines().mapIndexed { index, row -> if (index in queueRows) "" else row }.joinToString("\n")
+    if (agent.equals("claude", true)) {
+        claudeModelCard(plain)?.let { return it }
+        rebuiltClaudeAsk(plain)?.let { return it }
+        claudeClippedAskReview(plain)?.let { return it }
+    }
+    if (agent.equals("agy", true)) {
+        agySubagentQuestion(plain)?.let { return it }
+        agySubagentApproval(plain)?.let { return it }
+    }
+    if (ruleAgent(agent) in setOf("kiro", "kiro-cli")) kiroApprovalShortcuts(plain)?.let { return it }
     if (agent.equals("hermes", true)) hermesUsageEnd(plain)?.let { end ->
         // A report supersedes any old question above it, not a new card below it. A close
         // hint alone is not a question, even when herdr still reports that it is blocked.
@@ -3468,12 +4104,380 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     if (agent.equals("muse", true)) detectMuseQuotaDialog(text)?.let { return it }
     // 2.2.7 (Bill: "show the whole question"): Oh My Pi's and pi's boxed multi-question Ask dialog.
     if (agent?.lowercase() in setOf("omp", "pi")) OmpAsk.prompt(plain)?.let { return it }
+    // 2.2.8 (Bill: "OMP popped up another question it won't let me answer"): Oh My Pi's tool approval
+    // box ("Allow tool: bash", "↑/↓ choose · ⏎ select · … · ⎋ deny · … · type to deny and steer") waits
+    // for you whatever herdr reports (it runs the tool, so herdr may call it working, and the spinner
+    // under the box read as the agent going on). Its card also takes a typed answer that denies and
+    // steers, as the box's own hint offers.
+    if (agent?.lowercase() in setOf("omp", "pi") && OMP_APPROVAL_INNER.get() != true &&
+        plain.lines().takeLast(14).any { OMP_APPROVAL_FOOTER.containsMatchIn(it) }) {
+        OMP_APPROVAL_INNER.set(true)
+        try {
+            val p = detectPrompt(text, true, agent, version) ?: return null
+            val steer = plain.lines().takeLast(14).any { it.contains("type to deny and steer") }
+            return if (steer && p.choices.isNotEmpty() && !p.terminalReview) p.copy(choices = p.choices + Choice(OMP_STEER_LABEL, OMP_STEER, false)).withSpanOf(p) else p
+        } finally {
+            OMP_APPROVAL_INNER.set(false)
+        }
+    }
     if (isOpenCode(agent)) {
         if (openCodeBackgroundDrawer(agent, plain) || openCodeComposerMode(plain.lines().takeLast(20)) >= 0) return null
         detectOpenCodeQuestion(plain)?.let { return it }
         detectOpenCodePermission(text, plain)?.let { return it }
     }
-    return detectPlainPrompt(plain, blocked, agent, version)
+    // 2.2.8 (Bill: "grok is stuck on a question I can't answer"): Grok working under its own rows.
+    if (agent.equals("grok", true) && grokWorkingBelowAnyQuestion(plain)) return null
+    val p = detectPlainPrompt(if (agent.equals("grok", true)) grokWithoutThinkingPanel(plain) else plain, blocked, agent, version)
+    return if (p != null && agent.equals("grok", true)) grokApproval(plain, p) else p
+}
+
+private val GROK_THINKING_PANEL = Regex("""^\s*┃\s*◆\s+Thinking(?:…|\.\.\.)?\s*$""")
+private val GROK_SELECT_FOOTER = Regex("""^\s*\d+/\d+:select\b""")
+/** A row in the "┃" gutter (the thinking panel's body, an approval box's rows). */
+private val GROK_GUTTER_ROW = Regex("""^\s*┃""")
+/**
+ * Grok's running row however narrow the pane or early the turn (agy's GROKTHINK review): a spinner,
+ * then text, then "[stop]" at the row's end, with any spacing and before "⇣<tokens>" appears.
+ */
+private val GROK_RUNNING_ROW = Regex("""^\s*[\u2800-\u28FF]\s*\S.*\[stop]\s*$""")
+private val GROK_PRIVACY_BUTTONS = Regex("""\[Opt out]\s*\[Opt in]""")
+/** An entire radio row, with the frame drawn by /privacy when it fits. */
+private val GROK_PRIVACY_ROW = Regex("""^\s*[│┃|]?\s*([○●◯◉])\s+(Opt in|Opt out)\s*[│┃|]?\s*$""")
+/**
+ * Grok's plan review footer as the screen's last row: "a:approve  │  s:request changes  │ … │  q:quit
+ * plan", its keys between "│" bars ([detectLetterMenu] takes the same row). Prose that mentions the
+ * keys ("press a:approve or s:request changes") is not it (Codex's per-commit review).
+ */
+internal val GROK_PLAN_FOOTER_ROW = Regex("""^\s*a:approve\s+│\s+s:request changes\s+│.*\bq:quit plan\b.*$""")
+private val GROK_TRUST_HINT = Regex("""^\s*Enter or y to trust\b.*$""")
+private val GROK_TRUST_YES = Regex("""^\s*y\s{2,}Yes\b.*$""")
+private val GROK_TRUST_NO = Regex("""^\s*n\s{2,}No\b.*$""")
+
+/**
+ * The rows with text under a letter menu's options (its hint, and at most one more row of its own UI,
+ * such as a footer), with nothing of the agent's going on in them: no activity or working line, input
+ * row or running row. [detectLetterMenu] and [grokPlanOrTrustBottom] share it (Codex's per-commit
+ * review of 573e426).
+ */
+internal fun letterMenuTail(under: List<String>): Boolean {
+    val rows = under.filter { it.isNotBlank() }
+    return rows.size <= 2 && !agentWentOn(rows) && rows.none { GrokMeta.statusRow(it) != null || GROK_RUNNING_ROW.matches(it) }
+}
+
+/**
+ * The last row of a whole plan review or folder trust prompt at the bottom of [rows], or -1: the plan
+ * footer as the last row that holds text; or "y  Yes …" and "n  No …" with the trust hint right under
+ * them and only the menu's own rows after ([letterMenuTail], the card parser's rule). A mention of
+ * either anywhere else is not one.
+ */
+internal fun grokPlanOrTrustBottom(rows: List<String>): Int {
+    val last = rows.indexOfLast { it.isNotBlank() }
+    if (last < 0) return -1
+    if (GROK_PLAN_FOOTER_ROW.matches(rows[last])) return last
+    val no = rows.indexOfLast { GROK_TRUST_NO.matches(it) }
+    if (no < 1 || !GROK_TRUST_YES.matches(rows[no - 1])) return -1
+    val hint = (no + 1..last).firstOrNull { rows[it].isNotBlank() } ?: return -1
+    if (!GROK_TRUST_HINT.matches(rows[hint]) || !letterMenuTail(rows.subList(no + 1, rows.size))) return -1
+    return last
+}
+/**
+ * Grok's live thinking panel in [rows] from its title row [top]: down its "┃" gutter to a dialog's own
+ * boundary in the same gutter (Codex's per-commit review of 7d6950b: a box title, a radio row, a
+ * highlighted option run), and, when it stops at a menu with no box title, back to its last blank "┃" row, so a question
+ * line right above the dialog's options is the dialog's, not thought (review of 894e44b). No footer
+ * elsewhere on the screen decides it: a select footer under the panel is a question row of its own.
+ */
+internal fun grokThinkingPanel(rows: List<String>, top: Int): IntRange {
+    var end = top
+    while (end + 1 < rows.size && GROK_GUTTER_ROW.containsMatchIn(rows[end + 1]) && !grokDialogBoundary(rows, end + 1)) end++
+    // A menu with no box title of its own: its question is the rows after the panel's last blank row.
+    if (end + 1 < rows.size && MENU_OPTION_ROW.find(rows[end + 1]) != null && !GROK_RADIO_ROW.containsMatchIn(rows[end + 1])) {
+        (end downTo top + 1).firstOrNull { GROK_BLANK_GUTTER.matches(rows[it]) }?.let { end = it }
+    }
+    return top..end
+}
+private val GROK_BLANK_GUTTER = Regex("""^\s*┃\s*$""")
+
+/**
+ * [plain] with Grok's live thinking panel above a dialog in the same gutter blanked out (its rows kept,
+ * empty), so the card's question is the dialog's own rows, never the thought above them.
+ */
+internal fun grokWithoutThinkingPanel(plain: String): String {
+    val rows = plain.lines()
+    val top = rows.indexOfLast { GROK_THINKING_PANEL.matches(it) }
+    if (top < 0) return plain
+    val panel = grokThinkingPanel(rows, top)
+    if (panel.last + 1 >= rows.size || !GROK_GUTTER_ROW.containsMatchIn(rows[panel.last + 1])) return plain
+    return rows.drop(panel.last + 1).joinToString("\n")
+}
+
+/** A Grok approval or question title in the same gutter as its radio rows. */
+private val GROK_BOX_TITLE = Regex("""^\s*[│┃|]?\s*([›?])\s+\S""")
+
+/**
+ * Whether [rows] at [i] starts a Grok dialog in the thinking panel's gutter (never thought text): a box
+ * title, a radio row, the always row, or a highlighted option row with the next option right under it
+ * (one highlighted row alone, as thought may quote it, is not a menu).
+ */
+private fun grokDialogBoundary(rows: List<String>, i: Int): Boolean {
+    val r = rows[i]
+    if (GROK_BOX_TITLE.containsMatchIn(r) || GROK_RADIO_ROW.containsMatchIn(r) || GROK_UNNUMBERED_ALWAYS.matches(r)) return true
+    val m = MENU_OPTION_ROW.find(r) ?: return false
+    if (m.groupValues[1].isBlank()) return false
+    val next = rows.getOrNull(i + 1)?.let { MENU_OPTION_ROW.find(it) } ?: return false
+    return menuOptionKey(next).toIntOrNull() == menuOptionKey(m).toIntOrNull()?.plus(1)
+}
+
+private val GROK_COMPOSER_TOP = Regex("""^\s*╭─+╮\s*$""")
+private val GROK_COMPOSER_ROW = Regex("""^\s*│\s*❯""")
+private val GROK_COMPOSER_BOTTOM = Regex("""^\s*╰""")
+/** A row inside the message box's frame: its "│" edge on the left. */
+private val GROK_COMPOSER_FRAME = Regex("""^\s*│""")
+
+/**
+ * 2.2.8 (Bill: "grok is stuck on a question I can't answer"): Grok draws its live thinking panel in the
+ * same "┃" gutter as its approval box ("┃  ◆ Thinking…", "┃  …", its thought text), with its running
+ * row under it ("⠧ Thinking… 44s   22m58s ⇣121k [stop]") and the message box below. That is Grok at
+ * work, not a question: a card there could not be answered. True when Grok's running row, or the bottom
+ * of its thinking panel, is lower on the screen than every row a Grok question is made of (an option
+ * row, the "N/M:select" footer, the privacy banner's own rows, a whole plan review or folder trust
+ * prompt at the screen's bottom, [grokPlanOrTrustBottom]), so a stale approval box scrolled above the work isn't a card either. A waiting approval draws
+ * its running row above the box, never below. agy's GROKTHINK review: the thinking panel's own text
+ * (a numbered point in it) and a draft in the message box ("│ ❯ 1. check foo │") are never question
+ * rows, and a plan approval or folder trust prompt under a running row still is one.
+ */
+internal fun grokWorkingBelowAnyQuestion(plain: String): Boolean {
+    val rows = plain.lines()
+    var running = rows.indexOfLast { GrokMeta.statusRow(it) != null || GROK_RUNNING_ROW.matches(it) || GROK_THINKING_PANEL.matches(it) }
+    if (running < 0) return false
+    // The thinking panel runs on down its "┃" gutter: its body is Grok's thought, not a question
+    // (up to an approval box's own radio rows, should one follow in the same gutter).
+    // Its rows are never question rows.
+    val composer = BooleanArray(rows.size)
+    if (GROK_THINKING_PANEL.matches(rows[running])) {
+        val panel = grokThinkingPanel(rows, running)
+        for (i in panel) composer[i] = true
+        running = panel.last
+    }
+    // The message box: its top edge, the "│ ❯" row, the rest of a draft, its bottom edge; never past
+    // the first row outside its frame (Codex's per-commit review: a box drawn without its bottom edge
+    // must not hide a live prompt under it).
+    for (i in rows.indices) {
+        if (!GROK_COMPOSER_TOP.matches(rows[i]) || i + 1 >= rows.size || !GROK_COMPOSER_ROW.containsMatchIn(rows[i + 1])) continue
+        composer[i] = true
+        var j = i + 1
+        while (j < rows.size && (GROK_COMPOSER_FRAME.containsMatchIn(rows[j]) || GROK_COMPOSER_BOTTOM.containsMatchIn(rows[j]))) {
+            composer[j] = true
+            if (GROK_COMPOSER_BOTTOM.containsMatchIn(rows[j])) break
+            j++
+        }
+    }
+    val question = rows.indices.lastOrNull { i ->
+        val r = rows[i]
+        !composer[i] && (MENU_OPTION_ROW.find(r) != null || GROK_RADIO_ROW.containsMatchIn(r) || GROK_UNNUMBERED_ALWAYS.matches(r) ||
+            GROK_SELECT_FOOTER.containsMatchIn(r) || GROK_PRIVACY_BUTTONS.containsMatchIn(r) || GROK_PRIVACY_ROW.matches(r))
+    } ?: -1
+    // A whole plan review or folder trust prompt at the bottom (Codex's per-commit review: never a
+    // mention of their keys, and never one with Grok's running output under it).
+    return running > maxOf(question, grokPlanOrTrustBottom(rows))
+}
+
+/**
+ * 2.2.8 (Bill: codex "sat blocked" on its own update prompt, which the app showed nothing for): Codex's
+ * "Update available · <from> → <to>" prompt, its release-notes row, then "› 1. Update now (runs `…`)",
+ * "2. Skip", "3. Skip until next version" and the footer "enter continue · esc skip". A card with the
+ * three options, "Update now" with the exact command it runs; answered with the arrows from the
+ * highlighted row and Enter, under the usual check. Only with that footer as the screen's last row
+ * (blank rows aside), the heading over it and a single highlight; otherwise null.
+ */
+private val CODEX_UPDATE_HEAD = Regex("""^Update available · \S+ → \S+$""")
+private val CODEX_UPDATE_FOOTER = Regex("""^enter continue · esc skip$""")
+private val CODEX_UPDATE_OPTION = Regex("""^(›\s*)?(\d)\.\s+(\S.*)$""")
+
+internal fun codexUpdatePrompt(text: String): Prompt? {
+    val rows = text.lines().takeLast(80).map { it.trim() }
+    val footer = rows.indexOfLast { it.isNotBlank() }
+    if (footer < 0 || !CODEX_UPDATE_FOOTER.matches(rows[footer])) return null
+    val head = (footer - 1 downTo maxOf(0, footer - 30)).firstOrNull { CODEX_UPDATE_HEAD.matches(rows[it]) } ?: return null
+    val notes = mutableListOf<String>()
+    val options = mutableListOf<Triple<String, String, Boolean>>()
+    val optionAt = mutableListOf<Int>()
+    var lastRow = -1
+    for (i in head + 1 until footer) {
+        val r = rows[i]
+        if (r.isBlank()) continue
+        val m = CODEX_UPDATE_OPTION.matchEntire(r)
+        when {
+            m != null -> { optionAt += i; lastRow = i; options += Triple(m.groupValues[2], m.groupValues[3].trim(), m.groupValues[1].isNotEmpty()) }
+            // A long option the terminal wrapped goes on its row, as the terminal cut it.
+            options.isNotEmpty() -> { lastRow = i; options[options.size - 1] = options.last().let { Triple(it.first, it.second + r, it.third) } }
+            else -> notes += r
+        }
+    }
+    if (options.size < 2 || options.map { it.first } != (1..options.size).map { it.toString() } || options.count { it.third } != 1) return null
+    // "1.2.0 → 1.3.0" reads "1.2.0 to 1.3.0": a lone arrow on a card or alert reads as a row mark.
+    val heading = rows[head].replace(" → ", " to ")
+    val lines = listOf(QLine(heading)) + notes.map { QLine(it) }
+    return Prompt(
+        (listOf(heading) + notes).joinToString(" "),
+        options.map { Choice(it.second, it.first, false) },
+        selected = options.single { it.third }.first,
+        parts = questionParts(lines),
+    ).also { p ->
+        val screen = text.lines().takeLast(80)
+        p.dialogRows = DialogRows(screen.subList(head, lastRow + 1).map { cardRegionRow(it) }, optionAt.map { it - head })
+    }
+}
+
+/** 2.2.8: Grok's "… Ctrl+F to expand" row inside its approval box: the command is cut there. */
+internal val GROK_EXPAND_HINT = Regex("""^(?:…|\.\.\.)\s*ctrl[-+]f to expand$""", RegexOption.IGNORE_CASE)
+private val GROK_RADIO_ROW = Regex("""^\s*[│┃|]?\s*\d{1,2}\s+\([○●]\)\s+\S""")
+private val GROK_UNNUMBERED_ALWAYS = Regex("""^\s*[│┃|]?\s*\([○●]\)\s+(\S.*\(always-approve mode\))\s*[│┃|]?\s*$""")
+
+/** 2.2.8: the card's key for Grok's unnumbered always-approve row, which the card shows but never sends. */
+const val GROK_ALWAYS_APPROVE = "grok:always-approve"
+
+/**
+ * 2.2.8: why a choice is shown but can't be tapped, or null. Grok's "Yes, and don't ask again for
+ * anything (always-approve mode)" switches Grok to approve every tool from then on, which is never
+ * done without Bill's say (the shared rules): the card shows it disabled, alerts and voice leave it
+ * out, and an answer for it is refused.
+ */
+/**
+ * The column [s] draws its character at [index] in, as a terminal lays it out: a tab moves to the next
+ * multiple of 8, a wide character (CJK, an emoji) takes two columns, every other character one.
+ */
+internal fun displayColumn(s: String, index: Int): Int {
+    var col = 0
+    var i = 0
+    while (i < index && i < s.length) {
+        val cp = s.codePointAt(i)
+        col = advanceDisplayColumn(col, cp)
+        i += Character.charCount(cp)
+    }
+    return col
+}
+
+private fun advanceDisplayColumn(column: Int, codePoint: Int): Int = when {
+    codePoint == '\t'.code -> (column / 8 + 1) * 8
+    wideCodePoint(codePoint) -> column + 2
+    else -> column + 1
+}
+
+private fun wideCodePoint(cp: Int): Boolean = cp in 0x1100..0x115F || cp in 0x2E80..0xA4CF || cp in 0xAC00..0xD7A3 ||
+    cp in 0xF900..0xFAFF || cp in 0xFE30..0xFE4F || cp in 0xFF00..0xFF60 || cp in 0xFFE0..0xFFE6 || cp in 0x1F300..0x1FAFF ||
+    cp in 0x20000..0x3FFFD
+
+/** An option's own key hint at the end of its label: "(p)", "(esc)", "(y)". */
+private val OPTION_KEY_TAIL = Regex("""\((?:[a-z]|esc)\)$""")
+
+/** A radio row of its own ("(○) Yes, and don't ask again …"), never the label tail above it. */
+private val WRAP_RADIO_ROW = Regex("""^\([○●◯◉]\)""")
+/** Grok's always-approve option in full. */
+private const val GROK_ALWAYS_FULL = "Yes, and don't ask again for anything (always-approve mode)"
+
+/**
+ * Codex's per-commit review of fe63209 (HIGH): a label the pane cut off anywhere inside Grok's
+ * always-approve option ("Yes, and", "Yes, and don't ask again f") can't show what it approves, so it
+ * is blocked too; a label that goes on past that point with its own scope ("… for mkdir commands in
+ * /tmp/t") is not a cut-off one and stays usable.
+ */
+private fun grokAlwaysCutOff(label: String): Boolean =
+    label.trim().trimEnd('…', '.').trim().length >= "Yes, and".length && grokCouldBeAlways(label)
+
+/** Why [c] could be Grok's always-approve option cut off: a start of its label, short of the whole of it. */
+internal fun grokCouldBeAlways(label: String): Boolean {
+    val l = label.trim().trimEnd('…', '.').trim()
+    return l.isNotEmpty() && l.length < GROK_ALWAYS_FULL.length && GROK_ALWAYS_FULL.startsWith(l, ignoreCase = true)
+}
+
+internal const val AMBIGUOUS_CHOICE_REASON =
+    "Not sent: the pane cut this option's label off, so it could be the one that approves everything. Widen the pane, or use the terminal."
+
+/**
+ * Why [c] is never sent from the app, or null. Bill (2026-11-25): an approve-from-now-on option is
+ * offered behind its own confirmation ([approveAllAsk]); only what the app can't show or reach is
+ * never sent: a label cut off so it could be the approve-everything option ([Choice.ambiguous], or a
+ * cut-off start of Grok's), and Grok's unnumbered always-approve row, which no key the app sends selects.
+ */
+fun blockedChoiceReason(c: Choice): String? = when {
+    c.ambiguous || grokAlwaysCutOff(c.label) -> AMBIGUOUS_CHOICE_REASON
+    c.keys == GROK_ALWAYS_APPROVE ->
+        "Not sent: the app can't select this row with keys. It switches the agent to approve everything; use the terminal if you really mean to."
+    else -> null
+}
+
+/**
+ * Bill (2026-11-25): an option that approves from now on, on any agent (Grok's "Yes, and don't ask
+ * again for anything", Claude's and Codex's "don't ask again", "always", Oh My Pi's "for this session",
+ * OpenCode's "Always allow", Hermes's allowlist), and any option the app won't send: a tap opens
+ * "Approve everything from now on?" with its full label first.
+ */
+fun approvesFromNowOn(c: Choice): Boolean =
+    c.ambiguous || c.keys == GROK_ALWAYS_APPROVE || grantsStandingPermission(c.label) || blockedChoiceReason(c) != null
+
+/** The confirmation for [c] on [p]: its full label, the keys Confirm sends, or why it can't be sent. */
+data class ApproveAllAsk(val label: String, val keys: List<String>?, val reason: String?)
+
+/** [approvesFromNowOn]'s confirmation for [c] on the card [p], or null when [c] needs none. */
+fun approveAllAsk(p: Prompt, c: Choice): ApproveAllAsk? {
+    if (!approvesFromNowOn(c)) return null
+    val keys = if (blockedChoiceReason(c) == null) menuKeys(p, c) else null
+    val reason = blockedChoiceReason(c) ?: if (keys == null) "Not sent: the app can't tell which keys pick this option. Use the terminal." else null
+    return ApproveAllAsk(c.label, keys, reason)
+}
+
+private val GROK_APPROVAL_SELECT = Regex("""^\s*\d{1,2}/\d{1,2}:select(?:\s+│|\s*$)""")
+private val GROK_ANSWER_FOOTER = Regex("""^\s*\d{1,2}/\d{1,2}:answer\b""")
+private val GROK_APPROVAL_FRAME = Regex("""^\s*[│┃|]""")
+
+/**
+ * 2.2.8 (Bill: "grok has a question but keeps saying it changed and won't send"): Grok 4.7's approval
+ * box as it draws it now: numbered radio rows ("2 (●) Yes, proceed", "3 (○) No, reject (type to add
+ * feedback)") and, under them, an unnumbered "(○) Yes, and don't ask again for anything
+ * (always-approve mode)" row, which the card shows disabled ([blockedChoiceReason]). A box whose
+ * command is cut ("… Ctrl+F to expand") gives a [Prompt.clipped] card.
+ */
+internal fun grokApproval(plain: String, parsed: Prompt): Prompt {
+    if (parsed.choices.isEmpty() || parsed.terminalReview) return parsed
+    val rows = plain.lines()
+    val dialog = parsed.dialogRows ?: return parsed
+    val options = dialog.options.map { dialog.rows[it] }
+    if (options.isEmpty() || options.any { !GROK_RADIO_ROW.containsMatchIn(it) }) return parsed
+    val plainRows = rows.map(::cardRegionRow)
+    // The dialog parser selected the newest option run. An identical older copy in scrollback
+    // still forces the whole-screen send guard, but must not hide the live clipping indicator.
+    val start = (0..rows.size - dialog.rows.size).lastOrNull { i ->
+        dialog.rows.indices.all { j -> dialog.rows[j] == plainRows[i + j] }
+    } ?: return parsed
+    val first = start + dialog.options.first()
+    val last = start + dialog.options.last()
+    val heading = rows.take(first).asReversed().take(20)
+        .takeWhile { !GROK_RADIO_ROW.containsMatchIn(it) && GrokMeta.statusRow(it) == null }
+        .firstNotNullOfOrNull { GROK_BOX_TITLE.find(it)?.groupValues?.get(1) }
+    // A wrapped label or closing border can stand between the last radio row and the footer.
+    // A question's own answer footer wins over any select hint lower on the screen.
+    val footer = rows.drop(last + 1).take(8)
+        .takeWhile { !GROK_BOX_TITLE.containsMatchIn(it) && GrokMeta.statusRow(it) == null }
+        .firstOrNull { GROK_APPROVAL_SELECT.containsMatchIn(it) || GROK_ANSWER_FOOTER.containsMatchIn(it) }
+    val approval = heading != "?" && footer?.let(GROK_ANSWER_FOOTER::containsMatchIn) != true &&
+        (heading == "›" || footer?.let(GROK_APPROVAL_SELECT::containsMatchIn) == true)
+    // The shortest prefixes are ambiguous only in approval menus. A regular question can ask Yes/No.
+    val p = if (!approval || parsed.choices.none { grokCouldBeAlways(it.label) }) parsed
+        else parsed.copy(choices = parsed.choices.map { if (grokCouldBeAlways(it.label)) it.copy(ambiguous = true) else it }).withSpanOf(parsed)
+    var out = p
+    rows.getOrNull(start + dialog.rows.size)?.let { GROK_UNNUMBERED_ALWAYS.matchEntire(it) }?.let { m ->
+        val label = m.groupValues[1].trim()
+        if (out.choices.none { it.label == label }) out = out.copy(choices = out.choices + Choice(label, GROK_ALWAYS_APPROVE, false)).withSpanOf(p)
+    }
+    // Walk only the approval frame when looking above the options for clipped command text.
+    var i = first - 1
+    var clipped = false
+    while (i >= 0 && GROK_APPROVAL_FRAME.containsMatchIn(rows[i])) {
+        if (GROK_EXPAND_HINT.matches(rows[i].trimStart().drop(1).trim().trimEnd('│', '┃', '|').trimEnd())) clipped = true
+        i--
+    }
+    return if (clipped) out.copy(clipped = true).withSpanOf(p) else out
 }
 
 /**
@@ -3490,19 +4494,29 @@ private val CLAUDE_AWAITING = Regex("""(?:^|\s)(\d{1,3}) awaiting input$""")
  * How many sessions Claude's sessions list shows as awaiting input ("1 awaiting input"), 0 when
  * the list shows none, or the screen is not that list or a question dialog has replaced it (2.1.1).
  */
+private fun liveClaudeBackgroundHint(rows: List<String>): Int {
+    val hint = rows.indexOfLast { CLAUDE_BACKGROUND_HINT.containsMatchIn(it) }
+    if (hint < 0) return -1
+    val tail = rows.drop(hint + 1)
+    if (tail.any { QUESTION_FOOTER.containsMatchIn(it) || isClaudePermissionFooter(it) }) return -1
+    // The sessions list has its own composer and footer. Do not confuse that composer with
+    // the foreground Claude conversation's composer or a later assistant turn.
+    val listFooter = tail.indexOfLast { "enter to return · space to reply · ctrl+x to remove" in it }
+    if (agentWentOn(tail.drop(listFooter + 1).filterNot { it == "❯ describe a task for a new session" })) return -1
+    return hint
+}
+
 internal fun claudeSessionsAwaiting(text: String): Int {
     val rows = text.lines().takeLast(80).map { it.trim() }
-    val hint = rows.indexOfLast { CLAUDE_BACKGROUND_HINT.containsMatchIn(it) }
-    if (hint < 0 || rows.drop(hint + 1).any { QUESTION_FOOTER.containsMatchIn(it) }) return 0
+    val hint = liveClaudeBackgroundHint(rows)
+    if (hint < 0) return 0
     return rows.take(hint).firstNotNullOfOrNull { CLAUDE_AWAITING.find(it) }?.groupValues?.get(1)?.toIntOrNull() ?: 0
 }
 
 internal fun claudeBackgroundList(text: String): Prompt? {
     val rows = text.lines().takeLast(80).map { it.trim() }
-    val hint = rows.indexOfLast { CLAUDE_BACKGROUND_HINT.containsMatchIn(it) }
+    val hint = liveClaudeBackgroundHint(rows)
     if (hint < 0) return null
-    // A question dialog below the hint is the session itself, back on screen: the usual parser reads it.
-    if (rows.drop(hint + 1).any { QUESTION_FOOTER.containsMatchIn(it) }) return null
     val count = rows.take(hint).firstNotNullOfOrNull { CLAUDE_AWAITING.find(it) }
     val waiting = count?.groupValues?.get(1)?.toIntOrNull() ?: 0
     val question = if (waiting > 0) "Claude's session is in the background, and its sessions list shows " +
@@ -3527,6 +4541,7 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
     // 2.1.4: Claude's /btw panel is a side answer, not a question.
     if ((agent == null || agent.equals("claude", true)) && claudeBtwOverlay(text) != null) return null
     if (agent.equals("claude", true)) claudeBackgroundList(text)?.let { return it }
+    if (agent.equals("codex", true)) codexUpdatePrompt(text)?.let { return it }
     if (agent.equals("codex", true)) {
         val rows = text.lines().takeLast(80)
         fun hints(row: String) = row.split('|').map(String::trim)
@@ -3554,8 +4569,14 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
                     .takeWhile { it.isNotBlank() && !CODEX_QUESTION_OPTION.matches(it) }
                     .joinToString(" ").ifBlank { "Codex has a question" }
             }
+            // 2.2.8 (Bill: "make sure all the question text is visible"): the card shows the whole
+            // question, every paragraph and code block up to its options, not only its first paragraph.
+            val parts = if (confirmation || head < 0 || footer < 0) null else {
+                val end = (head + 1 until footer).firstOrNull { CODEX_QUESTION_OPTION.matches(rows[it].trim()) } ?: footer
+                dialogQuestionLines(rows.subList(head + 1, end)) { it.trim() }.takeIf { it.isNotEmpty() }?.let(::questionParts)
+            }
             // Enter can move focus, advance a step or submit, depending on the native overlay.
-            return Prompt(question, emptyList(), terminalReview = true, codexQuestion = true)
+            return Prompt(question, emptyList(), terminalReview = true, codexQuestion = true, parts = parts)
         }
     }
     val openCode = isOpenCode(agent)
@@ -3566,6 +4587,9 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
         // 2.2.7: the modern layout's rules, session title and footer under a live prompt are chrome,
         // and the "⚠ ❯" input row says Hermes waits whatever herdr reports (HermesComposer.kt).
         hermesWaitingScreen(text)?.let { return detectPlainPrompt(it, true, agent, version) }
+        // 2.2.8: the classic CLI's clarify panel (HermesClarify.kt), proven by its hint and input rows.
+        hermesClassicClarify(text)?.let { return it }
+        if (hermesStaleClassicPanel(text)) return null
         hermesClarifyFrame(text)?.let { frame ->
             return frame.card ?: detectPlainPrompt(frame.remainder, false, agent, version)
         }
@@ -3635,7 +4659,10 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
         raw = tail
         pastDialog = true
     }
+    if (agent.equals("claude", true)) raw = withoutClaudeAskPreview(raw)
     lines = raw.filter { it.isNotBlank() }.takeLast(40)
+    // 2.2.8 (Codex's review 4B): the row of raw each of lines is, so the guard gets the parser's own rows.
+    val rawAt = raw.indices.filter { raw[it].isNotBlank() }.takeLast(40)
     val activeText = raw.joinToString("\n")
     val dialogAt = raw.indexOfLast { parseTabBar(clean(it)) != null }
     // "❯ 1. Yes", "  2. Yes, and don't ask again for …" (labels can be long; up to 200 characters).
@@ -3645,9 +4672,9 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
     // Muse Code marks the highlighted row with "⟩" (1.4.7: "⟩ 1. Allow this stage once (y)").
     // 1.4.9 (the card audit): Hermes's "❯ [ ] 1. pytest" (a checkbox before the number) and "❯ [1] Approve
     // Once" (a number in brackets), and pi's "→" highlight.
-    val option = Regex("""^[\s│┃|]*([❯›>▶➤⟩→]\s*)?(\[[ xX✓✔]\]\s+)?(?:(\d{1,2})(?:[.)]|\s+(\([○●◯◉]\)))|\[(\d{1,2})\])\s+(.{1,200}?)[\s│┃|]*$""")
-    fun key(m: MatchResult) = m.groupValues[3].ifEmpty { m.groupValues[5] }
-    fun label(m: MatchResult) = (m.groupValues[2] + m.groupValues[6]).trim()
+    val option = MENU_OPTION_ROW
+    fun key(m: MatchResult) = menuOptionKey(m)
+    fun label(m: MatchResult) = menuOptionLabel(m)
     val marked = mutableSetOf<Int>()
     val optionRows = lines.withIndex().mapNotNull { (i, l) ->
         option.find(l)?.let { m ->
@@ -3665,16 +4692,37 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
     // An option's label wrapped onto the next line goes on there (1.4.9, from Grok's review: Copilot's
     // "(Manual" over "Approval for this session; …)"): the next line, when it is not an option row, while a
     // "(" is still open or it starts in lower case. A description under it (capitalised, its own sentence) is not.
+    // The last option's last row (its label wrapped), in lines: the bottom of the dialog the guard checks.
+    var lastOptionEnd = -1
     val numbered = run.map { (i, k, label) ->
         var full = label
         var j = i + 1
+        // Where the label starts on its row, as the terminal draws it: a wrapped row of it starts in the same column.
+        val labelCol = option.find(lines[i])?.let { m -> (m.groups[2] ?: m.groups[6])?.range?.first?.let { displayColumn(lines[i], it) } } ?: -1
         while (j < lines.size && option.find(lines[j]) == null) {
             val next = clean(lines[j])
+            // A radio row of its own ("(○) Yes, and don't ask again …") is never part of the label above
+            // it, whatever else holds (Codex's per-commit review of fe63209).
+            if (next.isEmpty() || WRAP_RADIO_ROW.containsMatchIn(next) || GROK_UNNUMBERED_ALWAYS.matches(lines[j])) break
             // A key hint under the last option ("ctrl+g to edit in editor") is not part of it.
-            if (next.isEmpty() || KEY_HINT_LINE.containsMatchIn(next) ||
-                !(full.count { it == '(' } > full.count { it == ')' } || next.first().isLowerCase())) break
+            // 2.2.8 (agy's corpus): or it is the label's own "(…)" tail, wrapped onto its own row in a
+            // narrow pane: Grok's "(always-approve mode)", Antigravity's "(Persist to settings.json)",
+            // and only when it starts in the label's own column (Codex's per-commit review: a "(…)"
+            // row of other output is not the label's).
+            // Codex's per-commit review of 5672ba8: on every path, a "(…)" row joins only in the label's
+            // column, counted as the terminal draws it (a tab to the next multiple of 8).
+            val nextCol = lines[j].indexOfFirst { it !in " \t│┃|" }.let { if (it < 0) -1 else displayColumn(lines[j], it) }
+            val parenRow = next.startsWith("(")
+            // agy's re-review (MEDIUM): Codex's narrow pane wraps an option before its own key hint
+            // ("2. Yes, and don't ask again for commands that start with" over "`python3 -` in … (p)"):
+            // a row in the label's column that ends with the key hint the label still lacks is its rest.
+            val keyTail = labelCol >= 0 && nextCol == labelCol && OPTION_KEY_TAIL.containsMatchIn(next) && !OPTION_KEY_TAIL.containsMatchIn(full)
+            if (KEY_HINT_LINE.containsMatchIn(next) || (parenRow && (labelCol < 0 || nextCol != labelCol)) ||
+                !(full.count { it == '(' } > full.count { it == ')' } || next.first().isLowerCase() ||
+                    (parenRow && next.endsWith(")")) || keyTail)) break
             full = "$full $next"; j++
         }
+        lastOptionEnd = j - 1
         Choice(full, k, false)
     }.distinctBy { it.keys }
     // The question: the text just above the first choice (up to four lines, skipping frame
@@ -3686,6 +4734,9 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
     // screen, or any screen with a row in Grok's "┆" gutter.
     val grokRows = agent.equals("grok", true) || raw.any { r -> GrokMeta.commandRow(r, null)?.cont == true }
     var topOff = false
+    // 2.2.8 (Grok's review 4): the top row of the question block the walk below read, so the card's
+    // guard hashes exactly that block through the options ([Prompt.questionSpan]); -1 when none.
+    var walkTop = -1
     val above = run.firstOrNull()?.let {
         val at = firstOption
         if (at <= 0) null else {
@@ -3694,30 +4745,50 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
             val got = mutableListOf<QLine>()
             // Claude's multi-question dialog: everything from its tab bar down to the options is the
             // question, including the review step's "● Close 537" / "→ Close it" rows (1.2.9).
-            val barAt = (at - 1 downTo maxOf(0, at - 30)).firstOrNull { parseTabBar(clean(raw[it])) != null }
+            // 2.2.8: however tall the question is (it was 30 rows), and its fenced code kept row by row.
+            val barAt = (at - 1 downTo maxOf(0, at - TALL_QUESTION_ROWS)).firstOrNull { parseTabBar(clean(raw[it])) != null }
             if (barAt != null) {
-                var gapNext = false
-                for (k in barAt until at) {
-                    val c = clean(raw[k])
-                    if (raw[k].isBlank() || c.isEmpty()) { gapNext = true; continue }
-                    got += QLine(c, gapBefore = gapNext); gapNext = false
-                }
+                got += dialogQuestionLines(raw.subList(barAt, at), clean)
+                walkTop = barAt
                 return@let got.takeIf { it.isNotEmpty() }
             }
             // 2.2.4: Claude's permission dialog, read by its frame however tall its command is.
-            val framed = if (grokRows) null else claudeFramedDialog(raw, at)
-            if (framed != null) { topOff = framed.topOffScreen; return@let framed.lines }
+            val framed = if (grokRows) null else claudeFramedDialog(raw, at, isRebuiltDialog(raw))
+            if (framed != null) { topOff = framed.topOffScreen; walkTop = maxOf(framed.top, 0); return@let framed.lines }
             var i = at - 1
             // Blank lines inside a card are crossed (Antigravity puts one between "Requesting
             // permission for:", the command, and "Run this command?"), up to two of them; a rule, the
             // top of a box, or the agent's own activity lines above the card end the question.
             var gaps = 0
+            var edgeRow = -1
             var gap = false
+            // 2.2.8 (Bill: "make sure all the question text is visible and well formatted especially
+            // code"): a long question with code blocks was cut at its third blank line or 20th line.
+            // A fenced block ("```" … "```") is read row by row, its rows and the blank lines around
+            // it never end the question; inside a dialog drawn in a frame (the option rows start with
+            // "│" or "┃": Grok, Copilot, OpenCode, Vibe, Hermes), a blank row of the frame does not
+            // either, and the question ends where the frame does. Everything else ends it as before.
+            val frame = raw[at].indexOfFirst { it != ' ' }.takeIf { it >= 0 && raw[at][it] in "│┃" }?.let { it to raw[at][it] }
+            fun inFrame(r: String) = frame != null && r.length > frame.first && r[frame.first] == frame.second
+            var inFence = false
+            var freeGaps = 0
             // At most 20 lines, or 60 while none of them asks yet (1.4.8: a Muse card with a long command
-            // put its "Would you like to run the following command?" more than 20 lines up).
-            while (i >= 0 && (got.size < 20 || (got.size < 60 && got.none { it.text.trimEnd().endsWith("?") }))) {
+            // put its "Would you like to run the following command?" more than 20 lines up); 2.2.8: up
+            // to TALL_QUESTION_ROWS once the question holds a code block or crossed a blank row of its frame.
+            while (i >= 0 && (got.size < 20 || (got.size < 60 && got.none { it.text.trimEnd().endsWith("?") }) ||
+                    ((freeGaps > 0 || got.any { it.fence }) && got.size < TALL_QUESTION_ROWS))) {
                 val l = raw[i]
                 val c = clean(l)
+                // 2.2.8: past the end of the dialog's frame, once the frame let the question run on.
+                if (frame != null && freeGaps > 0 && l.isNotBlank() && !inFrame(l)) break
+                val (bodyCol, bodyText) = rowBody(l)
+                if (inFence || isFenceRow(bodyText)) {
+                    if (l.trimStart().startsWith("╭") || l.trimStart().startsWith("┌") || l.trim().matches(Regex("""^[─━═]{3,}$"""))) break
+                    got.add(0, QLine(bodyText.trimEnd(), fence = true, indent = bodyCol))
+                    if (isFenceRow(bodyText)) inFence = !inFence
+                    gap = false
+                    i--; continue
+                }
                 // Grok's data-sharing banner can sit right above a card; it is its own question.
                 if (got.isNotEmpty() && GROK_BANNER.containsMatchIn(c)) break
                 // A rule on its own line ("──────") ends the question; clean() would empty it.
@@ -3726,11 +4797,25 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
                 // the walk would cross it like a blank line into the reply above (2.1.4).
                 if (grokRows && got.isNotEmpty() && l.trimStart().startsWith("╭")) {
                     val edgeTitle = l.trim().trim('╭', '╮', '─', ' ')
-                    if (got.any { it.row } && edgeTitle.any(Char::isLetter)) got.add(0, QLine(edgeTitle))
+                    if (got.any { it.row } && edgeTitle.any(Char::isLetter)) { got.add(0, QLine(edgeTitle)); edgeRow = i }
                     break
                 }
+                // 2.2.8 (agy's corpus, 054): the bottom edge of the frame the options are drawn in, above
+                // them, closes an older dialog: the question starts under it (never that dialog's footer).
+                if (got.isNotEmpty() && frame != null && l.indexOfFirst { it != ' ' } == frame.first &&
+                    l.trimStart().firstOrNull()?.let { it == '╰' || it == '└' || it == '┗' } == true) break
                 if (l.isBlank() || c.isEmpty()) {
-                    if (got.isNotEmpty() && !gap) { gap = true; gaps++; if (gaps > 2) break; got[0] = got[0].copy(gapBefore = true) }
+                    if (got.isNotEmpty() && !gap) {
+                        gap = true
+                        // 2.2.8: next to a code block, or a blank row inside the dialog's frame.
+                        val above = raw.getOrNull(i - 1)?.let(::rowBody)
+                        val byFence = (got[0].fence && isFenceRow(got[0].text)) || above?.second?.let(::isFenceRow) == true
+                        // Code drawn as Markdown, indented past the text next to it, with no fences.
+                        val byIndent = above != null && above.first >= 0 && got[0].indent >= 0 && kotlin.math.abs(got[0].indent - above.first) >= 4
+                        if (byFence || byIndent || inFrame(l)) freeGaps++ else gaps++
+                        if (gaps > 2) break
+                        got[0] = got[0].copy(gapBefore = true)
+                    }
                     i--; continue
                 }
                 if (l.trimStart().startsWith("╭") || l.trimStart().startsWith("┌") || c.matches(Regex("""^[─━═\-_\s]+$"""))) break
@@ -3766,9 +4851,10 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
                 // Grok's question card starts its question with a "?" icon (1.4.9).
                 val row = if (gutter) c.trimStart { it in GROK_GUTTER || it == ' ' }.trimEnd().removeSuffix("·").trimEnd()
                     else if (isCmd && tl.startsWith("┃")) c.trimEnd().removeSuffix("·").trimEnd() else c
-                if (row.any(Char::isLetterOrDigit) && !row.contains("narrow scope")) got.add(0, QLine(row.trimStart('›', '❯', ' ').replace(Regex("""^\?\s+"""), ""), isCmd, bar = !isCmd && tl.startsWith("│")))
+                if (row.any(Char::isLetterOrDigit) && !row.contains("narrow scope") && !row.contains("widen scope") && !(grokRows && GROK_EXPAND_HINT.matches(row.trim()))) got.add(0, QLine(row.trimStart('›', '❯', ' ').replace(Regex("""^\?\s+"""), ""), isCmd, bar = !isCmd && tl.startsWith("│"), indent = bodyCol))
                 i--
             }
+            walkTop = if (edgeRow >= 0) edgeRow else i + 1
             // A "┆" row goes on the line above only when that row ends in Grok's "·" wrap mark; else
             // it is a line of its own (2.1.4). The command reads in its true order, one line per row.
             val joined = mutableListOf<QLine>()
@@ -3778,7 +4864,7 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
                     joined[joined.size - 1] = prev.copy(text = prev.text.trimEnd() + " " + q.text.trimStart(), wraps = q.wraps)
                 else joined += q
             }
-            joined.takeIf { it.isNotEmpty() }
+            withFenceIndent(joined).takeIf { it.isNotEmpty() }
         }
     }
     // The question's text (notifications, matching) leaves out Claude's tab bar; the app shows it as steps.
@@ -3911,8 +4997,19 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
         // command (esc)"), known by name or by its "Change approval defaults in /permissions" line.
         val shortcuts = agent?.lowercase() in setOf("codex", "muse") ||
             lines.takeLast(4).any { CODEX_FOOTER.containsMatchIn(it) || MUSE_CARD_FOOTER.containsMatchIn(it) }
+        val rebuiltTall = agent.equals("claude", true) && isRebuiltDialog(text.lines())
         return Prompt(question ?: "Choose an option", numbered, selected, escRejects = vibeCard, parts = parts, multi = multi,
-            shortcuts = shortcuts, approvalIdentity = approvalIdentity, claudeCheckboxAction = checkboxAction, topOffScreen = topOff)
+            shortcuts = shortcuts, approvalIdentity = approvalIdentity, claudeCheckboxAction = checkboxAction, topOffScreen = topOff,
+            rebuiltTallDialog = rebuiltTall, region = if (topOff || rebuiltTall) raw else null)
+            .also { p ->
+                // 2.2.8 (Codex's review 4B): the parser's exact rows, the question block it read down to the
+                // last option's last row, with each option's own row; none when they can't be mapped.
+                val bottom = rawAt.getOrNull(lastOptionEnd) ?: -1
+                val at = run.map { rawAt.getOrNull(it.first) ?: -1 }
+                p.dialogRows = if (aboveText != null && walkTop in 0..firstOption && firstOption == at.firstOrNull() &&
+                    bottom >= firstOption && at.all { it in walkTop..bottom } && run.size == numbered.size)
+                    DialogRows(raw.subList(walkTop, bottom + 1).map { cardRegionRow(it) }, at.map { it - walkTop }) else null
+            }
     }
 
     val yn = Regex("""[(\[]\s*[yY](?:es)?\s*/\s*[nN]o?\s*[)\]]""")
@@ -3933,7 +5030,7 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
 
     // Buttons side by side (OpenCode's permission prompt, Vibe's folder trust) and options answered by a
     // letter (Grok's folder trust and plan review), 1.4.9.
-    detectButtonRow(activeText)?.let { return it }
+    if (!openCode) detectButtonRow(activeText)?.let { return it }
     detectLetterMenu(activeText, blocked)?.let { return it }
 
     // Grok's data-sharing banner, when nothing else is being asked: answered through /privacy.
@@ -4001,8 +5098,7 @@ fun showsGrokBanner(text: String): Boolean {
 fun detectGrokPrivacyDialog(text: String): Prompt? {
     val lines = text.lines().takeLast(40)
     if (lines.none { it.contains("Coding data, retention, and training") }) return null
-    val row = Regex("""^[\s│┃|]*([○●◯◉])\s+(Opt in|Opt out)\b""")
-    val rows = lines.mapNotNull { row.find(it) }
+    val rows = lines.mapNotNull(GROK_PRIVACY_ROW::matchEntire)
     if (rows.size != 2) return null
     val choices = rows.mapIndexed { i, m -> Choice(m.groupValues[2], (i + 1).toString(), false) }
     val selected = rows.indexOfFirst { it.groupValues[1] in setOf("●", "◉") }.takeIf { it >= 0 }?.let { (it + 1).toString() }
@@ -4200,6 +5296,7 @@ internal fun inboxUploadCommand(rel: String, size: Int): String {
 internal sealed class CardInput {
     data class Keys(val keys: List<String>) : CardInput()
     data class Text(val text: String, val enter: Boolean) : CardInput()
+    data class Submit(val text: String) : CardInput()
 }
 
 /** The pane's occupant digest and its screen digest, as the card's last read saw them (hex SHA-256). */
@@ -4220,6 +5317,27 @@ internal val CARD_SEND_CHECK_SH: String by lazy {
         .use { it.readBytes().toString(Charsets.UTF_8) }
 }
 internal const val CARD_CHECK_FAILED_EXIT = 4
+/** 2.2.8: the occupant-only check ([occupantCheckCommand]) found another occupant: nothing was typed. */
+internal const val OCCUPANT_CHANGED_EXIT = 5
+
+/** 2.2.8: a message bound to a pane's occupant found another one there, checked on the computer; nothing was typed. */
+internal class OccupantChanged : Exception("the pane changed")
+
+/**
+ * 2.2.8 (Codex's re-review 3): printed by the occupant-only check when it refuses (exit 5), and by the
+ * command once the check passed, just before the first write. The two tell a refusal (nothing typed)
+ * from a write that failed after it began (it may have gone in).
+ */
+internal const val OCCUPANT_REFUSED_MARK = "@@herdrdroid-occupant-refused@@"
+internal const val OCCUPANT_PASSED_MARK = "@@herdrdroid-occupant-passed@@"
+/** 2.2.8 (Codex's re-review 6): the card check's own refusal line (before exit 3), and the line just before the keys. */
+internal const val CARD_REFUSED_MARK = "@@herdrdroid-card-refused@@"
+internal const val CARD_PASSED_MARK = "@@herdrdroid-card-passed@@"
+
+private const val PASTED_MARK = "@@herdrdroid-text-pasted@@"
+
+/** A write began, but its result does not prove whether it reached the agent. */
+internal class DeliveryUncertain(message: String) : Exception(message)
 
 private val CARD_OCCUPANT_FIELDS = listOf("pane_id", "tab_id", "workspace_id", "agent", "foreground_cwd", "cwd", "terminal_id")
 private val CARD_SESSION_FIELDS = listOf("kind", "agent", "value")
@@ -4255,7 +5373,14 @@ internal fun cardOccupantDigest(p: JSONObject): String {
  * The same "(12s)" anywhere else, a command's text included, is part of the question.
  * [CARD_SEND_CHECK] and card-check.sh apply exactly this rule.
  */
-private val CARD_TIMER_LINE = Regex("""^(type [0-9/]+, or )?↑/↓ to select, enter to confirm[ \t\r\u000B\u000C]*\([0-9]+s\)$""")
+private val CARD_TIMER_LINE = Regex("""^(?:(type [0-9/]+, or )?↑/↓ to select, enter to confirm|↑/↓ to select, enter to lock, tab next question|type your answer and press enter)[ \t\r\u000B\u000C]*\([0-9]+s\)$""")
+/** Hermes's hint row under a live prompt, with or without its countdown (a clarify with no deadline has none). */
+private val CARD_HERMES_HINT = Regex("""^(?:(type [0-9/]+, or )?↑/↓ to select, enter to confirm|↑/↓ to select, enter to lock, tab next question|type your answer and press enter)(?:[ \t\r\u000B\u000C]*\([0-9]+s\))?$""")
+private val CARD_HERMES_RULE = Regex("""^──.*─$""")
+private val CARD_HERMES_INPUT = Regex("""^(?:⚠|\?|✎|🔐|🔑|⚙)\uFE0F?[ \t]*[❯›](?:[ \t].*)?$""")
+private val CARD_HERMES_BOTTOM = Regex("""^─+$""")
+/** Hermes's footer as [cardShown] gives it: "☤ <model> · ~188k/500k · …" (the model, then the context gauge). */
+private val CARD_HERMES_FOOTER = Regex("""^☤ [^ ]+ · ~?[0-9][0-9.,]*[km]?/[0-9][0-9.,]*[km]?(?: · .*)?$""")
 private val CARD_TIMER = Regex("""^(.*)\([0-9]+s\)""", RegexOption.DOT_MATCHES_ALL)
 private val CARD_CSI = Regex("\u001B\\[[0-9;?]*[ -/]*[@-~]")
 
@@ -4264,9 +5389,110 @@ private fun asciiFold(s: String) = buildString(s.length) { for (c in s) append(i
 /** A digest no screen has: a screen with a NUL byte never matches. */
 private val CARD_NO_MATCH = "0".repeat(64)
 
-internal fun cardTimerLine(line: String): String {
-    val shown = asciiFold(CARD_CSI.replace(line, "")).trim { it == ' ' || it == '\t' || it == '\r' || it == '\u000B' || it == '\u000C' }
-    return if (CARD_TIMER_LINE.matches(shown)) CARD_TIMER.replaceFirst(line, "$1(Ns)") else line
+/**
+ * 2.2.8 (Bill: "OMP popped up another question it won't let me answer"): two rows Oh My Pi redraws every
+ * second while its approval box waits, neither part of the question: its status row (a spinner and a
+ * running time: "⠙ 4m > ⬢ <model> > 📁 <folder> ▶────"), which stands for itself as one fixed row, and a
+ * tool box's bottom edge with its running time ("╰─── elapsed 3m46s ───╯"), whose time is left out.
+ * 2.2.8 (Codex's reviews): only where Oh My Pi draws them, around one approval box proven by
+ * [ompApprovalRegion]: the status row only as the row right under the box, and an elapsed edge only as
+ * the bottom of the tool box just above it. Every row of the box itself counts as it is, so a command
+ * row that looks like a status row is still part of the question. With no approval box, or one that
+ * isn't proven (two box tops, a row inside it that isn't the box's, no bottom edge), no row is left out.
+ * [CARD_SEND_CHECK] and card-check.sh apply exactly these rules.
+ */
+private val CARD_OMP_STATUS = Regex("""^[^ ]+ ([^ ]+ )?> .* > 📁 [^ ]+ ▶─.*$""", RegexOption.DOT_MATCHES_ALL)
+private val CARD_ELAPSED_ROW = Regex("""^╰─+ elapsed [0-9hms.]+ ─+╯$""")
+private val CARD_ELAPSED = Regex("""elapsed [0-9hms.]+""")
+private val CARD_OMP_BOX_TOP = Regex("""^╭─ allow tool: .*╮$""", RegexOption.DOT_MATCHES_ALL)
+private val CARD_BOX_BOTTOM = Regex("""^╰─+╯$""")
+
+/** A row as the checks match it: CSI styles dropped, ASCII case folded, ends trimmed. */
+private fun cardShown(line: String): String =
+    asciiFold(CARD_CSI.replace(line, "")).trim { it == ' ' || it == '\t' || it == '\r' || it == '\u000B' || it == '\u000C' }
+
+/** Hermes's countdown only (see [CARD_TIMER_LINE]); every other row as it is. */
+internal fun cardTimerLine(line: String): String =
+    if (CARD_TIMER_LINE.matches(cardShown(line))) CARD_TIMER.replaceFirst(line, "$1(Ns)") else line
+
+/**
+ * 2.2.8 (Codex's re-review): the one approval box the digest may look around, or null when it isn't
+ * proven. [shown] rows as [cardShown] gives them. The box: exactly one "╭─ allow tool: … ╮" top on the
+ * screen, then only the box's own rows ("│…", "├…") down to its "╰───╯" bottom, the only such edge
+ * under the top. The elapsed edge
+ * (-1 for none): the nearest "╰─ elapsed … ─╯" within the three rows above the top, with no other box
+ * edge between, and only as the bottom of a tool box ("╭…", then only "│…" rows). The same rule in
+ * [CARD_SEND_CHECK] and card-check.sh.
+ */
+internal data class OmpRegion(val top: Int, val bottom: Int, val elapsed: Int)
+
+internal fun ompApprovalRegion(shown: List<String>): OmpRegion? {
+    val tops = shown.indices.filter { CARD_OMP_BOX_TOP.matches(shown[it]) }
+    if (tops.size != 1) return null
+    val top = tops.single()
+    var bottom = -1
+    for (i in top + 1 until shown.size) {
+        val t = shown[i]
+        if (CARD_BOX_BOTTOM.matches(t)) { bottom = i; break }
+        if (!t.startsWith("│") && !t.startsWith("├")) return null
+    }
+    if (bottom < 0) return null
+    // A second bottom-shaped edge anywhere under the top: which one closes the box isn't proven.
+    if ((bottom + 1 until shown.size).any { CARD_BOX_BOTTOM.matches(shown[it]) }) return null
+    var elapsed = -1
+    for (i in top - 1 downTo maxOf(0, top - 3)) {
+        val t = shown[i]
+        if (CARD_ELAPSED_ROW.matches(t)) { elapsed = i; break }
+        if (t.startsWith("╭") || t.startsWith("╰") || t.startsWith("│") || t.startsWith("├")) break
+    }
+    if (elapsed >= 0) {
+        var j = elapsed - 1
+        while (j >= 0 && shown[j].startsWith("│")) j--
+        if (j < 0 || !shown[j].startsWith("╭")) elapsed = -1
+    }
+    return OmpRegion(top, bottom, elapsed)
+}
+
+/**
+ * 2.2.8 (Bill: "Hermes will ask a question occasionally that does not render in chat"): the two rows of
+ * Hermes's modern composer that it redraws every second while a prompt waits, neither part of the
+ * question: the composer's top rule (a spinner frame and the turn's running time on its left) and the
+ * footer under it (the model, context gauge and timers). Only when they are proven to be the composer
+ * under a live prompt, on a pane whose agent is Hermes: the last row on the screen with text is the
+ * footer in Hermes's own shape ([CARD_HERMES_FOOTER]: "☤ <model> · ~188K/500K · …"), right under the composer's
+ * bottom rule, right under a waiting input row ("⚠ ❯", "? ❯", "✎ ❯ …"), right under the top rule, right
+ * under Hermes's hint row ([CARD_HERMES_HINT]). Each stands for itself as one fixed row; the hint, the
+ * input row and every row of the prompt above count as they are. Returns the two indices, or null, and
+ * when the layout can't be established every row keeps its bytes. Review 3 (Codex): the checks on the
+ * computer take the agent from the occupant they read ("agent": "hermes", herdr's own name); the app
+ * passes the pane's agent, so a pane whose name the app maps to Hermes but herdr does not reads
+ * differently and the answer is refused, never sent. [CARD_SEND_CHECK] and card-check.sh apply exactly this rule.
+ */
+private fun hermesComposerRows(shown: List<String>): Pair<Int, Int>? {
+    val footer = shown.indexOfLast { it.isNotEmpty() }
+    if (footer < 4) return null
+    val ok = CARD_HERMES_FOOTER.matches(shown[footer]) && CARD_HERMES_BOTTOM.matches(shown[footer - 1]) && CARD_HERMES_INPUT.matches(shown[footer - 2]) &&
+        CARD_HERMES_RULE.matches(shown[footer - 3]) && CARD_HERMES_HINT.matches(shown[footer - 4])
+    return if (ok) (footer - 3) to footer else null
+}
+
+/** The screen's rows as the digest takes them: [cardTimerLine] on each, Oh My Pi's two running rows and Hermes's composer rows. */
+internal fun cardScreenRows(lines: List<String>, agent: String? = null): List<String> {
+    val shown = lines.map { cardShown(it) }
+    val r = ompApprovalRegion(shown)
+    // Review 3 (Codex): only on a Hermes pane, as herdr names its agent in the occupant the checks read.
+    val hermes = if (agent == "hermes") hermesComposerRows(shown) else null
+    return lines.mapIndexed { i, line ->
+        when {
+            i == hermes?.first -> "<hermes-rule>"
+            i == hermes?.second -> "<hermes-footer>"
+            r == null -> cardTimerLine(line)
+            i in r.top..r.bottom -> line
+            i == r.elapsed -> CARD_ELAPSED.replaceFirst(line, "elapsed N")
+            i == r.bottom + 1 && CARD_OMP_STATUS.matches(shown[i]) -> "<status>"
+            else -> cardTimerLine(line)
+        }
+    }
 }
 
 /**
@@ -4274,12 +5500,185 @@ internal fun cardTimerLine(line: String): String {
  * computes it. A screen that is not UTF-8, or holds a NUL, reads differently here and on the
  * computer, so it never matches: the check fails closed (exit 3), never open.
  */
-internal fun cardScreenDigest(raw: String): String {
+internal fun cardScreenDigest(raw: String, agent: String? = null): String {
     // A NUL is refused by both checks on the computer (a shell can't hold one): never a match here either.
     if ('\u0000' in raw) return CARD_NO_MATCH
     // Every line ends in a newline (the last one too), as a line-by-line awk prints it.
-    val t = raw.split("\n").joinToString("\n") { cardTimerLine(it) }.let { if (it.isNotEmpty() && !it.endsWith("\n")) it + "\n" else it }
+    val t = cardScreenRows(raw.split("\n"), agent).joinToString("\n").let { if (it.isNotEmpty() && !it.endsWith("\n")) it + "\n" else it }
     return sha256Hex(t.toByteArray(Charsets.UTF_8))
+}
+
+/** Compare everything except the verified Codex working clock and its spinner. */
+internal fun codexSteeringGuard(raw: String): String? {
+    if ('\u0000' in raw || !codexSteeringReady(raw)) return null
+    val rows = cardRows(raw)
+    val at = rows.indexOfLast { CODEX_WORKING_ROW.matches(stripAnsi(it).trimEnd()) }
+    if (at < 0) return null
+    val payload = rows.mapIndexed { i, row -> if (i == at) "<codex-working>" else row }
+        .joinToString("\n", postfix = "\n")
+    return "c:${rows.lastIndex - at}:${sha256Hex(payload.toByteArray(Charsets.UTF_8))}"
+}
+
+/**
+ * 2.2.8 (Bill: "I don't like the 'question changed, won't send' in general; just render the question
+ * and then give the buttons so that can't happen"): the guard compares the dialog, not the screen.
+ * The dialog's rows are the rows from its question down to its last option, found in the very read
+ * the card was checked against ([cardRegion]); the check on the computer takes the same rows of its
+ * own read (the same count, the same number of rows under them: a pane's screen keeps its height) and
+ * compares them, each with only its ends trimmed. Rows above
+ * the dialog (a spinner, running times, a token counter, a header) never count, for any agent. The
+ * rows under it count by their shape only ([cardUnderRow], Codex's review 4B): a new dialog drawn
+ * under the old one changes them, a ticking counter or spinner there doesn't.
+ * The rows are first taken as [cardScreenRows] gives them, so the rules kept there still hold inside.
+ * When the dialog's rows can't be found, the whole screen is compared as before ([cardScreenDigest]).
+ */
+internal data class CardRegion(val below: Int, val count: Int)
+
+/** A read's rows as the checks count them: split at each newline, with no empty row after the last one. */
+internal fun cardRows(raw: String): List<String> = raw.split("\n").let { if (raw.endsWith("\n")) it.dropLast(1) else it }
+
+/**
+ * One dialog row as the region digest takes it: only its ends trimmed, every space inside kept (Grok's
+ * review 4: `ls  -la` and `ls -la` are different commands), styles kept.
+ */
+internal fun cardRegionRow(row: String): String = row.trim { it == ' ' || it == '\t' || it == '\r' || it == '\u000B' || it == '\u000C' }
+
+/** 2.2.8: a numbered menu row, as the generic parser reads it ("❯ 1. Yes", "2 (●) Yes, proceed", "[1] Approve"). */
+internal val MENU_OPTION_ROW = Regex("""^[\s│┃|]*([❯›>▶➤⟩→]\s*)?(\[[ xX✓✔]\]\s+)?(?:(\d{1,2})(?:[.)]|\s+(\([○●◯◉]\)))|\[(\d{1,2})\])\s+(.{1,200}?)[\s│┃|]*$""")
+internal fun menuOptionKey(m: MatchResult) = m.groupValues[3].ifEmpty { m.groupValues[5] }
+internal fun menuOptionLabel(m: MatchResult) = (m.groupValues[2] + m.groupValues[6]).trim()
+
+/**
+ * 2.2.8 (Codex's review 4B): the dialog as the parser read it. [rows]: each screen row from the
+ * question's first row down to the last option's last row, as [cardRegionRow] gives it (no styles);
+ * [options]: where each of the card's options is among them.
+ */
+internal data class DialogRows(val rows: List<String>, val options: List<Int>)
+
+/**
+ * The dialog's rows in [raw] for the card [p] (2.2.8, Grok's review 4; Codex's review 4B): exactly
+ * the rows the parser read ([Prompt.dialogRows]), found once and only once on the screen, each
+ * option row there the card's own option by its key. Null (the whole screen is compared) when they
+ * aren't there, are there twice (an older copy of the same dialog), or a row isn't the card's option.
+ */
+internal fun cardRegion(raw: String, p: Prompt): CardRegion? {
+    if ('\u0000' in raw || p.terminalReview || p.readingQuestion || p.unreadQuestion) return null
+    val d = p.dialogRows ?: return null
+    if (d.rows.isEmpty()) return null
+    val rows = cardRows(raw)
+    val plain = rows.map { cardRegionRow(stripAnsi(it)) }
+    // Options the dialog draws (the card's own rows, such as Oh My Pi's typed steer, have a ":" key).
+    val options = p.choices.filter { ':' !in it.keys }
+    if (options.isEmpty() || options.size != d.options.size) return null
+    val n = d.rows.size
+    val at = (0..plain.size - n).filter { i -> (0 until n).all { plain[i + it] == d.rows[it] } }
+    val top = at.singleOrNull() ?: return null
+    for ((o, c) in d.options.zip(options)) {
+        val m = MENU_OPTION_ROW.find(plain[top + o])
+        // Codex's update prompt draws "› 1. Update now" (CODEX_UPDATE_OPTION), the same numbers.
+        val k = m?.let(::menuOptionKey) ?: CODEX_UPDATE_KEY.find(plain[top + o])?.groupValues?.get(1)
+        if (k != c.keys) return null
+    }
+    val bottom = top + n - 1
+    return CardRegion(rows.size - 1 - bottom, n)
+}
+
+private val CODEX_UPDATE_KEY = Regex("""^(?:›\s*)?(\d)\.\s+\S""")
+
+/**
+ * 2.2.8 (Codex's review 4B): a row under the dialog as the guard takes it. Those rows decide which
+ * dialog owns the keys (a new dialog drawn under the old one takes them), so they count too.
+ * Codex's per-commit review of 8c0125d: each counts exactly as it is (styles and all, only its ends
+ * trimmed: a changed shortcut or a highlight shown only in colour is a change), except a running
+ * status row ([CARD_STATUS_ROW]), where only its moving parts are read as tokens (Codex's per-commit
+ * review of d2895b5): its spinner's glyph (the first one) as "*", each whole running time ("9s", "10s",
+ * "1m 0s", "22m58s"; never part of a word or a number) as "T", and each token counter's number
+ * ("⇣1.2k", "↓ 999k") as "N". Every other character and every style stays as it is.
+ */
+private val CARD_UNDER_GLYPH = Regex("[\u2800-\u28FF·✢✳✶✻✽◐◓◑◒◆◇◈•]")
+/**
+ * A running status row as each agent draws it (Codex's per-commit review of dce009c: never any row that
+ * merely starts with a glyph): Grok's ("⠧ Thinking… 44s   22m58s ⇣121k [stop]", "◆ List … [↓][stop]"),
+ * Claude's, Codex's and Antigravity's ("✻ Working… (14s · esc to interrupt)", "• Working (12s • esc to
+ * interrupt)", "◇ Calling tools (21s · esc to interrupt)") and Hermes's ("── ⠹ Working… · 1m 2s ──── …").
+ * Matched on the row with its styles dropped and its ends trimmed; the same three shapes in
+ * [CARD_SEND_CHECK] and card-check.sh.
+ */
+internal val CARD_STATUS_ROW = Regex("^(?:(?:[\u2800-\u28FF]|◆|◇|◈) .*\\[stop]$|(?:[\u2800-\u28FF]|✻|✶|✳|✢|·|✽|◇|◆|•) .*\\(.*esc to interrupt\\)$|─+ [\u2800-\u28FF] Working)")
+internal fun cardUnderRow(row: String): String {
+    val trimmed = cardRegionRow(row)
+    if (!CARD_STATUS_ROW.containsMatchIn(cardRegionRow(CARD_CSI.replace(row, "")))) return trimmed
+    // Each run of text between two styles on its own: the styles stay where they are.
+    val out = StringBuilder()
+    var spun = false
+    var pos = 0
+    fun text(t: String) {
+        var x = t
+        if (!spun) CARD_UNDER_GLYPH.find(x)?.let { m -> x = x.replaceRange(m.range, "*"); spun = true }
+        x = cardTokens(x, CARD_COUNTER, false) { m -> m.value.takeWhile { !it.isDigit() } + "N" }
+        x = cardTokens(x, CARD_RUN_TIME, true) { "T" }
+        out.append(x)
+    }
+    for (m in CARD_CSI.findAll(trimmed)) {
+        text(trimmed.substring(pos, m.range.first))
+        out.append(m.value)
+        pos = m.range.last + 1
+    }
+    text(trimmed.substring(pos))
+    return out.toString()
+}
+private val CARD_COUNTER = Regex("[⇣↓] ?[0-9]+(\\.[0-9]+)?[kKM]?")
+private val CARD_RUN_TIME = Regex("([0-9]+h ?)?([0-9]+m ?)?[0-9]+(\\.[0-9]+)?[smh]")
+private fun cardWordChar(c: Char) = c in '0'..'9' || c in 'a'..'z' || c in 'A'..'Z'
+
+/**
+ * [t] with each match of [re] that stands on its own (no letter or digit right after it, and with
+ * [before], none or a "." right before it) replaced by [to]. One left-to-right scan: a match that
+ * doesn't stand on its own keeps its first character and the scan goes on from the next one, exactly
+ * as [CARD_SEND_CHECK] and card-check.sh scan.
+ */
+private fun cardTokens(t: String, re: Regex, before: Boolean, to: (MatchResult) -> String): String {
+    val out = StringBuilder()
+    var i = 0
+    while (true) {
+        val m = re.find(t, i)
+        if (m == null) { out.append(t, i, t.length); break }
+        val st = m.range.first
+        val en = m.range.last + 1
+        val ok = (en == t.length || !cardWordChar(t[en])) && (!before || st == 0 || !(cardWordChar(t[st - 1]) || t[st - 1] == '.'))
+        if (ok) { out.append(t, i, st).append(to(m)); i = en } else { out.append(t, i, st + 1); i = st + 1 }
+    }
+    return out.toString()
+}
+
+/** The line between the dialog's rows and the rows under it in the digest. */
+internal const val CARD_UNDER_MARK = "@@under@@"
+
+/** The digest of [r]'s rows in [raw], as [CARD_SEND_CHECK] and card-check.sh compute it; null when they aren't there. */
+internal fun cardRegionDigest(raw: String, r: CardRegion, agent: String? = null): String? {
+    if ('\u0000' in raw) return null
+    val rows = cardScreenRows(cardRows(raw), agent)
+    val start = rows.size - r.below - r.count
+    if (r.count < 1 || r.below < 0 || start < 0) return null
+    val t = rows.subList(start, rows.size - r.below).joinToString("") { cardRegionRow(it) + "\n" } +
+        CARD_UNDER_MARK + "\n" + rows.subList(rows.size - r.below, rows.size).joinToString("") { cardUnderRow(it) + "\n" }
+    return sha256Hex(t.toByteArray(Charsets.UTF_8))
+}
+
+/**
+ * The screen argument of a card's guard for [raw] read as [p]: "r:<rows under>:<rows>:<digest>"
+ * for the dialog's rows, or the whole screen's digest when they can't be found.
+ */
+internal fun cardGuardScreen(raw: String, p: Prompt?, agent: String? = null): String {
+    val r = p?.let { cardRegion(raw, it) } ?: return cardScreenDigest(raw, agent)
+    val d = cardRegionDigest(raw, r, agent) ?: return cardScreenDigest(raw, agent)
+    return "r:${r.below}:${r.count}:$d"
+}
+
+/** Whether [raw] still matches a guard's [screen] argument, as the checks on the computer decide it. */
+internal fun cardGuardScreenMatches(raw: String, screen: String, agent: String? = null): Boolean {
+    val m = Regex("""^r:([0-9]{1,6}):([1-9][0-9]{0,5}):([0-9a-f]{64})$""").matchEntire(screen) ?: return cardScreenDigest(raw, agent) == screen
+    return cardRegionDigest(raw, CardRegion(m.groupValues[1].toInt(), m.groupValues[2].toInt()), agent) == m.groupValues[3]
 }
 
 /**
@@ -4301,37 +5700,252 @@ internal val CARD_SEND_CHECK = """
         else:
             return b'-\n'
         return str(len(b)).encode('ascii') + b':' + b + b'\n'
+    # 2.2.8: a screen digest of '-' checks the occupant only, wherever the pane is scrolled.
+    ANYSCROLL = screen == '-'
+    # The pane's agent as herdr names it, from the last occupant read (Hermes's composer rule only for 'hermes').
+    SEEN = {}
     def identity():
         p = json.loads(call('get', pane))['result']['pane']
-        if p.get('pane_id') != pane or (p.get('scroll') or {}).get('offset_from_bottom') != 0:
+        if p.get('pane_id') != pane or (not ANYSCROLL and (p.get('scroll') or {}).get('offset_from_bottom') != 0):
             return None
         s = p.get('agent_session')
         s = s if isinstance(s, dict) else {}
         f = [p.get(k) for k in ('pane_id', 'tab_id', 'workspace_id', 'agent', 'foreground_cwd', 'cwd', 'terminal_id')]
         f += [s.get(k) for k in ('kind', 'agent', 'value')]
+        SEEN['agent'] = p.get('agent')
         return hashlib.sha256(b''.join(v(x) for x in f)).hexdigest()
     # Only the agent's own timer line (cardTimerLine in Herdr.kt): its last (Ns), nothing else.
-    TIMER_LINE = re.compile(b'^(type [0-9/]+, or )?' + '\u2191/\u2193'.encode('utf-8') + rb' to select, enter to confirm[ \t\r\x0b\x0c]*\([0-9]+s\)$')
-    def timer(line):
-        shown = re.sub(rb'\x1b\[[0-9;?]*[ -/]*[@-~]', b'', line).lower().strip(b' \t\r\x0b\x0c')
-        return re.sub(rb'(?s)^(.*)\([0-9]+s\)', rb'\1(Ns)', line, count=1) if TIMER_LINE.match(shown) else line
+    ARROWS = '\u2191/\u2193'.encode('utf-8')
+    HINTS = (b'(?:(type [0-9/]+, or )?' + ARROWS + b' to select, enter to confirm|' + ARROWS +
+             b' to select, enter to lock, tab next question|type your answer and press enter)')
+    TIMER_LINE = re.compile(b'^' + HINTS + rb'[ \t\r\x0b\x0c]*\([0-9]+s\)$')
+    # Hermes's composer under a live prompt (hermesComposerRows in Herdr.kt): its top rule and footer only.
+    HERMES_HINT = re.compile(b'^' + HINTS + rb'(?:[ \t\r\x0b\x0c]*\([0-9]+s\))?$')
+    RULE = '\u2500'.encode('utf-8')
+    HERMES_RULE = re.compile(b'^' + RULE + RULE + b'.*' + RULE + b'$')
+    HERMES_INPUT = re.compile(b'^(?:' + b'|'.join(re.escape(c.encode('utf-8')) for c in ('\u26a0', '?', '\u270e', '\U0001f510', '\U0001f511', '\u2699')) +
+                              b')(?:' + '\ufe0f'.encode('utf-8') + b')?[ \t]*(?:' + '\u276f'.encode('utf-8') + b'|' + '\u203a'.encode('utf-8') + b')(?:[ \t].*)?$')
+    HERMES_BOTTOM = re.compile(b'^(?:' + RULE + b')+$')
+    HERMES_FOOTER = re.compile('^\u2624 [^ ]+ \u00b7 ~?[0-9][0-9.,]*[km]?/[0-9][0-9.,]*[km]?(?: \u00b7 .*)?$'.encode('utf-8'))
+    OMP_STATUS = re.compile(rb'^[^ ]+ ([^ ]+ )?> .* > ' + '\U0001f4c1'.encode('utf-8') + rb' [^ ]+ ' + '\u25b6\u2500'.encode('utf-8') + rb'.*$')
+    ELAPSED_ROW = re.compile('\u2570'.encode('utf-8') + b'(?:' + '\u2500'.encode('utf-8') + rb')+ elapsed [0-9hms.]+ (?:' +
+                             '\u2500'.encode('utf-8') + b')+' + '\u256f'.encode('utf-8') + b'$')
+    # Oh My Pi's approval box (cardScreenRows in Herdr.kt): its rows count as they are.
+    BOX_TOP = re.compile(('\u256d\u2500 allow tool: ').encode('utf-8') + b'.*' + '\u256e'.encode('utf-8') + b'$')
+    BOX_BOTTOM = re.compile('\u2570'.encode('utf-8') + b'(?:' + '\u2500'.encode('utf-8') + b')+' + '\u256f'.encode('utf-8') + b'$')
+    def shown(line):
+        return re.sub(rb'\x1b\[[0-9;?]*[ -/]*[@-~]', b'', line).lower().strip(b' \t\r\x0b\x0c')
+    DIGIT = re.compile(rb'[0-9]')
+    GLYPH = re.compile(rb'\xe2[\xa0-\xa3][\x80-\xbf]|' + b'|'.join(re.escape(c.encode('utf-8')) for c in
+                       '\u00b7\u2722\u2733\u2736\u273b\u273d\u25d0\u25d3\u25d1\u25d2\u25c6\u25c7\u25c8\u2022'))
+    SPIN = rb'\xe2[\xa0-\xa3][\x80-\xbf]'
+    def alt(cs):
+        return b'|'.join(re.escape(c.encode('utf-8')) for c in cs)
+    # cardUnderRow's CARD_STATUS_ROW in Herdr.kt: Grok's, Claude's / Codex's / Antigravity's, Hermes's.
+    STATUS = re.compile(rb'^(?:(?:' + SPIN + b'|' + alt('\u25c6\u25c7\u25c8') + rb') .*\[stop\]$|(?:' + SPIN + b'|' +
+                        alt('\u273b\u2736\u2733\u2722\u00b7\u273d\u25c7\u25c6\u2022') + rb') .*\(.*esc to interrupt\)$|' +
+                        b'(?:' + '\u2500'.encode('utf-8') + b')+ ' + SPIN + b' Working)')
+    CSI = re.compile(rb'\x1b\[[0-9;?]*[ -/]*[@-~]')
+    COUNTER = re.compile(rb'(?:' + alt('\u21e3\u2193') + rb') ?[0-9]+(\.[0-9]+)?[kKM]?')
+    RUNTIME = re.compile(rb'([0-9]+h ?)?([0-9]+m ?)?[0-9]+(\.[0-9]+)?[smh]')
+    WORD = b'0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'
+    def tokens(t, rx, before, to):
+        # cardTokens in Herdr.kt: one left-to-right scan, a match only where it stands on its own.
+        out = b''
+        i = 0
+        while True:
+            m = rx.search(t, i)
+            if m is None:
+                return out + t[i:]
+            st, en = m.start(), m.end()
+            ok = (en == len(t) or t[en] not in WORD) and (not before or st == 0 or not (t[st - 1] in WORD or t[st - 1:st] == b'.'))
+            if ok:
+                out += t[i:st] + to(m.group(0))
+                i = en
+            else:
+                out += t[i:st + 1]
+                i = st + 1
+    def shape(line):
+        # cardUnderRow in Herdr.kt: a running status row's moving parts as tokens, every other byte as it is.
+        x = line.strip(b' \t\r\x0b\x0c')
+        if not STATUS.search(CSI.sub(b'', x).strip(b' \t\r\x0b\x0c')):
+            return x
+        out = b''
+        spun = False
+        for k, seg in enumerate(re.split(rb'(\x1b\[[0-9;?]*[ -/]*[@-~])', x)):
+            if k % 2:
+                out += seg
+                continue
+            if not spun:
+                g = GLYPH.search(seg)
+                if g:
+                    seg = seg[:g.start()] + b'*' + seg[g.end():]
+                    spun = True
+            seg = tokens(seg, COUNTER, False, lambda v: re.match(rb'[^0-9]*', v).group(0) + b'N')
+            seg = tokens(seg, RUNTIME, True, lambda v: b'T')
+            out += seg
+        return out
+    def timer(line, t):
+        return re.sub(rb'(?s)^(.*)\([0-9]+s\)', rb'\1(Ns)', line, count=1) if TIMER_LINE.match(t) else line
+    V = '\u2502'.encode('utf-8')
+    T = '\u251c'.encode('utf-8')
+    TL = '\u256d'.encode('utf-8')
+    BL = '\u2570'.encode('utf-8')
+    def region(t):
+        # The one proven approval box (ompApprovalRegion in Herdr.kt), or None.
+        tops = [i for i, x in enumerate(t) if BOX_TOP.match(x)]
+        if len(tops) != 1:
+            return None
+        top = tops[0]
+        bottom = -1
+        for i in range(top + 1, len(t)):
+            if BOX_BOTTOM.match(t[i]):
+                bottom = i
+                break
+            if not (t[i].startswith(V) or t[i].startswith(T)):
+                return None
+        if bottom < 0 or any(BOX_BOTTOM.match(x) for x in t[bottom + 1:]):
+            return None
+        elapsed = -1
+        for i in range(top - 1, max(0, top - 3) - 1, -1):
+            if ELAPSED_ROW.match(t[i]):
+                elapsed = i
+                break
+            if t[i].startswith((TL, BL, V, T)):
+                break
+        if elapsed >= 0:
+            j = elapsed - 1
+            while j >= 0 and t[j].startswith(V):
+                j -= 1
+            if j < 0 or not t[j].startswith(TL):
+                elapsed = -1
+        return top, bottom, elapsed
+    def rows(lines, hermes_pane):
+        t = [shown(line) for line in lines]
+        r = region(t)
+        f = max((i for i, x in enumerate(t) if x), default=-1)
+        hermes = (f - 3, f) if hermes_pane and f >= 4 and HERMES_FOOTER.match(t[f]) and HERMES_BOTTOM.match(t[f - 1]) and \
+            HERMES_INPUT.match(t[f - 2]) and HERMES_RULE.match(t[f - 3]) and HERMES_HINT.match(t[f - 4]) else (-1, -1)
+        out = []
+        for i, line in enumerate(lines):
+            if i == hermes[0]:
+                out.append(b'<hermes-rule>')
+            elif i == hermes[1]:
+                out.append(b'<hermes-footer>')
+            elif r is None:
+                out.append(timer(line, t[i]))
+            elif r[0] <= i <= r[1]:
+                out.append(line)
+            elif i == r[2]:
+                out.append(re.sub(rb'elapsed [0-9hms.]+', b'elapsed N', line, count=1))
+            elif i == r[1] + 1 and OMP_STATUS.match(t[i]):
+                out.append(b'<status>')
+            else:
+                out.append(timer(line, t[i]))
+        return out
+    codex = re.fullmatch(r'c:([0-9]{1,6}):([0-9a-f]{64})', screen)
+    CODEX_WORKING = re.compile(r'(?:•|◦) Working \(([0-9]+h )?([0-9]+m )?[0-9]+s • esc to interrupt\)'.encode())
+    # 2.2.8: "r:<rows under>:<rows>:<digest>" compares the dialog's rows only (cardGuardScreen).
+    REGION = None
+    m = re.fullmatch(r'r:([0-9]{1,6}):([1-9][0-9]{0,5}):([0-9a-f]{64})', screen)
+    if m:
+        REGION = (int(m.group(1)), int(m.group(2)), m.group(3))
+    if screen == '-':
+        # 2.2.8: the occupant only (a message queued behind a question): 0, 5 when it changed, 4.
+        try:
+            before = identity()
+            after = identity()
+        except Exception:
+            sys.exit(4)
+        if before is not None and before == after == occupant:
+            sys.exit(0)
+        print('@@herdrdroid-occupant-refused@@', flush=True)
+        sys.exit(5)
     try:
         before = identity()
         visible = call('read', pane, '--source', 'visible', '--format', 'ansi')
         after = identity()
         if b'\x00' in visible:
+            print('@@herdrdroid-card-refused@@', flush=True)
             sys.exit(3)  # a NUL never matches (the shell check can't hold one); as cardScreenDigest
-        visible = b'\n'.join(timer(line) for line in visible.split(b'\n'))
+        if codex is not None:
+            lines = visible.split(b'\n')
+            if visible.endswith(b'\n'):
+                lines.pop()
+            at = len(lines) - 1 - int(codex.group(1))
+            if SEEN.get('agent') == 'codex' and at >= 0 and CODEX_WORKING.fullmatch(
+                re.sub(rb'\x1b\[[0-9;?]*[ -/]*[@-~]', b'', lines[at]).rstrip(b' \t\r\v\f')
+            ):
+                lines[at] = b'<codex-working>'
+                seen = hashlib.sha256(b'\n'.join(lines) + b'\n').hexdigest()
+                if before == after == occupant and seen == codex.group(2):
+                    sys.exit(0)
+            print('@@herdrdroid-card-refused@@', flush=True)
+            sys.exit(3)
+        if REGION is not None:
+            # 2.2.8: the dialog's rows only, each with only its ends trimmed (cardRegionDigest in Herdr.kt).
+            below, count, want = REGION
+            lines = visible.split(b'\n')
+            if visible.endswith(b'\n'):
+                lines = lines[:-1]
+            r = rows(lines, SEEN.get('agent') == 'hermes')
+            start = len(r) - below - count
+            seen = None
+            if start >= 0:
+                seg = r[start:len(r) - below]
+                # Codex's review 4B: the rows under the dialog by their shape (cardUnderRow in Herdr.kt).
+                under = r[len(r) - below:]
+                seen = hashlib.sha256(b''.join(x.strip(b' \t\r\x0b\x0c') + b'\n' for x in seg) + b'@@under@@\n' +
+                                      b''.join(shape(x) + b'\n' for x in under)).hexdigest()
+            if before == after == occupant and seen == want:
+                sys.exit(0)
+            # The dialog's rows changed or aren't there: refused, as the whole-screen check refuses.
+            print('@@herdrdroid-card-refused@@', flush=True)
+            sys.exit(3)
+        visible = b'\n'.join(rows(visible.split(b'\n'), SEEN.get('agent') == 'hermes'))
         if visible and not visible.endswith(b'\n'):
             visible += b'\n'
         seen = hashlib.sha256(visible).hexdigest()
     except Exception:
         sys.exit(4)
-    sys.exit(0 if before == after == occupant and seen == screen else 3)
+    if before == after == occupant and seen == screen:
+        sys.exit(0)
+    # 2.2.8 (Codex's re-review 6): the refusal says so, so a failed key write is never taken for it.
+    print('@@herdrdroid-card-refused@@', flush=True)
+    sys.exit(3)
 """.trimIndent()
 
 /** 2.2.7: the line before an upload's results, so text a shell prints at login is skipped. */
 internal const val UPLOAD_MARKER = "@@herdrdroid-upload@@"
+
+/** Host-side byte compare without sending draft or command text back to the host. */
+internal val EXACT_VIEWPORT_CHECK = """
+    import hashlib, json, subprocess, sys
+    herdr, pane, expected = sys.argv[1:4]
+    def at_bottom():
+        data = json.loads(subprocess.check_output([herdr, 'pane', 'get', pane], timeout=5))
+        record = data['result']['pane']
+        return record.get('pane_id') == pane and (record.get('scroll') or {}).get('offset_from_bottom') == 0
+
+    try:
+        if len(sys.argv) > 4 and not at_bottom():
+            print('$CARD_REFUSED_MARK', flush=True)
+            sys.exit($CARD_CHANGED_EXIT)
+        screen = subprocess.check_output(
+            [herdr, 'pane', 'read', pane, '--source', 'visible', '--format', 'ansi'],
+            timeout=5,
+        )
+        if len(sys.argv) > 4 and not at_bottom():
+            print('$CARD_REFUSED_MARK', flush=True)
+            sys.exit($CARD_CHANGED_EXIT)
+    except Exception:
+        sys.exit(4)
+    if not screen.strip() or b'\x00' in screen:
+        sys.exit(4)
+    if hashlib.sha256(screen).hexdigest() != expected:
+        print('$CARD_REFUSED_MARK', flush=True)
+        sys.exit($CARD_CHANGED_EXIT)
+""".trimIndent()
 
 internal fun sha256Hex(bytes: ByteArray): String =
     java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }

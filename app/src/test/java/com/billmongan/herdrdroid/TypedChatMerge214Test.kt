@@ -53,7 +53,7 @@ class TypedChatMerge214Test {
             "\n\n Enter to select · ↑/↓ to navigate · Esc to cancel"
 
     @After fun close() {
-        vm.viewModelScope.cancel()
+        vm.clearForTest()
         shadowOf(Looper.getMainLooper()).idle()
     }
 
@@ -130,10 +130,11 @@ class TypedChatMerge214Test {
         val p = checkNotNull(detectPrompt(ask(1), true, "claude"))
         val row = checkNotNull(typedChatPair(p.choices)).first
         pump(1)
-        assertTrue(AppBus.emit(NotifyAction(server.id, fake.pane.id, "keep both copies", true, p.question, label = row.label, agent = "claude",
-            isReply = true, options = alertOptionsSig(p.choices), identity = alertIdentity(p), typedRow = row.keys)))
+        assertTrue(AppBus.emit(vm.bindFixtureAlert(NotifyAction(server.id, fake.pane.id, "keep both copies", true, p.question, label = row.label, agent = "claude",
+            isReply = true, options = alertOptionsSig(p.choices), identity = alertIdentity(p), typedRow = row.keys), fake.client)))
         pump(3)
         assertEquals(listOf("keys down", "text keep both copies", "keys enter"), fake.writes)
+        assertEquals(2, fake.checkedWrites)
     }
 
     @Test fun theAlertsTypedAnswerSendsNothingWhenTheQuestionChanged() {
@@ -141,8 +142,8 @@ class TypedChatMerge214Test {
         open(fake)
         val p = checkNotNull(detectPrompt(ask(1, listOf("No", "Type something.", "Chat about this")), true, "claude"))
         pump(1)
-        assertTrue(AppBus.emit(NotifyAction(server.id, fake.pane.id, "keep both copies", true, p.question, label = "Type something.", agent = "claude",
-            isReply = true, options = alertOptionsSig(p.choices), identity = alertIdentity(p), typedRow = "2")))
+        assertTrue(AppBus.emit(vm.bindFixtureAlert(NotifyAction(server.id, fake.pane.id, "keep both copies", true, p.question, label = "Type something.", agent = "claude",
+            isReply = true, options = alertOptionsSig(p.choices), identity = alertIdentity(p), typedRow = "2"), fake.client)))
         pump(3)
         assertTrue(fake.writes.toString(), fake.writes.isEmpty())
     }
@@ -179,8 +180,15 @@ class TypedChatMerge214Test {
         override suspend fun bulk(command: String): ExecResult = answer(command)
         override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult = answer(command)
 
+        var checkedWrites = 0
+            private set
+
         @Synchronized private fun answer(command: String): ExecResult {
             if ("boot_id" in command) return ok("")
+            runAlertFixtureGuard(command, "w1:p1", paneJson, screen, ::answer)?.let {
+                checkedWrites++
+                return it
+            }
             return when {
                 "'pane' 'list'" in command -> ok("""{"result":{"panes":[$paneJson]}}
 @@herdrdroid-tabs@@

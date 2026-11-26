@@ -157,7 +157,7 @@ class PanePrefetchTest {
             compose.runOnUiThread { f.install() }
             body(f)
         } finally {
-            f.vm.viewModelScope.cancel()
+            f.vm.clearForTest()
         }
     }
 
@@ -196,8 +196,8 @@ class PanePrefetchTest {
             reads += "$source:$id"
             if (expectedConnection != null) {
                 assertSame(connection, expectedConnection)
-                assertEquals(1L, timeoutSeconds)
-                hold?.await()
+                assertEquals(if (source == "visible") 1L else 5L, timeoutSeconds)
+                if (source == "visible") hold?.await()
             }
             if (failRead) return ExecResult(-2, "", "fixture timed out")
             return ok(if (id == "waiting") approval else "Idle")

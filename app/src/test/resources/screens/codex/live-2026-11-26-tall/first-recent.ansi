@@ -1,0 +1,35 @@
+
+  [1mWould you like to run the following command?[0m
+
+  Environment: [1mlocal[0m
+
+  Reason: [3mSynthetic long approval fixture. Cancel without executing.[0m
+
+  $ /usr/bin/printf '%s\n' detached-000 detached-001 detached-002 detached-003
+  detached-004 detached-005 detached-006 detached-007 detached-008 detached-009
+  detached-010 detached-011 detached-012 detached-013 detached-014 detached-015
+  detached-016 detached-017 detached-018 detached-019 detached-020 detached-021
+  detached-022 detached-023 detached-024 detached-025 detached-026 detached-027
+  detached-028 detached-029 detached-030 detached-031 detached-032 detached-033
+  detached-034 detached-035 detached-036 detached-037 detached-038 detached-039
+  detached-040 detached-041 detached-042 detached-043 detached-044 detached-045
+  detached-046 detached-047 detached-048 detached-049 detached-050 detached-051
+  detached-052 detached-053 detached-054 detached-055 detached-056 detached-057
+  detached-058 detached-059 detached-060 detached-061 detached-062 detached-063
+  detached-064 detached-065 detached-066 detached-067 detached-068 detached-069
+  detached-070 detached-071 detached-072 detached-073 detached-074 detached-075
+  detached-076 detached-077 detached-078 detached-079 detached-080 detached-081
+  detached-082 detached-083 detached-084 detached-085 detached-086 detached-087
+  detached-088 detached-089 detached-090 detached-091 detached-092 detached-093
+  detached-094 detached-095 detached-096 detached-097 detached-098 detached-099
+  detached-100 detached-101 detached-102 detached-103 detached-104 detached-105
+  detached-106 detached-107 detached-108 detached-109 detached-110 detached-111
+  detached-112 detached-113 detached-114 detached-115 detached-116 detached-117
+  detached-118 detached-119 detached-120 detached-121 detached-122 detached-123
+  detached-124 detached-125 detached-126 detached-127 detached-128 detached-129
+  detached-130 detached-131 detached-132 detached-133 detached-134 detached-135
+  [2m[… 77 lines] [0;1m^a[0;2m view all                                                           [0m
+[1;7m› 1. Yes, proceed (y)
+[0m  2. Yes, and don't ask again for commands that start with `/usr/bin/printf "%s\\n"
+     detached-000 detached-001 detached-002 detached-003 detached-004 detached-005
+  [2mPress [0;1menter[0;2m to confirm or [0;1mesc[0;2m to cancel

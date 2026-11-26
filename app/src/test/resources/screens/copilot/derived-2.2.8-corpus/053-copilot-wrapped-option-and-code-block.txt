@@ -1,0 +1,19 @@
+│ Run build cleanup script                                             │
+│ ──────────────────────────────────────────────────────────────────── │
+│ ╭──────────────────────────────────────────────────────────────────╮ │
+│ │ python3 - <<'PY'                                                 │ │
+│ │ # 1. check build stamp                                           │ │
+│ │ # 2. remove temporary logs                                       │ │
+│ │ print("cleanup ok")                                              │ │
+│ │ PY                                                               │ │
+│ ╰──────────────────────────────────────────────────────────────────╯ │
+│                                                                      │
+│ Do you want to run this command?                                     │
+│                                                                      │
+│ ❯ 1. Yes                                                             │
+│   2. Yes, and don't ask again for `python3` in this directory        │
+│      (/home/user/work/demo-repo)                                     │
+│   3. No, and tell Copilot what to do differently (Esc to stop)       │
+│                                                                      │
+│ ↑/↓ to navigate · enter to select · esc to cancel                    │
+╰──────────────────────────────────────────────────────────────────────╯

@@ -4,6 +4,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -59,14 +60,18 @@ class TallDialog227Test {
         assertEquals(listOf("1", "2"), p.choices.map { it.keys })
         // The visible screen's card is its bottom, so an answer checked against the live screen still fits.
         val live = checkNotNull(detectPrompt(scrolled, true, "claude"))
-        assertTrue(tallDialogFits(p, live))
+        assertTrue("rebuilt command should match its live suffix", tallDialogFits(p, live))
         // The answer path checks the whole dialog, rebuilt again; the visible tail alone is not enough.
         assertFalse(cardAnswerStillFits(p, live))
-        assertTrue(cardAnswerStillFits(p, checkNotNull(detectPrompt(complete(200 to good).first, true, "claude"))))
+        assertFalse(cardAnswerStillFits(p, checkNotNull(detectPrompt(complete(200 to good).first, true, "claude"))))
+        assertTrue("rebuilt command should be terminal-only", p.forCard().terminalReview)
+        assertTrue(p.forCard().choices.isEmpty())
+        assertTrue(live.forCard().terminalReview)
+        assertTrue(live.forCard().choices.isEmpty())
         // And the confirmation finds the dialog's top (its top rule, more than 60 rows above the options).
         val read = questionRead(text, p, "claude", null, true)
-        assertTrue(read.topped)
-        assertTrue(read.complete)
+        assertTrue("read of rebuilt command should be proven", read.topped)
+        assertTrue("read of rebuilt command should be complete", read.complete)
     }
 
     @Test fun aScreenWhoseTopRowContinuesAWrappedLineIsRebuiltToo() {
@@ -95,34 +100,119 @@ class TallDialog227Test {
 
     @Test fun aHistoryThatDoesNotEndWithThisScreenIsRejected() {
         val changed = good.replaceFirst("$ nproc", "$ hostname")
-        val (text, _) = complete(200 to changed, 400 to changed)
+        val (text, _) = complete(200 to changed, 600 to changed)
         assertEquals(scrolled, text)
         assertTrue(checkNotNull(detectPrompt(text, true, "claude")).topOffScreen)
     }
 
     @Test fun chatAboveTheScreenNeverEntersTheCommand() {
         val mixed = history(chat + rule + title + description + dashed + hidden.take(3) + " Some chat line" + hidden.drop(3))
-        assertEquals(scrolled, complete(200 to mixed, 400 to mixed).first)
+        assertEquals(scrolled, complete(200 to mixed, 600 to mixed).first)
     }
 
     @Test fun aStaleCopyOfTheScreensTopIsRejected() {
         val top = scrolled.lines().take(3)
         val stale = history(chat + rule + title + description + dashed + hidden + top)
-        assertEquals(scrolled, complete(200 to stale, 400 to stale).first)
+        assertEquals(scrolled, complete(200 to stale, 600 to stale).first)
     }
 
     @Test fun withoutTheTopWithinTheCapTheNoteStays() {
         fun deep(n: Int) = history((1..n).map { " │ # deep row $it" })
-        val (text, asked) = complete(200 to deep(200), 400 to deep(400))
-        assertEquals(listOf(200, 400), asked)
+        val (text, asked) = complete(200 to deep(200), 600 to deep(600), 2000 to deep(2000))
+        assertEquals(listOf(200, 600, 2000), asked)
         assertEquals(scrolled, text)
         val p = checkNotNull(detectPrompt(text, true, "claude"))
         assertTrue(p.shownParts().details.contains(CLAUDE_TOP_OFF_NOTE))
     }
 
+    @Test fun theThirdReadCanRecoverAMuchTallerCommand() {
+        val long = history(chat + rule + title + description + dashed +
+            (1..700).map { " │ # long command row $it" })
+        fun tail(n: Int) = long.lines().takeLast(n).joinToString("\n")
+        val (text, asked) = complete(200 to tail(200), 600 to tail(600), 2000 to long)
+        assertEquals(listOf(200, 600, 2000), asked)
+        val parsed = checkNotNull(detectPrompt(text, true, "claude"))
+        assertFalse("third read recovered the header", parsed.topOffScreen)
+        assertTrue("command includes its beginning", parsed.shownParts().command.orEmpty().contains("# long command row 1"))
+        assertTrue("command includes its end", parsed.shownParts().command.orEmpty().contains("# long command row 700"))
+        assertTrue("third read is terminal-only", parsed.forCard().terminalReview)
+    }
+
+    @Test fun aClippedEditRecoversItsPathAndWholeDiffForReview() = runBlocking {
+        val dashed = "╌".repeat(72)
+        val diff = (1..240).map { " $it +    sample line $it" }
+        val footer = listOf(dashed, " Do you want to make this edit to sample.txt?", " ❯ 1. Yes", "   2. No", " Esc to cancel")
+        val history = (listOf("─".repeat(72), " Edit file", " sample.txt", dashed) + diff + footer).joinToString("\n")
+        val live = (diff.takeLast(12) + footer).joinToString("\n")
+        val rebuilt = completeTallDialog(live, true, null) { n -> history.lines().takeLast(n).joinToString("\n") }
+        val card = checkNotNull(detectPrompt(rebuilt, true, "claude")).forCard()
+        assertTrue(card.terminalReview)
+        assertTrue(card.choices.isEmpty())
+        assertFalse(card.topOffScreen)
+        assertTrue(card.shownParts().details.any { it.contains("sample.txt") })
+        val diffShown = checkNotNull(card.shownParts().command)
+        assertTrue(diffShown.contains("sample line 1\n"))
+        assertTrue(diffShown.endsWith("sample line 240"))
+    }
+
+    @Test fun aClippedAskRecoversItsQuestionAndVisibleOptionsForReview() = runBlocking {
+        val footer = "Enter to select · ↑/↓ to navigate · Esc to cancel"
+        val live = listOf("  2. Gold", "❯ 3. Silver", "  4. Type something.", footer).joinToString("\n")
+        val head = listOf("☐ Sample", "Which color should the sample use?", "  1. Blue")
+        val history = (head + (1..220).map { "      Description row $it" } + live.lines()).joinToString("\n")
+        val rebuilt = completeTallDialog(live, true, null) { n -> history.lines().takeLast(n).joinToString("\n") }
+        val card = checkNotNull(detectPrompt(rebuilt, true, "claude")).forCard()
+        assertEquals("Which color should the sample use?", card.question)
+        assertTrue(card.terminalReview)
+        assertTrue(card.choices.isEmpty())
+        assertTrue(card.shownParts().details.containsAll(listOf("Blue", "Gold", "Silver")))
+        assertEquals(live, completeTallDialog(live, true, null) { history.replace("Silver", "Purple") })
+        assertEquals(live, completeTallDialog(live, true, null) { (head + footer + live).joinToString("\n") })
+    }
+
+    @Test fun aClippedCapturedCheckboxDialogRecoversItsWrappedHeadingForReview() = runBlocking {
+        val history = screen("captured-2.1.332-four-questions/q4.txt")
+        // Derived from the authentic capture by removing its top, including the tabs.
+        val live = history.lines().drop(6).joinToString("\n")
+        val partial = checkNotNull(detectPrompt(live, false, "claude")).forCard()
+        assertTrue(partial.terminalReview)
+        assertTrue(partial.topOffScreen)
+        assertTrue(partial.choices.isEmpty())
+        val recovered = completeTallDialog(live, false, null) { history }
+        val whole = checkNotNull(detectPrompt(recovered, false, "claude")).forCard()
+        assertTrue(whole.question.startsWith("│ Question 4:") || whole.question.startsWith("Question 4:"))
+        assertTrue(whole.shownParts().details.any { it.contains("Option 4.1") })
+        assertTrue(whole.terminalReview)
+        assertTrue(whole.choices.isEmpty())
+        assertEquals(live, completeTallDialog(live, false, null) { history.replace("Option 4.1", "Replaced") })
+        assertNull(claudeClippedAskReview("❯ Pasted checkboxes\n" + live))
+        assertNull(claudeClippedAskReview(live.replace("     Submit", "     Other action")))
+    }
+
+    @Test fun aClippedCheckboxDialogCanFocusItsOwnActions() = runBlocking {
+        val submit = screen("captured-2.1.332-four-questions/q4-submit.txt")
+        val next = submit.replace("❯    Submit", "❯    Next")
+        val chat = submit.replace("❯    Submit", "     Submit").replace("  6. Chat about this", "❯ 6. Chat about this")
+        for (history in listOf(submit, next, chat)) {
+            val live = history.lines().drop(6).joinToString("\n")
+            val partial = checkNotNull(claudeClippedAskReview(live)).forCard()
+            assertTrue(partial.terminalReview)
+            assertTrue(partial.topOffScreen)
+            assertTrue(partial.choices.isEmpty())
+            val rebuilt = completeTallDialog(live, false, null) { history }
+            val whole = checkNotNull(detectPrompt(rebuilt, false, "claude")).forCard()
+            assertTrue(whole.question.contains("Question 4:"))
+            assertTrue(whole.terminalReview)
+            assertTrue(whole.choices.isEmpty())
+        }
+        val liveSubmit = submit.lines().drop(6).joinToString("\n")
+        assertNull(claudeClippedAskReview(liveSubmit.replace("  6. Chat about this", "❯ 6. Chat about this")))
+        assertNull(claudeClippedAskReview(liveSubmit.replace("❯    Submit", "     Submit")))
+    }
+
     @Test fun aShortHistoryStopsAfterOneReadAndADialogThatFitsIsNotReadAgain() {
         val short = history(listOf(" │ # one more row"))
-        assertEquals(listOf(200), complete(200 to short, 400 to short).second)
+        assertEquals(listOf(200), complete(200 to short, 600 to short).second)
         val fits = screen("captured-2.1.330-tall/tall-ask.txt")
         runBlocking {
             var reads = 0

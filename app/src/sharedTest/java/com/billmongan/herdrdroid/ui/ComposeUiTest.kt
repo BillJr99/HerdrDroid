@@ -1,6 +1,7 @@
 package com.billmongan.herdrdroid.ui
 
 import com.billmongan.herdrdroid.OUTERMOST_RULE
+import com.billmongan.herdrdroid.clearForTest
 import com.billmongan.herdrdroid.idleMainLooperRule
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -19,6 +20,8 @@ import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotFocused
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.hasScrollToIndexAction
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.hasSetTextAction
@@ -52,6 +55,7 @@ import com.billmongan.herdrdroid.transcript.TextItem
 import com.billmongan.herdrdroid.transcript.UserItem
 import com.billmongan.herdrdroid.transcript.rowsOf
 import kotlinx.coroutines.cancel
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -66,6 +70,13 @@ import org.junit.runner.RunWith
 class ComposeUiTest {
     @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = idleMainLooperRule()
     @get:Rule val rule = createComposeRule()
+
+    /** View models a test made without its own teardown; each is cleared after the test (2.2.8). */
+    private val made = mutableListOf<AppViewModel>()
+
+    @After fun clearViewModels() {
+        if (made.isNotEmpty()) rule.runOnUiThread { made.forEach { it.clearForTest() } }
+    }
 
     /** 2.1.5/2.2.0: the cross-server card shows source, destination and message, offers a choice when asked, and Approve and Cancel; it never asks for a typed code. */
     @Test fun crossServerCardShowsTheMessageAndOffersChoicesApproveAndCancel() {
@@ -222,7 +233,7 @@ class ComposeUiTest {
             toggle.performClick().assertIsOff()
             rule.runOnIdle { assertEquals(false, prefs.getBoolean("agentMessagingEnabled", true)) }
         } finally {
-            rule.runOnUiThread { vm.viewModelScope.cancel() }
+            rule.runOnUiThread { vm.clearForTest() }
             val editor = prefs.edit()
             if (before is Boolean) editor.putBoolean("agentMessagingEnabled", before)
             else editor.remove("agentMessagingEnabled")
@@ -400,7 +411,7 @@ class ComposeUiTest {
     @Test fun sessionDrawerReturnsToTopWhenReopened() {
         val open = androidx.compose.runtime.mutableStateOf(true)
         val app = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.app.Application>()
-        val vm = com.billmongan.herdrdroid.AppViewModel(app)
+        val vm = com.billmongan.herdrdroid.AppViewModel(app).also { made += it }
         rule.setContent {
             Box(Modifier.height(240.dp)) { SessionDrawer(vm, opening = open.value) }
         }
@@ -420,7 +431,7 @@ class ComposeUiTest {
 
     @Test fun removingOneOfflineMessageDropsOnlyItsQueuedSend() {
         val app = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.app.Application>()
-        val vm = com.billmongan.herdrdroid.AppViewModel(app)
+        val vm = com.billmongan.herdrdroid.AppViewModel(app).also { made += it }
         val target = pane(Status.WORKING)
         // A server is open with no client yet (the link is down): taps queue for it. With no server
         // open at all a tap is dropped instead (2.1.1, Grok's RC review M1).
@@ -453,8 +464,7 @@ class ComposeUiTest {
             assertEquals(1, vm.queuedCount)
             assertEquals(listOf("Second message"), vm.removableSendsFor(target.id).map { it.text })
         }
-        // With a server open its checks keep running; stop them so later tests can go idle.
-        rule.runOnUiThread { vm.viewModelScope.cancel() }
+        // With a server open its checks keep running; @After stops them so later tests can go idle.
     }
 
     @Test fun unsentMessageLongPressOffersForceSendAndRemove() {
@@ -498,7 +508,7 @@ class ComposeUiTest {
 
     @Test fun paneWaitingForAnAnswerBlocksImmediateQueueDelivery() {
         val app = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.app.Application>()
-        val vm = com.billmongan.herdrdroid.AppViewModel(app)
+        val vm = com.billmongan.herdrdroid.AppViewModel(app).also { made += it }
         assertTrue(vm.hasPendingQuestion(pane(Status.NEEDS_YOU)))
         assertEquals(false, vm.hasPendingQuestion(pane(Status.IDLE)))
         val openChoice = """
@@ -617,10 +627,13 @@ class ComposeUiTest {
                 }, onKey = { error("Expected an answer row, not a raw key") }, onTypeAnswer = {})
             }
         }
-        rule.onNodeWithText("[ ] pytest").performScrollTo().performClick()
+        fun uncheckedChoice(label: String) = rule.onNode(
+            hasText(label) and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Unchecked")
+        )
+        uncheckedChoice("pytest").performScrollTo().performClick()
         assertEquals(listOf("space"), input)
         rule.onNodeWithText("Review answers").assertDoesNotExist()
-        val tox = rule.onNodeWithText("[ ] tox").performScrollTo()
+        val tox = uncheckedChoice("tox").performScrollTo()
         val next = rule.onNodeWithText("Next").performScrollTo()
         assertTrue(tox.fetchSemanticsNode().positionInRoot.y < next.fetchSemanticsNode().positionInRoot.y)
         next.assertIsDisplayed().performClick()
@@ -995,7 +1008,7 @@ class ComposeUiTest {
 
     @Test fun agentMenusKeepComposerAndDraftWithoutASeparateReadingView() {
         val app = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.app.Application>()
-        val vm = rule.runOnUiThread { com.billmongan.herdrdroid.AppViewModel(app) }
+        val vm = rule.runOnUiThread { com.billmongan.herdrdroid.AppViewModel(app) }.also { made += it }
         rule.setContent { AgentScreen(vm, "fixture:pane") }
         rule.onNode(hasSetTextAction()).performTextInput("Synthetic draft")
         rule.onNodeWithContentDescription("More").performClick()
@@ -1013,7 +1026,7 @@ class ComposeUiTest {
 
     @Test fun runningPillOpensWhatIsRunningAndMenuHasNoEntry() {
         val app = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.app.Application>()
-        val vm = rule.runOnUiThread { com.billmongan.herdrdroid.AppViewModel(app) }
+        val vm = rule.runOnUiThread { com.billmongan.herdrdroid.AppViewModel(app) }.also { made += it }
         val proc = com.billmongan.herdrdroid.herdr.ProcInfo(4242, 1, 1, "npm", "npm test", 30, 1.0, 2048)
         val sub = com.billmongan.herdrdroid.herdr.SubagentInfo("a1", "a1.jsonl", "Review", 0, true, 3)
         val work = com.billmongan.herdrdroid.herdr.WorkInfo(listOf(proc), listOf(sub), emptyList(), agentOwnedOnly = true)

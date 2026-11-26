@@ -1,0 +1,13 @@
+                                                                                     ┃ Getting started              ✕
+                                                                                     ┃
+                                                                                     ┃ Connect provider    /connect
+                                                                                     ┃
+                    █▀▀█ █▀▀█ █▀▀ █▀▀▄ █▀▀ █▀▀█ █▀▀▄ █▀▀                              ┃
+                    █  █ █▄▄█ █▀▀ █  █ █   █  █ █  █ █▀▀                              ┃
+                    ▀▀▀▀ ▀    ▀▀▀ ▀  ▀ ▀▀▀ ▀▀▀▀ ▀▀▀  ▀▀▀                              ┃
+                                                                                     ┃
+  ┃                                                                                  ┃
+  ┃  Ask anything...                                                                 ┃
+  ┃                                                                                  ┃
+  ┃  Build  llmproxy__flagship/free                                                  ┃
+                                                                    tab agents  ctrl+p commands

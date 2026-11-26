@@ -1,0 +1,13 @@
+> Check the sources before the build.
+
+↓ Shell for f in src/*.py; do
+      python3 -m py_compile "$f" || exit 1
+  done
+  make -C build test JOBS=4
+──────────────────────────────────────────────────────────────────────────
+ shell requires approval
+ ❯ Yes, single permission
+   Trust, always allow in this session
+   No (Tab to edit)
+──────────────────────────────────────────────────────────────────────────
+ esc to close · ↑↓ to navigate · ↵ to select · Tab to edit

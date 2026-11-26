@@ -10,6 +10,8 @@ internal interface PromptRelayPort {
     suspend fun hasWork(pane: Pane, connection: Any): Boolean
     suspend fun viewport(id: String, connection: Any): String
     suspend fun send(pane: Pane, text: String, connection: Any)
+    suspend fun noticeHistory(pane: Pane, cursor: String, connection: Any):
+        com.billmongan.herdrdroid.transcript.TranscriptRead? = null
 
     /**
      * Sends only if [permit] is still open when the write starts. A real transport claims it after
@@ -86,6 +88,7 @@ internal enum class RelayRefusal(val why: String, val transient: Boolean) {
     NO_INPUT("its input box is not on screen, so it can't be checked for a draft", true),
     DRAFT("text is already typed in its input box at the computer", true),
     FAILED("its pane or screen couldn't be read", true),
+    AGENT_NOT_FOUND("Herdr did not recognize that pane as an agent prompt target", true),
     SOURCE_CHANGED("this chat's pane is no longer open as it was when the proposal came", true),
     SOURCE_REPLACED("a different session is now in this chat's pane", false),
     /** 2.2.7: a message too long to type couldn't be put on that computer whole as a file. */
@@ -111,6 +114,15 @@ internal fun takesForcedInput(agent: String?): Boolean = takesInputDuringBackgro
 
 /** 2.2.2: herdr's agent prompt refuses an agent it calls blocked "with agent_blocked before any input is sent" (its --help). */
 internal fun refusedBeforeInput(e: Exception): Boolean = e is HerdrError && "agent_blocked" in e.message.orEmpty()
+
+/** Only a structured reply to the prompt command proves a missing target before input. */
+internal fun promptTargetNotFound(e: Exception): Boolean = e is HerdrError &&
+    runCatching {
+        org.json.JSONObject(e.message.orEmpty()).let {
+            it.optString("id") == "cli:agent:prompt" && it.optJSONObject("error")?.optString("code") == "agent_not_found"
+        }
+    }.getOrDefault(false)
+
 
 /**
  * A watched pane, after the app's work sweep ([withBusy]), that a relay may write to: idle or done
@@ -269,6 +281,7 @@ internal class PromptRelay(
         } catch (e: Exception) {
             // 2.2.2: herdr's agent_blocked is decided before any input is sent, so nothing was typed.
             if (refusedBeforeInput(e)) return refuse(RelayRefusal.QUESTION)
+            if (promptTargetNotFound(e)) return refuse(RelayRefusal.AGENT_NOT_FOUND)
             return if (permit.submitted) RelayResult.UNCERTAIN else refuse(RelayRefusal.FAILED)
         } finally {
             gate.finish(key, permit)

@@ -39,7 +39,7 @@ class SmallPacketFallbackVm226Test {
     private var now = 10_000L
 
     @After fun close() {
-        vm.viewModelScope.cancel()
+        vm.clearForTest()
         shadowOf(Looper.getMainLooper()).idle()
     }
 
@@ -128,7 +128,7 @@ class SmallPacketFallbackVm226Test {
     }
 
     @Test fun neverOverAWebSocket() {
-        val ws = a.copy(wsUrl = "wss://bridge.invalid/ssh")
+        val ws = a.copy(wsUrl = "ws://127.0.0.1:1/ssh")
         val ssh = HerdrSsh("unused", 0, ws.user, Credentials(null, null), null, { null }, ws.wsUrl)
         signedIn(ssh, ws)
         assertFalse(vm.maybeSmallPacketFallback(LinkDown(java.io.IOException("drop")), ssh))
@@ -137,6 +137,8 @@ class SmallPacketFallbackVm226Test {
 
     @Test fun aNetworkChangeOrTheBackgroundSkipsItAndSaysSo() {
         DiagLog.clear()
+        // The change below reaches this view model's network listener; no real reconnect may follow it.
+        vm.holdReconnectForTest()
         val ssh = HerdrSsh(a.host, a.port, a.user, Credentials(null, null), null, { null })
         // The first network seen is the baseline, not a change.
         NetworkWatch.observe(Any(), "fixture-base-${System.nanoTime()}")

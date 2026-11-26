@@ -1,0 +1,49 @@
+
+  ┃                                                                                           Fixture question check
+  ┃  Ask me which database the demo should use.
+  ┃                                                                                           Context
+  ┃  Ask me which database to use.                                                            1,234 tokens
+  ┃                                                                                           1% used
+
+                                                                                              MCP
+                                                                                              • fixture                   Connected
+     I will ask you now.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  ┃
+  ┃  Questions
+  ┃
+  ┃  Which database should the demo use?
+  ┃
+  ┃  1. SQLite (Recommended)
+  ┃     A local file, nothing to run
+  ┃  2. Postgres
+  ┃     A server database
+  ┃  3. Type your own answer
+  ┃
+  ┃  ↑↓ select  enter submit  esc dismiss
+  ┃

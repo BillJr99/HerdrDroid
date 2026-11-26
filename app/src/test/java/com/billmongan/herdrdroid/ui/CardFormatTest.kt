@@ -39,13 +39,14 @@ class CardFormatTest {
         for ((screen, layout) in golden) assertEquals("card layout of $screen changed; the new layout is in app/build/card-format-actual.txt", layout, actual[screen])
     }
 
-    /** Nothing is dropped or reworded: the same characters as the parser's text, less "#" titles and the "△" glyph. */
+    /** Nothing is dropped or reworded: the same characters as the parser's text, less "#" titles, the "△" glyph and (2.2.8) code fences. */
     @Test fun layoutKeepsEveryCharacterOfTheParsedText() {
         val root = File(requireNotNull(javaClass.classLoader?.getResource("screens")).toURI())
         val strip = "#△$"
         fun chars(s: String) = s.filterNot { it.isWhitespace() || it in strip }.toList().sorted()
         var checked = 0
-        for (f in root.walkTopDown().filter { it.isFile && it.name.endsWith(".txt") }) {
+        val bad = mutableListOf<String>()
+        for (f in root.walkTopDown().filter { it.isFile && it.name.endsWith(".txt") }.sortedBy { it.path }) {
             val agent = f.parentFile.parentFile.name
             val s = f.readText()
             val p = detectPrompt(s, true, agent) ?: continue
@@ -55,9 +56,18 @@ class CardFormatTest {
             val shown = CardFormat.format(parts, s).joinToString("") {
                 if (it is CardBlock.Labelled && it.label == "Your answer") ":" + it.value else CardFormat.plain(it)
             }
-            assertEquals(f.path, chars(parts.blocks.joinToString("") { it.text }), chars(shown))
+            // 2.2.8: a fenced block shows as code without its "```lang" fence rows.
+            val parsed = parts.blocks.joinToString("") { b -> b.text.lines().filterNot { com.billmongan.herdrdroid.herdr.isFenceRow(it) }.joinToString("\n") }
+            // Every screen that differs is listed, not only the first one found.
+            if (chars(parsed) != chars(shown)) {
+                val want = chars(parsed).groupingBy { it }.eachCount()
+                val got = chars(shown).groupingBy { it }.eachCount()
+                bad += "${f.relativeTo(root).path}: dropped ${want.mapValues { (c, n) -> n - (got[c] ?: 0) }.filterValues { it > 0 }}, " +
+                    "added ${got.mapValues { (c, n) -> n - (want[c] ?: 0) }.filterValues { it > 0 }}"
+            }
             checked++
         }
+        assertTrue(bad.joinToString("\n"), bad.isEmpty())
         assertTrue(checked > 50)
     }
 

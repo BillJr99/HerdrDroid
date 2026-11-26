@@ -38,7 +38,7 @@ class GrokUsageClose214Test {
     private val draft = idle.replace("│ ❯" + " ".repeat(126) + "│", "│ ❯ half-typed draft" + " ".repeat(108) + "│")
 
     @After fun close() {
-        vm.viewModelScope.cancel()
+        vm.clearForTest()
         shadowOf(Looper.getMainLooper()).idle()
     }
 
@@ -77,7 +77,8 @@ class GrokUsageClose214Test {
         open(fake)
         pump(1)
         assertTrue(com.billmongan.herdrdroid.notify.AppBus.emit(
-            com.billmongan.herdrdroid.notify.NotifyAction(server.id, fake.pane.id, "HD214_REPLY", true, "", agent = "grok", isReply = true)))
+            vm.bindFixtureAlert(com.billmongan.herdrdroid.notify.NotifyAction(
+                server.id, fake.pane.id, "HD214_REPLY", true, "", agent = "grok", isReply = true), fake.client)))
         pump(3)
         assertTrue(fake.typed.toString(), fake.typed.none { "HD214_REPLY" in it })
         // 2.2.1: the reply is never typed; the known dialog gets at most two checked Esc presses.

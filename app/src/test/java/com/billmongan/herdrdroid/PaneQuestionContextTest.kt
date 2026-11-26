@@ -155,6 +155,9 @@ class PaneQuestionContextTest {
         val chat = HermesChat(ssh, vm.viewModelScope)
         try {
             rule.runOnUiThread {
+                // Polls paused, as the layout tests do: nothing here may dial the refused fixture port.
+                state<Boolean>(vm, "foreground").value = false
+                vm.holdReconnectForTest()
                 state<HermesPhase>(chat, "phase").value = HermesPhase.CHAT
                 state<List<Item>>(chat, "items").value = listOf(reply)
                 state<List<Ask>>(chat, "asks").value = listOf(
@@ -167,7 +170,7 @@ class PaneQuestionContextTest {
             rule.onNodeWithText("Allow once").assertIsDisplayed()
             rule.onAllNodesWithText(reply.text).assertCountEquals(1)
         } finally {
-            vm.viewModelScope.cancel()
+            vm.clearForTest()
         }
     }
 
@@ -191,6 +194,9 @@ class PaneQuestionContextTest {
         val pane = Pane("w1:p1", "w1:t1", "w1", agent, Status.NEEDS_YOU, "", "/fixture")
         try {
             rule.runOnUiThread {
+                // Polls paused and the reconnect held, as the layout tests do: rendering only.
+                state<Boolean>(vm, "foreground").value = false
+                vm.holdReconnectForTest()
                 state<List<Pane>>(vm, "panes").value = listOf(pane)
                 vm.openPane(pane.id)
                 state<TranscriptMode>(vm, "transcriptState").value = mode
@@ -214,7 +220,7 @@ class PaneQuestionContextTest {
             rule.setContent { AgentScreen(vm, pane.id, readScreen = { /* no live pane I/O */ }) }
             verify()
         } finally {
-            vm.viewModelScope.cancel()
+            vm.clearForTest()
         }
     }
 

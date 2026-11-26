@@ -1,0 +1,29 @@
+────────────────────────────────────────
+❯ Please check that the calendar connection works. (No private values included.)
+────────────────────────────────────────
+
+📚 Skill demo-workspace  0.3s
+🔎 Grep def cmd_check|--check|calendarList  0.3s
+
+╭────────────────────────────────────────────────────────────╮
+│ ⚠️  Dangerous Command                                      │
+│                                                            │
+│ python3 -B - <<'PY'                                        │
+│ # 1. read config under ~/.demo                             │
+│ import pathlib,subprocess,sys                              │
+│ root=pathlib.Path.home()/'.demo'                           │
+│ … (choose Show full command)                               │
+│                                                            │
+│ ❯ 1. Allow once                                            │
+│   2. Allow for this session                                │
+│   3. Add to permanent allowlist                            │
+│   4. Deny                                                  │
+│   5. Show full command                                     │
+│                                                            │
+│ script execution via heredoc                               │
+╰────────────────────────────────────────────────────────────╯
+  ↑/↓ to select, Enter to confirm  (58s)
+── ⠹ Working… · 1m 2s ──────────────────────────────────────────────────────────────────────────────────── Check the calendar setup ─
+⚠ ❯
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☤ gpt-6.2-sol · ~188K/500K · [████░░░░░░] ~38% · ◎ 89.7% · ◷ 4.3s · ↑ 21 t/s · 1.0d · ⏲ 1m · ~/agents/hermes

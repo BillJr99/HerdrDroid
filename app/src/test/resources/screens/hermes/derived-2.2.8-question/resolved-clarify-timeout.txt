@@ -1,0 +1,17 @@
+────────────────────────────────────────
+❯ Please tidy the demo workspace and tell me what changed.
+────────────────────────────────────────
+
+📚 Skill demo-workspace  0.3s
+🔎 Grep TODO|FIXME  0.2s
+💻 $ ls -la /home/user/demo  0.1s
+
+
+? Clarify: Which branch should the demo build use? → main
+
+(clarify timed out after 90s — locked answers returned)
+
+── ⠹ Working… · 1m 2s ───────────────────────────────────────────────────────────────────────────────────── Tidy the demo workspace ─
+☤ ❯ msg=interrupt · /queue · /bg · /steer · Ctrl+C cancel
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☤ demo-model · ~42K/500K · [█░░░░░░░░░] ~8% · ◎ 12.0% · ◷ 3.1s · ↑ 20 t/s · 1.0d · ⏲ 1m · ~/demo enter interrupt · tab queue · ctrl+c stop

@@ -71,6 +71,8 @@ jobs:
           echo "HD_WS_KEY=$PWD/e2e/good" >> "$GITHUB_ENV"
           echo "HD_WS_BADKEY=$PWD/e2e/bad" >> "$GITHUB_ENV"
           echo "HD_WS_FP=$(docker exec hdws-srv ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub | cut -d' ' -f2)" >> "$GITHUB_ENV"
+          echo "HD_WS_USER=node" >> "$GITHUB_ENV"
+          echo "HD_WS_HERDR=/home/node/.local/bin/herdr" >> "$GITHUB_ENV"
 
       # A throwaway SSH server running both the herdr TUI and herdr-core (the Herdr App's server),
       # for the backend end-to-end test.
