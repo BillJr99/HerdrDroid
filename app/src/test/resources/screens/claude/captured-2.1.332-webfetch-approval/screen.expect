@@ -1,0 +1,4 @@
+card: options
+blocked: true
+options: Yes | Yes, and don't ask again for fixture.invalid | No, and tell Claude what to do differently (esc)
+source: Claude Code 2.1.332, native dialog from a disposable probe tab and loopback fixture provider
