@@ -20,6 +20,8 @@ import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotFocused
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.hasScrollToIndexAction
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.hasSetTextAction
@@ -625,10 +627,13 @@ class ComposeUiTest {
                 }, onKey = { error("Expected an answer row, not a raw key") }, onTypeAnswer = {})
             }
         }
-        rule.onNodeWithText("[ ] pytest").performScrollTo().performClick()
+        fun uncheckedChoice(label: String) = rule.onNode(
+            hasText(label) and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Unchecked")
+        )
+        uncheckedChoice("pytest").performScrollTo().performClick()
         assertEquals(listOf("space"), input)
         rule.onNodeWithText("Review answers").assertDoesNotExist()
-        val tox = rule.onNodeWithText("[ ] tox").performScrollTo()
+        val tox = uncheckedChoice("tox").performScrollTo()
         val next = rule.onNodeWithText("Next").performScrollTo()
         assertTrue(tox.fetchSemanticsNode().positionInRoot.y < next.fetchSemanticsNode().positionInRoot.y)
         next.assertIsDisplayed().performClick()
