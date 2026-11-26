@@ -1158,7 +1158,14 @@ class AppViewModel internal constructor(
                 val panes: List<Pane>? = if (s.id == current?.id && herdr != null) panes
                 else if (watched != null) runCatching {
                     com.billmongan.herdrdroid.ssh.SshCounts.reused(s.id)
-                    withBusy(watched.panes(), runCatching { watched.workCounts(watched.panes0Cache, transcriptScript).second }.getOrDefault(emptyMap()))
+                    val listed = watched.panes()
+                    val connection = watched.connectionIdentity
+                    val sequence = ++modelReadSequence
+                    val eligible = listed.filter { it.agent != null && (it.scrollOffset ?: 0) == 0 }
+                    val footers = runCatching { watched.previews(eligible.map { it.id }) }.getOrDefault(emptyMap())
+                    if (s.id != current?.id && fleet?.herdr(s.id) === watched && watched.connectionIdentity === connection)
+                        eligible.forEach { p -> footers[p.id]?.let { recordModelFooter(s.id, p, it.tail, sequence) } }
+                    withBusy(listed, runCatching { watched.workCounts(watched.panes0Cache, transcriptScript).second }.getOrDefault(emptyMap()))
                 }.getOrNull()
                 else runCatching {
                     val ssh = HerdrSsh(s.host, s.port, s.user, credentialsFor(s, savedPassword(s)), s.fingerprint, SshKeyVault::provider, s.wsUrl?.takeIf { s.overWebSocket }, s.smallPacketsMss, s.id,
@@ -1310,13 +1317,21 @@ class AppViewModel internal constructor(
         prefs.saveQuotas(s.id, stored)
         // Models for the drawer, read only (nothing is typed): every agent's from the footer it
         // draws, and Claude's (whose footer has none) from its session log.
-        val withAgent = fresh.filter { it.agent != null }
-        val fromFooters = runCatching { h.previews(withAgent.map { it.id }) }.getOrNull().orEmpty()
-            .mapNotNull { (id, peek) -> footerModel(withAgent.firstOrNull { it.id == id }?.agent, peek.tail)?.let { id to it } }.toMap()
-        val fromLogs = runCatching { h.logModels(fresh) }.getOrNull().orEmpty()
-        if (fromFooters.isNotEmpty() || fromLogs.isNotEmpty()) {
-            modelCache[s.id] = modelCache[s.id].orEmpty() + fromFooters + fromLogs
-            modelsVersion++
+        val withAgent = fresh.filter { it.agent != null && (it.scrollOffset ?: 0) == 0 }
+        val sequence = ++modelReadSequence
+        val footers = runCatching { h.previews(withAgent.map { it.id }) }.getOrNull().orEmpty()
+        val fromLogs = runCatching { h.logModels(withAgent.filter { it.id !in footers ||
+            footerModel(it.agent, footers.getValue(it.id).tail) == null }) }.getOrNull().orEmpty()
+        if (s.id != current?.id) {
+            val fallback = fromLogs.filterKeys { id ->
+                val p = withAgent.firstOrNull { it.id == id }
+                p != null && lastModelFooter[s.id to id]?.first?.sameCardOccupant(p) != true
+            }
+            if (fallback.isNotEmpty()) {
+                modelCache[s.id] = modelCache[s.id].orEmpty() + fallback
+                modelsVersion++
+            }
+            withAgent.forEach { p -> footers[p.id]?.let { recordModelFooter(s.id, p, it.tail, sequence) } }
         }
         serverQuotas = serverQuotas + (s.id to stored.toMap())
         // The open server's cards take the new readings at once.
@@ -1957,6 +1972,7 @@ class AppViewModel internal constructor(
         lastPanePrefetchAt = now
         panePrefetchAttempts[p.id] = now
         val owner = PanePreview(sid, h, connection, p, now, "")
+        val modelSequence = ++modelReadSequence
         panePrefetchOwner = owner
         panePrefetchJob = viewModelScope.launch {
             if (paneVisit != visit || !owner.matches(android.os.SystemClock.elapsedRealtime())) return@launch
@@ -1969,6 +1985,7 @@ class AppViewModel internal constructor(
                 return@launch
             }
             if (text.isBlank() || text.length > 8_192 || paneVisit != visit || !owner.matches(android.os.SystemClock.elapsedRealtime())) return@launch
+            recordModelFooter(sid, p, text, modelSequence)
             panePreviews.remove(p.id)
             panePreviews[p.id] = owner.copy(text = text)
             if (panePreviews.size > 8) panePreviews.remove(panePreviews.keys.first())
@@ -2016,13 +2033,57 @@ class AppViewModel internal constructor(
         runCatching { com.billmongan.herdrdroid.notify.AgentsWidget.update(getApplication()) }
     }
 
-    private val missingModelLogged = mutableSetOf<String>()
+    private var modelReadSequence = 0L
+    private val lastModelFooter = mutableMapOf<Pair<String, String>, Pair<Pane, Long>>()
+
+    /** Only a footer that names a model can replace the current label. */
+    private fun recordModelFooter(server: String, pane: Pane, text: String, sequence: Long) {
+        val model = footerModel(pane.agent, com.billmongan.herdrdroid.herdr.stripAnsi(text)) ?: return
+        val key = server to pane.id
+        val last = lastModelFooter[key]
+        if (last != null && sequence < last.second) return
+        lastModelFooter[key] = pane to sequence
+        val old = if (server == current?.id) models else modelCache[server].orEmpty()
+        if (old[pane.id] == model) return
+        val fresh = old + (pane.id to model)
+        modelCache[server] = fresh
+        if (server == current?.id) {
+            models = fresh
+            noteModels()
+        } else modelsVersion++
+    }
+
+    private suspend fun refreshAnsweredModel(target: CardTarget, shown: Prompt) {
+        // Read only a model dialog's acknowledged result, never use the highlighted choice as the label.
+        if (!shown.question.lines().any { row ->
+                Regex("""^\s*(?:(?:select|choose|change|switch)(?:\s+(?:to|a|the|your))*\s+models?\b|model\s+(?:selection|picker)\b)""",
+                    RegexOption.IGNORE_CASE).containsMatchIn(row)
+            }) return
+        val h = target.client
+        if (!target.isCurrent(h)) return
+        val id = target.pane.id
+        val sequence = ++modelReadSequence
+        val fresh = quietly { client ->
+            if (client !== h) return@quietly null
+            val now = h.cardPane(id, target.connection) ?: return@quietly null
+            if (!now.sameCardOccupant(target.pane) || now.scrollOffset != 0) return@quietly null
+            h.readStyledViewport(id, target.connection, timeoutSeconds = 2)
+        }
+        if (fresh != null && target.isCurrent(h)) recordModelFooter(target.server, target.pane, fresh, sequence)
+    }
+
     private var lastPreviewsAt = 0L
     private var lastWorkAt = 0L
 
     suspend fun refreshPreviews() {
-        val ids = panes.map { it.id }
-        quietly { it.previews(ids) }?.let { peeks ->
+        val server = current?.id ?: return
+        val client = herdr ?: return
+        val connection = client.connectionIdentity
+        val snapshot = panes.associateBy { it.id }
+        val sequence = ++modelReadSequence
+        fun currentRead() = current?.id == server && herdr === client && client.connectionIdentity === connection
+        quietly { it.previews(snapshot.keys.toList()) }?.let { peeks ->
+            if (!currentRead()) return
             // The last line of real output on each card, looking back past status chrome.
             previews = peeks.mapValues { (id, peek) ->
                 val agent = panes.firstOrNull { it.id == id }?.agent
@@ -2031,24 +2092,28 @@ class AppViewModel internal constructor(
                     .filter { footerModel(agent, it) == null }
                     .map { com.billmongan.herdrdroid.ui.cardLine(it) }.firstOrNull { it.isNotBlank() } ?: ""
             }
-            val seen = peeks.mapNotNull { (id, peek) ->
-                val agent = panes.firstOrNull { it.id == id }?.agent
-                val m = footerModel(agent, peek.tail)
-                // Once per pane: a card that should show a model but whose footer gave none. The
-                // footer's last line goes in the diagnostic log (a status line, nothing secret).
-                if (m == null && agent != null && agent !in setOf("claude") && missingModelLogged.add("${current?.id}|$id")) {
-                    val last = peek.tail.lines().map { it.trimEnd() }.lastOrNull { it.isNotBlank() }.orEmpty()
-                    com.billmongan.herdrdroid.diag.DiagLog.log("model", "no model in the footer of $agent pane $id; last line: \"${last.trim().take(120)}\"")
-                }
-                m?.let { id to it }
+            peeks.forEach { (id, peek) ->
+                val expected = snapshot[id] ?: return@forEach
+                val p = pane(id)?.takeIf { it.sameCardOccupant(expected) && (it.scrollOffset ?: 0) == 0 } ?: return@forEach
+                recordModelFooter(server, p, peek.tail, sequence)
             }
-            if (seen.isNotEmpty()) { models = models + seen; noteModels() }
         }
-        // Claude's footer has no model, so its cards take it from Claude's own session log.
-        quietly { it.logModels(panes) }?.let { fromLog -> if (fromLog.isNotEmpty()) { models = models + fromLog; noteModels() } }
+        // Claude can report the model in its own reply log, when the current screen has no footer.
+        val unproven = snapshot.values.filter { p ->
+            lastModelFooter[server to p.id]?.first?.sameCardOccupant(p) != true
+        }
+        quietly { it.logModels(unproven) }?.let { fromLog ->
+            if (!currentRead()) return
+            val applicable = fromLog.filterKeys { id ->
+                val p = snapshot[id] ?: return@filterKeys false
+                pane(id)?.sameCardOccupant(p) == true &&
+                    lastModelFooter[server to id]?.first?.sameCardOccupant(p) != true
+            }
+            if (applicable.isNotEmpty()) { models = models + applicable; noteModels() }
+        }
         refreshWorkCounts()
         refreshGit()
-        current?.let { previewCache[it.id] = previews; modelCache[it.id] = models }
+        if (currentRead()) { previewCache[server] = previews; modelCache[server] = models }
     }
 
     /** How many lines the alerts read, when made and when answered: the same both times (1.4.2). */
@@ -2437,6 +2502,7 @@ class AppViewModel internal constructor(
             return
         }
         val attempt = ++paneReadSequence
+        val modelSequence = ++modelReadSequence
         // Only for the pane open now (1.4.2, from review: a late answer for another pane set or
         // cleared the open pane's problem).
         val serverId = current?.id
@@ -2582,6 +2648,10 @@ class AppViewModel internal constructor(
             else if (verdict.why != null && verdict.reads > 1)
                 com.billmongan.herdrdroid.diag.DiagLog.log("read", "$paneId: view settled after ${verdict.reads} reads (${verdict.why.name.lowercase()})")
             paneViewSettled = verdict.show
+            // Model labels can update while the conversation text is still settling.
+            cardOwner?.takeIf { it.isCurrent(it.client) && it.pane.scrollOffset == 0 }?.let {
+                recordModelFooter(it.server, it.pane, text, modelSequence)
+            }
             // 2.1.5: a cross-server frame the agent rendered in this chat becomes a card; nothing is sent.
             // A card, so never held by the settle gate (2.2.0).
             noteCrossServerFrames(cardOwner, recent)
@@ -2604,13 +2674,7 @@ class AppViewModel internal constructor(
             piLiveQuestion = livePrompt?.takeIf { verifyPi && paneTextTarget != null }
             openCodeComposerTarget = paneTextTarget?.takeIf { useLive && verifyOpenCode && openCodeEmptyComposer(text) }
             hermesUsageRead = verifiedUsage
-            if (isOpenCode(agent) || agent in setOf("kiro", "kiro-cli")) {
-                footerModel(agent, text)?.takeIf { models[paneId] != it }?.let {
-                    models = models + (paneId to it)
-                    current?.id?.let { sid -> modelCache[sid] = models }
-                    noteModels()
-                }
-            }
+
             // What the question card sees, logged when it changes (sizes only, no question text).
             val status = panes.firstOrNull { it.id == paneId }?.status
             val p = when {
@@ -5710,6 +5774,7 @@ class AppViewModel internal constructor(
             if (!send(h, target, fresh)) { flash(refused); feedback?.invoke(refused); return@answerOnce }
             delivered()
             noteAnswer(id, shown, label, serverId = target.server)
+            refreshAnsweredModel(target, fresh)
             readPane(id)
         }
     }
@@ -5945,6 +6010,7 @@ class AppViewModel internal constructor(
             // Say what went (1.4.3): a tap that answers shows it at once.
             // A sent answer is a note on the screen, not a reason on the Questions view's entry.
             if (voiceAllowed != null) report("Sent $sent to $agentName: ${choice.label.take(40)}") else flash("Sent $sent to $agentName: ${choice.label.take(40)}")
+            refreshAnsweredModel(target, fresh)
             readPane(paneId)
             viewModelScope.launch { refreshPanes() }
         }
