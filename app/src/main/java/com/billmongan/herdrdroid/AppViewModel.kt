@@ -6080,16 +6080,8 @@ class AppViewModel internal constructor(
         if (com.billmongan.herdrdroid.herdr.detectGrokPrivacyDialog(screen) == null) {
             val left = com.billmongan.herdrdroid.herdr.grokInputText(screen)
                 ?: return "Grok's input box isn't showing, so /privacy wasn't typed. Close what is open in Grok and try again."
-            if (left.isNotEmpty()) {
-                // Backspaces clear it in any terminal program; then check that it is empty.
-                h.sendKeys(paneId, *Array(left.length + 2) { "backspace" }, expectedConnection = connection)
-                delay(500)
-                if (!com.billmongan.herdrdroid.herdr.grokInputText(h.read(paneId, 60)).isNullOrEmpty())
-                    return "Grok's input box still has text in it, so /privacy wasn't typed."
-            }
-            h.sendText(paneId, "/privacy", connection)
-            delay(700)
-            h.sendKeys(paneId, "enter", expectedConnection = connection)
+            if (left.isNotEmpty()) return "Grok's input box already has text, so /privacy wasn't typed."
+            h.typeAndEnter(paneId, "/privacy", connection, settleMillis = 700)
             delay(1500)
             screen = h.read(paneId, 60)
         }

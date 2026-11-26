@@ -800,8 +800,7 @@ class Herdr internal constructor(
             }
         }
         if (occupant != null) { write(cmd("pane", "send-text", pane.id, text) + " && " + cmd("pane", "send-keys", pane.id, "enter")); return }
-        runWrite(cmd("pane", "send-text", pane.id, text), expectedConnection = expectedConnection)
-        runWrite(cmd("pane", "send-keys", pane.id, "enter"), expectedConnection = expectedConnection)
+        typeAndEnter(pane.id, text, expectedConnection)
     }
 
     /**
@@ -814,11 +813,24 @@ class Herdr internal constructor(
         return runWrite(hcCmd("keys", paneId, *keys.toTypedArray()), expectedConnection = expectedConnection)
     }
 
-    /** Types [text] and presses Enter: one paste-and-submit on herdr-core. */
-    suspend fun typeAndEnter(paneId: String, text: String, expectedConnection: Any? = null) {
+    /** Paste and submit in one host operation so a phone-side failure cannot strand the paste. */
+    suspend fun typeAndEnter(paneId: String, text: String, expectedConnection: Any? = null, settleMillis: Int = 0) {
         if (core) { runWrite(hcCmd("send", "--force", paneId, text), expectedConnection = expectedConnection); return }
-        runWrite(cmd("pane", "send-text", paneId, text), expectedConnection = expectedConnection)
-        runWrite(cmd("pane", "send-keys", paneId, "enter"), expectedConnection = expectedConnection)
+        require(settleMillis in 0..1_000)
+        val pause = if (settleMillis == 0) "" else
+            "sleep ${settleMillis / 1_000}.${(settleMillis % 1_000).toString().padStart(3, '0')} && "
+        val paste = cmd("pane", "send-text", paneId, text)
+        val submit = cmd("pane", "send-keys", paneId, "enter")
+        val result = runWriteResult("$paste && echo $PASTED_MARK && $pause$submit", expectedConnection, null)
+        if (result.exit == 0) return
+        if (result.out.lineSequence().any { it.trim() == PASTED_MARK }) {
+            // The composer may contain this paste, the submitted message, or a newer user draft.
+            // Never clear or retry without proof of what the target now contains.
+            throw DeliveryUncertain("The text was typed, but submission could not be confirmed.")
+        }
+        val message = result.err.ifBlank { result.out }.lineSequence().lastOrNull { it.isNotBlank() }?.trim()
+            ?: "exit ${result.exit}"
+        throw HerdrError(message, result.exit)
     }
 
     /**
@@ -5123,7 +5135,9 @@ internal const val OCCUPANT_PASSED_MARK = "@@herdrdroid-occupant-passed@@"
 internal const val CARD_REFUSED_MARK = "@@herdrdroid-card-refused@@"
 internal const val CARD_PASSED_MARK = "@@herdrdroid-card-passed@@"
 
-/** 2.2.8: a bound write failed after its check passed and the write began: it may have reached the agent. */
+private const val PASTED_MARK = "@@herdrdroid-text-pasted@@"
+
+/** A write began, but its result does not prove whether it reached the agent. */
 internal class DeliveryUncertain(message: String) : Exception(message)
 
 private val CARD_OCCUPANT_FIELDS = listOf("pane_id", "tab_id", "workspace_id", "agent", "foreground_cwd", "cwd", "terminal_id")
