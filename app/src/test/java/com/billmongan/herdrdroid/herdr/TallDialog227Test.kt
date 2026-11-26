@@ -137,6 +137,38 @@ class TallDialog227Test {
         assertTrue(parsed.forCard().terminalReview)
     }
 
+    @Test fun aClippedEditRecoversItsPathAndWholeDiffForReview() = runBlocking {
+        val dashed = "╌".repeat(72)
+        val diff = (1..240).map { " $it +    sample line $it" }
+        val footer = listOf(dashed, " Do you want to make this edit to sample.txt?", " ❯ 1. Yes", "   2. No", " Esc to cancel")
+        val history = (listOf("─".repeat(72), " Edit file", " sample.txt", dashed) + diff + footer).joinToString("\n")
+        val live = (diff.takeLast(12) + footer).joinToString("\n")
+        val rebuilt = completeTallDialog(live, true, null) { n -> history.lines().takeLast(n).joinToString("\n") }
+        val card = checkNotNull(detectPrompt(rebuilt, true, "claude")).forCard()
+        assertTrue(card.terminalReview)
+        assertTrue(card.choices.isEmpty())
+        assertFalse(card.topOffScreen)
+        assertTrue(card.shownParts().details.any { it.contains("sample.txt") })
+        val diffShown = checkNotNull(card.shownParts().command)
+        assertTrue(diffShown.contains("sample line 1\n"))
+        assertTrue(diffShown.endsWith("sample line 240"))
+    }
+
+    @Test fun aClippedAskRecoversItsQuestionAndVisibleOptionsForReview() = runBlocking {
+        val footer = "Enter to select · ↑/↓ to navigate · Esc to cancel"
+        val live = listOf("  2. Gold", "❯ 3. Silver", "  4. Type something.", footer).joinToString("\n")
+        val head = listOf("☐ Sample", "Which color should the sample use?", "  1. Blue")
+        val history = (head + (1..220).map { "      Description row $it" } + live.lines()).joinToString("\n")
+        val rebuilt = completeTallDialog(live, true, null) { n -> history.lines().takeLast(n).joinToString("\n") }
+        val card = checkNotNull(detectPrompt(rebuilt, true, "claude")).forCard()
+        assertEquals("Which color should the sample use?", card.question)
+        assertTrue(card.terminalReview)
+        assertTrue(card.choices.isEmpty())
+        assertTrue(card.shownParts().details.containsAll(listOf("Blue", "Gold", "Silver")))
+        assertEquals(live, completeTallDialog(live, true, null) { history.replace("Silver", "Purple") })
+        assertEquals(live, completeTallDialog(live, true, null) { (head + footer + live).joinToString("\n") })
+    }
+
     @Test fun aShortHistoryStopsAfterOneReadAndADialogThatFitsIsNotReadAgain() {
         val short = history(listOf(" │ # one more row"))
         assertEquals(listOf(200), complete(200 to short, 600 to short).second)

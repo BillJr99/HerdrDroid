@@ -1772,7 +1772,9 @@ internal class ClaudeFramed(val lines: List<QLine>, val topOffScreen: Boolean, /
  * above the command, chat above the dialog with no rule between) is not this layout: null, and the
  * generic walk reads it as before.
  */
-internal fun claudeFramedDialog(raw: List<String>, at: Int): ClaudeFramed? {
+private val CLAUDE_EDIT_DIFF_ROW = Regex("""^ {0,3}\d+ {1,6}(?:[-+] ?)?\S.*$""")
+
+internal fun claudeFramedDialog(raw: List<String>, at: Int, rebuilt: Boolean = false): ClaudeFramed? {
     var i = at - 1
     while (i >= 0 && raw[i].isBlank()) i--
     // The question: "Do you want to proceed?", right above the options (it may wrap over two rows).
@@ -1780,6 +1782,8 @@ internal fun claudeFramedDialog(raw: List<String>, at: Int): ClaudeFramed? {
         ?: return null
     if ((header..i).any { raw[it].isBlank() || CLAUDE_GUTTER_ROW.matches(raw[it]) }) return null
     val question = (header..i).map { raw[it].trim() }
+    val edit = question.first().startsWith("Do you want to make this edit")
+    fun commandRow(row: String) = if (edit) CLAUDE_EDIT_DIFF_ROW.matches(row) else CLAUDE_GUTTER_ROW.matches(row)
     // The explanation, up to the dashed rule under the command.
     var k = header - 1
     while (k >= 0 && !CLAUDE_DASHED_RULE.matches(raw[k])) {
@@ -1792,11 +1796,13 @@ internal fun claudeFramedDialog(raw: List<String>, at: Int): ClaudeFramed? {
     // The command's rows: each in the gutter, up to the dashed rule over the command or the screen's top.
     var j = below - 1
     while (j >= 0 && !CLAUDE_DASHED_RULE.matches(raw[j])) {
-        if (!CLAUDE_GUTTER_ROW.matches(raw[j])) return null
+        if (!commandRow(raw[j])) return null
         j--
     }
     val commandRows = (j + 1 until below).map { raw[it] }
-    if (commandRows.none { CLAUDE_GUTTER_ROW.find(it)?.groupValues?.get(1).orEmpty().isNotBlank() }) return null
+    if (commandRows.isEmpty() || !edit && commandRows.none {
+            CLAUDE_GUTTER_ROW.find(it)?.groupValues?.get(1).orEmpty().isNotBlank()
+        }) return null
     // Over the command: the title and the description, under the plain rule (or the screen's top).
     var titleRows = emptyList<String>()
     var topOff = j < 0
@@ -1813,7 +1819,10 @@ internal fun claudeFramedDialog(raw: List<String>, at: Int): ClaudeFramed? {
             topRow = t
             // A full dialog names its tool on its first row.
             val title = titleRows.firstOrNull() ?: return null
-            if (!CLAUDE_COMMAND_TITLE.matches(title) && !CLAUDE_REQUEST_SOURCE.containsMatchIn(title) && !COMMAND_INTRO.matches(title)) return null
+            if (edit) {
+                if (!rebuilt || title != "Edit file") return null
+            } else if (!CLAUDE_COMMAND_TITLE.matches(title) && !CLAUDE_REQUEST_SOURCE.containsMatchIn(title) &&
+                !COMMAND_INTRO.matches(title)) return null
         }
     }
     // The command, one line per row; a row that fills the frame wraps into the next.
@@ -1821,9 +1830,9 @@ internal fun claudeFramedDialog(raw: List<String>, at: Int): ClaudeFramed? {
     val command = mutableListOf<String>()
     var wrapped = false
     for (r in commandRows) {
-        val body = CLAUDE_GUTTER_ROW.find(r)?.groupValues?.get(1).orEmpty().trimEnd()
+        val body = if (edit) r.trimEnd() else CLAUDE_GUTTER_ROW.find(r)?.groupValues?.get(1).orEmpty().trimEnd()
         if (wrapped && command.isNotEmpty()) command[command.size - 1] = command.last() + body else command += body
-        wrapped = r.trimEnd().length >= width - 1
+        wrapped = !edit && r.trimEnd().length >= width - 1
     }
     val out = mutableListOf<QLine>()
     if (topOff) out += QLine(if (j < 0) CLAUDE_TOP_OFF_NOTE else CLAUDE_TITLE_OFF_NOTE)
@@ -3863,7 +3872,10 @@ private fun hermesLiveApprovalBox(text: String): String? {
 
 fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version: String? = null): Prompt? {
     val plain = stripAnsi(text)
-    if (agent.equals("claude", true)) claudeClippedAskReview(plain)?.let { return it }
+    if (agent.equals("claude", true)) {
+        rebuiltClaudeAsk(plain)?.let { return it }
+        claudeClippedAskReview(plain)?.let { return it }
+    }
     if (agent.equals("agy", true)) {
         agySubagentQuestion(plain)?.let { return it }
         agySubagentApproval(plain)?.let { return it }
@@ -4509,7 +4521,7 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
                 return@let got.takeIf { it.isNotEmpty() }
             }
             // 2.2.4: Claude's permission dialog, read by its frame however tall its command is.
-            val framed = if (grokRows) null else claudeFramedDialog(raw, at)
+            val framed = if (grokRows) null else claudeFramedDialog(raw, at, isRebuiltDialog(raw))
             if (framed != null) { topOff = framed.topOffScreen; walkTop = maxOf(framed.top, 0); return@let framed.lines }
             var i = at - 1
             // Blank lines inside a card are crossed (Antigravity puts one between "Requesting
