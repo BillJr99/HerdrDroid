@@ -2575,7 +2575,7 @@ internal fun composerBoxStart(screen: String, agent: String?): Int? {
 }
 
 /** One character of a styled row and how it is drawn (1.4.6). */
-private data class Styled(val ch: Char, val faint: Boolean, val italic: Boolean, val grey: Boolean, val background: List<Int>, val colored: Boolean = false, val reverse: Boolean = false)
+internal data class Styled(val ch: Char, val faint: Boolean, val italic: Boolean, val grey: Boolean, val background: List<Int>, val colored: Boolean = false, val reverse: Boolean = false)
 
 /** A colour that reads as grey: the three channels within 28 of each other, of middle brightness. */
 private fun greyRgb(r: Int, g: Int, b: Int): Boolean =
@@ -2590,7 +2590,7 @@ private fun grey256(n: Int): Boolean = when (n) {
 }
 
 /** The characters of a row with the SGR state each is drawn in; other escape sequences are dropped. */
-private fun styledChars(row: String): List<Styled> {
+internal fun styledChars(row: String): List<Styled> {
     val out = ArrayList<Styled>(row.length)
     var faint = false; var italic = false; var grey = false
     // A foreground colour other than the terminal's default is set (2.1.1).
