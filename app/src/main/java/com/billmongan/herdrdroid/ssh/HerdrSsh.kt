@@ -574,29 +574,44 @@ class HerdrSsh(
         trace?.started = true
         val cmd = try { session.exec(command) } catch (e: Exception) { runCatching { session.close() }; throw AfterStart(e) }
         try {
-            input?.let { b -> cmd.outputStream.use { it.write(b); it.flush() } }
+            val began = System.currentTimeMillis()
+            val beganNanos = System.nanoTime()
+            val budgetNanos = TimeUnit.SECONDS.toNanos(timeoutSeconds)
             val out = Capped(maxOut, meter)
             val err = Capped(MAX_ERR, meter)
             val t1 = kotlin.concurrent.thread(isDaemon = true, name = "ssh-out") { out.drain(cmd.inputStream) }
             val t2 = kotlin.concurrent.thread(isDaemon = true, name = "ssh-err") { err.drain(cmd.errorStream) }
-            val began = System.currentTimeMillis()
-            val deadline = began + timeoutSeconds * 1000
-            // 2.2.7: the pane list and chat log reads (never a write, nor a search, git or sessions
-            // script that may rightly stay quiet) with no first byte for a while tell the session.
+            val uploadFailure = java.util.concurrent.atomic.AtomicReference<Exception?>()
+            // The remote side can emit output before accepting input. Let the streams move together
+            // and close the same channel if the deadline expires while its writer is blocked.
+            val upload = input?.let { bytes ->
+                kotlin.concurrent.thread(isDaemon = true, name = "ssh-in") {
+                    try {
+                        cmd.outputStream.use { it.write(bytes); it.flush() }
+                    } catch (e: Exception) {
+                        uploadFailure.set(e)
+                    }
+                }
+            }
+            val workers = listOfNotNull(t1, t2, upload)
+            // Only pane-list and chat-log reads report a first-byte stall.
             val watch = firstByteStallListener?.takeIf { trace == null && label in FIRST_BYTE_WATCHED }
                 ?.let { l -> FirstByteWatch(SmallPacketFallback.FIRST_BYTE_STALL_MS, began, l) }
-            while ((t1.isAlive || t2.isAlive) && System.currentTimeMillis() < deadline && !out.over) {
-                t1.join(100); if (!t1.isAlive) t2.join(100)
+            while (!out.over && uploadFailure.get() == null && System.nanoTime() - beganNanos < budgetNanos) {
+                val active = workers.firstOrNull(Thread::isAlive) ?: break
+                active.join(100)
                 watch?.tick(System.currentTimeMillis(), meter.bytes())
             }
-            if (out.over || t1.isAlive || t2.isAlive) {
+            if (out.over || uploadFailure.get() != null || workers.any(Thread::isAlive)) {
+                val stalledUpload = upload?.isAlive == true && uploadFailure.get() == null
                 runCatching { session.close() }
-                t1.join(2_000); t2.join(2_000)
+                workers.forEach { it.join(2_000) }
                 if (out.over) throw OutputTooLarge(maxOut)
-                // Closing often lets both readers finish (a stream that was slow to close): then the
-                // command's own result stands (1.3.2, from a code review).
+                if (stalledUpload) throw CommandTimeout(timeoutSeconds)
+                uploadFailure.get()?.let { throw it }
+                // Closing can finish the output streams after a completed command's late exit status.
                 val exit = cmd.exitStatus
-                if (!t1.isAlive && !t2.isAlive && exit != null) return Triple(exit, out.bytes(), err.bytes())
+                if (workers.none(Thread::isAlive) && exit != null) return Triple(exit, out.bytes(), err.bytes())
                 throw CommandTimeout(timeoutSeconds)
             }
             cmd.join(5, TimeUnit.SECONDS)
