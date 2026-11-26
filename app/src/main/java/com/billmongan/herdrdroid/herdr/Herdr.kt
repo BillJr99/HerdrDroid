@@ -3950,8 +3950,40 @@ private fun hermesLiveApprovalBox(text: String): String? {
     return lines.subList(top, bottom + 1).joinToString("\n")
 }
 
+/**
+ * Native Codex queue rows can contain arbitrary user text, including numbered menu options.
+ * Keep their positions but take them out of prompt parsing. A wrapped input is four-space
+ * indented, and the compositor returns to its own row when the queue ends.
+ */
+internal fun codexFollowUpRows(text: String): Set<Int> {
+    val masked = mutableSetOf<Int>()
+    var inInput = false
+    stripAnsi(text).lines().forEachIndexed { index, row ->
+        when {
+            row.trim() == "• Queued follow-up inputs" -> {
+                masked += index
+                inInput = false
+            }
+            row.startsWith("  ↳ ") -> {
+                masked += index
+                inInput = true
+            }
+            row.trim() == "shift+← edit last queued message" -> {
+                masked += index
+                inInput = false
+            }
+            inInput && row.startsWith("    ") -> masked += index
+            else -> inInput = false
+        }
+    }
+    return masked
+}
+
 fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version: String? = null): Prompt? {
-    val plain = stripAnsi(text)
+    val unstyled = stripAnsi(text)
+    val queueRows = if (agent.equals("codex", true)) codexFollowUpRows(unstyled) else emptySet()
+    val plain = if (queueRows.isEmpty()) unstyled
+        else unstyled.lines().mapIndexed { index, row -> if (index in queueRows) "" else row }.joinToString("\n")
     if (agent.equals("claude", true)) {
         claudeModelCard(plain)?.let { return it }
         rebuiltClaudeAsk(plain)?.let { return it }

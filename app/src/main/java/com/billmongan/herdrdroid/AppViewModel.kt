@@ -2619,7 +2619,10 @@ class AppViewModel internal constructor(
             // while status still says Working. Probe only the selected, live-bottom viewport.
             val missingCodexCard = agent == "codex" && paneStatus == Status.WORKING && preview?.choices.isNullOrEmpty()
             val recentClaudeModel = preview?.claudeModelControl == true
-            val recentCodexQuestion = preview?.codexQuestion == true && client?.backend == Backend.TUI
+            val recentCodexCard = agent == "codex" && preview != null && client?.backend == Backend.TUI
+            val recentCodexQuestion = recentCodexCard && preview?.codexQuestion == true
+            val shownCodexCard = recentCodexCard && paneTextPane == paneId &&
+                detectPrompt(paneText, blocked, agent, version) != null
             val requireCodexApprovalIdentity = (missingCodexCard && preview?.terminalReview != true) || recentCodexQuestion
             val unfinishedChoicePreview = agent in setOf("claude", "agy") &&
                 paneStatus == Status.WORKING && preview?.choices.isNullOrEmpty()
@@ -2635,7 +2638,7 @@ class AppViewModel internal constructor(
             if (unprovenPreview) com.billmongan.herdrdroid.diag.DiagLog.log("prompt",
                 "$paneId: the recent read's dialog isn't proven (${preview!!.choices.size} choice(s)); reading the live screen")
             val liveCard = if (liveUsage == null &&
-                (verifyOpenCode || verifyHermesUsage || verifyPi || recentClaudeModel || missingCodexCard || unfinishedChoicePreview || unprovenPreview ||
+                (verifyOpenCode || verifyHermesUsage || verifyPi || recentClaudeModel || recentCodexQuestion || shownCodexCard || missingCodexCard || unfinishedChoicePreview || unprovenPreview ||
                     preview?.terminalReview == true || preview?.topOffScreen == true || (blocked && preview?.choices.isNullOrEmpty())) && canUpgrade()) {
                 val owner = checkNotNull(cardOwner)
                 quietly { h ->
@@ -2670,7 +2673,8 @@ class AppViewModel internal constructor(
             }
             val recentClarify = preview?.hermesClarify == true
             val requiresLive = verifyOpenCode || recentClaudeModel || recentClarify || recentCodexQuestion || verifyPi
-            val codexQuestionCleared = recentCodexQuestion && liveCandidate == null
+            val codexQuestionCleared = liveCard != null && liveCandidate == null && (recentCodexQuestion ||
+                recentCodexCard && com.billmongan.herdrdroid.herdr.codexFollowUpRows(liveCard).isNotEmpty())
             // 2.2.8 (Codex's review 1): once the live screen was read for an unproven recent dialog, that read is
             // the card, a closed dialog included: the stale recent dialog never goes on to be confirmed.
             val unprovenAnswered = unprovenPreview && liveCard != null
