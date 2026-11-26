@@ -120,7 +120,7 @@ class GrokRcReviewFixesTest {
         val fake = Fake(sessionsList, status = "blocked")
         open(b, fake)
         idle()
-        assertTrue(AppBus.emit(NotifyAction(b.id, fake.pane.id, "HD211_REPLY", true, "", isReply = true)))
+        assertTrue(AppBus.emit(vm.bindFixtureAlert(NotifyAction(b.id, fake.pane.id, "HD211_REPLY", true, "", isReply = true), fake.client)))
         idle()
         assertTrue(fake.reads > 0)
         assertTrue(fake.writes().toString(), fake.writes().isEmpty())
@@ -134,10 +134,10 @@ class GrokRcReviewFixesTest {
     }
 
     @Test fun anAlertReplyStillGoesToAnOrdinaryClaudeQuestion() {
-        val fake = Fake("● Which file should I edit?\n\n" + "─".repeat(60) + "\n❯ \n" + "─".repeat(60) + "\n  ? for shortcuts", status = "blocked")
+        val fake = Fake("Which file should I edit?", status = "blocked")
         open(b, fake)
         idle()
-        assertTrue(AppBus.emit(replyTo(fake)))
+        assertTrue(AppBus.emit(vm.bindFixtureAlert(replyTo(fake), fake.client)))
         idle()
         assertTrue(fake.writes().toString(), fake.writes().any { "HD211_REPLY" in it })
     }
@@ -151,7 +151,7 @@ class GrokRcReviewFixesTest {
         fake.timeoutLines = 80
         open(b, fake)
         idle()
-        assertTrue(AppBus.emit(NotifyAction(b.id, fake.pane.id, "HD211_REPLY", true, "", agent = "claude", isReply = true)))
+        assertTrue(AppBus.emit(vm.bindFixtureAlert(NotifyAction(b.id, fake.pane.id, "HD211_REPLY", true, "", agent = "claude", isReply = true), fake.client)))
         // Past card recovery's pause before its 40-line read.
         repeat(4) { shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(1)); Thread.sleep(5) }
         assertTrue(fake.commands.none { "'--source' 'recent'" in it })
@@ -163,11 +163,11 @@ class GrokRcReviewFixesTest {
         shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
         Notify.channels(app)
         val nm = shadowOf(app.getSystemService(NotificationManager::class.java))
-        val fake = Fake("● Which file should I edit?\n\n" + "─".repeat(60) + "\n❯ \n" + "─".repeat(60) + "\n  ? for shortcuts", status = "blocked")
+        val fake = Fake("Which file should I edit?", status = "blocked")
         fake.failSends = true
         open(b, fake)
         idle()
-        assertTrue(AppBus.emit(replyTo(fake)))
+        assertTrue(AppBus.emit(vm.bindFixtureAlert(replyTo(fake), fake.client)))
         idle()
         assertTrue(fake.writes().toString(), fake.writes().isNotEmpty())
         val failed = nm.allNotifications.filter { n -> n.extras.getCharSequence("android.text")?.contains("may have been sent") == true }

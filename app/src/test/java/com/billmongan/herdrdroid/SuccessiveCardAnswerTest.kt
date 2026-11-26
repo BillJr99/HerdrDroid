@@ -1749,10 +1749,11 @@ class SuccessiveCardAnswerTest {
         fun alert(prompt: Prompt) {
             val choice = prompt.choices.first()
             val reads = guardedVisibleReads
-            assertTrue(AppBus.emit(NotifyAction(server.id, "p1", choice.keys, choice.pressEnter, prompt.question,
+            val h = field("herdr").get(vm) as Herdr
+            assertTrue(AppBus.emit(vm.bindFixtureAlert(NotifyAction(server.id, "p1", choice.keys, choice.pressEnter, prompt.question,
                 label = choice.label, agent = agent,
                 options = com.billmongan.herdrdroid.notify.alertOptionsSig(prompt.choices),
-                identity = com.billmongan.herdrdroid.notify.alertIdentity(prompt))))
+                identity = com.billmongan.herdrdroid.notify.alertIdentity(prompt)), h)))
             drainUntil { guardedVisibleReads > reads && !vm.answerInFlight("p1") }
         }
 

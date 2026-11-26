@@ -6562,6 +6562,7 @@ class AppViewModel internal constructor(
 
     internal fun noticeChanges(serverId: String, serverLabel: String, seen: List<Pane>, client: () -> Herdr?) {
         if (!watching) {
+            alertOrigins.keys.removeAll { it.first == serverId }
             seen.forEach { lastStatus["$serverId|${it.id}"] = it.status }
             return
         }
@@ -6571,12 +6572,14 @@ class AppViewModel internal constructor(
             val before = lastStatus[key]
             lastStatus[key] = p.status
             if (p.isProbe) {
+                alertOrigins.remove(serverId to p.id)
                 alertJobs.remove(key)?.cancel()
                 if (Notify.isShowing(app, serverId, p.id)) Notify.clear(app, serverId, p.id)
                 continue
             }
             if (before == null || before == p.status || p.agent == null) continue
-            // 2.2.2: a new state ends the alert's confirmation reads for the old one.
+            // A new state ends both the old read and its authority to answer.
+            alertOrigins.remove(serverId to p.id)
             alertJobs.remove(key)?.cancel()
             val onScreen = foreground && serverId == current?.id && (screen as? Screen.Agent)?.paneId == p.id
             if (onScreen) continue
@@ -6584,7 +6587,9 @@ class AppViewModel internal constructor(
                 p.status == Status.NEEDS_YOU -> alertJobs.put(key, viewModelScope.launch {
                     // Glyphs kept (2.1.2), as the tap's read keeps them, so the question identity the
                     // alert carries is computed from the same text the tap compares it with.
-                    var text = runCatching { client()?.read(p.id, NOTIFY_READ_LINES, preserveGlyphs = true) }.getOrNull().orEmpty()
+                    val alertClient = client()
+                    val alertConnection = alertClient?.connectionIdentity
+                    var text = runCatching { alertClient?.read(p.id, NOTIFY_READ_LINES, preserveGlyphs = true) }.getOrNull().orEmpty()
                     if (!isActive || probePane(serverId, p.id)) return@launch
                     // A screen that couldn't be read: one plain notice, no question and no Reply (1.4.2, from review).
                     if (text.isBlank()) { Notify.unread(app, serverId, serverLabel, p.id, p.agentName); return@launch }
@@ -6617,7 +6622,7 @@ class AppViewModel internal constructor(
                             delay(com.billmongan.herdrdroid.herdr.ALERT_CONFIRM_PAUSE_MS)
                             if (!stillWanted()) null
                             // A failed read is skipped, not the end: the next one may confirm.
-                            else runCatching { client()?.read(p.id, NOTIFY_READ_LINES, preserveGlyphs = true) }.getOrNull().orEmpty()
+                            else runCatching { alertClient?.read(p.id, NOTIFY_READ_LINES, preserveGlyphs = true) }.getOrNull().orEmpty()
                         }
                         if (got == null || !stillWanted()) {
                             com.billmongan.herdrdroid.diag.DiagLog.log("watch", "${p.id}: question not confirmed, or the alert was opened or dismissed; the alert stays as it is")
@@ -6632,10 +6637,11 @@ class AppViewModel internal constructor(
                     if (!isActive || probePane(serverId, p.id)) return@launch
                     // 2.1.2: the alert offers the card's own options (Hermes's clarify and OpenCode's
                     // question included), answered through the same checks when tapped.
+                    val origin = alertClient?.let { registerAlertOrigin(serverId, p, it, alertConnection) }
                     Notify.needsYou(app, serverId, serverLabel, p.id, p.agentName, asked?.question ?: "Waiting for you.", asked?.choices.orEmpty(), p.agent,
-                        terminalReview = asked?.terminalReview == true,
+                        terminalReview = asked?.terminalReview == true || origin == null,
                         reply = com.billmongan.herdrdroid.notify.notificationOffersReply(asked), prompt = asked,
-                        quietUpdate = neutralFirst)
+                        quietUpdate = neutralFirst, origin = origin.orEmpty())
                 })
                 // Only agents that need you notify (Bill, 2026-11-13); finishing doesn't.
                 before == Status.NEEDS_YOU -> {
@@ -6656,6 +6662,26 @@ class AppViewModel internal constructor(
         if (!locked) startBackgroundChecks()
     }
 
+    private class AlertOrigin(val token: String, val pane: Pane, val client: Herdr, val connection: Any) {
+        var answeredAt: Long? = null
+    }
+    private val alertOrigins = LinkedHashMap<Pair<String, String>, AlertOrigin>()
+
+    /** A notification can answer only on the session and connection that supplied its question. */
+    internal fun registerAlertOrigin(server: String, pane: Pane, client: Herdr, connection: Any?): String? {
+        if (connection == null || !hasStableOccupant(pane) || client.backend != Backend.TUI ||
+            !alertSourceCurrent(client, server, connection)) return null
+        val key = server to pane.id
+        alertOrigins.remove(key)
+        while (alertOrigins.size >= 256) alertOrigins.remove(alertOrigins.keys.first())
+        val origin = AlertOrigin(java.util.UUID.randomUUID().toString(), pane, client, connection)
+        alertOrigins[key] = origin
+        return origin.token
+    }
+
+    private fun AlertOrigin.currentFor(a: NotifyAction): Boolean =
+        alertOrigins[a.serverId to a.paneId] === this && alertSourceCurrent(client, a.serverId, connection)
+
     private data class AlertViewport(val pane: Pane, val raw: String, val occupant: String) {
         fun prompt() = detectPrompt(
             if (isOpenCode(pane.agent) || pane.agent.equals("muse", true)) raw
@@ -6671,25 +6697,25 @@ class AppViewModel internal constructor(
         !locked && h.connectionIdentity === connection &&
             if (server == current?.id) herdr === h && link == Link.CONNECTED else fleet?.herdr(server) === h
 
-    private suspend fun readAlertViewport(h: Herdr, a: NotifyAction, connection: Any): AlertViewport? {
-        if (h.backend != Backend.TUI || !alertSourceCurrent(h, a.serverId, connection)) return null
-        val (pane, occupant) = h.cardPaneGuarded(a.paneId, connection) ?: return null
-        if (occupant == null || !hasStableOccupant(pane) ||
+    private suspend fun readAlertViewport(a: NotifyAction, origin: AlertOrigin): AlertViewport? {
+        if (!origin.currentFor(a)) return null
+        val (pane, occupant) = origin.client.cardPaneGuarded(a.paneId, origin.connection) ?: return null
+        if (occupant == null || !origin.pane.sameCardOccupant(pane) ||
             a.agent != null && !a.agent.equals(pane.agent, true)) return null
-        val raw = h.readStyledViewport(a.paneId, connection)
-        if (!alertSourceCurrent(h, a.serverId, connection) || com.billmongan.herdrdroid.herdr.stripAnsi(raw).isBlank()) return null
+        val raw = origin.client.readStyledViewport(a.paneId, origin.connection)
+        if (!origin.currentFor(a) || com.billmongan.herdrdroid.herdr.stripAnsi(raw).isBlank()) return null
         return AlertViewport(pane, raw, occupant)
     }
 
-    private suspend fun sendAlertInput(h: Herdr, a: NotifyAction, connection: Any, view: AlertViewport,
+    private suspend fun sendAlertInput(a: NotifyAction, origin: AlertOrigin, view: AlertViewport,
         prompt: Prompt?, input: com.billmongan.herdrdroid.herdr.CardInput) {
-        if (!alertSourceCurrent(h, a.serverId, connection) || probePane(a.serverId, a.paneId))
+        if (!origin.currentFor(a) || probePane(a.serverId, a.paneId))
             throw com.billmongan.herdrdroid.herdr.CardCheckFailed()
         // Bound to precisely this viewport and occupant on the host, under the same connection.
         val lane = a.serverId to a.paneId
         val permit = writeGate.open(lane) ?: throw com.billmongan.herdrdroid.herdr.CardCheckFailed()
         try {
-            h.sendCardInput(a.paneId, input, view.guard(prompt), connection, permit,
+            origin.client.sendCardInput(a.paneId, input, view.guard(prompt), origin.connection, permit,
                 shellOnly = a.serverId in noPython3, onShellFallback = { shellCheckFallback(a.serverId) })
         } finally {
             writeGate.finish(lane, permit)
@@ -6703,18 +6729,16 @@ class AppViewModel internal constructor(
             Notify.clear(app, a.serverId, a.paneId)
             return
         }
-        val serverLabel = servers.firstOrNull { it.id == a.serverId }?.label ?: ""
-        val h = if (a.serverId == current?.id) herdr else fleet?.herdr(a.serverId)
-        if (h == null) {
-            // Not connected to that server now (1.4.2, from review: the alert stayed on "Sending").
-            Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer", "The app isn't connected to $serverLabel, so the answer wasn't sent.")
+        val origin = alertOrigins[a.serverId to a.paneId]?.takeIf { it.token == a.origin && it.currentFor(a) }
+        if (origin == null) {
+            Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
+                "This alert's connection or pane session could not be verified.")
             return
         }
         // One answer per question (1.4.2, from review): taps are handled one after another, so a second
         // tap for a question already answered from its alert is dropped for 15 seconds, before the
         // pane may have redrawn.
-        val key = "${a.serverId}|${a.paneId}|${a.question.filterNot { it.isWhitespace() }}"
-        val at = notifyAnswered[key]
+        val at = origin.answeredAt
         if (at != null && System.currentTimeMillis() - at < 15_000) {
             // Already answered: the alert says so rather than staying on "Sending" (1.4.2, from review).
             Notify.sending(app, a.serverId, a.paneId, "Answered", "This question was already answered.")
@@ -6728,21 +6752,17 @@ class AppViewModel internal constructor(
             return
         }
         try {
-            answerFromNotificationNow(h, a, app) { notifyAnswered[key] = System.currentTimeMillis() }
+            answerFromNotificationNow(a, origin, app) { origin.answeredAt = System.currentTimeMillis() }
         } finally {
             answeringCards = answeringCards - flight
             release()
         }
     }
 
-    /** When each question was last answered from its alert (or a write may have reached it). */
-    private val notifyAnswered = java.util.concurrent.ConcurrentHashMap<String, Long>()
-
-    private suspend fun answerFromNotificationNow(h: Herdr, a: NotifyAction, app: Application, answered: () -> Unit) {
+    private suspend fun answerFromNotificationNow(a: NotifyAction, origin: AlertOrigin, app: Application, answered: () -> Unit) {
         fun refuse(reason: String) = Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer", reason)
         try {
-            val connection = h.connectionIdentity ?: run { refuse("The pane's connection could not be verified."); return }
-            val initial = readAlertViewport(h, a, connection) ?: run {
+            val initial = readAlertViewport(a, origin) ?: run {
                 refuse("The pane's live screen could not be verified.")
                 return
             }
@@ -6786,9 +6806,9 @@ class AppViewModel internal constructor(
                     val move = if (now.numberKeys) emptyList() else com.billmongan.herdrdroid.herdr.moveKeys(now, row)
                     if (move == null) { refuse("The typed answer row could not be verified."); return }
                     if (move.isNotEmpty()) {
-                        sendAlertInput(h, a, connection, initial, now, com.billmongan.herdrdroid.herdr.CardInput.Keys(move))
+                        sendAlertInput(a, origin, initial, now, com.billmongan.herdrdroid.herdr.CardInput.Keys(move))
                         delay(300)
-                        val reread = readAlertViewport(h, a, connection)
+                        val reread = readAlertViewport(a, origin)
                         val live = reread?.prompt()
                         if (reread == null || reread.occupant != initial.occupant || live == null ||
                             !cardAnswerStillFits(now, live) || com.billmongan.herdrdroid.herdr.moveKeys(live, row)?.isEmpty() != true) {
@@ -6800,9 +6820,9 @@ class AppViewModel internal constructor(
                     }
                 } else if (now.openCodeQuestionFrame != null) {
                     val digit = now.openCodeCustom ?: run { refuse("The typed answer row could not be verified."); return }
-                    sendAlertInput(h, a, connection, initial, now, com.billmongan.herdrdroid.herdr.CardInput.Keys(listOf(digit)))
+                    sendAlertInput(a, origin, initial, now, com.billmongan.herdrdroid.herdr.CardInput.Keys(listOf(digit)))
                     delay(300)
-                    val reread = readAlertViewport(h, a, connection)
+                    val reread = readAlertViewport(a, origin)
                     if (reread == null || reread.occupant != initial.occupant ||
                         com.billmongan.herdrdroid.herdr.openCodeQuestionEditing(reread.raw)?.let(::norm) != norm(now.question)) {
                         refuse("OpenCode's typed answer row could not be verified.")
@@ -6845,7 +6865,7 @@ class AppViewModel internal constructor(
                 }
                 label = choice?.label ?: "Pressed Esc"
             }
-            sendAlertInput(h, a, connection, destination, destinationPrompt, input)
+            sendAlertInput(a, origin, destination, destinationPrompt, input)
             rememberCardAnswer(a.serverId, a.paneId, now)
             answered()
             Notify.sending(app, a.serverId, a.paneId, "Answered", label.take(40))

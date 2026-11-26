@@ -230,6 +230,37 @@ class OpenCodeAlert212Test {
         assertTrue(fake.writes().isEmpty())
     }
 
+    @Test fun identicalAlertCannotAnswerAReplacementOccupant() {
+        val shown = checkNotNull(detectPrompt(frame, blocked = true, agent = "opencode"))
+        val fake = Fake(focused(frame, "Allow once"), status = "done")
+        open(fake)
+        val old = vm.bindFixtureAlert(button(shown, "Allow once"), fake.client)
+        fake.terminal = "replacement"
+        emit(old, postOrigin = false)
+        assertTrue(fake.commands.any { "'pane' 'get' 'w1:p1'" in it })
+        assertTrue(fake.writes().isEmpty())
+    }
+
+    @Test fun identicalAlertCannotAnswerAfterTheConnectionWasReplaced() {
+        val shown = checkNotNull(detectPrompt(frame, blocked = true, agent = "opencode"))
+        val fake = Fake(focused(frame, "Allow once"), status = "done")
+        open(fake)
+        val old = vm.bindFixtureAlert(button(shown, "Allow once"), fake.client)
+        fake.connection = Any()
+        emit(old, postOrigin = false)
+        assertTrue(fake.commands.none { "'pane' 'get' 'w1:p1'" in it })
+        assertTrue(fake.writes().isEmpty())
+    }
+
+    @Test fun actionWithoutAPostedOriginCannotSendKeys() {
+        val shown = checkNotNull(detectPrompt(frame, blocked = true, agent = "opencode"))
+        val fake = Fake(focused(frame, "Allow once"), status = "done")
+        open(fake)
+        emit(button(shown, "Allow once"), postOrigin = false)
+        assertTrue(fake.commands.none { "'pane' 'get' 'w1:p1'" in it })
+        assertTrue(fake.writes().isEmpty())
+    }
+
     @Test fun replacingAnApprovalAtTheHostRefusesTheAlertKeys() {
         val shown = checkNotNull(detectPrompt(frame, blocked = true, agent = "opencode"))
         val fake = Fake(focused(frame, "Allow once"), status = "done")
@@ -398,8 +429,9 @@ class OpenCodeAlert212Test {
         idle()
     }
 
-    private fun emit(a: NotifyAction) {
-        assertTrue(AppBus.emit(a))
+    private fun emit(a: NotifyAction, postOrigin: Boolean = true) {
+        val client = field(vm, "herdr").get(vm) as Herdr
+        assertTrue(AppBus.emit(if (postOrigin) vm.bindFixtureAlert(a, client) else a))
         idle()
     }
 
@@ -417,7 +449,8 @@ class OpenCodeAlert212Test {
         val ssh = HerdrSsh("127.0.0.1", 2, "fake", Credentials(null, null), null, { null })
         val client = Herdr(ssh, "/fixture/herdr", if (core) Backend.CORE else Backend.TUI, if (core) "/fixture/hc" else null, this)
         override var connection: Any? = Any()
-        private val paneJson = """{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1","agent":"opencode","agent_status":"$status","screen_detection_skipped":true,"cwd":"/fixture","terminal_id":"t1","scroll":{"offset_from_bottom":0}}"""
+        var terminal = "t1"
+        private val paneJson get() = """{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1","agent":"opencode","agent_status":"$status","screen_detection_skipped":true,"cwd":"/fixture","terminal_id":"$terminal","scroll":{"offset_from_bottom":0}}"""
         private val claudeJson = """{"pane_id":"w1:p2","workspace_id":"w1","tab_id":"w1:t2","agent":"claude","agent_status":"idle","cwd":"/fixture","terminal_id":"t2","scroll":{"offset_from_bottom":0}}"""
         private val listJson = if (withClaude) "$paneJson,$claudeJson" else paneJson
         val commands = java.util.Collections.synchronizedList(mutableListOf<String>())
