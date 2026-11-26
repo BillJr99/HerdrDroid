@@ -174,6 +174,7 @@ internal fun alertPlan(prompt: com.billmongan.herdrdroid.herdr.Prompt, terminalR
     val answers = com.billmongan.herdrdroid.herdr.shownChoices(prompt.choices).filter {
         com.billmongan.herdrdroid.herdr.blockedChoiceReason(it) == null &&
             it.keys != com.billmongan.herdrdroid.herdr.OMP_STEER &&
+            it.keys != com.billmongan.herdrdroid.herdr.OmpAsk.SUBMIT &&
             !it.keys.startsWith("grok-privacy:")
     }.map { c ->
         if (c == merged && reply) return@map AlertButton(com.billmongan.herdrdroid.herdr.TYPED_ANSWER_LABEL, choice = c, typed = true)
@@ -271,19 +272,18 @@ object Notify {
         ctx: Context, serverId: String, paneId: String, agent: String,
         /** Shown as one-tap quick replies above the keyboard; a choice's label answers with its keys. */
         quick: List<String> = emptyList(), choices: List<Choice> = emptyList(), question: String = "",
-        /** OpenCode's question (2.1.2): the reply types its own answer there, checked against this question. */
-        customQuestion: String? = null, options: String = "", identity: String = "", title: String = "Reply",
+        agentKind: String? = null, options: String = "", identity: String = "", title: String = "Reply",
     ): NotificationCompat.Action {
         val input = androidx.core.app.RemoteInput.Builder(KEY_REPLY).setLabel("Reply to $agent")
             .apply { if (quick.isNotEmpty()) setChoices(quick.map { it.take(40) }.toTypedArray()) }.build()
         val i = Intent(ctx, ActionReceiver::class.java)
-            .forButton(serverId, paneId, if (choices.isEmpty() && question.isEmpty()) 5 else 4)
+            .forButton(serverId, paneId, if (choices.isEmpty() && question.isEmpty()) 5 else 4, identity)
             .putExtra(EXTRA_SERVER, serverId).putExtra(EXTRA_PANE, paneId).putExtra("reply", true)
             .putExtra("question", question)
             .putExtra("cLabels", choices.map { it.label.take(40) }.toTypedArray())
             .putExtra("cKeys", choices.map { it.keys }.toTypedArray())
             .putExtra("cEnter", choices.map { it.pressEnter }.toBooleanArray())
-            .apply { if (customQuestion != null) putExtra("customQuestion", customQuestion).putExtra("options", options).putExtra("identity", identity).putExtra("agent", "opencode") }
+            .putExtra("options", options).putExtra("identity", identity).putExtra("agent", agentKind)
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0)
         val pi = PendingIntent.getBroadcast(ctx, code(serverId, paneId, if (choices.isEmpty() && question.isEmpty()) 5 else 4), i, flags)
         return NotificationCompat.Action.Builder(0, title, pi).addRemoteInput(input).setAllowGeneratedReplies(false).build()
@@ -298,7 +298,7 @@ object Notify {
         row: Choice, options: String, identity: String): NotificationCompat.Action {
         val input = androidx.core.app.RemoteInput.Builder(KEY_REPLY).setLabel("Answer $agent").build()
         val i = Intent(ctx, ActionReceiver::class.java)
-            .forButton(serverId, paneId, 6)
+            .forButton(serverId, paneId, 6, identity)
             .putExtra(EXTRA_SERVER, serverId).putExtra(EXTRA_PANE, paneId).putExtra("reply", true)
             .putExtra("question", question).putExtra("typedRow", row.keys).putExtra("label", row.label).putExtra("agent", agentKind)
             .putExtra("options", options).putExtra("identity", identity)
@@ -344,9 +344,9 @@ object Notify {
      * A data address naming the server, pane and button (1.4.2, from review): part of the
      * PendingIntent's identity, so two panes whose request codes happen to collide never share extras.
      */
-    private fun Intent.forButton(serverId: String, paneId: String, slot: Int): Intent =
+    private fun Intent.forButton(serverId: String, paneId: String, slot: Int, identity: String): Intent =
         setData(android.net.Uri.Builder().scheme("herdrdroid").authority("answer")
-            .appendPath(serverId).appendPath(paneId).appendPath(slot.toString()).build())
+            .appendPath(serverId).appendPath(paneId).appendPath(slot.toString()).appendPath(identity).build())
 
     private fun openIntent(ctx: Context, serverId: String, paneId: String): PendingIntent {
         val i = Intent(ctx, MainActivity::class.java)
@@ -415,7 +415,7 @@ object Notify {
                 c != null -> {
                     val n = slot++
                     val i = Intent(ctx, ActionReceiver::class.java)
-                        .forButton(serverId, paneId, n)
+                        .forButton(serverId, paneId, n, identity)
                         .putExtra(EXTRA_SERVER, serverId).putExtra(EXTRA_PANE, paneId)
                         .putExtra("keys", c.keys).putExtra("enter", c.pressEnter).putExtra("question", question).putExtra("label", c.label).putExtra("agent", agentKind)
                         .putExtra("options", options).putExtra("identity", identity)
@@ -425,16 +425,16 @@ object Notify {
                 button.esc -> {
                     // Esc declines or dismisses the question, the same as the Esc key in the app.
                     val esc = Intent(ctx, ActionReceiver::class.java)
-                        .forButton(serverId, paneId, 3)
+                        .forButton(serverId, paneId, 3, identity)
                         .putExtra(EXTRA_SERVER, serverId).putExtra(EXTRA_PANE, paneId)
                         .putExtra("keys", "esc").putExtra("isKey", true).putExtra("question", question).putExtra("agent", agentKind)
                         .putExtra("options", options).putExtra("identity", identity)
                     b.addAction(0, "Esc", PendingIntent.getBroadcast(ctx, code(serverId, paneId, 3), esc, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
                 }
-                button.reply -> b.addAction(
-                    if (card.openCodeCustom != null) replyAction(ctx, serverId, paneId, agent, question = question, customQuestion = question, options = options, identity = identity, title = button.title)
-                    else replyAction(ctx, serverId, paneId, agent, question = question),
-                )
+                button.reply -> b.addAction(replyAction(
+                    ctx, serverId, paneId, agent, question = question, agentKind = agentKind,
+                    options = options, identity = identity, title = button.title,
+                ))
             }
         }
         runCatching { NotificationManagerCompat.from(ctx).notify(id(serverId, paneId), b.build()) }
@@ -567,8 +567,8 @@ class ActionReceiver : BroadcastReceiver() {
                     intent.getBooleanArrayExtra("cEnter")?.getOrNull(at) ?: false, intent.getStringExtra("question").orEmpty()))
             } else if (!text.isNullOrEmpty()) {
                 // OpenCode's question (2.1.2): the reply carries the question it answers, for the app to check.
-                val custom = intent.getStringExtra("customQuestion")
-                AppBus.emit(NotifyAction(server, pane, text, true, custom.orEmpty(), agent = intent.getStringExtra("agent"),
+                val question = intent.getStringExtra("question") ?: intent.getStringExtra("customQuestion")
+                AppBus.emit(NotifyAction(server, pane, text, true, question.orEmpty(), agent = intent.getStringExtra("agent"),
                     isReply = true, options = intent.getStringExtra("options").orEmpty(), identity = intent.getStringExtra("identity").orEmpty()))
             }
             Notify.clear(context, server, pane)
