@@ -66,6 +66,7 @@ import com.billmongan.herdrdroid.herdr.takesInputDuringBackgroundWork
 import com.billmongan.herdrdroid.herdr.WritePermit
 import com.billmongan.herdrdroid.herdr.hasStableOccupant
 import com.billmongan.herdrdroid.herdr.sameOccupant
+import com.billmongan.herdrdroid.herdr.sameWorkIdentity
 import com.billmongan.herdrdroid.ssh.AuthRejected
 import com.billmongan.herdrdroid.ssh.Credentials
 import com.billmongan.herdrdroid.ssh.HerdrSsh
@@ -1453,6 +1454,10 @@ class AppViewModel internal constructor(
         rawWorkPanes = emptyList()
         workCounts = emptyMap()
         busyCounts = emptyMap()
+        work = emptyMap()
+        endedProcs = emptyMap()
+        workScreens = emptyMap()
+        movedToBackground = emptyMap()
         openUsage = null
         hermes?.close()
         hermes = null
@@ -1887,6 +1892,10 @@ class AppViewModel internal constructor(
                 .map { it.id }.toSet()
             busyCounts = busyCounts.filterKeys { it in unchanged }
             workCounts = workCounts.filterKeys { it in unchanged }
+            work = work.filterKeys { it in unchanged }
+            endedProcs = endedProcs.filterKeys { it in unchanged }
+            workScreens = workScreens.filterKeys { it in unchanged }
+            movedToBackground = movedToBackground.filterKeys { it in unchanged }
             rawWorkPanes = fresh
             maintainChats(before, fresh)
             applyWorkStatus()
@@ -7718,8 +7727,11 @@ class AppViewModel internal constructor(
     /** Reads the pane's screen for the page's Foreground and Background marks (Claude Code only). */
     suspend fun refreshWorkScreen(paneId: String) {
         val p = pane(paneId) ?: return
-        if (!p.agent.equals("claude", true)) return
+        if (p.isProbe || !p.agent.equals("claude", true)) return
+        val client = herdr ?: return
+        val connection = client.connectionIdentity
         val s = quietly { h -> h.readStyled(paneId, sendReadLines(p.agent)) }?.takeIf { it.isNotBlank() } ?: return
+        if (herdr !== client || client.connectionIdentity !== connection || pane(paneId)?.sameWorkIdentity(p) != true) return
         workScreens = workScreens + (paneId to s)
         // A read with no foreground command confirms the move; after 10 s the read alone decides.
         movedToBackground[paneId]?.let { (_, at) ->
@@ -7794,9 +7806,6 @@ class AppViewModel internal constructor(
     private var busyCounts by mutableStateOf<Map<String, Int>>(emptyMap())
     private var rawWorkPanes = emptyList<Pane>()
     private var workSweep = 0L
-
-    private fun Pane.sameWorkIdentity(other: Pane): Boolean =
-        agent == other.agent && cwd == other.cwd && sessionId == other.sessionId
 
     private fun applyWorkStatus() {
         panes = withBusy(rawWorkPanes, busyCounts)
@@ -7957,9 +7966,10 @@ class AppViewModel internal constructor(
     suspend fun refreshWorkCounts() {
         val client = herdr ?: return
         val request = ++workSweep
+        val connection = client.connectionIdentity
         val requested = rawWorkPanes.associateBy { it.id }
         quietly { it.workCounts(requested.values.toList(), transcriptScript) }?.let { (counts, busy) ->
-            if (herdr !== client || request != workSweep) return
+            if (herdr !== client || client.connectionIdentity !== connection || request != workSweep) return
             val unchanged = rawWorkPanes.filter { p ->
                 requested[p.id]?.sameWorkIdentity(p) == true
             }.map { it.id }.toSet()
