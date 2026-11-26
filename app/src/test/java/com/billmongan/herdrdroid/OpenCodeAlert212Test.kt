@@ -347,8 +347,11 @@ class OpenCodeAlert212Test {
             emit(reply)
             // The text waits for the redraw after the digit (300 ms on the paused main clock).
             settle()
-            assertEquals(listOf("'send-keys' 'w1:p1' '3'", "'send-text' 'w1:p1' 'MariaDB'", "'send-keys' 'w1:p1' 'enter'"),
-                fake.writes().map { it.substringAfter("'pane' ") })
+            assertEquals(listOf(
+                "'send-keys' 'w1:p1' '3'",
+                "'send-text' 'w1:p1' 'MariaDB' && echo @@herdrdroid-text-pasted@@ && " +
+                    "'/fixture/herdr' 'pane' 'send-keys' 'w1:p1' 'enter'",
+            ), fake.writes().map { it.substringAfter("'pane' ") })
         }
     }
 

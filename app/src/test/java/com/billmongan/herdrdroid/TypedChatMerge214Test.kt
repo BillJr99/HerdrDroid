@@ -134,6 +134,7 @@ class TypedChatMerge214Test {
             isReply = true, options = alertOptionsSig(p.choices), identity = alertIdentity(p), typedRow = row.keys)))
         pump(3)
         assertEquals(listOf("keys down", "text keep both copies", "keys enter"), fake.writes)
+        assertEquals(1, fake.pasteSubmits)
     }
 
     @Test fun theAlertsTypedAnswerSendsNothingWhenTheQuestionChanged() {
@@ -179,6 +180,9 @@ class TypedChatMerge214Test {
         override suspend fun bulk(command: String): ExecResult = answer(command)
         override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult = answer(command)
 
+        var pasteSubmits = 0
+            private set
+
         @Synchronized private fun answer(command: String): ExecResult {
             if ("boot_id" in command) return ok("")
             return when {
@@ -187,6 +191,15 @@ class TypedChatMerge214Test {
 {"result":{"tabs":[{"tab_id":"w1:t1","label":"claude"}]}}""")
                 "'pane' 'get' 'w1:p1'" in command -> ok("""{"result":{"pane":$paneJson}}""")
                 "'--source' 'recent'" in command || "'--source' 'visible'" in command -> ok(screen)
+                " && echo @@herdrdroid-text-pasted@@ && " in command -> {
+                    val (paste, submit) = command.split(" && echo @@herdrdroid-text-pasted@@ && ", limit = 2)
+                    check(submit == "'/fixture/herdr' 'pane' 'send-keys' 'w1:p1' 'enter'")
+                    val text = checkNotNull(Regex("""'send-text' 'w1:p1' '(.*)'$""").find(paste)).groupValues[1]
+                    writes += "text $text"
+                    writes += "keys enter"
+                    pasteSubmits++
+                    ok("@@herdrdroid-text-pasted@@")
+                }
                 "'send-keys'" in command -> {
                     val key = Regex("""'send-keys' 'w1:p1' (.*)$""").find(command)?.groupValues?.get(1)?.replace("'", "") ?: command
                     writes += "keys $key"
