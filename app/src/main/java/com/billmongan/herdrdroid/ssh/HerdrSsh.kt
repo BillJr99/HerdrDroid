@@ -28,8 +28,6 @@ import net.schmizz.sshj.connection.channel.direct.Parameters
 import com.billmongan.herdrdroid.diag.DiagLog
 import java.io.IOException
 import java.io.InputStream
-import java.net.InetSocketAddress
-import java.net.ServerSocket
 import java.security.MessageDigest
 import java.security.PrivateKey
 import java.security.PublicKey
@@ -782,17 +780,14 @@ class HerdrSsh(
      */
     suspend fun forward(remoteHost: String, remotePort: Int): Forward = withContext(Dispatchers.IO) {
         val c = lock.withLock { open() }
-        val ss = ServerSocket()
-        ss.reuseAddress = true
-        ss.bind(InetSocketAddress("127.0.0.1", 0))
-        val fwd = c.newLocalPortForwarder(Parameters("127.0.0.1", ss.localPort, remoteHost, remotePort), ss)
-        val t = Thread({ runCatching { fwd.listen() } }, "herdrdroid-forward-${ss.localPort}")
-        t.isDaemon = true
-        t.start()
-        Forward(ss.localPort) {
-            runCatching { fwd.close() }
-            runCatching { ss.close() }
+        val forward = startLoopbackForward { socket ->
+            c.newLocalPortForwarder(Parameters("127.0.0.1", socket.localPort, remoteHost, remotePort), socket).listen()
         }
+        if (client !== c) {
+            forward.close()
+            throw ConnectionChanged()
+        }
+        forward
     }
 
     /** Drops the published connection and any open in flight. The next command can reconnect. */
