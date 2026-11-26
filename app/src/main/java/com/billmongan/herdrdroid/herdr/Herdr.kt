@@ -4103,7 +4103,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
         }.joinToString("\n")
         // A pending Copilot follow-up has an indented recall hint under its echoed input.
         // This row is queue chrome and must not become an unnumbered menu choice.
-        ruleAgent(agent) == "copilot" -> unstyled.lines().joinToString("\n") { row ->
+        agent?.let(::canonicalAgent) == "copilot" -> unstyled.lines().joinToString("\n") { row ->
             if (COPILOT_PENDING_INPUT_ROW.matches(row)) "" else row
         }
         else -> unstyled

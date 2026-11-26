@@ -24,9 +24,14 @@ class CopilotBusyControls229Test {
 
     @Test fun pendingRecallHintNeverBecomesAQuestionChoice() {
         val screen = capture("after-enter")
+        val question = checkNotNull(javaClass.getResource(
+            "/screens/copilot/derived-1.4.9/0407-question-ask-user.txt"
+        )).readText()
         for (agent in listOf("copilot", "github-copilot")) {
             assertNull(detectPrompt(screen, blocked = true, agent = agent))
             assertNull(detectPrompt(screen, blocked = false, agent = agent))
+            assertEquals(listOf("SQLite", "Postgres", "Other (type your answer)"),
+                detectPrompt(question, blocked = true, agent = agent)?.choices?.map { it.label })
         }
     }
 
