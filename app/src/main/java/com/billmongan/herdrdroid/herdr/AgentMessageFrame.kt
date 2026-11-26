@@ -1,7 +1,11 @@
 package com.billmongan.herdrdroid.herdr
 
+import com.billmongan.herdrdroid.transcript.Item
+import com.billmongan.herdrdroid.transcript.TextItem
+import com.billmongan.herdrdroid.transcript.UserItem
 import java.nio.ByteBuffer
 import java.nio.charset.CharacterCodingException
+import java.security.MessageDigest
 import java.util.Base64
 import org.json.JSONObject
 
@@ -59,6 +63,51 @@ internal fun crossServerFrames(output: String): List<CrossServerFrame> {
     return found.filter { it.code !in conflicted }
 }
 
+/** Frames require evidence from an agent reply. Screen decorations alone do not prove authorship. */
+internal fun crossServerProposalFrames(output: String, agent: String?, items: List<Item>): List<CrossServerFrame> {
+    val rows = output.takeLast(65_536).lines().map(String::trimEnd)
+    val candidates = crossServerFrames(output)
+    if (candidates.isEmpty()) return emptyList()
+    val lastUser = items.indexOfLast { it is UserItem }
+    val replies = items.drop(lastUser + 1).filterIsInstance<TextItem>().flatMap { reply ->
+        val lines = reply.text.lines().map { it.trim(' ') }
+        lines.mapIndexedNotNull { i, row ->
+            row.takeIf { it.startsWith("HDMSG2 ") }
+                ?.let { parseFrame(lines, i, it.removePrefix("HDMSG2 "))?.first }
+        }
+    }
+    val marker = when (agent?.lowercase()) {
+        "claude" -> "⏺●"
+        "codex" -> "•"
+        else -> ""
+    }
+    val tool = Regex("""^(?:[A-Za-z][\w.-]*\(|(?:Ran|Explored|Edited|Read|Searched|Called|Updated|Added|Deleted|Waited|Running)\b)""")
+    val toolRow = Regex("""^\s*[⎿└│┃╭╰>❯]""")
+    val marked = mutableSetOf<CrossServerFrame>()
+    var inReply = false
+    for ((i, row) in rows.withIndex()) {
+        val head = row.length > 2 && row[0] in marker && row[1] == ' '
+        if (head) {
+            inReply = !tool.containsMatchIn(row.substring(2))
+        } else if (toolRow.containsMatchIn(row) || (row.isNotBlank() && !row.startsWith(' '))) {
+            inReply = false
+        }
+        if (!inReply) continue
+        val first = if (head) row.substring(2) else row.trimStart(' ')
+        if (!first.startsWith("HDMSG2 ")) continue
+        val indent = if (head) 2 else row.length - first.length
+        if (indent !in 1..4) continue
+        val body = listOf(first) + rows.asSequence().drop(i + 1).take(37).map { r ->
+            if (r.startsWith(" ".repeat(indent)) && r.getOrNull(indent) != ' ') r.drop(indent) else ""
+        }.toList()
+        parseFrame(body, 0, first.removePrefix("HDMSG2 "))?.let { marked += it.first }
+    }
+    return candidates.filter { frame ->
+        val sameCode = replies.filter { it.code == frame.code }
+        if (sameCode.isNotEmpty()) sameCode.all { it == frame } else frame in marked
+    }
+}
+
 /** One frame starting at [start], with the index after its end line, or null. */
 private fun parseFrame(lines: List<String>, start: Int, code: String): Pair<CrossServerFrame, Int>? {
     if (!CrossServerCode.valid(code)) return null
@@ -109,25 +158,30 @@ private fun decodeMessage(encoded: String): String? {
  * an app restart never raises a second card for a spent or expired code.
  */
 internal class CrossServerCodeLedger(private val load: () -> String, private val save: (String) -> Unit) {
-    private data class Entry(val firstSeen: Long, val spent: Boolean)
+    private data class Entry(val firstSeen: Long, val spent: Boolean, val fingerprint: String?)
 
     private val entries: MutableMap<String, Entry> = runCatching {
         val o = JSONObject(load().ifBlank { "{}" })
         o.keys().asSequence().associateWith { k ->
-            o.getJSONObject(k).let { Entry(it.getLong("at"), it.getBoolean("spent")) }
+            o.getJSONObject(k).let { Entry(it.getLong("at"), it.getBoolean("spent"), it.optString("fingerprint").takeIf(String::isNotEmpty)) }
         }.toMutableMap()
     }.getOrDefault(mutableMapOf())
 
     /** The card's deadline when [key] may show a card now: not spent and not expired. Records the first sighting. */
-    fun admit(key: String, now: Long): Long? {
-        val e = entries[key] ?: Entry(now, false).also { entries[key] = it; persist(now) }
-        if (e.spent) return null
+    fun admit(key: String, now: Long, frame: CrossServerFrame? = null): Long? {
+        val fingerprint = frame?.let {
+            MessageDigest.getInstance("SHA-256")
+                .digest((it.destination + "\u0000" + it.text).toByteArray(Charsets.UTF_8))
+                .let { bytes -> Base64.getEncoder().encodeToString(bytes) }
+        }
+        val e = entries[key] ?: Entry(now, false, fingerprint).also { entries[key] = it; persist(now) }
+        if (e.spent || e.fingerprint != fingerprint) return null
         val deadline = e.firstSeen + CrossServerCode.LIFETIME_MS
         return deadline.takeIf { now < it }
     }
 
     fun spend(key: String, now: Long) {
-        entries[key] = Entry(entries[key]?.firstSeen ?: now, true)
+        entries[key] = entries[key]?.copy(spent = true) ?: Entry(now, true, null)
         persist(now)
     }
 
@@ -149,7 +203,7 @@ internal class CrossServerCodeLedger(private val load: () -> String, private val
     private fun persist(now: Long) {
         entries.entries.removeAll { now - it.value.firstSeen > 30L * 24 * 3_600_000 }
         save(JSONObject().apply {
-            entries.forEach { (k, e) -> put(k, JSONObject().put("at", e.firstSeen).put("spent", e.spent)) }
+            entries.forEach { (k, e) -> put(k, JSONObject().put("at", e.firstSeen).put("spent", e.spent).put("fingerprint", e.fingerprint)) }
         }.toString())
     }
 }
