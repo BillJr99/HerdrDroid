@@ -3538,6 +3538,40 @@ private fun openCodeComposerMode(rows: List<String>): Int {
     } ?: -1
 }
 
+/** Strip the right column only from a session frame whose composer and sidebar both identify it. */
+internal fun openCodeChatColumn(screen: String): String {
+    val rows = stripAnsi(screen).lines()
+    val tail = rows.takeLast(20)
+    val mode = openCodeComposerMode(tail)
+    if (mode < 0) return screen
+    val edge = tail.drop(mode + 1).firstOrNull { it.trimStart().startsWith("╹▀") } ?: return screen
+    val end = edge.lastIndexOf('▀') + 1
+    val width = displayColumn(edge, end)
+    if (width < 30 || edge.substring(end).isNotBlank()) return screen
+
+    fun split(row: String): Int {
+        var column = 0
+        var i = 0
+        while (i < row.length && column < width) {
+            val codePoint = row.codePointAt(i)
+            column = advanceDisplayColumn(column, codePoint)
+            i += Character.charCount(codePoint)
+        }
+        return i
+    }
+
+    val columns = rows.map { row -> split(row).let { row.take(it) to row.drop(it).trim() } }
+    val sidebar = columns.map { it.second }
+    val context = sidebar.indexOf("Context")
+    val usage = Regex("""[0-9][0-9,.]*% used""")
+    val tokens = Regex("""[0-9][0-9,.]* tokens""")
+    val hasContext = context >= 0 && sidebar.drop(context + 1).take(3).any(tokens::matches) &&
+        sidebar.drop(context + 1).take(3).any(usage::matches)
+    val mcp = sidebar.indexOf("MCP")
+    val hasMcp = mcp >= 0 && sidebar.drop(mcp + 1).take(3).any { it.startsWith("• ") }
+    return if (hasContext || hasMcp) columns.joinToString("\n") { it.first } else screen
+}
+
 /** A positively identified empty composer, required before typing despite stale blocked metadata. */
 internal fun openCodeEmptyComposer(screen: String): Boolean {
     val rows = stripAnsi(screen).lines().takeLast(20)
@@ -4175,14 +4209,16 @@ internal fun displayColumn(s: String, index: Int): Int {
     var i = 0
     while (i < index && i < s.length) {
         val cp = s.codePointAt(i)
-        col = when {
-            cp == '\t'.code -> (col / 8 + 1) * 8
-            wideCodePoint(cp) -> col + 2
-            else -> col + 1
-        }
+        col = advanceDisplayColumn(col, cp)
         i += Character.charCount(cp)
     }
     return col
+}
+
+private fun advanceDisplayColumn(column: Int, codePoint: Int): Int = when {
+    codePoint == '\t'.code -> (column / 8 + 1) * 8
+    wideCodePoint(codePoint) -> column + 2
+    else -> column + 1
 }
 
 private fun wideCodePoint(cp: Int): Boolean = cp in 0x1100..0x115F || cp in 0x2E80..0xA4CF || cp in 0xAC00..0xD7A3 ||
