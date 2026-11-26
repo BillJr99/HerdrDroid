@@ -344,14 +344,15 @@ internal fun claudeClippedAskReview(text: String): Prompt? {
     val rows = withoutClaudeChromeUnderDialog(stripAnsi(text)).lines()
     val footer = rows.indexOfLast { it.isNotBlank() }
     if (footer < 0 || !claudeAskFooter(rows[footer])) return null
-    val body = rows.take(footer).dropWhile { it.isBlank() }
-    val first = CLAUDE_CLIPPED_OPTION.matchEntire(body.firstOrNull() ?: return null) ?: return null
-    // An ordinary numbered message starts at one. A real tab or an older Ask footer
-    // proves this is a mixed viewport, so leave it to the regular dialog parser.
-    val firstNumber = first.groupValues[2].toInt()
-    if (firstNumber < 2 || body.any { claudeAskTab(it) || claudeAskFooter(it) }) return null
+    val above = rows.take(footer)
+    // Without a live tab row, only the identifiable option list belongs to the preview.
+    if (above.any { claudeAskTab(it) || claudeAskFooter(it) }) return null
+    val firstOption = above.indexOfFirst { CLAUDE_CLIPPED_OPTION.matches(it) }
+    if (firstOption < 0) return null
+    val body = above.drop(firstOption)
     val options = body.mapNotNull(CLAUDE_CLIPPED_OPTION::matchEntire)
     if (options.size < 2 || options.count { it.groupValues[1].isNotEmpty() } != 1) return null
+    val firstNumber = options.first().groupValues[2].toInt()
     if (options.map { it.groupValues[2].toInt() } != (firstNumber until firstNumber + options.size).toList()) return null
     val heading = "Claude question (top off screen)"
     val parts = questionParts(listOf(QLine(heading)))
