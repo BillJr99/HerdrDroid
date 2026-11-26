@@ -34,6 +34,8 @@ class SendNowVm227Test {
         fun res(path: String) = checkNotNull(SendNowVm227Test::class.java.getResource(path)).readText().replace("\r", "")
         val working = res("/screens/claude/derived-2.1.330-shells/working-3-shells.ansi")
         val withHint = SendNowFixtures.withHint(working)
+        val codexBusy = res("/screens/codex/live-2026-11-26-busy/empty.ansi")
+        val codexDraft = res("/screens/codex/live-2026-11-26-busy/draft.ansi")
     }
 
     private fun fixture(agent: String, frame: String, test: Fixture.() -> Unit) {
@@ -71,6 +73,7 @@ class SendNowVm227Test {
         var occupantRefused = 0
         /** 2.2.8: runs as a screen read is answered (once), for a change while the send reads the pane. */
         var duringRead: (() -> Unit)? = null
+        var duringCodexCheck: (() -> Unit)? = null
 
         init {
             field("herdr").set(vm, Herdr(ssh, server.herdrPath, Backend.TUI, null, this))
@@ -134,6 +137,19 @@ class SendNowVm227Test {
                 }
                 return last.copy(out = out + last.out)
             }
+            if ("'pane' 'run' 'p1'" in command) {
+                duringCodexCheck?.invoke()
+                val exact = com.billmongan.herdrdroid.herdr.cardScreenDigest(frame, "codex")
+                val who = com.billmongan.herdrdroid.herdr.cardOccupantDigest(
+                    org.json.JSONObject(paneOn(checkTerminal ?: remoteTerminal ?: terminal)),
+                )
+                if ("'$who' '$exact'" !in command) return ExecResult(
+                    com.billmongan.herdrdroid.herdr.CARD_CHANGED_EXIT,
+                    com.billmongan.herdrdroid.herdr.CARD_REFUSED_MARK + "\n", "",
+                )
+                writes += "submit:" + command.substringAfter("'pane' 'run' 'p1' ").removeSurrounding("'")
+                return ok(com.billmongan.herdrdroid.herdr.CARD_PASSED_MARK + "\n")
+            }
             return direct(command)
         }
 
@@ -170,6 +186,28 @@ class SendNowVm227Test {
         private fun field(name: String) = AppViewModel::class.java.getDeclaredField(name).apply { isAccessible = true }
         @Suppress("UNCHECKED_CAST")
         fun state(name: String, value: Any?) { (field("$name\$delegate").get(vm) as MutableState<Any?>).value = value }
+    }
+
+    @Test fun codexBusySendConfirmsAndUsesOneNativeSubmit() = fixture("codex", codexBusy) {
+        shown()
+        vm.sendQueuedNow(queue("Switch to the small example."))
+        assertTrue(writes.isEmpty())
+        assertNotNull(vm.sendNowConfirm)
+        vm.confirmSendNow()
+        drainUntil { vm.queued.isEmpty() }
+        assertEquals(listOf("submit:Switch to the small example."), writes)
+    }
+
+    @Test fun codexDraftAppearingAtTheHostCheckLeavesTheQueueUntouched() = fixture("codex", codexBusy) {
+        shown()
+        vm.sendQueuedNow(queue("Switch to the small example."))
+        assertNotNull(vm.sendNowConfirm)
+        duringCodexCheck = { frame = codexDraft }
+        vm.confirmSendNow()
+        drainUntil { vm.queued.single().note != null }
+        assertTrue(writes.isEmpty())
+        assertFalse(vm.queued.single().mayHaveSent)
+        assertTrue(vm.queued.single().note.orEmpty().contains("Still queued"))
     }
 
     /**
