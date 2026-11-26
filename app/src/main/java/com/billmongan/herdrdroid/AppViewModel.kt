@@ -47,6 +47,8 @@ import com.billmongan.herdrdroid.herdr.Backend
 import com.billmongan.herdrdroid.herdr.NeedsYouCadence
 import com.billmongan.herdrdroid.herdr.detectBackend
 import com.billmongan.herdrdroid.herdr.HerdrError
+import com.billmongan.herdrdroid.herdr.isMissingPane
+import com.billmongan.herdrdroid.herdr.terminalUnavailable
 import com.billmongan.herdrdroid.herdr.Pane
 import com.billmongan.herdrdroid.herdr.recoverPaneRead
 import com.billmongan.herdrdroid.herdr.QuotaProfile
@@ -2568,9 +2570,11 @@ class AppViewModel internal constructor(
         val client = herdr
         val visit = paneVisit
         val started = android.os.SystemClock.elapsedRealtime()
-        val cardOwner = cardTarget(paneId)
+        val originalCardOwner = cardTarget(paneId)
+        val readConnection = client?.connectionIdentity
+        val readTarget = pane(paneId)
         fun isOpen() = attempt > lastAppliedPaneRead && current?.id == serverId && herdr === client &&
-            paneVisit == visit && (screen as? Screen.Agent)?.paneId == paneId
+            client?.connectionIdentity === readConnection && paneVisit == visit && (screen as? Screen.Agent)?.paneId == paneId
         fun problem(why: String) {
             if (!isOpen()) return
             lastAppliedPaneRead = attempt
@@ -2589,13 +2593,15 @@ class AppViewModel internal constructor(
         quietly { h ->
             val waiting = pane(paneId)?.status == Status.NEEDS_YOU
             try {
-                readPaneScreen(h, paneId, if (waiting || paneReadProblem != null) 80 else 200)
+                val lines = if (waiting || paneReadProblem != null) 80 else 200
+                readOpenPaneScreen(h, paneId, lines, readTarget, readConnection, ::isOpen)
             } catch (e: HerdrError) {
                 problem(e.message?.take(120) ?: "the screen could not be read")
                 null
             }
-        }?.let { recent ->
+        }?.let { (recent, originalPaneId) ->
             if (!isOpen()) return
+            val cardOwner = originalCardOwner.takeIf { originalPaneId }
             val paneNow = pane(paneId)
             val agent = paneNow?.agent
             // Recent output can omit the current modal even when the read succeeds. Only the
@@ -4522,6 +4528,19 @@ class AppViewModel internal constructor(
         }
     }
 
+    /** The phone's terminal keys belong to the pane and server the user saw at the tap. */
+    internal fun sendTerminalKeys(paneId: String, shown: Pane?, server: String?, vararg keys: String) {
+        val target = cardTarget(paneId)
+        if (target == null || target.server != server || shown == null || !target.pane.sameCardOccupant(shown)) {
+            error = "Couldn't send the key: reopen this terminal on the connected computer and try again."
+            return
+        }
+        act(paneId, "Couldn't send the key", input = true) { h ->
+            h.sendTerminalKeys(shown, keys.toList(), target.connection) { target.isCurrent(h) }
+            if (target.isCurrent(h)) readPane(paneId)
+        }
+    }
+
     /** Keep dispatch identity, not the history signature (which groups different steps of a dialog). */
     private val answeredCards = mutableMapOf<Pair<String, String>, Pair<Prompt, Long>>()
 
@@ -4534,15 +4553,34 @@ class AppViewModel internal constructor(
         return (android.os.SystemClock.elapsedRealtime() - at).takeIf { it < ANSWER_HOLD_MS && matches(was) }
     }
 
-    private suspend fun readPaneScreen(h: Herdr, paneId: String, lines: Int): String =
+    private suspend fun readPaneScreen(h: Herdr, paneId: String, lines: Int,
+                                       scrollOffset: Int? = pane(paneId)?.scrollOffset, connection: Any? = null): String =
         recoverPaneRead(
-            recent = { h.read(paneId, lines, preserveGlyphs = true) },
+            recent = { h.read(paneId, lines, preserveGlyphs = true, expectedConnection = connection) },
             visible = {
                 // A viewport scrolled back can show an old approval. Only read it at the bottom.
-                if ((pane(paneId)?.scrollOffset ?: 0) > 0) "" else h.readVisible(paneId, preserveGlyphs = true)
+                if ((scrollOffset ?: 0) > 0) "" else h.readVisible(paneId, preserveGlyphs = true, expectedConnection = connection)
             },
-            shortRecent = { h.read(paneId, 40, preserveGlyphs = true) },
+            shortRecent = { h.read(paneId, 40, preserveGlyphs = true, expectedConnection = connection) },
+            stopOnMissing = paneId,
         )
+
+    private suspend fun readOpenPaneScreen(h: Herdr, paneId: String, lines: Int, shown: Pane?,
+                                           connection: Any?, stillOpen: () -> Boolean): Pair<String, Boolean> =
+        try {
+            readPaneScreen(h, paneId, lines) to true
+        } catch (e: HerdrError) {
+            if (h.backend != Backend.TUI || !e.isMissingPane(paneId)) throw e
+            if (shown == null || connection == null || !stillOpen()) throw terminalUnavailable()
+            val live = h.resolveTerminalPane(shown, connection)
+            if (!stillOpen()) throw terminalUnavailable()
+            try {
+                readPaneScreen(h, live.id, lines, live.scrollOffset, connection) to (live.id == paneId)
+            } catch (again: HerdrError) {
+                if (!again.isMissingPane(live.id)) throw again
+                throw terminalUnavailable()
+            }
+        }
 
     /** Read fresh output for the card before accepting an answer. */
     private suspend fun readForCard(h: Herdr, paneId: String, lines: Int = 80): String? =
