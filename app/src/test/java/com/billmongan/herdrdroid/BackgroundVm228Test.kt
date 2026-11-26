@@ -95,6 +95,15 @@ class BackgroundVm228Test {
             shadowOf(Looper.getMainLooper()).idle()
         }
 
+        fun takeParkedForSwitch(serverId: String) {
+            field("ssh").set(vm, ssh)
+            AppViewModel::class.java.getDeclaredMethod("park").apply { isAccessible = true }.invoke(vm)
+            val kept = AppViewModel::class.java.getDeclaredMethod("takeParked", String::class.java)
+                .apply { isAccessible = true }.invoke(vm, serverId)
+            assertEquals(null, kept)
+            assertTrue("The old SSH is permanently closed before opening the new server", ssh.isClosed)
+        }
+
         fun refreshWorkScreen() {
             val read = vm.viewModelScope.launch { vm.refreshWorkScreen("p1") }
             drain()
@@ -192,6 +201,10 @@ class BackgroundVm228Test {
             state("pendingSends", listOf(p))
             return p
         }
+    }
+
+    @Test fun switchingServersClosesUnusedParkedConnection() = fixture("claude", fg) {
+        takeParkedForSwitch("another-server")
     }
 
     @Test fun blankReadClearsOldWorkScreen() = fixture("claude", fg) {
