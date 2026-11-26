@@ -91,6 +91,8 @@ class Fleet(
                 while (isActive && clients.isNotEmpty()) {
                     for ((id, pair0) in clients.toMap()) {
                         val server = watched[id] ?: continue
+                        // An earlier read can suspend while ownership of a later connection changes.
+                        if (clients[id] !== pair0) continue
                         // A server that failed waits a growing time before the next try.
                         if ((retryAt[id] ?: 0L) > System.currentTimeMillis()) continue
                         // An Automatic server is looked at once to see which herdr it runs.
