@@ -266,6 +266,10 @@ object NetworkWatch {
         if (!first) listener?.let { l -> runCatching { l(type, changes) } }
     }
 
+    @Synchronized internal fun lost(network: Any) {
+        if (network == lastNetwork) observe(null, "none")
+    }
+
     fun typeOf(vpn: Boolean, wifi: Boolean, cellular: Boolean, ethernet: Boolean): String = when {
         vpn -> "vpn"
         wifi -> "wifi"
@@ -304,21 +308,35 @@ object NetworkWatch {
     }
 
     fun start(context: android.content.Context) {
-        if (!started.compareAndSet(false, true)) return
         runCatching {
-            val cm = context.getSystemService(android.net.ConnectivityManager::class.java) ?: return
-            manager = cm
-            cm.registerDefaultNetworkCallback(object : android.net.ConnectivityManager.NetworkCallback() {
-                override fun onCapabilitiesChanged(network: android.net.Network, caps: android.net.NetworkCapabilities) {
-                    observe(network, typeOf(
-                        caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN),
-                        caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI),
-                        caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR),
-                        caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET),
-                    ))
-                }
-                override fun onLost(network: android.net.Network) = observe(null, "none")
-            })
+            registerNetworkWatchOnce(started) {
+                val cm = context.getSystemService(android.net.ConnectivityManager::class.java)
+                    ?: return@registerNetworkWatchOnce false
+                cm.registerDefaultNetworkCallback(object : android.net.ConnectivityManager.NetworkCallback() {
+                    override fun onCapabilitiesChanged(network: android.net.Network, caps: android.net.NetworkCapabilities) {
+                        observe(network, typeOf(
+                            caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN),
+                            caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI),
+                            caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR),
+                            caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET),
+                        ))
+                    }
+                    override fun onLost(network: android.net.Network) = lost(network)
+                })
+                manager = cm
+                true
+            }
         }.onFailure { DiagLog.log("link", "network=unknown watch=failed error=${errorChain(it)}") }
+    }
+}
+
+/** Only a successful registration prevents a subsequent start from retrying. */
+internal inline fun registerNetworkWatchOnce(started: java.util.concurrent.atomic.AtomicBoolean, register: () -> Boolean) {
+    if (!started.compareAndSet(false, true)) return
+    var registered = false
+    try {
+        registered = register()
+    } finally {
+        if (!registered) started.set(false)
     }
 }
