@@ -123,6 +123,68 @@ class Corpus228Test {
         assertNull(blockedChoiceReason(Choice("Yes, allow", "1", false)))
     }
 
+    @Test fun truncatedGrokApprovalIsBlockedInLightAndUnboxedLayouts() {
+        val boxed = """
+            ╭────────────────────────────────────────────────╮
+            │  ›  List the sample values                     │
+            │  │ printf sample                               │
+            │                                                │
+            │  1 (○) Yes, a…                                 │
+            │  2 (●) Yes, proceed                            │
+            │  3 (○) No, reject (type to add feedback)        │
+            │  4 (○) Never allow: list sample values          │
+            │                                                │
+            ╰────────────────────────────────────────────────╯
+
+            1/4:select  │  Tab:next option  │  Esc:scrollback
+        """.trimIndent()
+        val plain = """
+            List the sample values: printf sample
+
+            1 (○) Yes, a…
+            2 (●) Yes, proceed
+            3 (○) No, reject (type to add feedback)
+            4 (○) Never allow: list
+                  sample values
+
+            1/4:select
+                │  Tab:next option  │  Esc:scrollback
+        """.trimIndent()
+        for (screen in listOf(boxed, plain)) {
+            val card = checkNotNull(detectPrompt(screen, true, "grok"))
+            val cut = card.choices.single { it.keys == "1" }
+            assertEquals(AMBIGUOUS_CHOICE_REASON, blockedChoiceReason(cut))
+            assertNull(approveAllAsk(card, cut)?.keys)
+            assertNull(blockedChoiceReason(card.choices.single { it.keys == "2" }))
+        }
+    }
+
+    @Test fun ordinaryGrokYesAnswersStaySelectable() {
+        val plain = checkNotNull(detectPrompt("Continue reviewing the sample? [y/n]", true, "grok"))
+        assertEquals(listOf("y", "n"), plain.choices.map { it.keys })
+        assertTrue(plain.choices.all { blockedChoiceReason(it) == null })
+
+        val ask = checkNotNull(javaClass.getResource(
+            "/screens/grok/derived-1.4.9/0305-question-card-ask-user-question.txt")).readText()
+            .replace("Which database should demo-box use?", "Continue reviewing the sample?")
+            .replace("SQLite", "Yes").replace("Postgres", "No")
+        val card = checkNotNull(detectPrompt(ask, true, "grok"))
+        assertEquals(listOf("Yes", "No"), card.choices.take(2).map { it.label })
+        assertTrue(card.choices.take(2).all { blockedChoiceReason(it) == null })
+    }
+
+    @Test fun grokAskHeaderSurvivesTheThinkingGutter() {
+        val ask = checkNotNull(javaClass.getResource(
+            "/screens/grok/derived-1.4.9/0305-question-card-ask-user-question.txt")).readText()
+        val screen = "  ┃  ◆ Thinking…\n  ┃  Considering the sample.\n" + ask
+        val pruned = grokWithoutThinkingPanel(screen)
+        assertTrue(pruned.contains("┃  ?  Which database should demo-box use?"))
+        assertFalse(pruned.contains("Considering the sample."))
+        val card = checkNotNull(detectPrompt(screen, true, "grok"))
+        assertTrue(card.question.contains("Which database should demo-box use?"))
+        assertFalse(card.question.contains("Considering the sample."))
+    }
+
     /**
      * Codex's per-commit review of fe63209 (MEDIUM): a "(…)" row joins the option above it only when it
      * starts in the label's own column, and a radio row never joins, even under an open "(".

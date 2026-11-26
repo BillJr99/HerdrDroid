@@ -3896,8 +3896,9 @@ private val GROK_GUTTER_ROW = Regex("""^\s*┃""")
  * then text, then "[stop]" at the row's end, with any spacing and before "⇣<tokens>" appears.
  */
 private val GROK_RUNNING_ROW = Regex("""^\s*[\u2800-\u28FF]\s*\S.*\[stop]\s*$""")
-/** The privacy banner's own rows: its buttons, or its radio rows; never prose that says "Opt in". */
-private val GROK_PRIVACY_ROW = Regex("""\[Opt out]\s*\[Opt in]|^\s*[○●]\s+Opt (?:in|out)\s*$""")
+private val GROK_PRIVACY_BUTTONS = Regex("""\[Opt out]\s*\[Opt in]""")
+/** An entire radio row, with the frame drawn by /privacy when it fits. */
+private val GROK_PRIVACY_ROW = Regex("""^\s*[│┃|]?\s*([○●◯◉])\s+(Opt in|Opt out)\s*[│┃|]?\s*$""")
 /**
  * Grok's plan review footer as the screen's last row: "a:approve  │  s:request changes  │ … │  q:quit
  * plan", its keys between "│" bars ([detectLetterMenu] takes the same row). Prose that mentions the
@@ -3966,8 +3967,8 @@ internal fun grokWithoutThinkingPanel(plain: String): String {
     return rows.mapIndexed { i, r -> if (i in panel) "" else r }.joinToString("\n")
 }
 
-/** A Grok approval box's title row in the "┃" gutter: "┃  ›  List the build cache". */
-private val GROK_BOX_TITLE = Regex("""^\s*┃\s*›\s+\S""")
+/** A Grok approval or question title in the same gutter as its radio rows. */
+private val GROK_BOX_TITLE = Regex("""^\s*[│┃|]?\s*([›?])\s+\S""")
 
 /**
  * Whether [rows] at [i] starts a Grok dialog in the thinking panel's gutter (never thought text): a box
@@ -4030,7 +4031,7 @@ internal fun grokWorkingBelowAnyQuestion(plain: String): Boolean {
     val question = rows.indices.lastOrNull { i ->
         val r = rows[i]
         !composer[i] && (MENU_OPTION_ROW.find(r) != null || GROK_RADIO_ROW.containsMatchIn(r) || GROK_UNNUMBERED_ALWAYS.matches(r) ||
-            GROK_SELECT_FOOTER.containsMatchIn(r) || GROK_PRIVACY_ROW.containsMatchIn(r))
+            GROK_SELECT_FOOTER.containsMatchIn(r) || GROK_PRIVACY_BUTTONS.containsMatchIn(r) || GROK_PRIVACY_ROW.matches(r))
     } ?: -1
     // A whole plan review or folder trust prompt at the bottom (Codex's per-commit review: never a
     // mention of their keys, and never one with Grok's running output under it).
@@ -4086,8 +4087,8 @@ internal fun codexUpdatePrompt(text: String): Prompt? {
 
 /** 2.2.8: Grok's "… Ctrl+F to expand" row inside its approval box: the command is cut there. */
 internal val GROK_EXPAND_HINT = Regex("""^(?:…|\.\.\.)\s*ctrl[-+]f to expand$""", RegexOption.IGNORE_CASE)
-private val GROK_RADIO_ROW = Regex("""^\s*┃?\s*\d{1,2}\s+\([○●]\)\s+\S""")
-private val GROK_UNNUMBERED_ALWAYS = Regex("""^\s*┃?\s*\([○●]\)\s+(\S.*\(always-approve mode\))\s*┃?\s*$""")
+private val GROK_RADIO_ROW = Regex("""^\s*[│┃|]?\s*\d{1,2}\s+\([○●]\)\s+\S""")
+private val GROK_UNNUMBERED_ALWAYS = Regex("""^\s*[│┃|]?\s*\([○●]\)\s+(\S.*\(always-approve mode\))\s*[│┃|]?\s*$""")
 
 /** 2.2.8: the card's key for Grok's unnumbered always-approve row, which the card shows but never sends. */
 const val GROK_ALWAYS_APPROVE = "grok:always-approve"
@@ -4180,6 +4181,10 @@ fun approveAllAsk(p: Prompt, c: Choice): ApproveAllAsk? {
     return ApproveAllAsk(c.label, keys, reason)
 }
 
+private val GROK_APPROVAL_SELECT = Regex("""^\s*\d{1,2}/\d{1,2}:select(?:\s+│|\s*$)""")
+private val GROK_ANSWER_FOOTER = Regex("""^\s*\d{1,2}/\d{1,2}:answer\b""")
+private val GROK_APPROVAL_FRAME = Regex("""^\s*[│┃|]""")
+
 /**
  * 2.2.8 (Bill: "grok has a question but keeps saying it changed and won't send"): Grok 4.7's approval
  * box as it draws it now: numbered radio rows ("2 (●) Yes, proceed", "3 (○) No, reject (type to add
@@ -4189,25 +4194,33 @@ fun approveAllAsk(p: Prompt, c: Choice): ApproveAllAsk? {
  */
 internal fun grokApproval(plain: String, parsed: Prompt): Prompt {
     if (parsed.choices.isEmpty() || parsed.terminalReview) return parsed
-    // Codex's per-commit review of a1314cd (HIGH): Grok draws no plain "Yes" and no option that is only
-    // the start of its always-approve one, so a label cut off anywhere inside that one ("Yes", "Yes,
-    // a…", "Yes, and don't ask again f…") is ambiguous: shown, never sent.
-    val p = if (parsed.choices.none { grokCouldBeAlways(it.label) }) parsed
-        else parsed.copy(choices = parsed.choices.map { if (grokCouldBeAlways(it.label)) it.copy(ambiguous = true) else it }).withSpanOf(parsed)
     val rows = plain.lines()
     val last = rows.indexOfLast { GROK_RADIO_ROW.containsMatchIn(it) }
-    if (last < 0) return p
+    if (last < 0) return parsed
     var first = last
     while (first > 0 && GROK_RADIO_ROW.containsMatchIn(rows[first - 1])) first--
+    val heading = rows.take(first).asReversed().take(20)
+        .takeWhile { !GROK_RADIO_ROW.containsMatchIn(it) && GrokMeta.statusRow(it) == null }
+        .firstNotNullOfOrNull { GROK_BOX_TITLE.find(it)?.groupValues?.get(1) }
+    // A wrapped label or closing border can stand between the last radio row and the footer.
+    // A question's own answer footer wins over any select hint lower on the screen.
+    val footer = rows.drop(last + 1).take(8)
+        .takeWhile { !GROK_BOX_TITLE.containsMatchIn(it) && GrokMeta.statusRow(it) == null }
+        .firstOrNull { GROK_APPROVAL_SELECT.containsMatchIn(it) || GROK_ANSWER_FOOTER.containsMatchIn(it) }
+    val approval = heading != "?" && footer?.let(GROK_ANSWER_FOOTER::containsMatchIn) != true &&
+        (heading == "›" || footer?.let(GROK_APPROVAL_SELECT::containsMatchIn) == true)
+    // The shortest prefixes are ambiguous only in approval menus. A regular question can ask Yes/No.
+    val p = if (!approval || parsed.choices.none { grokCouldBeAlways(it.label) }) parsed
+        else parsed.copy(choices = parsed.choices.map { if (grokCouldBeAlways(it.label)) it.copy(ambiguous = true) else it }).withSpanOf(parsed)
     var out = p
     rows.getOrNull(last + 1)?.let { GROK_UNNUMBERED_ALWAYS.matchEntire(it) }?.let { m ->
         val label = m.groupValues[1].trim()
         if (out.choices.none { it.label == label }) out = out.copy(choices = out.choices + Choice(label, GROK_ALWAYS_APPROVE, false)).withSpanOf(p)
     }
-    // The box's own rows above its options: each starts with its "┃" edge (blank rows of the box too).
+    // Walk only the approval frame when looking above the options for clipped command text.
     var i = first - 1
     var clipped = false
-    while (i >= 0 && rows[i].trimStart().startsWith("┃")) {
+    while (i >= 0 && GROK_APPROVAL_FRAME.containsMatchIn(rows[i])) {
         if (GROK_EXPAND_HINT.matches(rows[i].trimStart().drop(1).trim())) clipped = true
         i--
     }
@@ -4820,8 +4833,7 @@ fun showsGrokBanner(text: String): Boolean {
 fun detectGrokPrivacyDialog(text: String): Prompt? {
     val lines = text.lines().takeLast(40)
     if (lines.none { it.contains("Coding data, retention, and training") }) return null
-    val row = Regex("""^[\s│┃|]*([○●◯◉])\s+(Opt in|Opt out)\b""")
-    val rows = lines.mapNotNull { row.find(it) }
+    val rows = lines.mapNotNull(GROK_PRIVACY_ROW::matchEntire)
     if (rows.size != 2) return null
     val choices = rows.mapIndexed { i, m -> Choice(m.groupValues[2], (i + 1).toString(), false) }
     val selected = rows.indexOfFirst { it.groupValues[1] in setOf("●", "◉") }.takeIf { it >= 0 }?.let { (it + 1).toString() }
