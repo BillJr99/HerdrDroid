@@ -2191,7 +2191,7 @@ fun isComposerHint(agent: String?, text: String): Boolean {
 fun inputLineOf(screen: String, agent: String? = null, menuWrite: Boolean = false): String? {
     // OpenCode draws no prompt glyph (2.1.5): its box, positively found empty, is an empty line;
     // otherwise nothing is judged, as before.
-    if (isOpenCode(agent) && openCodeComposerEmpty(screen)) return ""
+    if (isOpenCode(agent)) return if (openCodeComposerEmpty(screen)) "" else null
     // 2.2.2: pi, Oh My Pi and Copilot draw no prompt glyph either; their boxes are found by shape, and
     // a layout their reader doesn't know is no input line (never the generic glyph search below).
     // A blank Oh My Pi or Copilot box can hold typed spaces the screen can't show (no cursor cell), so
@@ -3496,6 +3496,22 @@ internal fun openCodeBackgroundDrawer(agent: String?, screen: String): Boolean {
 private val OPENCODE_COMMANDS = Regex("""\bctrl\+p\s+commands\b""", RegexOption.IGNORE_CASE)
 private val OPENCODE_MODE = Regex("""^[┃│]\s+(Build|Plan)(?:\s+·)?\s+[^┃│]+[┃│]?.*$""")
 private val OPENCODE_EMPTY_HINT = Regex("""^\s*[┃│]\s+Ask anything(?:\.\.\.|…)\s*(?:[┃│].*)?$""")
+private val OPENCODE_SLASH_QUERY = Regex("""^/[\w.-]*$""")
+private val OPENCODE_SLASH_OPTION = Regex("""^\s*[┃│▏▎]\s+/[\w.-]+(?:\s{2,}\S.*| Exit the app\s*[┃│]?)$""")
+
+/** The slash list is drawn directly above OpenCode's composer, at the same left rail. */
+private fun openCodeSlashMenu(rows: List<String>, mode: Int, bar: Int, width: Int): Boolean {
+    val textRow = mode - 2
+    val query = rows[textRow].take(width).drop(bar + 1).trim()
+    if (!OPENCODE_SLASH_QUERY.matches(query)) return false
+    val option = (textRow - 1 downTo maxOf(0, textRow - 4)).firstOrNull { i ->
+        val row = rows[i].take(width).trimEnd()
+        row.isNotBlank() && row.trim() !in setOf("┃", "│") && !row.trimStart().startsWith("└")
+    } ?: return false
+    val row = rows[option].take(width).trimEnd()
+    if (row.indexOfFirst { !it.isWhitespace() } != bar) return false
+    return OPENCODE_SLASH_OPTION.matches(row)
+}
 
 /** The normal OpenCode composer draws model/mode above its commands footer, not modal controls. */
 private fun openCodeComposerMode(rows: List<String>): Int {
@@ -3557,8 +3573,8 @@ internal fun openCodeSessionComposerEmpty(screen: String): Boolean {
 /**
  * 2.2.8: the text typed in OpenCode's box, read the way [openCodeSessionComposerEmpty] finds the box
  * (the "Build · <model>" row, its bar column and its bottom edge), or null when the box is empty,
- * shows only its grey placeholder, or isn't found. Only the box's own columns count, so a popup drawn
- * to its right is not read as text. A draft of more than one row makes the box taller.
+ * shows only its grey placeholder, has an open slash list, or isn't found. Only the box's own
+ * columns count. A draft of more than one row makes the box taller.
  */
 internal fun openCodeComposerDraft(screen: String): String? {
     val rawRows = screen.lines().map { it.replace("\r", "") }.takeLast(40)
@@ -3569,6 +3585,7 @@ internal fun openCodeComposerDraft(screen: String): String? {
     val edge = rows.subList(mode + 1, rows.size).firstOrNull { it.trimStart().startsWith("╹") } ?: return null
     val width = edge.lastIndexOf('▀') + 1
     if (bar < 0 || width <= bar + 1 || edge.indexOf('╹') != bar) return null
+    if (openCodeSlashMenu(rows, mode, bar, width)) return null
     fun inBox(r: String) = r.length > bar && r[bar] == rows[mode][bar] && r.substring(0, bar).isBlank()
     var top = mode
     while (top > 0 && mode - top <= MAX_DRAFT_ROWS && inBox(rows[top - 1])) top--
