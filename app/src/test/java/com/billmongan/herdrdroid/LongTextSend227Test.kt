@@ -150,7 +150,7 @@ class LongTextSend227Test {
      */
     @Test fun aBoundLongMessageNeverReachesAReplacementDuringItsUpload() = fixture {
         val text = paste(55_710)
-        vm.enqueue("p1", text, behindQuestion = true)
+        vm.enqueue("p1", text, behindQuestion = true, displayedPane = vm.pane("p1"), displayedServer = vm.current?.id)
         duringUpload = {
             terminal = "replacement"
             state("panes", listOf(Pane("p1", "tab", "w1", "claude", Status.IDLE, "", "/fixture", terminalId = "replacement")))
@@ -173,7 +173,7 @@ class LongTextSend227Test {
     /** The same message with the occupant unchanged goes as before: one file, one message. */
     @Test fun aBoundLongMessageGoesToItsOwnOccupant() = fixture {
         val text = paste(55_710)
-        vm.enqueue("p1", text, behindQuestion = true)
+        vm.enqueue("p1", text, behindQuestion = true, displayedPane = vm.pane("p1"), displayedServer = vm.current?.id)
         vm.sendQueuedImmediately(vm.queued.single())
         drainUntil { prompts.size == 1 }
         assertEquals(1, uploads.size)
