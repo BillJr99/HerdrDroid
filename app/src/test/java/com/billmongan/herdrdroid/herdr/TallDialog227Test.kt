@@ -4,6 +4,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -167,6 +168,25 @@ class TallDialog227Test {
         assertTrue(card.shownParts().details.containsAll(listOf("Blue", "Gold", "Silver")))
         assertEquals(live, completeTallDialog(live, true, null) { history.replace("Silver", "Purple") })
         assertEquals(live, completeTallDialog(live, true, null) { (head + footer + live).joinToString("\n") })
+    }
+
+    @Test fun aClippedCapturedCheckboxDialogRecoversItsWrappedHeadingForReview() = runBlocking {
+        val history = screen("captured-2.1.332-four-questions/q4.txt")
+        // Derived from the authentic capture by removing its top, including the tabs.
+        val live = history.lines().drop(6).joinToString("\n")
+        val partial = checkNotNull(detectPrompt(live, false, "claude")).forCard()
+        assertTrue(partial.terminalReview)
+        assertTrue(partial.topOffScreen)
+        assertTrue(partial.choices.isEmpty())
+        val recovered = completeTallDialog(live, false, null) { history }
+        val whole = checkNotNull(detectPrompt(recovered, false, "claude")).forCard()
+        assertTrue(whole.question.startsWith("│ Question 4:") || whole.question.startsWith("Question 4:"))
+        assertTrue(whole.shownParts().details.any { it.contains("Option 4.1") })
+        assertTrue(whole.terminalReview)
+        assertTrue(whole.choices.isEmpty())
+        assertEquals(live, completeTallDialog(live, false, null) { history.replace("Option 4.1", "Replaced") })
+        assertNull(claudeClippedAskReview("❯ Pasted checkboxes\n" + live))
+        assertNull(claudeClippedAskReview(live.replace("     Submit", "     Other action")))
     }
 
     @Test fun aShortHistoryStopsAfterOneReadAndADialogThatFitsIsNotReadAgain() {
