@@ -189,6 +189,27 @@ class TallDialog227Test {
         assertNull(claudeClippedAskReview(live.replace("     Submit", "     Other action")))
     }
 
+    @Test fun aClippedCheckboxDialogCanFocusItsOwnActions() = runBlocking {
+        val submit = screen("captured-2.1.332-four-questions/q4-submit.txt")
+        val next = submit.replace("❯    Submit", "❯    Next")
+        val chat = submit.replace("❯    Submit", "     Submit").replace("  6. Chat about this", "❯ 6. Chat about this")
+        for (history in listOf(submit, next, chat)) {
+            val live = history.lines().drop(6).joinToString("\n")
+            val partial = checkNotNull(claudeClippedAskReview(live)).forCard()
+            assertTrue(partial.terminalReview)
+            assertTrue(partial.topOffScreen)
+            assertTrue(partial.choices.isEmpty())
+            val rebuilt = completeTallDialog(live, false, null) { history }
+            val whole = checkNotNull(detectPrompt(rebuilt, false, "claude")).forCard()
+            assertTrue(whole.question.contains("Question 4:"))
+            assertTrue(whole.terminalReview)
+            assertTrue(whole.choices.isEmpty())
+        }
+        val liveSubmit = submit.lines().drop(6).joinToString("\n")
+        assertNull(claudeClippedAskReview(liveSubmit.replace("  6. Chat about this", "❯ 6. Chat about this")))
+        assertNull(claudeClippedAskReview(liveSubmit.replace("❯    Submit", "     Submit")))
+    }
+
     @Test fun aShortHistoryStopsAfterOneReadAndADialogThatFitsIsNotReadAgain() {
         val short = history(listOf(" │ # one more row"))
         assertEquals(listOf(200), complete(200 to short, 600 to short).second)
