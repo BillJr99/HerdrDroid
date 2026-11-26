@@ -131,7 +131,7 @@ object Reflow {
      */
     fun parse(text: String, antigravity: Boolean = false, grok: Boolean = false, agent: String? = null): List<Seg> {
         val boxAt = composerBoxStart(text, agent)
-        val src = text.lines()
+        val src = (if (isOpenCode(agent)) openCodeChatColumn(text) else text).lines()
         // Grok's message times (its 24-hour and dated forms too, 2.1.4) are shown as times, not text.
         var raw = src.map { plainGlyphs(clean(if (grok) GrokClock.strip(it) else it)) }
         // Grok's status row, read before clean() cuts its timer and [stop] off (2.1.2).
