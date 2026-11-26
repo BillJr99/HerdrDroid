@@ -28,10 +28,11 @@ class PaneDraftCardTest {
     private val text = androidx.compose.runtime.mutableStateOf("first line\nsecond line")
 
     private fun show(canAct: Boolean = true, canClear: Boolean = true, sendNote: String? = null,
-                     verified: Boolean = true, holdNote: String? = null, blockedNote: String? = null) = rule.setContent {
+                     verified: Boolean = true, holdNote: String? = null, blockedNote: String? = null,
+                     lastVerified: Boolean = false) = rule.setContent {
         val t = text.value.takeIf { verified }
-        PaneDraftCard("Hermes", draft = t, text = t, canAct = canAct, canClear = canClear, busy = null, sendNote = sendNote,
-            onSend = { sends++ }, onClear = { clears++; cleared += it }, onShowTerminal = {}, holdNote = holdNote, blockedNote = blockedNote)
+        PaneDraftCard("Hermes", draft = t, text = text.value.takeIf { verified || lastVerified }, canAct = canAct, canClear = canClear, busy = null, sendNote = sendNote,
+            onSend = { sends++ }, onClear = { clears++; cleared += it }, onShowTerminal = {}, holdNote = holdNote, blockedNote = blockedNote, lastVerified = lastVerified)
     }
 
     @Test fun confirmClearsTheCapturedDraftAndADraftChangeDismissesIt() {
@@ -99,6 +100,7 @@ class PaneDraftCardTest {
         show(verified = false, holdNote = "A held message is waiting for this draft.")
         rule.onNodeWithText("A held message is waiting for this draft.").assertIsDisplayed()
         rule.onNodeWithText("Waiting for a verified view of the draft.").assertIsDisplayed()
+        rule.onNodeWithText("There may be unsent text in Hermes's input box at the computer.").assertIsDisplayed()
         rule.onNodeWithTag("pane-draft-send").assertIsNotEnabled()
         rule.onNodeWithTag("pane-draft-clear").assertIsNotEnabled()
     }
@@ -114,7 +116,10 @@ class PaneDraftCardTest {
     }
 
     @Test fun anOpenQuestionShowsBothActionsButNeverTypesIntoIt() {
-        show(verified = false, blockedNote = "Answer the open question before sending or clearing the draft.")
+        show(verified = false, lastVerified = true,
+            blockedNote = "Answer the open question before sending or clearing the draft.")
+        rule.onNodeWithText("Last verified draft. The open question covers the input box.").assertIsDisplayed()
+        rule.onNodeWithText("first line\nsecond line").assertIsDisplayed()
         rule.onNodeWithTag("pane-draft-send").assertIsNotEnabled()
         rule.onNodeWithTag("pane-draft-clear").assertIsNotEnabled()
         rule.onNodeWithText("Answer the open question before sending or clearing the draft.").assertIsDisplayed()

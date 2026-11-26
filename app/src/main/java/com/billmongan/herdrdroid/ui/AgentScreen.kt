@@ -468,8 +468,9 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 onShowTerminal = if (!fullTerminal) ({ hermesLive = false; fullTerminal = true; termFollow = true }) else null,
             )
         } }
+        val questionCoversDraft = prompt != null || status == Status.NEEDS_YOU
         val blockedDraft = when {
-            prompt != null || status == Status.NEEDS_YOU -> "Answer the open question before sending or clearing the draft."
+            questionCoversDraft -> "Answer the open question before sending or clearing the draft."
             backgroundDrawer || usageOverlay != null -> "Close the open panel before sending or clearing the draft."
             vm.paneReadProblem != null -> "The pane couldn't be read. Wait for a fresh view of the draft."
             else -> null
@@ -486,10 +487,12 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 else -> null
             }
             val checked = visibleDraft.takeIf { blockedDraft == null }
+            val lastVerifiedText = visibleDraft?.text?.takeIf { questionCoversDraft && vm.paneReadProblem == null }
             PaneDraftCard(
                 agent = pane?.agentName ?: "The agent",
                 draft = checked,
-                text = checked?.text,
+                text = checked?.text ?: lastVerifiedText,
+                lastVerified = lastVerifiedText != null,
                 canAct = checked?.actionable == true,
                 canClear = checked?.clearable == true,
                 busy = vm.paneDraftBusy(paneId),
