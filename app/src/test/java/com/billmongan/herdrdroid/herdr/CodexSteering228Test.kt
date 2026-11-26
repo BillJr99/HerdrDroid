@@ -32,6 +32,18 @@ class CodexSteering228Test {
         assertFalse("placeholder words without the native style", codexSteeringReady(stripAnsi(empty)))
     }
 
+    @Test fun theSingleEnterCaptureShowsBothFramesOfTheWorkingSpinner() {
+        val before = capture("one-enter-before")
+        val first = capture("one-enter-enter-one")
+        val second = capture("one-enter-enter-two")
+        assertTrue(stripAnsi(before).contains("tab to queue message"))
+        assertFalse(codexSteeringReady(before))
+        assertTrue(stripAnsi(first).contains("◦ Working"))
+        assertTrue(stripAnsi(second).contains("• Working"))
+        assertTrue(codexSteeringReady(first))
+        assertTrue(codexSteeringReady(second))
+    }
+
     @Test fun steeringAcceptsChatAndRefusesShellCommandsOrControlKeys() {
         assertTrue(codexSteeringText("Please use the smaller interface."))
         assertFalse(codexSteeringText(" /model"))
