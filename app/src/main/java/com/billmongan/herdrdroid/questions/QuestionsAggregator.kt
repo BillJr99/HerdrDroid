@@ -30,6 +30,8 @@ data class QuestionSource(
      * once a read confirms a question on its screen.
      */
     val candidate: Boolean = false,
+    /** Connection identity for a locally answerable source, or null while disconnected or remote. */
+    val connection: Any? = null,
 ) {
     val key: String get() = "$serverId|${pane.id}"
 }
@@ -123,6 +125,9 @@ class QuestionsAggregator(private val clock: () -> Long = System::currentTimeMil
                 // Its dialog closed while herdr still says it needs you: "Answered" shows its full
                 // time; once it has gone, a pane still needing you is read again as a new entry.
                 old.state == EntryState.ANSWERED -> old
+                old.source.connection !== src.connection || old.source.current != src.current ||
+                    (old.source.candidate && !src.candidate && old.state == EntryState.UNREAD) ->
+                    QuestionEntry(src, EntryState.READING, since = old.since)
                 else -> old.copy(source = src)
             }
         }
@@ -144,11 +149,14 @@ class QuestionsAggregator(private val clock: () -> Long = System::currentTimeMil
         applied[key] = token
         if (key in held) return
         val old = byKey[key] ?: return
-        if (old.state == EntryState.ANSWERED || !sameOccupant(old.source.pane, source.pane)) return
+        if (old.state == EntryState.ANSWERED || !sameOccupant(old.source.pane, source.pane) ||
+            old.source.connection !== source.connection || old.source.current != source.current ||
+            (source.candidate && !old.source.candidate && read?.prompt == null)) return
         val now = clock()
         byKey[key] = when {
             // The read itself failed: keep a question shown, try again next time; a pane never read says so.
             read == null -> if (old.state == EntryState.READING) old.copy(state = EntryState.UNREAD, readAt = now, note = READ_FAILED_NOTE)
+                else if (old.state == EntryState.READY) old
                 else old.copy(readAt = now)
             // The app can't read this pane at all: say why, with Open pane; read again after the usual wait.
             read.unreadable != null -> old.copy(state = EntryState.UNREAD, readAt = now, target = null, prompt = null, note = read.unreadable)

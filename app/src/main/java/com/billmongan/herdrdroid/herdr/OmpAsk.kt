@@ -110,7 +110,8 @@ object OmpAsk {
         var radios = false; var folded = false; var open = false
         fun close() {
             if (!open) return
-            questions += Question(num, clean(text.toString()), answered, options.map(::clean), chosen?.let(::clean), radios, cursor, chosenAt)
+            val chosenText = chosenAt?.let(options::getOrNull) ?: chosen
+            questions += Question(num, clean(text.toString()), answered, options.map(::clean), chosenText?.let(::clean), radios, cursor, chosenAt
             open = false
         }
         // 2.2.8 (Bill: "make sure all the question text is visible and well formatted especially

@@ -56,6 +56,10 @@ class QuestionsFeed(
     fun show() {
         visible = true
         if (job?.isActive != true) job = scope.launch {
+            // A previous visit may still be winding down a cancelled read. Wait for it
+            // before the first refresh instead of leaving that refresh with the old visit.
+            round.lock()
+            round.unlock()
             while (isActive && visible) {
                 refreshNow()
                 val wait = if (entries.any { it.state == EntryState.ANSWERED }) QuestionsAggregator.ANSWERED_SHOW_MS else POLL_MS
