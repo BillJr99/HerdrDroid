@@ -3,6 +3,7 @@ package com.billmongan.herdrdroid.ui
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import com.billmongan.herdrdroid.herdr.screenLinks
 import com.billmongan.herdrdroid.herdr.openCodeBackgroundDrawer
 import com.billmongan.herdrdroid.herdr.backgroundSupport
@@ -56,6 +57,8 @@ import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -1733,14 +1736,29 @@ internal fun PromptCard(
                     val caution = com.billmongan.herdrdroid.herdr.grantsStandingPermission(c.label)
                     // The highlighted row (the one Enter picks) is the blue one, not always the first.
                     val first = c.keys == (p.selected ?: p.choices.firstOrNull()?.keys?.takeUnless { p.openCodePermission })
+                    val shownLabel = com.billmongan.herdrdroid.herdr.shownChoiceLabel(allRows, c)
+                    val nativeBox = shownLabel.take(3).takeIf {
+                        p.claudeCheckboxAction != null && !typed && it in setOf("[ ]", "[x]", "[X]", "[✓]", "[✔]")
+                    }
+                    // The native viewport owns the check state. Taps use the same guarded action
+                    // as the other answer rows, and the refreshed viewport shows the outcome.
+                    val selectedBox = nativeBox?.let { it != "[ ]" }
                     val body: @Composable () -> Unit = {
                         Column(Modifier.fillMaxWidth()) {
-                            // A key hint ("(esc)") or tail reads quieter; the label's text is unchanged (2.1.1).
-                            Text(optionLabel(com.billmongan.herdrdroid.herdr.shownChoiceLabel(allRows, c), if (first) Palette.OnBlue.copy(alpha = 0.8f) else Palette.Muted, c.keys),
-                                fontSize = 15.sp, fontWeight = FontWeight.SemiBold, lineHeight = 20.sp,
-                                color = if (first) Palette.OnBlue else Palette.Ink,
-                                // 2.2.2: the highlighted row is the card's own blue button; tagged for the UI tests.
-                                modifier = Modifier.testTag(if (first) "choice-label-focused" else "choice-label"))
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                if (selectedBox != null) {
+                                    val ink = if (first) Palette.OnBlue else Palette.Ink
+                                    Checkbox(checked = selectedBox, onCheckedChange = null,
+                                        modifier = Modifier.testTag("claude-choice-checkbox"),
+                                        colors = CheckboxDefaults.colors(checkedColor = ink, uncheckedColor = ink,
+                                            checkmarkColor = if (first) Palette.Blue else Palette.Terminal))
+                                }
+                                Text(optionLabel(if (nativeBox == null) shownLabel else shownLabel.drop(3).trimStart(),
+                                    if (first) Palette.OnBlue.copy(alpha = 0.8f) else Palette.Muted, c.keys),
+                                    fontSize = 15.sp, fontWeight = FontWeight.SemiBold, lineHeight = 20.sp,
+                                    color = if (first) Palette.OnBlue else Palette.Ink,
+                                    modifier = Modifier.testTag(if (first) "choice-label-focused" else "choice-label"))
+                            }
                             optionNotes[c.keys]?.let { note ->
                                 // 2.2.2: the description under its label, smaller and quieter, one paragraph.
                                 OptionNote(note, if (first) Palette.OnBlue.copy(alpha = 0.9f) else Palette.Muted)
@@ -1752,6 +1770,10 @@ internal fun PromptCard(
                         }
                     }
                     val pad = PaddingValues(horizontal = 16.dp, vertical = 10.dp)
+                    val rowModifier = Modifier.fillMaxWidth().heightIn(min = 52.dp).then(
+                        if (selectedBox == null) Modifier
+                        else Modifier.semantics { stateDescription = if (selectedBox) "Checked" else "Unchecked" }
+                    )
                     if (first) {
                         Button(
                             enabled = !sending,
@@ -1759,7 +1781,7 @@ internal fun PromptCard(
                             shape = RoundedCornerShape(14.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = Palette.Blue, contentColor = Palette.OnBlue),
                             contentPadding = pad,
-                            modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                            modifier = rowModifier,
                         ) { body() }
                     } else {
                         OutlinedButton(
@@ -1767,7 +1789,7 @@ internal fun PromptCard(
                             onClick = { if (typed) onTypedChoice(c) else onChoice(c) },
                             shape = RoundedCornerShape(14.dp),
                             contentPadding = pad,
-                            modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                            modifier = rowModifier,
                         ) { body() }
                     }
                 }
