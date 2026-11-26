@@ -5,6 +5,9 @@ import com.billmongan.herdrdroid.ssh.Credentials
 import com.billmongan.herdrdroid.ssh.ExecResult
 import com.billmongan.herdrdroid.ssh.HerdrSsh
 import kotlinx.coroutines.runBlocking
+import org.junit.Assume.assumeTrue
+import org.junit.Rule
+import org.junit.rules.TemporaryFolder
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -14,6 +17,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RcHerdr228Test {
+    @get:Rule val temp = TemporaryFolder()
+
     @Test fun claudeScrollbackHintDoesNotMaskTheForegroundPermission() {
         val stale = "1 awaiting input\nYour session moved to the background (esc returns to it)"
         val permission = "$stale\n\nRun the sample?\n❯ 1. Yes\n  2. No\nEsc to cancel"
@@ -49,6 +54,31 @@ class RcHerdr228Test {
             assertFalse(chat.contains("mcpproxy"))
         }
         assertEquals("Context\n4 tokens\n40% used", openCodeChatColumn("Context\n4 tokens\n40% used"))
+    }
+
+    @Test fun backgroundHostGuardRefusesScrolledBackViewEvenWhenTheBytesMatch() {
+        assumeTrue(java.io.File("/usr/bin/python3").canExecute())
+        val fake = temp.newFile("fixture-herdr").apply {
+            writeText("""#!/bin/sh
+case "${'$'}2" in
+    get) printf '{"result":{"pane":{"pane_id":"p1","scroll":{"offset_from_bottom":%s}}}}' "${'$'}FAKE_OFFSET" ;;
+    read) printf 'the same visible bytes' ;;
+    *) exit 9 ;;
+esac
+""")
+            check(setExecutable(true))
+        }
+        val screen = "the same visible bytes"
+        fun status(offset: String): Pair<Int, String> {
+            val proc = ProcessBuilder("/usr/bin/python3", "-c", EXACT_VIEWPORT_CHECK, fake.absolutePath, "p1",
+                sha256Hex(screen.toByteArray()), "bottom")
+                .apply { environment()["FAKE_OFFSET"] = offset }
+                .start()
+            val out = proc.inputStream.bufferedReader().use { it.readText() }
+            return proc.waitFor() to out.trim()
+        }
+        assertEquals(0 to "", status("0"))
+        assertEquals(CARD_CHANGED_EXIT to "@@herdrdroid-card-refused@@", status("1"))
     }
 
     @Test fun relayUploadCannotFollowAReplacedConnection() = runBlocking {
