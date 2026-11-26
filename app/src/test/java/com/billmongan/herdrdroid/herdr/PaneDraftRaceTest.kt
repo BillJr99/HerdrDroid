@@ -77,13 +77,13 @@ class PaneDraftRaceTest {
         }
     }
 
-    @Test fun `the last read is right before Enter, after the occupant check, and Enter goes once`() {
+    @Test fun `the latest viewport and pane status are verified before one Enter`() {
         val c = computer(draftScreen)
         assertEquals(PaneDraftAction.Outcome.SENT, send(c))
         assertEquals(listOf(listOf("enter")), c.writes)
         val enter = c.events.indexOf("keys:enter")
-        // pane, viewport (the check), pane (the occupant), viewport (the last read), Enter.
-        assertEquals(listOf("pane", "viewport", "pane", "viewport", "keys:enter"), c.events.subList(0, enter + 1))
+        // Verify the last viewport and its current pane status before Enter.
+        assertEquals(listOf("pane", "viewport", "pane", "viewport", "pane", "keys:enter"), c.events.subList(0, enter + 1))
     }
 
     @Test fun `a change after Enter is never followed by a second Enter`() {
