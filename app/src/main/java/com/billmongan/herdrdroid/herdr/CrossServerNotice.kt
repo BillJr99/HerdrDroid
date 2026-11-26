@@ -1,6 +1,7 @@
 package com.billmongan.herdrdroid.herdr
 
 import com.billmongan.herdrdroid.transcript.TranscriptRead
+import com.billmongan.herdrdroid.transcript.LiveSession
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
@@ -80,12 +81,37 @@ internal class NoticeReceipt private constructor(
     val cursor get() = baseline.cursor
 
     companion object {
-        fun begin(session: String?, read: TranscriptRead?): NoticeReceipt? {
-            if (session.isNullOrBlank() || read == null || !read.ok || read.more ||
-                read.cursor.isBlank() || read.cursor == "{}") return null
+        private fun source(session: String, read: TranscriptRead): LiveSession? {
+            if (!read.ok || read.cursor.isBlank() || read.cursor == "{}") return null
             val live = read.live ?: return null
-            if (live.herdrStale || live.sid != session || (live.ref == null && live.db == null)) return null
+            return live.takeIf { !it.herdrStale && it.sid == session && (it.ref != null || it.db != null) }
+        }
+
+        fun begin(session: String?, read: TranscriptRead?): NoticeReceipt? {
+            if (session.isNullOrBlank() || read == null || read.more || source(session, read) == null) return null
             return NoticeReceipt(session, read)
+        }
+
+        /** Catch up before sending. A partial or changed history cannot prove a later receipt. */
+        suspend fun capture(session: String?, read: suspend (String) -> TranscriptRead?): NoticeReceipt? {
+            if (session.isNullOrBlank()) return null
+            var page = read("") ?: return null
+            val source = source(session, page) ?: return null
+            val seen = mutableSetOf(page.cursor)
+            val items = page.items.toMutableList()
+            repeat(2) {
+                if (!page.more) return begin(session, page.copy(items = items))
+                val next = read(page.cursor) ?: return null
+                val live = source(session, next) ?: return null
+                if (next.reset || live.ref != source.ref || live.db != source.db) return null
+                // Some readers set more for older history and re-read the final row on the
+                // same cursor. Accept that only when the forward read has no more pages.
+                if (next.cursor == page.cursor && next.more) return null
+                if (next.cursor != page.cursor && !seen.add(next.cursor)) return null
+                items += next.items
+                page = next
+            }
+            return begin(session, page.copy(items = items))
         }
     }
 }
