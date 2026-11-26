@@ -137,7 +137,7 @@ class SendNowVm227Test {
                 }
                 return last.copy(out = out + last.out)
             }
-            if ("'pane' 'run' 'p1'" in command) {
+            if (com.billmongan.herdrdroid.herdr.CARD_PASSED_MARK in command && "'pane' 'run' 'p1'" in command) {
                 duringCodexCheck?.invoke()
                 val exact = com.billmongan.herdrdroid.herdr.codexSteeringGuard(frame)
                 val who = com.billmongan.herdrdroid.herdr.cardOccupantDigest(
@@ -160,6 +160,12 @@ class SendNowVm227Test {
                 if (failSends) ExecResult(1, "", "fixture refused") else {
                     writes += "prompt:" + command.substringAfter("'p1' ").removeSurrounding("'")
                     if (promptExit != 0) ExecResult(promptExit, "", "fixture write lost") else ok("")
+                }
+            }
+            command.contains("'pane' 'run' 'p1' ") -> {
+                if (failSends) ExecResult(1, "", """{"error":{"code":"pane_not_found","message":"pane p1 not found"}}""") else {
+                    writes += "submit:" + command.substringAfter("'pane' 'run' 'p1' ").removeSurrounding("'")
+                    ok("")
                 }
             }
             command.contains("'pane' 'send-text' 'p1' ") -> {
