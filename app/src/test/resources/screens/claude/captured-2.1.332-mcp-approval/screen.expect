@@ -1,0 +1,4 @@
+card: options
+blocked: true
+options: Yes | Yes, and don't ask again for fixture — Display commands in /fixture/project | No
+source: Claude Code 2.1.332, native local MCP dialog; disposable probe path normalized

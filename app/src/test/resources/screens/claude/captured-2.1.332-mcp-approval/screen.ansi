@@ -1,0 +1,17 @@
+ [0m[1m[38;5;153mTool use[0m
+ [0m[1mfixture — Display Tool:[0m[38;5;246m (MCP)[0m
+[0m[38;5;239m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌[0m
+ [0m[38;5;246mtext: [0m"Public sample"
+[0m[38;5;239m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌[0m
+ [0m[3mAbout the [0m[1m[3mfixture — Display[0m[3m Tool:[0m
+ [0m[2m│ [0m[3m[38;5;246mDisplay a fictional sample[0m
+
+ Rule [0m[1mmcp__fixture__display [0mfrom command line arguments says to ask.
+ [0m[38;5;246m/permissions to update rules[0m
+
+ Do you want to proceed?
+ [0m[38;5;153m❯[0m [0m[38;5;246m1. [0m[38;5;153mYes[0m
+   [0m[38;5;246m2. [0mYes, and don't ask again for fixture — Display commands in /fixture/project
+   [0m[38;5;246m3. [0mNo
+
+ [0m[38;5;246mEsc to cancel · Tab to amend[0m
