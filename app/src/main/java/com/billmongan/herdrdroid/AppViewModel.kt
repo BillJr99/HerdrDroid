@@ -951,12 +951,7 @@ class AppViewModel internal constructor(
                 // it is used again at once after one quick check, with no sign-in or detection.
                 // Or the watcher's own live connection to it, so switching servers from the drawer
                 // is quick too.
-                val previous = parked
-                parked = null
-                parkJob?.cancel()
-                val fromPark = previous?.takeIf { it.serverId == server.id && System.currentTimeMillis() - it.at < PARK_MILLIS }
-                if (fromPark == null) previous?.ssh?.close()
-                val kept = fromPark
+                val kept = takeParked(server.id)
                     ?: fleet?.take(server.id)?.let { (fs, fh) -> Parked(server.id, fs, fh, fh.backend, System.currentTimeMillis()) }
                 val reused = kept != null && runCatching { kotlinx.coroutines.withTimeout(6_000) { kept.herdr.check() } }.isSuccess
                 if (kept != null && !reused) kept.ssh.close()
@@ -1459,6 +1454,16 @@ class AppViewModel internal constructor(
     private var parked: Parked? = null
     private var parkJob: Job? = null
     private val PARK_MILLIS = 5 * 60_000L
+
+    /** Transfers the parked connection to a reconnect, or closes it before another server starts. */
+    private fun takeParked(serverId: String): Parked? {
+        val previous = parked
+        parked = null
+        parkJob?.cancel()
+        return previous?.takeIf {
+            it.serverId == serverId && System.currentTimeMillis() - it.at < PARK_MILLIS
+        }.also { kept -> if (kept == null) previous?.ssh?.close() }
+    }
 
     /** Keeps the open server's connection for [PARK_MILLIS], then closes it if unused. */
     private fun park() {
