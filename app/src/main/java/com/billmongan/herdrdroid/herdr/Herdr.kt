@@ -4092,11 +4092,22 @@ internal fun codexFollowUpRows(text: String): Set<Int> {
     return masked
 }
 
+private val COPILOT_PENDING_INPUT_ROW = Regex("""^\s+└ \[pending · ↑ recall]\s*$""")
+
 fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version: String? = null): Prompt? {
     val unstyled = stripAnsi(text)
     val queueRows = if (agent.equals("codex", true)) codexFollowUpRows(unstyled) else emptySet()
-    val plain = if (queueRows.isEmpty()) unstyled
-        else unstyled.lines().mapIndexed { index, row -> if (index in queueRows) "" else row }.joinToString("\n")
+    val plain = when {
+        queueRows.isNotEmpty() -> unstyled.lines().mapIndexed { index, row ->
+            if (index in queueRows) "" else row
+        }.joinToString("\n")
+        // A pending Copilot follow-up has an indented recall hint under its echoed input.
+        // This row is queue chrome and must not become an unnumbered menu choice.
+        ruleAgent(agent) == "copilot" -> unstyled.lines().joinToString("\n") { row ->
+            if (COPILOT_PENDING_INPUT_ROW.matches(row)) "" else row
+        }
+        else -> unstyled
+    }
     if (agent.equals("claude", true)) {
         claudeModelCard(plain)?.let { return it }
         rebuiltClaudeAsk(plain)?.let { return it }

@@ -2,6 +2,7 @@ package com.billmongan.herdrdroid.herdr
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -19,6 +20,14 @@ class CopilotBusyControls229Test {
         assertEquals(SendNowRoute.WAIT_FOR_IDLE, sendNowRoute("copilot", Status.WORKING, screen))
         assertFalse(nativeQueuedSendAvailable("copilot", Status.WORKING, screen))
         assertFalse(foregroundHint("copilot", screen))
+    }
+
+    @Test fun pendingRecallHintNeverBecomesAQuestionChoice() {
+        val screen = capture("after-enter")
+        for (agent in listOf("copilot", "github-copilot")) {
+            assertNull(detectPrompt(screen, blocked = true, agent = agent))
+            assertNull(detectPrompt(screen, blocked = false, agent = agent))
+        }
     }
 
     @Test fun nativeChordMovedTheTaskButTheAppDoesNotAssumeItIsSafe() {
