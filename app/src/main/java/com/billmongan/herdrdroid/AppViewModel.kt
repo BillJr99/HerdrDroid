@@ -7475,7 +7475,7 @@ class AppViewModel internal constructor(
                 override suspend fun viewport(id: String) = h.readStyledViewport(id, connection)
                 override fun blocked(fresh: Pane, viewport: String): Boolean {
                     if (fresh.status != Status.WORKING || blocksNormalSend(fresh, viewport) ||
-                        holdReason(fresh.id, viewport) != null ||
+                        holdReason(fresh.id, viewport.trimEnd()) != null ||
                         !com.billmongan.herdrdroid.herdr.codexSteeringReady(viewport)) return true
                     verifiedViewport = viewport
                     return false
