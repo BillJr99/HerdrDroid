@@ -4,6 +4,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -82,6 +84,21 @@ class ClaudeQuestionCard222UiTest {
         rule.onAllNodesWithText("Enter to select", substring = true).assertCountEquals(0)
         rule.onNodeWithText("Use make test").performScrollTo().performClick()
         assertEquals(listOf(raw[1]), picked)
+    }
+
+    @Test fun aNativeCheckboxCardShowsTheCheckedRowsAndSendsTheOriginalChoice() {
+        val screen = requireNotNull(javaClass.getResource(
+            "/screens/claude/captured-2.1.332-four-questions/q4-toggled.txt"
+        )).readText()
+        val p = requireNotNull(detectPrompt(screen, true, "claude"))
+        val picked = mutableListOf<Choice>()
+        show(p, screen, picked)
+
+        rule.onAllNodesWithTag("claude-choice-checkbox", useUnmergedTree = true).assertCountEquals(4)
+        rule.onAllNodes(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Checked"))
+            .assertCountEquals(1)
+        rule.onNodeWithText("Option 4.2").performScrollTo().performClick()
+        assertEquals(listOf(p.choices.single { it.label == "[✔] Option 4.2" }), picked)
     }
 
     @Test fun aCommandInTheQuestionTextShowsAsItsOwnMonospaceBlock() {
