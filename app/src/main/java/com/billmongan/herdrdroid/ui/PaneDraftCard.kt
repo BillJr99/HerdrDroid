@@ -56,9 +56,10 @@ internal fun <T> PaneDraftCard(
     onShowTerminal: () -> Unit,
     holdNote: String? = null,
     blockedNote: String? = null,
+    lastVerified: Boolean = false,
 ) {
     var confirmClear by remember { mutableStateOf<Pair<T, String>?>(null) }
-    val interact = canAct && draft != null && text != null && blockedNote == null
+    val interact = canAct && draft != null && text != null && blockedNote == null && !lastVerified
     LaunchedEffect(draft, text, interact, canClear) {
         if (!interact || !canClear || confirmClear?.let { it.first != draft || it.second != text } == true)
             confirmClear = null
@@ -70,8 +71,12 @@ internal fun <T> PaneDraftCard(
         Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Draft in the pane", color = Palette.Ink, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
             Text(
-                "This is typed in $agent's input box at the computer and hasn't been sent. " +
-                    "Messages from the app wait until it is sent or cleared.",
+                when {
+                    text == null -> "There may be unsent text in $agent's input box at the computer."
+                    lastVerified -> "Last verified draft. The open question covers the input box."
+                    else -> "This is typed in $agent's input box at the computer and hasn't been sent. " +
+                        "Messages from the app wait until it is sent or cleared."
+                },
                 color = Palette.Muted, fontSize = 12.5.sp,
             )
             if (holdNote != null) Text(holdNote, color = Palette.Muted, fontSize = 12.5.sp)
