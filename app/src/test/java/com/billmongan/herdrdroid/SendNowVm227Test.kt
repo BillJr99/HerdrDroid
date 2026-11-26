@@ -89,7 +89,7 @@ class SendNowVm227Test {
 
         fun status(s: Status) {
             statusNow = s
-            state("panes", listOf(Pane("p1", "tab", "w1", agent, s, "", "/fixture", terminalId = terminal)))
+            state("panes", listOf(Pane("p1", "tab", "w1", agent, s, "", "/fixture", terminalId = terminal, scrollOffset = 0)))
         }
 
         /** The chat's latest read of the pane, as the screen Send now first decides from. */
@@ -139,7 +139,7 @@ class SendNowVm227Test {
             }
             if ("'pane' 'run' 'p1'" in command) {
                 duringCodexCheck?.invoke()
-                val exact = com.billmongan.herdrdroid.herdr.cardScreenDigest(frame, "codex")
+                val exact = com.billmongan.herdrdroid.herdr.codexSteeringGuard(frame)
                 val who = com.billmongan.herdrdroid.herdr.cardOccupantDigest(
                     org.json.JSONObject(paneOn(checkTerminal ?: remoteTerminal ?: terminal)),
                 )
@@ -186,6 +186,24 @@ class SendNowVm227Test {
         private fun field(name: String) = AppViewModel::class.java.getDeclaredField(name).apply { isAccessible = true }
         @Suppress("UNCHECKED_CAST")
         fun state(name: String, value: Any?) { (field("$name\$delegate").get(vm) as MutableState<Any?>).value = value }
+    }
+
+    @Test fun codexRealReadKeepsVerifiedStylingForTheBusySendMenu() = fixture("codex", codexBusy) {
+        kotlinx.coroutines.runBlocking { vm.readPane("p1") }
+        assertEquals("p1", vm.paneTextPane)
+        assertTrue(com.billmongan.herdrdroid.herdr.codexSteeringReady(vm.paneText))
+        vm.sendQueuedNow(queue("Switch to the small example."))
+        assertNotNull(vm.sendNowConfirm)
+        assertTrue(writes.isEmpty())
+    }
+
+    @Test fun codexTickBetweenAppReadAndHostCheckStillSendsOnce() = fixture("codex", codexBusy) {
+        shown()
+        vm.sendQueuedNow(queue("Switch to the small example."))
+        duringCodexCheck = { frame = frame.replace("0s", "1s") }
+        vm.confirmSendNow()
+        drainUntil { vm.queued.isEmpty() }
+        assertEquals(listOf("submit:Switch to the small example."), writes)
     }
 
     @Test fun codexBusySendConfirmsAndUsesOneNativeSubmit() = fixture("codex", codexBusy) {

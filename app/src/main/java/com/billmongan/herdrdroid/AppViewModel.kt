@@ -2637,7 +2637,7 @@ class AppViewModel internal constructor(
                 !com.billmongan.herdrdroid.herdr.questionRead(recent, preview.forCard(), agent, version, blocked).topped
             if (unprovenPreview) com.billmongan.herdrdroid.diag.DiagLog.log("prompt",
                 "$paneId: the recent read's dialog isn't proven (${preview!!.choices.size} choice(s)); reading the live screen")
-            val liveCard = if (liveUsage == null &&
+            val liveViewport = if (liveUsage == null &&
                 (verifyOpenCode || verifyHermesUsage || verifyPi || recentClaudeModel || recentCodexQuestion || shownCodexCard || missingCodexCard || unfinishedChoicePreview || unprovenPreview ||
                     preview?.terminalReview == true || preview?.topOffScreen == true || (blocked && preview?.choices.isNullOrEmpty())) && canUpgrade()) {
                 val owner = checkNotNull(cardOwner)
@@ -2646,10 +2646,11 @@ class AppViewModel internal constructor(
                     if ((verifyHermesUsage || verifyPi) && (!com.billmongan.herdrdroid.herdr.hasStableOccupant(owner.pane) ||
                             h.cardPane(paneId, owner.connection)?.sameCardOccupant(owner.pane) != true || !canUpgrade())) return@quietly null
                     // 2.2.8: a far server (a cloud host) can take more than a second to answer.
-                    h.readCardViewport(paneId, owner.connection, timeoutSeconds = 3)
+                    h.readStyledViewport(paneId, owner.connection, timeoutSeconds = 3)
                 }
                     ?.takeIf { canUpgrade() && !it.isBlank() }
             } else null
+            val liveCard = liveViewport?.let { com.billmongan.herdrdroid.herdr.stripAnsi(it) }
             if (!isOpen()) return
             val liveCandidate = liveCard?.let {
                 if (verifyPi) activePiQuestion(it, version)
@@ -2684,7 +2685,11 @@ class AppViewModel internal constructor(
                 com.billmongan.herdrdroid.herdr.claudeClippedAskReview(recent) != null
             val useLive = liveCard != null && (livePrompt != null || recentClaudeModel || recentClippedClaudeAsk || preview?.topOffScreen == true || unprovenAnswered || verifyPi && preview != null || liveReport || recentReport || verifiedUsage != null || recentClarify || codexQuestionCleared || verifyOpenCode &&
                 (blocked || preview != null || openCodeBackgroundDrawer(agent, recent) || openCodeBackgroundDrawer(agent, liveCard)))
-            val shownText = if (useLive) checkNotNull(liveCard) else recent
+            val codexSteerView = liveViewport?.takeIf {
+                missingCodexCard && liveCandidate == null &&
+                    com.billmongan.herdrdroid.herdr.codexSteeringReady(it)
+            }
+            val shownText = codexSteerView ?: if (useLive) checkNotNull(liveCard) else recent
             // 2.2.7: a Claude dialog taller than the screen is completed from the pane's history when that proves it (herdr/TallDialog.kt).
             val text = if (useLive && agent.equals("claude", true) && cardOwner != null)
                 com.billmongan.herdrdroid.herdr.completeTallDialog(shownText, blocked, version) { n ->
@@ -7533,7 +7538,7 @@ class AppViewModel internal constructor(
         }
         fun ownsRow() = queuedById(item.id)?.sendToken == token
         fun allowed() = ownsRow() && !locked && foreground && current?.id == server && herdr === h &&
-            h.connectionIdentity === connection && link == Link.CONNECTED
+            h.connectionIdentity === connection && link == Link.CONNECTED && screen == Screen.Agent(target.id)
         viewModelScope.launch {
             var verifiedViewport: String? = null
             var occupant: String? = null
@@ -7555,7 +7560,8 @@ class AppViewModel internal constructor(
                 override suspend fun send(fresh: Pane, text: String, permit: WritePermit) {
                     if (fresh.status != Status.WORKING || !allowed()) throw com.billmongan.herdrdroid.herdr.CardCheckFailed()
                     val guard = com.billmongan.herdrdroid.herdr.CardGuard(
-                        checkNotNull(occupant), com.billmongan.herdrdroid.herdr.cardScreenDigest(checkNotNull(verifiedViewport), "codex"),
+                        checkNotNull(occupant), com.billmongan.herdrdroid.herdr.codexSteeringGuard(checkNotNull(verifiedViewport))
+                            ?: throw com.billmongan.herdrdroid.herdr.CardCheckFailed(),
                     )
                     h.sendCardInput(fresh.id, com.billmongan.herdrdroid.herdr.CardInput.Submit(text), guard,
                         connection, permit, shellOnly = server in noPython3)

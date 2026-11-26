@@ -153,6 +153,27 @@ class CardSendCheck227Test {
         }
     }
 
+    @Test fun codexBusyClockIsNormalizedButOtherRowsAndOccupantStayExact() {
+        val raw = checkNotNull(javaClass.getResource("/screens/codex/live-2026-11-26-busy/empty.ansi")).readText()
+        val json = getJson.replace("hermes", "codex")
+        val digest = checkNotNull(codexSteeringGuard(raw))
+        val g = CardGuard(guard(json).occupant, digest)
+        val tick = raw.replace("0s", "12s")
+        assertEquals(digest, codexSteeringGuard(tick))
+        bothChecks { mode ->
+            assertEquals(0, runReal(g, json, tick, mode = mode).exit)
+            val draft = raw.replace("Ask Codex to do anything", "replacement draft")
+            val status = raw.replace(" to interrupt", " to dismiss")
+            val toolOutput = raw.replace("describe a task", "streaming output")
+            for (other in listOf(draft, status, toolOutput)) {
+                val refused = runReal(g, json, other, mode = mode)
+                assertEquals(3, refused.exit)
+                assertTrue(refused.sent.isEmpty())
+            }
+            assertEquals(3, runReal(g, json.replace("term-1", "term-2"), tick, mode = mode).exit)
+        }
+    }
+
     private fun bothChecks(block: (Mode) -> Unit) {
         block(Mode.SHELL)
         if (hasPython) block(Mode.PYTHON)
