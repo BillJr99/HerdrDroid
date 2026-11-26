@@ -393,7 +393,7 @@ class Herdr internal constructor(
         override suspend fun sendForced(pane: Pane, text: String, connection: Any, permit: WritePermit) =
             sendMessage(pane, text, allowTerminalFallback = false, expectedConnection = connection, permit = permit, busyOk = true)
         // 2.2.7: a message too long to type, as a checked file in this computer's inbox.
-        override suspend fun upload(name: String, bytes: ByteArray, connection: Any) = uploadVerified(name, bytes)
+        override suspend fun upload(name: String, bytes: ByteArray, connection: Any) = uploadVerified(name, bytes, connection)
     }
 
     /** No tab list, status enrichment, bulk lock, or reconnect during a card tap. */
@@ -454,7 +454,7 @@ class Herdr internal constructor(
         // line with its exit means the question changed; anything else, the check failed.
         val why = (r.err.ifBlank { r.out }).trim().lines().lastOrNull { it.isNotBlank() && it.trim() != CARD_PASSED_MARK } ?: "exit ${r.exit}"
         when {
-            CARD_PASSED_MARK in lines -> throw DeliveryUncertain(why)
+            r.exit == -2 || CARD_PASSED_MARK in lines -> throw DeliveryUncertain(why)
             r.exit == CARD_CHANGED_EXIT && CARD_REFUSED_MARK in lines -> throw CardChanged()
             else -> throw CardCheckFailed()
         }
@@ -760,7 +760,7 @@ class Herdr internal constructor(
             val lines = r.out.lines().map { it.trim() }
             val why = (r.err.ifBlank { r.out }).trim().lines().lastOrNull { it.isNotBlank() && it.trim() != OCCUPANT_PASSED_MARK } ?: "exit ${r.exit}"
             when {
-                OCCUPANT_PASSED_MARK in lines -> throw DeliveryUncertain(why)
+                r.exit == -2 || OCCUPANT_PASSED_MARK in lines -> throw DeliveryUncertain(why)
                 r.exit == OCCUPANT_CHANGED_EXIT && OCCUPANT_REFUSED_MARK in lines -> throw OccupantChanged()
                 else -> throw CardCheckFailed()
             }
@@ -785,7 +785,7 @@ class Herdr internal constructor(
         if (core) {
             // hc send pastes and presses Enter; it refuses a terminal waiting on a question
             // unless forced, and a message sent then is meant as the answer.
-            if (status == Status.NEEDS_YOU) runWrite(hcCmd("send", "--force", pane.id, text))
+            if (status == Status.NEEDS_YOU) runWrite(hcCmd("send", "--force", pane.id, text), expectedConnection = expectedConnection, permit = permit)
             else runWrite((clear?.let { hcCmd("keys", pane.id, it) + " && " } ?: "") + hcCmd("send", pane.id, text), expectedConnection = expectedConnection, permit = permit)
             return
         }
@@ -823,10 +823,10 @@ class Herdr internal constructor(
         val submit = cmd("pane", "send-keys", paneId, "enter")
         val result = runWriteResult("$paste && echo $PASTED_MARK && $pause$submit", expectedConnection, null)
         if (result.exit == 0) return
-        if (result.out.lineSequence().any { it.trim() == PASTED_MARK }) {
+        if (result.exit == -2 || result.out.lineSequence().any { it.trim() == PASTED_MARK }) {
             // The composer may contain this paste, the submitted message, or a newer user draft.
             // Never clear or retry without proof of what the target now contains.
-            throw DeliveryUncertain("The text was typed, but submission could not be confirmed.")
+            throw DeliveryUncertain("The paste or submission could not be confirmed.")
         }
         val message = result.err.ifBlank { result.out }.lineSequence().lastOrNull { it.isNotBlank() }?.trim()
             ?: "exit ${result.exit}"
@@ -854,7 +854,7 @@ class Herdr internal constructor(
         val lines = r.out.lines().map { it.trim() }
         val why = (r.err.ifBlank { r.out }).trim().lines().lastOrNull { it.isNotBlank() && it.trim() != OCCUPANT_PASSED_MARK } ?: "exit ${r.exit}"
         when {
-            OCCUPANT_PASSED_MARK in lines -> throw DeliveryUncertain(why)
+            r.exit == -2 || OCCUPANT_PASSED_MARK in lines -> throw DeliveryUncertain(why)
             r.exit == BACKGROUND_REFUSED_EXIT && BACKGROUND_REFUSED_MARK in lines -> return false
             r.exit == CARD_CHANGED_EXIT && CARD_REFUSED_MARK in lines -> return false
             r.exit == OCCUPANT_CHANGED_EXIT && OCCUPANT_REFUSED_MARK in lines -> throw OccupantChanged()
@@ -881,7 +881,7 @@ class Herdr internal constructor(
         val result = runWriteResult("$check && echo $OCCUPANT_PASSED_MARK && $send", connection, permit)
         if (result.exit == 0) return true
         val lines = result.out.lineSequence().map(String::trim).toSet()
-        if (OCCUPANT_PASSED_MARK in lines) throw DeliveryUncertain("The draft key may have gone through.")
+        if (result.exit == -2 || OCCUPANT_PASSED_MARK in lines) throw DeliveryUncertain("The draft key may have gone through.")
         return false
     }
 
@@ -893,8 +893,8 @@ class Herdr internal constructor(
     private fun usageSnapshotCommand(paneId: String, agent: String) =
         "$PY -c ${shq(USAGE_OVERLAY_SNAPSHOT)} $herdr ${shq(paneId)} ${shq(agent)}"
 
-    internal suspend fun readUsageOverlay(paneId: String, agent: String, anyAgent: Boolean = false): UsageOverlay? =
-        (readUsageState(paneId, agent, anyAgent) as? UsageState.Open)?.overlay
+    internal suspend fun readUsageOverlay(paneId: String, agent: String, anyAgent: Boolean = false, expectedConnection: Any? = null): UsageOverlay? =
+        (readUsageState(paneId, agent, anyAgent, expectedConnection) as? UsageState.Open)?.overlay
 
     /** The guarded live snapshot (occupant digest and visible screen), or null when refused or unreadable. */
     private suspend fun panelSnapshot(paneId: String, agent: String): Pair<String, String>? {
@@ -921,10 +921,10 @@ class Herdr internal constructor(
      * can't tell (the read was refused: the pane is working, scrolled back, or changed occupant;
      * or the dialog's hint is drawn in a layout the app doesn't know).
      */
-    internal suspend fun readUsageState(paneId: String, agent: String, anyAgent: Boolean = false): UsageState {
+    internal suspend fun readUsageState(paneId: String, agent: String, anyAgent: Boolean = false, expectedConnection: Any? = null): UsageState {
         // 2.2.1: [anyAgent] when a panel shows on a recent read of an agent outside the usage set.
         if (core || (agent !in USAGE_DIALOG_AGENTS && !anyAgent)) return UsageState.Unknown
-        val json = runNow(usageSnapshotCommand(paneId, agent), timeoutSeconds = 5).trim()
+        val json = runNow(usageSnapshotCommand(paneId, agent), timeoutSeconds = 5, expectedConnection = expectedConnection).trim()
         if (json.isEmpty()) return UsageState.Unknown
         val objectJson = runCatching { JSONObject(json) }.getOrNull() ?: return UsageState.Unknown
         val visible = objectJson.optString("visible")
@@ -933,25 +933,25 @@ class Herdr internal constructor(
         return if (usageDialogHint(agent, visible) || visible.isBlank()) UsageState.Unknown else UsageState.Closed
     }
 
-    internal suspend fun closeUsageOverlay(paneId: String, agent: String, overlay: UsageOverlay): Boolean {
+    internal suspend fun closeUsageOverlay(paneId: String, agent: String, overlay: UsageOverlay, expectedConnection: Any? = null): Boolean {
         if (core || dismissibleUsageFrame(agent, overlay.visible) == null) return false
         val digest = java.security.MessageDigest.getInstance("SHA-256")
             .digest(overlay.visible.toByteArray()).joinToString("") { "%02x".format(it) }
         val expected = "${shq(overlay.occupant)} ${shq(digest)}"
         // Repeat the exact compare on the server, rather than sending an unguarded Escape over SSH.
         // Herdr does not expose an atomic compare-and-send; the final local CLI call is still separate.
-        return runWrite("${usageSnapshotCommand(paneId, agent)} $expected", timeoutSeconds = 5).trim() == "sent"
+        return runWrite("${usageSnapshotCommand(paneId, agent)} $expected", timeoutSeconds = 5, expectedConnection = expectedConnection).trim() == "sent"
     }
 
     /**
      * Scrolls Claude's /btw panel one step (2.1.4): Down, under the same server-side exact-snapshot
      * check as [closeUsageOverlay], so it goes only to the panel just read. Only for a panel the app opened.
      */
-    internal suspend fun scrollBtwOverlay(paneId: String, overlay: UsageOverlay): Boolean {
+    internal suspend fun scrollBtwOverlay(paneId: String, overlay: UsageOverlay, expectedConnection: Any? = null): Boolean {
         if (core || claudeBtwOverlay(overlay.visible) == null) return false
         val digest = java.security.MessageDigest.getInstance("SHA-256")
             .digest(overlay.visible.toByteArray()).joinToString("") { "%02x".format(it) }
-        return runWrite("${usageSnapshotCommand(paneId, "claude")} ${shq(overlay.occupant)} ${shq(digest)} down", timeoutSeconds = 5).trim() == "sent"
+        return runWrite("${usageSnapshotCommand(paneId, "claude")} ${shq(overlay.occupant)} ${shq(digest)} down", timeoutSeconds = 5, expectedConnection = expectedConnection).trim() == "sent"
     }
 
     /**
@@ -1029,7 +1029,7 @@ class Herdr internal constructor(
      * computer; a mismatch is written again once, then refused ([UploadMismatch]), so a message
      * never points at a missing or partial file. Logged with the inbox file name, size and result only.
      */
-    suspend fun uploadVerified(name: String, bytes: ByteArray): UploadReceipt {
+    suspend fun uploadVerified(name: String, bytes: ByteArray, expectedConnection: Any? = connectionIdentity): UploadReceipt {
         val safe = name.replace(Regex("[^A-Za-z0-9._-]"), "_").trim('_').take(80).ifBlank { "file" }
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
         val want = sha256Hex(bytes)
@@ -1042,7 +1042,8 @@ class Herdr internal constructor(
         var last: String? = null
         // 2.2.7 (Codex's review): bound to the connection it started on (a replacement refuses it)
         // and counted as a send, so the small-packets fallback waits for it instead of cutting it.
-        val pinned = connectionIdentity
+        val pinned = expectedConnection
+        if (pinned != null && connectionIdentity !== pinned) throw com.billmongan.herdrdroid.ssh.ConnectionChanged()
         ssh.beginSend()
         try {
             for (attempt in 1..2) {
