@@ -340,25 +340,27 @@ internal fun withoutClaudeAskPreview(rows: List<String>): List<String> {
 private val CLAUDE_CLIPPED_OPTION = Regex("""^\s*([❯›]?)\s*(\d{1,2})[.)]\s+\S.*$""")
 
 private val CLAUDE_CLIPPED_CHECKBOX = Regex("""^\s*([❯›]?)\s*(\d{1,2})\. \[[ xX✓✔]\] \S.*$""")
-private val CLAUDE_CLIPPED_CHAT = Regex("""^\s*(\d{1,2})\. Chat about this$""")
+private val CLAUDE_CLIPPED_CHAT = Regex("""^\s*([❯›]?)\s*(\d{1,2})\. Chat about this$""")
+private val CLAUDE_CLIPPED_ACTION = Regex("""^\s*([❯›]?)\s*(?:Next|Submit)$""")
 
-/** Checkbox dialogs end with their own Submit, rule, and separately numbered chat action. */
+/** Checkbox dialogs end with their own Next or Submit, rule, and separately numbered chat action. */
 internal fun claudeClippedCheckboxRows(frame: List<String>): List<String>? {
-    val rows = frame.filter { it.isNotBlank() }
+    val rows = frame.filter { it.isNotBlank() }.map { it.trimEnd() }
     if (rows.size < 6 || !claudeAskFooter(rows.last())) return null
     if (rows.dropLast(1).any { claudeAskTab(it) || claudeAskFooter(it) }) return null
     val chat = CLAUDE_CLIPPED_CHAT.matchEntire(rows[rows.lastIndex - 1]) ?: return null
     if (!CLAUDE_DIALOG_TOP_RULE.matches(rows[rows.lastIndex - 2])) return null
-    if (rows[rows.lastIndex - 3].trim() != "Submit") return null
+    val action = CLAUDE_CLIPPED_ACTION.matchEntire(rows[rows.lastIndex - 3]) ?: return null
     val body = rows.dropLast(4)
     val first = body.indexOfFirst { CLAUDE_CLIPPED_CHECKBOX.matches(it) }
     if (first < 0 || body.take(first).any { it.isNotBlank() && !it.startsWith("│ ") }) return null
     val options = body.drop(first).mapNotNull(CLAUDE_CLIPPED_CHECKBOX::matchEntire)
-    if (options.size < 2 || options.count { it.groupValues[1].isNotEmpty() } != 1) return null
+    val focused = (options + action + chat).count { it.groupValues[1].isNotEmpty() }
+    if (options.size < 2 || focused != 1) return null
     val firstNumber = options.first().groupValues[2].toInt()
     val nextNumber = firstNumber + options.size
     if (firstNumber < 1 || options.map { it.groupValues[2].toInt() } != (firstNumber until nextNumber).toList() ||
-        chat.groupValues[1].toInt() != nextNumber) return null
+        chat.groupValues[2].toInt() != nextNumber) return null
     return body.drop(first)
 }
 
