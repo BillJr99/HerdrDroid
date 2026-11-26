@@ -518,27 +518,9 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
 
     // Bill (2026-11-25): an approve-from-now-on option is confirmed here first, with its full label;
     // one the app can't show whole or reach only says why, and has no Confirm.
-    vm.approveAllPending?.takeIf { it.paneId == paneId && it.serverId == vm.current?.id }?.let { pending ->
-        val ask = pending.ask
-        androidx.compose.material3.AlertDialog(
-            onDismissRequest = { vm.cancelApproveAll() },
-            modifier = Modifier.semantics { contentDescription = "Approve everything from now on" }.testTag("approve-all-dialog"),
-            title = { Text(if (ask.reason == null) "Approve everything from now on?" else "Not sent from here") },
-            text = {
-                Column {
-                    Text("\u201c${ask.label}\u201d", color = Palette.Ink, fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.height(8.dp))
-                    Text(ask.reason ?: "${pane?.agentName ?: "The agent"} will do this again without asking you. Nothing is sent until you confirm.",
-                        color = Palette.Ink)
-                }
-            },
-            confirmButton = {
-                if (ask.reason == null) TextButton(onClick = { vm.confirmApproveAll() }, modifier = Modifier.testTag("approve-all-confirm")) { Text("Confirm") }
-                else TextButton(onClick = { vm.cancelApproveAll() }, modifier = Modifier.testTag("approve-all-close")) { Text("Close") }
-            },
-            dismissButton = if (ask.reason == null) ({ TextButton(onClick = { vm.cancelApproveAll() }, modifier = Modifier.testTag("approve-all-cancel")) { Text("Cancel") } }) else null,
-        )
-    }
+    vm.approveAllPending?.takeIf {
+        it.paneId == paneId && it.serverId == vm.current?.id && it.target?.questionsVisit?.let { visit -> visit < 0 } != false
+    }?.let { ApproveAllDialog(vm, it, pane?.agentName) }
 
     // 2.2.7 (pre-review L8): an attachment's path goes into this pane's message box as it is now,
     // once the computer has the whole file, even after a Retry from another screen.
@@ -1080,7 +1062,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         val seen = if (ModelPresets.takesName(pane.agent)) vm.knownModels(pane.agent) else emptyList()
         val efforts = ModelPresets.efforts(pane.agent)
         val now = vm.models[paneId]
-        val idle = status != Status.WORKING
+        val idle = status == Status.IDLE || status == Status.DONE
         AlertDialog(
             onDismissRequest = { choosingModel = false },
             title = { Text("Model for ${pane.agentName}") },
@@ -1130,9 +1112,10 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             confirmButton = {
                 TextButton(enabled = idle, onClick = {
                     choosingModel = false
-                    vm.runCommand(paneId, ModelPresets.pickerCommand(pane.agent))
-                    pickerWhat = "model"
-                    readingPicker = true
+                    vm.runCommand(paneId, ModelPresets.pickerCommand(pane.agent)) {
+                        pickerWhat = "model"
+                        readingPicker = true
+                    }
                 }) { Text("Open the picker") }
             },
             dismissButton = { TextButton(onClick = { choosingModel = false }) { Text("Cancel") } },
@@ -2178,3 +2161,26 @@ internal class ComposerDraftBox(private val vm: AppViewModel, private val paneId
 
 /** 2.2.8: the note when a message waits for an open question (never typed into the dialog). */
 const val QUEUED_FOR_QUESTION = "The agent is waiting on a question. Your message is queued here and goes once the question is answered or gone."
+
+@Composable
+internal fun ApproveAllDialog(vm: AppViewModel, pending: AppViewModel.ApproveAllPending, agentName: String?) {
+    val ask = pending.ask
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = { vm.cancelApproveAll() },
+        modifier = Modifier.semantics { contentDescription = "Approve everything from now on" }.testTag("approve-all-dialog"),
+        title = { Text(if (ask.reason == null) "Approve everything from now on?" else "Not sent from here") },
+        text = {
+            Column {
+                Text("\u201c${ask.label}\u201d", color = Palette.Ink, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(8.dp))
+                Text(ask.reason ?: "${agentName ?: "The agent"} will do this again without asking you. Nothing is sent until you confirm.",
+                    color = Palette.Ink)
+            }
+        },
+        confirmButton = {
+            if (ask.reason == null) TextButton(onClick = { vm.confirmApproveAll() }, modifier = Modifier.testTag("approve-all-confirm")) { Text("Confirm") }
+            else TextButton(onClick = { vm.cancelApproveAll() }, modifier = Modifier.testTag("approve-all-close")) { Text("Close") }
+        },
+        dismissButton = if (ask.reason == null) ({ TextButton(onClick = { vm.cancelApproveAll() }, modifier = Modifier.testTag("approve-all-cancel")) { Text("Cancel") } }) else null,
+    )
+}
