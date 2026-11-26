@@ -217,7 +217,7 @@ class SendNowVm227Test {
     @Test fun aMessageQueuedBehindACardGoesOnceAfterTheCard() = fixture("claude", working.replace("esc to interrupt", "")) {
         status(Status.NEEDS_YOU)
         shown()
-        vm.enqueue("p1", "after the question", behindQuestion = true)
+        vm.enqueue("p1", "after the question", behindQuestion = true, displayedPane = vm.pane("p1"), displayedServer = vm.current?.id)
         repeat(2) { shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(4)); Thread.sleep(5) }
         assertTrue("held while the question is open", writes.isEmpty())
         status(Status.IDLE)
@@ -227,11 +227,23 @@ class SendNowVm227Test {
         assertTrue(vm.queued.isEmpty())
     }
 
+    @Test fun staleComposerTapDoesNotQueueForAReplacementOccupant() = fixture("claude", working) {
+        val displayed = vm.pane("p1")
+        val serverId = vm.current?.id
+        terminal = "replacement"
+        status(Status.NEEDS_YOU)
+        assertFalse(vm.enqueue("p1", "for the first session", behindQuestion = true,
+            displayedPane = displayed, displayedServer = serverId))
+        assertFalse(vm.enqueue("p1", "unattributed", behindQuestion = true))
+        assertTrue(vm.queued.isEmpty())
+        assertTrue(writes.isEmpty())
+    }
+
     /** The same, with another session in the pane by then: nothing goes to it, and the text is back in the box. */
     @Test fun aMessageQueuedBehindACardNeverGoesToAReplacement() = fixture("claude", working.replace("esc to interrupt", "")) {
         status(Status.NEEDS_YOU)
         shown()
-        vm.enqueue("p1", "for the first session only", behindQuestion = true)
+        vm.enqueue("p1", "for the first session only", behindQuestion = true, displayedPane = vm.pane("p1"), displayedServer = vm.current?.id)
         assertNotNull(vm.queued.single().occupant)
         terminal = "replacement"
         status(Status.IDLE)
@@ -248,7 +260,7 @@ class SendNowVm227Test {
         terminal = "t1"
         status(Status.NEEDS_YOU)
         vm.setComposerDraft("p1", "")
-        vm.enqueue("p1", "second", behindQuestion = true)
+        vm.enqueue("p1", "second", behindQuestion = true, displayedPane = vm.pane("p1"), displayedServer = vm.current?.id)
         terminal = "other"
         status(Status.IDLE)
         vm.sendQueuedNow(vm.queued.single())
@@ -267,7 +279,7 @@ class SendNowVm227Test {
     @Test fun aBoundMessageIsCheckedAgainRightBeforeTheWrite() = fixture("claude", working.replace("esc to interrupt", "")) {
         status(Status.IDLE)
         shown()
-        vm.enqueue("p1", "only for the first session", behindQuestion = true)
+        vm.enqueue("p1", "only for the first session", behindQuestion = true, displayedPane = vm.pane("p1"), displayedServer = vm.current?.id)
         duringRead = { terminal = "replacement"; status(Status.IDLE) }
         vm.sendQueuedImmediately(vm.queued.single())
         var noted = false
@@ -289,7 +301,7 @@ class SendNowVm227Test {
     @Test fun aRemoteOccupantChangeTheListHasNotSeenStopsABoundSend() = fixture("claude", working.replace("esc to interrupt", "")) {
         status(Status.IDLE)
         shown()
-        vm.enqueue("p1", "only for the first session", behindQuestion = true)
+        vm.enqueue("p1", "only for the first session", behindQuestion = true, displayedPane = vm.pane("p1"), displayedServer = vm.current?.id)
         remoteTerminal = "replacement"
         vm.sendQueuedImmediately(vm.queued.single())
         var noted = false
@@ -309,7 +321,7 @@ class SendNowVm227Test {
     @Test fun theComputerRefusesABoundWriteToAnotherOccupant() = fixture("claude", working.replace("esc to interrupt", "")) {
         status(Status.IDLE)
         shown()
-        vm.enqueue("p1", "only for the first session", behindQuestion = true)
+        vm.enqueue("p1", "only for the first session", behindQuestion = true, displayedPane = vm.pane("p1"), displayedServer = vm.current?.id)
         checkTerminal = "replacement"
         vm.sendQueuedImmediately(vm.queued.single())
         var noted = false
@@ -329,7 +341,7 @@ class SendNowVm227Test {
     @Test fun aBoundWriteGoesBehindTheComputersCheck() = fixture("claude", working.replace("esc to interrupt", "")) {
         status(Status.IDLE)
         shown()
-        vm.enqueue("p1", "for this session", behindQuestion = true)
+        vm.enqueue("p1", "for this session", behindQuestion = true, displayedPane = vm.pane("p1"), displayedServer = vm.current?.id)
         vm.sendQueuedImmediately(vm.queued.single())
         drainUntil { writes.isNotEmpty() }
         assertEquals(listOf("prompt:for this session"), writes)
@@ -346,7 +358,7 @@ class SendNowVm227Test {
         shown()
         promptExit = com.billmongan.herdrdroid.herdr.OCCUPANT_CHANGED_EXIT
         // Send now: the queued row stays, marked as maybe sent.
-        vm.enqueue("p1", "maybe it went", behindQuestion = true)
+        vm.enqueue("p1", "maybe it went", behindQuestion = true, displayedPane = vm.pane("p1"), displayedServer = vm.current?.id)
         vm.sendQueuedNow(vm.queued.single())
         drainUntil { vm.queued.singleOrNull()?.mayHaveSent == true }
         assertEquals(listOf("prompt:maybe it went"), writes)
@@ -356,7 +368,7 @@ class SendNowVm227Test {
         // The idle loop's route (Send immediately): the pending row shows it as maybe sent.
         vm.cancelQueued(vm.queued.single())
         writes.clear()
-        vm.enqueue("p1", "maybe again", behindQuestion = true)
+        vm.enqueue("p1", "maybe again", behindQuestion = true, displayedPane = vm.pane("p1"), displayedServer = vm.current?.id)
         vm.sendQueuedImmediately(vm.queued.single())
         drainUntil { vm.pendingSends.any { it.held == MAY_HAVE_SENT } }
         assertEquals(listOf("prompt:maybe again"), writes)
@@ -370,7 +382,7 @@ class SendNowVm227Test {
         status(Status.IDLE)
         shown()
         checkTerminal = "replacement"
-        vm.enqueue("p1", "not for the replacement", behindQuestion = true)
+        vm.enqueue("p1", "not for the replacement", behindQuestion = true, displayedPane = vm.pane("p1"), displayedServer = vm.current?.id)
         vm.sendQueuedNow(vm.queued.single())
         drainUntil { vm.composerDraft("p1") == "not for the replacement" }
         assertTrue(writes.isEmpty())
