@@ -62,7 +62,11 @@ class TallDialog227Test {
         assertTrue(tallDialogFits(p, live))
         // The answer path checks the whole dialog, rebuilt again; the visible tail alone is not enough.
         assertFalse(cardAnswerStillFits(p, live))
-        assertTrue(cardAnswerStillFits(p, checkNotNull(detectPrompt(complete(200 to good).first, true, "claude"))))
+        assertFalse(cardAnswerStillFits(p, checkNotNull(detectPrompt(complete(200 to good).first, true, "claude"))))
+        assertTrue(p.forCard().terminalReview)
+        assertTrue(p.forCard().choices.isEmpty())
+        assertTrue(live.forCard().terminalReview)
+        assertTrue(live.forCard().choices.isEmpty())
         // And the confirmation finds the dialog's top (its top rule, more than 60 rows above the options).
         val read = questionRead(text, p, "claude", null, true)
         assertTrue(read.topped)
@@ -95,34 +99,47 @@ class TallDialog227Test {
 
     @Test fun aHistoryThatDoesNotEndWithThisScreenIsRejected() {
         val changed = good.replaceFirst("$ nproc", "$ hostname")
-        val (text, _) = complete(200 to changed, 400 to changed)
+        val (text, _) = complete(200 to changed, 600 to changed)
         assertEquals(scrolled, text)
         assertTrue(checkNotNull(detectPrompt(text, true, "claude")).topOffScreen)
     }
 
     @Test fun chatAboveTheScreenNeverEntersTheCommand() {
         val mixed = history(chat + rule + title + description + dashed + hidden.take(3) + " Some chat line" + hidden.drop(3))
-        assertEquals(scrolled, complete(200 to mixed, 400 to mixed).first)
+        assertEquals(scrolled, complete(200 to mixed, 600 to mixed).first)
     }
 
     @Test fun aStaleCopyOfTheScreensTopIsRejected() {
         val top = scrolled.lines().take(3)
         val stale = history(chat + rule + title + description + dashed + hidden + top)
-        assertEquals(scrolled, complete(200 to stale, 400 to stale).first)
+        assertEquals(scrolled, complete(200 to stale, 600 to stale).first)
     }
 
     @Test fun withoutTheTopWithinTheCapTheNoteStays() {
         fun deep(n: Int) = history((1..n).map { " │ # deep row $it" })
-        val (text, asked) = complete(200 to deep(200), 400 to deep(400))
-        assertEquals(listOf(200, 400), asked)
+        val (text, asked) = complete(200 to deep(200), 600 to deep(600), 2000 to deep(2000))
+        assertEquals(listOf(200, 600, 2000), asked)
         assertEquals(scrolled, text)
         val p = checkNotNull(detectPrompt(text, true, "claude"))
         assertTrue(p.shownParts().details.contains(CLAUDE_TOP_OFF_NOTE))
     }
 
+    @Test fun theThirdReadCanRecoverAMuchTallerCommand() {
+        val long = history(chat + rule + title + description + dashed +
+            (1..700).map { " │ # long command row $it" })
+        fun tail(n: Int) = long.lines().takeLast(n).joinToString("\n")
+        val (text, asked) = complete(200 to tail(200), 600 to tail(600), 2000 to long)
+        assertEquals(listOf(200, 600, 2000), asked)
+        val parsed = checkNotNull(detectPrompt(text, true, "claude"))
+        assertFalse(parsed.topOffScreen)
+        assertTrue(parsed.shownParts().command.orEmpty().contains("# long command row 1"))
+        assertTrue(parsed.shownParts().command.orEmpty().contains("# long command row 700"))
+        assertTrue(parsed.forCard().terminalReview)
+    }
+
     @Test fun aShortHistoryStopsAfterOneReadAndADialogThatFitsIsNotReadAgain() {
         val short = history(listOf(" │ # one more row"))
-        assertEquals(listOf(200), complete(200 to short, 400 to short).second)
+        assertEquals(listOf(200), complete(200 to short, 600 to short).second)
         val fits = screen("captured-2.1.330-tall/tall-ask.txt")
         runBlocking {
             var reads = 0

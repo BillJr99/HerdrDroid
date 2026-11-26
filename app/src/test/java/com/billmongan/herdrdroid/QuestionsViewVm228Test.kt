@@ -351,6 +351,9 @@ class QuestionsViewVm228Test {
         assertEquals(EntryState.READY, e.state)
         val card = e.prompt!!
         assertTrue("the whole dialog, not its visible tail", !card.topOffScreen)
+        assertTrue(card.terminalReview)
+        assertTrue(card.choices.isEmpty())
+        assertNull(e.target)
         val command = checkNotNull(card.shownParts().command).lines()
         assertEquals("cd /home/user/scratch && python3 - <<'EOF'", command.first())
         assertEquals("EOF", command.last())

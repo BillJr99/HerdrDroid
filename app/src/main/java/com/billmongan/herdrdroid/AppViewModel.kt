@@ -2510,7 +2510,7 @@ class AppViewModel internal constructor(
                 "$paneId: the recent read's dialog isn't proven (${preview!!.choices.size} choice(s)); reading the live screen")
             val liveCard = if (liveUsage == null &&
                 (verifyOpenCode || verifyHermesUsage || verifyPi || missingCodexCard || unfinishedChoicePreview || unprovenPreview ||
-                    preview?.terminalReview == true || (blocked && preview?.choices.isNullOrEmpty())) && canUpgrade()) {
+                    preview?.terminalReview == true || preview?.topOffScreen == true || (blocked && preview?.choices.isNullOrEmpty())) && canUpgrade()) {
                 val owner = checkNotNull(cardOwner)
                 quietly { h ->
                     if (h !== owner.client) return@quietly null
@@ -2552,13 +2552,16 @@ class AppViewModel internal constructor(
                 "$paneId: the live screen shows no dialog; the recent read's is not used")
             val recentClippedClaudeAsk = agent.equals("claude", true) && preview?.terminalReview == true &&
                 com.billmongan.herdrdroid.herdr.claudeClippedAskReview(recent) != null
-            val useLive = liveCard != null && (livePrompt != null || recentClippedClaudeAsk || unprovenAnswered || verifyPi && preview != null || liveReport || recentReport || verifiedUsage != null || recentClarify || codexQuestionCleared || verifyOpenCode &&
+            val useLive = liveCard != null && (livePrompt != null || recentClippedClaudeAsk || preview?.topOffScreen == true || unprovenAnswered || verifyPi && preview != null || liveReport || recentReport || verifiedUsage != null || recentClarify || codexQuestionCleared || verifyOpenCode &&
                 (blocked || preview != null || openCodeBackgroundDrawer(agent, recent) || openCodeBackgroundDrawer(agent, liveCard)))
             val shownText = if (useLive) checkNotNull(liveCard) else recent
             // 2.2.7: a Claude dialog taller than the screen is completed from the pane's history when that proves it (herdr/TallDialog.kt).
-            val text = if (agent.equals("claude", true) && client != null) com.billmongan.herdrdroid.herdr.completeTallDialog(shownText, blocked, version) { n ->
-                quietly { h -> if (h === client && isOpen()) h.read(paneId, n, preserveGlyphs = true) else null }
-            } else shownText
+            val text = if (useLive && agent.equals("claude", true) && cardOwner != null)
+                com.billmongan.herdrdroid.herdr.completeTallDialog(shownText, blocked, version) { n ->
+                    quietly { h -> if (h === cardOwner.client && canUpgrade()) h.readCardHistory(paneId, n, cardOwner.connection) else null }
+                }
+            else shownText
+            if (text != shownText && !canUpgrade()) return
             if (!isOpen()) return
             // 2.2.0: the first reads after a switch are held until they settle (two identical reads, or
             // a read that must show at once); the last good view stays up meanwhile. See [SettleGate].
@@ -5396,12 +5399,12 @@ class AppViewModel internal constructor(
                 // A Claude dialog taller than the screen: rebuilt whole from the history, as its card is.
                 if (parsed != null && parsed.topOffScreen && agent.equals("claude", true)) {
                     plain = com.billmongan.herdrdroid.herdr.completeTallDialog(plain, blocked, version) { k ->
-                        if (stillCurrent()) client.read(pane.id, k, preserveGlyphs = true) else null
+                        if (stillCurrent()) client.readCardHistory(pane.id, k, connection) else null
                     }
                     if (!stillCurrent()) return null
                     parsed = detectPrompt(plain, blocked, agent, version)
                 }
-                parsed = parsed?.takeIf { it.terminalReview || it.choices.isNotEmpty() }
+                parsed = parsed?.forCard()?.takeIf { it.terminalReview || it.choices.isNotEmpty() }
                 reviewPreview = if (agent.equals("claude", true))
                     com.billmongan.herdrdroid.herdr.claudeReviewPreview(plain, parsed) else null
                 if (parsed == null) {
@@ -5413,7 +5416,7 @@ class AppViewModel internal constructor(
                 }
                 val v = gate.decide("questions", com.billmongan.herdrdroid.herdr.questionRead(plain, parsed, agent, version, blocked))
                 if (v.shows == com.billmongan.herdrdroid.herdr.CardShows.CARD) {
-                    return com.billmongan.herdrdroid.questions.QuestionRead(parsed.forCard(), target)
+                    return com.billmongan.herdrdroid.questions.QuestionRead(parsed, target.takeUnless { parsed.topOffScreen || parsed.rebuiltTallDialog })
                 }
             }
             reviewPreview?.let { com.billmongan.herdrdroid.questions.QuestionRead(it, null) }
@@ -5512,7 +5515,7 @@ class AppViewModel internal constructor(
         /** Whether the fresh card is still the one shown; the dialog's own rule for Oh My Pi's Submit steps. */
         fits: (Prompt, Prompt) -> Boolean = ::cardAnswerStillFits,
     ): Pair<Prompt, com.billmongan.herdrdroid.herdr.CardGuard?>? {
-        if (shown.terminalReview || !isCurrent(h) ||
+        if (shown.forCard().terminalReview || !isCurrent(h) ||
             shown.guardedShortcutApproval && (h.backend != Backend.TUI || !hasStableOccupant(pane))) return null
         val guardedChoice = shown.guardedShortcutApproval || shown.hermesClarify || shown.openCodeQuestionFrame != null
         if (guardedChoice && (!foreground || h.backend != Backend.TUI || pane.scrollOffset != 0 ||
@@ -5530,22 +5533,10 @@ class AppViewModel internal constructor(
         val live = if (pane.agent == "pi" && h.backend == Backend.TUI &&
             (pane.status == Status.WORKING || currentPane.status == Status.WORKING)) activePiQuestion(text, versionOf(pane.id))
         else detectPrompt(text, currentPane.status == Status.NEEDS_YOU, currentPane.agent, versionOf(pane.id))
-        // 2.2.7: a card built from the whole of a tall dialog is checked against the whole dialog,
-        // rebuilt again from a fresh read of the history; when that can't be proven, nothing is sent.
-        val whole = if (live != null && live.topOffScreen && !shown.topOffScreen && currentPane.agent.equals("claude", true) &&
-            com.billmongan.herdrdroid.herdr.tallDialogFits(shown, live)) {
-            val rebuilt = com.billmongan.herdrdroid.herdr.completeTallDialog(text, currentPane.status == Status.NEEDS_YOU, versionOf(pane.id)) { n ->
-                if (isCurrent(h)) h.read(pane.id, n, preserveGlyphs = true) else null
-            }
-            if (!isCurrent(h)) return null
-            detectPrompt(rebuilt, currentPane.status == Status.NEEDS_YOU, currentPane.agent, versionOf(pane.id))
-        } else live
-        // 2.2.8 (Bill: "just render the question and then give the buttons"): the keys go under a check
-        // of the dialog's own rows in this read, so a spinner or running time beside it is no change.
-        // A card rebuilt from the history is checked against the whole screen, as before.
+        // Scrollback may explain a command, but only the live, complete card can authorize input.
         val guard = occupant?.let { com.billmongan.herdrdroid.herdr.CardGuard(it,
-            com.billmongan.herdrdroid.herdr.cardGuardScreen(raw, live?.takeIf { whole === live }, currentPane.agent)) }
-        return whole?.takeIf { fits(shown, it) }?.let { it to guard }
+            com.billmongan.herdrdroid.herdr.cardGuardScreen(raw, live, currentPane.agent)) }
+        return live?.takeIf { !it.forCard().terminalReview && fits(shown, it) }?.let { it to guard }
     }
 
     internal fun answerCardKey(target: CardTarget?, prompt: Prompt, key: String, label: String,
@@ -6479,7 +6470,7 @@ class AppViewModel internal constructor(
                     if (!isActive || probePane(serverId, p.id)) return@launch
                     // A screen that couldn't be read: one plain notice, no question and no Reply (1.4.2, from review).
                     if (text.isBlank()) { Notify.unread(app, serverId, serverLabel, p.id, p.agentName); return@launch }
-                    val prompt = detectPrompt(text, blocked = true, agent = p.agent)
+                    val prompt = detectPrompt(text, blocked = true, agent = p.agent)?.forCard()
                     // An agent's error, not a question (1.4.2): its own alert, once per change of state.
                     // 2.2.0: OpenCode's failed turn too, read whole; one already acknowledged raises nothing.
                     val notice = if (prompt == null) com.billmongan.herdrdroid.herdr.agentErrorNotice(text, p.agent, p.agentName) else null
