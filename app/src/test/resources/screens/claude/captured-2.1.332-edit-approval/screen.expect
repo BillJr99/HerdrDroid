@@ -1,0 +1,4 @@
+card: options
+blocked: true
+options: Yes | Yes, and switch to accept edits (auto-approve file edits and common file commands) for this session | No
+source: Claude Code 2.1.332, native Edit dialog from a disposable probe tab and loopback fixture provider
