@@ -130,8 +130,8 @@ class TypedChatMerge214Test {
         val p = checkNotNull(detectPrompt(ask(1), true, "claude"))
         val row = checkNotNull(typedChatPair(p.choices)).first
         pump(1)
-        assertTrue(AppBus.emit(NotifyAction(server.id, fake.pane.id, "keep both copies", true, p.question, label = row.label, agent = "claude",
-            isReply = true, options = alertOptionsSig(p.choices), identity = alertIdentity(p), typedRow = row.keys)))
+        assertTrue(AppBus.emit(vm.bindFixtureAlert(NotifyAction(server.id, fake.pane.id, "keep both copies", true, p.question, label = row.label, agent = "claude",
+            isReply = true, options = alertOptionsSig(p.choices), identity = alertIdentity(p), typedRow = row.keys), fake.client)))
         pump(3)
         assertEquals(listOf("keys down", "text keep both copies", "keys enter"), fake.writes)
         assertEquals(2, fake.checkedWrites)
@@ -142,8 +142,8 @@ class TypedChatMerge214Test {
         open(fake)
         val p = checkNotNull(detectPrompt(ask(1, listOf("No", "Type something.", "Chat about this")), true, "claude"))
         pump(1)
-        assertTrue(AppBus.emit(NotifyAction(server.id, fake.pane.id, "keep both copies", true, p.question, label = "Type something.", agent = "claude",
-            isReply = true, options = alertOptionsSig(p.choices), identity = alertIdentity(p), typedRow = "2")))
+        assertTrue(AppBus.emit(vm.bindFixtureAlert(NotifyAction(server.id, fake.pane.id, "keep both copies", true, p.question, label = "Type something.", agent = "claude",
+            isReply = true, options = alertOptionsSig(p.choices), identity = alertIdentity(p), typedRow = "2"), fake.client)))
         pump(3)
         assertTrue(fake.writes.toString(), fake.writes.isEmpty())
     }

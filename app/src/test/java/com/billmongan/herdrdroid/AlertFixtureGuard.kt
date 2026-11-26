@@ -28,3 +28,17 @@ internal fun runAlertFixtureGuard(command: String, paneId: String, pane: String,
     }
     return result.copy(out = "$CARD_PASSED_MARK\n${result.out}")
 }
+
+
+/** Simulate the origin recorded by the ViewModel when it posted the alert. */
+internal fun AppViewModel.bindFixtureAlert(action: com.billmongan.herdrdroid.notify.NotifyAction,
+    client: com.billmongan.herdrdroid.herdr.Herdr): com.billmongan.herdrdroid.notify.NotifyAction {
+    val postedPane = checkNotNull(pane(action.paneId))
+    return action.copy(origin = checkNotNull(registerAlertOrigin(action.serverId, postedPane, client, client.connectionIdentity)))
+}
+
+
+/** The Claude-style reply mark and continuation indentation taken by provenance checks. */
+internal fun fixtureClaudeReplyFrame(code: String, text: String, to: String = "Hermes on laptop2"): String =
+    com.billmongan.herdrdroid.herdr.fixtureMessageFrame(code, text, to)
+        .prependIndent("  ").replaceFirst("  ", "⏺ ")

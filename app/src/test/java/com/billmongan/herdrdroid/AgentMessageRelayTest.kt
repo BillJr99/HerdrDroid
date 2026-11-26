@@ -118,7 +118,7 @@ class AgentMessageRelayTest {
     @Test fun theCodeInTheAgentsOwnOutputConfirmsNothing() = runBlocking {
         vm.changeAgentMessaging(true)
         frame()
-        source.frame = "⏺ " + fixtureMessageFrame(code, exact, sendTo) + "\nUser: $code\nYes\n$code\n❯ $code"
+        source.frame = fixtureClaudeReplyFrame(code, exact, sendTo) + "\nUser: $code\nYes\n$code\n❯ $code"
         vm.readPane("p1")
         settle()
         assertEquals(CrossServerState.PENDING, vm.crossServerCardsFor("p1").single().state)
@@ -149,7 +149,7 @@ class AgentMessageRelayTest {
         vm.changeAgentMessaging(true)
         vm.readPane("p1")
         val newer = "M4N5P6"
-        source.frame = "⏺ " + fixtureMessageFrame(code, exact, sendTo) + "\n" + fixtureMessageFrame(newer, "Second message.", sendTo)
+        source.frame = fixtureClaudeReplyFrame(code, exact, sendTo) + "\n" + fixtureClaudeReplyFrame(newer, "Second message.", sendTo)
         vm.readPane("p1")
         val (older, latest) = vm.crossServerCardsFor("p1")
         assertEquals(newer, latest.code)
@@ -214,7 +214,7 @@ class AgentMessageRelayTest {
     }
 
     @Test fun noCardWhileMessagingIsOff() = runBlocking {
-        source.frame = "⏺ " + fixtureMessageFrame(code, exact, sendTo)
+        source.frame = fixtureClaudeReplyFrame(code, exact, sendTo)
         vm.readPane("p1")
         assertTrue(vm.crossServerCardsFor("p1").isEmpty())
         assertNull(vm.crossServerDialogFor("p1"))
@@ -688,7 +688,7 @@ class AgentMessageRelayTest {
     private suspend fun frame(to: String = sendTo): AppViewModel.CrossServerCard {
         vm.readPane("p1")
         assertTrue(vm.crossServerCardsFor("p1").isEmpty())
-        source.frame = "⏺ Sure. Confirm on the phone.\n" + fixtureMessageFrame(code, exact, to)
+        source.frame = fixtureClaudeReplyFrame(code, exact, to)
         vm.readPane("p1")
         return vm.crossServerCardsFor("p1").single()
     }

@@ -69,6 +69,7 @@ class BackgroundVm228Test {
         var terminal = "t1"
         /** The terminal the computer reports (null: [terminal]). */
         var remoteTerminal: String? = null
+        var remoteScroll = 0
         var checks = 0
         var backgroundFailure: ExecResult? = null
         var reads = 0
@@ -125,7 +126,7 @@ class BackgroundVm228Test {
         override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult {
             check(expectedConnection == null || expectedConnection === connection) { "write or read used a replaced connection" }
             fun exactViewportMatches(): Boolean {
-                val digest = Regex("""'p1' '([0-9a-f]{64})' && echo""").find(command)!!.groupValues[1]
+                val digest = Regex("""'p1' '([0-9a-f]{64})'(?: bottom)? && echo""").find(command)!!.groupValues[1]
                 return digest == com.billmongan.herdrdroid.herdr.sha256Hex(frame.toByteArray())
             }
             fun changed() = ExecResult(com.billmongan.herdrdroid.herdr.CARD_CHANGED_EXIT,
@@ -140,7 +141,7 @@ class BackgroundVm228Test {
                 atCheck?.also { atCheck = null }?.invoke()
                 val step = BackgroundStep.entries.single { Regex("""'p1' '${it.check}' && """).containsMatchIn(command) }
                 if (!backgroundCheckPasses(step, frame)) return ExecResult(BACKGROUND_REFUSED_EXIT, "$BACKGROUND_REFUSED_MARK\n", "")
-                if (!exactViewportMatches()) return changed()
+                if (!exactViewportMatches() || (" bottom && echo" in command && remoteScroll != 0)) return changed()
                 keys += "ctrl+b"
                 afterCtrlB?.let { frame = it }
                 afterKey?.invoke()
@@ -172,7 +173,7 @@ class BackgroundVm228Test {
             Status.NEEDS_YOU -> "blocked"
             else -> "working"
         }
-        private fun paneOn(t: String) = """{"pane_id":"p1","workspace_id":"w1","tab_id":"tab","agent":"$agent","agent_status":"$statusWord","cwd":"/fixture","terminal_id":"$t","scroll":{"offset_from_bottom":0}}"""
+        private fun paneOn(t: String) = """{"pane_id":"p1","workspace_id":"w1","tab_id":"tab","agent":"$agent","agent_status":"$statusWord","cwd":"/fixture","terminal_id":"$t","scroll":{"offset_from_bottom":$remoteScroll}}"""
         private fun ok(out: String) = ExecResult(0, out, "")
         private fun field(name: String) = AppViewModel::class.java.getDeclaredField(name).apply { isAccessible = true }
         @Suppress("UNCHECKED_CAST")
@@ -369,6 +370,14 @@ class BackgroundVm228Test {
         drain()
         assertTrue(atClear == null)
         assertEquals(emptyList<String>(), keys)
+    }
+
+    @Test fun backgroundRefusesWhenTheViewportWasScrolledAfterTheHintRead() = fixture("claude", fg) {
+        atCheck = { remoteScroll = 1 }
+        vm.backgroundForeground("p1")
+        drain()
+        assertEquals(1, checks)
+        assertTrue(keys.isEmpty())
     }
 
     @Test fun backgroundRefusesAReplacementWithTheSameHint() = fixture("claude", fg) {
