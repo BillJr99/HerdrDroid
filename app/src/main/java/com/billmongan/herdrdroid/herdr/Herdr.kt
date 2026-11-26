@@ -5745,7 +5745,7 @@ internal val CARD_SEND_CHECK = """
                 out.append(timer(line, t[i]))
         return out
     codex = re.fullmatch(r'c:([0-9]{1,6}):([0-9a-f]{64})', screen)
-    CODEX_WORKING = re.compile(r'[•◦] Working \(([0-9]+h )?([0-9]+m )?[0-9]+s • esc to interrupt\)'.encode())
+    CODEX_WORKING = re.compile(r'(?:•|◦) Working \(([0-9]+h )?([0-9]+m )?[0-9]+s • esc to interrupt\)'.encode())
     # 2.2.8: "r:<rows under>:<rows>:<digest>" compares the dialog's rows only (cardGuardScreen).
     REGION = None
     m = re.fullmatch(r'r:([0-9]{1,6}):([1-9][0-9]{0,5}):([0-9a-f]{64})', screen)
