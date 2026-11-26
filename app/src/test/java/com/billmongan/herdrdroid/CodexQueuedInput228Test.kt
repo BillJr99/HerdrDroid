@@ -1,5 +1,6 @@
 package com.billmongan.herdrdroid
 
+import com.billmongan.herdrdroid.herdr.codexFollowUpRows
 import com.billmongan.herdrdroid.herdr.codexFreeformQuestion
 import com.billmongan.herdrdroid.herdr.detectPrompt
 import org.junit.Assert.assertEquals
@@ -20,6 +21,13 @@ class CodexQueuedInput228Test {
             "    › 1. Choose the first sample\n    2. Choose the second sample\n    Press enter to confirm or esc to cancel",
         )
         assertNull(detectPrompt(screen, true, "codex"))
+    }
+
+    @Test fun standaloneArrowIsNotAQueueAndClippedQueueUsesItsFooter() {
+        assertTrue(codexFollowUpRows("  ↳ command text\n    more text").isEmpty())
+        val clipped = codexQueuedInputViewport.substringAfter("• Queued follow-up inputs\n")
+        assertTrue(codexFollowUpRows(clipped).containsAll((0..5).toList()))
+        assertNull(detectPrompt(clipped, true, "codex"))
     }
 
     @Test fun realQuestionsAndApprovalsOnEitherSideOfTheQueueStillParse() {

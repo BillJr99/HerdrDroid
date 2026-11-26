@@ -3956,24 +3956,25 @@ private fun hermesLiveApprovalBox(text: String): String? {
  * indented, and the compositor returns to its own row when the queue ends.
  */
 internal fun codexFollowUpRows(text: String): Set<Int> {
+    val rows = stripAnsi(text).lines()
     val masked = mutableSetOf<Int>()
-    var inInput = false
-    stripAnsi(text).lines().forEachIndexed { index, row ->
+    fun inputRow(row: String): Boolean = row.startsWith("  ↳ ")
+    fun continuation(row: String): Boolean = row.isNotBlank() && row.startsWith("    ")
+    for ((index, row) in rows.withIndex()) {
         when {
-            row.trim() == "• Queued follow-up inputs" -> {
-                masked += index
-                inInput = false
+            row.trimEnd() == "• Queued follow-up inputs" && rows.getOrNull(index + 1)?.let(::inputRow) == true -> {
+                val end = (index + 1 until rows.size).firstOrNull { !inputRow(rows[it]) && !continuation(rows[it]) }
+                    ?: rows.size
+                masked += index until end
             }
-            row.startsWith("  ↳ ") -> {
-                masked += index
-                inInput = true
+            row.trimEnd() == "    shift+← edit last queued message" -> {
+                // A recent read may start below the heading. Require at least one input
+                // marker before treating its indented text as a clipped queue.
+                val start = (index - 1 downTo 0).firstOrNull { !inputRow(rows[it]) && !continuation(rows[it]) }
+                    ?.plus(1) ?: 0
+                val firstInput = (start until index).firstOrNull { inputRow(rows[it]) } ?: continue
+                masked += firstInput..index
             }
-            row.trim() == "shift+← edit last queued message" -> {
-                masked += index
-                inInput = false
-            }
-            inInput && row.startsWith("    ") -> masked += index
-            else -> inInput = false
         }
     }
     return masked
