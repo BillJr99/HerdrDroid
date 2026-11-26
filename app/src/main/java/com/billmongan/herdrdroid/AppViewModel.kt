@@ -587,6 +587,7 @@ class AppViewModel internal constructor(
     internal var paneTextTarget by mutableStateOf<CardTarget?>(null)
         private set
     private var openCodeComposerTarget by mutableStateOf<CardTarget?>(null)
+    private var codexSteeringTarget by mutableStateOf<CardTarget?>(null)
     private var piLiveQuestion by mutableStateOf<Prompt?>(null)
     /**
      * A draft typed in the open pane's input box at the computer, read from its live screen (2.1.0).
@@ -2584,13 +2585,14 @@ class AppViewModel internal constructor(
             openingPanePreview = null
             paneTextTarget = null
             openCodeComposerTarget = null
+            codexSteeringTarget = null
             piLiveQuestion = null
             hermesUsageRead = null
             openUsage = null
             paneDraft = null
             draftReadFor = null
         }
-        quietly { h ->
+        val reading = quietly { h ->
             val waiting = pane(paneId)?.status == Status.NEEDS_YOU
             try {
                 val lines = if (waiting || paneReadProblem != null) 80 else 200
@@ -2599,7 +2601,9 @@ class AppViewModel internal constructor(
                 problem(e.message?.take(120) ?: "the screen could not be read")
                 null
             }
-        }?.let { (recent, originalPaneId) ->
+        }
+        if (reading == null && isOpen()) codexSteeringTarget = null
+        reading?.let { (recent, originalPaneId) ->
             if (!isOpen()) return
             val cardOwner = originalCardOwner.takeIf { originalPaneId }
             val paneNow = pane(paneId)
@@ -2692,11 +2696,9 @@ class AppViewModel internal constructor(
                 com.billmongan.herdrdroid.herdr.claudeClippedAskReview(recent) != null
             val useLive = liveCard != null && (livePrompt != null || recentClaudeModel || recentClippedClaudeAsk || preview?.topOffScreen == true || unprovenAnswered || verifyPi && preview != null || liveReport || recentReport || verifiedUsage != null || recentClarify || codexQuestionCleared || verifyOpenCode &&
                 (blocked || preview != null || openCodeBackgroundDrawer(agent, recent) || openCodeBackgroundDrawer(agent, liveCard)))
-            val codexSteerView = liveViewport?.takeIf {
-                missingCodexCard && liveCandidate == null &&
-                    com.billmongan.herdrdroid.herdr.codexSteeringReady(it)
-            }
-            val shownText = codexSteerView ?: if (useLive) checkNotNull(liveCard) else recent
+            val codexSteeringProven = liveViewport != null && missingCodexCard && liveCandidate == null &&
+                com.billmongan.herdrdroid.herdr.codexSteeringReady(liveViewport)
+            val shownText = if (useLive || codexSteeringProven) checkNotNull(liveCard) else recent
             // 2.2.7: a Claude dialog taller than the screen is completed from the pane's history when that proves it (herdr/TallDialog.kt).
             val text = if (useLive && agent.equals("claude", true) && cardOwner != null)
                 com.billmongan.herdrdroid.herdr.completeTallDialog(shownText, blocked, version) { n ->
@@ -2732,7 +2734,10 @@ class AppViewModel internal constructor(
             // A card, so never held by the settle gate (2.2.0).
             noteCrossServerFrames(cardOwner, recent)
             notePaneReadFrames(cardOwner, recent)
-            if (!verdict.show) return
+            if (!verdict.show) {
+                codexSteeringTarget = null
+                return
+            }
             noteSettledScreen(serverId, paneId, text, visit)
             lastAppliedPaneRead = attempt
             paneReadsApplied++
@@ -2747,6 +2752,8 @@ class AppViewModel internal constructor(
             paneText = text
             paneTextPane = paneId
             paneTextTarget = cardOwner?.takeIf { it.isCurrent(it.client) && (!requiresLive || useLive) && (!verifyPi || livePrompt != null) }
+            // Keep the native placeholder proof separate from the plain screen used by every renderer.
+            codexSteeringTarget = paneTextTarget?.takeIf { codexSteeringProven }
             piLiveQuestion = livePrompt?.takeIf { verifyPi && paneTextTarget != null }
             openCodeComposerTarget = paneTextTarget?.takeIf { useLive && verifyOpenCode && openCodeEmptyComposer(text) }
             hermesUsageRead = verifiedUsage
@@ -2913,6 +2920,7 @@ class AppViewModel internal constructor(
         paneTextPane = paneId
         paneTextTarget = null
         openCodeComposerTarget = null
+        codexSteeringTarget = null
         piLiveQuestion = null
         paneReadProblem = null
         openUsage = null
@@ -7317,6 +7325,15 @@ class AppViewModel internal constructor(
             it.pane.sameCardOccupant(pane) && it.isCurrent(it.client)
     } == true
 
+    private fun codexSteeringIsCurrent(pane: Pane): Boolean = codexSteeringTarget?.let {
+        foreground && paneReadProblem == null && paneTextPane == pane.id && pane.scrollOffset == 0 &&
+            it.pane.sameCardOccupant(pane) && it.isCurrent(it.client)
+    } == true
+
+    internal fun queuedSendAvailable(pane: Pane?, status: Status, screen: String): Boolean =
+        com.billmongan.herdrdroid.herdr.nativeQueuedSendAvailable(pane?.agent, status, screen,
+            codexSteeringProven = pane != null && codexSteeringIsCurrent(pane))
+
     private fun currentHermesUsage(pane: Pane): HermesUsageRead? = hermesUsageRead?.takeIf {
         foreground && paneReadProblem == null && paneTextPane == pane.id && pane.scrollOffset == 0 &&
             it.target.pane.sameCardOccupant(pane) && it.target.isCurrent(it.target.client)
@@ -7518,7 +7535,8 @@ class AppViewModel internal constructor(
             return
         }
         val screen = if (paneTextPane == target.id && paneReadProblem == null) paneText else ""
-        val route = com.billmongan.herdrdroid.herdr.sendNowRoute(target.agent, target.status, screen)
+        val route = com.billmongan.herdrdroid.herdr.sendNowRoute(target.agent, target.status, screen,
+            codexSteeringProven = codexSteeringIsCurrent(target))
         com.billmongan.herdrdroid.diag.DiagLog.log("send", "to ${target.id}: send now, route ${route.name.lowercase()}")
         when (route) {
             com.billmongan.herdrdroid.herdr.SendNowRoute.NORMAL -> dispatchQueued(item, target)

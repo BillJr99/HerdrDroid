@@ -188,17 +188,34 @@ class SendNowVm227Test {
         fun state(name: String, value: Any?) { (field("$name\$delegate").get(vm) as MutableState<Any?>).value = value }
     }
 
-    @Test fun codexRealReadKeepsVerifiedStylingForTheBusySendMenu() = fixture("codex", codexBusy) {
+    @Test fun codexRealReadKeepsPlainScreenAndVerifiedBusySendMenu() = fixture("codex", codexBusy) {
         kotlinx.coroutines.runBlocking { vm.readPane("p1") }
         assertEquals("p1", vm.paneTextPane)
-        assertTrue(com.billmongan.herdrdroid.herdr.codexSteeringReady(vm.paneText))
+        assertFalse(vm.paneText.contains('\u001b'))
+        assertTrue(vm.paneText.contains("Working"))
+        assertTrue(vm.queuedSendAvailable(vm.pane("p1"), Status.WORKING, vm.paneText))
         vm.sendQueuedNow(queue("Switch to the small example."))
         assertNotNull(vm.sendNowConfirm)
         assertTrue(writes.isEmpty())
     }
 
+    @Test fun codexBusySendProofExpiresOnReplacementOrUnprovenRead() = fixture("codex", codexBusy) {
+        kotlinx.coroutines.runBlocking { vm.readPane("p1") }
+        assertTrue(vm.queuedSendAvailable(vm.pane("p1"), Status.WORKING, vm.paneText))
+        terminal = "replacement"
+        status(Status.WORKING)
+        assertFalse(vm.queuedSendAvailable(vm.pane("p1"), Status.WORKING, vm.paneText))
+
+        kotlinx.coroutines.runBlocking { vm.readPane("p1") }
+        assertTrue(vm.queuedSendAvailable(vm.pane("p1"), Status.WORKING, vm.paneText))
+        frame = codexDraft
+        kotlinx.coroutines.runBlocking { vm.readPane("p1") }
+        assertFalse(vm.queuedSendAvailable(vm.pane("p1"), Status.WORKING, vm.paneText))
+        assertTrue(writes.isEmpty())
+    }
+
     @Test fun codexTickBetweenAppReadAndHostCheckStillSendsOnce() = fixture("codex", codexBusy) {
-        shown()
+        kotlinx.coroutines.runBlocking { vm.readPane("p1") }
         vm.sendQueuedNow(queue("Switch to the small example."))
         duringCodexCheck = { frame = frame.replace("0s", "1s") }
         vm.confirmSendNow()
@@ -207,7 +224,7 @@ class SendNowVm227Test {
     }
 
     @Test fun codexBusySendConfirmsAndUsesOneNativeSubmit() = fixture("codex", codexBusy) {
-        shown()
+        kotlinx.coroutines.runBlocking { vm.readPane("p1") }
         vm.sendQueuedNow(queue("Switch to the small example."))
         assertTrue(writes.isEmpty())
         assertNotNull(vm.sendNowConfirm)
@@ -217,7 +234,7 @@ class SendNowVm227Test {
     }
 
     @Test fun codexDraftAppearingAtTheHostCheckLeavesTheQueueUntouched() = fixture("codex", codexBusy) {
-        shown()
+        kotlinx.coroutines.runBlocking { vm.readPane("p1") }
         vm.sendQueuedNow(queue("Switch to the small example."))
         assertNotNull(vm.sendNowConfirm)
         duringCodexCheck = { frame = codexDraft }
