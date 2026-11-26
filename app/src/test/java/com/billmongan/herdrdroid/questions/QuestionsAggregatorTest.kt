@@ -21,6 +21,41 @@ class QuestionsAggregatorTest {
         p: Pane = pane(id)) = QuestionSource(server, label, current, p)
     private fun prompt(q: String, vararg options: String) = Prompt(q, options.mapIndexed { i, o -> Choice(o, "${i + 1}", false) })
 
+    @Test fun anUnreadCandidatePromotedToBlockedIsReadImmediately() {
+        val candidate = src("open", "p1").copy(candidate = true)
+        agg.update(listOf(candidate))
+        agg.applyRead(candidate, QuestionRead(null, null))
+        assertTrue(agg.entries().isEmpty())
+        val blocked = candidate.copy(candidate = false)
+        agg.update(listOf(blocked))
+        assertEquals(EntryState.READING, agg.entries().single().state)
+        assertEquals(listOf(blocked), agg.due(5_000))
+    }
+
+    @Test fun replacementConnectionInvalidatesTargetsAndInFlightReads() {
+        val connected = src("open", "p1").copy(connection = Any())
+        val ready = QuestionRead(prompt("Continue?", "Yes"), Any())
+        agg.update(listOf(connected))
+        agg.applyRead(connected, ready)
+        val late = agg.beginRead(connected.key)
+        val replacement = connected.copy(connection = Any())
+        agg.update(listOf(replacement))
+        agg.applyRead(connected, ready, late)
+        assertNull(agg.entries().single().target)
+        assertEquals(EntryState.READING, agg.entries().single().state)
+        assertEquals(listOf(replacement), agg.due(5_000))
+    }
+
+    @Test fun anUnavailableReadDoesNotDelayRetryOfAnExistingQuestion() {
+        val connected = src("open", "p1")
+        agg.update(listOf(connected))
+        agg.applyRead(connected, QuestionRead(prompt("Continue?", "Yes"), Any()))
+        now += 5_000
+        agg.applyRead(connected, null)
+        assertEquals(EntryState.READY, agg.entries().single().state)
+        assertEquals(listOf(connected), agg.due(5_000))
+    }
+
     @Test fun noPanesNeedingYouIsAnEmptyList() {
         agg.update(emptyList())
         assertTrue(agg.entries().isEmpty())

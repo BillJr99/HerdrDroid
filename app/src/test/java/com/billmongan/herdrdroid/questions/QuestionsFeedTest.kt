@@ -26,6 +26,34 @@ class QuestionsFeedTest {
     private fun src(server: String, id: String) = QuestionSource(server, server, server == "open", pane(id))
     private fun prompt(q: String, vararg options: String) = Prompt(q, options.mapIndexed { i, o -> Choice(o, "${i + 1}", false) })
 
+    @Test fun reopeningWaitsForTheCancelledReadBeforeRefreshing() = runBlocking {
+        val started = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val reopened = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var attempts = 0
+        val feed = QuestionsFeed(this, { listOf(src("open", "p1")) }, {
+            if (++attempts == 1) {
+                started.complete(Unit)
+                kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { release.await() }
+            } else {
+                reopened.complete(Unit)
+            }
+            QuestionRead(prompt("Continue?", "Yes"), Any())
+        }, { false }) { now }
+        try {
+            feed.show()
+            started.await()
+            feed.hide()
+            feed.show()
+            kotlinx.coroutines.yield()
+            release.complete(Unit)
+            kotlinx.coroutines.withTimeout(1_000) { reopened.await() }
+        } finally {
+            release.complete(Unit)
+            feed.hide()
+        }
+    }
+
     @Test fun theFeedHoldsAnEntryWhileItsAnswerIsInFlight() = runBlocking {
         val p1 = src("open", "p1")
         var listed = listOf(p1)
