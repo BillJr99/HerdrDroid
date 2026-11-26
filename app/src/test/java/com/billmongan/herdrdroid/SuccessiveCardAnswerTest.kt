@@ -1620,7 +1620,7 @@ class SuccessiveCardAnswerTest {
             recentResult = recent
             ansiRows = true
             readSelectedPane()
-            assertEquals(listOf(boundedVisible), discoveryVisibleReads)
+            assertEquals(listOf(boundedVisible), visibleReadsWithLineLimit)
             assertTrue(sent.isEmpty())
             val prompt = shownApproval()
             answer(prompt, checkNotNull(vm.paneTextTarget))
@@ -1702,7 +1702,7 @@ class SuccessiveCardAnswerTest {
         var liveScrollOffset = 0
         var recentReads = 0
         var recentResult: ExecResult? = null
-        val discoveryVisibleReads = mutableListOf<Boolean>()
+        val visibleReadsWithLineLimit = mutableListOf<Boolean>()
         var guardedVisibleReads = 0
         var spoken = ""
         private var speechDone: (() -> Unit)? = null
@@ -1839,8 +1839,8 @@ class SuccessiveCardAnswerTest {
                 command.endsWith("'pane' 'get' 'p1'") -> { onPaneGet?.invoke(); ok("""{"result":{"pane":$pane}}""") }
                 command.contains("'pane' 'read' 'p1' '--source' 'recent'") -> { recentReads++; recentResult ?: ok(ansiFrame()) }
                 command.contains("'pane' 'read' 'p1' '--source' 'visible'") -> {
-                    if (expectedConnection == null) discoveryVisibleReads += command.contains("'--lines'")
-                    else guardedVisibleReads++
+                    visibleReadsWithLineLimit += command.contains("'--lines'")
+                    if (expectedConnection != null) guardedVisibleReads++
                     ok(if (command.endsWith("'--format' 'ansi'")) ansiFrame() else frame)
                 }
                 command.contains("def occupant():") && command.endsWith("'/fixture/herdr' 'p1' '$agent'") -> ok("")
