@@ -58,10 +58,11 @@ internal fun claudeBackgroundHint(screen: String): Boolean {
 internal fun agentWorking(status: Status, screen: String): Boolean =
     status == Status.WORKING || stripAnsi(screen).lines().takeLast(HINT_ROWS).any { isAgentStatusRow(it) }
 
-internal fun sendNowRoute(agent: String?, status: Status, screen: String): SendNowRoute = when {
+internal fun sendNowRoute(agent: String?, status: Status, screen: String,
+                          codexSteeringProven: Boolean = agent == "codex" && codexSteeringReady(screen)): SendNowRoute = when {
     !agentWorking(status, screen) -> SendNowRoute.NORMAL
     agent.equals("claude", true) && claudeBackgroundHint(screen) -> SendNowRoute.BACKGROUND_THEN_SEND
-    (takesInputDuringBackgroundWork(agent) || agent == "codex" && codexSteeringReady(screen)) -> SendNowRoute.FORCE_CONFIRM
+    (takesInputDuringBackgroundWork(agent) || agent == "codex" && codexSteeringProven) -> SendNowRoute.FORCE_CONFIRM
     else -> SendNowRoute.WAIT_FOR_IDLE
 }
 
@@ -90,6 +91,7 @@ internal fun codexSteeringText(text: String): Boolean =
     text.isNotBlank() && text.trimStart().first() !in "/!$" &&
         text.none { it.isISOControl() } && LongText.plan(text) is LongText.Plan.Single
 
-internal fun nativeQueuedSendAvailable(agent: String?, status: Status, screen: String): Boolean =
-    sendNowRoute(agent, status, screen) != SendNowRoute.WAIT_FOR_IDLE ||
+internal fun nativeQueuedSendAvailable(agent: String?, status: Status, screen: String,
+                                       codexSteeringProven: Boolean = agent == "codex" && codexSteeringReady(screen)): Boolean =
+    sendNowRoute(agent, status, screen, codexSteeringProven) != SendNowRoute.WAIT_FOR_IDLE ||
         backgroundSupport(agent, "") == null

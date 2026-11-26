@@ -946,7 +946,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                                 // 2.2.8: named Send immediately there, with Share, for agents that background tasks.
                                 forceSendMenu = true,
                                 menuSendLabel = if (backgroundSupport(pane?.agent, pane?.agentName ?: "") == null) "Send immediately (background running tasks)" else "Send now",
-                                onMenuSend = if (com.billmongan.herdrdroid.herdr.nativeQueuedSendAvailable(pane?.agent, status, liveScreenText))
+                                onMenuSend = if (vm.queuedSendAvailable(pane, status, liveScreenText))
                                     ({ vm.sendQueuedNow(q) }) else null,
                             )
                         }
