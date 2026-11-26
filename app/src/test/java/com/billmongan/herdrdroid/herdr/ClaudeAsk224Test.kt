@@ -113,7 +113,8 @@ class ClaudeAsk224Test {
             assertTrue("${c.path} complete", r.complete)
             assertFalse(r.refused)
             val gate = QuestionConfirm()
-            assertEquals(CardShows.READING, gate.decide("k", r).shows)
+            val first = if (c.topOff) CardShows.CARD else CardShows.READING
+            assertEquals(first, gate.decide("k", r).shows)
             assertEquals("${c.path}: two identical reads show the card", CardShows.CARD, gate.decide("k", r).shows)
             assertEquals(p, shownCard(p, CardDecision(p, Verdict(CardShows.CARD)), "Claude"))
         }
@@ -192,8 +193,9 @@ class ClaudeAsk224Test {
             // A tall command: its first lines and how many more, then the hook's reason.
             assertTrue("${c.path}: $body", body.contains("more lines in the app") && body.contains("Hook PreToolUse:Bash requires confirmation"))
             val buttons = alertPlan(alert).buttons
-            assertEquals("${c.path}: $buttons", listOf("Yes", "No"), buttons.filter { it.choice != null }.map { it.title })
-            assertEquals(listOf("1", "2"), buttons.mapNotNull { it.choice?.keys })
+            val labels = if (c.topOff) emptyList() else listOf("Yes", "No")
+            assertEquals("${c.path}: $buttons", labels, buttons.filter { it.choice != null }.map { it.title })
+            assertEquals(if (c.topOff) emptyList() else listOf("1", "2"), buttons.mapNotNull { it.choice?.keys })
         }
     }
 
@@ -201,6 +203,14 @@ class ClaudeAsk224Test {
         for (c in cases) for (blocked in listOf(true, false)) {
             val p = parsed(c, blocked)
             val (yes, no) = p.choices
+            if (c.topOff) {
+                assertTrue(p.forCard().terminalReview)
+                for (c in listOf(yes, no)) {
+                    assertNull(menuKeys(p, c))
+                    assertNull(voiceCardKeys(p, c))
+                }
+                continue
+            }
             assertEquals(c.path, listOf("enter"), menuKeys(p, yes))
             assertEquals(c.path, listOf("down", "enter"), menuKeys(p, no))
             assertEquals(c.path, listOf("enter"), voiceCardKeys(p, yes))

@@ -50,7 +50,7 @@ internal fun readingAlertText(agent: String): String = "$agent is asking a quest
  * app's own words, or show a command for review only) and Claude's sessions-list card are not.
  */
 internal fun needsConfirmation(p: Prompt): Boolean =
-    !p.unreadQuestion && !p.readingQuestion && !p.claudeBackground &&
+    !p.unreadQuestion && !p.readingQuestion && !p.claudeBackground && !p.historyReviewOnly &&
         (p.choices.isNotEmpty() || (!p.terminalReview && p.region.orEmpty().any { it.isNotBlank() } && p.region != listOf(UNREAD_SCREEN)))
 
 /**
@@ -283,7 +283,7 @@ internal fun shownCard(parsed: Prompt?, decision: CardDecision?, agent: String):
 internal fun alertCard(prompt: Prompt?, confirmed: Boolean, agent: String): Prompt? =
     if (prompt != null && needsConfirmation(prompt) && !confirmed)
         Prompt(readingAlertText(agent), emptyList(), terminalReview = true, readingQuestion = true)
-    else prompt
+    else if (prompt?.historyReviewOnly == true) prompt.forCard() else prompt
 
 /** How many more reads an alert may take to confirm its question, and the pause between them. */
 internal const val ALERT_CONFIRM_READS = 10

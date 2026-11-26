@@ -165,7 +165,7 @@ internal fun alertOptionsSig(choices: List<Choice>): String =
  * named in the alert's text for the question card that tapping the alert opens.
  */
 internal fun alertPlan(prompt: com.billmongan.herdrdroid.herdr.Prompt, terminalReview: Boolean = prompt.terminalReview, reply: Boolean = true): AlertPlan {
-    if (terminalReview || prompt.terminalReview || prompt.clipped || prompt.guardedShortcutApproval) return AlertPlan(emptyList(), emptyList())
+    if (terminalReview || prompt.terminalReview || prompt.historyReviewOnly || prompt.clipped || prompt.guardedShortcutApproval) return AlertPlan(emptyList(), emptyList())
     val escChoice = prompt.choices.firstOrNull { com.billmongan.herdrdroid.herdr.menuKeys(prompt, it) == listOf("esc") }
     // 2.1.4: "Type something." and "Chat about this" are one "Type your answer" reply button.
     val merged = com.billmongan.herdrdroid.herdr.typedChatPair(prompt.choices)?.first
