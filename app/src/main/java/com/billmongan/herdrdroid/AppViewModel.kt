@@ -5122,7 +5122,8 @@ class AppViewModel internal constructor(
         s.server.id == current?.id && link == Link.CONNECTED && herdr?.let { it.backend != Backend.CORE && it.connectionIdentity != null } == true
     else relayPort(s.server.id)?.connectionIdentity != null
 
-    private fun noticeRecipients(): List<Session> = sessions().filter(::noticeReachable)
+    private fun noticeRecipients(): List<Session> =
+        sessions().filter { !it.pane.isProbe && noticeReachable(it) }
 
     private fun noticeQuota(s: Session): QuotaReading? {
         val key = QuotaProfiles.key(s.pane.agent) ?: return null
