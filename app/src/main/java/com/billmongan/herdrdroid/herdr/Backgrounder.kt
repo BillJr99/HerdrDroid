@@ -54,6 +54,12 @@ internal class Backgrounder(private val agent: String?, private val port: Port, 
         BLOCKED,
         /** The host no longer sees the viewport the app verified. */
         CHANGED,
+        /** The host reports a different occupant. */
+        TARGET_CHANGED,
+        /** The host could not complete its pre-write check. */
+        CHECK_FAILED,
+        /** The host reached the key write but could not confirm delivery. */
+        UNCERTAIN,
         /** The screen could not be read twice running. */
         UNREADABLE,
         /** The hint was still there after a press and a full wait: the key did not take. */
@@ -237,6 +243,9 @@ internal fun backgroundOutcomeText(outcome: Backgrounder.Outcome, agentName: Str
     Backgrounder.Outcome.DONE -> null
     Backgrounder.Outcome.BLOCKED -> "Stopped moving tasks to the background: $agentName has a question or panel open. Answer it first."
     Backgrounder.Outcome.CHANGED -> "Stopped: $agentName's running view changed. The message is still in its queue."
+    Backgrounder.Outcome.TARGET_CHANGED -> "Stopped: the pane occupant changed. No key was sent to the replacement."
+    Backgrounder.Outcome.CHECK_FAILED -> "Stopped: the check on the computer failed."
+    Backgrounder.Outcome.UNCERTAIN -> "Ctrl+B may have reached $agentName. No further key was sent."
     Backgrounder.Outcome.UNREADABLE -> "Stopped: $agentName's screen couldn't be read. The message is still in its queue."
     Backgrounder.Outcome.STUCK -> "Ctrl+B didn't move $agentName's running command to the background. The message is still in its queue."
     Backgrounder.Outcome.TIMED_OUT -> "$agentName hasn't taken the message yet. It is still in its queue."
