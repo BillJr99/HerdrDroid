@@ -562,7 +562,7 @@ fun footerModel(agent: String?, screen: String): String? {
     val found = when (ruleAgent(agent)) {
         // Explicit Claude model status or the completed switch acknowledgement, never the picker's highlight.
         "claude" -> lastMatch(Regex("""^\s*(?:(?:⏵{1,2}|⏸)[^·]*·\s*)?Model:\s*((?:Opus|Sonnet|Haiku|Fable)\s+\d+(?:\.\d+)?(?:\s+\(1M(?: context)?\))?)\s*(?:·.*)?$""", RegexOption.IGNORE_CASE))
-            ?: lastMatch(Regex("""^\s*⎿\s+Set model to\s+((?:Opus|Sonnet|Haiku|Fable)\s+\d+(?:\.\d+)?(?:\s+\(1M(?: context)?\))?)\s*[.!]?\s*$""", RegexOption.IGNORE_CASE))
+            ?: lastMatch(Regex("""^\s*⎿[\s\p{Zs}]+Set model to\s+((?:Opus|Sonnet|Haiku|Fable)\s+\d+(?:\.\d+)?(?:\s+\(1M(?: context)?\))?)(?:\s+for this session only)?(?:\s+with (?:low|medium|high|xhigh|max) effort)?\s*[.!]?\s*$""", RegexOption.IGNORE_CASE))
         // "GPT-6.1-Sol default · ~/agents/codex"
         "codex" -> lastMatch(Regex("""^\s*(\S[^·]*?)\s+·\s+~"""))
             ?.replace(Regex("""\s+(default|minimal|low|medium|high|xhigh)$"""), " · $1")

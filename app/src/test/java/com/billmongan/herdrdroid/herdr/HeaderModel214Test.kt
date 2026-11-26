@@ -20,6 +20,8 @@ class HeaderModel214Test {
     @Test fun explicitClaudeFooterAndSwitchResultAreModelsButPickerChoicesAreNot() {
         assertEquals("Fable 5.2", footerModel("claude", "❯ \n  ⏵ auto mode · Model: Fable 5.2"))
         assertEquals("Sonnet 4.6", footerModel("claude", "❯ \n  ⎿  Set model to Sonnet 4.6"))
+        assertEquals("Sonnet 5.5", footerModel("claude",
+            "  ⎿  \u00a0Set model to Sonnet 5.5 for this session only with high effort"))
         assertNull(footerModel("claude", "Select model\n❯ 3. Fable 5.2 ✔"))
     }
 
