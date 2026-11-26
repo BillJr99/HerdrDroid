@@ -66,7 +66,7 @@ class TerminalTarget228Test {
         remote.beforeWrite = { id ->
             if (id == selected.id) {
                 remote.panes = listOf(replacement, moved)
-                missing(id).copy(out = OCCUPANT_PASSED_MARK)
+                missing(id).let { result -> result.copy(out = "$OCCUPANT_PASSED_MARK${'\n'}${result.err}", err = "fixture warning") }
             } else ExecResult(0, OCCUPANT_PASSED_MARK, "")
         }
         remote.client.sendTerminalKeys(selected, listOf("down"), remote.connection) { true }

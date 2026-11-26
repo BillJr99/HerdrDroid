@@ -222,7 +222,7 @@ class Herdr internal constructor(
         val r = commands?.let { permit.admit(); it.immediate(command, timeoutSeconds, expectedConnection) }
             ?: ssh.execNow(command, timeoutSeconds, expectedConnection, permit)
         if (r.exit != 0) {
-            val msg = (r.err.ifBlank { r.out }).trim().lines().lastOrNull { it.isNotBlank() } ?: "exit ${r.exit}"
+            val msg = r.terminalFailureMessage()
             throw HerdrError(msg, r.exit)
         }
         return r.out
@@ -891,8 +891,7 @@ class Herdr internal constructor(
             val result = runWriteResult(command, connection, permit = null)
             if (result.exit == 0) return true
             val lines = result.out.lines().map { it.trim() }
-            val why = result.err.ifBlank { result.out }.lineSequence().map { it.trim() }
-                .lastOrNull { it.isNotEmpty() && it != OCCUPANT_PASSED_MARK } ?: "exit ${result.exit}"
+            val why = result.terminalFailureMessage()
             val problem = HerdrError(why, result.exit)
             if (OCCUPANT_PASSED_MARK in lines) {
                 if (problem.isMissingPane(target.id)) return false
@@ -1464,12 +1463,22 @@ internal suspend fun recoverPaneRead(
 
 class HerdrError(message: String, val exit: Int) : Exception(message)
 
+private fun com.billmongan.herdrdroid.ssh.ExecResult.terminalFailureMessage(): String {
+    val structured = if (exit == 1) (err.lineSequence() + out.lineSequence())
+        .map { it.trim() }.filter { it.startsWith("{") }
+        .filter { paneLookupError(it) != null }.distinct().take(2).toList().singleOrNull() else null
+    return structured ?: err.ifBlank { out }.lineSequence().map { it.trim() }
+        .lastOrNull { it.isNotEmpty() && it != OCCUPANT_PASSED_MARK } ?: "exit $exit"
+}
+
+private fun paneLookupError(line: String): String? =
+    runCatching { JSONObject(line).optJSONObject("error") }.getOrNull()
+        ?.takeIf { it.optString("code") == "pane_not_found" }?.optString("message")
+
 /** Herdr rejects this lookup before any terminal key is attempted. Other failures are ambiguous. */
 internal fun HerdrError.isMissingPane(id: String): Boolean {
     if (exit != 1) return false
-    val response = runCatching { JSONObject(message.orEmpty()).optJSONObject("error") }.getOrNull() ?: return false
-    return response.optString("code") == "pane_not_found" &&
-        response.optString("message") in setOf("pane $id not found", "pane not found")
+    return paneLookupError(message.orEmpty()) in setOf("pane $id not found", "pane not found")
 }
 
 internal fun terminalUnavailable() =
