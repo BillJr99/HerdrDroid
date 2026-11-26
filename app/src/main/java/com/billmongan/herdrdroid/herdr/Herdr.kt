@@ -842,14 +842,14 @@ class Herdr internal constructor(
      * [DeliveryUncertain] when the key may have gone. Never on herdr-core (no occupant check there).
      */
     internal suspend fun sendBackgroundKey(
-        paneId: String, step: BackgroundStep, viewport: String, occupant: String, connection: Any,
+        paneId: String, step: BackgroundStep, viewport: String, occupant: String, connection: Any, permit: WritePermit? = null,
     ): Boolean {
         if (core || viewport.isBlank()) return false
         val check = "$PY -c ${shq(BACKGROUND_CHECK)} $herdr ${shq(paneId)} ${shq(step.check)}"
         val full = occupantCheckCommand(paneId, occupant) + " && " + check + " && " +
-            exactViewportCheck(paneId, viewport) + " && echo $OCCUPANT_PASSED_MARK && " +
+            exactViewportCheck(paneId, viewport, requireBottom = true) + " && echo $OCCUPANT_PASSED_MARK && " +
             cmd("pane", "send-keys", paneId, Backgrounding.KEY)
-        val r = runWriteResult(full, connection, null)
+        val r = runWriteResult(full, connection, permit)
         if (r.exit == 0) return true
         val lines = r.out.lines().map { it.trim() }
         val why = (r.err.ifBlank { r.out }).trim().lines().lastOrNull { it.isNotBlank() && it.trim() != OCCUPANT_PASSED_MARK } ?: "exit ${r.exit}"
@@ -866,9 +866,9 @@ class Herdr internal constructor(
         if (core) runWrite(hcCmd("keys", paneId, *keys), expectedConnection = expectedConnection)
         else runWrite(cmd("pane", "send-keys", paneId, *keys), expectedConnection = expectedConnection)
 
-    private fun exactViewportCheck(paneId: String, viewport: String): String {
+    private fun exactViewportCheck(paneId: String, viewport: String, requireBottom: Boolean = false): String {
         val digest = sha256Hex(viewport.toByteArray(Charsets.UTF_8))
-        return "$PY -c ${shq(EXACT_VIEWPORT_CHECK)} $herdr ${shq(paneId)} ${shq(digest)}"
+        return "$PY -c ${shq(EXACT_VIEWPORT_CHECK)} $herdr ${shq(paneId)} ${shq(digest)}" + if (requireBottom) " bottom" else ""
     }
 
     /** Draft keys only after the host compares the app's last ANSI viewport byte for byte. */
@@ -1549,6 +1549,7 @@ data class Prompt(
     internal val kiroOnceShortcuts: Boolean = false,
     /** A proven Claude Code model control uses only keys named by its own picker. */
     internal val claudeModelControl: Boolean = false,
+    internal val letterKeys: Boolean = false,
 ) {
     internal val guardedShortcutApproval: Boolean get() = agyApproval || kiroOnceShortcuts || claudeModelControl
     internal val historyReviewOnly: Boolean get() = topOffScreen || rebuiltTallDialog
@@ -2698,7 +2699,7 @@ private fun cursorBeforeHint(chars: List<Styled>, leadEnd: Int, start: Int, type
 // "approve all tools", "disable the sandbox", "for this repo" grant standing permission too.
 private val ALWAYS_LABEL = Regex("""\balways\b|don'?t ask again|\btrust\b|remainder of this session|always-approve|for this (session|conversation)|don'?t ask me again|(never|don'?t) show again|in the future|permanent|allowlist|allow rule|for the rest of|approve all|disable the sandbox|future similar|during this session|(from|for|in) this (project|repo)|auto-accept""", RegexOption.IGNORE_CASE)
 // 1.4.1 (from a code review): a refusal ("No, don't trust this", "Never allow") grants nothing.
-private val REFUSAL_LABEL = Regex("""^\W*(no|deny|reject|cancel|never|quit|don'?t (trust|allow))\b|\b(don'?t|do not|not|never) (trust|always)\b|\bdeny rule\b|\bblock\b""", RegexOption.IGNORE_CASE)
+private val REFUSAL_LABEL = Regex("""^\W*(no|deny|reject|cancel|never|quit|don'?t (trust|allow))\b|\b(don'?t|do not|not|never) (trust|always)\b|\bdeny rule\b|^\W*block\b""", RegexOption.IGNORE_CASE)
 // A curly apostrophe ("don’t ask again", Claude's MCP and skill rows) reads as a straight one (1.4.9).
 fun grantsStandingPermission(label: String): Boolean = label.replace('\u2019', '\'').let { ALWAYS_LABEL.containsMatchIn(it) && !REFUSAL_LABEL.containsMatchIn(it) }
 
@@ -2810,7 +2811,7 @@ fun detectLetterMenu(text: String, blocked: Boolean): Prompt? {
         // The plan review's key line is the last line of the screen; nothing of the agent's own comes after it.
         val heading = lines.firstOrNull { it.trimStart().startsWith("#") }?.trim()?.trimStart('#')?.trim()
         return Prompt(heading?.let { "Approve the plan: $it?" } ?: "Approve the plan?",
-            pairs.map { (k, l) -> Choice(l.replaceFirstChar { it.uppercase() }, k, false) })
+            pairs.map { (k, l) -> Choice(l.replaceFirstChar { it.uppercase() }, k, false) }, letterKeys = true)
     }
     val row = Regex("""^\s*([a-z])\s{2,}(\S.{0,80})$""")
     val rows = lines.withIndex().filter { row.matches(it.value) }
@@ -2821,7 +2822,7 @@ fun detectLetterMenu(text: String, blocked: Boolean): Prompt? {
     val hint = lines.drop(rows.last().index + 1).joinToString(" ")
     if (!blocked && letters.none { Regex("""\b$it\b""").containsMatchIn(hint) }) return null
     val question = lines.take(rows.first().index).lastOrNull { it.trim().endsWith("?") }?.trim() ?: "Choose"
-    return Prompt(question, rows.map { r -> row.find(r.value)!!.let { m -> Choice(m.groupValues[2].trim(), m.groupValues[1], false) } })
+    return Prompt(question, rows.map { r -> row.find(r.value)!!.let { m -> Choice(m.groupValues[2].trim(), m.groupValues[1], false) } }, letterKeys = true)
 }
 
 /**
@@ -2867,7 +2868,7 @@ fun menuKeys(prompt: Prompt, choice: Choice): List<String>? {
         val key = if (to > from) "down" else "up"
         return List(kotlin.math.abs(to - from)) { key } + if (isCheckbox(choice.label)) "space" else "enter"
     }
-    if (prompt.numberKeys && choice in prompt.choices) return listOf(choice.keys)
+    if ((prompt.numberKeys || prompt.letterKeys) && choice in prompt.choices) return listOf(choice.keys)
     // "No, and tell Copilot what to do differently (Esc to stop)": Enter on that row does nothing in
     // Copilot, and in Codex and Claude it opens a feedback box; Esc answers it in all three. Vibe's
     // card says "Esc reject", and Esc rejects wherever its (invisible) highlight is.
@@ -3646,7 +3647,7 @@ private fun detectOpenCodePermission(styled: String, text: String): Prompt? {
     }
     val hint = OPENCODE_PERMISSION_HINT.find(clean(rows[footer]))
     val title = (footer downTo maxOf(0, footer - 60)).firstOrNull { OPENCODE_PERMISSION_TITLE.matches(clean(rows[it])) }
-    if (title == null && (hint == null || !clean(rows[footer]).contains("Allow once"))) return null
+    if (title == null && hint == null) return null
     // A shell command wrapped inside the dialog can start a row with ">" (">/dev/null 2>&1"): it is
     // the command being asked about, not an input row under the dialog (2.1.2).
     val command = title?.let { t -> (t + 1..footer).firstOrNull { clean(rows[it]).startsWith("$ ") } }
@@ -4030,7 +4031,7 @@ internal fun grokWithoutThinkingPanel(plain: String): String {
     if (top < 0) return plain
     val panel = grokThinkingPanel(rows, top)
     if (panel.last + 1 >= rows.size || !GROK_GUTTER_ROW.containsMatchIn(rows[panel.last + 1])) return plain
-    return rows.mapIndexed { i, r -> if (i in panel) "" else r }.joinToString("\n")
+    return rows.drop(panel.last + 1).joinToString("\n")
 }
 
 /** A Grok approval or question title in the same gutter as its radio rows. */
@@ -4261,10 +4262,15 @@ private val GROK_APPROVAL_FRAME = Regex("""^\s*[│┃|]""")
 internal fun grokApproval(plain: String, parsed: Prompt): Prompt {
     if (parsed.choices.isEmpty() || parsed.terminalReview) return parsed
     val rows = plain.lines()
-    val last = rows.indexOfLast { GROK_RADIO_ROW.containsMatchIn(it) }
-    if (last < 0) return parsed
-    var first = last
-    while (first > 0 && GROK_RADIO_ROW.containsMatchIn(rows[first - 1])) first--
+    val dialog = parsed.dialogRows ?: return parsed
+    val options = dialog.options.map { dialog.rows[it] }
+    if (options.isEmpty() || options.any { !GROK_RADIO_ROW.containsMatchIn(it) }) return parsed
+    val plainRows = rows.map(::cardRegionRow)
+    val start = (0..rows.size - dialog.rows.size).singleOrNull { i ->
+        dialog.rows.indices.all { j -> dialog.rows[j] == plainRows[i + j] }
+    } ?: return parsed
+    val first = start + dialog.options.first()
+    val last = start + dialog.options.last()
     val heading = rows.take(first).asReversed().take(20)
         .takeWhile { !GROK_RADIO_ROW.containsMatchIn(it) && GrokMeta.statusRow(it) == null }
         .firstNotNullOfOrNull { GROK_BOX_TITLE.find(it)?.groupValues?.get(1) }
@@ -4279,7 +4285,7 @@ internal fun grokApproval(plain: String, parsed: Prompt): Prompt {
     val p = if (!approval || parsed.choices.none { grokCouldBeAlways(it.label) }) parsed
         else parsed.copy(choices = parsed.choices.map { if (grokCouldBeAlways(it.label)) it.copy(ambiguous = true) else it }).withSpanOf(parsed)
     var out = p
-    rows.getOrNull(last + 1)?.let { GROK_UNNUMBERED_ALWAYS.matchEntire(it) }?.let { m ->
+    rows.getOrNull(start + dialog.rows.size)?.let { GROK_UNNUMBERED_ALWAYS.matchEntire(it) }?.let { m ->
         val label = m.groupValues[1].trim()
         if (out.choices.none { it.label == label }) out = out.copy(choices = out.choices + Choice(label, GROK_ALWAYS_APPROVE, false)).withSpanOf(p)
     }
@@ -4287,7 +4293,7 @@ internal fun grokApproval(plain: String, parsed: Prompt): Prompt {
     var i = first - 1
     var clipped = false
     while (i >= 0 && GROK_APPROVAL_FRAME.containsMatchIn(rows[i])) {
-        if (GROK_EXPAND_HINT.matches(rows[i].trimStart().drop(1).trim())) clipped = true
+        if (GROK_EXPAND_HINT.matches(rows[i].trimStart().drop(1).trim().trimEnd('│', '┃', '|').trimEnd())) clipped = true
         i--
     }
     return if (clipped) out.copy(clipped = true).withSpanOf(p) else out
@@ -4307,19 +4313,29 @@ private val CLAUDE_AWAITING = Regex("""(?:^|\s)(\d{1,3}) awaiting input$""")
  * How many sessions Claude's sessions list shows as awaiting input ("1 awaiting input"), 0 when
  * the list shows none, or the screen is not that list or a question dialog has replaced it (2.1.1).
  */
+private fun liveClaudeBackgroundHint(rows: List<String>): Int {
+    val hint = rows.indexOfLast { CLAUDE_BACKGROUND_HINT.containsMatchIn(it) }
+    if (hint < 0) return -1
+    val tail = rows.drop(hint + 1)
+    if (tail.any { QUESTION_FOOTER.containsMatchIn(it) || isClaudePermissionFooter(it) }) return -1
+    // The sessions list has its own composer and footer. Do not confuse that composer with
+    // the foreground Claude conversation's composer or a later assistant turn.
+    val listFooter = tail.indexOfLast { "enter to return · space to reply · ctrl+x to remove" in it }
+    if (agentWentOn(tail.drop(listFooter + 1).filterNot { it == "❯ describe a task for a new session" })) return -1
+    return hint
+}
+
 internal fun claudeSessionsAwaiting(text: String): Int {
     val rows = text.lines().takeLast(80).map { it.trim() }
-    val hint = rows.indexOfLast { CLAUDE_BACKGROUND_HINT.containsMatchIn(it) }
-    if (hint < 0 || rows.drop(hint + 1).any { QUESTION_FOOTER.containsMatchIn(it) }) return 0
+    val hint = liveClaudeBackgroundHint(rows)
+    if (hint < 0) return 0
     return rows.take(hint).firstNotNullOfOrNull { CLAUDE_AWAITING.find(it) }?.groupValues?.get(1)?.toIntOrNull() ?: 0
 }
 
 internal fun claudeBackgroundList(text: String): Prompt? {
     val rows = text.lines().takeLast(80).map { it.trim() }
-    val hint = rows.indexOfLast { CLAUDE_BACKGROUND_HINT.containsMatchIn(it) }
+    val hint = liveClaudeBackgroundHint(rows)
     if (hint < 0) return null
-    // A question dialog below the hint is the session itself, back on screen: the usual parser reads it.
-    if (rows.drop(hint + 1).any { QUESTION_FOOTER.containsMatchIn(it) }) return null
     val count = rows.take(hint).firstNotNullOfOrNull { CLAUDE_AWAITING.find(it) }
     val waiting = count?.groupValues?.get(1)?.toIntOrNull() ?: 0
     val question = if (waiting > 0) "Claude's session is in the background, and its sessions list shows " +
@@ -4833,7 +4849,7 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
 
     // Buttons side by side (OpenCode's permission prompt, Vibe's folder trust) and options answered by a
     // letter (Grok's folder trust and plan review), 1.4.9.
-    detectButtonRow(activeText)?.let { return it }
+    if (!openCode) detectButtonRow(activeText)?.let { return it }
     detectLetterMenu(activeText, blocked)?.let { return it }
 
     // Grok's data-sharing banner, when nothing else is being asked: answered through /privacy.
@@ -5695,13 +5711,24 @@ internal const val UPLOAD_MARKER = "@@herdrdroid-upload@@"
 
 /** Host-side byte compare without sending draft or command text back to the host. */
 internal val EXACT_VIEWPORT_CHECK = """
-    import hashlib, subprocess, sys
-    herdr, pane, expected = sys.argv[1:]
+    import hashlib, json, subprocess, sys
+    herdr, pane, expected = sys.argv[1:4]
+    def at_bottom():
+        data = json.loads(subprocess.check_output([herdr, 'pane', 'get', pane], timeout=5))
+        record = data['result']['pane']
+        return record.get('pane_id') == pane and (record.get('scroll') or {}).get('offset_from_bottom') == 0
+
     try:
+        if len(sys.argv) > 4 and not at_bottom():
+            print('$CARD_REFUSED_MARK', flush=True)
+            sys.exit($CARD_CHANGED_EXIT)
         screen = subprocess.check_output(
             [herdr, 'pane', 'read', pane, '--source', 'visible', '--format', 'ansi'],
             timeout=5,
         )
+        if len(sys.argv) > 4 and not at_bottom():
+            print('$CARD_REFUSED_MARK', flush=True)
+            sys.exit($CARD_CHANGED_EXIT)
     except Exception:
         sys.exit(4)
     if not screen.strip() or b'\x00' in screen:
