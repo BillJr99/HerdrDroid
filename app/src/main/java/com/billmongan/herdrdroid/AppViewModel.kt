@@ -1674,6 +1674,7 @@ class AppViewModel internal constructor(
                     com.billmongan.herdrdroid.diag.DiagLog.log("link", com.billmongan.herdrdroid.diag.LinkStats.reconnectLine(
                         current?.id, attempt, backoff, reconnectReason, "ok", System.currentTimeMillis() - tryAt))
                     linkTo(Link.CONNECTED, "reconnected")
+                    questionsFeed.poke()
                     // 2.2.7: signed in again after a network change: the fallback watches this connection.
                     rearmAfterSignIn()
                     linkProblem = null
@@ -2301,11 +2302,12 @@ class AppViewModel internal constructor(
      * leaving the screen or the app doesn't stop it halfway. When it can't confirm the close, the record
      * stays (the next check or send tries again first) and the chat shows a pane notice.
      */
-    internal fun closeAppUsage(paneId: String, why: String, automatic: Boolean = true): Job? {
+    internal fun closeAppUsage(paneId: String, why: String, automatic: Boolean = true, expectedConnection: Any? = null): Job? {
         val sid = current?.id ?: return null
         val rec = openedUsageOf(sid, paneId) ?: return null
         if (automatic && rec.failures >= USAGE_CLOSE_AUTO_TRIES) return null
         val h = herdr ?: return null
+        val connection = expectedConnection ?: h.connectionIdentity ?: return null
         val key = "$sid/$paneId"
         if (!closingAppUsage.add(key)) return null
         return viewModelScope.launch {
@@ -2313,9 +2315,9 @@ class AppViewModel internal constructor(
                 val outcome = withContext(kotlinx.coroutines.NonCancellable) {
                     paneDispatch.run(sid to paneId) {
                         com.billmongan.herdrdroid.herdr.closeUsageAndVerify(
-                            stillCurrent = { current?.id == sid && herdr === h && pane(paneId)?.agent == rec.agent },
-                            readState = { h.readUsageState(paneId, rec.agent) },
-                            sendEscape = { shown -> h.closeUsageOverlay(paneId, rec.agent, shown) },
+                            stillCurrent = { current?.id == sid && herdr === h && h.connectionIdentity === connection && pane(paneId)?.agent == rec.agent },
+                            readState = { h.readUsageState(paneId, rec.agent, expectedConnection = connection) },
+                            sendEscape = { shown -> h.closeUsageOverlay(paneId, rec.agent, shown, expectedConnection = connection) },
                             settle = { delay(PANEL_SETTLE_MS) },
                             maxEscapes = 2,
                         )
@@ -2466,6 +2468,7 @@ class AppViewModel internal constructor(
      */
     private fun followBtw(rec: OpenedUsage) {
         val h = herdr ?: return
+        val connection = h.connectionIdentity ?: return
         viewModelScope.launch {
             var got: com.billmongan.herdrdroid.herdr.BtwRead? = null
             try {
@@ -2473,12 +2476,12 @@ class AppViewModel internal constructor(
                     var shown: UsageOverlay? = null
                     com.billmongan.herdrdroid.herdr.readBtwToEnd(
                         read = {
-                            if (current?.id != rec.server || herdr !== h) null
-                            else (h.readUsageState(rec.pane, "claude") as? com.billmongan.herdrdroid.herdr.UsageState.Open)?.overlay
+                            if (current?.id != rec.server || herdr !== h || h.connectionIdentity !== connection) null
+                            else (h.readUsageState(rec.pane, "claude", expectedConnection = connection) as? com.billmongan.herdrdroid.herdr.UsageState.Open)?.overlay
                                 ?.let { o -> com.billmongan.herdrdroid.herdr.claudeBtwOverlay(o.visible)?.also { shown = o } }
                         },
                         settle = { delay(BTW_SETTLE_MS) },
-                        scrollDown = { _ -> shown?.let { h.scrollBtwOverlay(rec.pane, it) } ?: false },
+                        scrollDown = { _ -> shown?.let { h.scrollBtwOverlay(rec.pane, it, expectedConnection = connection) } ?: false },
                     )
                 }
             } catch (c: CancellationException) {
@@ -2490,7 +2493,8 @@ class AppViewModel internal constructor(
                     val read = got
                     if (read != null) recordBtw(rec.server, rec.pane, read)
                     else com.billmongan.herdrdroid.diag.DiagLog.log("btw", "${rec.pane}: no side answer was read")
-                    if (current?.id == rec.server) closeAppUsage(rec.pane, "the side answer was read", automatic = false)?.join()
+                    if (current?.id == rec.server && herdr === h && h.connectionIdentity === connection)
+                        closeAppUsage(rec.pane, "the side answer was read", automatic = false, expectedConnection = connection)?.join()
                 }
             }
         }
@@ -2844,6 +2848,9 @@ class AppViewModel internal constructor(
                     }?.takeIf { it.first.sameCardOccupant(target.pane) && it.first.scrollOffset == 0 } ?: return false
                     if (!allowed()) return false
                     return h.sendCheckedDraftKeys(id, keys, viewport, bound.second, target.connection, permit)
+                }
+                override fun linkLost(error: LinkDown) {
+                    if (herdr === h) this@AppViewModel.linkLost(error)
                 }
                 override suspend fun pause(ms: Long) = delay(ms)
             }
@@ -4675,14 +4682,15 @@ class AppViewModel internal constructor(
     private fun noteCrossServerFrames(owner: CardTarget?, recent: String) {
         if (owner == null || !crossServerSourceCurrent(owner)) return
         resolveCrossServerDestinations()
-        val frames = com.billmongan.herdrdroid.herdr.crossServerFrames(recent)
+        val items = if (transcriptPane == owner.pane.id && transcriptState == TranscriptMode.ON) transcriptItems else emptyList()
+        val frames = com.billmongan.herdrdroid.herdr.crossServerProposalFrames(recent, owner.pane.agent, items)
         if (frames.isEmpty()) return
         val now = crossServerClock()
         var added = false
         for (f in frames) {
             val id = "${owner.server}|${owner.pane.id}|${f.code}"
             if (crossServerCards.any { it.id == id }) continue
-            val deadline = crossServerCodes.admit(id, now) ?: continue
+            val deadline = crossServerCodes.admit(id, now, f) ?: continue
             val card = CrossServerCard(id, owner, f.code, f.destination, f.text, deadline)
             crossServerCards = crossServerCards + card.copy(choice = crossServerMatches(card).singleOrNull())
             added = true
@@ -5463,7 +5471,8 @@ class AppViewModel internal constructor(
             val waiting = it.status == Status.NEEDS_YOU
             val candidate = !waiting && it.status == Status.WORKING && it.pane.agent?.lowercase() in QUESTION_CANDIDATE_AGENTS
             if (!waiting && !candidate) null
-            else com.billmongan.herdrdroid.questions.QuestionSource(it.server.id, it.server.label, it.current, it.pane, candidate = candidate)
+            else com.billmongan.herdrdroid.questions.QuestionSource(it.server.id, it.server.label, it.current, it.pane, candidate = candidate,
+                connection = if (it.current && link == Link.CONNECTED) herdr?.connectionIdentity else null)
         }
 
     /**
@@ -7591,10 +7600,12 @@ class AppViewModel internal constructor(
         done: (String) -> Boolean,
     ): com.billmongan.herdrdroid.herdr.Backgrounder.Outcome {
         val paneId = target.id
+        val lane = (server ?: return com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.UNREADABLE) to paneId
         val connection = client.connectionIdentity ?: return com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.UNREADABLE
-        fun same() = herdr === client && client.connectionIdentity === connection && current?.id == server && link == Link.CONNECTED
+        fun same() = !locked && foreground && herdr === client && client.connectionIdentity === connection &&
+            current?.id == server && link == Link.CONNECTED
         val bound = quietly { h -> if (h === client) h.boundOccupant(paneId, connection) else null }
-            ?.takeIf { it.first.sameCardOccupant(target) } ?: return com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.BLOCKED
+            ?.takeIf { it.first.sameCardOccupant(target) && it.first.scrollOffset == 0 } ?: return com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.BLOCKED
         val port = object : com.billmongan.herdrdroid.herdr.Backgrounder.Port {
             override suspend fun screen(): String? =
                 if (!same()) null else quietly { h -> if (h === client) h.readStyledViewport(paneId, connection) else null }?.takeIf { it.isNotBlank() }
@@ -7604,11 +7615,21 @@ class AppViewModel internal constructor(
             }
             override fun done(screen: String) = done(screen)
             override suspend fun press(step: com.billmongan.herdrdroid.herdr.BackgroundStep, viewport: String): Boolean {
-                if (!canPoll || !same()) return false
-                val went = client.sendBackgroundKey(paneId, step, viewport, bound.second, connection)
-                com.billmongan.herdrdroid.diag.DiagLog.log("send", "to $paneId: Ctrl+B for ${step.check} ${if (went) "went" else "refused by the check"}")
-                if (went) onPressed(step)
-                return went
+                val release = paneDispatch.tryAcquire(lane) ?: throw com.billmongan.herdrdroid.herdr.CardCheckFailed()
+                try {
+                    if (!canPoll || blocked(viewport)) return false
+                    val permit = writeGate.open(lane) ?: throw com.billmongan.herdrdroid.herdr.CardCheckFailed()
+                    try {
+                        val went = client.sendBackgroundKey(paneId, step, viewport, bound.second, connection, permit)
+                        com.billmongan.herdrdroid.diag.DiagLog.log("send", "to $paneId: Ctrl+B for ${step.check} ${if (went) "went" else "refused by the check"}")
+                        if (went) onPressed(step)
+                        return went
+                    } finally {
+                        writeGate.finish(lane, permit)
+                    }
+                } finally {
+                    release()
+                }
             }
             override suspend fun pause(ms: Long) = delay(ms)
         }
@@ -7622,6 +7643,9 @@ class AppViewModel internal constructor(
             com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.UNCERTAIN
         } catch (e: com.billmongan.herdrdroid.herdr.CardCheckFailed) {
             com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.CHECK_FAILED
+        } catch (e: LinkDown) {
+            if (herdr === client) linkLost(e)
+            com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.UNREADABLE
         } catch (e: Exception) {
             com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.UNREADABLE
         }
