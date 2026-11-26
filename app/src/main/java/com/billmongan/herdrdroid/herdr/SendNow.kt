@@ -71,11 +71,17 @@ internal fun sendNowWaitText(agentName: String) =
 
 /** Installed Codex 0.172.0 uses Enter to steer and Tab to queue during this working composer view. */
 internal fun codexSteeringReady(screen: String): Boolean {
-    val rows = stripAnsi(screen).lines().filter { it.isNotBlank() }.takeLast(12)
-    val input = rows.indexOfLast { it.trimStart().startsWith("›") }
-    if (input < 1 || !Regex("""^• Working \(.*esc to interrupt\)$""").matches(rows[input - 1].trim())) return false
-    return inputLineOf(screen, "codex") == "" && composerDraftOf(screen, "codex") == null &&
-        rows.drop(input + 1).any { it.trimStart().startsWith("← for agents") }
+    val raw = screen.trimEnd().lines().takeLast(12)
+    val rows = raw.map { stripAnsi(it).trimEnd() }
+    val input = rows.indexOfLast { it.startsWith("›") }
+    if (input < 1 || rows.getOrNull(input + 1)?.isBlank() != true) return false
+    val above = rows.take(input).lastOrNull { it.isNotBlank() } ?: return false
+    if (!Regex("""^• Working \(.*esc to interrupt\)$""").matches(above)) return false
+    val footer = rows.drop(input + 2).filter { it.isNotBlank() }
+    if (footer.size !in 1..3 || footer.any { !it.startsWith("  ") } ||
+        !footer.last().trimStart().startsWith("← for agents")) return false
+    val prompt = rows[input].removePrefix("›").trimStart()
+    return prompt.isEmpty() || isComposerHint("codex", prompt) && isPlaceholderText(raw[input], prompt, "codex")
 }
 
 internal fun codexSteeringText(text: String): Boolean =

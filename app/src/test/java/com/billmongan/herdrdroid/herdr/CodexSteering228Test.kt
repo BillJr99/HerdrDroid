@@ -12,7 +12,7 @@ class CodexSteering228Test {
 
     @Test fun theLiveEmptyWorkingComposerAllowsConfirmedSteering() {
         val screen = capture("empty")
-        assertTrue(codexSteeringReady(screen))
+        assertTrue("native empty composer was not recognized", codexSteeringReady(screen))
         assertEquals(SendNowRoute.FORCE_CONFIRM, sendNowRoute("codex", Status.WORKING, screen))
         assertEquals(null, backgroundStep("codex", screen))
     }
