@@ -2708,18 +2708,14 @@ class AppViewModel internal constructor(
                 override suspend fun pane(id: String) = quietly { if (it === h) it.cardPane(id, target.connection) else null }
                 override suspend fun viewport(id: String) =
                     quietly { if (it === h) it.readStyledViewport(id, target.connection, timeoutSeconds = 3) else null }
-                override suspend fun keys(id: String, keys: List<String>, permit: WritePermit) {
-                    quietly { if (it === h) { it.sendPermittedKeys(id, keys, target.connection, permit); true } else null }
-                        ?: throw IllegalStateException("the keys could not be sent")
+                override suspend fun checkedKeys(id: String, keys: List<String>, viewport: String, permit: WritePermit): Boolean {
+                    if (!allowed()) return false
+                    val bound = quietly { client ->
+                        if (client === h) client.boundOccupant(id, target.connection) else null
+                    }?.takeIf { it.first.sameCardOccupant(target.pane) && it.first.scrollOffset == 0 } ?: return false
+                    if (!allowed()) return false
+                    return h.sendCheckedDraftKeys(id, keys, viewport, bound.second, target.connection, permit)
                 }
-                override suspend fun clearKeys(id: String, keys: List<String>, viewport: String, permit: WritePermit): Boolean =
-                    quietly { client ->
-                        if (client !== h || !allowed()) return@quietly false
-                        val bound = client.boundOccupant(id, target.connection)
-                            ?.takeIf { it.first.sameCardOccupant(target.pane) && it.first.scrollOffset == 0 }
-                            ?: return@quietly false
-                        client.sendDraftClearKeys(id, keys, viewport, bound.second, target.connection, permit)
-                    } ?: false
                 override suspend fun pause(ms: Long) = delay(ms)
             }
             val outcome = try {
