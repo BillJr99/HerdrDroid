@@ -1,0 +1,5 @@
+card: options
+blocked: true
+heading: Do you want to proceed?
+options: Yes | No
+source: Claude Code 2.1.332, native terminal from a disposable probe tab and a loopback fixture provider
