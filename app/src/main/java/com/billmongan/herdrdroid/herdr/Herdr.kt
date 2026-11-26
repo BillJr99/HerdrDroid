@@ -594,6 +594,15 @@ class Herdr internal constructor(
             runNow(visibleSnapshot(paneId, ansi = true, lines = lines), timeoutSeconds = 5)
         }
 
+    /** Bounded history from the same connection as the live card, without a visible-read fallback. */
+    internal suspend fun readCardHistory(paneId: String, lines: Int, connection: Any): String? =
+        if (core) null else try {
+            screenText(runNow(recentSnapshot(paneId, lines), timeoutSeconds = 5, expectedConnection = connection), true)
+        } catch (e: HerdrError) {
+            if (e.exit == -2) throw e
+            null
+        }
+
     suspend fun read(paneId: String, lines: Int = 200, preserveGlyphs: Boolean = false): String =
         if (core) screenText(runNow(hcCmd("read", paneId, "--lines", lines.toString()), timeoutSeconds = 5), preserveGlyphs)
         else try {
@@ -1511,6 +1520,8 @@ data class Prompt(
      * is partly off screen, and the dialog's top is the screen's top ([dialogRead]).
      */
     internal val topOffScreen: Boolean = false,
+    /** The complete display includes scrollback that the live send guard cannot verify. */
+    internal val rebuiltTallDialog: Boolean = false,
     /** 2.2.7: Oh My Pi's or pi's multi-question Ask dialog, as [OmpAsk] read it. */
     internal val ompAsk: OmpAsk.State? = null,
     /**
@@ -1542,7 +1553,14 @@ data class Prompt(
      * Never an empty card (1.4.2): a prompt with no choices always has something to show, the
      * screen region or, when the screen couldn't be read, a note saying so, with the generic keys.
      */
-    fun forCard(): Prompt = if (choices.isNotEmpty() || region.orEmpty().any { it.isNotBlank() }) this else copy(region = listOf(UNREAD_SCREEN))
+    fun forCard(): Prompt = when {
+        (topOffScreen || rebuiltTallDialog) && !terminalReview -> copy(
+            choices = emptyList(), selected = null, terminalReview = true,
+            region = region ?: listOf(UNREAD_SCREEN),
+        )
+        choices.isNotEmpty() || region.orEmpty().any { it.isNotBlank() } -> this
+        else -> copy(region = listOf(UNREAD_SCREEN))
+    }
 
     /** [parts], or the same layout read from the question's text. */
     fun shownParts(): QuestionParts = parts ?: questionParts(listOf(QLine(question)))
@@ -1576,7 +1594,8 @@ internal fun unreadQuestionCard(agent: String): Prompt = Prompt(
 
 /** Dispatch identity, unlike history deduplication, must not discard punctuation or command text. */
 internal fun cardAnswerStillFits(shown: Prompt, fresh: Prompt?): Boolean =
-    !shown.terminalReview && !shown.readingQuestion && fresh != null && !fresh.terminalReview && !fresh.readingQuestion &&
+    !shown.forCard().terminalReview && !shown.readingQuestion &&
+        fresh != null && !fresh.forCard().terminalReview && !fresh.readingQuestion &&
         shown.forCard().region != listOf(UNREAD_SCREEN) &&
         shown.copy(selected = null).forCard() == fresh.copy(selected = null).forCard()
 
@@ -4734,8 +4753,10 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
         // command (esc)"), known by name or by its "Change approval defaults in /permissions" line.
         val shortcuts = agent?.lowercase() in setOf("codex", "muse") ||
             lines.takeLast(4).any { CODEX_FOOTER.containsMatchIn(it) || MUSE_CARD_FOOTER.containsMatchIn(it) }
+        val rebuiltTall = agent.equals("claude", true) && isRebuiltDialog(text.lines())
         return Prompt(question ?: "Choose an option", numbered, selected, escRejects = vibeCard, parts = parts, multi = multi,
-            shortcuts = shortcuts, approvalIdentity = approvalIdentity, claudeCheckboxAction = checkboxAction, topOffScreen = topOff)
+            shortcuts = shortcuts, approvalIdentity = approvalIdentity, claudeCheckboxAction = checkboxAction, topOffScreen = topOff,
+            rebuiltTallDialog = rebuiltTall, region = if (topOff || rebuiltTall) raw else null)
             .also { p ->
                 // 2.2.8 (Codex's review 4B): the parser's exact rows, the question block it read down to the
                 // last option's last row, with each option's own row; none when they can't be mapped.

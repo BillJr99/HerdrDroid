@@ -12,8 +12,8 @@ package com.billmongan.herdrdroid.herdr
  * above the dialog, a different screen, or a stale copy of the screen's own top rows is refused, and
  * the card keeps the 2.2.4 note. The answer keys still come from the live dialog's options.
  */
-internal val TALL_DIALOG_READS = listOf(200, 400)
-internal const val TALL_DIALOG_MAX_LINES = 400
+internal val TALL_DIALOG_READS = listOf(200, 600, 2000)
+internal const val TALL_DIALOG_MAX_LINES = 2000
 
 /**
  * The first row of a dialog rebuilt from history (a word joiner alone, which draws as nothing): the
@@ -71,6 +71,7 @@ internal suspend fun completeTallDialog(screen: String, blocked: Boolean, versio
     if (!base.topOffScreen || base.choices.isEmpty()) return screen
     for (n in TALL_DIALOG_READS) {
         val history = read(n) ?: return screen
+        if (history.isBlank()) return screen
         extendFramedDialog(screen, history, blocked, version)?.let { return it }
         // The pane has no more history than this.
         if (screenRows(history).size < n - 1) return screen
@@ -100,6 +101,7 @@ internal fun tallDialogFits(shown: Prompt, fresh: Prompt): Boolean {
     var at = 0
     for (t in shownText) if (at < seenText.size && t == seenText[at]) at++
     if (at != seenText.size) return false
-    fun bare(p: Prompt) = p.copy(selected = null, question = "", parts = null, topOffScreen = false).forCard()
+    fun bare(p: Prompt) = p.copy(selected = null, question = "", parts = null, region = null,
+        topOffScreen = false, rebuiltTallDialog = false)
     return bare(shown) == bare(fresh)
 }
