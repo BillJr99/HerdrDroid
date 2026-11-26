@@ -32,13 +32,22 @@ class RunningPillTest {
         assertEquals(true, pill.active)
     }
 
-    @Test fun aProcessOnlyReadDoesNotReportZeroCodexSubagents() {
+    @Test fun unknownSubagentCountLeavesOnlyObservedWorkInThePill() {
         val work = WorkInfo(emptyList(), emptyList(), emptyList(), agentOwnedOnly = true)
-        val pill = runningPill(work, "codex", 0)!!
-        assertEquals("? sub", pill.label)
-        assertEquals("0 observed shells; subagent count unavailable", pill.description)
-        assertEquals(false, pill.active)
-        assertEquals("1 sh - ? sub", runningPill(work.copy(procs = listOf(proc)), "codex", 0)!!.label)
+        for (agent in listOf("codex", "claude", "grok", "agy", "omp", "opencode", "hermes")) {
+            assertNull(runningPill(work, agent, 0))
+            val shellPill = runningPill(work.copy(procs = listOf(proc)), agent, 0)!!
+            assertEquals("1 sh", shellPill.label)
+            assertEquals("1 shell running; subagent count unavailable", shellPill.description)
+            assertEquals(true, shellPill.active)
+            assertEquals(RunningPill("1 done", "Nothing running, 1 finished", false), runningPill(work, agent, 1))
+        }
+    }
+
+    @Test fun verifiedSubagentCountsRemainVisibleForCodex() {
+        val work = WorkInfo(listOf(proc), emptyList(), emptyList(), agentOwnedOnly = true, subagentsVerified = true)
+        assertEquals("1 sh - 0 sub", runningPill(work, "codex", 0)!!.label)
+        assertEquals("0 sh - 1 sub", runningPill(work.copy(procs = emptyList(), subagents = listOf(sub(true))), "codex", 0)!!.label)
     }
 
     @Test fun claudeComposerFooterReportsBackgroundShellsWithoutCountingProcessesTwice() {
@@ -50,8 +59,8 @@ class RunningPillTest {
         assertNull(visibleBackgroundShellCount("codex", capture))
         assertNull(visibleBackgroundShellCount("claude", "  ⏵⏵ auto mode on · 1 shell · ↓ to manage"))
         val work = WorkInfo(listOf(proc), emptyList(), emptyList(), agentOwnedOnly = true, reportedBackgroundShells = reported)
-        assertEquals("1 sh - ? sub", runningPill(work, "claude", 0)!!.label)
-        assertEquals("1 sh - ? sub", runningPill(work.copy(procs = emptyList()), "claude", 0)!!.label)
+        assertEquals("1 sh", runningPill(work, "claude", 0)!!.label)
+        assertEquals("1 sh", runningPill(work.copy(procs = emptyList()), "claude", 0)!!.label)
     }
 
     @Test fun finishedWorkKeepsAMutedWayIn() {
