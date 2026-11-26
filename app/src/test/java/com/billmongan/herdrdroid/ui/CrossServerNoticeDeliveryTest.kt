@@ -108,6 +108,20 @@ class CrossServerNoticeDeliveryTest {
         assertEquals(2, laptop2.writes.size)
     }
 
+    @Test fun disposableProbePanesAreNeitherNotifiedNorAdvertised() {
+        laptop.rows += Row("p2", "w1:t2", "probe-local", "claude", "s-probe-local")
+        laptop2.rows += Row("w2:p7", "w2:t7", "probe-remote", "claude", "s-probe-remote")
+        state(vm, "panes", laptop.panes())
+        watch()
+
+        vm.changeAgentMessaging(true)
+        tick()
+        assertEquals(1, laptop.writes.size)
+        assertEquals(2, laptop2.writes.size)
+        val writes = laptop.writes + laptop2.writes
+        assertTrue(writes.none { "probe-" in it || "'p2'" in it || "'w2:p7'" in it })
+    }
+
     /** Grok's RC review 4: an unnamed server is "server N" in the notice, with no account, host or port. */
     @Test fun anUnnamedServerIsNamedOnlyByItsPlaceInTheNotice() {
         val unnamed = laptop2.server.copy(name = "")
