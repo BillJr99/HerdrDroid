@@ -6,11 +6,20 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ClaudeFourQuestions228Test {
-    private fun card(name: String): Prompt {
-        val screen = checkNotNull(javaClass.getResource(
-            "/screens/claude/captured-2.1.332-four-questions/$name.txt"
-        )).readText()
-        return checkNotNull(detectPrompt(screen, blocked = true, agent = "claude"))
+    private fun screen(name: String): String = checkNotNull(javaClass.getResource(
+        "/screens/claude/captured-2.1.332-four-questions/$name.txt"
+    )).readText()
+
+    private fun card(name: String): Prompt =
+        checkNotNull(detectPrompt(screen(name), blocked = true, agent = "claude"))
+
+    @Test fun narrowNativeFrameKeepsTheWholeQuestionAndProvesItsDialog() {
+        val narrow = card("narrow-q1")
+        val wide = card("q1")
+        assertEquals(wide.question, narrow.question)
+        assertEquals(wide.choices, narrow.choices)
+        assertTrue(narrow.question.endsWith("This invented scenario compares?"))
+        assertTrue(questionRead(screen("narrow-q1"), narrow, "claude", null, blocked = true).complete)
     }
 
     @Test fun nativeFourQuestionFlowKeepsCheckboxesAndReviewDistinct() {

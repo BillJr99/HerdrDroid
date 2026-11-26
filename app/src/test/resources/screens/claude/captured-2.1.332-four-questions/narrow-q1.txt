@@ -1,0 +1,24 @@
+────────────────────────────────────────────────────────────────
+←  ☐ Sample 1  ☐ Sample 2  ☐ Sample 3  ☐ Sample 4  ✔ Submit  →
+
+│ Question 1: choose the options for the sample case. This
+│ invented scenario compares ordinary choices for a public
+│ fixture. This invented scenario compares ordinary choices for
+│ a public fixture. This invented scenario compares ordinary
+│ choices for a public fixture. This invented scenario compares
+│ ordinary choices for a public fixture. This invented scenario
+│ compares ordinary choices for a public fixture. This invented
+│ scenario compares ordinary choices for a public fixture. This
+│ invented scenario compares?
+
+❯ 1. Option 1.1
+     Use sample choice 1 in this fixture.
+  2. Option 1.2
+     Use sample choice 2 in this fixture.
+  3. Option 1.3
+     Use sample choice 3 in this fixture.
+  4. Type something.
+────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel
