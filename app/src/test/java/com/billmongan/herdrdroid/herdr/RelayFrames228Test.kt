@@ -22,6 +22,13 @@ class RelayFrames228Test {
         }
     }
 
+    @Test fun aMarkedScreenCannotOverrideAnAvailableCurrentTranscript() {
+        val screen = "⏺ Here is the request:\n" + raw.prependIndent("  ")
+        val prior = TextItem("r", raw)
+        val next = UserItem("u", "new turn")
+        assertTrue(crossServerProposalFrames(screen, "claude", listOf(prior, next)).isEmpty())
+    }
+
     @Test fun anUnmarkedPaneNeedsAnExactFrameInItsOwnCurrentReply() {
         val user = UserItem("u", "send hello")
         val reply = TextItem("r", "Here is the request:\n```\n$raw\n```")
