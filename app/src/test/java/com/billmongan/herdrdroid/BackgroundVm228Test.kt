@@ -70,6 +70,7 @@ class BackgroundVm228Test {
         /** The terminal the computer reports (null: [terminal]). */
         var remoteTerminal: String? = null
         var checks = 0
+        var backgroundFailure: ExecResult? = null
         var reads = 0
         var pushReads = 0
         val prompts = mutableListOf<String>()
@@ -132,6 +133,7 @@ class BackgroundVm228Test {
             if (BACKGROUND_REFUSED_MARK in command) {
                 // The occupant check, then the screen check, then the key: as the computer would run them.
                 checks++
+                backgroundFailure?.let { return it }
                 val occupant = Regex("""'p1' '([0-9a-f]{64})' '-'""").find(command)!!.groupValues[1]
                 val now = com.billmongan.herdrdroid.herdr.cardOccupantDigest(org.json.JSONObject(paneOn(remoteTerminal ?: terminal)))
                 if (now != occupant) return ExecResult(com.billmongan.herdrdroid.herdr.OCCUPANT_CHANGED_EXIT, com.billmongan.herdrdroid.herdr.OCCUPANT_REFUSED_MARK + "\n", "")
@@ -215,6 +217,23 @@ class BackgroundVm228Test {
         drain()
         assertTrue(keys.isEmpty())
         assertTrue(checks >= 1)
+    }
+
+    @Test fun backgroundWriteFailuresKeepTheirOutcomeWithoutAnotherKey() {
+        val cases = listOf(
+            Triple(1, com.billmongan.herdrdroid.herdr.OCCUPANT_PASSED_MARK, "Ctrl+B may have reached"),
+            Triple(com.billmongan.herdrdroid.herdr.OCCUPANT_CHANGED_EXIT,
+                com.billmongan.herdrdroid.herdr.OCCUPANT_REFUSED_MARK, "pane occupant changed"),
+            Triple(4, "", "check on the computer failed"),
+        )
+        for (push in listOf(false, true)) for ((exit, marker, expected) in cases) fixture("claude", fg) {
+            backgroundFailure = ExecResult(exit, marker + "\n", "")
+            startBackground(push)
+            drain()
+            assertEquals(1, checks)
+            assertTrue(keys.isEmpty())
+            assertTrue(vm.notice.orEmpty(), vm.notice.orEmpty().contains(expected))
+        }
     }
 
     @Test fun sendImmediatelyPressesUntilTheMessageIsTaken() = fixture("claude", fg) {
