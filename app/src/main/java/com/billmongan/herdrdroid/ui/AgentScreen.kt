@@ -344,9 +344,10 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
             // queue and goes once the question is answered or gone; the note says so.
             if (waitingForHermes || prompt != null || openingPreview != null || vm.hasPendingQuestion(pane)) {
                 // 2.2.8 (Codex's review 1): bound to the pane's occupant now; another one never gets it.
-                vm.enqueue(paneId, text, behindQuestion = true)
-                vm.clearComposerDraft(paneId)
-                vm.flashNote(QUEUED_FOR_QUESTION)
+                if (vm.enqueue(paneId, text, behindQuestion = true, displayedPane = pane, displayedServer = draftServer)) {
+                    vm.clearComposerDraft(paneId)
+                    vm.flashNote(QUEUED_FOR_QUESTION)
+                }
                 return
             }
             // 2.2.7: out of the box now; its draft ends once delivered, and comes back if it never was.
@@ -1033,7 +1034,13 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 onStop = pane?.let { p -> { vm.stopPane(p) } },
                 // herdr's agent prompt reaches a working agent, so a message sent now steers it.
                 steerLabel = if (pane?.agent != null && !typingAnswer && prompt == null) "Steer" else null,
-                onQueueWhenIdle = if (!typingAnswer && !usageBlocksInput) ({ vm.enqueue(paneId, normalMessage.trim(), behindQuestion = prompt != null || openingPreview != null || pane?.let { vm.hasPendingQuestion(it) } == true); vm.clearComposerDraft(paneId) }) else null,
+                onQueueWhenIdle = if (!typingAnswer && !usageBlocksInput && pane != null) ({
+                    val behindQuestion = prompt != null || openingPreview != null || vm.hasPendingQuestion(pane)
+                    if (vm.enqueue(paneId, normalMessage.trim(), behindQuestion = behindQuestion,
+                            displayedPane = pane, displayedServer = draftServer)) {
+                        vm.clearComposerDraft(paneId)
+                    }
+                }) else null,
                 onAttach = { uri -> vm.attach(uri, paneId) },
                 attachBusy = vm.uploading,
                 commands = SlashCommands.forAgent(pane?.agent),
