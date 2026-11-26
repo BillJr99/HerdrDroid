@@ -859,8 +859,8 @@ class Herdr internal constructor(
         return "$PY -c ${shq(EXACT_VIEWPORT_CHECK)} $herdr ${shq(paneId)} ${shq(digest)}"
     }
 
-    /** Clear keys only after the host compares the app's last ANSI viewport byte for byte. */
-    internal suspend fun sendDraftClearKeys(
+    /** Draft keys only after the host compares the app's last ANSI viewport byte for byte. */
+    internal suspend fun sendCheckedDraftKeys(
         paneId: String, keys: List<String>, viewport: String, occupant: String, connection: Any, permit: WritePermit,
     ): Boolean {
         if (core || viewport.isBlank()) return false
@@ -869,7 +869,7 @@ class Herdr internal constructor(
         val result = runWriteResult("$check && echo $OCCUPANT_PASSED_MARK && $send", connection, permit)
         if (result.exit == 0) return true
         val lines = result.out.lineSequence().map(String::trim).toSet()
-        if (OCCUPANT_PASSED_MARK in lines) throw DeliveryUncertain("The Clear key may have gone through.")
+        if (OCCUPANT_PASSED_MARK in lines) throw DeliveryUncertain("The draft key may have gone through.")
         return false
     }
 

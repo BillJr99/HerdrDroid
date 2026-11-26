@@ -2722,7 +2722,21 @@ class AppViewModel internal constructor(
             !usageDialogShown(agent, text) &&
             (now.scrollOffset ?: 0) == 0 && (!com.billmongan.herdrdroid.herdr.inputLineOf(text, agent).isNullOrEmpty() ||
                 com.billmongan.herdrdroid.herdr.paneDraftOf(text, agent) != null)
-        if (!eligible) { if (stillShown()) { paneDraft = null; draftReadFor = null }; return }
+        if (!eligible) {
+            if (stillShown()) {
+                val previous = paneDraft
+                val waitingQuestion = question != null || now?.status == Status.NEEDS_YOU
+                // A question can cover a draft already verified in this same visit. Keep its
+                // existence for the disabled chat card only until we can read the composer again.
+                val heldByQuestion = waitingQuestion && owner != null && previous != null &&
+                    owner.isCurrent(owner.client) && owner.client === previous.target.client &&
+                    owner.connection === previous.target.connection && owner.visit == previous.target.visit &&
+                    owner.pane.sameCardOccupant(previous.target.pane)
+                if (!heldByQuestion) paneDraft = null
+                draftReadFor = null
+            }
+            return
+        }
         val o = checkNotNull(owner)
         val plain = com.billmongan.herdrdroid.herdr.paneDraftOf(text, agent)?.text
             ?: com.billmongan.herdrdroid.herdr.inputLineOf(text, agent)
@@ -2776,18 +2790,14 @@ class AppViewModel internal constructor(
                 override suspend fun pane(id: String) = quietly { if (it === h) it.cardPane(id, target.connection) else null }
                 override suspend fun viewport(id: String) =
                     quietly { if (it === h) it.readStyledViewport(id, target.connection, timeoutSeconds = 3) else null }
-                override suspend fun keys(id: String, keys: List<String>, permit: WritePermit) {
-                    quietly { if (it === h) { it.sendPermittedKeys(id, keys, target.connection, permit); true } else null }
-                        ?: throw IllegalStateException("the keys could not be sent")
+                override suspend fun checkedKeys(id: String, keys: List<String>, viewport: String, permit: WritePermit): Boolean {
+                    if (!allowed()) return false
+                    val bound = quietly { client ->
+                        if (client === h) client.boundOccupant(id, target.connection) else null
+                    }?.takeIf { it.first.sameCardOccupant(target.pane) && it.first.scrollOffset == 0 } ?: return false
+                    if (!allowed()) return false
+                    return h.sendCheckedDraftKeys(id, keys, viewport, bound.second, target.connection, permit)
                 }
-                override suspend fun clearKeys(id: String, keys: List<String>, viewport: String, permit: WritePermit): Boolean =
-                    quietly { client ->
-                        if (client !== h || !allowed()) return@quietly false
-                        val bound = client.boundOccupant(id, target.connection)
-                            ?.takeIf { it.first.sameCardOccupant(target.pane) && it.first.scrollOffset == 0 }
-                            ?: return@quietly false
-                        client.sendDraftClearKeys(id, keys, viewport, bound.second, target.connection, permit)
-                    } ?: false
                 override suspend fun pause(ms: Long) = delay(ms)
             }
             val outcome = try {
@@ -4003,6 +4013,8 @@ class AppViewModel internal constructor(
 
     /** Why a send waits for a draft at the computer (2.1.0): the chat's draft card shows it, with Send draft and Clear draft. */
     private val DRAFT_HOLD = "a draft is typed in its input box at the computer (the chat's Draft in the pane card can send or clear it)"
+
+    internal fun isPaneDraftHold(note: String?): Boolean = note?.contains(DRAFT_HOLD) == true
 
     /**
      * [failed] (2.2.7, Send now on a queued message): when set, a send that a guard refuses is not

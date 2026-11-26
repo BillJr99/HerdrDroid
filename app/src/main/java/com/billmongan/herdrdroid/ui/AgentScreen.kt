@@ -411,6 +411,12 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     // 1.2.8 (Bill: "show the question and text in the chat area ... so I can scroll to read it,
     // and just the answer buttons in the card"): the question, and what the agent said before it,
     // sit in the chat or terminal as the agent's message; the orange card below holds the answers.
+    val sendNotice = vm.sendNoticeFor(paneId)
+    val idleQueue = vm.queued.filter { it.paneId == paneId && it.serverId == vm.current?.id }
+    val unsent = vm.removableSendsFor(paneId)
+    val heldForDraft = vm.isPaneDraftHold(sendNotice) || unsent.any { vm.isPaneDraftHold(it.held) }
+    val queuedForDraft = idleQueue.any { vm.isPaneDraftHold(it.note) }
+    val showChatDraft = !fullTerminal && !live
     val promptCard: @Composable () -> Unit = {
         prompt?.let { p ->
           // In the terminal view the card shrinks to one line with the way back (1.4.8, Bill: "the show
@@ -462,27 +468,37 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 onShowTerminal = if (!fullTerminal) ({ hermesLive = false; fullTerminal = true; termFollow = true }) else null,
             )
         } }
-        // 2.1.0: a draft typed at the computer, with Send draft and Clear draft. Only while no
-        // question is open, from this pane's own latest read.
-        vm.paneDraft?.takeIf { prompt == null && !fullTerminal && !backgroundDrawer && usageOverlay == null &&
-            vm.paneReadProblem == null && vm.paneTextPane == paneId && it.target.pane.id == paneId }?.let { d ->
-            // Claude holds a question back while a draft is in its input box (2.1.1): say so here.
-            if (pane?.agent == "claude" && com.billmongan.herdrdroid.herdr.claudeQuestionBehindDraft(screenText))
-                Text("Claude has a question waiting behind this draft. Send or clear the draft to see it.",
-                    color = Palette.OrangeInk, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
+        val blockedDraft = when {
+            prompt != null || status == Status.NEEDS_YOU -> "Answer the open question before sending or clearing the draft."
+            backgroundDrawer || usageOverlay != null -> "Close the open panel before sending or clearing the draft."
+            vm.paneReadProblem != null -> "The pane couldn't be read. Wait for a fresh view of the draft."
+            else -> null
+        }
+        val visibleDraft = vm.paneDraft?.takeIf { vm.paneTextPane == paneId && it.target.pane.id == paneId }
+        val questionBehindDraft = blockedDraft == null && visibleDraft != null && pane?.agent == "claude" &&
+            com.billmongan.herdrdroid.herdr.claudeQuestionBehindDraft(screenText)
+        if (showChatDraft && (visibleDraft != null || heldForDraft || queuedForDraft)) {
+            val reason = when {
+                questionBehindDraft -> "Claude has a question waiting behind this draft. Send or clear the draft to see it."
+                heldForDraft && queuedForDraft -> "Held and queued messages are waiting for this draft."
+                heldForDraft -> "A held message is waiting for this draft."
+                queuedForDraft -> "A queued message is waiting for this draft."
+                else -> null
+            }
+            val checked = visibleDraft.takeIf { blockedDraft == null }
             PaneDraftCard(
                 agent = pane?.agentName ?: "The agent",
-                draft = d,
-                text = d.text,
-                canAct = d.actionable,
-                canClear = d.clearable,
+                draft = checked,
+                text = checked?.text,
+                canAct = checked?.actionable == true,
+                canClear = checked?.clearable == true,
                 busy = vm.paneDraftBusy(paneId),
-                sendNote = d.sendNote,
-                onSend = { shown -> vm.sendPaneDraft(shown) },
-                // The draft captured when Clear draft was tapped, not whatever shows at confirm.
-                onClear = { captured -> vm.clearPaneDraft(captured) },
+                sendNote = checked?.sendNote,
+                onSend = vm::sendPaneDraft,
+                onClear = vm::clearPaneDraft,
                 onShowTerminal = { hermesLive = false; fullTerminal = true; termFollow = true },
+                holdNote = reason,
+                blockedNote = blockedDraft,
             )
         }
     }
@@ -715,7 +731,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         HorizontalDivider(color = Palette.Line)
         ServerBanners(vm)
         // A held send's problem shows only in its own pane's chat, on its own server (2.1.2).
-        vm.sendNoticeFor(paneId)?.takeUnless { pane?.isProbe == true }?.let { ErrorBanner(it) { vm.dismissSendNotice(paneId) } }
+        sendNotice?.takeUnless { pane?.isProbe == true || (showChatDraft && vm.isPaneDraftHold(it)) }
+            ?.let { ErrorBanner(it) { vm.dismissSendNotice(paneId) } }
         // 2.1.5: cross-server cards from frames the agent rendered in this chat (2.2.0: kept to a
         // share of the window, so the message box below always fits).
         if (!live) CrossServerPanel(vm, paneId)
@@ -919,8 +936,6 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     modifier = Modifier.padding(horizontal = 4.dp),
                 )
             }
-            val idleQueue = vm.queued.filter { it.paneId == paneId && it.serverId == vm.current?.id }
-            val unsent = vm.removableSendsFor(paneId)
             if (idleQueue.isNotEmpty() || unsent.isNotEmpty()) {
                 Column(
                     Modifier.heightIn(max = 160.dp).verticalScroll(rememberScrollState()),
@@ -932,7 +947,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                             PendingMessageRow(
                                 title = if (q.inFlight()) "Sending now" else "Queued until idle",
                                 text = q.text,
-                                note = q.note,
+                                note = q.note?.takeUnless { showChatDraft && vm.isPaneDraftHold(it) },
                                 onRemove = { vm.cancelQueued(q) },
                                 sendLabel = "Send when ready",
                                 onSend = { vm.sendQueuedImmediately(q) },
@@ -954,7 +969,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                                     else -> "Delivery not confirmed"
                                 },
                                 text = p.text,
-                                note = p.held,
+                                note = p.held?.takeUnless { showChatDraft && vm.isPaneDraftHold(it) },
                                 onRemove = { vm.dismissPending(p.id) },
                                 sendLabel = when {
                                     p.waiting -> "Force send immediately"

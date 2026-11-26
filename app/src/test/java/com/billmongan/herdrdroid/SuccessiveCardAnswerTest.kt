@@ -1280,6 +1280,18 @@ class SuccessiveCardAnswerTest {
         assertTrue(vm.notice.orEmpty(), vm.notice.orEmpty().startsWith("Not sent: the draft changed"))
     }
 
+    @Test fun sendDraftRefusesAReplacementAtTheHostGuard() = fixture("hermes", hermesBox("❯ first draft")) {
+        status(Status.IDLE)
+        readSelectedPane()
+        val draft = checkNotNull(vm.paneDraft)
+        beforeDraftCheck = { frame = hermesBox("❯ replacement draft") }
+        vm.sendPaneDraft(draft)
+        waitForDraftAction()
+        assertNull(beforeDraftCheck)
+        assertTrue(sent.isEmpty())
+        assertTrue(vm.notice.orEmpty().startsWith("Not sent: the draft changed"))
+    }
+
     @Test fun noDraftNoCardAndNoExtraRead() = fixture("hermes", hermesBox("❯ ")) {
         status(Status.IDLE)
         readSelectedPane()
@@ -1777,6 +1789,7 @@ class SuccessiveCardAnswerTest {
         var cardChecksRefused = 0
         /** Runs as the check on the computer starts: what changed between the card's last read and the keys. */
         var beforeCheck: (() -> Unit)? = null
+        var beforeDraftCheck: (() -> Unit)? = null
         /** 2.2.7: the computer has no python3; how many answers each check took. */
         var pythonMissing = false
         var pythonChecks = 0
@@ -1785,6 +1798,7 @@ class SuccessiveCardAnswerTest {
         override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult {
             if (expectedConnection != null) assertSame(connection, expectedConnection)
             if ("hashlib.sha256(screen)" in command) {
+                beforeDraftCheck?.also { beforeDraftCheck = null }?.invoke()
                 val occupant = Regex("""'p1' '([0-9a-f]{64})' '-'""").find(command)!!.groupValues[1]
                 val digest = Regex("""'p1' '([0-9a-f]{64})' && echo""").find(command)!!.groupValues[1]
                 val now = com.billmongan.herdrdroid.herdr.cardOccupantDigest(org.json.JSONObject(pane))

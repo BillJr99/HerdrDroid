@@ -136,12 +136,12 @@ class PaneDraftTest {
         var reads = 0
         override suspend fun pane(id: String) = pane
         override suspend fun viewport(id: String): String { reads++; return screens[minOf(writes.size, screens.size - 1)] }
-        override suspend fun keys(id: String, keys: List<String>, permit: WritePermit) {
+        private fun recordKeys(keys: List<String>, permit: WritePermit) {
             permit.admit()
             writes += keys
         }
-        override suspend fun clearKeys(id: String, keys: List<String>, viewport: String, permit: WritePermit): Boolean {
-            keys(id, keys, permit)
+        override suspend fun checkedKeys(id: String, keys: List<String>, viewport: String, permit: WritePermit): Boolean {
+            recordKeys(keys, permit)
             return true
         }
         override suspend fun pause(ms: Long) {}
@@ -224,14 +224,14 @@ class PaneDraftTest {
             val lines = text.split("\n")
             return hermes(*(listOf("❯ " + lines.first()) + lines.drop(1)).toTypedArray())
         }
-        override suspend fun keys(id: String, keys: List<String>, permit: WritePermit) {
+        private fun recordKeys(keys: List<String>, permit: WritePermit) {
             permit.admit()
             writes += keys
             val n = keys.size - (if (writes.size == 1) drop else 0) + (if (writes.size == 1) extra else 0)
             text = text.dropLast(n.coerceAtMost(text.length))
         }
-        override suspend fun clearKeys(id: String, keys: List<String>, viewport: String, permit: WritePermit): Boolean {
-            keys(id, keys, permit)
+        override suspend fun checkedKeys(id: String, keys: List<String>, viewport: String, permit: WritePermit): Boolean {
+            recordKeys(keys, permit)
             return true
         }
         override suspend fun pause(ms: Long) {}
