@@ -1536,6 +1536,7 @@ data class Prompt(
     internal val kiroOnceShortcuts: Boolean = false,
 ) {
     internal val guardedShortcutApproval: Boolean get() = agyApproval || kiroOnceShortcuts
+    internal val historyReviewOnly: Boolean get() = topOffScreen || rebuiltTallDialog
 
     /**
      * 2.2.8 (Grok's review 4; Codex's review 4B): the exact rows the parser read the dialog from, from
@@ -1554,7 +1555,7 @@ data class Prompt(
      * screen region or, when the screen couldn't be read, a note saying so, with the generic keys.
      */
     fun forCard(): Prompt = when {
-        (topOffScreen || rebuiltTallDialog) && !terminalReview -> copy(
+        historyReviewOnly && !terminalReview -> copy(
             choices = emptyList(), selected = null, terminalReview = true,
             region = region ?: listOf(UNREAD_SCREEN),
         )
@@ -1594,8 +1595,8 @@ internal fun unreadQuestionCard(agent: String): Prompt = Prompt(
 
 /** Dispatch identity, unlike history deduplication, must not discard punctuation or command text. */
 internal fun cardAnswerStillFits(shown: Prompt, fresh: Prompt?): Boolean =
-    !shown.forCard().terminalReview && !shown.readingQuestion &&
-        fresh != null && !fresh.forCard().terminalReview && !fresh.readingQuestion &&
+    !shown.terminalReview && !shown.historyReviewOnly && !shown.readingQuestion &&
+        fresh != null && !fresh.terminalReview && !fresh.historyReviewOnly && !fresh.readingQuestion &&
         shown.forCard().region != listOf(UNREAD_SCREEN) &&
         shown.copy(selected = null).forCard() == fresh.copy(selected = null).forCard()
 
@@ -2836,7 +2837,7 @@ private val SHORTCUT_LABEL = Regex("""\(([a-z])\)\s*$""")
 
 /** The keys that pick [choice]: arrows from the highlighted option, then Enter; null to type it. */
 fun menuKeys(prompt: Prompt, choice: Choice): List<String>? {
-    if (prompt.terminalReview) return null
+    if (prompt.terminalReview || prompt.historyReviewOnly) return null
     if (prompt.agyApproval) return listOf("ctrl+k").takeIf { choice in prompt.choices && choice.keys == "ctrl+k" }
     if (prompt.kiroOnceShortcuts && choice in prompt.choices) when (choice.label) {
         "Allow once" -> return listOf("y")

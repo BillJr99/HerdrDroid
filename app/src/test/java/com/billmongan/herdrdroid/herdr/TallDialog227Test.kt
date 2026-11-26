@@ -59,18 +59,18 @@ class TallDialog227Test {
         assertEquals(listOf("1", "2"), p.choices.map { it.keys })
         // The visible screen's card is its bottom, so an answer checked against the live screen still fits.
         val live = checkNotNull(detectPrompt(scrolled, true, "claude"))
-        assertTrue(tallDialogFits(p, live))
+        assertTrue("rebuilt command should match its live suffix", tallDialogFits(p, live))
         // The answer path checks the whole dialog, rebuilt again; the visible tail alone is not enough.
         assertFalse(cardAnswerStillFits(p, live))
         assertFalse(cardAnswerStillFits(p, checkNotNull(detectPrompt(complete(200 to good).first, true, "claude"))))
-        assertTrue(p.forCard().terminalReview)
+        assertTrue("rebuilt command should be terminal-only", p.forCard().terminalReview)
         assertTrue(p.forCard().choices.isEmpty())
         assertTrue(live.forCard().terminalReview)
         assertTrue(live.forCard().choices.isEmpty())
         // And the confirmation finds the dialog's top (its top rule, more than 60 rows above the options).
         val read = questionRead(text, p, "claude", null, true)
-        assertTrue(read.topped)
-        assertTrue(read.complete)
+        assertTrue("read of rebuilt command should be proven", read.topped)
+        assertTrue("read of rebuilt command should be complete", read.complete)
     }
 
     @Test fun aScreenWhoseTopRowContinuesAWrappedLineIsRebuiltToo() {
@@ -131,10 +131,10 @@ class TallDialog227Test {
         val (text, asked) = complete(200 to tail(200), 600 to tail(600), 2000 to long)
         assertEquals(listOf(200, 600, 2000), asked)
         val parsed = checkNotNull(detectPrompt(text, true, "claude"))
-        assertFalse(parsed.topOffScreen)
-        assertTrue(parsed.shownParts().command.orEmpty().contains("# long command row 1"))
-        assertTrue(parsed.shownParts().command.orEmpty().contains("# long command row 700"))
-        assertTrue(parsed.forCard().terminalReview)
+        assertFalse("third read recovered the header", parsed.topOffScreen)
+        assertTrue("command includes its beginning", parsed.shownParts().command.orEmpty().contains("# long command row 1"))
+        assertTrue("command includes its end", parsed.shownParts().command.orEmpty().contains("# long command row 700"))
+        assertTrue("third read is terminal-only", parsed.forCard().terminalReview)
     }
 
     @Test fun aClippedEditRecoversItsPathAndWholeDiffForReview() = runBlocking {

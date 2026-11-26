@@ -5416,7 +5416,7 @@ class AppViewModel internal constructor(
                 }
                 val v = gate.decide("questions", com.billmongan.herdrdroid.herdr.questionRead(plain, parsed, agent, version, blocked))
                 if (v.shows == com.billmongan.herdrdroid.herdr.CardShows.CARD) {
-                    return com.billmongan.herdrdroid.questions.QuestionRead(parsed, target.takeUnless { parsed.topOffScreen || parsed.rebuiltTallDialog })
+                    return com.billmongan.herdrdroid.questions.QuestionRead(parsed, target.takeUnless { parsed.historyReviewOnly })
                 }
             }
             reviewPreview?.let { com.billmongan.herdrdroid.questions.QuestionRead(it, null) }
@@ -5515,7 +5515,7 @@ class AppViewModel internal constructor(
         /** Whether the fresh card is still the one shown; the dialog's own rule for Oh My Pi's Submit steps. */
         fits: (Prompt, Prompt) -> Boolean = ::cardAnswerStillFits,
     ): Pair<Prompt, com.billmongan.herdrdroid.herdr.CardGuard?>? {
-        if (shown.forCard().terminalReview || !isCurrent(h) ||
+        if (shown.terminalReview || shown.historyReviewOnly || !isCurrent(h) ||
             shown.guardedShortcutApproval && (h.backend != Backend.TUI || !hasStableOccupant(pane))) return null
         val guardedChoice = shown.guardedShortcutApproval || shown.hermesClarify || shown.openCodeQuestionFrame != null
         if (guardedChoice && (!foreground || h.backend != Backend.TUI || pane.scrollOffset != 0 ||
@@ -5536,7 +5536,7 @@ class AppViewModel internal constructor(
         // Scrollback may explain a command, but only the live, complete card can authorize input.
         val guard = occupant?.let { com.billmongan.herdrdroid.herdr.CardGuard(it,
             com.billmongan.herdrdroid.herdr.cardGuardScreen(raw, live, currentPane.agent)) }
-        return live?.takeIf { !it.forCard().terminalReview && fits(shown, it) }?.let { it to guard }
+        return live?.takeIf { !it.terminalReview && !it.historyReviewOnly && fits(shown, it) }?.let { it to guard }
     }
 
     internal fun answerCardKey(target: CardTarget?, prompt: Prompt, key: String, label: String,
@@ -6470,7 +6470,7 @@ class AppViewModel internal constructor(
                     if (!isActive || probePane(serverId, p.id)) return@launch
                     // A screen that couldn't be read: one plain notice, no question and no Reply (1.4.2, from review).
                     if (text.isBlank()) { Notify.unread(app, serverId, serverLabel, p.id, p.agentName); return@launch }
-                    val prompt = detectPrompt(text, blocked = true, agent = p.agent)?.forCard()
+                    val prompt = detectPrompt(text, blocked = true, agent = p.agent)?.let { if (it.historyReviewOnly) it.forCard() else it }
                     // An agent's error, not a question (1.4.2): its own alert, once per change of state.
                     // 2.2.0: OpenCode's failed turn too, read whole; one already acknowledged raises nothing.
                     val notice = if (prompt == null) com.billmongan.herdrdroid.herdr.agentErrorNotice(text, p.agent, p.agentName) else null
