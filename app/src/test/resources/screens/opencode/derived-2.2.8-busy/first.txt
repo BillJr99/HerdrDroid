@@ -1,0 +1,7 @@
+                                                                                                  use other models, including
+  ┃                                                                                               Claude, GPT, Gemini etc
+  ┃
+  ┃                                                                                               Connect provider        /connect
+  ┃  Build · Probe Probe
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   ■■■■■■⬝⬝ esc interrupt                                shift+tab agents  ctrl+p commands    …/sample/project
