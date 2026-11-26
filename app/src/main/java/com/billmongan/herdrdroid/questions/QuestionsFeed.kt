@@ -56,12 +56,10 @@ class QuestionsFeed(
     fun show() {
         visible = true
         if (job?.isActive != true) job = scope.launch {
-            // A previous visit may still be winding down a cancelled read. Wait for it
-            // before the first refresh instead of leaving that refresh with the old visit.
-            round.lock()
-            round.unlock()
+            // A previous visit can still be unwinding a cancelled read. This loop must
+            // keep its own refresh rather than leave it with that cancelled visit.
             while (isActive && visible) {
-                refreshNow()
+                refreshRound(waitForRound = true)
                 val wait = if (entries.any { it.state == EntryState.ANSWERED }) QuestionsAggregator.ANSWERED_SHOW_MS else POLL_MS
                 withTimeoutOrNull(wait) { wake.receive() }
             }
@@ -108,8 +106,11 @@ class QuestionsFeed(
      * A round now, or (when one is running) once more right after it. Repeated asks while a round
      * runs add at most one more round, and its reads are only of panes due by then.
      */
-    suspend fun refreshNow() {
-        if (!round.tryLock()) { again = true; return }
+    suspend fun refreshNow() = refreshRound(waitForRound = false)
+
+    private suspend fun refreshRound(waitForRound: Boolean) {
+        if (waitForRound) round.lock()
+        else if (!round.tryLock()) { again = true; return }
         try {
             do { again = false; oneRound() } while (again)
         } finally {

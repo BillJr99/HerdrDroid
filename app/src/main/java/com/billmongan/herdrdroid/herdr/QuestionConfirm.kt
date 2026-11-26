@@ -56,7 +56,8 @@ internal fun needsConfirmation(p: Prompt): Boolean =
 /**
  * Parsers that prove their own frame before they return options: Hermes's clarify (its "ask N
  * questions" head and exact footer), OpenCode's native question and permission (an exact frame and a
- * styled live read), Oh My Pi’s boxed Ask, Muse's quota dialog (a styled read) and Grok's privacy dialog (its settings box).
+ * styled live read), Oh My Pi's boxed Ask, Muse's quota dialog (a styled read) and Grok's privacy
+ * dialog (its settings box).
  */
 private fun selfFramed(p: Prompt): Boolean =
     p.ompAsk != null || p.guardedShortcutApproval || p.hermesClarify || p.openCodeQuestionFrame != null || p.openCodePermission || p.numberKeys || p.museQuota || p == GROK_PRIVACY_PROMPT
