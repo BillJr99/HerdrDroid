@@ -18,16 +18,34 @@ internal object CrossServerNotice {
 
     /** The notice for one agent, or null when no agent on another server is reachable. */
     fun text(others: List<String>): String? {
-        val names = others.map { it.trim() }.filter { it.isNotEmpty() }.distinct().sorted()
-        if (names.isEmpty()) return null
-        return """HerdrDroid notice, for information only. No reply is needed; if you must answer, reply only "ok".
+        val names = others.asSequence().filter { name ->
+            name.codePoints().noneMatch { cp ->
+                Character.isISOControl(cp) || when (Character.getType(cp)) {
+                    Character.FORMAT.toInt(), Character.LINE_SEPARATOR.toInt(), Character.PARAGRAPH_SEPARATOR.toInt() -> true
+                    else -> false
+                }
+            }
+        }.map(String::trim).filter { it.length in 1..120 }.distinct().sorted()
+        val prefix = """HerdrDroid notice, for information only. No reply is needed; if you must answer, reply only "ok".
 When the user asks you in chat to send a message to an agent on another server, do not send it yourself. Render only this frame in a plain fenced code block, then wait:
 HDMSG2 <code>
 HDTO <destination>
 HD> <standard padded Base64 of your UTF-8 message, chunks of at most 40 characters, each with its own HD> prefix>
 HDEND <code>
 <code> is a new code you pick for each frame: 6 characters from ${CrossServerCode.ALPHABET}. <destination> is one name from the list below, exactly as written. The message must be nonblank, at most 1024 UTF-8 bytes, with no controls except line feeds and no secrets. Do not run a remote command.
-Agents on other servers: ${names.joinToString(", ")}. The phone shows your message to the user with a Yes/No question, and it is delivered only if the user taps Yes on the phone; you will not see that answer."""
+Agents on other servers: """
+        val suffix = ". The phone shows your message to the user with a Yes/No question, and it is delivered only if the user taps Yes on the phone; you will not see that answer."
+        val budget = MAX_CHARS - prefix.length - suffix.length
+        val chosen = mutableListOf<String>()
+        var used = 0
+        for (name in names) {
+            val extra = name.length + if (chosen.isEmpty()) 0 else 2
+            if (used + extra > budget) continue
+            chosen += name
+            used += extra
+        }
+        if (chosen.isEmpty()) return null
+        return prefix + chosen.joinToString(", ") + suffix
     }
 
     /** Whether the known usage of an agent is at or above [threshold] percent. 100 never skips; unknown never skips. */
