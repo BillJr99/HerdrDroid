@@ -2493,6 +2493,7 @@ class AppViewModel internal constructor(
             // A nonempty recent capture can omit the entire dialog or just its choices
             // while status still says Working. Probe only the selected, live-bottom viewport.
             val missingCodexCard = agent == "codex" && paneStatus == Status.WORKING && preview?.choices.isNullOrEmpty()
+            val recentClaudeModel = preview?.claudeModelControl == true
             val recentCodexQuestion = preview?.codexQuestion == true && client?.backend == Backend.TUI
             val requireCodexApprovalIdentity = (missingCodexCard && preview?.terminalReview != true) || recentCodexQuestion
             val unfinishedChoicePreview = agent in setOf("claude", "agy") &&
@@ -2509,7 +2510,7 @@ class AppViewModel internal constructor(
             if (unprovenPreview) com.billmongan.herdrdroid.diag.DiagLog.log("prompt",
                 "$paneId: the recent read's dialog isn't proven (${preview!!.choices.size} choice(s)); reading the live screen")
             val liveCard = if (liveUsage == null &&
-                (verifyOpenCode || verifyHermesUsage || verifyPi || missingCodexCard || unfinishedChoicePreview || unprovenPreview ||
+                (verifyOpenCode || verifyHermesUsage || verifyPi || recentClaudeModel || missingCodexCard || unfinishedChoicePreview || unprovenPreview ||
                     preview?.terminalReview == true || preview?.topOffScreen == true || (blocked && preview?.choices.isNullOrEmpty())) && canUpgrade()) {
                 val owner = checkNotNull(cardOwner)
                 quietly { h ->
@@ -2543,7 +2544,7 @@ class AppViewModel internal constructor(
                 if (liveReport || continued && ready) HermesUsageRead(owner, ready) else null
             }
             val recentClarify = preview?.hermesClarify == true
-            val requiresLive = verifyOpenCode || recentClarify || recentCodexQuestion || verifyPi
+            val requiresLive = verifyOpenCode || recentClaudeModel || recentClarify || recentCodexQuestion || verifyPi
             val codexQuestionCleared = recentCodexQuestion && liveCandidate == null
             // 2.2.8 (Codex's review 1): once the live screen was read for an unproven recent dialog, that read is
             // the card, a closed dialog included: the stale recent dialog never goes on to be confirmed.
@@ -2552,7 +2553,7 @@ class AppViewModel internal constructor(
                 "$paneId: the live screen shows no dialog; the recent read's is not used")
             val recentClippedClaudeAsk = agent.equals("claude", true) && preview?.terminalReview == true &&
                 com.billmongan.herdrdroid.herdr.claudeClippedAskReview(recent) != null
-            val useLive = liveCard != null && (livePrompt != null || recentClippedClaudeAsk || preview?.topOffScreen == true || unprovenAnswered || verifyPi && preview != null || liveReport || recentReport || verifiedUsage != null || recentClarify || codexQuestionCleared || verifyOpenCode &&
+            val useLive = liveCard != null && (livePrompt != null || recentClaudeModel || recentClippedClaudeAsk || preview?.topOffScreen == true || unprovenAnswered || verifyPi && preview != null || liveReport || recentReport || verifiedUsage != null || recentClarify || codexQuestionCleared || verifyOpenCode &&
                 (blocked || preview != null || openCodeBackgroundDrawer(agent, recent) || openCodeBackgroundDrawer(agent, liveCard)))
             val shownText = if (useLive) checkNotNull(liveCard) else recent
             // 2.2.7: a Claude dialog taller than the screen is completed from the pane's history when that proves it (herdr/TallDialog.kt).

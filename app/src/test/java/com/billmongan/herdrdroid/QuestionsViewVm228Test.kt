@@ -71,6 +71,25 @@ class QuestionsViewVm228Test {
         assertEquals(1, cardChecks)
     }
 
+    @Test fun claudeModelChoiceSendsTheGuardedSessionOnlyKeys() = fixture("claude", claudePicker()) {
+        val e = readEntry()
+        answer(e, choiceIndex = 3)
+        assertEquals(listOf("down s"), sent)
+        assertEquals(1, cardChecks)
+    }
+
+    @Test fun aChangedClaudeModelPickerAtTheHostSendsNothing() = fixture("claude", claudePicker()) {
+        val e = readEntry()
+        beforeCheck = { frame = frame.replace("Sonnet 5.5", "Sonnet 5.6") }
+        answer(e, choiceIndex = 3)
+        assertTrue(sent.isEmpty())
+        assertEquals(1, cardChecksRefused)
+    }
+
+    private fun claudePicker(): String = checkNotNull(javaClass.getResource(
+        "/screens/claude/captured-2.1.332-model-picker/screen.ansi"
+    )).readText()
+
     @Test fun anEntryNeedsTheQuestionsViewOpen() = fixture {
         vm.screen = Screen.Home
         shadowOf(Looper.getMainLooper()).idle()
