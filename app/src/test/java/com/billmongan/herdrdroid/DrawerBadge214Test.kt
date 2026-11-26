@@ -14,6 +14,7 @@ import com.billmongan.herdrdroid.ssh.ExecResult
 import com.billmongan.herdrdroid.ssh.HerdrSsh
 import com.billmongan.herdrdroid.store.Server
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -70,6 +71,26 @@ class DrawerBadge214Test {
         assertTrue(vm.sessions().isEmpty())
     }
 
+    @Test fun theDrawerModelUpdatesFromTheNextOrdinaryChatPoll() {
+        val fake = Fake("codex")
+        install(fake)
+        vm.drawerOpen = true
+        shadowOf(Looper.getMainLooper()).idle()
+        vm.screen = Screen.Agent("c1")
+
+        fun read(footer: String) {
+            fake.screen = "❯ \n$footer"
+            vm.viewModelScope.launch { vm.readPane("c1") }
+            shadowOf(Looper.getMainLooper()).idle()
+        }
+
+        read("GPT-6.1-Sol default · ~/fixture")
+        val row = vm.sessions().single { it.pane.id == "c1" }
+        assertEquals("GPT-6.1-Sol · default", vm.modelFor(row.server.id, row.pane.id))
+        read("GPT-6.2-Sol default · ~/fixture")
+        assertEquals("GPT-6.2-Sol · default", vm.modelFor(row.server.id, row.pane.id))
+    }
+
     private fun badge(): Status = vm.sessions().single { it.pane.id == "c1" }.status
 
     private fun install(fake: Fake) {
@@ -83,7 +104,7 @@ class DrawerBadge214Test {
     @Suppress("UNCHECKED_CAST")
     private fun state(name: String, value: Any?) { (field("$name\$delegate").get(vm) as MutableState<Any?>).value = value }
 
-    private class Fake : Herdr.Commands {
+    private class Fake(private val agent: String = "claude") : Herdr.Commands {
         val ssh = HerdrSsh("127.0.0.1", 2, "fake", Credentials(null, null), null, { null })
         val client = Herdr(ssh, "/fixture/herdr", Backend.TUI, null, this)
         override var connection: Any? = Any()
@@ -93,15 +114,17 @@ class DrawerBadge214Test {
         override suspend fun bulk(command: String): ExecResult = when {
             "'pane' 'list'" in command -> {
                 lists++
-                ExecResult(0, """{"result":{"panes":[{"pane_id":"c1","workspace_id":"w1","tab_id":"t1","agent":"claude","agent_status":"working","cwd":"/fixture","terminal_id":"term1","scroll":{"offset_from_bottom":0}}]}}
+                ExecResult(0, """{"result":{"panes":[{"pane_id":"c1","workspace_id":"w1","tab_id":"t1","agent":"$agent","agent_status":"working","cwd":"/fixture","terminal_id":"term1","scroll":{"offset_from_bottom":0}}]}}
 @@herdrdroid-tabs@@
 {"result":{"tabs":[{"tab_id":"t1","label":"claude"}]}}""", "")
             }
+            "@@herdrdroid@@" !in command && "'pane' 'read' 'c1'" in command -> ExecResult(0, screen, "")
             "@@herdrdroid@@" in command -> ExecResult(0, "@@herdrdroid@@c1\n$screen", "")
             else -> ExecResult(1, "", "not in the fake")
         }
 
         override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult =
-            ExecResult(1, "", "not in the fake")
+            if ("'pane' 'read' 'c1'" in command) ExecResult(0, screen, "")
+            else ExecResult(1, "", "not in the fake")
     }
 }
