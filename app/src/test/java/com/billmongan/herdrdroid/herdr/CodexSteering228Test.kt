@@ -30,6 +30,8 @@ class CodexSteering228Test {
         assertFalse("typed text with the empty composer's footer",
             codexSteeringReady(empty.replace("Ask Codex to do anything", "Another draft")))
         assertFalse("placeholder words without the native style", codexSteeringReady(stripAnsi(empty)))
+        assertFalse("a blank-looking row may contain user spaces",
+            codexSteeringReady(empty.replace("Ask Codex to do anything", "     ")))
     }
 
     @Test fun theSingleEnterCaptureShowsBothFramesOfTheWorkingSpinner() {
