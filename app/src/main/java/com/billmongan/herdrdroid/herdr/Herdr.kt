@@ -1738,7 +1738,7 @@ private fun claudeDescriptionAbove(t: String, next: QLine?): Boolean {
     if (next == null || t.isEmpty() || !t.first().isUpperCase() || !t.contains(' ')) return false
     if (SHELL_SIGN.containsMatchIn(t)) return false
     val n = next.text.trim()
-    return n.isNotEmpty() && (SHELL_SIGN.containsMatchIn(n) || n.first().isLowerCase())
+    return n.isNotEmpty() && (next.row || SHELL_SIGN.containsMatchIn(n) || n.first().isLowerCase())
 }
 
 /** Claude Code 2.1.329+'s dashed rules around a permission dialog's command, at the screen's left edge. */
