@@ -15,6 +15,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.net.Inet4Address
 import java.net.InetAddress
@@ -57,7 +58,9 @@ fun sshVersion(banner: String?): String? {
 
 object LanScan {
     /** The phone's IPv4 address and prefix on Wi-Fi (or Ethernet); null on cellular or offline. */
-    fun localNetwork(context: Context): Pair<String, Int>? {
+    fun localNetwork(context: Context): Pair<String, Int>? = readLanNetwork { activeLanNetwork(context) }
+
+    private fun activeLanNetwork(context: Context): Pair<String, Int>? {
         val cm = context.getSystemService(ConnectivityManager::class.java) ?: return null
         val net = cm.activeNetwork ?: return null
         val caps = cm.getNetworkCapabilities(net) ?: return null
@@ -140,6 +143,12 @@ internal suspend fun collectLanDiscovery(start: () -> Unit, waitForResults: susp
 }
 
 
+private fun readLanNetwork(network: () -> Pair<String, Int>?): Pair<String, Int>? = try {
+    network()
+} catch (_: SecurityException) {
+    null
+}
+
 internal suspend fun scanLan(
     network: () -> Pair<String, Int>?,
     discover: suspend () -> Map<String, String>,
@@ -148,11 +157,7 @@ internal suspend fun scanLan(
     onProgress: (Int, Int) -> Unit,
     onFound: (LanHost) -> Unit,
 ) {
-    val (ip, prefix) = try {
-        network()
-    } catch (_: SecurityException) {
-        null
-    } ?: return
+    val (ip, prefix) = readLanNetwork(network) ?: return
     val names = try {
         discover().toMap()
     } catch (e: CancellationException) {
@@ -166,9 +171,9 @@ internal suspend fun scanLan(
     val gate = Semaphore(48)
     coroutineScope {
         hosts.map { host ->
-            async(Dispatchers.IO) {
+            async {
                 gate.withPermit {
-                    val banner = probe(host)
+                    val banner = withContext(Dispatchers.IO) { probe(host) }
                     synchronized(progressLock) {
                         ensureActive()
                         onProgress(++done, hosts.size)
