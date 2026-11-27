@@ -284,8 +284,14 @@ class Herdr internal constructor(
         kotlinx.coroutines.withContext(com.billmongan.herdrdroid.diag.ReadLabel("list-read")) {
             val connection = connectionIdentity
             val snapshot = panesRead()
-            if (quotaCommand == null) snapshot
-            else snapshot.copy(panes = paneQuotaSource.decorate(snapshot.panes, quotaCommand, connection))
+            if (quotaCommand == null || !snapshot.complete) snapshot else {
+                val panes = paneQuotaSource.decorate(snapshot.panes, quotaCommand, connection) {
+                    kotlinx.coroutines.withTimeoutOrNull(QUOTA_TIMEOUT_SECONDS * 1_000) {
+                        panesRead().takeIf { it.complete }?.panes
+                    }.orEmpty()
+                }
+                snapshot.copy(panes = panes)
+            }
         }
 
     private suspend fun panesRead(): PaneSnapshot {

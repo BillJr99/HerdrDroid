@@ -54,7 +54,12 @@ internal class PaneQuotaSource(
     private val lock = Mutex()
     private var cached: Sample? = null
 
-    suspend fun decorate(panes: List<Pane>, command: String?, connection: Any?): List<Pane> = lock.withLock {
+    suspend fun decorate(
+        panes: List<Pane>,
+        command: String?,
+        connection: Any?,
+        verifyPanes: suspend () -> List<Pane>,
+    ): List<Pane> = lock.withLock {
         val configured = command?.takeIf { it.isNotBlank() && it.length <= QUOTA_COMMAND_LIMIT && it.none(Char::isISOControl) }
         if (configured == null || connection == null || currentConnection() !== connection) {
             cached = null
@@ -65,24 +70,29 @@ internal class PaneQuotaSource(
         val sample = if (previous != null && previous.connection === connection &&
             previous.command == configured && now - previous.at < POLL_INTERVAL_NANOS
         ) previous else {
-            val readings = try {
+            val provenReadings = try {
                 val (exit, bytes) = read(configured, connection)
-                if (exit == 0 && bytes.size <= QUOTA_OUTPUT_LIMIT) parsePaneQuotas(bytes.toString(Charsets.UTF_8), wallTime())
-                else emptyMap()
+                val readings = if (exit == 0 && bytes.size <= QUOTA_OUTPUT_LIMIT)
+                    parsePaneQuotas(bytes.toString(Charsets.UTF_8), wallTime()) else emptyMap()
+                if (readings.isEmpty() || currentConnection() !== connection) emptyMap()
+                else {
+                    val verified = verifyPanes().filterNot(Pane::isProbe).groupBy(Pane::id)
+                    panes.filterNot(Pane::isProbe).mapNotNull { pane ->
+                        val live = verified[pane.id]?.singleOrNull()
+                        if (live == null || !hasStableOccupant(pane) || !sameOccupant(pane, live)) null
+                        else readings[pane.id]?.let { Occupant.of(pane) to it }
+                    }.toMap()
+                }
             } catch (c: CancellationException) {
                 throw c
             } catch (_: Exception) {
                 emptyMap()
             }
-            Sample(connection, configured, now, panes.filterNot(Pane::isProbe).mapNotNull { pane ->
-                readings[pane.id]?.let { Occupant.of(pane) to it }
-            }.toMap()).also { cached = it }
+            Sample(connection, configured, now, provenReadings).also { cached = it }
         }
         if (currentConnection() !== connection) return@withLock panes
         panes.map { pane ->
-            // When the host cannot identify the occupant, do not carry a sample to a later list.
-            val occupant = Occupant.of(pane)
-            val quota = sample.readings[occupant]?.takeIf { !pane.isProbe && (sample !== previous || occupant.stable) }
+            val quota = sample.readings[Occupant.of(pane)]?.takeUnless { pane.isProbe }
             if (quota == null) pane else pane.copy(quotaReading = quota)
         }
     }

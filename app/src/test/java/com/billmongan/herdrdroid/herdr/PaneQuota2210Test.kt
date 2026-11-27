@@ -33,9 +33,9 @@ class PaneQuota2210Test {
             connection = Any()
             0 to valid.toByteArray()
         }, wallTime = { now })
-        assertNull(source.decorate(listOf(pane), null, connection).single().quotaReading)
+        assertNull(source.decorate(listOf(pane), null, connection) { error("disabled source") }.single().quotaReading)
         assertEquals(0, calls)
-        assertNull(source.decorate(listOf(pane), "quota-source", connection).single().quotaReading)
+        assertNull(source.decorate(listOf(pane), "quota-source", connection) { error("connection changed") }.single().quotaReading)
         assertEquals(1, calls)
     }
 
@@ -46,7 +46,7 @@ class PaneQuota2210Test {
         var result = 0 to valid.toByteArray()
         val source = PaneQuotaSource({ connection }, { _, _ -> calls++; result }, { nano }, { now })
         suspend fun shown(p: Pane = pane, command: String = "quota-source") =
-            source.decorate(listOf(p), command, connection).single().quotaReading?.usedPercent
+            source.decorate(listOf(p), command, connection) { listOf(p) }.single().quotaReading?.usedPercent
 
         assertEquals(12.5, shown())
         assertEquals(12.5, shown())
@@ -64,6 +64,22 @@ class PaneQuota2210Test {
         result = 0 to ByteArray(QUOTA_OUTPUT_LIMIT + 1)
         assertNull(shown(command = "different-quota-source"))
         assertEquals(3, calls)
+    }
+
+    @Test fun quotaFromAReplacementPaneCannotLandOnThePreviousOccupant() = runBlocking {
+        val connection = Any()
+        val replacement = pane.copy(terminalId = "term2")
+        var polls = 0
+        val source = PaneQuotaSource({ connection }, { _, _ -> 0 to valid.toByteArray() }, wallTime = { now })
+        val old = source.decorate(listOf(pane), "quota-source", connection) {
+            polls++
+            listOf(replacement)
+        }
+        assertNull(old.single().quotaReading)
+        assertEquals(1, polls)
+        assertNull(source.decorate(listOf(replacement), "quota-source", connection) {
+            error("no verification needed for reused sample")
+        }.single().quotaReading)
     }
 
     @Test fun serverConfigurationIsOptionalAndRoundTrips() {
