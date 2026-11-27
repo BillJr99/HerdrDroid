@@ -1,5 +1,10 @@
 package com.billmongan.herdrdroid
 
+import com.billmongan.herdrdroid.board.BoardProtocol
+import com.billmongan.herdrdroid.board.BoardStore
+import com.billmongan.herdrdroid.herdr.PromptRelay
+import com.billmongan.herdrdroid.transcript.TextItem
+
 import com.billmongan.herdrdroid.transcript.CachedChat
 import com.billmongan.herdrdroid.transcript.withRead
 import android.app.Application
@@ -124,6 +129,7 @@ sealed interface Screen {
     data class History(val paneId: String, val session: PastSession? = null) : Screen
     /** 2.2.8: every open question on the servers the app can see, with its answers ([com.billmongan.herdrdroid.ui.QuestionsScreen]). */
     data object Questions : Screen
+    data object Board : Screen
 }
 
 /** Whether the open pane's conversation comes from the agent's own log (ON) or its screen (OFF). */
@@ -4804,6 +4810,139 @@ class AppViewModel internal constructor(
         com.billmongan.herdrdroid.herdr.PromptRelay(paneDispatch, ::relayPort, writeGate, laneClear = ::promptLaneClear) { serverId, paneId ->
             promptLaneClear(serverId, paneId) && fleetStates[serverId]?.panes?.singleOrNull { it.id == paneId }
                 ?.let(::idleForRelay) == true
+        }
+    }
+
+    internal val boardStore by lazy { BoardStore(getApplication<Application>()) }
+    private var boardBack: Screen = Screen.Home
+    private val boardExchangeLocks = mutableMapOf<String, Mutex>()
+
+    internal fun openBoard() {
+        if (screen != Screen.Board) boardBack = screen
+        drawerOpen = false
+        screen = Screen.Board
+    }
+
+    internal fun leaveBoard() { screen = boardBack }
+
+    private fun boardPanes(serverId: String): List<Pane> =
+        if (serverId == current?.id) panes else fleetStates[serverId]?.panes ?: serverPanes[serverId].orEmpty()
+
+    internal fun boardAgentChoices(serverId: String): List<Pane> = boardPanes(serverId).filter {
+        hasStableOccupant(it) && com.billmongan.herdrdroid.herdr.ruleAgent(it.agent) in readers
+    }
+
+    internal fun boardPaneKey(pane: Pane): String =
+        org.json.JSONArray(listOf(pane.id, pane.agent, pane.terminalId ?: pane.sessionId)).toString()
+
+    private fun boardClient(server: String): Herdr? {
+        if (locked || !foreground) return null
+        if (server == current?.id) return herdr?.takeIf { link == Link.CONNECTED && it.backend != Backend.CORE }
+        val saved = servers.firstOrNull { it.id == server } ?: return null
+        val watched = fleetStates[server] ?: return null
+        if (watched.error != null || watched.server != saved) return null
+        return clientFor(server)?.takeIf { it.backend != Backend.CORE }
+    }
+
+    private fun boardLaneClear(server: String, pane: String): Boolean =
+        promptLaneClear(server, pane) && composerDrafts[draftKey(server, pane)].isNullOrEmpty() &&
+            draftsInFlight[draftKey(server, pane)].isNullOrEmpty()
+
+    private val boardRelay by lazy {
+        PromptRelay(paneDispatch, { server -> boardClient(server)?.relayPort(transcriptScript) }, writeGate,
+            clearToSend = ::boardLaneClear)
+    }
+
+    internal fun refreshBoards(ids: List<String>) {
+        val now = System.currentTimeMillis()
+        ids.filter { id -> servers.any { it.id == id && it.boardAgentPane != null } }
+            .forEach { boardStore.queueExport(it, now) }
+    }
+
+    /** The visible Board owns this loop. An idle board does not read a transcript or send a prompt. */
+    internal suspend fun serviceBoard(server: String) {
+        val lock = boardExchangeLocks.getOrPut(server) { Mutex() }
+        lock.withLock { serviceBoardLocked(server) }
+    }
+
+    private suspend fun serviceBoardLocked(server: String) {
+        if (screen != Screen.Board || locked || !foreground) return
+        val selected = servers.firstOrNull { it.id == server }?.boardAgentPane ?: return
+        val state = boardStore.state.value.servers[server]
+        if (state?.noAnswer == true) return
+        if (state?.request == null) boardStore.queueApply(server)
+        val pending = boardStore.state.value.servers[server] ?: return
+        val request = pending.request ?: return
+        val now = System.currentTimeMillis()
+        val sentAt = pending.requestSentAt
+        val pane = boardAgentChoices(server).singleOrNull { boardPaneKey(it) == selected }
+        fun enabled(): Boolean = screen == Screen.Board && foreground && !locked &&
+            servers.firstOrNull { it.id == server }?.boardAgentPane == selected &&
+            boardStore.state.value.servers[server]?.request?.id == request.id
+        if (sentAt != null && now - sentAt >= BoardProtocol.NO_ANSWER_MS) {
+            boardStore.markNoAnswer(server, request.id)
+            return
+        }
+        if (pane == null) return
+        val target = boardRelay.bind(server, pane) ?: return
+        if (!enabled()) return
+        if (sentAt != null) {
+            if (target.pane.status !in setOf(Status.IDLE, Status.DONE)) return
+            val reply = readBoardReply(target, request)
+            if (enabled() && boardRelay.isCurrent(target) && reply != null) boardStore.receive(server, reply)
+            return
+        }
+        if (!boardStore.canSend(server, now)) return
+        val message = BoardProtocol.message(request)
+        if (com.billmongan.herdrdroid.herdr.LongText.plan(message) !is com.billmongan.herdrdroid.herdr.LongText.Plan.Single) {
+            boardStore.markNoAnswer(server, request.id, "The queued changes are too large for one board request.")
+            return
+        }
+        val permit = WritePermit { enabled() && boardLaneClear(server, pane.id) && boardRelay.isCurrent(target) }
+        if (!boardStore.markSent(server, request.id, now)) return
+        try {
+            val result = boardRelay.send(target, message, authorizedWrite = permit, boardRequest = true) { enabled() }
+            if (result == RelayResult.REFUSED || result == RelayResult.DRAFT) boardStore.markQueued(server, request.id)
+        } catch (c: CancellationException) {
+            if (!permit.submitted) boardStore.markQueued(server, request.id)
+            throw c
+        }
+    }
+
+    private suspend fun readBoardReply(target: PromptRelay.Target, request: com.billmongan.herdrdroid.board.BoardRequest):
+        com.billmongan.herdrdroid.board.BoardReply? {
+        return try {
+            var cursor = ""
+            var assistant = StringBuilder()
+            suspend fun current() = boardRelay.isCurrent(target) &&
+                target.port.pane(target.pane.id, target.connection)?.let { sameOccupant(it, target.pane) } == true
+            if (!current()) return null
+            repeat(6) {
+                val read = target.port.noticeHistory(target.pane, cursor, target.connection) ?: return null
+                if (!read.ok || read.live?.herdrStale == true || !current()) return null
+                if (read.reset) assistant = StringBuilder()
+                for (record in read.items) {
+                    when (val item = Transcript.toItem(record)) {
+                        is com.billmongan.herdrdroid.transcript.UserItem -> {
+                            BoardProtocol.parseReply(assistant.toString(), request)?.let { return it }
+                            assistant = StringBuilder()
+                        }
+                        is TextItem -> {
+                            assistant.appendLine(item.text)
+                            if (assistant.length > 512 * 1024) assistant.delete(0, assistant.length - 512 * 1024)
+                        }
+                        else -> Unit
+                    }
+                }
+                if (!read.more) return BoardProtocol.parseReply(assistant.toString(), request)
+                if (read.cursor == cursor) return null
+                cursor = read.cursor
+            }
+            null
+        } catch (c: CancellationException) {
+            throw c
+        } catch (_: Exception) {
+            null
         }
     }
 

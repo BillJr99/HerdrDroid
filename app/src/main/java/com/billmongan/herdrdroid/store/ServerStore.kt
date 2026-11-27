@@ -59,6 +59,7 @@ data class Server(
     /** The MSS for [smallPackets], kept within [com.billmongan.herdrdroid.ssh.SmallPackets.MIN]..MAX. */
     val mss: Int = com.billmongan.herdrdroid.ssh.SmallPackets.DEFAULT,
     val paneQuotaCommand: String? = null,
+    val boardAgentPane: String? = null,
 ) {
     val overWebSocket: Boolean get() = !wsUrl.isNullOrBlank()
     /** The MSS a connection to this server asks for, or null: off, or a WebSocket server (where it can't apply). */
@@ -84,6 +85,7 @@ data class Server(
         .put("smallPackets", smallPackets)
         .put("mss", mss)
         .put("paneQuotaCommand", paneQuotaCommand ?: JSONObject.NULL)
+        .put("boardAgentPane", boardAgentPane ?: JSONObject.NULL)
 
     companion object {
         private fun JSONObject.str(k: String) = optString(k).takeIf { !isNull(k) && it.isNotBlank() }
@@ -106,6 +108,7 @@ data class Server(
             wsUrl = o.str("wsUrl"),
             backend = o.str("backend"),
             smallPackets = o.optBoolean("smallPackets", false),
+            boardAgentPane = o.str("boardAgentPane"),
             paneQuotaCommand = (o.opt("paneQuotaCommand") as? String)?.takeUnless(String::isBlank),
             mss = com.billmongan.herdrdroid.ssh.SmallPackets.clamp(o.optInt("mss", com.billmongan.herdrdroid.ssh.SmallPackets.DEFAULT)),
         )

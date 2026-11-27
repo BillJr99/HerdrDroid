@@ -421,6 +421,12 @@ class Herdr internal constructor(
         // The permit is checked by the SSH transport after it has the connection (2.0.1 finding 4).
         override suspend fun send(pane: Pane, text: String, connection: Any, permit: WritePermit) =
             sendPermitted(pane, text, connection, permit)
+        override suspend fun sendBoardRequest(pane: Pane, text: String, viewport: String, connection: Any, permit: WritePermit) {
+            val (fresh, occupant) = cardPaneGuarded(pane.id, connection) ?: throw CardChanged()
+            if (occupant == null || !sameOccupant(pane, fresh) || fresh.status !in setOf(Status.IDLE, Status.DONE))
+                throw CardChanged()
+            sendCardInput(pane.id, CardInput.Submit(text), CardGuard(occupant, cardScreenDigest(viewport, pane.agent)), connection, permit)
+        }
         // 2.2.2: Force Send's prompt to a working agent, still herdr's agent prompt (it reaches a working agent), never --force.
         override suspend fun sendForced(pane: Pane, text: String, connection: Any, permit: WritePermit) =
             sendMessage(pane, text, allowTerminalFallback = false, expectedConnection = connection, permit = permit, busyOk = true)

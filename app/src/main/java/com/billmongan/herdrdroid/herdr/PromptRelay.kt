@@ -22,6 +22,10 @@ internal interface PromptRelayPort {
         send(pane, text, connection)
     }
 
+    suspend fun sendBoardRequest(pane: Pane, text: String, viewport: String, connection: Any, permit: WritePermit) {
+        throw CardCheckFailed()
+    }
+
     /**
      * 2.2.2: the forced relay's write, which may go to a working agent. The same permitted send as
      * above, by the same route (herdr's agent prompt, never --force); only the transport's own
@@ -174,11 +178,11 @@ internal class PromptRelay(
      */
     suspend fun send(
         target: Target, text: String, authorizedWrite: WritePermit = WritePermit(),
-        refused: (RelayRefusal) -> Unit = {}, force: Boolean = false, allowed: () -> Boolean,
+        refused: (RelayRefusal) -> Unit = {}, force: Boolean = false, boardRequest: Boolean = false, allowed: () -> Boolean,
     ): RelayResult {
         val key = target.server to target.pane.id
         // Force only ever applies to an agent that queues typed input (Claude Code); for any other it is an ordinary send.
-        val force = force && takesForcedInput(target.pane.agent)
+        val force = force && !boardRequest && takesForcedInput(target.pane.agent)
         val lane = if (force) laneClear ?: clearToSend else clearToSend
         fun invalid(): RelayRefusal? = when {
             !allowed() -> RelayRefusal.STOPPED
@@ -203,6 +207,7 @@ internal class PromptRelay(
             val outgoing = when (LongText.plan(text)) {
                 is LongText.Plan.Single -> text
                 is LongText.Plan.Attachment -> {
+                    if (boardRequest) return refuse(RelayRefusal.TEXT)
                     invalid()?.let { return refuse(it) }
                     val r = try { port.upload("agent-message.txt", text.toByteArray(Charsets.UTF_8), target.connection) }
                         catch (c: CancellationException) { throw c } catch (_: Exception) { return refuse(RelayRefusal.UPLOAD) }
@@ -211,7 +216,7 @@ internal class PromptRelay(
                 }
             }
             // 2.2.1: background work alone does not hold an agent that takes input meanwhile.
-            val waitsForBackground = !takesInputDuringBackgroundWork(target.pane.agent)
+            val waitsForBackground = boardRequest || !takesInputDuringBackgroundWork(target.pane.agent)
             var notIdle: RelayRefusal = RelayRefusal.UNREACHABLE
             suspend fun idlePane(): Pane? {
                 val p = port.pane(target.pane.id, target.connection)
@@ -238,7 +243,7 @@ internal class PromptRelay(
                     return RelayRefusal.USAGE
                 if (detectPrompt(forPhone(viewport), false, agent) != null) return RelayRefusal.QUESTION
                 // 2.2.2: a working agent can raise a dialog mid-turn; a forced send also checks the dialog footers.
-                if (force && (showsQuestionDialog(stripAnsi(viewport)) || claudePermissionFooterAtBottom(viewport))) return RelayRefusal.QUESTION
+                if ((force || boardRequest) && (showsQuestionDialog(stripAnsi(viewport)) || claudePermissionFooterAtBottom(viewport))) return RelayRefusal.QUESTION
                 // 2.2.1: the screen says a turn is running ("esc to interrupt" under the box), whatever herdr says.
                 if (!force && composerFooterSaysWorking(viewport)) return RelayRefusal.WORKING
                 // 2.2.7: a blank Oh My Pi or Copilot box counts as empty: the prompt clears it first ([Herdr.sendMessage]).
@@ -267,6 +272,11 @@ internal class PromptRelay(
                 invalid()?.let { return refuse(it) }
                 screenRefusal(again, ready.agent)?.let { return refuse(it) }
                 port.sendForced(ready, outgoing, target.connection, permit)
+            } else if (boardRequest) {
+                val again = port.viewport(ready.id, target.connection)
+                invalid()?.let { return refuse(it) }
+                screenRefusal(again, ready.agent)?.let { return refuse(it) }
+                port.sendBoardRequest(ready, outgoing, again, target.connection, permit)
             } else port.send(ready, outgoing, target.connection, permit)
             return RelayResult.SENT
         } catch (c: CancellationException) {
@@ -279,6 +289,8 @@ internal class PromptRelay(
         } catch (_: ConnectionChanged) {
             return if (permit.submitted) RelayResult.UNCERTAIN else refuse(RelayRefusal.LINK)
         } catch (e: Exception) {
+            if (boardRequest && (e is CardChanged || e is CardCheckFailed || e is OccupantChanged))
+                return refuse(RelayRefusal.FAILED)
             // 2.2.2: herdr's agent_blocked is decided before any input is sent, so nothing was typed.
             if (refusedBeforeInput(e)) return refuse(RelayRefusal.QUESTION)
             if (promptTargetNotFound(e)) return refuse(RelayRefusal.AGENT_NOT_FOUND)

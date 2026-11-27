@@ -145,6 +145,7 @@ fun SessionDrawer(vm: AppViewModel, opening: Boolean = true) {
         }
         // 2.2.8: every open question on the servers the app can see, pinned under the list.
         HorizontalDivider(color = Palette.Line)
+        BoardDrawerItem(selected = vm.screen == Screen.Board, onClick = vm::openBoard)
         QuestionsDrawerItem(vm.openQuestionCount(), selected = vm.screen == Screen.Questions) {
             vm.drawerOpen = false
             vm.screen = Screen.Questions
