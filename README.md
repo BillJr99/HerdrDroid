@@ -661,6 +661,7 @@ To keep a new test class safe:
 - **Question actions.** After a notification answer advances to another question, the notification offers the next question's choices. An incomplete Oh My Pi or pi Ask dialog offers only Cancel.
 - **Antigravity approvals.** When Antigravity clips a shell command, the card shows the visible portion and directs you to the terminal to review the full command. Native subagent questions and approval pickers show the visible details and direct you to the terminal to answer.
 - **OpenCode notices.** The app keeps receipt checks tied to the selected pane across chat refreshes. Another OpenCode session in the same project cannot confirm delivery.
+- **Muse background work.** Move to background sends Ctrl+B only when the selected pane shows a running shell, its background hint, and an empty composer. The app checks for a new matching background receipt before reporting success.
 - **Running work.** The pill displays subagent counts when the app can verify them. Open **Running under** to see the available details, including when the subagent count is unavailable.
 - **Local discovery.** The app limits reverse DNS work and discards results from cancelled scans. Missing local network access ends the scan cleanly. On a /31 link, discovery checks only the other endpoint. A /32 address has no neighbors to scan.
 
