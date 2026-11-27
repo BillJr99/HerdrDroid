@@ -466,6 +466,26 @@ class SuccessiveCardAnswerTest {
      * 2.2.8 (Bill: "it said it couldn't read it although it looked like a fairly standard question"): when
      * the recent read can't prove the dialog, the live screen is read, and its proven dialog is the card.
      */
+    @Test fun agyNativePickerUsesFreshViewportAndDiscardsStaleRecentCard() {
+        val picker = checkNotNull(javaClass.getResource(
+            "/screens/agy/captured-1.5.18-native-question/picker.txt"
+        )).readText()
+        fixture("agy", picker) {
+            status(Status.WORKING)
+            recentResult = ExecResult(0, "Preparing the question.", "")
+            repeat(3) { readSelectedPane() }
+            assertTrue(checkNotNull(vm.cardParse("p1", vm.paneText)).terminalReview)
+            assertTrue(vm.paneText.contains("Which fixture label?"))
+
+            recentResult = ExecResult(0, picker, "")
+            frame = "Continuing after the question."
+            repeat(3) { readSelectedPane() }
+            assertFalse(vm.paneText.contains("Which fixture label?"))
+            assertNull(vm.cardParse("p1", vm.paneText))
+            assertTrue(sent.isEmpty())
+        }
+    }
+
     @Test fun anUnprovenRecentReadFallsBackToTheLiveScreen() = fixture("claude",
         checkNotNull(javaClass.getResource("/screens/claude/synthetic-2.2.8-multiq/four-tabs-first.ansi")).readText()) {
         val live = frame
