@@ -71,6 +71,18 @@ class GrokPrivacyTest {
         assertNull(grokInputText(dialog))
     }
 
+    @Test fun nativePickerDraftRemainsUnsubmittedAfterSettlingOrDismissingSuggestions() {
+        fun capture(name: String) = checkNotNull(
+            javaClass.getResource("/screens/grok/captured-1.0.92-picker-draft/$name.txt")
+        ).readText()
+
+        val privacy = capture("privacy-settled-draft")
+        assertEquals("/privacy", grokInputText(privacy))
+        assertNull(detectGrokPrivacyDialog(privacy))
+        assertEquals("/resume", grokInputText(capture("resume-after-esc")))
+        assertEquals("", grokInputText(capture("resume-after-manual-clear")))
+    }
+
     @Test fun bannerNeverMergesIntoACard() {
         val card = """
   Help improve Grok                                                                                               [Opt out] [Opt in]
