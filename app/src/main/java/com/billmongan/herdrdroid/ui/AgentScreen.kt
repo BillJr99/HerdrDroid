@@ -342,7 +342,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     // question in chat"): while the pane shows as needing you, a card is always there, the parsed
     // one or one that says the question couldn't be read, with Show terminal.
     val prompt: Prompt? = com.billmongan.herdrdroid.herdr.withNeedsYouCard(status, parsedPrompt,
-        suppressed = typingAnswer || usageBlocksInput || backgroundDrawer || agentError != null, agent = pane?.agentName ?: "The agent")
+        suppressed = typingAnswer || usageBlocksInput || backgroundDrawer || agentError != null,
+        agent = pane?.agentName ?: "The agent", codexActivityViewport = vm.codexActivityViewport(paneId))
     // The question a parser read; the unread-question card leaves the chat's open questions in place.
     val questionCard: Prompt? = prompt?.takeUnless { it.unreadQuestion || it.readingQuestion }
     fun send() {

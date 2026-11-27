@@ -1715,8 +1715,11 @@ const val UNREAD_SCREEN = "(The app couldn't read this pane's screen yet. Tap Sh
  * something else holds the card's place (an answer being typed, a usage dialog, OpenCode's
  * background drawer, an agent error banner).
  */
-internal fun withNeedsYouCard(status: Status, prompt: Prompt?, suppressed: Boolean, agent: String): Prompt? =
-    prompt ?: if (status == Status.NEEDS_YOU && !suppressed) unreadQuestionCard(agent) else null
+internal fun withNeedsYouCard(
+    status: Status, prompt: Prompt?, suppressed: Boolean, agent: String, codexActivityViewport: String? = null,
+): Prompt? = prompt ?: if (
+    status == Status.NEEDS_YOU && !suppressed && codexActivityViewport?.let(::hasCodexInputActivity) != true
+) unreadQuestionCard(agent) else null
 
 /** [withNeedsYouCard]'s card: no options and no keys, only the way to the terminal. */
 internal fun unreadQuestionCard(agent: String): Prompt = Prompt(
@@ -4074,10 +4077,17 @@ internal fun codexFollowUpRows(text: String): Set<Int> {
     fun continuation(row: String): Boolean = row.isNotBlank() && row.startsWith("    ")
     for ((index, row) in rows.withIndex()) {
         when {
-            row.trimEnd() == "• Queued follow-up inputs" && rows.getOrNull(index + 1)?.let(::inputRow) == true -> {
-                val end = (index + 1 until rows.size).firstOrNull { !inputRow(rows[it]) && !continuation(rows[it]) }
-                    ?: rows.size
-                masked += index until end
+            row.trimEnd() == "• Queued follow-up inputs" -> {
+                // A redraw can leave the title and an indented continuation while the
+                // arrow or entire first input row is absent. Stop before the next UI row.
+                val first = (index + 1 until rows.size).firstOrNull { rows[it].isNotBlank() }
+                if (first != null && (inputRow(rows[first]) || continuation(rows[first]) &&
+                        !CODEX_COMMAND_HEADING.matches(rows[first].trim()) &&
+                        !CODEX_OTHER_APPROVAL.matches(rows[first].trim()))) {
+                    val end = (first until rows.size).firstOrNull { !inputRow(rows[it]) && !continuation(rows[it]) }
+                        ?: rows.size
+                    masked += index until end
+                }
             }
             row.trimEnd() == "    shift+← edit last queued message" -> {
                 // A recent read may start below the heading. Require at least one input
@@ -4090,6 +4100,20 @@ internal fun codexFollowUpRows(text: String): Set<Int> {
         }
     }
     return masked
+}
+
+private val CODEX_ACTIVE_BACKGROUND = Regex(
+    """^• .+\(.*esc to interrupt\).* · [1-9]\d* background terminals? running(?: · /ps to view.*)?$""",
+)
+private val CODEX_BACKGROUND_INTERACTION = Regex("""^• Interacted with `[^`]+`$""")
+private val CODEX_EMPTY_ACTIVITY_COMPOSER = Regex("""^› (?:Ask Codex to do anything|Ask a follow-up question)$""")
+
+/** Native queue or background activity that can explain a lagging NEEDS_YOU status. */
+internal fun hasCodexInputActivity(text: String): Boolean {
+    if (codexFollowUpRows(text).isNotEmpty()) return true
+    val tail = stripAnsi(text).lines().takeLast(32).map(String::trimEnd)
+    return tail.any(CODEX_EMPTY_ACTIVITY_COMPOSER::matches) &&
+        tail.any { CODEX_ACTIVE_BACKGROUND.matches(it) || CODEX_BACKGROUND_INTERACTION.matches(it) }
 }
 
 private val COPILOT_PENDING_INPUT_ROW = Regex("""^\s+└ \[pending · ↑ recall]\s*$""")

@@ -1,6 +1,8 @@
 package com.billmongan.herdrdroid.herdr
 
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -12,6 +14,22 @@ class CodexQueueRedrawTest {
                 assertNull("$source, blocked=$blocked", detectPrompt(screen, blocked, "codex"))
             }
         }
+    }
+
+    @Test fun knownQueueAndBackgroundActivityDoNotDrawAnUnreadCardFromStaleStatus() {
+        val screen = capture("visible")
+        val composer = screen.substringAfterLast("shift+← edit last queued message").trimStart()
+        val status = screen.lineSequence().single { it.contains("background terminal running") }
+        val interaction = screen.lineSequence().single { it.contains("Interacted with") }
+        for (frame in listOf(screen, "$status\n$composer", "$interaction\n$composer")) {
+            assertNull(detectPrompt(frame, true, "codex"))
+            assertNull(withNeedsYouCard(Status.NEEDS_YOU, null, false, "Codex", frame))
+        }
+
+        // Keep the fallback when there is no live evidence, and keep a parsed real prompt.
+        assertNotNull(withNeedsYouCard(Status.NEEDS_YOU, null, false, "Codex"))
+        val question = checkNotNull(detectPrompt(codexFreeformQuestion, true, "codex"))
+        assertSame(question, withNeedsYouCard(Status.NEEDS_YOU, question, false, "Codex", screen))
     }
 
     @Test fun unmarkedQueuedContinuationCannotBecomeAConfirmationDuringRedraw() {

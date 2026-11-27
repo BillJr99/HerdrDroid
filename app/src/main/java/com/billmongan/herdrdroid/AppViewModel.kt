@@ -2686,7 +2686,7 @@ class AppViewModel internal constructor(
             val recentClarify = preview?.hermesClarify == true
             val requiresLive = verifyOpenCode || recentClaudeModel || recentClarify || recentCodexQuestion || verifyPi
             val codexQuestionCleared = liveCard != null && liveCandidate == null && (recentCodexQuestion ||
-                recentCodexCard && com.billmongan.herdrdroid.herdr.codexFollowUpRows(liveCard).isNotEmpty())
+                recentCodexCard && com.billmongan.herdrdroid.herdr.hasCodexInputActivity(liveCard))
             // 2.2.8 (Codex's review 1): once the live screen was read for an unproven recent dialog, that read is
             // the card, a closed dialog included: the stale recent dialog never goes on to be confirmed.
             val unprovenAnswered = unprovenPreview && liveCard != null
@@ -2950,6 +2950,13 @@ class AppViewModel internal constructor(
     private val cardDecisions = androidx.compose.runtime.mutableStateMapOf<String, com.billmongan.herdrdroid.herdr.CardDecision>()
 
     /** The status the open pane's card is read with: what the pane shows (2.2.2: the same for the card and its confirmation). */
+    /** Only a successful screen read for the current Codex occupant may explain a stale wait. */
+    internal fun codexActivityViewport(paneId: String): String? =
+        paneTextTarget?.takeIf { target ->
+            target.pane.id == paneId && target.pane.agent == "codex" && paneTextPane == paneId &&
+                paneReadProblem == null && target.isCurrent(target.client)
+        }?.let { paneText }
+
     private fun cardStatus(pane: Pane): Status {
         val shown = shownStatus(pane)
         return if (shown == Status.NEEDS_YOU && openCodeComposerIsCurrent(pane)) Status.IDLE else shown
