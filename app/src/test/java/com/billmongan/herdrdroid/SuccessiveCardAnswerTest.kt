@@ -486,6 +486,26 @@ class SuccessiveCardAnswerTest {
         }
     }
 
+    @Test fun agyClippedApprovalUsesFreshViewportAndDiscardsStaleRecentCard() {
+        val clipped = checkNotNull(javaClass.getResource(
+            "/screens/agy/captured-1.5.18-tall/clipped-a.txt"
+        )).readText()
+        fixture("agy", clipped) {
+            status(Status.WORKING)
+            recentResult = ExecResult(0, "Preparing the command.", "")
+            repeat(3) { readSelectedPane() }
+            assertTrue(checkNotNull(vm.cardParse("p1", vm.paneText)).terminalReview)
+            assertTrue(vm.paneText.contains("fixture-a-011"))
+
+            recentResult = ExecResult(0, clipped, "")
+            frame = "Continuing after the approval."
+            repeat(3) { readSelectedPane() }
+            assertFalse(vm.paneText.contains("fixture-a-011"))
+            assertNull(vm.cardParse("p1", vm.paneText))
+            assertTrue(sent.isEmpty())
+        }
+    }
+
     @Test fun grokPrivacyOverlayUsesFreshViewportAndDiscardsStaleRecentCard() {
         val picker = checkNotNull(javaClass.getResource(
             "/screens/grok/captured-1.0.92-picker-draft/privacy-picker.txt"
