@@ -55,7 +55,7 @@ import com.billmongan.herdrdroid.board.ServerBoard
 import java.time.Instant
 import java.util.UUID
 
-internal data class BoardSource(val id: String, val label: String)
+internal data class BoardSource(val id: String, val label: String, val availability: String? = null)
 
 private data class BoardTab(val label: String, val serverId: String? = null, val isAll: Boolean = false)
 private data class BoardSelection(val serverId: String?, val cardId: String)
@@ -249,6 +249,9 @@ private fun BoardList(
                 Text(serverBoard?.name ?: source?.label ?: "Phone", color = Palette.Ink, fontWeight = FontWeight.Bold,
                     modifier = Modifier.padding(start = 16.dp, top = 12.dp, bottom = 4.dp))
             }
+            source?.availability?.let { message ->
+                item { Text(message, color = Palette.Muted, modifier = Modifier.padding(horizontal = 16.dp)) }
+            }
             if (sourceId != null && serverBoard != null) item {
                 BoardSyncStatus(serverBoard) { retry(sourceId) }
             }
@@ -279,7 +282,7 @@ private fun BoardSyncStatus(board: ServerBoard, retry: () -> Unit) {
         }
         status?.let { Text(it, color = if (board.noAnswer) Palette.OrangeInk else Palette.Muted, fontSize = 13.sp) }
         board.issue?.let { Text(it, color = Palette.OrangeInk, fontSize = 13.sp) }
-        if (board.noAnswer) TextButton(onClick = retry) { Text("Retry") }
+        if (board.noAnswer || board.issue != null && board.request == null) TextButton(onClick = retry) { Text("Retry") }
     }
 }
 

@@ -13,7 +13,7 @@ internal fun ConnectedBoardScreen(vm: AppViewModel) {
     val store = vm.boardStore
     val state by store.state.collectAsState()
     val sources = vm.servers.filter { it.boardAgentPane != null }.map {
-        BoardSource(it.id, state.servers[it.id]?.name ?: it.label)
+        BoardSource(it.id, state.servers[it.id]?.name ?: it.label, vm.boardAgentAvailability(it.id))
     }
     for (source in sources) {
         key(source.id) {
@@ -32,10 +32,10 @@ internal fun ConnectedBoardScreen(vm: AppViewModel) {
         onBack = vm::leaveBoard,
         onRefresh = vm::refreshBoards,
         onRetry = { store.retry(it) },
-        onSave = { server, card -> store.saveCard(server, card) },
-        onMovePhoneCard = { card, server -> store.movePhoneCard(card, server) },
-        onAddNote = { server, card, note -> store.addNote(server, card, note) },
-        onResolve = { server, card, field, keepPhone -> store.resolve(server, card, field, keepPhone) },
+        onSave = { server, card -> if (!store.saveCard(server, card)) vm.boardEditFailed() },
+        onMovePhoneCard = { card, server -> if (!store.movePhoneCard(card, server)) vm.boardEditFailed() },
+        onAddNote = { server, card, note -> if (!store.addNote(server, card, note)) vm.boardEditFailed() },
+        onResolve = { server, card, field, keepPhone -> if (!store.resolve(server, card, field, keepPhone)) vm.boardEditFailed() },
         handleBack = !vm.drawerOpen,
     )
 }

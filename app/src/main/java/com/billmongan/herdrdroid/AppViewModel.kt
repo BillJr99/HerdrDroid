@@ -3,7 +3,8 @@ package com.billmongan.herdrdroid
 import com.billmongan.herdrdroid.board.BoardProtocol
 import com.billmongan.herdrdroid.board.BoardStore
 import com.billmongan.herdrdroid.herdr.PromptRelay
-import com.billmongan.herdrdroid.transcript.TextItem
+import com.billmongan.herdrdroid.board.BoardRequestKind
+import com.billmongan.herdrdroid.board.BoardTranscript
 
 import com.billmongan.herdrdroid.transcript.CachedChat
 import com.billmongan.herdrdroid.transcript.withRead
@@ -1996,6 +1997,7 @@ class AppViewModel internal constructor(
             logListCounts(client, readServer, fresh0.size, System.currentTimeMillis() - readAt)
             current?.let { s -> noticeChanges(s.id, s.label, fresh,
                 complete = snapshot.complete && readConnection != null && client?.connectionIdentity === readConnection) { herdr } }
+            readServer?.let(::servicePendingBoardFromInventory)
             schedulePanePrefetch(prefetchConnection)
             // Footers (each agent's model) every 30 seconds wherever you are in the app; before
             // 1.1.5 only the tab list read them, which the agent-first app rarely shows.
@@ -4859,14 +4861,35 @@ class AppViewModel internal constructor(
             .forEach { boardStore.queueExport(it, now) }
     }
 
-    /** The visible Board owns this loop. An idle board does not read a transcript or send a prompt. */
+    internal fun boardAgentAvailability(server: String): String? {
+        val selection = servers.firstOrNull { it.id == server }?.boardAgentPane ?: return null
+        return when {
+            boardClient(server)?.connectionIdentity == null -> "Connect to this server to sync."
+            boardAgentChoices(server).none { boardPaneKey(it) == selection } -> "The board agent is unavailable. Check the server settings."
+            else -> null
+        }
+    }
+
+    internal fun boardEditFailed() = flash("The board change could not be saved.")
+
+    // Outside Board, existing foreground inventory updates give queued edits another opportunity.
+    private fun servicePendingBoardFromInventory(server: String) {
+        if (!foreground || locked || screen == Screen.Board ||
+            servers.none { it.id == server && it.boardAgentPane != null }) return
+        val pending = boardStore.state.value.servers[server] ?: return
+        if (pending.noAnswer || pending.request?.kind == BoardRequestKind.EXPORT) return
+        if (boardExchangeLocks[server]?.isLocked == true) return
+        viewModelScope.launch { serviceBoard(server) }
+    }
+
+    /** An idle board does not read a transcript or send a prompt. */
     internal suspend fun serviceBoard(server: String) {
         val lock = boardExchangeLocks.getOrPut(server) { Mutex() }
         lock.withLock { serviceBoardLocked(server) }
     }
 
     private suspend fun serviceBoardLocked(server: String) {
-        if (screen != Screen.Board || locked || !foreground) return
+        if (locked || !foreground) return
         val selected = servers.firstOrNull { it.id == server }?.boardAgentPane ?: return
         val state = boardStore.state.value.servers[server]
         if (state?.noAnswer == true) return
@@ -4876,9 +4899,11 @@ class AppViewModel internal constructor(
         val now = System.currentTimeMillis()
         val sentAt = pending.requestSentAt
         val pane = boardAgentChoices(server).singleOrNull { boardPaneKey(it) == selected }
-        fun enabled(): Boolean = screen == Screen.Board && foreground && !locked &&
+        fun enabled(): Boolean = (screen == Screen.Board || request.kind == BoardRequestKind.APPLY) &&
+            foreground && !locked &&
             servers.firstOrNull { it.id == server }?.boardAgentPane == selected &&
             boardStore.state.value.servers[server]?.request?.id == request.id
+        if (!enabled()) return
         if (sentAt != null && now - sentAt >= BoardProtocol.NO_ANSWER_MS) {
             boardStore.markNoAnswer(server, request.id)
             return
@@ -4913,28 +4938,18 @@ class AppViewModel internal constructor(
         com.billmongan.herdrdroid.board.BoardReply? {
         return try {
             var cursor = ""
-            var assistant = StringBuilder()
+            var reply = BoardTranscript(request)
             suspend fun current() = boardRelay.isCurrent(target) &&
                 target.port.pane(target.pane.id, target.connection)?.let { sameOccupant(it, target.pane) } == true
             if (!current()) return null
             repeat(6) {
                 val read = target.port.noticeHistory(target.pane, cursor, target.connection) ?: return null
-                if (!read.ok || read.live?.herdrStale == true || !current()) return null
-                if (read.reset) assistant = StringBuilder()
-                for (record in read.items) {
-                    when (val item = Transcript.toItem(record)) {
-                        is com.billmongan.herdrdroid.transcript.UserItem -> {
-                            BoardProtocol.parseReply(assistant.toString(), request)?.let { return it }
-                            assistant = StringBuilder()
-                        }
-                        is TextItem -> {
-                            assistant.appendLine(item.text)
-                            if (assistant.length > 512 * 1024) assistant.delete(0, assistant.length - 512 * 1024)
-                        }
-                        else -> Unit
-                    }
-                }
-                if (!read.more) return BoardProtocol.parseReply(assistant.toString(), request)
+                val live = read.live ?: return null
+                if (!read.ok || live.herdrStale ||
+                    target.pane.sessionId?.let { it != live.sid } == true || !current()) return null
+                if (read.reset) reply = BoardTranscript(request)
+                reply.append(read.items)?.let { return it }
+                if (!read.more) return reply.result()
                 if (read.cursor == cursor) return null
                 cursor = read.cursor
             }
@@ -6841,6 +6856,7 @@ class AppViewModel internal constructor(
             keystoreKey = SshKeyVault::provider,
             onSeen = { st ->
                 trackDone(st.server.id, st.panes)
+                servicePendingBoardFromInventory(st.server.id)
                 noticeChanges(st.server.id, st.server.label, st.panes, complete = st.complete) { fleet?.herdr(st.server.id) }
             },
             // 1.2.8: watched servers get the same work sweep as the open one, so an agent with a
