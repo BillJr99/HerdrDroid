@@ -5,6 +5,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONObject
+import java.util.UUID
 
 data class BoardConflict(
     val cardId: String,
@@ -34,6 +35,8 @@ data class ServerBoard(
     internal val previousExportAt: Long? = null,
     internal val attempted: Boolean = false,
     internal val previouslyAttempted: Boolean = false,
+    internal val exportWanted: Boolean = false,
+    internal val refusal: String? = null,
 ) {
     val cards: Map<String, BoardCard> get() = entries.mapValues { (id, card) ->
         card.copy(notes = card.notes + pendingNotes[id].orEmpty())
@@ -142,8 +145,15 @@ class BoardStore internal constructor(
         val cleared = board.copy(conflicted = if (remaining.isEmpty()) board.conflicted - cardId else board.conflicted + (cardId to remaining))
         val phone = cleared.entries[cardId] ?: return@server cleared
         if (field == DELETED_FIELD) {
-            if (keepPhone) cleared.copy(creates = cleared.creates + cardId).afterEdit()
-            else cleared.copy(entries = cleared.entries - cardId, pendingNotes = cleared.pendingNotes - cardId).afterEdit()
+            if (keepPhone) {
+                val clientId = UUID.randomUUID().toString()
+                cleared.copy(
+                    entries = cleared.entries - cardId + (clientId to phone.copy(id = clientId)),
+                    creates = cleared.creates + clientId,
+                    pendingNotes = cleared.pendingNotes - cardId +
+                        (clientId to cleared.pendingNotes[cardId].orEmpty()),
+                ).afterEdit()
+            } else cleared.copy(entries = cleared.entries - cardId, pendingNotes = cleared.pendingNotes - cardId).afterEdit()
         } else if (keepPhone) cleared.afterEdit() else {
             val remote = cleared.baseline[cardId] ?: return@server cleared
             cleared.copy(
@@ -154,15 +164,21 @@ class BoardStore internal constructor(
     }
 
     fun queueExport(serverId: String, now: Long): Boolean = server(serverId) { board ->
-        if (board.request != null && (board.request.kind == BoardRequestKind.EXPORT || board.attempted || board.noAnswer) ||
-            !board.exportDue(now)) board
-        else board.copy(request = BoardRequest(BoardRequestKind.EXPORT, board.asOf), issue = null)
+        val request = board.request
+        when {
+            !board.exportDue(now) || request?.kind == BoardRequestKind.EXPORT -> board
+            request != null && (board.attempted || board.noAnswer) -> board.copy(exportWanted = true)
+            else -> board.withExport()
+        }
     }
 
-    fun queueApply(serverId: String): Boolean = server(serverId) { board ->
-        if (board.request != null || board.issue != null) return@server board
-        board.withPendingApply()
-    }
+    fun queueApply(serverId: String, now: Long = System.currentTimeMillis()): Boolean =
+        server(serverId) { board ->
+            if (board.request != null) return@server board
+            if (board.exportWanted && board.exportDue(now)) return@server board.withExport()
+            if (board.issue != null) return@server board
+            board.withPendingApply()
+        }
 
     fun canSend(serverId: String, now: Long): Boolean {
         val board = state.value.servers[serverId] ?: return false
@@ -204,15 +220,21 @@ class BoardStore internal constructor(
     fun retry(serverId: String): Boolean = server(serverId) { board ->
         if (board.request != null && board.noAnswer) {
             // A response may have been lost after an apply. Reuse the ID and exact payload.
-            board.copy(requestSentAt = null, noAnswer = false, issue = null)
+            board.copy(requestSentAt = null, noAnswer = false, issue = board.refusal)
         } else if (board.request == null && board.issue != null) {
-            board.copy(issue = null).withPendingApply()
+            board.copy(issue = null, refusal = null).withPendingApply()
         } else board
     }
 
     fun receive(serverId: String, reply: BoardReply): Boolean = server(serverId) { board ->
         val request = board.request ?: return@server board
         if (!board.attempted || !BoardProtocol.validReply(reply, request)) return@server board
+        val createdIds = request.changes.zip(reply.results).mapNotNull { (change, result) ->
+            if (change !is BoardChange.Create || !result.ok) return@mapNotNull null
+            if (result.id in board.entries && result.id != change.clientId) return@server board
+            result.id
+        }
+        if (createdIds.toSet().size != createdIds.size) return@server board
         board.accept(request, reply)
     }
 }
@@ -220,7 +242,12 @@ class BoardStore internal constructor(
 private fun ServerBoard.exportDue(now: Long): Boolean =
     lastExportAt?.let { now >= it && now - it >= BoardProtocol.EXPORT_INTERVAL_MS } ?: true
 
+private fun ServerBoard.withExport(): ServerBoard = copy(
+    request = BoardRequest(BoardRequestKind.EXPORT, asOf), issue = refusal, exportWanted = false,
+)
+
 private fun ServerBoard.afterEdit(): ServerBoard {
+    if (refusal != null) return this
     if (request != null && (attempted || request.kind == BoardRequestKind.EXPORT || noAnswer)) return this
     return copy(issue = null).withPendingApply()
 }
@@ -257,7 +284,9 @@ private fun ServerBoard.accept(request: BoardRequest, reply: BoardReply): Server
     val issues = mutableListOf<String>()
     request.changes.zip(reply.results).forEach { (change, result) ->
         if (!result.ok) {
-            if (result.error != "conflict") issues += result.reason.orEmpty().ifBlank { result.error.orEmpty() }
+            if (result.error == "refused" || result.error == "unknown_id" && change is BoardChange.Create) {
+                issues += result.reason.orEmpty().ifBlank { result.error.orEmpty() }
+            }
             if (result.error == "unknown_id" && change !is BoardChange.Create) deleted += result.id
             result.current?.let { if (it.id !in incoming) incoming[it.id] = it }
             return@forEach
@@ -318,11 +347,12 @@ private fun ServerBoard.accept(request: BoardRequest, reply: BoardReply): Server
         local[id] = phone.withFields(merged)
         if (conflictFields.isEmpty()) conflicts.remove(id) else conflicts[id] = conflictFields
     }
+    val refused = issues.takeIf { it.isNotEmpty() }?.joinToString("\n") ?: refusal
     return copy(
         name = reply.board,
         asOf = if (request.kind == BoardRequestKind.EXPORT) reply.asOf else asOf,
         entries = local, baseline = known, creates = newIds, pendingNotes = pending.filterValues { it.isNotEmpty() },
-        conflicted = conflicts, issue = issues.takeIf { it.isNotEmpty() }?.joinToString("\n"),
+        conflicted = conflicts, issue = refused, refusal = refused,
         request = null, requestSentAt = null, noAnswer = false, attempted = false, previouslyAttempted = false, previousExportAt = null,
     )
 }

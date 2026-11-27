@@ -26,6 +26,8 @@ private fun serverJson(board: ServerBoard): JSONObject = JSONObject()
     .put("previous_export_at", board.previousExportAt ?: JSONObject.NULL)
     .put("attempted", board.attempted)
     .put("previously_attempted", board.previouslyAttempted)
+    .put("export_wanted", board.exportWanted)
+    .put("refusal", board.refusal ?: JSONObject.NULL)
 
 private fun JSONObject.cards(key: String): Map<String, BoardCard> =
     getJSONArray(key).objects().map(::cardFromJson).associateBy { it.id }
@@ -51,6 +53,8 @@ private fun serverFromJson(json: JSONObject): ServerBoard {
         previousExportAt = json.nullableLong("previous_export_at"),
         attempted = json.getBoolean("attempted"),
         previouslyAttempted = json.optBoolean("previously_attempted"),
+        exportWanted = json.optBoolean("export_wanted"),
+        refusal = json.nullableString("refusal"),
     )
 }
 

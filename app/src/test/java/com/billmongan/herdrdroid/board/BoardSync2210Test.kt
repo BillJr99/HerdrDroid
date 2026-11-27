@@ -194,4 +194,54 @@ class BoardSync2210Test {
         assertEquals(apply, restored.state.value.servers.getValue(source).request)
         assertTrue(restored.canSend(source, BoardProtocol.NO_ANSWER_MS + 1))
     }
+    @Test
+    fun requestedRefreshWaitsForActiveApplyAndRefusalSurvivesRefreshAndEdit() {
+        serverCards(card)
+        assertTrue(store.saveCard(source, card.copy(next = "Use scrap paper")))
+        val apply = request()
+        assertTrue(store.markSent(source, apply.id, 299_999))
+        assertTrue(store.queueExport(source, 300_000))
+        assertEquals(apply.id, request().id)
+        assertTrue(store.receive(source, BoardReply(apply.id, "Example board", firstTime, listOf(card),
+            emptyList(), listOf(BoardResult(false, card.id, "refused", reason = "The change is restricted")))))
+        assertTrue(store.queueApply(source, 300_001))
+        val export = request()
+        assertEquals(BoardRequestKind.EXPORT, export.kind)
+        assertTrue(store.markSent(source, export.id, 300_001))
+        assertTrue(store.receive(source, BoardReply(export.id, "Example board", secondTime, emptyList(),
+            emptyList(), emptyList())))
+        assertTrue(store.saveCard(source, snapshot().cards.getValue(card.id).copy(owner = "reader")))
+        assertNull(snapshot().request)
+        assertFalse(store.queueApply(source, 300_002))
+        assertEquals("The change is restricted", snapshot().issue)
+    }
+
+    @Test
+    fun keepingLocallyEditedDeletedCardUsesNewCreateIdentity() {
+        serverCards(card)
+        assertTrue(store.saveCard(source, card.copy(next = "Use scrap paper")))
+        val request = startExport(300_000)
+        assertTrue(store.receive(source, BoardReply(request.id, "Example board", secondTime, emptyList(),
+            listOf(card.id), emptyList())))
+        assertEquals("deleted", snapshot().conflicts.single().field)
+        assertTrue(store.resolve(source, card.id, "deleted", keepPhone = true))
+        val create = request().changes.single() as BoardChange.Create
+        assertEquals(create.clientId, java.util.UUID.fromString(create.clientId).toString())
+        assertEquals("Use scrap paper", create.card.next)
+        assertFalse(card.id in snapshot().cards)
+    }
+
+    @Test
+    fun successfulCreateCannotReplaceADifferentExistingCard() {
+        serverCards(card)
+        val newCard = card.copy(id = "16958fa2-a9fc-4343-8a0e-9d4270d04fe5", title = "Build a kite")
+        assertTrue(store.saveCard(source, newCard))
+        val request = request()
+        assertTrue(store.markSent(source, request.id, 1))
+        assertFalse(store.receive(source, BoardReply(request.id, "Example board", firstTime,
+            listOf(newCard.copy(id = card.id)), emptyList(), listOf(BoardResult(true, card.id)))))
+        assertEquals(card, snapshot().cards[card.id])
+        assertEquals(newCard, snapshot().cards[newCard.id])
+        assertEquals(request, request())
+    }
 }
