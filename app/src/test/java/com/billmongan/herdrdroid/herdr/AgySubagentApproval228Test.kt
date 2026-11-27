@@ -85,6 +85,40 @@ class AgySubagentApproval228Test {
         }
     }
 
+    private fun capturedTransition(name: String): String = checkNotNull(javaClass.getResource(
+        "/captures/agy-1.5.18/$name.txt"
+    )).readText()
+
+    @Test fun nativeQuestionFocusMovementDoesNotEnableAppActionsAndReceiptClosesCard() {
+        val alpha = capturedTransition("question-alpha")
+        val beta = nativeQuestionScreen("picker")
+        assertTrue(alpha.contains("> 1. Alpha"))
+        assertTrue(beta.contains("> 2. Beta"))
+        for (screen in listOf(alpha, beta)) {
+            val prompt = checkNotNull(detectPrompt(screen, false, "agy"))
+            assertTrue(prompt.terminalReview)
+            assertTrue(prompt.choices.isEmpty())
+            assertEquals(listOf("Alpha", "Beta", "Write-in..."), prompt.parts?.details)
+        }
+        val answered = capturedTransition("question-answered")
+        assertTrue(answered.contains("> Beta"))
+        assertNull(detectPrompt(answered, false, "agy"))
+    }
+
+    @Test fun nativeApprovalFocusMovementDoesNotEnableAppActionsAndDenialClosesCard() {
+        val approve = capturedTransition("deny-approve-focused")
+        val deny = nativeQuestionScreen("approval-picker")
+        assertTrue(approve.contains("> 1. Yes, approve"))
+        assertTrue(deny.contains("> 2. No, deny"))
+        for (screen in listOf(approve, deny)) {
+            val prompt = checkNotNull(detectPrompt(screen, false, "agy"))
+            assertTrue(prompt.terminalReview)
+            assertTrue(prompt.choices.isEmpty())
+            assertTrue(alertPlan(prompt).buttons.isEmpty())
+        }
+        assertNull(detectPrompt(capturedTransition("deny-completed"), false, "agy"))
+    }
+
     @Test fun staleAndUnprovenPanelRowsCannotOfferApproval() {
         assertNull(agySubagentApproval(frame + " ❯ New input\n"))
         assertNull(agySubagentApproval(frame.replace(" ┃ ctrl+k", "   ctrl+k")))

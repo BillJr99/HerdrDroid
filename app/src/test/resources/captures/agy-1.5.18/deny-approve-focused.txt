@@ -1,0 +1,12 @@
+  ⚠ Approval Required
+    > Bash
+      printf 'fixture-deny\n'
+      > 1. Yes, approve
+        2. No, deny
+
+  ────────────────────────────────────────────────────────────
+
+  Trajectory — self (3 steps)
+  (1–26 of 30 lines)
+  ↑/↓ navigate · / select · enter confirm · esc cancel
+                                     Orchestrator · Gemini 4 Neon · high · 1 subagent(s)

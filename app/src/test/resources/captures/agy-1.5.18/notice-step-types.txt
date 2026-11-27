@@ -1,0 +1,4 @@
+idx=0 step_type=14 status=3 fixtures=['fixture-receipt-target']
+idx=1 step_type=15 status=3 fixtures=['fixture-receipt-target']
+idx=0 step_type=14 status=3 fixtures=['fixture-receipt-control']
+idx=1 step_type=15 status=3 fixtures=['fixture-receipt-control']

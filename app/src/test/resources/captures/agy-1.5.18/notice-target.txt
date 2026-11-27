@@ -1,0 +1,8 @@
+> Reply with exactly fixture-receipt-target. Do not use tools.
+
+  fixture-receipt-target
+
+────────────────────────────────────────────────────────────────────────────────────────
+>
+────────────────────────────────────────────────────────────────────────────────────────
+? for shortcuts                                      Orchestrator · Gemini 4 Neon · high
