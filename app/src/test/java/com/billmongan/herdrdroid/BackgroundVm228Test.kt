@@ -231,6 +231,25 @@ class BackgroundVm228Test {
         assertEquals(listOf("ctrl+b"), keys)
     }
 
+    @Test fun museBackgroundReportsSuccessOnlyForTheSameShell() {
+        val foreground = res("/backgrounding/muse-1.4.24/foreground.txt").replace("<running-separator>", "\u2014")
+        val background = res("/backgrounding/muse-1.4.24/background.txt")
+        fixture("muse", foreground) {
+            afterCtrlB = background
+            vm.backgroundForeground("p1")
+            drain()
+            assertEquals(listOf("ctrl+b"), keys)
+            assertEquals("Moved to the background.", vm.notice)
+        }
+        fixture("muse", foreground) {
+            afterCtrlB = background.replace("Sleep twenty seconds foreground", "A different command")
+            vm.backgroundForeground("p1")
+            drain(ms = 75, rounds = 75)
+            assertEquals(listOf("ctrl+b"), keys)
+            assertTrue(vm.notice.orEmpty().contains("could not verify"))
+        }
+    }
+
     @Test fun terminalBackgroundRequiresAndUsesTheVerifiedFrame() = fixture("claude", fg) {
         vm.backgroundTerminalTask("p1", null)
         drain(rounds = 10)
