@@ -23,7 +23,7 @@ class ClaudeQuestionReviewTest {
         Esc to cancel
     """.trimIndent()
 
-    @Test fun clippedSingleQuestionWithOnlyNumberedDescriptionDoesNotCrash() {
+    @Test fun clippedSingleQuestionWithOnlyNumberedDescriptionHasNoActions() {
         val screen = listOf(
             "     First line of the option description.",
             "     2. Nested step",
@@ -34,7 +34,13 @@ class ClaudeQuestionReviewTest {
             "↑ 10 more lines",
             "Enter to select · Tab/Arrow keys to navigate · Esc to cancel",
         ).joinToString("\n")
-        assertNull(claudeClippedAskReview(screen))
+        for (blocked in listOf(false, true)) {
+            val prompt = requireNotNull(detectPrompt(screen, blocked, "claude"))
+            assertTrue(prompt.terminalReview)
+            assertTrue(prompt.topOffScreen)
+            assertTrue(prompt.choices.isEmpty())
+            assertTrue(prompt.shownParts().blocks.any { it.text == "2. Nested step" })
+        }
     }
 
     @Test fun clippedSingleQuestionPreservesNumberedDescriptionRows() {

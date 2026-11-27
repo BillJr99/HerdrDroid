@@ -351,7 +351,7 @@ private val CLAUDE_SINGLE_DESCRIPTION = Regex("""^ {5}\S.*$""")
 /** A clipped native single-select viewport can start inside its question or an option description. */
 private fun claudeClippedSingleRows(frame: List<String>): List<String>? {
     val rows = frame.filter { it.isNotBlank() }.map { it.trimEnd() }
-    if (rows.size < 7 || !CLAUDE_SINGLE_CLIP_COUNT.matches(rows.last().trim())) return null
+    if (rows.size < 5 || !CLAUDE_SINGLE_CLIP_COUNT.matches(rows.last().trim())) return null
     val chat = CLAUDE_CLIPPED_CHAT_PLAIN.matchEntire(rows[rows.lastIndex - 1]) ?: return null
     if (!CLAUDE_DIALOG_TOP_RULE.matches(rows[rows.lastIndex - 2])) return null
     val typed = CLAUDE_CLIPPED_TYPE.matchEntire(rows[rows.lastIndex - 3]) ?: return null
@@ -360,6 +360,11 @@ private fun claudeClippedSingleRows(frame: List<String>): List<String>? {
     val body = rows.dropLast(4)
     val firstOption = body.indexOfFirst {
         !CLAUDE_SINGLE_DESCRIPTION.matches(it) && CLAUDE_CLIPPED_OPTION.matches(it)
+    }
+    // If all real options have scrolled off, the native footer still identifies the dialog.
+    // Keep numbered descriptions readable without handing them to the generic option parser.
+    if (firstOption < 0 && body.all(CLAUDE_SINGLE_DESCRIPTION::matches)) {
+        return body + rows[rows.lastIndex - 3] + rows[rows.lastIndex - 1]
     }
     if (firstOption <= 0) return null
     val leadingRows = body.take(firstOption)
