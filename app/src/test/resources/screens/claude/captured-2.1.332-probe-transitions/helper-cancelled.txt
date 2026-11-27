@@ -1,0 +1,14 @@
+  Did not run 1 call
+  ⎿  $ printf 'fixture-helper\n'
+  ⎿  Interrupted · What should Claude do instead?
+
+✻ Waiting for 1 background agent to finish
+
+› Message from @general-purpose (ctrl+o to expand)
+
+✢ Symbioting…
+
+────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · /tasks to see subagents · esc to interrupt
