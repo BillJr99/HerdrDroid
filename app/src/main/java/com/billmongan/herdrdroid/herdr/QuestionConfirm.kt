@@ -358,7 +358,9 @@ private fun claudeClippedSingleRows(frame: List<String>): List<String>? {
     val typeNumber = typed.groupValues[1].toInt()
     if (typeNumber !in 3..5 || chat.groupValues[1].toInt() != typeNumber + 1) return null
     val body = rows.dropLast(4)
-    val firstOption = body.indexOfFirst { CLAUDE_CLIPPED_OPTION.matches(it) }
+    val firstOption = body.indexOfFirst {
+        !CLAUDE_SINGLE_DESCRIPTION.matches(it) && CLAUDE_CLIPPED_OPTION.matches(it)
+    }
     if (firstOption <= 0) return null
     val leadingRows = body.take(firstOption)
     val options = body.drop(firstOption).mapNotNull { row ->
@@ -366,7 +368,7 @@ private fun claudeClippedSingleRows(frame: List<String>): List<String>? {
         else CLAUDE_CLIPPED_OPTION.matchEntire(row) ?: return null
     }
     val numbers = options.map { it.groupValues[2].toInt() }
-    val firstNumber = numbers.first()
+    val firstNumber = numbers.firstOrNull() ?: return null
     if (numbers != (firstNumber until typeNumber).toList()) return null
     if (firstNumber == 1) {
         // A wrapped question starts above the viewport, in Claude's question gutter.
@@ -374,7 +376,9 @@ private fun claudeClippedSingleRows(frame: List<String>): List<String>? {
     } else if (firstNumber < 2 || leadingRows.any { !CLAUDE_SINGLE_DESCRIPTION.matches(it) }) return null
     val visibleQuestion = leadingRows.map { it.removePrefix("│ ") }
     val visibleOptions = body.drop(firstOption).map { row ->
-        if (CLAUDE_CLIPPED_OPTION.matches(row)) row.trimStart().trimStart('❯', '›', ' ') else row
+        if (!CLAUDE_SINGLE_DESCRIPTION.matches(row) && CLAUDE_CLIPPED_OPTION.matches(row)) {
+            row.trimStart().trimStart('❯', '›', ' ')
+        } else row
     }
     return visibleQuestion + visibleOptions + rows[rows.lastIndex - 3] + rows[rows.lastIndex - 1]
 }
