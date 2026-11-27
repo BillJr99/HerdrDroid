@@ -42,16 +42,22 @@ private fun claudeModelConfirmation(rows: List<String>): Prompt? {
         claudeModelControl = true)
 }
 
-/** The unavailable /fast panel in Claude Code 2.1.332. */
-private fun claudeFastUnavailable(rows: List<String>): Prompt? {
+private val FAST_COST_ROW = Regex("""^Fast mode\s{2,}(?:OFF|ON)\s{2,}[$]\d+(?:\.\d+)?/[$]\d+(?:\.\d+)? per Mtok$""")
+private const val FAST_DOCS = "Learn more: https://code.claude.com/docs/en/fast-mode"
+
+/** A standalone fast-mode panel. The app can close it without changing the paid setting. */
+private fun claudeFastPanel(rows: List<String>): Prompt? {
     val title = rows.indexOfLast { it.trim() == "↯ Fast mode" }
     if (title <= 0 || !CONFIRM_RULE.matches(rows[title - 1])) return null
     val frame = rows.drop(title - 1)
     val content = frame.drop(2).map(String::trim).filter(String::isNotEmpty)
     val details = content.dropLast(3).joinToString(" ")
-    if (details != "High-speed mode for Opus 5.5. Draws from usage credits at a higher rate. Separate rate limits apply." ||
-        content.takeLast(3) != listOf("✘ Fast mode is currently unavailable",
-            "Learn more: https://code.claude.com/docs/en/fast-mode", "Esc to cancel")) return null
+    if (details != "High-speed mode for Opus 5.5. Draws from usage credits at a higher rate. Separate rate limits apply.") return null
+    val footer = content.takeLast(3)
+    val unavailable = footer == listOf("✘ Fast mode is currently unavailable", FAST_DOCS, "Esc to cancel")
+    val eligible = footer.size == 3 && FAST_COST_ROW.matches(footer[0]) && footer[1] == FAST_DOCS &&
+        footer[2] == "Space to toggle · Enter to confirm · Esc to cancel"
+    if (!unavailable && !eligible) return null
     return Prompt("Fast mode", listOf(Choice("Cancel", "esc", false)), region = frame,
         parts = QuestionParts(emptyList(), listOf(QBlock(QKind.HEADING, "Fast mode")) +
             content.dropLast(1).map { QBlock(QKind.TEXT, it) }),
@@ -62,7 +68,7 @@ private fun claudeFastUnavailable(rows: List<String>): Prompt? {
 internal fun claudeModelCard(screen: String): Prompt? {
     val rows = screen.lines().dropLastWhile(String::isBlank).map(String::trimEnd)
     claudeModelConfirmation(rows)?.let { return it }
-    claudeFastUnavailable(rows)?.let { return it }
+    claudeFastPanel(rows)?.let { return it }
     val top = rows.indexOfLast { it.trim() == "Select model" }
     if (top == -1) return null
     val frame = rows.subList(top, rows.size)
