@@ -287,7 +287,8 @@ private fun ServerBoard.accept(request: BoardRequest, reply: BoardReply): Server
     }
     val incoming = reply.cards.associateBy { it.id }.toMutableMap()
     val issues = mutableListOf<String>()
-    request.changes.zip(reply.results).forEach { (change, result) ->
+    val resultPairs = request.changes.zip(reply.results)
+    resultPairs.forEach { (change, result) ->
         if (!result.ok) {
             if (result.error == "refused" || result.error == "unknown_id" && change is BoardChange.Create) {
                 issues += result.reason.orEmpty().ifBlank { result.error.orEmpty() }
@@ -351,6 +352,18 @@ private fun ServerBoard.accept(request: BoardRequest, reply: BoardReply): Server
         }
         local[id] = phone.withFields(merged)
         if (conflictFields.isEmpty()) conflicts.remove(id) else conflicts[id] = conflictFields
+    }
+    // A conflict with no matching choice needs a manual retry, just like a refusal.
+    resultPairs.forEach { (change, result) ->
+        if (!result.ok && result.error == "conflict") {
+            val fields = conflicts[result.id].orEmpty()
+            val hasChoice = when (change) {
+                is BoardChange.Create -> false
+                is BoardChange.Note -> "notes" in fields || DELETED_FIELD in fields
+                is BoardChange.Update -> fields.any { it == DELETED_FIELD || it in change.set }
+            }
+            if (!hasChoice) issues += result.reason.orEmpty().ifBlank { "The agent reported a conflict." }
+        }
     }
     val refused = issues.takeIf { it.isNotEmpty() }?.joinToString("\n") ?: refusal
     return copy(
