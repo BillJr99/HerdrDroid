@@ -244,4 +244,18 @@ class BoardSync2210Test {
         assertEquals(newCard, snapshot().cards[newCard.id])
         assertEquals(request, request())
     }
+    @Test
+    fun changingUnsentRejectedPayloadClearsItsNoAnswerState() {
+        serverCards(card)
+        assertTrue(store.saveCard(source, card.copy(next = "x".repeat(25_000))))
+        val oversized = request()
+        assertTrue(store.markNoAnswer(source, oversized.id, "The queued changes are too large for one board request."))
+        assertFalse(store.canSend(source, 1))
+        assertTrue(store.saveCard(source, card.copy(next = "Use scrap paper")))
+        assertFalse(snapshot().noAnswer)
+        assertNull(snapshot().issue)
+        assertNotEquals(oversized.id, request().id)
+        assertEquals(mapOf("next" to "Use scrap paper"), (request().changes.single() as BoardChange.Update).set)
+        assertTrue(store.canSend(source, 1))
+    }
 }

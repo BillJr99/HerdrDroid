@@ -251,8 +251,10 @@ private fun ServerBoard.withExport(): ServerBoard = copy(
 
 private fun ServerBoard.afterEdit(): ServerBoard {
     if (refusal != null) return this
-    if (request != null && (attempted || request.kind == BoardRequestKind.EXPORT || noAnswer)) return this
-    return copy(issue = null).withPendingApply()
+    if (request != null && (attempted || request.kind == BoardRequestKind.EXPORT)) return this
+    val updated = withPendingApply()
+    // A local size refusal happened before any write. Let a changed payload leave that state.
+    return if (updated.request == request && noAnswer) updated else updated.copy(issue = null, noAnswer = false)
 }
 
 private fun ServerBoard.withPendingApply(): ServerBoard {
