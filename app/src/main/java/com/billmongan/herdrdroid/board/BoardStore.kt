@@ -62,13 +62,16 @@ private fun label(value: Any?): String = when (value) {
     else -> value.toString()
 }
 
+private fun loadBoard(context: Context, storage: String): BoardState =
+    context.getSharedPreferences(storage, Context.MODE_PRIVATE).getString("state", null)
+        ?.let { runCatching { boardStateFromJson(JSONObject(it)) }.getOrNull() } ?: BoardState()
+
 class BoardStore internal constructor(
     initial: BoardState,
     private val persist: (BoardState) -> Boolean,
 ) {
     private constructor(context: Context, storage: String) : this(
-        initial = context.getSharedPreferences(storage, Context.MODE_PRIVATE).getString("state", null)
-            ?.let { runCatching { boardStateFromJson(JSONObject(it)) }.getOrNull() } ?: BoardState(),
+        initial = loadBoard(context, storage),
         persist = { state ->
             context.getSharedPreferences(storage, Context.MODE_PRIVATE).edit()
                 .putString("state", boardStateJson(state).toString()).commit()
