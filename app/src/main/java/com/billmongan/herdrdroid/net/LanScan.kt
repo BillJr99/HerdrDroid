@@ -211,7 +211,7 @@ internal class LanReverseLookup(
             val work = try {
                 workers.submit {
                     val name = runCatching { resolve(ip) }.getOrNull()?.takeIf { it != ip }
-                    continuation.resume(name)
+                    if (continuation.isActive) continuation.resume(name)
                 }
             } catch (_: RejectedExecutionException) {
                 continuation.resume(null)
