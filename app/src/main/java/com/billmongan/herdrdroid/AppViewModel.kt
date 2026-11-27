@@ -2673,7 +2673,8 @@ class AppViewModel internal constructor(
             }
             fun nativeReview(text: String): Boolean = when (agent?.lowercase()) {
                 "agy" -> com.billmongan.herdrdroid.herdr.agySubagentQuestion(text) != null ||
-                    com.billmongan.herdrdroid.herdr.agySubagentApproval(text)?.terminalReview == true
+                    com.billmongan.herdrdroid.herdr.agySubagentApproval(text)?.terminalReview == true ||
+                    com.billmongan.herdrdroid.herdr.agyClippedShellCommand(text) != null
                 "grok" -> com.billmongan.herdrdroid.herdr.grokPrivacyOverlay(text) != null
                 else -> false
             }
