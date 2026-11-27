@@ -134,7 +134,7 @@ class Fleet(
 
         val state = try {
             val connection = pair.second.connectionIdentity
-            val snapshot = pair.second.paneSnapshot()
+            val snapshot = pair.second.paneSnapshot(server.paneQuotaCommand)
             if (!stillWatching()) return
             val gap = if (screenOn()) 30_000L else 90_000L
             val sweepDue = System.currentTimeMillis() - (sweptAt[id] ?: 0L) >= gap
@@ -151,7 +151,9 @@ class Fleet(
                     last
                 }
             }.orEmpty()
-            FleetState(server, sweptPanes(snapshot.panes, Result.success(busy)), null, System.currentTimeMillis(), busy,
+            val panes = if (pair.second.connectionIdentity === connection) snapshot.panes
+                else snapshot.panes.map { it.copy(quotaReading = null) }
+            FleetState(server, sweptPanes(panes, Result.success(busy)), null, System.currentTimeMillis(), busy,
                 complete = snapshot.complete && connection != null && pair.second.connectionIdentity === connection)
         } catch (c: CancellationException) {
             throw c
@@ -161,7 +163,8 @@ class Fleet(
             val wait = ((retryStep[id] ?: 15_000L) * 2).coerceAtMost(10 * 60_000L)
             retryStep[id] = wait
             retryAt[id] = System.currentTimeMillis() + wait
-            FleetState(server, states[id]?.panes.orEmpty(), e.message ?: "unreachable", System.currentTimeMillis())
+            FleetState(server, states[id]?.panes.orEmpty().map { it.copy(quotaReading = null) },
+                e.message ?: "unreachable", System.currentTimeMillis())
         }
         if (!stillWatching()) return
         if (state.error == null) {

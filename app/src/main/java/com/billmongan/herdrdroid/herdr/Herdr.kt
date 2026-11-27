@@ -45,6 +45,7 @@ data class Pane(
      * send keeps its guards; only the display shows the pane as idle ([com.billmongan.herdrdroid.AppViewModel.shownStatus]).
      */
     val openCodeStaleBlock: Boolean = false,
+    val quotaReading: PaneQuotaReading? = null,
 ) {
     /** Disposable probes use a reserved tab label, independent of pane titles and agent output. */
     val isProbe: Boolean get() = tabLabel.startsWith("probe-")
@@ -272,8 +273,20 @@ class Herdr internal constructor(
     /** 2.2.6: the read is named "list-read" in the diagnostic log. */
     suspend fun panes(): List<Pane> = paneSnapshot().panes
 
-    internal suspend fun paneSnapshot(): PaneSnapshot =
-        kotlinx.coroutines.withContext(com.billmongan.herdrdroid.diag.ReadLabel("list-read")) { panesRead() }
+    private val paneQuotaSource = PaneQuotaSource({ connectionIdentity }, { command, connection ->
+        commands?.immediate(command, QUOTA_TIMEOUT_SECONDS, connection)?.let { it.exit to it.out.toByteArray() }
+            ?: kotlinx.coroutines.withTimeoutOrNull(QUOTA_TIMEOUT_SECONDS * 1_000) {
+                ssh.execBytes(command, QUOTA_TIMEOUT_SECONDS, QUOTA_OUTPUT_LIMIT, expectedConnection = connection)
+            } ?: (-2 to ByteArray(0))
+    })
+
+    internal suspend fun paneSnapshot(quotaCommand: String? = null): PaneSnapshot =
+        kotlinx.coroutines.withContext(com.billmongan.herdrdroid.diag.ReadLabel("list-read")) {
+            val connection = connectionIdentity
+            val snapshot = panesRead()
+            if (quotaCommand == null) snapshot
+            else snapshot.copy(panes = paneQuotaSource.decorate(snapshot.panes, quotaCommand, connection))
+        }
 
     private suspend fun panesRead(): PaneSnapshot {
         if (core) {

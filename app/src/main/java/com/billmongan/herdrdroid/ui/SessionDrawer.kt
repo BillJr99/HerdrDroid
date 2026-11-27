@@ -217,6 +217,7 @@ private fun SessionRow(s: AppViewModel.Session, open: Boolean, model: String?, w
                     listOfNotNull(s.server.label, model, s.pane.folder).filter { it.isNotBlank() }.joinToString(" · "),
                     color = Palette.Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
+                s.pane.quotaReading?.let { PaneQuotaText(it) }
             }
             warningCount?.let { PaneWarningBadge(it, Modifier.padding(end = 6.dp)) }
             // The session on screen now (Bill asked what the old blue check meant: it read as "done").

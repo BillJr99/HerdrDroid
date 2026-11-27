@@ -606,6 +606,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 status = if (vm.link == Link.CONNECTED && identity.known) look(status, pane?.backgroundBusy == true).label else null,
                 statusInk = look(status).ink,
                 compact = keyboardUp,
+                quota = pane?.quotaReading?.takeIf { vm.link == Link.CONNECTED },
                 onName = { if (isHermes) { hermesMenu = true; vm.hermesChat()?.refreshSessions() } else vm.drawerOpen = true },
                 onModel = if (pane?.agent != null) ({ choosingModel = true }) else null,
                 nameAnchor = {

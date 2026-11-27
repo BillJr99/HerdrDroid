@@ -383,6 +383,7 @@ fun EditServerScreen(vm: AppViewModel, existing: Server?, prefillHost: String? =
     var port by remember { mutableStateOf(existing?.port?.toString() ?: "22") }
     var user by remember { mutableStateOf(existing?.user ?: "") }
     var herdrPath by remember { mutableStateOf(existing?.herdrPath ?: "herdr") }
+    var paneQuotaCommand by remember { mutableStateOf(existing?.paneQuotaCommand.orEmpty()) }
     var biometric by remember { mutableStateOf(existing?.biometric ?: false) }
     var useKey by remember { mutableStateOf(existing?.useKey ?: false) }
     var keyKind by remember { mutableStateOf(existing?.keyKind) }
@@ -499,6 +500,14 @@ fun EditServerScreen(vm: AppViewModel, existing: Server?, prefillHost: String? =
             modifier = Modifier.fillMaxWidth(),
         )
 
+        OutlinedTextField(
+            paneQuotaCommand,
+            { paneQuotaCommand = it.filterNot(Char::isISOControl).take(com.billmongan.herdrdroid.herdr.QUOTA_COMMAND_LIMIT) },
+            label = { Text("Pane quota command (optional)") }, singleLine = true,
+            supportingText = { Text("Runs over SSH. Use a trusted, read-only command that prints quota JSON keyed by pane ID.") },
+            modifier = Modifier.fillMaxWidth(),
+        )
+
         if (!viaWs) {
             SwitchRow(
                 "Small packets (for lossy Wi-Fi)",
@@ -599,6 +608,7 @@ fun EditServerScreen(vm: AppViewModel, existing: Server?, prefillHost: String? =
                 vm.saveServer(
                     base.copy(
                         name = name.trim(), host = newHost, port = newPort, user = user, herdrPath = herdrPath.trim(),
+                        paneQuotaCommand = paneQuotaCommand.trim().takeUnless(String::isBlank),
                         biometric = false,
                         passwordCipher = if (viaWs || forgetPassword || (existing != null && existing.user != user)) null else base.passwordCipher,
                         fingerprint = fp,

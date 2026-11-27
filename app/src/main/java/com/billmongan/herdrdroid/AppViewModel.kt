@@ -807,7 +807,14 @@ class AppViewModel internal constructor(
     fun saveServer(server: Server) {
         store.save(server)
         reloadServers()
-        if (current?.id == server.id) current = server
+        if (current?.id == server.id) {
+            if (current?.paneQuotaCommand != server.paneQuotaCommand) {
+                rawWorkPanes = rawWorkPanes.map { it.copy(quotaReading = null) }
+                applyWorkStatus()
+            }
+            current = server
+        }
+        if (watchOthers && herdr != null) fleet?.watch(watchable())
         screen = Screen.Servers
     }
 
@@ -1941,8 +1948,10 @@ class AppViewModel internal constructor(
         val prefetchConnection = readConnection?.takeIf { foreground && !locked }
         val readAt = System.currentTimeMillis()
         val readServer = current?.id
-        quietly(allowBackground, com.billmongan.herdrdroid.diag.LinkDiag.Stage.LIST_READ) { it.paneSnapshot() }?.let { snapshot ->
-            val fresh0 = snapshot.panes
+        val quotaCommand = current?.paneQuotaCommand
+        quietly(allowBackground, com.billmongan.herdrdroid.diag.LinkDiag.Stage.LIST_READ) { it.paneSnapshot(quotaCommand) }?.let { snapshot ->
+            val fresh0 = if (quotaCommand == current?.paneQuotaCommand && client?.connectionIdentity === readConnection)
+                snapshot.panes else snapshot.panes.map { it.copy(quotaReading = null) }
             // A list read on a connection that has since been replaced (a reconnect, another server)
             // is dropped: it must not land on whichever server is open now.
             if (herdr !== client || current?.id != readServer || sequence < appliedPaneInventorySequence) {
@@ -7322,11 +7331,16 @@ class AppViewModel internal constructor(
         val out = mutableListOf<Session>()
         val cur = current
         if (cur != null) panes.filter { it.agent != null }.forEach { p ->
-            out += Session(cur, p, shownStatus(p), "${cur.id}|${p.tabLabel}" in pins, true)
+            val shown = if (link == Link.CONNECTED) p else p.copy(quotaReading = null)
+            out += Session(cur, shown, shownStatus(p), "${cur.id}|${p.tabLabel}" in pins, true)
         }
         for (s in servers) {
             if (s.id == cur?.id) continue
-            val list = fleetStates[s.id]?.panes ?: serverPanes[s.id].orEmpty()
+            val watched = fleetStates[s.id]
+            val list = watched?.panes?.let { panes ->
+                if (watched.server.paneQuotaCommand == s.paneQuotaCommand) panes
+                else panes.map { it.copy(quotaReading = null) }
+            } ?: serverPanes[s.id].orEmpty()
             list.filter { it.agent != null }.forEach { p -> out += Session(s, p, shownStatus(p, s.id), "${s.id}|${p.tabLabel}" in pins, false) }
         }
         return out.sortedWith(compareBy({ statusOrder.indexOf(it.status) }, { !it.pinned }, { it.server.label.lowercase() }, { it.pane.tabLabel.lowercase() }))

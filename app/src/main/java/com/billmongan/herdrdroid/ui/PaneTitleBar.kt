@@ -42,6 +42,7 @@ internal fun PaneTitleLines(
     onModel: (() -> Unit)? = null,
     nameAnchor: @Composable () -> Unit = {},
     statusLine: (@Composable () -> Unit)? = null,
+    quota: com.billmongan.herdrdroid.herdr.PaneQuotaReading? = null,
 ) {
     Column(modifier) {
         Box {
@@ -72,6 +73,7 @@ internal fun PaneTitleLines(
                 )
             }
         }
+        quota?.let { PaneQuotaText(it) }
     }
 }
 

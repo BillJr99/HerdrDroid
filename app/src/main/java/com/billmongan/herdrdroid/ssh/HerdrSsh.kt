@@ -749,9 +749,14 @@ class HerdrSsh(
     }
 
     /** Runs a command and returns its standard output as bytes (for files fetched from the computer), up to [maxBytes]. */
-    suspend fun execBytes(command: String, timeoutSeconds: Long = 120, maxBytes: Int = MAX_BYTES): Pair<Int, ByteArray> = withContext(Dispatchers.IO) {
+    suspend fun execBytes(
+        command: String,
+        timeoutSeconds: Long = 120,
+        maxBytes: Int = MAX_BYTES,
+        expectedConnection: Any? = null,
+    ): Pair<Int, ByteArray> = withContext(Dispatchers.IO) {
         try {
-            val (exit, out, _) = bulkLock.withLock { runRetrying(command, null, timeoutSeconds, maxBytes) }
+            val (exit, out, _) = bulkLock.withLock { runRetrying(command, null, timeoutSeconds, maxBytes, expectedConnection) }
             exit to out
         } catch (e: CommandTimeout) {
             -2 to ByteArray(0)
