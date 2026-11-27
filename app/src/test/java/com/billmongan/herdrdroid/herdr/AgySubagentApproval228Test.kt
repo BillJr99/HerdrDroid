@@ -66,8 +66,11 @@ class AgySubagentApproval228Test {
         assertTrue(prompt.terminalReview)
         assertTrue(prompt.choices.isEmpty())
         assertTrue(alertPlan(prompt).buttons.isEmpty())
-        assertNull(agySubagentQuestion(screen.replace("> 2. ", "  2. ")))
-        assertNull(agySubagentQuestion(screen.replace("  3. ", "  4. ")))
+        for (clipped in listOf(screen.replace("> 2. ", "  2. "), screen.replace("  3. ", "  4. "))) {
+            val review = checkNotNull(detectPrompt(clipped, false, "agy"))
+            assertTrue(review.terminalReview)
+            assertTrue(review.choices.isEmpty())
+        }
     }
 
     @Test fun nativeManagedApprovalAndItsParentShowOnlyTerminalReview() {

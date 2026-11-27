@@ -70,7 +70,10 @@ private fun agyManagedApprovalReview(screen: String): Prompt? {
         rows[heading + 3].trim().removePrefix("> ") != "1. Yes, approve" ||
         rows[heading + 4].trim().removePrefix("> ") != "2. No, deny" ||
         !RULE.matches(rows[heading + 5].trim()) ||
-        !rows[heading + 6].trim().startsWith("Trajectory ") || heading + 8 != footerIndex) return null
+        !rows[heading + 6].trim().startsWith("Trajectory ") || heading + 8 != footerIndex) {
+        return Prompt("Review the AGY approval", emptyList(),
+            region = listOf(MANAGED_APPROVAL_HINT), terminalReview = true, agyApproval = true)
+    }
     return review("Review the AGY approval", rows[heading + 2].trim(), rows.subList(heading, footerIndex + 1))
 }
 
@@ -101,6 +104,7 @@ internal fun agySubagentQuestion(screen: String): Prompt? {
                     rows.subList(headerIndex - 2, footerIndex + 1))
             }
         }
+        return review("Review the AGY question", emptyList(), listOf(QUESTION_PICKER_HINT))
     }
 
     val row = GUTTER.matchEntire(last)?.groupValues?.get(2)
