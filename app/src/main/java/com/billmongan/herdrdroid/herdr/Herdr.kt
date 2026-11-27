@@ -287,12 +287,21 @@ class Herdr internal constructor(
             if (quotaCommand == null || !snapshot.complete) snapshot else {
                 val panes = paneQuotaSource.decorate(snapshot.panes, quotaCommand, connection) {
                     kotlinx.coroutines.withTimeoutOrNull(QUOTA_TIMEOUT_SECONDS * 1_000) {
-                        panesRead().takeIf { it.complete }?.panes
+                        tuiPaneList().takeIf { it.raw == it.panes.size }?.panes
                     }.orEmpty()
                 }
                 snapshot.copy(panes = panes)
             }
         }
+
+    private suspend fun tuiPaneList(): TuiPaneList {
+        // Panes and tab labels in one round trip; a tab list failure only loses the labels.
+        // 2.2.5: the pane list's own exit status comes back after the marker. Before, the line's
+        // status was the tab list's (always 0), so a failed pane list reached the parser as empty
+        // text and its error was lost.
+        val both = run(cmd("pane", "list") + "; s=\$?; echo \"$TABS_MARK \$s\"; " + cmd("tab", "list") + " 2>/dev/null || true")
+        return parseTuiPaneList(both)
+    }
 
     private suspend fun panesRead(): PaneSnapshot {
         if (core) {
@@ -300,12 +309,7 @@ class Herdr internal constructor(
             lastListCounts = PaneListCounts(panes.size, panes.size)
             return PaneSnapshot(panes, complete = false)
         }
-        // Panes and tab labels in one round trip; a tab list failure only loses the labels.
-        // 2.2.5: the pane list's own exit status comes back after the marker. Before, the line's
-        // status was the tab list's (always 0), so a failed pane list reached the parser as empty
-        // text and its error was lost.
-        val both = run(cmd("pane", "list") + "; s=\$?; echo \"$TABS_MARK \$s\"; " + cmd("tab", "list") + " 2>/dev/null || true")
-        val read = parseTuiPaneList(both)
+        val read = tuiPaneList()
         lastListCounts = PaneListCounts(read.raw, read.panes.size)
         val list = read.panes
         // herdr doesn't always mark a Claude question dialog (AskUserQuestion) as blocked, so the
