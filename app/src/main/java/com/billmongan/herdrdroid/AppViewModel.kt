@@ -1838,17 +1838,33 @@ class AppViewModel internal constructor(
         // The whole action counts as a send in flight, from its guard reads through its write, so
         // the fallback's reconnect can't reset the connection in between (Grok's re-review).
         val lane = h.transport
+        var executing: Herdr? = null
+        suspend fun runOn(client: Herdr) {
+            // A send waiting for its pane can run on the next connection to the same server.
+            executing = client
+            q.run(client)
+        }
+        fun authenticationFailed(message: () -> String) {
+            if (herdr === executing) {
+                stopForProblem(message())
+            } else q.pendingId?.let { id ->
+                pendingSends = pendingSends.map {
+                    if (it.id == id) it.copy(awaitingLink = false, waiting = false, undelivered = true,
+                        held = if (trace.started) MAY_HAVE_SENT else "the send failed on its previous connection") else it
+                }
+            }
+        }
         lane.beginSend()
         try { kotlinx.coroutines.withContext(trace) {
             val key = q.dispatchKey
-            if (key == null) q.run(h)
+            if (key == null) runOn(h)
             else {
                 val epoch = writeGate.epoch(key)
                 paneDispatch.run(key) {
                     // A close confirmed while this tap waited for the lane drops it, even once the close is over.
                     if (current?.id != key.first || writeGate.isClosing(key) || writeGate.epoch(key) != epoch) return@run
                     val connected = herdr
-                    if (connected != null && link == Link.CONNECTED) q.run(connected) else enqueue(q)
+                    if (connected != null && link == Link.CONNECTED) runOn(connected) else enqueue(q)
                 }
             }
         } } catch (c: CancellationException) {
@@ -1867,9 +1883,9 @@ class AppViewModel internal constructor(
             } else enqueue(q)
             if (herdr === h) linkLost(e)
         } catch (e: AuthRejected) {
-            stopForProblem(authMessage(current, null, e))
+            authenticationFailed { authMessage(current, null, e) }
         } catch (e: HostKeyChanged) {
-            stopForProblem(hostKeyMessage(e))
+            authenticationFailed { hostKeyMessage(e) }
         } catch (e: HerdrError) {
             error = "${q.label}: ${e.message}"
         } catch (e: com.billmongan.herdrdroid.herdr.DeliveryUncertain) {
