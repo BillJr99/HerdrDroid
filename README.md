@@ -653,6 +653,12 @@ To keep a new test class safe:
 
 ## Version history
 
+### 2.2.10
+
+- **Pane alerts.** When a complete Herdr TUI pane list confirms a pane has closed, its waiting alert clears. A partial list cannot clear it.
+- **SSH reconnects.** Authentication and host-key errors from a replaced connection no longer disconnect the active connection. Errors from the client that ran a read or send still surface when it is current.
+- **SSH over WebSocket.** After the WebSocket server closes, the bridge delivers already received bytes before closing the SSH connection, even if the SSH client writes or closes its sending side.
+
 ### 2.2.9
 
 - **Claude Code cards.** Long single questions and wrapped option descriptions appear in chat when the app can read them. If part of a question is missing, the card can show the text and choices it found and offer **Show terminal** for answering. The standalone `/fast` card shows availability or the displayed price for eligible fast mode. **Cancel** closes the notice after the app checks that it is still the same dialog. The native model-switch cache warning offers a guarded **No** action.
