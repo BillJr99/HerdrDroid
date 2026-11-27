@@ -184,8 +184,7 @@ class SendImmediately228Test {
                 Sample("muse", museCapture("foreground"), BackgroundStep.MUSE),
                 Sample("muse", museCapture("background"), null),
                 Sample("muse", museCapture("foreground").replace("❯", "❯ draft"), null),
-                Sample("muse", "Esc to cancel
-" + museCapture("foreground"), null),
+                Sample("muse", "Esc to cancel\n" + museCapture("foreground"), null),
                 Sample("muse", museCapture("foreground").replace("◆ Running command ·", "◆ Ran command ·"), null),
             )
             for ((agent, frame, expected) in samples) {
