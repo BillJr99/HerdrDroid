@@ -1,0 +1,39 @@
+
+  /fixture                                                            3.5k / 256k │ [Dashboard]
+
+
+     ❯ Call the terminal tool to print invented fixture values once.                                        1:14 PM
+
+
+     ◆ Running print invented fixture values
+
+
+
+
+
+
+
+
+
+
+
+
+    ◆ Print invented fixture values… 0.5s                                                       0.5s ⇣3.52k [↓][stop]
+
+  ┃
+  ┃  ›  Print invented fixture values
+  ┃  │ printf '%s\n' original-fixture-000 original-fixture-001 original-fixture-002 original-fixture-003·
+  ┃  ┆ original-fixture-004 original-fixture-005 original-fixture-006 original-fixture-007 original-fixture-008·
+  ┃  ┆ original-fixture-009 original-fixture-010 original-fixture-011 original-fixture-012 original-fixture-013·
+  ┃  ┆ original-fixture-014 original-fixture-015 original-fixture-016 original-fixture-017 original-fixture-018·
+  ┃  … Ctrl+F to expand
+  ┃  → narrow scope · e edit pattern
+  ┃
+  ┃  1 (○) Always allow: printf
+  ┃  3 (●) Yes, proceed
+  ┃  4 (○) No, reject (type to add feedback)
+  ┃  5 (○) Never allow: printf
+  ┃    (○) Yes, and don't ask again for anything (always-approve mode)
+  ┃
+
+  1/5:select  │  Tab:next option  │  →:scope  │  e:edit pattern  │  Ctrl+f:expand  │  Ctrl+c:cancel
