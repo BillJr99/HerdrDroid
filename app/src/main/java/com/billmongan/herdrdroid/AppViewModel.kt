@@ -7340,7 +7340,7 @@ class AppViewModel internal constructor(
             val list = watched?.panes?.let { panes ->
                 if (watched.server.paneQuotaCommand == s.paneQuotaCommand) panes
                 else panes.map { it.copy(quotaReading = null) }
-            } ?: serverPanes[s.id].orEmpty()
+            } ?: serverPanes[s.id].orEmpty().map { it.copy(quotaReading = null) }
             list.filter { it.agent != null }.forEach { p -> out += Session(s, p, shownStatus(p, s.id), "${s.id}|${p.tabLabel}" in pins, false) }
         }
         return out.sortedWith(compareBy({ statusOrder.indexOf(it.status) }, { !it.pinned }, { it.server.label.lowercase() }, { it.pane.tabLabel.lowercase() }))
