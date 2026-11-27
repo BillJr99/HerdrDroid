@@ -127,5 +127,6 @@ dependencies {
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
     testImplementation("org.json:json:20240303")
+    testImplementation("org.apache.sshd:sshd-core:2.16.0")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 }
