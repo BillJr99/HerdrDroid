@@ -658,6 +658,7 @@ To keep a new test class safe:
 - **Claude Code cards.** Long single questions and wrapped option descriptions appear in chat when the app can read them. If part of a question is missing, the card can show the text and choices it found and offer **Show terminal** for answering. When standalone `/fast` opens the availability notice, the card shows the explanation. **Cancel** closes the notice after the app checks that it is still the same dialog.
 - **Codex and Copilot activity.** A fresh Codex screen with only queued follow-ups or running activity clears an outdated question card. Copilot's recall hint for pending input stays out of the choices on a question card.
 - **Terminal submission.** For actions that type text and press Enter immediately, HerdrDroid can submit both in one native request on Herdr TUI. If the acknowledgement is lost, the app reports uncertain delivery and leaves the composer alone. Grok picker actions that need time to settle and herdr-core use their existing input paths.
+- **OpenCode notices.** The app keeps receipt checks tied to the selected pane across chat refreshes. Another OpenCode session in the same project cannot confirm delivery.
 - **Running work.** The pill displays subagent counts when the app can verify them. Open **Running under** to see the available details, including when the subagent count is unavailable.
 - **Local discovery.** The app limits reverse DNS work and discards results from cancelled scans. Missing local network access ends the scan cleanly.
 
