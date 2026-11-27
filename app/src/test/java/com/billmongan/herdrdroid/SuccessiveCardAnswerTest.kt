@@ -200,6 +200,22 @@ class SuccessiveCardAnswerTest {
         assertEquals(listOf("enter"), sent)
     }
 
+    @Test fun agyLongCommandReplacedAtTheSendIsRefused() = fixture(
+        "agy", res("/screens/agy/derived-2.2.8-format/long-command-approval.txt"),
+    ) {
+        readSelectedPane()
+        val card = displayed()
+        assertEquals("Yes, run command", card.choices.first().label)
+        assertTrue(card.question.contains("JOBS=4"))
+
+        beforeCheck = { frame = frame.replace("JOBS=4", "JOBS=8") }
+        answer(card)
+        assertEquals(1, cardChecksRefused)
+        assertTrue(sent.isEmpty())
+        assertEquals(CARD_UPDATED_NOTE, vm.notice)
+        assertTrue(displayed().question.contains("JOBS=8"))
+    }
+
     /** 2.2.8: the dialog changed before the tap's read: the card shows it now, nothing typed. */
     @Test fun aDialogChangedBeforeTheTapUpdatesTheCardAndSendsNothing() = fixture("grok", grokScreen("approval-whole.ansi")) {
         readSelectedPane()
