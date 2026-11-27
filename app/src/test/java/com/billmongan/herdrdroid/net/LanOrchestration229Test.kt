@@ -4,6 +4,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
@@ -34,6 +35,31 @@ class LanOrchestration229Test {
         )
         assertEquals(listOf(1 to 1), progress)
         assertEquals(listOf(LanHost("192.0.2.2", "server", "OpenSSH 9.6")), found)
+    }
+
+    @Test fun cancelledLookupCannotPublishAHostAfterReplacementScan() = runBlocking {
+        val pending = CompletableDeferred<String?>()
+        val entered = CompletableDeferred<Unit>()
+        val found = mutableListOf<LanHost>()
+        suspend fun scan(reverse: suspend (String) -> String?) = scanLan(
+            network = { "192.0.2.1" to 30 },
+            discover = { emptyMap() },
+            probe = { "SSH-2.0-test" },
+            reverse = reverse,
+            onProgress = { _, _ -> },
+            onFound = { found += it },
+        )
+        val old = async {
+            scan {
+                entered.complete(Unit)
+                pending.await()
+            }
+        }
+        withTimeout(2_000) { entered.await() }
+        old.cancelAndJoin()
+        scan { "replacement" }
+        pending.complete("stale")
+        assertEquals(listOf(LanHost("192.0.2.2", "replacement", "test")), found)
     }
 
     @Test fun blockedResolverCannotHoldUpTheScanOrStartAnUnboundedQueue() = runBlocking {
