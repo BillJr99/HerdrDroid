@@ -220,7 +220,7 @@ class SmallPacketFallbackVm226Test {
             idle()
             assertTrue(read.isCompleted)
             assertNull(vm.current)
-            assertEquals(Link.OFFLINE, vm.link)
+            assertEquals(Screen.Servers, vm.screen)
             assertFalse(vm.error.isNullOrBlank())
         }
     }

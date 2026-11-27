@@ -1764,9 +1764,11 @@ class AppViewModel internal constructor(
             if (herdr === h) linkLost(e)
             null
         } catch (e: AuthRejected) {
-            stopForProblem(authMessage(current, null, e)); null
+            if (herdr === h) stopForProblem(authMessage(current, null, e))
+            null
         } catch (e: HostKeyChanged) {
-            stopForProblem(hostKeyMessage(e)); null
+            if (herdr === h) stopForProblem(hostKeyMessage(e))
+            null
         } catch (e: Exception) {
             // 2.2.6: a read that timed out soon after sign-in: reconnect once with small packets.
             if (herdr === h && maybeSmallPacketFallback(e, h.transport)) {
