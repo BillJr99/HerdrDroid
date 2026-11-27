@@ -1,0 +1,8 @@
+○ Thought for 44.1s (Planning the execution phase requires care...)
+● Ran (printf '%s\n' fixture-b-001 fixture...) (ctrl+o to expand)
+
+  ⎿  Interrupted · What should Antigravity CLI do instead?
+────────────────────────────────────────────────────────────────────
+>
+────────────────────────────────────────────────────────────────────
+? for shortcuts                  Orchestrator · Gemini 4 Neon · high

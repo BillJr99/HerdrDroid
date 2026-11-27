@@ -2,6 +2,7 @@ package com.billmongan.herdrdroid.herdr
 
 import com.billmongan.herdrdroid.notify.alertPlan
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -19,5 +20,16 @@ class GrokNativeClipped229Test {
         assertFalse(approval.question.contains("fixture-a-420"))
         assertTrue(approval.choices.any { it.label == "Yes, proceed" })
         assertTrue(alertPlan(approval).buttons.isEmpty())
+    }
+    @Test fun delayedNativeRejectionDoesNotTurnTheViewerOrReceiptIntoApproval() {
+        fun frame(name: String) = checkNotNull(
+            javaClass.getResource("/screens/grok/captured-1.0.92-tall/$name.txt")
+        ).readText()
+
+        val stillOpen = checkNotNull(detectPrompt(frame("late-reject"), blocked = true, agent = "grok"))
+        assertTrue(stillOpen.clipped)
+        assertTrue(alertPlan(stillOpen).buttons.isEmpty())
+        assertNull(detectPrompt(frame("viewer-open"), blocked = false, agent = "grok"))
+        assertNull(detectPrompt(frame("reject-receipt"), blocked = false, agent = "grok"))
     }
 }

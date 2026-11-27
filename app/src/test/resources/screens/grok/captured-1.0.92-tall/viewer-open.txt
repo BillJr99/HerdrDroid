@@ -1,0 +1,17 @@
+  ╭───────────────────────────────────────────────────────── [✗] ─╮
+  │                                                               │
+  │           fixture-b-291 fixture-b-292 fixture-b-293        ▲  │
+  │           fixture-b-294 fixture-b-295 fixture-b-296           │
+  │           fixture-b-297 fixture-b-298 fixture-b-299           │
+  │           fixture-b-300 fixture-b-301 fixture-b-302           │
+  │           fixture-b-303 fixture-b-304 fixture-b-305           │
+  │           fixture-b-306 fixture-b-307 fixture-b-308           │
+  │           fixture-b-309 fixture-b-310 fixture-b-311           │
+  │           fixture-b-312 fixture-b-313 fixture-b-314           │
+  │           fixture-b-315 fixture-b-316 fixture-b-317           │
+  │           fixture-b-318 fixture-b-319 fixture-b-320           │
+  │           fixture-b-321 fixture-b-322 fixture-b-323           │
+ ╭│           fixture-b-324 fixture-b-325 fixture-b-326        ▼  │╮
+ │╰───────────────────────────────────────────────────────────────╯│
+ ╰───────────────────────────────── Grok 4.7 (high) · auto-review ─╯
+ Esc:close  │  Enter:quote  │  /:search  │  f:filter  │  v:select

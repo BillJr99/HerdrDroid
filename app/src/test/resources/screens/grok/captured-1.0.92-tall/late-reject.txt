@@ -1,0 +1,17 @@
+    fixture-b-420 in full, and wait for the terminal
+    approval.
+
+    ◆ Running print fixture-b-001 through fixture-b-420 literally
+
+
+  ◆ Print fixture-b-001 through fixture… 17s   1m5s ⇣33.5k [↓][stop]
+ ┃  │ printf '%s\n' fixture-b-001 fixture-b-002 fixture-b-003·
+ ┃  ┆ fixture-b-004 fixture-b-005 fixture-b-006 fixture-b-007·
+ ┃  ┆ fixture-b-008 fixture-b-009 fixture-b-010 fixture-b-011·
+ ┃  … Ctrl+F to expand
+ ┃  1 (○) Always allow: printf
+ ┃  3 (●) Yes, proceed
+ ┃  4 (○) No, reject (type to add feedback)
+ ┃  5 (○) Never allow: printf
+ ┃    (○) Yes, and don't ask again for anything (always-approve mo
+ 1/5:select  │  Tab:next option  │  →:scope  │  e:edit pattern

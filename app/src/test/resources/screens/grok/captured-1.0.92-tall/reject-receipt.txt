@@ -1,0 +1,17 @@
+    command that prints 420 literal invented tokens,
+    from fixture-b-001 through fixture-b-420, written …
+
+    ◆ Thought for 30.5s
+
+    I'll run one printf that lists fixture-b-001 through   7:57 AM
+    fixture-b-420 in full, and wait for the terminal
+    approval.
+
+    ◆ Rejected printf '%s\n' fixture-b-001 fixture-b-002 fixture-…
+
+    Turn cancelled because a permission was denied in 1m18s.
+
+ ╭─────────────────────────────────────────────────────────────────╮
+ │ ❯                                                               │
+ ╰───────────────────────────────── Grok 4.7 (high) · auto-review ─╯
+ Ctrl+.:shortcuts

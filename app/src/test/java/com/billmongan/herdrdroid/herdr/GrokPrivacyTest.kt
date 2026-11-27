@@ -83,6 +83,22 @@ class GrokPrivacyTest {
         assertEquals("", grokInputText(capture("resume-after-manual-clear")))
     }
 
+    @Test fun nativePickersDismissWithoutLeavingACommandDraft() {
+        fun capture(name: String) = checkNotNull(
+            javaClass.getResource("/screens/grok/captured-1.0.92-picker-draft/$name.txt")
+        ).readText()
+
+        assertNull(grokInputText(capture("resume-picker")))
+        val privacy = checkNotNull(detectGrokPrivacyDialog(capture("privacy-picker")))
+        assertEquals("2", privacy.selected)
+        assertNull(grokInputText(capture("privacy-picker")))
+        for (name in listOf("resume", "privacy")) {
+            val dismissed = capture("$name-dismissed")
+            assertEquals("", grokInputText(dismissed))
+            assertNull(detectPrompt(dismissed, blocked = false, agent = "grok"))
+        }
+    }
+
     @Test fun bannerNeverMergesIntoACard() {
         val card = """
   Help improve Grok                                                                                               [Opt out] [Opt in]
