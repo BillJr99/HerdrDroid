@@ -4146,6 +4146,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     if (agent.equals("agy", true)) {
         agySubagentQuestion(plain)?.let { return it }
         agySubagentApproval(plain)?.let { return it }
+        agyClippedShellCommand(plain)?.let { return terminalCommandReview(it) }
     }
     if (ruleAgent(agent) in setOf("kiro", "kiro-cli")) kiroApprovalShortcuts(plain)?.let { return it }
     if (agent.equals("hermes", true)) hermesUsageEnd(plain)?.let { end ->

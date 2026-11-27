@@ -35,3 +35,25 @@ internal fun agySubagentQuestion(screen: String): Prompt? {
     if (!PICKER_HEADER.matches(row)) return null
     return Prompt(row, emptyList(), region = listOf(row), terminalReview = true)
 }
+
+private val SHELL_APPROVAL_HINT = Regex(
+    """↑/↓ Navigate · tab Amend · ctrl\+g edit/expand command""", RegexOption.IGNORE_CASE,
+)
+private val SHELL_APPROVAL_FOOTER = Regex("""esc to cancel(?:\s{2,}\S.*)?""", RegexOption.IGNORE_CASE)
+
+/** A native shell approval can omit the command's tail from both the viewport and recent history. */
+internal fun agyClippedShellCommand(screen: String): String? {
+    val rows = stripAnsi(screen).lines().takeLast(80).map(String::trim)
+        .filter(String::isNotEmpty)
+    if (rows.size < 8 || !SHELL_APPROVAL_FOOTER.matches(rows.last()) ||
+        !SHELL_APPROVAL_HINT.matches(rows[rows.lastIndex - 1])) return null
+    val question = rows.indexOfLast { it == "Run this command?" }
+    if (question < 2 || question >= rows.size - 4 ||
+        rows[question + 1].removePrefix("> ").trim() != "1. Yes, run command" ||
+        rows[rows.lastIndex - 2].removePrefix("> ").trim() != "4. No, cancel") return null
+    val intro = rows.subList(0, question).indexOfLast { it == "Requesting permission for:" }
+    if (intro < 0 || intro + 1 >= question) return null
+    val lastCommandRow = rows[question - 1]
+    if (!lastCommandRow.endsWith("...") && !lastCommandRow.endsWith("…")) return null
+    return rows.subList(intro + 1, question).joinToString("\n")
+}
