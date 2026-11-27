@@ -1,5 +1,8 @@
 package com.billmongan.herdrdroid.ui
 
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
@@ -81,14 +84,17 @@ class BoardScreen2210UiTest {
     @Test fun conflictShowsBothValuesAndSendsTheChosenResolution() {
         val source = BoardSource("remote", "Shared")
         val card = BoardCard("a", "Plan", next = "Check draft")
+        val remote = card.copy(next = "Review changes")
+        val board = ServerBoard(
+            entries = mapOf(card.id to card),
+            baseline = mapOf(card.id to remote),
+            conflicted = mapOf(card.id to setOf("next")),
+        )
+        val state = mutableStateOf(BoardState(servers = mapOf(source.id to board)))
         var chosen: List<Any> = emptyList()
         rule.setContent {
             BoardScreen(
-                state = BoardState(servers = mapOf(source.id to ServerBoard(
-                    entries = mapOf(card.id to card),
-                    baseline = mapOf(card.id to card.copy(next = "Review changes")),
-                    conflicted = mapOf(card.id to setOf("next")),
-                ))),
+                state = state.value,
                 servers = listOf(source),
                 onMenu = {}, onBack = {}, onRefresh = {}, onRetry = {},
                 onSave = { _, _ -> }, onMovePhoneCard = { _, _ -> }, onAddNote = { _, _, _ -> },
@@ -99,7 +105,15 @@ class BoardScreen2210UiTest {
         rule.onNodeWithText("Plan").performClick()
         rule.onNodeWithText("Phone: Check draft").assertExists()
         rule.onNodeWithText("Server: Review changes").assertExists()
+        rule.onNodeWithText("Edit card").assertIsNotEnabled()
         rule.onNodeWithText("Keep server").performClick()
-        rule.runOnIdle { assertEquals(listOf("remote", "a", "next", false), chosen) }
+        rule.runOnIdle {
+            assertEquals(listOf("remote", "a", "next", false), chosen)
+            state.value = BoardState(servers = mapOf(source.id to board.copy(
+                entries = mapOf(card.id to remote),
+                conflicted = emptyMap(),
+            )))
+        }
+        rule.onNodeWithText("Edit card").assertIsEnabled()
     }
 }
