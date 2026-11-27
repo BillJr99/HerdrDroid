@@ -13,12 +13,18 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.SynchronousQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
 
 /** A machine on the local network that answers SSH: a candidate HerdrDroid server. */
 data class LanHost(val ip: String, val name: String?, val ssh: String?)
@@ -66,33 +72,14 @@ object LanScan {
      * SSH version line each machine sends first is read. [onProgress] gets (checked, total).
      */
     suspend fun scan(context: Context, onProgress: (Int, Int) -> Unit, onFound: (LanHost) -> Unit) {
-        val (ip, prefix) = localNetwork(context) ?: return
-        val names = mutableMapOf<String, String>()
-        val nsd = try {
-            mdnsNames(context)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Exception) {
-            emptyMap()
-        }
-        names.putAll(nsd)
-        val hosts = subnetHosts(ip, prefix)
-        var done = 0
-        val gate = Semaphore(48)
-        coroutineScope {
-            hosts.map { h ->
-                async(Dispatchers.IO) {
-                    gate.withPermit {
-                        val banner = probe(h)
-                        synchronized(this@LanScan) { done++; onProgress(done, hosts.size) }
-                        if (banner != null) {
-                            val name = names[h] ?: withTimeoutOrNull(1_500) { reverseName(h) }
-                            onFound(LanHost(h, name, sshVersion(banner) ?: "SSH"))
-                        }
-                    }
-                }
-            }.awaitAll()
-        }
+        scanLan(
+            network = { localNetwork(context) },
+            discover = { mdnsNames(context) },
+            probe = ::probe,
+            reverse = reverseLookup::name,
+            onProgress = onProgress,
+            onFound = onFound,
+        )
     }
 
     /** Connects to port 22 and reads the first line the server sends; null when nothing answers. */
@@ -106,8 +93,8 @@ object LanScan {
         }
     }.getOrNull()
 
-    private suspend fun reverseName(ip: String): String? = withContext(Dispatchers.IO) {
-        runCatching { InetAddress.getByName(ip).canonicalHostName }.getOrNull()?.takeIf { it != ip }
+    private val reverseLookup = LanReverseLookup {
+        InetAddress.getByName(it).canonicalHostName
     }
 
     /** mDNS names of machines advertising `_ssh._tcp`, by IPv4 address, gathered for about 3 s. */
@@ -138,7 +125,7 @@ object LanScan {
             waitForResults = { delay(3_000) },
             stop = { nsd.stopServiceDiscovery(listener) },
         )
-        return out
+        return out.toMap()
     }
 }
 
@@ -149,5 +136,76 @@ internal suspend fun collectLanDiscovery(start: () -> Unit, waitForResults: susp
         waitForResults()
     } finally {
         runCatching { stop() }
+    }
+}
+
+
+internal suspend fun scanLan(
+    network: () -> Pair<String, Int>?,
+    discover: suspend () -> Map<String, String>,
+    probe: (String) -> String?,
+    reverse: suspend (String) -> String?,
+    onProgress: (Int, Int) -> Unit,
+    onFound: (LanHost) -> Unit,
+) {
+    val (ip, prefix) = try {
+        network()
+    } catch (_: SecurityException) {
+        null
+    } ?: return
+    val names = try {
+        discover().toMap()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        emptyMap()
+    }
+    val hosts = subnetHosts(ip, prefix)
+    var done = 0
+    val progressLock = Any()
+    val gate = Semaphore(48)
+    coroutineScope {
+        hosts.map { host ->
+            async(Dispatchers.IO) {
+                gate.withPermit {
+                    val banner = probe(host)
+                    synchronized(progressLock) {
+                        ensureActive()
+                        onProgress(++done, hosts.size)
+                    }
+                    if (banner != null) {
+                        val name = names[host] ?: reverse(host)
+                        ensureActive()
+                        onFound(LanHost(host, name, sshVersion(banner) ?: "SSH"))
+                    }
+                }
+            }
+        }.awaitAll()
+    }
+}
+
+/** A platform DNS lookup may ignore interrupts. Keep its workers bounded across scans. */
+internal class LanReverseLookup(
+    threads: Int = 4,
+    private val timeoutMs: Long = 1_500,
+    private val resolve: (String) -> String?,
+) {
+    private val workers = ThreadPoolExecutor(
+        0, threads, 15L, TimeUnit.SECONDS, SynchronousQueue(),
+    ) { job -> Thread(job, "lan-reverse-lookup").apply { isDaemon = true } }
+
+    suspend fun name(ip: String): String? = withTimeoutOrNull(timeoutMs) {
+        suspendCancellableCoroutine { continuation ->
+            val work = try {
+                workers.submit {
+                    val name = runCatching { resolve(ip) }.getOrNull()?.takeIf { it != ip }
+                    continuation.resume(name)
+                }
+            } catch (_: RejectedExecutionException) {
+                continuation.resume(null)
+                return@suspendCancellableCoroutine
+            }
+            continuation.invokeOnCancellation { work.cancel(true) }
+        }
     }
 }
