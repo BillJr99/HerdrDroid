@@ -348,8 +348,8 @@ private val CLAUDE_CLIPPED_TYPE = Regex("""^  (\d{1,2})\. Type something\.$""")
 private val CLAUDE_CLIPPED_CHAT_PLAIN = Regex("""^  (\d{1,2})\. Chat about this$""")
 private val CLAUDE_SINGLE_DESCRIPTION = Regex("""^ {5}\S.*$""")
 
-/** The native single-select viewport can start inside an option description, above its clip counter. */
-private fun claudeClippedSingleDescriptionRows(frame: List<String>): List<String>? {
+/** A clipped native single-select viewport can start inside its question or an option description. */
+private fun claudeClippedSingleRows(frame: List<String>): List<String>? {
     val rows = frame.filter { it.isNotBlank() }.map { it.trimEnd() }
     if (rows.size < 7 || !CLAUDE_SINGLE_CLIP_COUNT.matches(rows.last().trim())) return null
     val chat = CLAUDE_CLIPPED_CHAT_PLAIN.matchEntire(rows[rows.lastIndex - 1]) ?: return null
@@ -359,14 +359,19 @@ private fun claudeClippedSingleDescriptionRows(frame: List<String>): List<String
     if (typeNumber !in 3..5 || chat.groupValues[1].toInt() != typeNumber + 1) return null
     val body = rows.dropLast(4)
     val firstOption = body.indexOfFirst { CLAUDE_CLIPPED_OPTION.matches(it) }
-    if (firstOption <= 0 || body.take(firstOption).any { !CLAUDE_SINGLE_DESCRIPTION.matches(it) }) return null
+    if (firstOption <= 0) return null
+    val leadingRows = body.take(firstOption)
     val options = body.drop(firstOption).mapNotNull { row ->
         if (CLAUDE_SINGLE_DESCRIPTION.matches(row)) null
         else CLAUDE_CLIPPED_OPTION.matchEntire(row) ?: return null
     }
     val numbers = options.map { it.groupValues[2].toInt() }
     val firstNumber = numbers.first()
-    if (firstNumber < 2 || numbers != (firstNumber until typeNumber).toList()) return null
+    if (numbers != (firstNumber until typeNumber).toList()) return null
+    if (firstNumber == 1) {
+        // A wrapped question starts above the viewport, in Claude's question gutter.
+        if (leadingRows.any { !it.startsWith("│ ") } || options.count { it.groupValues[1].isNotEmpty() } != 1) return null
+    } else if (firstNumber < 2 || leadingRows.any { !CLAUDE_SINGLE_DESCRIPTION.matches(it) }) return null
     return rows.dropLast(1)
 }
 
@@ -397,7 +402,7 @@ internal fun claudeClippedAskReview(text: String): Prompt? {
     val footer = rows.indexOfLast { it.isNotBlank() }
     if (footer < 0 || !claudeAskFooter(rows[footer])) return null
     val above = rows.take(footer).dropWhile { it.isBlank() }
-    val body = claudeClippedCheckboxRows(above + rows[footer]) ?: claudeClippedSingleDescriptionRows(above) ?: run {
+    val body = claudeClippedCheckboxRows(above + rows[footer]) ?: claudeClippedSingleRows(above) ?: run {
         val first = CLAUDE_CLIPPED_OPTION.matchEntire(above.firstOrNull() ?: return null) ?: return null
         // An ordinary numbered message starts at one. A real tab or an older Ask footer
         // proves this is a mixed viewport, so leave it to the regular dialog parser.

@@ -1,0 +1,22 @@
+[0m[2m│ [0m[1m[38;5;231mreviewers compare the results. The sample team w[0m
+
+[0m[38;5;153m❯[0m [0m[38;5;246m1.[0m [0m[38;5;153mPreview the result (Recommended)[0m
+     [0m[38;5;246mPreview the changes with local fixtures, record the exact [0m
+     [0m[38;5;246minputs, and let the second reviewer verify the same result [0m
+     [0m[38;5;246mwithout modifying any shared branch. Preview the changes [0m
+     [0m[38;5;246mwith local fixtures, record the exact inputs, and let the [0m
+     [0m[38;5;246msecond reviewer verify the same result without modifying [0m
+     [0m[38;5;246many shared branch. Preview the changes wi[0m
+  [0m[38;5;246m2.[0m Propose a small change
+     [0m[38;5;246mMake a small proposal for the fixture repository. Explain [0m
+     [0m[38;5;246mthe tradeoffs and preserve the evidence for the next [0m
+     [0m[38;5;246mreader.[0m
+  [0m[38;5;246m3. [0mKeep the existing layout
+     [0m[38;5;246mKeep the existing layout until the sample team can compare [0m
+     [0m[38;5;246mboth approaches. Record the open question in the local [0m
+     [0m[38;5;246mnotes.[0m
+  [0m[38;5;246m4. Type something.[0m
+[0m[38;5;246m────────────────────────────────────────────────────────────────[0m
+  5. Chat about this
+[0m[38;5;220m ↑ 13 more lines [0m
+[0m[38;5;246mEnter to select · ↑/↓ to navigate · Esc to cancel[0m
