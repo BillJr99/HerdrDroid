@@ -4784,6 +4784,15 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
     // The whole question: every line above the first choice up to a blank line, the top of the
     // question's box or a rule (at most 20 lines), so a long question isn't cut.
     val firstOption = run.firstOrNull()?.let { raw.lastIndexOf(lines[it.first]) } ?: -1
+    // Claude wraps a long single question inside its own vertical gutter. It may have no
+    // question mark at the end of a row, and the single tab is not a multi-question tab bar.
+    val singleClaudeBar = if (agent.equals("claude", true) && dialogAt < 0 && run.firstOrNull()?.second == "1" &&
+        raw.lastOrNull { it.isNotBlank() }?.let(::claudeAskFooter) == true) {
+        (firstOption - 1 downTo 0).firstOrNull { claudeAskTab(raw[it]) }?.takeIf { tab ->
+            val questionRows = raw.subList(tab + 1, firstOption).filter { it.isNotBlank() }
+            questionRows.isNotEmpty() && questionRows.all { it.startsWith("│ ") }
+        }
+    } else null
     // Grok's command rows ("│ git …·", "┆ …"), read whatever frame its box has (2.1.4): Grok's
     // screen, or any screen with a row in Grok's "┆" gutter.
     val grokRows = agent.equals("grok", true) || raw.any { r -> GrokMeta.commandRow(r, null)?.cont == true }
@@ -4800,9 +4809,11 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
             // Claude's multi-question dialog: everything from its tab bar down to the options is the
             // question, including the review step's "● Close 537" / "→ Close it" rows (1.2.9).
             // 2.2.8: however tall the question is (it was 30 rows), and its fenced code kept row by row.
-            val barAt = (at - 1 downTo maxOf(0, at - TALL_QUESTION_ROWS)).firstOrNull { parseTabBar(clean(raw[it])) != null }
+            val barAt = singleClaudeBar ?: (at - 1 downTo maxOf(0, at - TALL_QUESTION_ROWS))
+                .firstOrNull { parseTabBar(clean(raw[it])) != null }
             if (barAt != null) {
-                got += dialogQuestionLines(raw.subList(barAt, at), clean)
+                val questionStart = if (singleClaudeBar != null) barAt + 1 else barAt
+                got += dialogQuestionLines(raw.subList(questionStart, at), clean)
                 walkTop = barAt
                 return@let got.takeIf { it.isNotEmpty() }
             }
@@ -4949,7 +4960,7 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
         !PROMPT_ECHO.containsMatchIn(it.trimStart()) && clean(it).endsWith("?") && !CODE_LINE.containsMatchIn(clean(it))
     }
     val plainEcho = raw.firstOrNull { it.isNotBlank() }?.trimStart()?.startsWith("❯ ") == true
-    val rejectEcho = dialogAt < 0 && !approvalHeader && !questionHeader &&
+    val rejectEcho = dialogAt < 0 && singleClaudeBar == null && !approvalHeader && !questionHeader &&
         (agent?.lowercase() == "claude" || (agent == null && plainEcho)) &&
         raw.any { PROMPT_ECHO.containsMatchIn(it.trimStart()) }
 
