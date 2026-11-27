@@ -1173,18 +1173,45 @@ class SuccessiveCardAnswerTest {
             val card = displayed()
             assertFalse(card.terminalReview)
             assertTrue(card.shownParts().command.orEmpty().contains(
-                "tool.py -c 12345 --preview --format text --file /home/user/project/fixture/fixture/fixtures/data.json"
+                "tool.py -\nc 12345 --preview --format text --file /home/user/project/fixture/fixture/\nfixtures/data.json"
             ))
             assertEquals(listOf("Allow once", "Always allow", "Reject"), card.choices.map { it.label })
-            answer(shown(), checkNotNull(vm.paneTextTarget), index = 1)
+            assertNull(card.selected)
+            answer(card, checkNotNull(vm.paneTextTarget), index = 1)
             assertTrue(sent.isEmpty())
             val ask = checkNotNull(vm.approveAllPending).ask
-            assertEquals(listOf("right", "enter"), ask.keys)
+            assertNull(ask.keys)
+            assertNull(ask.reason)
             vm.confirmApproveAll()
             drainUntil { !vm.answerInFlight("p1") }
             assertEquals(listOf("right enter"), sent)
         }
     }
+
+    @Test fun wrappedOpenCodePermissionFallsBackForUnframedOrClippedRows() {
+        val frame = res("/screens/opencode/derived-2.2.10/permission-wrapped.txt")
+        val changedFrames = listOf(
+            frame.replace("  ┃  c 12345", "     c 12345"),
+            frame.replace("fixtures/data.json", "fixtures/…"),
+            frame.replace("  ┃  △ Permission required\n", ""),
+        )
+        for (changed in changedFrames) {
+            val card = checkNotNull(detectPrompt(changed, blocked = false, agent = "opencode"))
+            assertTrue(card.terminalReview)
+            assertTrue(card.choices.isEmpty())
+        }
+    }
+
+    @Test fun wrappedOpenCodeStandingPermissionWithUnprovenFocusSendsNothing() =
+        fixture("opencode", res("/screens/opencode/derived-2.2.10/permission-wrapped.txt")) {
+            readSelectedPane()
+            val card = displayed()
+            answer(card, checkNotNull(vm.paneTextTarget), index = 1)
+            assertNull(checkNotNull(vm.approveAllPending).ask.reason)
+            vm.confirmApproveAll()
+            drainUntil { !vm.answerInFlight("p1") }
+            assertTrue(sent.isEmpty())
+        }
 
     @Test fun nativeOpenCodeRejectDoesNotConfirmTheHighlightedApproval() = fixture("opencode", openCodePermission) {
         readSelectedPane()

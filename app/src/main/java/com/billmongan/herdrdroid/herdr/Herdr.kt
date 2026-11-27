@@ -3865,6 +3865,23 @@ private fun detectOpenCodePermission(styled: String, text: String): Prompt? {
     val buttons = OPENCODE_PERMISSION_BUTTONS.find(if (buttonRow == footer) onFooter else clean(rows[buttonRow])) ?: return review()
     val body = rows.subList(title + 1, buttonRow).map(::clean).filter(String::isNotEmpty)
     if (body.isEmpty() || body.any { '…' in it || "..." in it } || body.last().trim() in listOf("$", "# Shell command")) return review()
+    val details = if (command != null && checkNotNull(commandEnd) - command > 1) {
+        // OpenCode word-wraps after punctuation as well as whitespace. The pane read can
+        // omit row-end spaces, so a join could change an option or a path. Keep the complete
+        // run in one code block with its original row boundaries, as in the terminal.
+        val end = checkNotNull(commandEnd)
+        val first = rows[command]
+        val gutter = first.substringBefore("$ ")
+        if (end >= buttonRow || !gutter.matches(Regex("""^\s*[┃│|] +$""")) ||
+            rows.subList(end, buttonRow).any { clean(it).isNotEmpty() }) return review()
+        val continuation = rows.subList(command + 1, end)
+        if (continuation.any { !it.startsWith(gutter) || it.removePrefix(gutter).trimStart().startsWith("$ ") }) return review()
+        val context = rows.subList(title + 1, command).map(::clean).filter(String::isNotEmpty)
+        val parsed = questionParts((listOf(heading) + context).map { QLine(it) })
+        val commandLines = listOf(first.removePrefix(gutter).removePrefix("$ ")) + continuation.map { it.removePrefix(gutter) }
+        parsed.copy(blocks = parsed.blocks + QBlock(QKind.COMMAND, commandLines.joinToString("\n")) +
+            QBlock(QKind.TEXT, "Line breaks follow the terminal display."))
+    } else questionParts((listOf(heading) + body).map { QLine(it) })
     val labels = listOfNotNull(buttons.groups[1]?.value, buttons.groups[2]?.value, buttons.groups[3]?.value)
     val styledRow = styled.lines().getOrNull(buttonRow).orEmpty()
     val chars = styledChars(styledRow)
@@ -3881,7 +3898,7 @@ private fun detectOpenCodePermission(styled: String, text: String): Prompt? {
         else null
     // Every button the dialog shows, Always allow included (2.1.2, Bill: "The alert should offer
     // whatever options the question does").
-    return Prompt(heading, labels.mapIndexed { i, label -> Choice(label, (i + 1).toString(), false) }, focused, escRejects = true, parts = questionParts((listOf(heading) + body).map { QLine(it) }),
+    return Prompt(heading, labels.mapIndexed { i, label -> Choice(label, (i + 1).toString(), false) }, focused, escRejects = true, parts = details,
         horizontal = true, approvalIdentity = rows.subList(title, buttonRow).joinToString("\n"), openCodePermission = true)
 }
 private val OPENCODE_WEB_SEARCH_OPTION = Regex("""^(?:[❯›>]\s*)?([1-3])[.]\s+(.+)$""")
@@ -4528,7 +4545,11 @@ data class ApproveAllAsk(val label: String, val keys: List<String>?, val reason:
 fun approveAllAsk(p: Prompt, c: Choice): ApproveAllAsk? {
     if (!approvesFromNowOn(c)) return null
     val keys = if (blockedChoiceReason(c) == null) menuKeys(p, c) else null
-    val reason = blockedChoiceReason(c) ?: if (keys == null) "Not sent: the app can't tell which keys pick this option. Use the terminal." else null
+    // OpenCode's chat card is drawn without ANSI. The confirm action reads its live focus
+    // before choosing any movement keys, just as for Allow once.
+    val canReadLiveFocus = p.openCodePermission && !p.terminalReview && !p.historyReviewOnly && c in p.choices
+    val reason = blockedChoiceReason(c) ?: if (keys == null && !canReadLiveFocus)
+        "Not sent: the app can't tell which keys pick this option. Use the terminal." else null
     return ApproveAllAsk(c.label, keys, reason)
 }
 

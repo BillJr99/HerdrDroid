@@ -6321,7 +6321,7 @@ class AppViewModel internal constructor(
     fun confirmApproveAll() {
         val p = approveAllPending ?: return
         approveAllPending = null
-        if (p.ask.reason != null || p.ask.keys == null || p.serverId != current?.id) return
+        if (p.ask.reason != null || p.serverId != current?.id) return
         answerChoice(p.paneId, p.prompt, p.choice, target = p.target, feedback = p.feedback, confirmed = true)
     }
 
@@ -6406,7 +6406,7 @@ class AppViewModel internal constructor(
                 report("Not sent. The app couldn't see which option Muse has highlighted. Open Terminal to choose.")
                 return@answerOnce
             }
-            if (fresh.openCodePermission && keys == null) {
+            if (fresh.openCodePermission && (keys == null || confirmed && guard == null)) {
                 report("Not sent. Open Terminal to verify the selected permission button.")
                 return@answerOnce
             }
