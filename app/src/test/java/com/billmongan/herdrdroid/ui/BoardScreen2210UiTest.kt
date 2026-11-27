@@ -26,7 +26,10 @@ class BoardScreen2210UiTest {
     @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = IdleMainLooperRule()
     @get:Rule val rule = createComposeRule()
 
-    @Test fun createsPhoneCardWithoutAServer() {
+    // Robolectric cannot settle dialogs with text fields on wider viewports.
+    @Test
+    @Config(qualifiers = "w320dp-h1000dp")
+    fun createsPhoneCardWithoutAServer() {
         var savedServer: String? = "not called"
         var savedTitle = ""
         rule.setContent {
