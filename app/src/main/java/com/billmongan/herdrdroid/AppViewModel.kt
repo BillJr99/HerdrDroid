@@ -2639,7 +2639,7 @@ class AppViewModel internal constructor(
             val shownCodexCard = recentCodexCard && paneTextPane == paneId && paneText.isNotBlank() &&
                 detectPrompt(paneText, blocked, agent, version) != null
             val requireCodexApprovalIdentity = (missingCodexCard && preview?.terminalReview != true) || recentCodexQuestion
-            val unfinishedChoicePreview = agent in setOf("claude", "agy") &&
+            val unfinishedChoicePreview = agent in setOf("claude", "agy", "grok") &&
                 paneStatus == Status.WORKING && preview?.choices.isNullOrEmpty()
             val verifyOpenCode = isOpenCode(agent) && client?.backend == Backend.TUI &&
                 (blocked || paneStatus == Status.WORKING || preview != null || openCodeBackgroundDrawer(agent, recent))
@@ -2671,13 +2671,16 @@ class AppViewModel internal constructor(
                 if (verifyPi) activePiQuestion(it, version)
                 else detectPrompt(it, pane(paneId)?.status == Status.NEEDS_YOU, agent, version)
             }
-            fun agyNativeReview(text: String): Boolean = agent.equals("agy", true) &&
-                (com.billmongan.herdrdroid.herdr.agySubagentQuestion(text) != null ||
-                    com.billmongan.herdrdroid.herdr.agySubagentApproval(text)?.terminalReview == true)
-            val recentAgyReview = agyNativeReview(recent)
-            val liveAgyReview = liveCard?.let(::agyNativeReview) == true
+            fun nativeReview(text: String): Boolean = when (agent?.lowercase()) {
+                "agy" -> com.billmongan.herdrdroid.herdr.agySubagentQuestion(text) != null ||
+                    com.billmongan.herdrdroid.herdr.agySubagentApproval(text)?.terminalReview == true
+                "grok" -> com.billmongan.herdrdroid.herdr.grokPrivacyOverlay(text) != null
+                else -> false
+            }
+            val recentNativeReview = nativeReview(recent)
+            val liveNativeReview = liveCard?.let(::nativeReview) == true
             val livePrompt = liveCandidate?.takeIf {
-                verifyOpenCode || it.codexQuestion || liveAgyReview ||
+                verifyOpenCode || it.codexQuestion || liveNativeReview ||
                     (it.choices.isNotEmpty() && !it.terminalReview && (!requireCodexApprovalIdentity || it.approvalIdentity != null)) ||
                     ((requireCodexApprovalIdentity || verifyHermesUsage || agent.equals("claude", true)) && it.terminalReview)
             }
@@ -2703,7 +2706,7 @@ class AppViewModel internal constructor(
                 "$paneId: the live screen shows no dialog; the recent read's is not used")
             val recentClippedClaudeAsk = agent.equals("claude", true) && preview?.terminalReview == true &&
                 com.billmongan.herdrdroid.herdr.claudeClippedAskReview(recent) != null
-            val useLive = liveCard != null && (livePrompt != null || recentAgyReview || recentClaudeModel || recentClippedClaudeAsk || preview?.topOffScreen == true || unprovenAnswered || verifyPi && preview != null || liveReport || recentReport || verifiedUsage != null || recentClarify || codexQuestionCleared || verifyOpenCode &&
+            val useLive = liveCard != null && (livePrompt != null || recentNativeReview || recentClaudeModel || recentClippedClaudeAsk || preview?.topOffScreen == true || unprovenAnswered || verifyPi && preview != null || liveReport || recentReport || verifiedUsage != null || recentClarify || codexQuestionCleared || verifyOpenCode &&
                 (blocked || preview != null || openCodeBackgroundDrawer(agent, recent) || openCodeBackgroundDrawer(agent, liveCard)))
             val codexSteeringProven = liveViewport != null && missingCodexCard && liveCandidate == null &&
                 com.billmongan.herdrdroid.herdr.codexSteeringReady(liveViewport)

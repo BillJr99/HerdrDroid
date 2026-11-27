@@ -486,6 +486,26 @@ class SuccessiveCardAnswerTest {
         }
     }
 
+    @Test fun grokPrivacyOverlayUsesFreshViewportAndDiscardsStaleRecentCard() {
+        val picker = checkNotNull(javaClass.getResource(
+            "/screens/grok/captured-1.0.92-picker-draft/privacy-picker.txt"
+        )).readText()
+        fixture("grok", picker) {
+            status(Status.WORKING)
+            recentResult = ExecResult(0, "Opening settings.", "")
+            repeat(3) { readSelectedPane() }
+            assertTrue(checkNotNull(vm.cardParse("p1", vm.paneText)).terminalReview)
+            assertTrue(vm.paneText.contains("Coding data, retention, and training"))
+
+            recentResult = ExecResult(0, picker, "")
+            frame = "Continuing after closing settings."
+            repeat(3) { readSelectedPane() }
+            assertFalse(vm.paneText.contains("Coding data, retention, and training"))
+            assertNull(vm.cardParse("p1", vm.paneText))
+            assertTrue(sent.isEmpty())
+        }
+    }
+
     @Test fun anUnprovenRecentReadFallsBackToTheLiveScreen() = fixture("claude",
         checkNotNull(javaClass.getResource("/screens/claude/synthetic-2.2.8-multiq/four-tabs-first.ansi")).readText()) {
         val live = frame

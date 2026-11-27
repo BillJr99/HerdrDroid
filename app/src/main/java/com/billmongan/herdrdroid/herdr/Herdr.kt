@@ -5162,7 +5162,7 @@ private val GROK_PRIVACY_OVERLAY_FOOTER =
     Regex("""↑/↓ nav\s*\|\s*Enter select\s*\|\s*double-click select\s*\|\s*Esc cancel""")
 
 /** A settings overlay can retain the old composer and transcript outside its rectangular frame. */
-private fun grokPrivacyOverlay(text: String): Prompt? {
+internal fun grokPrivacyOverlay(text: String): Prompt? {
     val rows = text.lines().dropLastWhile(String::isBlank).takeLast(60)
     val title = "┌─ Settings › $GROK_PRIVACY_TITLE "
     val top = rows.indexOfLast { title in it }
