@@ -5111,23 +5111,16 @@ class AppViewModel internal constructor(
     private suspend fun readBoardReply(target: PromptRelay.Target, request: com.billmongan.herdrdroid.board.BoardRequest):
         com.billmongan.herdrdroid.board.BoardReply? {
         return try {
-            var cursor = ""
-            var reply = BoardTranscript(request)
             suspend fun current() = boardRelay.isCurrent(target) &&
                 target.port.pane(target.pane.id, target.connection)?.let { sameOccupant(it, target.pane) } == true
             if (!current()) return null
-            repeat(6) {
-                val read = target.port.noticeHistory(target.pane, cursor, target.connection) ?: return null
-                val live = read.live ?: return null
-                if (!read.ok || live.herdrStale ||
-                    target.pane.sessionId?.let { it != live.sid } == true || !current()) return null
-                if (read.reset) reply = BoardTranscript(request)
-                reply.append(read.items)?.let { return it }
-                if (!read.more) return reply.result()
-                if (read.cursor == cursor) return null
-                cursor = read.cursor
-            }
-            null
+            // The empty cursor reads the tail. "More" means there is older history before it.
+            val read = target.port.noticeHistory(target.pane, "", target.connection) ?: return null
+            val live = read.live ?: return null
+            if (!read.ok || live.herdrStale ||
+                target.pane.sessionId?.let { it != live.sid } == true || !current()) return null
+            val transcript = BoardTranscript(request)
+            transcript.append(read.items) ?: transcript.result()
         } catch (c: CancellationException) {
             throw c
         } catch (_: Exception) {
