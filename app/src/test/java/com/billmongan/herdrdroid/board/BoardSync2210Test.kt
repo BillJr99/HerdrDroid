@@ -237,6 +237,32 @@ class BoardSync2210Test {
     }
 
     @Test
+    fun noteAddedDuringCreateAppendsToTheAssignedCard() {
+        val firstNote = BoardNote(firstTime, "Phone", "Start with scrap paper")
+        val lateNote = BoardNote(secondTime, "Phone", "Save the template")
+        val pendingCard = card.copy(id = "16958fa2-a9fc-4343-8a0e-9d4270d04fe5", notes = listOf(firstNote))
+        assertTrue(store.saveCard(source, pendingCard))
+        val create = request()
+        assertTrue(store.markSent(source, create.id, 1))
+        assertTrue(store.addNote(source, pendingCard.id, lateNote))
+        val saved = card.copy(notes = listOf(firstNote.copy(by = "reader")))
+        assertTrue(store.receive(source, BoardReply(create.id, "Example board", secondTime,
+            listOf(saved), emptyList(), listOf(BoardResult(true, saved.id)))))
+
+        assertTrue(snapshot().conflicts.isEmpty())
+        assertEquals(saved.notes + lateNote, snapshot().cards.getValue(saved.id).notes)
+        assertTrue(store.queueApply(source))
+        val append = request()
+        assertEquals(listOf(BoardChange.Note(saved.id, lateNote.text)), append.changes)
+        assertTrue(store.markSent(source, append.id, 2))
+        val withAppend = saved.copy(notes = saved.notes + lateNote.copy(by = "reader"))
+        assertTrue(store.receive(source, BoardReply(append.id, "Example board", secondTime,
+            listOf(withAppend), emptyList(), listOf(BoardResult(true, saved.id)))))
+        assertEquals(withAppend.notes, snapshot().cards.getValue(saved.id).notes)
+        assertFalse(store.queueApply(source))
+    }
+
+    @Test
     fun successfulCreateCannotReplaceADifferentExistingCard() {
         serverCards(card)
         val newCard = card.copy(id = "16958fa2-a9fc-4343-8a0e-9d4270d04fe5", title = "Build a kite")

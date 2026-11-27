@@ -262,7 +262,7 @@ private fun ServerBoard.withPendingApply(): ServerBoard {
         entries.forEach { (id, phone) ->
             if (id in conflicted) return@forEach
             if (id in creates) {
-                add(BoardChange.Create(id, phone.copy(notes = phone.notes + pendingNotes[id].orEmpty())))
+                add(BoardChange.Create(id, phone))
                 return@forEach
             }
             val remote = baseline[id]?.fields() ?: return@forEach
@@ -299,12 +299,12 @@ private fun ServerBoard.accept(request: BoardRequest, reply: BoardReply): Server
         when (change) {
             is BoardChange.Create -> {
                 val id = change.clientId
-                val notesSent = pending[id].orEmpty()
+                val notesToAppend = pending.remove(id).orEmpty()
                 val inFlight = local[id]
                 newIds.remove(id)
                 local.remove(id)
-                pending.remove(id)
-                if (inFlight != null) local[result.id] = inFlight.copy(id = result.id, notes = inFlight.notes + notesSent)
+                if (notesToAppend.isNotEmpty()) pending[result.id] = notesToAppend
+                if (inFlight != null) local[result.id] = inFlight.copy(id = result.id)
                 known[result.id] = change.card.copy(id = result.id)
             }
             is BoardChange.Update -> known[change.id]?.let { known[change.id] = it.withFields(change.set) }
