@@ -162,14 +162,54 @@ class OpenCodeAlert212Test {
         val ordinary = probe.copy(id = "ordinary-pane", title = "probe-title", tabLabel = "ordinary")
         var reads = 0
         val client = { reads++; null }
-        vm.noticeChanges(server.id, server.label, listOf(probe, ordinary), client)
+        vm.noticeChanges(server.id, server.label, listOf(probe, ordinary), client = client)
         vm.noticeChanges(server.id, server.label, listOf(probe.copy(status = Status.NEEDS_YOU),
-            ordinary.copy(status = Status.NEEDS_YOU)), client)
+            ordinary.copy(status = Status.NEEDS_YOU)), client = client)
         shadowOf(Looper.getMainLooper()).idle()
         assertEquals(1, reads)
         assertFalse(Notify.isShowing(app, server.id, probe.id))
         assertTrue(Notify.isShowing(app, server.id, ordinary.id))
         Notify.clear(app, server.id, ordinary.id)
+    }
+
+    @Test fun aCompleteInventoryClearsClosedPaneAlertsWithoutTreatingPartialReadsAsClosures() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        Notify.channels(app)
+        vm.changeWatching(true)
+        val pane = pane("opencode", Status.WORKING)
+        val blocked = pane.copy(status = Status.NEEDS_YOU)
+        val otherServer = server.id + "|other"
+        fun seen(panes: List<Pane>, complete: Boolean = true) {
+            vm.noticeChanges(server.id, server.label, panes, complete = complete) { null }
+            shadowOf(Looper.getMainLooper()).idle()
+        }
+        try {
+            seen(listOf(pane))
+            seen(listOf(blocked))
+            vm.noticeChanges(otherServer, server.label, listOf(blocked), complete = true) { null }
+            Notify.unread(app, otherServer, server.label, pane.id, pane.agentName)
+            assertTrue(Notify.isShowing(app, server.id, pane.id))
+
+            seen(emptyList(), complete = false)
+            assertTrue(Notify.isShowing(app, server.id, pane.id))
+            seen(emptyList())
+            assertFalse(Notify.isShowing(app, server.id, pane.id))
+            assertTrue(Notify.isShowing(app, otherServer, pane.id))
+            assertTrue(AppBus.emit(NotifyAction(server.id, pane.id, "esc", false, "Old question", origin = "closed")))
+            idle()
+            assertFalse(Notify.isShowing(app, server.id, pane.id))
+
+            // A reused public ID begins with a fresh baseline; its next transition can alert.
+            seen(listOf(blocked.copy(terminalId = "replacement")))
+            assertFalse(Notify.isShowing(app, server.id, pane.id))
+            seen(listOf(pane.copy(terminalId = "replacement")))
+            seen(listOf(blocked.copy(terminalId = "replacement")))
+            assertTrue(Notify.isShowing(app, server.id, pane.id))
+        } finally {
+            Notify.clear(app, server.id, pane.id)
+            Notify.clear(app, otherServer, pane.id)
+        }
     }
 
     @Test fun codexQueuedViewportWithdrawsAnAlertEvenWhileNativeStatusIsStillBlocked() {

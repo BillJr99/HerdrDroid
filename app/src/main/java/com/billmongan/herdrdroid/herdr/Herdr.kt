@@ -138,6 +138,7 @@ enum class Backend { TUI, CORE }
 /** What a computer has: which herdr is installed and which one's server is running. */
 /** herdr's own pane count in a list read, and how many of them this app parsed (2.2.5). */
 data class PaneListCounts(val raw: Int, val parsed: Int)
+internal data class PaneSnapshot(val panes: List<Pane>, val complete: Boolean)
 
 /** One parsed pane list read (2.2.5). */
 data class TuiPaneList(val panes: List<Pane>, val raw: Int)
@@ -269,10 +270,17 @@ class Herdr internal constructor(
         private set
 
     /** 2.2.6: the read is named "list-read" in the diagnostic log. */
-    suspend fun panes(): List<Pane> = kotlinx.coroutines.withContext(com.billmongan.herdrdroid.diag.ReadLabel("list-read")) { panesRead() }
+    suspend fun panes(): List<Pane> = paneSnapshot().panes
 
-    private suspend fun panesRead(): List<Pane> {
-        if (core) return corePanes(run(hcCmd("ls", "--json"))).also { lastListCounts = PaneListCounts(it.size, it.size) }
+    internal suspend fun paneSnapshot(): PaneSnapshot =
+        kotlinx.coroutines.withContext(com.billmongan.herdrdroid.diag.ReadLabel("list-read")) { panesRead() }
+
+    private suspend fun panesRead(): PaneSnapshot {
+        if (core) {
+            val panes = corePanes(run(hcCmd("ls", "--json")))
+            lastListCounts = PaneListCounts(panes.size, panes.size)
+            return PaneSnapshot(panes, complete = false)
+        }
         // Panes and tab labels in one round trip; a tab list failure only loses the labels.
         // 2.2.5: the pane list's own exit status comes back after the marker. Before, the line's
         // status was the tab list's (always 0), so a failed pane list reached the parser as empty
@@ -305,7 +313,8 @@ class Herdr internal constructor(
         }
         val order = listOf(Status.NEEDS_YOU, Status.WORKING, Status.DONE, Status.IDLE, Status.UNKNOWN)
         panes0Cache = marked
-        return marked.sortedWith(compareBy({ order.indexOf(it.status) }, { it.id }))
+        return PaneSnapshot(marked.sortedWith(compareBy({ order.indexOf(it.status) }, { it.id })),
+            complete = read.raw == read.panes.size)
     }
 
     /**

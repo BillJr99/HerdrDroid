@@ -1910,19 +1910,26 @@ class AppViewModel internal constructor(
     /** When each pane last reported an agent, keyed "server|pane". */
     private val agentSeenAt = mutableMapOf<String, Long>()
 
+    private var paneReadSequence = 0L
+    private var appliedPaneReadSequence = 0L
+
     suspend fun refreshPanes(allowBackground: Boolean = false) {
+        val sequence = ++paneReadSequence
         val client = herdr
-        val prefetchConnection = client?.connectionIdentity?.takeIf { foreground && !locked }
+        val readConnection = client?.connectionIdentity
+        val prefetchConnection = readConnection?.takeIf { foreground && !locked }
         val readAt = System.currentTimeMillis()
         val readServer = current?.id
-        quietly(allowBackground, com.billmongan.herdrdroid.diag.LinkDiag.Stage.LIST_READ) { it.panes() }?.let { fresh0 ->
+        quietly(allowBackground, com.billmongan.herdrdroid.diag.LinkDiag.Stage.LIST_READ) { it.paneSnapshot() }?.let { snapshot ->
+            val fresh0 = snapshot.panes
             // A list read on a connection that has since been replaced (a reconnect, another server)
             // is dropped: it must not land on whichever server is open now.
-            if (herdr !== client || current?.id != readServer) {
+            if (herdr !== client || current?.id != readServer || sequence < appliedPaneReadSequence) {
                 com.billmongan.herdrdroid.diag.LinkDiag.stage(connectRun.toLong(), readServer, com.billmongan.herdrdroid.diag.LinkDiag.Stage.APPLY, "stale-dropped",
                     System.currentTimeMillis() - readAt, mapOf("parsed" to fresh0.size))
                 return
             }
+            appliedPaneReadSequence = sequence
             // herdr sometimes reports a pane's agent as missing for a moment (while it redraws, or
             // just after a screen closes). Keep the agent last seen in that pane, so its card keeps
             // its usage and model instead of going blank until the next read.
@@ -1951,7 +1958,8 @@ class AppViewModel internal constructor(
             maintainChats(before, fresh)
             applyWorkStatus()
             logListCounts(client, readServer, fresh0.size, System.currentTimeMillis() - readAt)
-            current?.let { s -> noticeChanges(s.id, s.label, fresh) { herdr } }
+            current?.let { s -> noticeChanges(s.id, s.label, fresh,
+                complete = snapshot.complete && readConnection != null && client?.connectionIdentity === readConnection) { herdr } }
             schedulePanePrefetch(prefetchConnection)
             // Footers (each agent's model) every 30 seconds wherever you are in the app; before
             // 1.1.5 only the tab list read them, which the agent-first app rarely shows.
@@ -6424,7 +6432,7 @@ class AppViewModel internal constructor(
     var darkPalette by mutableStateOf(runCatching { DarkPalette.valueOf(prefs.darkPalette) }.getOrDefault(DarkPalette.STANDARD))
         private set
     private val unlockedThisSession = mutableSetOf<String>()
-    private val lastStatus = mutableMapOf<String, Status>()
+    private val lastStatus = mutableMapOf<Pair<String, String>, Status>()
     private var fleet: Fleet? = null
     private var watchJob: Job? = null
     private var pendingOpen: String? = null
@@ -6607,7 +6615,7 @@ class AppViewModel internal constructor(
             keystoreKey = SshKeyVault::provider,
             onSeen = { st ->
                 trackDone(st.server.id, st.panes)
-                noticeChanges(st.server.id, st.server.label, st.panes) { fleet?.herdr(st.server.id) }
+                noticeChanges(st.server.id, st.server.label, st.panes, complete = st.complete) { fleet?.herdr(st.server.id) }
             },
             // 1.2.8: watched servers get the same work sweep as the open one, so an agent with a
             // running shell there shows as working in the drawer, cards and notifications.
@@ -6689,7 +6697,7 @@ class AppViewModel internal constructor(
      * waiting on you, or (if wanted) finishes. The pane open on screen in the foreground is skipped.
      */
     /** Each pane's running alert confirmation (2.2.2), "server|pane" to job: one at a time per pane. */
-    private val alertJobs = HashMap<String, Job>()
+    private val alertJobs = HashMap<Pair<String, String>, Job>()
 
     private suspend fun readCodexAlertViewport(h: Herdr, pane: Pane, connection: Any): String? {
         if (h.backend != Backend.TUI || pane.scrollOffset?.let { it != 0 } == true) return null
@@ -6707,15 +6715,28 @@ class AppViewModel internal constructor(
         com.billmongan.herdrdroid.herdr.codexFollowUpRows(text).isNotEmpty() &&
             detectPrompt(text, blocked = true, agent = "codex") == null
 
-    internal fun noticeChanges(serverId: String, serverLabel: String, seen: List<Pane>, client: () -> Herdr?) {
+    internal fun noticeChanges(
+        serverId: String, serverLabel: String, seen: List<Pane>, complete: Boolean = false, client: () -> Herdr?,
+    ) {
+        val app = getApplication<Application>()
+        if (complete) {
+            val live = seen.mapTo(hashSetOf()) { it.id }
+            val tracked = (lastStatus.keys + alertJobs.keys + alertOrigins.keys)
+            for (key in tracked) {
+                if (key.first != serverId || key.second in live) continue
+                lastStatus.remove(key)
+                alertJobs.remove(key)?.cancel()
+                alertOrigins.remove(key)
+                Notify.clear(app, serverId, key.second)
+            }
+        }
         if (!watching) {
             alertOrigins.keys.removeAll { it.first == serverId }
-            seen.forEach { lastStatus["$serverId|${it.id}"] = it.status }
+            seen.forEach { lastStatus[serverId to it.id] = it.status }
             return
         }
-        val app = getApplication<Application>()
         for (p in seen) {
-            val key = "$serverId|${p.id}"
+            val key = serverId to p.id
             val before = lastStatus[key]
             lastStatus[key] = p.status
             if (p.isProbe) {
@@ -6879,7 +6900,7 @@ class AppViewModel internal constructor(
     private fun watchAnsweredAlert(app: Application, address: NotifyAction, origin: AlertOrigin, answered: Prompt) {
         val server = address.serverId
         val paneId = address.paneId
-        val key = "$server|$paneId"
+        val key = server to paneId
         fun stillWanted() =
             watching && origin.currentFor(address) && lastStatus[key] == Status.NEEDS_YOU &&
                 !probePane(server, paneId) &&
@@ -6961,8 +6982,9 @@ class AppViewModel internal constructor(
         if (currentOrigin != null && currentOrigin.token != a.origin) return
         val origin = currentOrigin
         if (origin == null) {
-            Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
-                "This alert's connection or pane session could not be verified.")
+            if (Notify.isShowing(app, a.serverId, a.paneId))
+                Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
+                    "This alert's connection or pane session could not be verified.")
             return
         }
         // One answer per question (1.4.2, from review): taps are handled one after another, so a second
