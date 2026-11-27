@@ -57,7 +57,6 @@ class UpdaterTest {
         override val installedVersionCode = 117L
         var signers = setOf(RELEASE_SIGNER_SHA256)
         var archive: ArchiveFacts? = ArchiveFacts(UPDATE_PACKAGE, 118, setOf(RELEASE_SIGNER_SHA256))
-        var metered = false
         var online = true
         var allowed = true
         var clock = 1_800_000_000_000L
@@ -66,7 +65,6 @@ class UpdaterTest {
         override fun installedSigners() = signers
         override fun readArchive(file: File) = archive
         override fun hasNetwork() = online
-        override fun isMetered() = metered
         override fun canInstall() = allowed
         override fun openInstallPermissionSettings() { settingsOpened++ }
         override fun install(file: File) { installed += file.name; file.delete() }
@@ -114,15 +112,6 @@ class UpdaterTest {
         platform.clock += 86_400_000L
         updater.onResume()
         updater.checkAtLaunch()
-        assertEquals(1, http.gets.size)
-    }
-
-    @Test fun aMeteredLaunchSkipsAutomaticCheckButAllowsManualCheck() {
-        http.body = releaseJson()
-        platform.metered = true
-        updater.checkAtLaunch()
-        assertTrue(http.gets.isEmpty())
-        updater.checkNow()
         assertEquals(1, http.gets.size)
     }
 

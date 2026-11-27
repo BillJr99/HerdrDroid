@@ -44,7 +44,7 @@ fun UpdateSettings(
         Switch(checked = checkOnLaunch, onCheckedChange = null)
     }
     Text(
-        "Once each launch on an unmetered network, the app asks GitHub whether a newer " +
+        "Once each launch when online, the app asks GitHub whether a newer " +
             "HerdrDroid release is out. It sends nothing about you or your servers.",
         color = Palette.Muted, fontSize = 13.sp,
     )

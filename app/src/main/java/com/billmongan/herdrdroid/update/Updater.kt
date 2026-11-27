@@ -25,7 +25,7 @@ sealed interface UpdateDialogState {
 }
 
 /**
- * Checks for a newer release once per launch on an unmetered network or when requested.
+ * Checks for a newer release once per launch or when requested.
  * An accepted offer downloads and verifies the APK before opening Android's installer.
  */
 class Updater(
@@ -76,7 +76,7 @@ class Updater(
     fun checkAtLaunch() {
         if (launchChecked) return
         launchChecked = true
-        if (checking || !prefs.checkOnLaunch || !platform.hasNetwork() || platform.isMetered()) return
+        if (checking || !prefs.checkOnLaunch || !platform.hasNetwork()) return
         scope.launch { check(manual = false) }
     }
 
