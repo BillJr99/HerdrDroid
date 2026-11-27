@@ -4774,7 +4774,7 @@ class AppViewModel internal constructor(
             try {
                 fun current() = terminalDismissals[key] === dismissal && !locked &&
                     client() === dismissal.watch.frame.source.client && dismissal.matches(pane) &&
-                    this@AppViewModel.pane(pane.id)?.let(dismissal::matches) == true
+                    this@AppViewModel.pane(pane.id)?.let { dismissal.matches(it) } == true
                 val live = readTerminalAnswerViewport(dismissal.watch, ::current, watchingInventory = true) ?: return@launch
                 if (current() && live.status == Status.NEEDS_YOU) {
                     terminalDismissals.remove(key)
