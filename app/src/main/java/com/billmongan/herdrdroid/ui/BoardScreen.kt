@@ -204,10 +204,15 @@ internal fun BoardScreen(
         )
     }
     editor?.let { (serverId, card) ->
-        val cards = if (serverId == null) state.phone else state.servers[serverId]?.cards.orEmpty()
-        val existing = cards[card.id]
-        val changedWhileEditing = card.title.isNotBlank() && existing != card
-        BoardEditor(card, serverId == null, changedWhileEditing, onDismiss = { editor = null }) { changed ->
+        val board = serverId?.let(state.servers::get)
+        val cards = if (serverId == null) state.phone else board?.cards.orEmpty()
+        val blockedReason = when {
+            board?.conflicts.orEmpty().any { it.cardId == card.id } -> "Resolve the conflict before editing this card."
+            card.title.isNotBlank() && cards[card.id] != card ->
+                "This card updated while you were editing. Reopen it to see the latest values."
+            else -> null
+        }
+        BoardEditor(card, serverId == null, blockedReason, onDismiss = { editor = null }) { changed ->
             onSave(serverId, changed)
             editor = null
             detail = BoardSelection(serverId, changed.id)
@@ -327,7 +332,9 @@ private fun BoardCardDetail(
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onBack) { Text("Back to cards") }
-            if (card != null) TextButton(onClick = { onEdit(card) }) { Text("Edit card") }
+            if (card != null) {
+                TextButton(enabled = conflicts.isEmpty(), onClick = { onEdit(card) }) { Text("Edit card") }
+            }
         }
         Text(card?.title ?: "Card conflict", color = Palette.Ink, fontSize = 20.sp, fontWeight = FontWeight.Bold)
         conflicts.forEach { conflict ->
@@ -408,7 +415,7 @@ private fun BoardStatusButton(status: BoardStatus, enabled: Boolean = true, set:
 private fun BoardEditor(
     card: BoardCard,
     phone: Boolean,
-    changedWhileEditing: Boolean,
+    blockedReason: String?,
     onDismiss: () -> Unit,
     onSave: (BoardCard) -> Unit,
 ) {
@@ -419,10 +426,7 @@ private fun BoardEditor(
         title = { Text(if (card.title.isBlank()) "New card" else "Edit card") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (changedWhileEditing) {
-                    Text("This card updated while you were editing. Reopen it to see the latest values.",
-                        color = Palette.OrangeInk)
-                }
+                blockedReason?.let { Text(it, color = Palette.OrangeInk) }
                 BoardField("Title", input.title, Modifier.testTag("board-card-title")) { input = input.copy(title = it) }
                 BoardStatusButton(input.status) { input = input.moveStatus(it, phone) }
                 BoardField("Native status", input.nativeStatus) { input = input.copy(nativeStatus = it) }
@@ -448,7 +452,7 @@ private fun BoardEditor(
             }
         },
         confirmButton = {
-            TextButton(enabled = input.title.isNotBlank() && !changedWhileEditing, onClick = {
+            TextButton(enabled = input.title.isNotBlank() && blockedReason == null, onClick = {
                 onSave(input.copy(waitingOn = waiting.lineSequence().map(String::trim).filter(String::isNotEmpty).toList()))
             }) { Text("Save card") }
         },
