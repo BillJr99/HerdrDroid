@@ -372,7 +372,8 @@ private fun claudeClippedSingleRows(frame: List<String>): List<String>? {
         // A wrapped question starts above the viewport, in Claude's question gutter.
         if (leadingRows.any { !it.startsWith("│ ") } || options.count { it.groupValues[1].isNotEmpty() } != 1) return null
     } else if (firstNumber < 2 || leadingRows.any { !CLAUDE_SINGLE_DESCRIPTION.matches(it) }) return null
-    return rows.dropLast(1)
+    val visibleQuestion = leadingRows.map { it.removePrefix("│ ") }
+    return visibleQuestion + body.drop(firstOption) + rows[rows.lastIndex - 3] + rows[rows.lastIndex - 1]
 }
 
 /** Checkbox dialogs end with their own Next or Submit, rule, and separately numbered chat action. */
