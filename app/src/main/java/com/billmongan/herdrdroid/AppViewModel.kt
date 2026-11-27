@@ -6126,7 +6126,7 @@ class AppViewModel internal constructor(
             }
             val keys = if (voiceAllowed == null) com.billmongan.herdrdroid.herdr.menuKeys(fresh, choice)
                 else com.billmongan.herdrdroid.voice.voiceCardKeys(fresh, choice)
-            if (fresh.claudeCheckboxAction != null && keys == null) {
+            if ((fresh.claudeAsk || fresh.claudeCheckboxAction != null) && keys == null) {
                 report("Not sent. Open Terminal to verify the selected row.")
                 return@answerOnce
             }
@@ -7091,7 +7091,7 @@ class AppViewModel internal constructor(
                 if (keys != null) {
                     input = com.billmongan.herdrdroid.herdr.CardInput.Keys(keys)
                 } else if (!a.isKey && choice != null && !now.openCodePermission && now.openCodeQuestionFrame == null &&
-                    !now.hermesClarify && !now.museQuota && now.claudeCheckboxAction == null) {
+                    !now.hermesClarify && !now.museQuota && !now.claudeAsk && now.claudeCheckboxAction == null) {
                     input = com.billmongan.herdrdroid.herdr.CardInput.Text(choice.keys, choice.pressEnter)
                 } else {
                     refuse("The active option could not be verified.")

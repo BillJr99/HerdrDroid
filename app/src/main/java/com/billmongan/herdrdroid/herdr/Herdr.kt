@@ -1665,6 +1665,8 @@ data class Prompt(
     /** A proven Claude Code model control uses only keys named by its own picker. */
     internal val claudeModelControl: Boolean = false,
     internal val letterKeys: Boolean = false,
+    /** Claude AskUserQuestion answers require a key sequence verified from the current highlight. */
+    internal val claudeAsk: Boolean = false,
 ) {
     internal val guardedShortcutApproval: Boolean get() = agyApproval || kiroOnceShortcuts || claudeModelControl
     internal val historyReviewOnly: Boolean get() = topOffScreen || rebuiltTallDialog
@@ -5067,7 +5069,8 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
         val rebuiltTall = agent.equals("claude", true) && isRebuiltDialog(text.lines())
         return Prompt(question ?: "Choose an option", numbered, selected, escRejects = vibeCard, parts = parts, multi = multi,
             shortcuts = shortcuts, approvalIdentity = approvalIdentity, claudeCheckboxAction = checkboxAction, topOffScreen = topOff,
-            rebuiltTallDialog = rebuiltTall, region = if (topOff || rebuiltTall) raw else null)
+            rebuiltTallDialog = rebuiltTall, region = if (topOff || rebuiltTall) raw else null,
+            claudeAsk = agent.equals("claude", true) && raw.lastOrNull { it.isNotBlank() }?.let(::claudeAskFooter) == true)
             .also { p ->
                 // 2.2.8 (Codex's review 4B): the parser's exact rows, the question block it read down to the
                 // last option's last row, with each option's own row; none when they can't be mapped.
