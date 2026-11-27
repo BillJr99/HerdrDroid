@@ -7,6 +7,7 @@ import com.billmongan.herdrdroid.herdr.WorkInfo
 import com.billmongan.herdrdroid.herdr.visibleBackgroundShellCount
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** 2.1.5: the header pill is the only way into "what's running", so it must show whenever something does. */
@@ -48,6 +49,30 @@ class RunningPillTest {
         val work = WorkInfo(listOf(proc), emptyList(), emptyList(), agentOwnedOnly = true, subagentsVerified = true)
         assertEquals("1 sh - 0 sub", runningPill(work, "codex", 0)!!.label)
         assertEquals("0 sh - 1 sub", runningPill(work.copy(procs = emptyList(), subagents = listOf(sub(true))), "codex", 0)!!.label)
+    }
+
+    @Test fun codexCaptureActivityAndDrawerRowsDoNotVerifyPaneSubagents() {
+        fun screen(name: String): String = checkNotNull(javaClass.getResource(
+            "/work-captures/codex-0.172.0/$name.txt"
+        )).readText()
+        val target = listOf("target-working", "target-finished-child", "target-complete", "target-drawer")
+            .map(::screen)
+        val control = listOf("control-working", "control-complete").map(::screen)
+        assertTrue(target[0].contains("• Working"))
+        assertTrue(target[1].contains("• Completed `/fixture/sort_strings`"))
+        assertTrue(target[2].contains("One subagent finished."))
+        assertTrue(target[3].contains("/fixture/target  2") && target[3].contains("/fixture/control  1"))
+        assertTrue(control[0].contains("• Working"))
+        assertTrue(control[1].contains("• fixture-no-children"))
+
+        // These are screen rows only. The pane-scoped inventory has no subagent evidence.
+        val work = WorkInfo(emptyList(), emptyList(), emptyList(), agentOwnedOnly = true)
+        for (capture in target + control) {
+            val fromScreen = work.copy(reportedBackgroundShells = visibleBackgroundShellCount("codex", capture))
+            assertNull(fromScreen.subagentCount("codex"))
+            assertNull(runningPill(fromScreen, "codex", 0))
+            assertEquals("1 sh", runningPill(fromScreen.copy(procs = listOf(proc)), "codex", 0)?.label)
+        }
     }
 
     @Test fun claudeComposerFooterReportsBackgroundShellsWithoutCountingProcessesTwice() {

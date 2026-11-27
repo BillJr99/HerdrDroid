@@ -1,0 +1,7 @@
+• Working (0s • esc to interrupt)
+
+
+› Ask Codex to do anything
+
+  GPT-6.2-Sol default · /fixture/control
+  ← for agents · ? for shortcuts

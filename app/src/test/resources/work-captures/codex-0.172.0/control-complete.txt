@@ -1,0 +1,10 @@
+• fixture-no-children
+
+  Worked for 2s • <time>
+
+
+
+› Ask Codex to do anything
+
+  GPT-6.2-Sol default · /fixture/control · Reply fixture-no-children
+  ← for agents · ? for shortcuts

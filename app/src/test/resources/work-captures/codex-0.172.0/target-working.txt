@@ -1,0 +1,8 @@
+• Working (7s • esc to interrupt)
+
+
+› Ask Codex to do anything
+
+  GPT-6.2-Sol default · /fixture/target · Start exactly one disposable
+  subagent. Ask it to think brie…
+  ← for agents · ? for shortcuts
