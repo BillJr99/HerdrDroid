@@ -137,6 +137,18 @@ class SendImmediately228Test {
         assertTrue(BACKGROUND_CHECK.contains(BACKGROUND_REFUSED_MARK))
     }
 
+    @Test fun `native follow-up status does not prove a background action`() {
+        // Only the relevant rows of each probe are retained. A hint from a busy turn is not a receipt.
+        val cases = listOf("copilot-1", "hermes-1", "hermes-2", "kiro-1", "muse-1",
+            "omp-1", "opencode-1", "opencode-2", "pi-1", "vibe-1")
+        for (name in cases) {
+            val agent = name.substringBeforeLast('-')
+            val rows = res("/backgrounding/native-2026-11-27/$name.txt")
+            assertNull(name, backgroundStep(agent, rows))
+            assertNotNull(name, backgroundSupport(agent, agent))
+        }
+    }
+
     private fun museCapture(name: String) =
         res("/backgrounding/muse-1.4.24/$name.txt").replace("<running-separator>", "\u2014")
 

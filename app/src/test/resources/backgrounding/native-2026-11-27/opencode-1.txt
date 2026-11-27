@@ -1,0 +1,2 @@
+Press ctrl+b to move running work to the background
+↓ 1 shell  ctrl+p commands
