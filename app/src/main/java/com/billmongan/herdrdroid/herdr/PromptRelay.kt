@@ -178,7 +178,8 @@ internal class PromptRelay(
      */
     suspend fun send(
         target: Target, text: String, authorizedWrite: WritePermit = WritePermit(),
-        refused: (RelayRefusal) -> Unit = {}, force: Boolean = false, boardRequest: Boolean = false, allowed: () -> Boolean,
+        refused: (RelayRefusal) -> Unit = {}, force: Boolean = false, boardRequest: Boolean = false, beforeBoardWrite: () -> Boolean = { true },
+        allowed: () -> Boolean,
     ): RelayResult {
         val key = target.server to target.pane.id
         // Force only ever applies to an agent that queues typed input (Claude Code); for any other it is an ordinary send.
@@ -247,7 +248,7 @@ internal class PromptRelay(
                 // 2.2.1: the screen says a turn is running ("esc to interrupt" under the box), whatever herdr says.
                 if (!force && composerFooterSaysWorking(viewport)) return RelayRefusal.WORKING
                 // 2.2.7: a blank Oh My Pi or Copilot box counts as empty: the prompt clears it first ([Herdr.sendMessage]).
-                val line = inputLineOf(viewport, agent, menuWrite = true)
+                val line = inputLineOf(viewport, agent, menuWrite = !boardRequest)
                 // A draft of several rows whose first row is empty is a draft too.
                 val draft = composerDraftOf(viewport, agent) != null
                 if (!line.isNullOrEmpty() || draft) return RelayRefusal.DRAFT
@@ -276,6 +277,7 @@ internal class PromptRelay(
                 val again = port.viewport(ready.id, target.connection)
                 invalid()?.let { return refuse(it) }
                 screenRefusal(again, ready.agent)?.let { return refuse(it) }
+                if (!beforeBoardWrite()) return refuse(RelayRefusal.STOPPED)
                 port.sendBoardRequest(ready, outgoing, again, target.connection, permit)
             } else port.send(ready, outgoing, target.connection, permit)
             return RelayResult.SENT

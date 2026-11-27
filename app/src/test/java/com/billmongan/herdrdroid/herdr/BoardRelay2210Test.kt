@@ -28,8 +28,11 @@ class BoardRelay2210Test {
     @Test fun busyRequestCanWaitUntilThePaneIsIdle() = runBlocking {
         val target = checkNotNull(relay.bind("server", selected))
         port.live = selected.copy(status = Status.WORKING)
-        assertEquals(RelayResult.REFUSED, relay.send(target, "board request", boardRequest = true) { true })
+        var started = false
+        val beforeWrite = { started = true; true }
+        assertEquals(RelayResult.REFUSED, relay.send(target, "board request", boardRequest = true, beforeBoardWrite = beforeWrite) { true })
         assertTrue(port.writes.isEmpty())
+        assertTrue(!started)
         port.live = selected
         assertEquals(RelayResult.SENT, relay.send(target, "board request", boardRequest = true) { true })
         assertEquals(listOf("board request"), port.writes)

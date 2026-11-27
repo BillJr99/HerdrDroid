@@ -4918,15 +4918,23 @@ class AppViewModel internal constructor(
             return
         }
         if (!boardStore.canSend(server, now)) return
+        // A manual retry first looks for an answer that arrived after the timeout.
+        if (pending.attempted && target.pane.status in setOf(Status.IDLE, Status.DONE)) {
+            val reply = readBoardReply(target, request)
+            if (!enabled() || !boardRelay.isCurrent(target)) return
+            if (reply != null && boardStore.receive(server, reply)) return
+        }
         val message = BoardProtocol.message(request)
         if (com.billmongan.herdrdroid.herdr.LongText.plan(message) !is com.billmongan.herdrdroid.herdr.LongText.Plan.Single) {
             boardStore.markNoAnswer(server, request.id, "The queued changes are too large for one board request.")
             return
         }
         val permit = WritePermit { enabled() && boardLaneClear(server, pane.id) && boardRelay.isCurrent(target) }
-        if (!boardStore.markSent(server, request.id, now)) return
         try {
-            val result = boardRelay.send(target, message, authorizedWrite = permit, boardRequest = true) { enabled() }
+            val result = boardRelay.send(target, message, authorizedWrite = permit, boardRequest = true,
+                beforeBoardWrite = {
+                    enabled() && boardStore.markSent(server, request.id, System.currentTimeMillis())
+                }) { enabled() }
             if (result == RelayResult.REFUSED || result == RelayResult.DRAFT) boardStore.markQueued(server, request.id)
         } catch (c: CancellationException) {
             if (!permit.submitted) boardStore.markQueued(server, request.id)
