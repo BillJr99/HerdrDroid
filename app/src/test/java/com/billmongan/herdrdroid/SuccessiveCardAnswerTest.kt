@@ -1583,6 +1583,10 @@ class SuccessiveCardAnswerTest {
         assertEquals(listOf("enter", "enter"), sent)
     }
 
+    @Test fun answeredNotificationRefreshesASecondQuestionWithoutAStatusChange() = fixture("claude", firstStep) {
+        watchAnsweredSuccessor(secondStep.replace("1. Blue", "1. Green"))
+    }
+
     @Test fun oldNotificationCannotAnswerAnIndistinguishableButtonOnTheNextStep() = fixture("claude", firstStep) {
         val first = shown()
         answer(first)
@@ -1771,6 +1775,54 @@ class SuccessiveCardAnswerTest {
                 options = com.billmongan.herdrdroid.notify.alertOptionsSig(prompt.choices),
                 identity = com.billmongan.herdrdroid.notify.alertIdentity(prompt)), h)))
             drainUntil { guardedVisibleReads > reads && !vm.answerInFlight("p1") }
+        }
+
+        fun watchAnsweredSuccessor(nextFrame: String) {
+            val app = ApplicationProvider.getApplicationContext<Application>()
+            shadowOf(app).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+            val notify = com.billmongan.herdrdroid.notify.Notify
+            notify.channels(app)
+            state("watching", true)
+            state("foreground", false)
+            val h = field("herdr").get(vm) as Herdr
+            val blocked = checkNotNull(vm.pane("p1"))
+            fun poll() = vm.noticeChanges(server.id, server.label, listOf(blocked)) { h }
+            fun active() = app.getSystemService(android.app.NotificationManager::class.java).activeNotifications.single().notification
+            val first = shown()
+            val choice = first.choices.first()
+            val old = vm.bindFixtureAlert(NotifyAction(server.id, "p1", choice.keys, choice.pressEnter,
+                first.question, label = choice.label, agent = agent,
+                options = com.billmongan.herdrdroid.notify.alertOptionsSig(first.choices),
+                identity = com.billmongan.herdrdroid.notify.alertIdentity(first)), h)
+            try {
+                poll()
+                assertTrue(AppBus.emit(old))
+                drainUntil { sent.size == 1 && !vm.answerInFlight("p1") }
+                assertEquals("Answered", active().extras.getCharSequence(android.app.Notification.EXTRA_TITLE)?.toString())
+
+                val reads = guardedVisibleReads
+                poll()
+                drainUntil { guardedVisibleReads > reads }
+                assertEquals("Answered", active().extras.getCharSequence(android.app.Notification.EXTRA_TITLE)?.toString())
+
+                frame = nextFrame
+                poll()
+                drainWithTime { active().actions?.any { it.title.toString() == "Green" } == true }
+                val next = active().actions.single { it.title.toString() == "Green" }
+                com.billmongan.herdrdroid.notify.ActionReceiver().onReceive(app, android.content.Intent()
+                    .putExtra(notify.EXTRA_SERVER, server.id)
+                    .putExtra(notify.EXTRA_PANE, "p1")
+                    .putExtra("origin", old.origin)
+                    .putExtra("keys", old.keys))
+                shadowOf(Looper.getMainLooper()).idle()
+                assertEquals(listOf("enter"), sent)
+                assertTrue(active().actions.any { it.title.toString() == "Green" })
+                next.actionIntent.send()
+                drainUntil { sent.size == 2 && !vm.answerInFlight("p1") }
+                assertEquals(listOf("enter", "enter"), sent)
+            } finally {
+                notify.clear(app, server.id, "p1")
+            }
         }
 
         /** [drainUntil], with the main looper's clock moving on, for answers that wait between keys. */

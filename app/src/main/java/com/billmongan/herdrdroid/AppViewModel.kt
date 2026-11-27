@@ -6716,6 +6716,15 @@ class AppViewModel internal constructor(
                 continue
             }
             val codexWaiting = p.agent.equals("codex", true) && p.status == Status.NEEDS_YOU
+            val previous = alertOrigins[serverId to p.id]
+            if (before == p.status && p.status == Status.NEEDS_YOU && previous?.confirmedAnswer != null &&
+                alertJobs[key]?.isActive != true && previous.isAwaitingSuccessor() &&
+                Notify.isShowing(app, serverId, p.id)) {
+                alertJobs[key] = viewModelScope.launch {
+                    refreshAnsweredAlert(app, serverId, serverLabel, p, previous)
+                }
+                continue
+            }
             if (before == p.status && codexWaiting &&
                 alertJobs[key]?.isActive != true && Notify.isShowing(app, serverId, p.id)) {
                 alertJobs[key] = viewModelScope.launch {
@@ -6833,6 +6842,11 @@ class AppViewModel internal constructor(
 
     private class AlertOrigin(val token: String, val pane: Pane, val client: Herdr, val connection: Any) {
         var answeredAt: Long? = null
+        var confirmedAnswer: Prompt? = null
+
+        fun isAwaitingSuccessor(): Boolean =
+            answeredAt?.let { System.currentTimeMillis() - it in 0 until 15_000L } == true
+
     }
     private val alertOrigins = LinkedHashMap<Pair<String, String>, AlertOrigin>()
 
@@ -6866,6 +6880,45 @@ class AppViewModel internal constructor(
         !locked && h.connectionIdentity === connection &&
             if (server == current?.id) herdr === h && link == Link.CONNECTED else fleet?.herdr(server) === h
 
+    /** A successful answer may advance a dialog without a Herdr status transition. */
+    private suspend fun refreshAnsweredAlert(app: Application, serverId: String, serverLabel: String,
+        pane: Pane, previous: AlertOrigin) {
+        val answered = previous.confirmedAnswer ?: return
+        val key = serverId to pane.id
+        fun stillWanted() =
+            watching && previous.isAwaitingSuccessor() && alertOrigins[key] === previous &&
+                alertSourceCurrent(previous.client, serverId, previous.connection) &&
+                lastStatus["$serverId|${pane.id}"] == Status.NEEDS_YOU && !probePane(serverId, pane.id) &&
+                !(foreground && serverId == current?.id && (screen as? Screen.Agent)?.paneId == pane.id) &&
+                Notify.isShowing(app, serverId, pane.id)
+
+        if (!stillWanted() || !previous.pane.sameCardOccupant(pane)) return
+        val address = NotifyAction(serverId, pane.id, "", false, "", agent = previous.pane.agent)
+        try {
+            val first = readAlertViewport(address, previous) ?: return
+            val next = first.prompt() ?: return
+            if (com.billmongan.herdrdroid.notify.alertIdentity(answered) ==
+                com.billmongan.herdrdroid.notify.alertIdentity(next) &&
+                com.billmongan.herdrdroid.notify.alertOptionsSig(answered.choices) ==
+                com.billmongan.herdrdroid.notify.alertOptionsSig(next.choices)) return
+            delay(com.billmongan.herdrdroid.herdr.ALERT_CONFIRM_PAUSE_MS)
+            if (!stillWanted()) return
+            val second = readAlertViewport(address, previous) ?: return
+            val settled = second.prompt() ?: return
+            if (first.occupant != second.occupant || !cardAnswerStillFits(next, settled) || !stillWanted()) return
+            val origin = registerAlertOrigin(serverId, second.pane, previous.client, previous.connection) ?: return
+            Notify.needsYou(app, serverId, serverLabel, pane.id, second.pane.agentName, settled.question,
+                settled.choices, second.pane.agent, reply = com.billmongan.herdrdroid.notify.notificationOffersReply(settled),
+                prompt = settled, quietUpdate = true, origin = origin)
+            if (settled.choices.isNotEmpty())
+                observeQuestion(serverId, pane.id, settled, pane.status, pane.agentName, second.raw)
+        } catch (c: CancellationException) {
+            throw c
+        } catch (_: Exception) {
+            // Keep the original alert on transient read failures. A later poll may confirm the successor.
+        }
+    }
+
     private suspend fun readAlertViewport(a: NotifyAction, origin: AlertOrigin): AlertViewport? {
         if (!origin.currentFor(a)) return null
         val (pane, occupant) = origin.client.cardPaneGuarded(a.paneId, origin.connection) ?: return null
@@ -6898,7 +6951,9 @@ class AppViewModel internal constructor(
             Notify.clear(app, a.serverId, a.paneId)
             return
         }
-        val origin = alertOrigins[a.serverId to a.paneId]?.takeIf { it.token == a.origin && it.currentFor(a) }
+        val currentOrigin = alertOrigins[a.serverId to a.paneId]?.takeIf { it.currentFor(a) }
+        if (currentOrigin != null && currentOrigin.token != a.origin) return
+        val origin = currentOrigin
         if (origin == null) {
             Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
                 "This alert's connection or pane session could not be verified.")
@@ -6921,6 +6976,7 @@ class AppViewModel internal constructor(
             return
         }
         try {
+            Notify.sending(app, a.serverId, a.paneId, "Sending your answer", a.label.ifEmpty { if (a.isReply) "Reply" else "Esc" })
             answerFromNotificationNow(a, origin, app) { origin.answeredAt = System.currentTimeMillis() }
         } finally {
             answeringCards = answeringCards - flight
@@ -7036,6 +7092,7 @@ class AppViewModel internal constructor(
             }
             sendAlertInput(a, origin, destination, destinationPrompt, input)
             rememberCardAnswer(a.serverId, a.paneId, now)
+            origin.confirmedAnswer = now
             answered()
             Notify.sending(app, a.serverId, a.paneId, "Answered", label.take(40))
             runCatching { noteAnswer(a.paneId, now, label, a.serverId) }

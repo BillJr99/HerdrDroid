@@ -558,23 +558,27 @@ class ActionReceiver : BroadcastReceiver() {
             val labels = intent.getStringArrayExtra("cLabels").orEmpty()
             val at = labels.indexOf(text)
             val typedRow = intent.getStringExtra("typedRow").orEmpty()
-            if (typedRow.isNotEmpty()) {
+            val taken = if (typedRow.isNotEmpty()) {
                 // The merged "Type your answer" (2.1.4): typed through its row after the app's checks.
-                if (!text.isNullOrEmpty()) AppBus.emit(NotifyAction(server, pane, text, true, intent.getStringExtra("question").orEmpty(),
+                !text.isNullOrEmpty() && AppBus.emit(NotifyAction(server, pane, text, true, intent.getStringExtra("question").orEmpty(),
                     label = intent.getStringExtra("label").orEmpty(), agent = intent.getStringExtra("agent"), isReply = true,
                     options = intent.getStringExtra("options").orEmpty(), identity = intent.getStringExtra("identity").orEmpty(), typedRow = typedRow, origin = origin))
             } else if (at >= 0) {
                 // A quick reply that is one of the agent's choices: answer with that choice's keys,
                 // checked against the same question, like the choice buttons.
                 AppBus.emit(NotifyAction(server, pane, intent.getStringArrayExtra("cKeys")?.getOrNull(at).orEmpty(),
-                    intent.getBooleanArrayExtra("cEnter")?.getOrNull(at) ?: false, intent.getStringExtra("question").orEmpty()))
+                    intent.getBooleanArrayExtra("cEnter")?.getOrNull(at) ?: false, intent.getStringExtra("question").orEmpty(),
+                    label = text.orEmpty(), agent = intent.getStringExtra("agent"),
+                    options = intent.getStringExtra("options").orEmpty(), identity = intent.getStringExtra("identity").orEmpty(),
+                    origin = origin))
             } else if (!text.isNullOrEmpty()) {
                 // OpenCode's question (2.1.2): the reply carries the question it answers, for the app to check.
                 val question = intent.getStringExtra("question") ?: intent.getStringExtra("customQuestion")
                 AppBus.emit(NotifyAction(server, pane, text, true, question.orEmpty(), agent = intent.getStringExtra("agent"),
                     isReply = true, options = intent.getStringExtra("options").orEmpty(), identity = intent.getStringExtra("identity").orEmpty(), origin = origin))
-            }
-            Notify.clear(context, server, pane)
+            } else false
+            if (!taken && !text.isNullOrEmpty())
+                Notify.sending(context, server, pane, "Open HerdrDroid to answer", "The app could not receive the reply. Tap to open it.")
             return
         }
         val label = intent.getStringExtra("label").orEmpty()
@@ -585,8 +589,7 @@ class ActionReceiver : BroadcastReceiver() {
                 options = intent.getStringExtra("options").orEmpty(), identity = intent.getStringExtra("identity").orEmpty(), origin = origin,
             ),
         )
-        if (taken) Notify.sending(context, server, pane, "Sending your answer", if (label.isNotEmpty()) label else "Esc")
-        else Notify.sending(context, server, pane, "Open HerdrDroid to answer", "The app wasn't running, so the answer wasn't sent. Tap to open it.")
+        if (!taken) Notify.sending(context, server, pane, "Open HerdrDroid to answer", "The app wasn't running, so the answer wasn't sent. Tap to open it.")
     }
 }
 
