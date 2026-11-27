@@ -11,8 +11,8 @@ private val RULE = Regex("""^─{3,}$""")
 /** An AGY subagent can request approval underneath its parent's composer while it is working. */
 internal fun agySubagentApproval(screen: String): Prompt? {
     val rows = stripAnsi(screen).lines().dropLastWhile { it.isBlank() }.takeLast(4).map(String::trimEnd)
-    val footer = rows.lastOrNull()?.let(GUTTER::matchEntire) ?: return null
-    if (!MANAGE_HINT.matches(footer.groupValues[2])) return null
+    val footer = rows.lastOrNull()?.let(GUTTER::matchEntire)
+    if (footer == null || !MANAGE_HINT.matches(footer.groupValues[2])) return agyManagedApprovalReview(screen)
     val review = Prompt("Review the AGY approval", emptyList(), region = rows, terminalReview = true,
         agyApproval = true)
     if (rows.size != 4) return review
@@ -34,7 +34,45 @@ private val QUESTION_PICKER_HEADER = Regex("""Question (\d+)/([1-9]\d*): (.+)"""
 private val QUESTION_PICKER_ROW = Regex("""(> )?([1-9]\d*)\. (.+)""")
 private val ORCHESTRATOR_FOOTER = Regex("""Orchestrator · .+ · \d+ subagent\(s\)""")
 private val ORCHESTRATOR_SHORTCUTS = Regex("""\? for shortcuts\s{2,}Orchestrator · .+ · \d+ subagent\(s\)""")
-private val BLOCKED_QUESTION_AGENT = Regex("""● Agent\(($AGENT_NAME)(?:: [^)]+)?\) · .+\s+Blocked · AskQuestion · .+""")
+private val BLOCKED_AGENT = Regex("""● Agent\(($AGENT_NAME)(?:: [^)]+)?\) · .+\s+Blocked · (AskQuestion|Bash) · .+""")
+private const val MANAGED_APPROVAL_HINT = "↑/↓ navigate · / select · enter confirm · esc cancel"
+
+private fun blockedAgyBanner(rows: List<String>, tool: String): Pair<String, List<String>>? {
+    if (rows.size < 10 || !ORCHESTRATOR_SHORTCUTS.matches(rows.last().trim())) return null
+    val tail = rows.takeLast(10)
+    if (listOf(4, 6, 8).any { !RULE.matches(tail[it].trim()) } || tail[5].trim() != ">") return null
+    val blocked = BLOCKED_AGENT.matchEntire(tail[7].trim()) ?: return null
+    if (blocked.groupValues[2] != tool) return null
+    val banner = tail.take(4).map { GUTTER.matchEntire(it) ?: return null }
+    val gutter = banner.first().groupValues[1]
+    if (banner.any { it.groupValues[1] != gutter } || !RULE.matches(banner[1].groupValues[2])) return null
+    return blocked.groupValues[1] to banner.map { it.groupValues[2] }
+}
+
+private fun agyManagedApprovalReview(screen: String): Prompt? {
+    val rows = stripAnsi(screen).lines().takeLast(80).map(String::trimEnd).filter(String::isNotBlank)
+    fun review(question: String, command: String, frame: List<String>) =
+        Prompt(question, emptyList(), region = frame, terminalReview = true,
+            parts = QuestionParts(emptyList(), listOf(QBlock(QKind.COMMAND, command))), agyApproval = true)
+
+    blockedAgyBanner(rows, "Bash")?.let { (agent, banner) ->
+        val heading = "$agent needs approval for Bash"
+        val command = COMMAND.matchEntire(banner[2])?.groupValues?.get(1)
+        if (banner[0] == heading && MANAGE_HINT.matches(banner[3]) && !command.isNullOrBlank()) {
+            return review(heading, command, banner)
+        }
+    }
+    val last = rows.lastOrNull() ?: return null
+    val footerIndex = rows.lastIndex - if (ORCHESTRATOR_FOOTER.matches(last.trim())) 1 else 0
+    if (rows.getOrNull(footerIndex)?.trim() != MANAGED_APPROVAL_HINT) return null
+    val heading = rows.take(footerIndex).indexOfLast { it.trim() == "⚠ Approval Required" }
+    if (heading < 0 || heading + 7 >= footerIndex || rows[heading + 1].trim() != "> Bash" ||
+        rows[heading + 3].trim().removePrefix("> ") != "1. Yes, approve" ||
+        rows[heading + 4].trim().removePrefix("> ") != "2. No, deny" ||
+        !RULE.matches(rows[heading + 5].trim()) ||
+        !rows[heading + 6].trim().startsWith("Trajectory ") || heading + 8 != footerIndex) return null
+    return review("Review the AGY approval", rows[heading + 2].trim(), rows.subList(heading, footerIndex + 1))
+}
 
 /** A native question may sit above the default parent composer, or inside an open subagent picker. */
 internal fun agySubagentQuestion(screen: String): Prompt? {
@@ -69,17 +107,11 @@ internal fun agySubagentQuestion(screen: String): Prompt? {
     if (row != null && PICKER_HEADER.matches(row)) return review(row, emptyList(), listOf(row))
 
     // Only accept an earlier banner when the complete native footer binds it to a blocked agent.
-    if (rows.size < 10 || !ORCHESTRATOR_SHORTCUTS.matches(last.trim())) return null
-    val tail = rows.takeLast(10)
-    if (listOf(4, 6, 8).any { !RULE.matches(tail[it].trim()) } || tail[5].trim() != ">") return null
-    val agent = BLOCKED_QUESTION_AGENT.matchEntire(tail[7].trim())?.groupValues?.get(1) ?: return null
-    val banner = tail.take(4).map { GUTTER.matchEntire(it) ?: return null }
-    val gutter = banner.first().groupValues[1]
-    if (banner.any { it.groupValues[1] != gutter } || banner[0].groupValues[2] != "$agent has a question" ||
-        !RULE.matches(banner[1].groupValues[2]) || !QUESTION_ANSWER_HINT.matches(banner[3].groupValues[2])) return null
-    val question = banner[2].groupValues[2].takeIf { it.startsWith("? ") }?.drop(2)?.takeIf { it.isNotBlank() }
+    val (agent, banner) = blockedAgyBanner(rows, "AskQuestion") ?: return null
+    if (banner[0] != "$agent has a question" || !QUESTION_ANSWER_HINT.matches(banner[3])) return null
+    val question = banner[2].takeIf { it.startsWith("? ") }?.drop(2)?.takeIf { it.isNotBlank() }
         ?: return null
-    return review(question, listOf("$agent has a question"), tail.take(4))
+    return review(question, listOf("$agent has a question"), banner)
 }
 
 private val SHELL_APPROVAL_HINT = Regex(

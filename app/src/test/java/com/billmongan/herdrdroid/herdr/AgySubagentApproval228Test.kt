@@ -70,6 +70,18 @@ class AgySubagentApproval228Test {
         assertNull(agySubagentQuestion(screen.replace("  3. ", "  4. ")))
     }
 
+    @Test fun nativeManagedApprovalAndItsParentShowOnlyTerminalReview() {
+        for (name in listOf("approval-parent", "approval-picker")) {
+            val screen = nativeQuestionScreen(name)
+            val prompt = checkNotNull(detectPrompt(screen, false, "agy"))
+            assertEquals("printf 'fixture-deny\\n'", prompt.parts?.command)
+            assertTrue(prompt.terminalReview)
+            assertTrue(prompt.choices.isEmpty())
+            assertTrue(alertPlan(prompt).buttons.isEmpty())
+            assertNull(agySubagentApproval(screen + "\n> another prompt"))
+        }
+    }
+
     @Test fun staleAndUnprovenPanelRowsCannotOfferApproval() {
         assertNull(agySubagentApproval(frame + " ❯ New input\n"))
         assertNull(agySubagentApproval(frame.replace(" ┃ ctrl+k", "   ctrl+k")))
