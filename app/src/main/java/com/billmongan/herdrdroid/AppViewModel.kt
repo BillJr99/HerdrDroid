@@ -2028,6 +2028,8 @@ class AppViewModel internal constructor(
         panePreviews.clear()
         panePrefetchAttempts.clear()
         openingPanePreview = null
+        warningRefresh?.cancel()
+        warningBatch = null
     }
 
     private fun Pane.canPrefetch(client: Herdr) = agent != null &&
@@ -2164,7 +2166,7 @@ class AppViewModel internal constructor(
     private var lastPreviewsAt = 0L
     private var lastWorkAt = 0L
 
-    private data class WarningReading(val pane: Pane, val count: Int)
+    private data class WarningReading(val pane: Pane, val count: Int, val readAt: Long)
     private data class WarningBatch(
         val server: String, val client: Herdr, val connection: Any, val readings: Map<String, WarningReading>,
     )
@@ -2176,7 +2178,9 @@ class AppViewModel internal constructor(
         if (server != current?.id || link != Link.CONNECTED || locked || pane.scrollOffset != 0) return null
         val batch = warningBatch ?: return null
         if (batch.server != server || batch.client !== herdr || batch.client.connectionIdentity !== batch.connection) return null
-        return batch.readings[pane.id]?.takeIf { it.pane.sameCardOccupant(pane) }?.count
+        return batch.readings[pane.id]?.takeIf {
+            it.pane.sameCardOccupant(pane) && android.os.SystemClock.elapsedRealtime() - it.readAt < 60_000
+        }?.count
     }
 
     private fun refreshWarnings(server: String, client: Herdr, snapshot: Collection<Pane>) {
@@ -2197,7 +2201,7 @@ class AppViewModel internal constructor(
                     val count = paneWarningCount(expected.agent, viewport) ?: continue
                     val (after, afterDigest) = client.cardPaneGuarded(id, connection) ?: continue
                     if (digest == afterDigest && after.sameCardOccupant(expected)) {
-                        readings[id] = WarningReading(after, count)
+                        readings[id] = WarningReading(after, count, android.os.SystemClock.elapsedRealtime())
                     }
                 } catch (c: CancellationException) {
                     throw c
