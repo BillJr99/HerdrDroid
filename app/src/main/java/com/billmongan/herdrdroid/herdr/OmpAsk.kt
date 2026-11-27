@@ -17,13 +17,14 @@ object OmpAsk {
         val answers: List<String?> = emptyList(),
         /** Where each chosen answer sits among its question's options (0-based), when the dialog shows it. */
         val answerAt: List<Int?> = emptyList()) {
-        val allAnswered: Boolean get() = total > 0 && answered >= total
+        val hasAllQuestions: Boolean get() = total > 0 && questions.size == total && answered in 0..total
+        val allAnswered: Boolean get() = hasAllQuestions && answered == total
         /**
          * Codex's review: every answer can be told apart on screen: each question shows a chosen
          * option at a known place, and none is a typed Other (its text can change past the point
          * where the dialog cuts it off, unseen). Only then is Submit offered from the card.
          */
-        val verifiable: Boolean get() = answers.size == questions.size && answerAt.size == questions.size &&
+        val verifiable: Boolean get() = hasAllQuestions && answers.size == questions.size && answerAt.size == questions.size &&
             answers.all { it != null && it.removeSuffix("…").isNotBlank() && !isTypedAnswerChoice(it) } && answerAt.all { it != null }
     }
 
@@ -225,7 +226,9 @@ object OmpAsk {
             if (state.allAnswered && state.verifiable) add(Choice(SUBMIT_LABEL, SUBMIT, false))
             add(Choice(CANCEL_LABEL, "esc", false))
         }
-        if (current == null || d.onSubmit) {
+        // A clipped or inconsistent question count cannot prove which choice a key would answer.
+        // Escape can still cancel an otherwise recognized box.
+        if (!state.hasAllQuestions || current == null || d.onSubmit) {
             val heading = when {
                 state.allAnswered && state.verifiable -> "Submit all answers?"
                 state.allAnswered -> TERMINAL_SUBMIT
