@@ -6982,7 +6982,10 @@ class AppViewModel internal constructor(
     }
 
     private suspend fun answerFromNotificationNow(a: NotifyAction, origin: AlertOrigin, app: Application, answered: () -> Unit) {
-        fun refuse(reason: String) = Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer", reason)
+        fun stillLatest() = alertOrigins[a.serverId to a.paneId] === origin
+        fun refuse(reason: String) {
+            if (stillLatest()) Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer", reason)
+        }
         try {
             val initial = readAlertViewport(a, origin) ?: run {
                 refuse("The pane's live screen could not be verified.")
@@ -7000,7 +7003,7 @@ class AppViewModel internal constructor(
             if (recentAnswerAge(a.serverId, a.paneId) {
                     if (a.isReply) cardAnswerStillFits(it, now) else notificationAnswerStillFits(it, a)
                 } != null) {
-                Notify.sending(app, a.serverId, a.paneId, "Already answered", "")
+                if (stillLatest()) Notify.sending(app, a.serverId, a.paneId, "Already answered", "")
                 return
             }
             val label: String
@@ -7088,6 +7091,7 @@ class AppViewModel internal constructor(
                 label = choice?.label ?: "Pressed Esc"
             }
             sendAlertInput(a, origin, destination, destinationPrompt, input)
+            if (!stillLatest()) return
             rememberCardAnswer(a.serverId, a.paneId, now)
             answered()
             Notify.sending(app, a.serverId, a.paneId, "Answered", label.take(40))

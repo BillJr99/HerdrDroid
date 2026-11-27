@@ -65,8 +65,10 @@ internal fun alertIdentity(p: com.billmongan.herdrdroid.herdr.Prompt): String {
     val material = p.approvalIdentity ?: p.openCodeQuestionFrame
         ?: (listOf(p.question) + p.choices.map { it.keys + ":" + it.label }).joinToString("\n")
     val norm = com.billmongan.herdrdroid.herdr.forPhone(material).filterNot(Char::isWhitespace)
+    val activeTab = p.parts?.tabs?.withIndex()?.singleOrNull { it.value.current }
+    val tab = activeTab?.let { "\u0000${it.index}:${it.value.title}" }.orEmpty()
     val command = p.parts?.command?.let { "\u0000" + com.billmongan.herdrdroid.herdr.stripAnsi(it) }.orEmpty()
-    return java.security.MessageDigest.getInstance("SHA-256").digest((norm + command).toByteArray(Charsets.UTF_8))
+    return java.security.MessageDigest.getInstance("SHA-256").digest((norm + command + tab).toByteArray(Charsets.UTF_8))
         .joinToString("") { "%02x".format(it) }
 }
 

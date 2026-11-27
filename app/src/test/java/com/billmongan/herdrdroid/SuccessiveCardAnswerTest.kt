@@ -1584,7 +1584,7 @@ class SuccessiveCardAnswerTest {
     }
 
     @Test fun answeredNotificationRefreshesASecondQuestionWithoutAStatusChange() = fixture("claude", firstStep) {
-        watchAnsweredSuccessor(secondStep.replace("1. Blue", "1. Green"))
+        watchAnsweredSuccessor(secondStep)
     }
 
     @Test fun oldNotificationCannotAnswerAnIndistinguishableButtonOnTheNextStep() = fixture("claude", firstStep) {
@@ -1806,8 +1806,13 @@ class SuccessiveCardAnswerTest {
                 assertEquals("Answered", active().extras.getCharSequence(android.app.Notification.EXTRA_TITLE)?.toString())
 
                 frame = nextFrame
-                drainWithTime { active().actions?.any { it.title.toString() == "Green" } == true }
-                val next = active().actions.single { it.title.toString() == "Green" }
+                val nextPrompt = shown()
+                val nextLabel = nextPrompt.choices.first().label
+                assertEquals(choice.label, nextLabel)
+                assertEquals(first.question, nextPrompt.question)
+                assertNotEquals(old.identity, com.billmongan.herdrdroid.notify.alertIdentity(nextPrompt))
+                drainWithTime { active().actions?.any { it.title.toString() == nextLabel } == true }
+                val next = active().actions.single { it.title.toString() == nextLabel }
                 com.billmongan.herdrdroid.notify.ActionReceiver().onReceive(app, android.content.Intent()
                     .putExtra(notify.EXTRA_SERVER, server.id)
                     .putExtra(notify.EXTRA_PANE, "p1")
@@ -1815,7 +1820,7 @@ class SuccessiveCardAnswerTest {
                     .putExtra("keys", old.keys))
                 shadowOf(Looper.getMainLooper()).idle()
                 assertEquals(listOf("enter"), sent)
-                assertTrue(active().actions.any { it.title.toString() == "Green" })
+                assertTrue(active().actions.any { it.title.toString() == nextLabel })
                 next.actionIntent.send()
                 drainUntil { sent.size == 2 && !vm.answerInFlight("p1") }
                 assertEquals(listOf("enter", "enter"), sent)
