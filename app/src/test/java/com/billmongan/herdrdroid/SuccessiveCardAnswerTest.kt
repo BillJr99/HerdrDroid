@@ -1020,6 +1020,17 @@ class SuccessiveCardAnswerTest {
         }
     }
 
+    @Test fun claudeAskWithNoVisibleHighlightDoesNotTypeAnOptionDigit() =
+        fixture("claude", firstStep.replace("❯ 1.", "  1.")) {
+            readSelectedPane()
+            val card = displayed()
+            assertNull(card.selected)
+            assertEquals(listOf("Blue", "Orange", "Type something."), card.choices.map { it.label })
+            answer(card)
+            assertEquals("Not sent. Open Terminal to verify the selected row.", vm.notice)
+            assertTrue(sent.isEmpty())
+        }
+
     @Test fun claudeCheckboxActionMissingOrAmbiguousIsNotAnAnswerRow() {
         fun labels(frame: String, agent: String = "claude") = detectPrompt(frame, true, agent)?.answerRows().orEmpty().map { it.label }
         assertTrue("Next" in labels(claudeNext))
