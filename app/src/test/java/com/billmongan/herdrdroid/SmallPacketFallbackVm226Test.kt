@@ -10,9 +10,11 @@ import com.billmongan.herdrdroid.diag.DiagLog
 import com.billmongan.herdrdroid.diag.NetworkWatch
 import com.billmongan.herdrdroid.herdr.Backend
 import com.billmongan.herdrdroid.herdr.Herdr
+import com.billmongan.herdrdroid.ssh.AuthRejected
 import com.billmongan.herdrdroid.ssh.Credentials
 import com.billmongan.herdrdroid.ssh.ExecResult
 import com.billmongan.herdrdroid.ssh.HerdrSsh
+import com.billmongan.herdrdroid.ssh.HostKeyChanged
 import com.billmongan.herdrdroid.ssh.LinkDown
 import com.billmongan.herdrdroid.store.Server
 import kotlinx.coroutines.CompletableDeferred
@@ -186,6 +188,40 @@ class SmallPacketFallbackVm226Test {
             assertNull(epA.ssh.activeMss)
             assertNull(epB.ssh.activeMss)
             assertEquals(Link.CONNECTED, vm.link)
+        }
+    }
+
+    @Test fun staleAuthenticationReadDoesNotDisconnectTheReplacement() {
+        for (failure in listOf(AuthRejected("fixture auth failure"), HostKeyChanged("expected", "actual"))) {
+            val old = Endpoint(a)
+            val replacement = Endpoint(b)
+            open(old, a)
+            val read = vm.viewModelScope.launch { vm.refreshPanes() }
+            idle()
+            assertTrue(read.isActive)
+            open(replacement, b)
+            old.gate.completeExceptionally(failure)
+            idle()
+            assertTrue(read.isCompleted)
+            assertEquals(b.id, vm.current?.id)
+            assertEquals(Link.CONNECTED, vm.link)
+            assertNull(vm.error)
+        }
+    }
+
+    @Test fun currentAuthenticationReadStillReportsTheFailure() {
+        for (failure in listOf(AuthRejected("fixture auth failure"), HostKeyChanged("expected", "actual"))) {
+            val endpoint = Endpoint(a)
+            open(endpoint, a)
+            val read = vm.viewModelScope.launch { vm.refreshPanes() }
+            idle()
+            assertTrue(read.isActive)
+            endpoint.gate.completeExceptionally(failure)
+            idle()
+            assertTrue(read.isCompleted)
+            assertNull(vm.current)
+            assertEquals(Link.OFFLINE, vm.link)
+            assertFalse(vm.error.isNullOrBlank())
         }
     }
 
