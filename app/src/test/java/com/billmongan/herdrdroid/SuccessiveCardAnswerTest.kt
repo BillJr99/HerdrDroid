@@ -1765,6 +1765,20 @@ class SuccessiveCardAnswerTest {
         assertFalse(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
     }
 
+    @Test fun terminalClearedBadgeStaysClearInPaneListUntilTheNextLiveQuestion() = fixture("claude", firstStep) {
+        readSelectedPane()
+        val terminal = readTerminal()
+        recentResult = ExecResult(0, firstStep, "")
+        afterSend = "❯ "
+        vm.sendTerminalKeys("p1", terminal, "enter")
+        drainUntil { sent == listOf("enter") && vm.openQuestionCount() == 0 }
+        vm.screen = Screen.Tabs
+        assertEquals("stale native blocked status is not another question", 0, vm.openQuestionCount())
+        frame = firstStep.replace("Which option", "Which layout")
+        pollTerminalPaneStatus()
+        drainUntil { vm.openQuestionCount() == 1 }
+    }
+
     @Test fun ordinaryOutputAfterClaudeAnswerIsNotAnotherQuestion() =
         verifyPostAnswerOutput("claude", firstStep, "enter")
 
@@ -1985,8 +1999,13 @@ class SuccessiveCardAnswerTest {
             runBlocking { vm.readTerminalPane("p1") }
             return checkNotNull(vm.terminalFrame("p1"))
         }
+        fun pollTerminalPaneStatus() {
+            val h = field("herdr").get(vm) as Herdr
+            vm.noticeChanges(server.id, server.label, listOf(checkNotNull(vm.pane("p1")))) { h }
+        }
         fun showTerminalQuestionAlert(card: Prompt) {
             val app = vm.getApplication<Application>()
+            shadowOf(app).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
             com.billmongan.herdrdroid.notify.Notify.channels(app)
             com.billmongan.herdrdroid.notify.Notify.needsYou(app, server.id, server.label, "p1", agent,
                 card.question, card.choices, agent)
@@ -2107,7 +2126,8 @@ class SuccessiveCardAnswerTest {
 
         override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult {
             if (expectedConnection != null) assertSame(connection, expectedConnection)
-            if (Regex("""'p1' '[0-9a-f]{64}' '-'""").containsMatchIn(command) && command.contains(" && echo ${com.billmongan.herdrdroid.herdr.OCCUPANT_PASSED_MARK} && ") &&
+            if ("hashlib.sha256(screen)" !in command && Regex("""'p1' '[0-9a-f]{64}' '-'""").containsMatchIn(command) &&
+                command.contains(" && echo ${com.billmongan.herdrdroid.herdr.OCCUPANT_PASSED_MARK} && ") &&
                 command.substringAfter(" && echo ${com.billmongan.herdrdroid.herdr.OCCUPANT_PASSED_MARK} && ").startsWith("'/fixture/herdr' 'pane' 'send-keys'")) {
                 val send = command.substringAfter(" && echo ${com.billmongan.herdrdroid.herdr.OCCUPANT_PASSED_MARK} && ")
                 return immediate(send, timeoutSeconds, expectedConnection)

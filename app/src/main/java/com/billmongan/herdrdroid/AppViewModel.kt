@@ -2667,7 +2667,7 @@ class AppViewModel internal constructor(
             if (screen == Screen.Questions) questionsFeed.poke()
             return
         }
-        val terminalWatch = terminalAnswerWatch(paneId)
+        val terminalWatch = terminalAnswerWatch(paneId) ?: resumeTerminalAnswerWatch(paneId)
         val attempt = ++paneReadSequence
         val modelSequence = ++modelReadSequence
         // Only for the pane open now (1.4.2, from review: a late answer for another pane set or
@@ -4720,21 +4720,77 @@ class AppViewModel internal constructor(
     }
 
     private var terminalAnswerWatch by mutableStateOf<TerminalAnswerWatch?>(null)
+    private data class TerminalDismissal(val watch: TerminalAnswerWatch, val status: Status)
+    private val terminalDismissals = androidx.compose.runtime.mutableStateMapOf<Pair<String, String>, TerminalDismissal>()
+    private val terminalDismissalReads = mutableSetOf<Pair<String, String>>()
 
     private fun terminalAnswerWatch(paneId: String): TerminalAnswerWatch? =
         terminalAnswerWatch?.takeIf { it.frame.source.pane.id == paneId && it.frame.source.isCurrent(it.frame.source.client) }
 
-    private fun terminalAnswerStatus(pane: Pane, server: String?): Status? =
-        terminalAnswerWatch(pane.id)?.takeIf { it.frame.source.server == server && it.frame.source.pane.sameCardOccupant(pane) }?.status
+    private fun TerminalDismissal.matches(pane: Pane): Boolean {
+        val source = watch.frame.source
+        return current?.id == source.server && herdr === source.client &&
+            source.client.connectionIdentity === source.connection && pane.sameCardOccupant(source.pane)
+    }
+
+    private fun resumeTerminalAnswerWatch(paneId: String): TerminalAnswerWatch? {
+        val source = cardTarget(paneId) ?: return null
+        val prior = terminalDismissals[source.server to paneId]?.takeIf { it.matches(source.pane) } ?: return null
+        val frame = prior.watch.frame.copy(source = source)
+        return TerminalAnswerWatch(frame, null, null, null).also {
+            it.status = prior.status
+            it.alertResolved = true
+            terminalAnswerWatch = it
+        }
+    }
+
+    private fun terminalAnswerStatus(pane: Pane, server: String?): Status? {
+        if (server != current?.id || server == null) return null
+        if (foreground) {
+            terminalAnswerWatch(pane.id)?.takeIf { it.frame.source.pane.sameCardOccupant(pane) }?.status?.let { return it }
+        }
+        return terminalDismissals[server to pane.id]?.takeIf { it.matches(pane) }?.status
+    }
+
+    /**
+     * A pane can keep reporting the old wait after the user leaves its chat. Keep the verified
+     * badge until native status catches up. If it still says blocked, check its next live view
+     * before the watcher can restore or notify a different question.
+     */
+    private fun reconcileTerminalDismissal(serverId: String, serverLabel: String, pane: Pane, client: () -> Herdr?) {
+        val key = serverId to pane.id
+        val dismissal = terminalDismissals[key] ?: return
+        if (!dismissal.matches(pane) || pane.status != Status.NEEDS_YOU) {
+            terminalDismissals.remove(key)
+            return
+        }
+        if (locked || foreground && terminalAnswerWatch(pane.id) != null || !terminalDismissalReads.add(key)) return
+        viewModelScope.launch {
+            try {
+                fun current() = terminalDismissals[key] === dismissal && !locked &&
+                    client() === dismissal.watch.frame.source.client && dismissal.matches(pane) &&
+                    this@AppViewModel.pane(pane.id)?.let(dismissal::matches) == true
+                val live = readTerminalAnswerViewport(dismissal.watch, ::current, watchingInventory = true) ?: return@launch
+                if (current() && live.status == Status.NEEDS_YOU) {
+                    terminalDismissals.remove(key)
+                    noticeChanges(serverId, serverLabel, listOf(pane), client = client)
+                }
+            } finally {
+                terminalDismissalReads.remove(key)
+            }
+        }
+    }
 
     private data class TerminalAnswerRead(val live: Pane, val raw: String, val prompt: Prompt?, val status: Status)
 
     /** Recent terminal output is useful for display. Only a bracketed live viewport may retire its question. */
-    private suspend fun readTerminalAnswerViewport(watch: TerminalAnswerWatch, current: () -> Boolean): TerminalAnswerRead? {
+    private suspend fun readTerminalAnswerViewport(
+        watch: TerminalAnswerWatch, current: () -> Boolean, watchingInventory: Boolean = false,
+    ): TerminalAnswerRead? {
         val frame = watch.frame
         val source = frame.source
         val version = versionOf(source.pane.id)
-        val (live, raw) = quietly { h ->
+        val (live, raw) = quietly(allowBackground = watchingInventory) { h ->
             if (h !== source.client || !current()) return@quietly null
             val first = h.cardPane(frame.live.id, source.connection) ?: return@quietly null
             if (!first.sameCardOccupant(frame.live) || first.scrollOffset != 0 || !current()) return@quietly null
@@ -4755,7 +4811,8 @@ class AppViewModel internal constructor(
             else detectPrompt(raw, blocked = live.status == Status.NEEDS_YOU && !composer && !working, agent, version)
         val dialog = parsed ?: if (agent == "claude")
             com.billmongan.herdrdroid.herdr.claudeReviewPreview(text, null) else null
-        if (dialog == null && (!composer && !working || com.billmongan.herdrdroid.herdr.showsQuestionDialog(text))) return null
+        if (dialog == null && (!composer && !working || com.billmongan.herdrdroid.herdr.showsQuestionDialog(text)))
+            return TerminalAnswerRead(live, raw, null, Status.NEEDS_YOU).takeIf { watchingInventory }
         val status = when {
             dialog != null -> Status.NEEDS_YOU
             working -> Status.WORKING
@@ -4768,11 +4825,14 @@ class AppViewModel internal constructor(
     private fun applyTerminalQuestionStatus(watch: TerminalAnswerWatch, read: TerminalAnswerRead) {
         val source = watch.frame.source
         val previous = watch.previous
-        val changed = read.prompt == null || previous != null &&
+        val key = source.server to source.pane.id
+        if (read.prompt == null && read.live.status == Status.NEEDS_YOU)
+            terminalDismissals[key] = TerminalDismissal(watch, read.status)
+        else terminalDismissals.remove(key)
+        val changed = read.prompt == null || previous == null ||
             !com.billmongan.herdrdroid.herdr.cardAnswerStillFits(previous, read.prompt) &&
             previous.copy(selected = null) != read.prompt.copy(selected = null)
         if (changed && !watch.alertResolved) {
-            val key = source.server to source.pane.id
             // Leave a different notification posted while the viewport was being read alone.
             if (alertJobs[key] === watch.alertJob && alertOrigins[key] === watch.alert) {
                 alertJobs.remove(key)?.cancel()
@@ -7072,18 +7132,20 @@ class AppViewModel internal constructor(
         val app = getApplication<Application>()
         if (complete) {
             val live = seen.mapTo(hashSetOf()) { it.id }
-            val tracked = (lastStatus.keys + alertJobs.keys + alertOrigins.keys)
+            val tracked = (lastStatus.keys + alertJobs.keys + alertOrigins.keys + terminalDismissals.keys)
             for (key in tracked) {
                 if (key.first != serverId || key.second in live) continue
                 lastStatus.remove(key)
                 alertJobs.remove(key)?.cancel()
                 alertOrigins.remove(key)
+                terminalDismissals.remove(key)
                 Notify.clear(app, serverId, key.second)
             }
         }
+        seen.forEach { reconcileTerminalDismissal(serverId, serverLabel, it, client) }
         if (!watching) {
             alertOrigins.keys.removeAll { it.first == serverId }
-            seen.forEach { lastStatus[serverId to it.id] = it.status }
+            seen.forEach { lastStatus[serverId to it.id] = terminalAnswerStatus(it, serverId) ?: it.status }
             return
         }
         for (raw in seen) {
