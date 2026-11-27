@@ -58,6 +58,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.billmongan.herdrdroid.AppViewModel
+import com.billmongan.herdrdroid.Link
 import com.billmongan.herdrdroid.Screen
 import com.billmongan.herdrdroid.herdr.QuotaReading
 import com.billmongan.herdrdroid.herdr.Pane
@@ -226,6 +227,10 @@ fun TabsScreen(vm: AppViewModel) {
                             Column(Modifier.weight(1f).padding(start = 10.dp)) {
                                 Text("${p.agentName} · ${p.folder}", color = Palette.Ink, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 Text("on ${server.label} · tap to switch", color = Palette.Muted, fontSize = 12.5.sp)
+                                val saved = vm.servers.firstOrNull { it.id == server.id }
+                                if (saved?.paneQuotaCommand == server.paneQuotaCommand && saved != null) {
+                                    p.quotaReading?.let { PaneQuotaText(it) }
+                                }
                             }
                         }
                     }
@@ -247,6 +252,7 @@ fun TabsScreen(vm: AppViewModel) {
                 items(list, key = { it.id }) { p ->
                     PaneCard(
                         p, vm.previews[p.id].orEmpty(), model = vm.modelLine(p.id), quota = vm.quotaFor(p),
+                        paneQuota = p.quotaReading?.takeIf { vm.link == Link.CONNECTED },
                         checking = false, warningCount = vm.warningFor(p),
                         underneath = vm.workCounts[p.id] ?: 0,
                         git = vm.gitInfo[p.cwd],
@@ -282,6 +288,7 @@ internal fun PaneCard(
     underneath: Int = 0,
     git: com.billmongan.herdrdroid.herdr.GitInfo? = null,
     onClose: (() -> Unit)? = null,
+    paneQuota: com.billmongan.herdrdroid.herdr.PaneQuotaReading? = null,
     onClick: () -> Unit,
 ) {
     val needs = p.status == Status.NEEDS_YOU
@@ -310,6 +317,7 @@ internal fun PaneCard(
                 }
                 model?.let { Text(it, color = Palette.Blue, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 quota?.let { QuotaChips(it, Modifier.padding(top = 2.dp)) }
+                paneQuota?.let { PaneQuotaText(it) }
             }
         }
     }
