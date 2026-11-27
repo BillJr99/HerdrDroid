@@ -1,0 +1,6 @@
+◆ Running command · Sleep twenty seconds foreground <running-separator> running (1s · esc to interrupt)
+└ (ctrl+b to send to background)
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  muse-wonder-full-1.0 · high · /fixture · Launch overrides

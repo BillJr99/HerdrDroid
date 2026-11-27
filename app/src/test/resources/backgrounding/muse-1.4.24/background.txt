@@ -1,0 +1,9 @@
+◆ Backgrounded · Sleep twenty seconds foreground · 1.8s · ctrl+o
+  (↓ to view terminals)
+◆ Calling tools (7s · esc to interrupt)
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+main · ↓ to select
+└ ◈ Sleep twenty seconds foreground  running                                                                                       2s
+  muse-wonder-full-1.0 · high · /fixture · Launch overrides

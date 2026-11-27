@@ -8074,7 +8074,7 @@ class AppViewModel internal constructor(
 
     private fun backgroundForeground(paneId: String, permitted: () -> Boolean) {
         val p = pane(paneId) ?: return
-        backgroundSupport(p.agent, p.agentName)?.let { flash(it); return }
+        backgroundSupport(p.agent, p.agentName, manual = true)?.let { flash(it); return }
         if (hasPendingQuestion(p)) { flash("Not sent: ${p.agentName} has a question open. Answer it first."); return }
         val client = herdr ?: return
         if (paneId in backgroundingPanes) return
@@ -8083,12 +8083,26 @@ class AppViewModel internal constructor(
         viewModelScope.launch {
             var pressed: com.billmongan.herdrdroid.herdr.BackgroundStep? = null
             var fg: Set<Int> = emptySet()
+            val muse = p.agent.equals("muse", true)
+            var museTask: String? = null
+            var musePreviousReceipts = 0
             val outcome = try {
-                runBackgrounder(client, server, p, com.billmongan.herdrdroid.herdr.Backgrounder.Limits(maxPresses = 2, maxReads = 8, pollMs = 700),
+                runBackgrounder(client, server, p, com.billmongan.herdrdroid.herdr.Backgrounder.Limits(maxPresses = if (muse) 1 else 2, maxReads = 8, pollMs = 700),
                     onPressed = { pressed = it }, permitted = permitted) { s ->
                     workScreens = workScreens + (paneId to s)
                     val step = com.billmongan.herdrdroid.herdr.backgroundStep(p.agent, s)
                     val last = pressed
+                    if (muse) {
+                        if (last == null) {
+                            museTask = com.billmongan.herdrdroid.herdr.museForegroundTask(s)
+                            musePreviousReceipts = museTask?.let {
+                                com.billmongan.herdrdroid.herdr.museBackgroundReceiptCount(s, it)
+                            } ?: 0
+                        }
+                        return@runBackgrounder last != null && museTask?.let {
+                            com.billmongan.herdrdroid.herdr.museBackgroundConfirmed(s, it, musePreviousReceipts)
+                        } == true
+                    }
                     // Before any key: the shells this screen shows in the foreground for certain.
                     if (last == null) fg = com.billmongan.herdrdroid.herdr.shellPlaces(p.agent, s, work[paneId]?.activeProcs(p.agent).orEmpty())
                         .filterValues { it == com.billmongan.herdrdroid.herdr.RunPlace.FOREGROUND }.keys
@@ -8102,7 +8116,9 @@ class AppViewModel internal constructor(
                 movedToBackground = movedToBackground + (paneId to (fg to System.currentTimeMillis()))
             flash(when (outcome) {
                 com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.DONE -> "Moved to the background."
-                com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.TIMED_OUT -> "Nothing running in the foreground in ${p.agentName} could be moved just now."
+                com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.TIMED_OUT -> if (muse && pressed != null)
+                    "Ctrl+B reached ${p.agentName}, but the app could not verify that the shell moved."
+                    else "Nothing running in the foreground in ${p.agentName} could be moved just now."
                 else -> com.billmongan.herdrdroid.herdr.backgroundOutcomeText(outcome, p.agentName) ?: ""
             })
             if (current?.id == server) refreshWork(paneId)
