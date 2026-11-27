@@ -1162,6 +1162,30 @@ class SuccessiveCardAnswerTest {
         }
     }
 
+    @Test fun wrappedOpenCodePermissionReconstructsTokensAndKeepsGuardedButtons() {
+        val capture = checkNotNull(javaClass.getResource(
+            "/screens/opencode/derived-2.2.10/permission-wrapped.txt")).readText()
+        val styled = listOf("Allow once", "Always allow", "Reject").fold(capture) { text, label ->
+            text.replace(label, "\u001B[${if (label == "Allow once") 44 else 49}m$label\u001B[0m")
+        }
+        fixture("opencode", styled) {
+            readSelectedPane()
+            val card = displayed()
+            assertFalse(card.terminalReview)
+            assertTrue(card.shownParts().command.orEmpty().contains(
+                "tool.py -c 12345 --preview --format text --file /home/user/project/fixture/fixture/fixtures/data.json"
+            ))
+            assertEquals(listOf("Allow once", "Always allow", "Reject"), card.choices.map { it.label })
+            answer(shown(), checkNotNull(vm.paneTextTarget), index = 1)
+            assertTrue(sent.isEmpty())
+            val ask = checkNotNull(vm.approveAllPending).ask
+            assertEquals(listOf("right", "enter"), ask.keys)
+            vm.confirmApproveAll()
+            drainUntil { !vm.answerInFlight("p1") }
+            assertEquals(listOf("right enter"), sent)
+        }
+    }
+
     @Test fun nativeOpenCodeRejectDoesNotConfirmTheHighlightedApproval() = fixture("opencode", openCodePermission) {
         readSelectedPane()
         val card = displayed()
