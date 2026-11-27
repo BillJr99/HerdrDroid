@@ -145,6 +145,41 @@ class BoardSync2210Test {
     }
 
     @Test
+    fun createConflictRequiresManualRetry() {
+        val pending = card.copy(id = "16958fa2-a9fc-4343-8a0e-9d4270d04fe5")
+        assertTrue(store.saveCard(source, pending))
+        assertConflictRequiresManualRetry(pending)
+    }
+
+    @Test
+    fun noteConflictRequiresManualRetry() {
+        serverCards(card)
+        assertTrue(store.addNote(source, card.id, BoardNote(firstTime, "Phone", "Add a crease")))
+        assertConflictRequiresManualRetry(card)
+    }
+
+    @Test
+    fun updateConflictWithoutConflictingFieldsRequiresManualRetry() {
+        serverCards(card)
+        assertTrue(store.saveCard(source, card.copy(next = "Use scrap paper")))
+        assertConflictRequiresManualRetry(card)
+    }
+
+    private fun assertConflictRequiresManualRetry(current: BoardCard) {
+        val pending = request()
+        val reason = "The agent could not apply this change"
+        assertTrue(store.markSent(source, pending.id, 1))
+        assertTrue(store.receive(source, BoardReply(pending.id, "Example board", secondTime,
+            listOf(current), emptyList(), listOf(BoardResult(false, current.id, "conflict", current, reason)))))
+        assertTrue(snapshot().conflicts.isEmpty())
+        assertEquals(reason, snapshot().issue)
+        assertNull(snapshot().request)
+        assertFalse(store.queueApply(source))
+        assertTrue(store.retry(source))
+        assertEquals(pending.changes, request().changes)
+    }
+
+    @Test
     fun refusalAndDuplicateNoteSurviveReloadWithoutAutomaticRetry() {
         serverCards(card)
         val note = BoardNote(firstTime, "Phone", "Add a crease")
