@@ -4136,6 +4136,8 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
         }
         else -> unstyled
     }
+    // Unlike an empty read, a clipped viewport containing only queue rows is readable.
+    if (queueRows.isNotEmpty() && plain.isBlank()) return null
     if (agent.equals("claude", true)) {
         claudeModelCard(plain)?.let { return it }
         rebuiltClaudeAsk(plain)?.let { return it }

@@ -45,6 +45,14 @@ class CodexQueueRedrawTest {
         }
     }
 
+    @Test fun clippedQueueOnlyViewportIsNotAnUnreadableScreen() {
+        val block = "• Queued follow-up inputs" + capture("visible").substringAfter("• Queued follow-up inputs")
+            .substringBefore("› Ask Codex")
+        assertNull(detectPrompt(block, true, "codex"))
+        assertNull(detectPrompt(block.substringAfter('\n'), true, "codex"))
+        assertTrue(detectPrompt("", true, "codex")?.region == listOf(UNREAD_SCREEN))
+    }
+
     @Test fun nativeDialogsStillParseOnEitherSideOfQueueActivity() {
         val queue = capture("visible").substringAfter("• Queued follow-up inputs")
             .substringBefore("› Ask Codex")
