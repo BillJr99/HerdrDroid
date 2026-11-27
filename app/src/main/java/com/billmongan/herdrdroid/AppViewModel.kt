@@ -2914,6 +2914,11 @@ class AppViewModel internal constructor(
                 attempt == lastAppliedPaneRead && current?.id == serverId && herdr === client &&
                     paneVisit == visit && (screen as? Screen.Agent)?.paneId == paneId
             }
+            // Once both native reads have caught up, ordinary polling no longer needs to
+            // distinguish the answered prompt from the stale blocked state.
+            if (terminalRead != null && terminalRead.prompt == null && terminalRead.live.status != Status.NEEDS_YOU &&
+                pane(paneId)?.status != Status.NEEDS_YOU && terminalAnswerWatch(paneId) === terminalWatch &&
+                lastAppliedPaneRead == attempt) terminalAnswerWatch = null
         }
     }
 
