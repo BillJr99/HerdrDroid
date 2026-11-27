@@ -27,6 +27,35 @@ class BoardTranscript2210Test {
         assertEquals("Example", receipt.result()?.board)
     }
 
+    @Test fun inclusiveCursorReplayKeepsOneReply() {
+        val receipt = BoardTranscript(request)
+        val assistant = item("text", block).put("k", "answer-1")
+        receipt.append(listOf(item("user", BoardProtocol.message(request)), assistant))
+        receipt.append(listOf(assistant))
+        assertEquals("Example", receipt.result()?.board)
+    }
+
+    @Test fun rewrittenAssistantItemReplacesItsEarlierContents() {
+        val receipt = BoardTranscript(request)
+        receipt.append(listOf(
+            item("user", BoardProtocol.message(request)),
+            item("text", "A partial answer.").put("k", "answer-1"),
+            item("text", "```").put("k", "answer-2"),
+        ))
+        receipt.append(listOf(item("text", "```json\n$answer").put("k", "answer-1")))
+        assertEquals("Example", receipt.result()?.board)
+    }
+
+    @Test fun genuinelySeparateMatchingFencesRemainInvalid() {
+        val receipt = BoardTranscript(request)
+        receipt.append(listOf(
+            item("user", BoardProtocol.message(request)),
+            item("text", block).put("k", "answer-1"),
+            item("text", block).put("k", "answer-2"),
+        ))
+        assertNull(receipt.result())
+    }
+
     @Test fun ignoresToolOutputAndOtherTurns() {
         val receipt = BoardTranscript(request)
         receipt.append(listOf(item("user", "Other prompt"), item("text", block)))
