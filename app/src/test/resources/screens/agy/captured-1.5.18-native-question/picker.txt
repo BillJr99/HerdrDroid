@@ -1,0 +1,11 @@
+Question
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Question 1/1: Which fixture label?
+
+  1. Alpha
+> 2. Beta
+  3. Write-in...
+
+  ↑/↓ Navigate · enter Select · esc Skip
+                                                                                  Orchestrator · Gemini 4 Neon · high · 1 subagent(s)

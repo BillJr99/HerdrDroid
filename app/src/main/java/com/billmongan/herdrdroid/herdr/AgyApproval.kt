@@ -28,12 +28,58 @@ internal fun agySubagentApproval(screen: String): Prompt? {
         approvalIdentity = rows.joinToString("\n"), agyApproval = true)
 }
 
-/** The pending question row is a cue to open a different picker, not an approval. */
+private val QUESTION_ANSWER_HINT = Regex("""(?i:ctrl[+-]k|\^k|c-k) answer · alt\+j manage""")
+private val QUESTION_PICKER_HINT = "↑/↓ Navigate · enter Select · esc Skip"
+private val QUESTION_PICKER_HEADER = Regex("""Question (\d+)/([1-9]\d*): (.+)""")
+private val QUESTION_PICKER_ROW = Regex("""(> )?([1-9]\d*)\. (.+)""")
+private val ORCHESTRATOR_FOOTER = Regex("""Orchestrator · .+ · \d+ subagent\(s\)""")
+private val ORCHESTRATOR_SHORTCUTS = Regex("""\? for shortcuts\s{2,}Orchestrator · .+ · \d+ subagent\(s\)""")
+private val BLOCKED_QUESTION_AGENT = Regex("""● Agent\(($AGENT_NAME)(?:: [^)]+)?\) · .+\s+Blocked · AskQuestion · .+""")
+
+/** A native question may sit above the default parent composer, or inside an open subagent picker. */
 internal fun agySubagentQuestion(screen: String): Prompt? {
-    val last = stripAnsi(screen).lines().lastOrNull { it.isNotBlank() }?.trimEnd() ?: return null
-    val row = GUTTER.matchEntire(last)?.groupValues?.get(2) ?: return null
-    if (!PICKER_HEADER.matches(row)) return null
-    return Prompt(row, emptyList(), region = listOf(row), terminalReview = true)
+    val rows = stripAnsi(screen).lines().takeLast(80).map(String::trimEnd).filter(String::isNotBlank)
+    val last = rows.lastOrNull() ?: return null
+    fun review(question: String, details: List<String>, frame: List<String>) =
+        Prompt(question, emptyList(), region = frame, terminalReview = true,
+            parts = QuestionParts(emptyList(), details.map { QBlock(QKind.TEXT, it) }))
+
+    val footerIndex = rows.lastIndex - if (ORCHESTRATOR_FOOTER.matches(last.trim())) 1 else 0
+    if (rows.getOrNull(footerIndex)?.trim() == QUESTION_PICKER_HINT) {
+        val options = rows.take(footerIndex).asReversed()
+            .takeWhile { QUESTION_PICKER_ROW.matches(it.trim()) }.asReversed()
+            .map { QUESTION_PICKER_ROW.matchEntire(it.trim())!! }
+        val headerIndex = footerIndex - options.size - 1
+        val header = rows.getOrNull(headerIndex)?.trim()?.let(QUESTION_PICKER_HEADER::matchEntire)
+        if (header != null && options.size >= 2 &&
+            options.map { it.groupValues[2].toIntOrNull() } == (1..options.size).toList() &&
+            options.count { it.groupValues[1].isNotEmpty() } == 1 &&
+            rows.getOrNull(headerIndex - 1)?.trim()?.let(RULE::matches) == true &&
+            rows.getOrNull(headerIndex - 2)?.trim() == "Question") {
+            val current = header.groupValues[1].toIntOrNull()
+            val total = header.groupValues[2].toIntOrNull()
+            if (current != null && total != null && current in 1..total) {
+                return review(header.groupValues[3], options.map { it.groupValues[3] },
+                    rows.subList(headerIndex - 2, footerIndex + 1))
+            }
+        }
+    }
+
+    val row = GUTTER.matchEntire(last)?.groupValues?.get(2)
+    if (row != null && PICKER_HEADER.matches(row)) return review(row, emptyList(), listOf(row))
+
+    // Only accept an earlier banner when the complete native footer binds it to a blocked agent.
+    if (rows.size < 10 || !ORCHESTRATOR_SHORTCUTS.matches(last.trim())) return null
+    val tail = rows.takeLast(10)
+    if (listOf(4, 6, 8).any { !RULE.matches(tail[it].trim()) } || tail[5].trim() != ">") return null
+    val agent = BLOCKED_QUESTION_AGENT.matchEntire(tail[7].trim())?.groupValues?.get(1) ?: return null
+    val banner = tail.take(4).map { GUTTER.matchEntire(it) ?: return null }
+    val gutter = banner.first().groupValues[1]
+    if (banner.any { it.groupValues[1] != gutter } || banner[0].groupValues[2] != "$agent has a question" ||
+        !RULE.matches(banner[1].groupValues[2]) || !QUESTION_ANSWER_HINT.matches(banner[3].groupValues[2])) return null
+    val question = banner[2].groupValues[2].takeIf { it.startsWith("? ") }?.drop(2)?.takeIf { it.isNotBlank() }
+        ?: return null
+    return review(question, listOf("$agent has a question"), tail.take(4))
 }
 
 private val SHELL_APPROVAL_HINT = Regex(

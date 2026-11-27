@@ -42,6 +42,34 @@ class AgySubagentApproval228Test {
         assertNull(agySubagentQuestion(screen.trimStart().removePrefix("┃ ")))
     }
 
+    private fun nativeQuestionScreen(name: String): String = checkNotNull(javaClass.getResource(
+        "/screens/agy/captured-1.5.18-native-question/$name.txt"
+    )).readText()
+
+    @Test fun nativeParentBannerAboveComposerMatchesOnlyItsOwnBlockedHelper() {
+        val screen = nativeQuestionScreen("parent")
+        val prompt = checkNotNull(detectPrompt(screen, false, "agy"))
+        assertEquals("Which fixture label?", prompt.question)
+        assertTrue(prompt.terminalReview)
+        assertTrue(prompt.choices.isEmpty())
+        assertTrue(alertPlan(prompt).buttons.isEmpty())
+        assertNull(agySubagentQuestion(screen.replace("Agent(self:", "Agent(other:")))
+        assertNull(agySubagentQuestion(screen.replace("Blocked · AskQuestion", "Running · Work")))
+        assertNull(agySubagentQuestion(screen + "\n> another prompt"))
+    }
+
+    @Test fun nativePickerShowsQuestionAndOptionsWithoutOfferingKeys() {
+        val screen = nativeQuestionScreen("picker")
+        val prompt = checkNotNull(detectPrompt(screen, false, "agy"))
+        assertEquals("Which fixture label?", prompt.question)
+        assertEquals(listOf("Alpha", "Beta", "Write-in..."), prompt.parts?.details)
+        assertTrue(prompt.terminalReview)
+        assertTrue(prompt.choices.isEmpty())
+        assertTrue(alertPlan(prompt).buttons.isEmpty())
+        assertNull(agySubagentQuestion(screen.replace("> 2. ", "  2. ")))
+        assertNull(agySubagentQuestion(screen.replace("  3. ", "  4. ")))
+    }
+
     @Test fun staleAndUnprovenPanelRowsCannotOfferApproval() {
         assertNull(agySubagentApproval(frame + " ❯ New input\n"))
         assertNull(agySubagentApproval(frame.replace(" ┃ ctrl+k", "   ctrl+k")))
