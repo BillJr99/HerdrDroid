@@ -39,7 +39,8 @@ private const val MANAGED_APPROVAL_HINT = "↑/↓ navigate · / select · enter
 
 private fun blockedAgyBanner(rows: List<String>, tool: String): Pair<String, List<String>>? {
     if (rows.size < 10 || !ORCHESTRATOR_SHORTCUTS.matches(rows.last().trim())) return null
-    val tail = rows.takeLast(10)
+    val tail = rows.filter { it.trim() != "┃" }.takeLast(10)
+    if (tail.size != 10) return null
     if (listOf(4, 6, 8).any { !RULE.matches(tail[it].trim()) } || tail[5].trim() != ">") return null
     val blocked = BLOCKED_AGENT.matchEntire(tail[7].trim()) ?: return null
     if (blocked.groupValues[2] != tool) return null
