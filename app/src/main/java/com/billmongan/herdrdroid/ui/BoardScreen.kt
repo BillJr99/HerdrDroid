@@ -162,7 +162,8 @@ internal fun BoardScreen(
                     else if (ownerName.isBlank()) selectingOwner = true
                     else mineOnly = true
                 }, label = { Text("Mine") })
-                FilterChip(waitingOnly, onClick = { waitingOnly = !waitingOnly }, label = { Text("Waiting") })
+                FilterChip(waitingOnly, onClick = { waitingOnly = !waitingOnly }, label = { Text("Waiting") },
+                    modifier = Modifier.testTag("board-filter-waiting"))
                 if (mineOnly) {
                     TextButton(onClick = { selectingOwner = true }) {
                         Text(ownerName, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -422,7 +423,7 @@ private fun BoardEditor(
                     Text("This card updated while you were editing. Reopen it to see the latest values.",
                         color = Palette.OrangeInk)
                 }
-                BoardField("Title", input.title) { input = input.copy(title = it) }
+                BoardField("Title", input.title, Modifier.testTag("board-card-title")) { input = input.copy(title = it) }
                 BoardStatusButton(input.status) { input = input.moveStatus(it, phone) }
                 BoardField("Native status", input.nativeStatus) { input = input.copy(nativeStatus = it) }
                 BoardField("Owner", input.owner.orEmpty()) { input = input.copy(owner = it.takeIf(String::isNotEmpty)) }
@@ -456,6 +457,6 @@ private fun BoardEditor(
 }
 
 @Composable
-private fun BoardField(label: String, value: String, onValue: (String) -> Unit) {
-    OutlinedTextField(value, onValue, label = { Text(label) }, modifier = Modifier.fillMaxWidth())
+private fun BoardField(label: String, value: String, modifier: Modifier = Modifier, onValue: (String) -> Unit) {
+    OutlinedTextField(value, onValue, label = { Text(label) }, modifier = modifier.fillMaxWidth())
 }

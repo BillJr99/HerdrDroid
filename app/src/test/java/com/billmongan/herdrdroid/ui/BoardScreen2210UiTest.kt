@@ -2,6 +2,7 @@ package com.billmongan.herdrdroid.ui
 
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
@@ -39,7 +40,7 @@ class BoardScreen2210UiTest {
             )
         }
         rule.onNodeWithText("New card").performClick()
-        rule.onNodeWithText("Title").performTextInput("Sketch outline")
+        rule.onNodeWithTag("board-card-title").performTextInput("Sketch outline")
         rule.onNodeWithText("Save card").performClick()
         rule.runOnIdle {
             assertNull(savedServer)
@@ -68,7 +69,7 @@ class BoardScreen2210UiTest {
         rule.onNodeWithText("No answer. Showing the cached board.").assertExists()
         rule.onNodeWithText("Retry").performClick()
         rule.onNodeWithContentDescription("Refresh board").performClick()
-        rule.onNodeWithText("Waiting").performClick()
+        rule.onNodeWithTag("board-filter-waiting").performClick()
         rule.onNodeWithText("Await review").assertExists()
         rule.onNodeWithText("Ready to archive").assertDoesNotExist()
         rule.runOnIdle { assertEquals(listOf("refresh:remote", "retry:remote", "refresh:remote"), events) }
