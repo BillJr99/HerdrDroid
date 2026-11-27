@@ -4190,7 +4190,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     if (p != null && agent.equals("claude", true)) {
         val ask = withoutClaudeChromeUnderDialog(plain).lineSequence().lastOrNull { it.isNotBlank() }
             ?.let(::claudeAskFooter) == true
-        if (ask) return if (p.choices.isNotEmpty() && p.selected == null)
+        if (ask) return if (p.selected == null)
             p.copy(choices = emptyList(), claudeCheckboxAction = null, terminalReview = true,
                 region = p.region ?: plain.lines(), claudeAsk = true).withSpanOf(p)
         else p.copy(claudeAsk = true).withSpanOf(p)
