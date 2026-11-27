@@ -2667,6 +2667,7 @@ class AppViewModel internal constructor(
             if (screen == Screen.Questions) questionsFeed.poke()
             return
         }
+        if (terminalAnswerWatch(paneId)?.let { readTerminalAnswerViewport(it); true } == true) return
         val attempt = ++paneReadSequence
         val modelSequence = ++modelReadSequence
         // Only for the pane open now (1.4.2, from review: a late answer for another pane set or
@@ -3358,7 +3359,7 @@ class AppViewModel internal constructor(
      * Records what a read of the pane's screen showed: a question card adds or updates its record;
      * no card twice in a row while one is open settles it (answered, answered elsewhere, dismissed).
      */
-    private fun observeQuestion(serverId: String, paneId: String, p: com.billmongan.herdrdroid.herdr.Prompt?, status: Status?, agent: String?, screenText: String? = null) {
+    private fun observeQuestion(serverId: String, paneId: String, p: com.billmongan.herdrdroid.herdr.Prompt?, status: Status?, agent: String?, screenText: String? = null, verifiedGone: Boolean = false) {
         val k = "$serverId|$paneId"
         // While the history can't be read (locked, or unreadable now), questions aren't recorded (1.3.1, 1.3.2).
         val log = loadedQuestions(serverId, paneId) ?: return
@@ -3376,7 +3377,7 @@ class AppViewModel internal constructor(
         if (log.lastOrNull()?.state != com.billmongan.herdrdroid.transcript.QState.OPEN) return
         val misses = (questionMisses[k] ?: 0) + 1
         questionMisses[k] = misses
-        if (misses >= 2) putQuestions(serverId, paneId, com.billmongan.herdrdroid.transcript.QuestionLog.gone(log, status == Status.WORKING, now))
+        if (verifiedGone || misses >= 2) putQuestions(serverId, paneId, com.billmongan.herdrdroid.transcript.QuestionLog.gone(log, status == Status.WORKING, now))
     }
 
     /** Records the answer the app sent to the pane's open question: an option, typed text, or a key. */
@@ -4698,6 +4699,106 @@ class AppViewModel internal constructor(
         lastTerminalRead = attempt
         paintedTerminal = result?.let { (live, text) -> TerminalFrame(target, live, text) }
         terminalReadProblem = if (result == null) problem ?: "the terminal could not be verified" else null
+        terminalAnswerWatch(paneId)?.let { readTerminalAnswerViewport(it) }
+    }
+
+    private class TerminalAnswerWatch(
+        val frame: TerminalFrame,
+        var previous: Prompt?,
+        var alert: AlertOrigin?,
+        var alertJob: Job?,
+    ) {
+        var status by mutableStateOf<Status?>(null)
+    }
+
+    private var terminalAnswerWatch by mutableStateOf<TerminalAnswerWatch?>(null)
+
+    private fun terminalAnswerWatch(paneId: String): TerminalAnswerWatch? =
+        terminalAnswerWatch?.takeIf { it.frame.source.pane.id == paneId && it.frame.source.isCurrent(it.frame.source.client) }
+
+    private fun terminalAnswerStatus(pane: Pane, server: String?): Status? =
+        terminalAnswerWatch(pane.id)?.takeIf { it.frame.source.server == server && it.frame.source.pane.sameCardOccupant(pane) }?.status
+
+    /** Recent terminal output is useful for display, but only a current viewport may retire a question. */
+    private suspend fun readTerminalAnswerViewport(watch: TerminalAnswerWatch) {
+        val frame = watch.frame
+        val source = frame.source
+        val paneId = source.pane.id
+        val agent = source.pane.agent
+        val attempt = ++paneReadSequence
+        fun current() = attempt > lastAppliedPaneRead && terminalAnswerWatch(paneId) === watch
+        val read = quietly { h ->
+            if (h !== source.client || !current()) return@quietly null
+            try {
+                // A terminal move, new occupant, or viewport scrolled away from its bottom proves nothing.
+                val first = h.cardPane(frame.live.id, source.connection) ?: return@quietly null
+                if (!first.sameCardOccupant(frame.live) || first.scrollOffset != 0) return@quietly null
+                val raw = h.readStyledViewport(first.id, source.connection).takeIf { it.isNotBlank() } ?: return@quietly null
+                val last = h.cardPane(first.id, source.connection) ?: return@quietly null
+                if (!last.sameCardOccupant(first) || last.scrollOffset != 0) return@quietly null
+                last to raw
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+        } ?: return
+        if (!current()) return
+        val (live, raw) = read
+        val text = com.billmongan.herdrdroid.herdr.stripAnsi(raw)
+        val version = versionOf(paneId)
+        val parsed = detectPrompt(raw, blocked = false, agent, version)
+            ?: if (agent == "claude") com.billmongan.herdrdroid.herdr.claudeReviewPreview(text, null) else null
+        val working = com.billmongan.herdrdroid.herdr.composerFooterSaysWorking(raw)
+        val clear = parsed == null && !com.billmongan.herdrdroid.herdr.showsQuestionDialog(text) &&
+            (live.status in setOf(Status.IDLE, Status.DONE, Status.WORKING) || working ||
+                if (isOpenCode(agent)) openCodeEmptyComposer(raw)
+                else com.billmongan.herdrdroid.herdr.inputLineOf(raw, agent, menuWrite = true) == "")
+        if (parsed == null && !clear) return  // A partial or unknown frame is not an answer.
+        val status = when {
+            parsed != null -> Status.NEEDS_YOU
+            working -> Status.WORKING
+            live.status == Status.NEEDS_YOU || live.status == Status.UNKNOWN -> Status.IDLE
+            else -> live.status
+        }
+
+        lastAppliedPaneRead = attempt
+        paneReadsApplied++
+        watch.status = status
+        paneText = text
+        paneTextPane = paneId
+        paneReadProblem = null
+        openingPanePreview = null
+        paneViewSettled = true
+        noteInputLine(paneId, raw)
+        recordModelFooter(source.server, live, text, ++modelReadSequence)
+        paneTextTarget = source.takeIf { live.id == paneId }
+        piLiveQuestion = parsed?.takeIf { agent == "pi" && paneTextTarget != null }
+        codexSteeringTarget = null
+        codexActivityTarget = null
+        openCodeComposerTarget = paneTextTarget?.takeIf { clear && isOpenCode(agent) && openCodeEmptyComposer(raw) }
+        val (card, shows) = offerQuestionRead(source.server, paneId, text)
+        if (clear || shows == com.billmongan.herdrdroid.herdr.CardShows.CARD)
+            observeQuestion(source.server, paneId, card, status, live.agentName, text, verifiedGone = clear)
+        val changed = clear || watch.previous?.let {
+            !com.billmongan.herdrdroid.herdr.cardAnswerStillFits(it, parsed) && it.copy(selected = null) != parsed?.copy(selected = null)
+        } == true
+        if (changed) {
+            val key = source.server to paneId
+            // Ignore a different notification posted while the viewport was being read.
+            if (alertJobs[key] === watch.alertJob && alertOrigins[key] === watch.alert) {
+                alertJobs.remove(key)?.cancel()
+                alertOrigins.remove(key)
+                Notify.clear(getApplication<Application>(), source.server, paneId)
+            }
+            watch.alertJob = null
+            watch.alert = null
+            questionsFeed.poke()
+        }
+        watch.previous = parsed
+        readPaneDraft(paneId, text, parsed, paneTextTarget) {
+            lastAppliedPaneRead == attempt && terminalAnswerWatch(paneId) === watch
+        }
     }
 
     private fun terminalFrameMatches(paneId: String, frame: TerminalFrame?, client: Herdr) =
@@ -4712,8 +4813,23 @@ class AppViewModel internal constructor(
             return
         }
         act(paneId, "Couldn't send the key", input = true) { h ->
+            val agent = frame.live.agent
+            val previous = openCardText(paneId)?.let { cardParse(paneId, it) }
+                ?: detectPrompt(frame.text, blocked = false, agent, versionOf(paneId))
+            val watch = terminalAnswerWatch(paneId)
+            val alertKey = frame.source.server to paneId
+            val alert = alertOrigins[alertKey]
+            val alertJob = alertJobs[alertKey]
             h.sendTerminalKeys(frame.live, keys.toList(), frame.source.connection) { stillShowing(h) }
-            if (stillShowing(h)) readTerminalPane(paneId)
+            if (!stillShowing(h)) return@act
+            if (h.backend == Backend.TUI && hasStableOccupant(frame.live) &&
+                (previous != null || shownStatus(frame.source.pane) == Status.NEEDS_YOU || watch != null)) {
+                lastAppliedPaneRead = ++paneReadSequence
+                terminalAnswerWatch = TerminalAnswerWatch(frame, previous, alert, alertJob).also {
+                    it.status = watch?.status
+                }
+            }
+            readTerminalPane(paneId)
         }
     }
 
@@ -6985,7 +7101,8 @@ class AppViewModel internal constructor(
             seen.forEach { lastStatus[serverId to it.id] = it.status }
             return
         }
-        for (p in seen) {
+        for (raw in seen) {
+            val p = terminalAnswerStatus(raw, serverId)?.let { raw.copy(status = it) } ?: raw
             val key = serverId to p.id
             val before = lastStatus[key]
             lastStatus[key] = p.status
@@ -7763,7 +7880,7 @@ class AppViewModel internal constructor(
     fun hasPendingQuestion(pane: Pane): Boolean {
         if (hermesGatewayHolds(pane)) return true
         val effective = if (pane.status == Status.NEEDS_YOU && currentHermesUsage(pane)?.composerReady == true)
-            pane.copy(status = Status.IDLE) else pane
+            pane.copy(status = Status.IDLE) else terminalAnswerStatus(pane, current?.id)?.let { pane.copy(status = it) } ?: pane
         return blocksNormalSend(effective, if (paneTextPane == pane.id && paneReadProblem == null) paneText else "",
             openCodeComposerIsCurrent(pane))
     }
@@ -8460,6 +8577,7 @@ class AppViewModel internal constructor(
     }
 
     fun shownStatus(p: Pane, serverId: String? = current?.id): Status {
+        terminalAnswerStatus(p, serverId)?.let { return it }
         // 2.2.0: herdr's stale "blocked" on an OpenCode pane whose screen shows no dialog is shown as idle.
         if (p.openCodeStaleBlock && p.status == Status.NEEDS_YOU) return Status.IDLE
         val here = serverId == current?.id

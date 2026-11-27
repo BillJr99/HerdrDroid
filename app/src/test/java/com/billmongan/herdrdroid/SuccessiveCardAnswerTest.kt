@@ -1680,14 +1680,65 @@ class SuccessiveCardAnswerTest {
     @Test fun terminalEnterClearsTheCardAndWaitingBadgeFromLiveScreen() = fixture("claude", firstStep) {
         readSelectedPane()
         assertNotNull(vm.cardParse("p1", vm.paneText))
-        val terminal = readTerminal()
-        recentResult = ExecResult(0, firstStep, "")
-        afterSend = "❯ "
-        vm.sendTerminalKeys("p1", terminal, "enter")
+        showTerminalQuestionAlert(shown())
+        try {
+            val terminal = readTerminal()
+            recentResult = ExecResult(0, firstStep, "")
+            afterSend = "❯ "
+            vm.sendTerminalKeys("p1", terminal, "enter")
+            drainUntil { sent == listOf("enter") && vm.paneText == "❯ " }
+            assertNull("the live terminal no longer asks a question", vm.cardParse("p1", vm.paneText))
+            assertNotEquals(Status.NEEDS_YOU, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+            assertFalse(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+            assertFalse(terminalAlertIsShowing())
+            readSelectedPane()
+            assertNull("old recent output cannot reopen the answered prompt", vm.cardParse("p1", vm.paneText))
+        } finally {
+            clearTerminalAlert()
+        }
+    }
+
+    @Test fun terminalAnswerKeepsTheOldCardUntilASecondLiveQuestionArrives() = fixture("claude", firstStep) {
+        readSelectedPane()
+        val first = shown()
+        showTerminalQuestionAlert(first)
+        try {
+            val terminal = readTerminal()
+            val before = recentReads
+            vm.sendTerminalKeys("p1", terminal, "enter")
+            drainUntil { sent == listOf("enter") && recentReads > before }
+            assertNotNull(vm.cardParse("p1", vm.paneText))
+            assertEquals(Status.NEEDS_YOU, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+            assertTrue(terminalAlertIsShowing())
+            recentResult = ExecResult(0, firstStep, "")
+            frame = firstStep.replace("Which format", "Which layout")
+            assertNotEquals(first.question, shown().question)
+            readTerminal()
+            readTerminal()
+            assertEquals(shown().question, vm.cardParse("p1", vm.paneText)?.question)
+            assertFalse(terminalAlertIsShowing())
+        } finally {
+            clearTerminalAlert()
+        }
+    }
+
+    @Test fun terminalAnswerCannotClearItsCardFromAnUnverifiedViewport() = fixture("claude", firstStep) {
+        readSelectedPane()
+        val shownFrame = readTerminal()
         val before = recentReads
+        vm.sendTerminalKeys("p1", shownFrame, "enter")
         drainUntil { sent == listOf("enter") && recentReads > before }
-        assertNull("the live terminal no longer asks a question", vm.cardParse("p1", vm.paneText))
-        assertNotEquals(Status.NEEDS_YOU, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+        frame = "❯ "
+        recentResult = ExecResult(0, firstStep, "")
+        liveScrollOffset = 2
+        readTerminal()
+        assertNotNull(vm.cardParse("p1", vm.paneText))
+        assertEquals(Status.NEEDS_YOU, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+        liveScrollOffset = 0
+        afterGuardedVisibleRead = { terminal = "different-terminal" }
+        readTerminal()
+        assertNotNull(vm.cardParse("p1", vm.paneText))
+        assertEquals(Status.NEEDS_YOU, vm.shownStatus(checkNotNull(vm.pane("p1"))))
     }
 
     @Test fun ordinaryOutputAfterClaudeAnswerIsNotAnotherQuestion() =
@@ -1869,6 +1920,7 @@ class SuccessiveCardAnswerTest {
         var recentResult: ExecResult? = null
         val visibleReadsWithLineLimit = mutableListOf<Boolean>()
         var guardedVisibleReads = 0
+        var afterGuardedVisibleRead: (() -> Unit)? = null
         var spoken = ""
         private var speechDone: (() -> Unit)? = null
         val voice = VoiceControls(vm, { _, text, _, done -> spoken = text; speechDone = done }, { false })
@@ -1909,6 +1961,16 @@ class SuccessiveCardAnswerTest {
             runBlocking { vm.readTerminalPane("p1") }
             return checkNotNull(vm.terminalFrame("p1"))
         }
+        fun showTerminalQuestionAlert(card: Prompt) {
+            val app = vm.getApplication<Application>()
+            com.billmongan.herdrdroid.notify.Notify.channels(app)
+            com.billmongan.herdrdroid.notify.Notify.needsYou(app, server.id, server.label, "p1", agent,
+                card.question, card.choices, agent)
+        }
+        fun terminalAlertIsShowing() =
+            com.billmongan.herdrdroid.notify.Notify.isShowing(vm.getApplication<Application>(), server.id, "p1")
+        fun clearTerminalAlert() =
+            com.billmongan.herdrdroid.notify.Notify.clear(vm.getApplication<Application>(), server.id, "p1")
         fun readSelectedPane() = runBlocking { vm.readPane("p1") }
         fun answer(prompt: Prompt, target: AppViewModel.CardTarget = checkNotNull(vm.cardTarget("p1")), index: Int = 0) {
             vm.answerChoice("p1", prompt, prompt.choices[index], target = target)
@@ -2066,7 +2128,10 @@ class SuccessiveCardAnswerTest {
                 command.contains("'pane' 'read' 'p1' '--source' 'recent'") -> { recentReads++; recentResult ?: ok(ansiFrame()) }
                 command.contains("'pane' 'read' 'p1' '--source' 'visible'") -> {
                     visibleReadsWithLineLimit += command.contains("'--lines'")
-                    if (expectedConnection != null) guardedVisibleReads++
+                    if (expectedConnection != null) {
+                        guardedVisibleReads++
+                        afterGuardedVisibleRead?.also { afterGuardedVisibleRead = null }?.invoke()
+                    }
                     ok(if (command.endsWith("'--format' 'ansi'")) ansiFrame() else frame)
                 }
                 command.contains("def occupant():") && command.endsWith("'/fixture/herdr' 'p1' '$agent'") -> ok("")
