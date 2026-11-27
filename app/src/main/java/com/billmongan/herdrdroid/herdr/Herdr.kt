@@ -3865,11 +3865,12 @@ private fun detectOpenCodePermission(styled: String, text: String): Prompt? {
     val buttons = OPENCODE_PERMISSION_BUTTONS.find(if (buttonRow == footer) onFooter else clean(rows[buttonRow])) ?: return review()
     val body = rows.subList(title + 1, buttonRow).map(::clean).filter(String::isNotEmpty)
     if (body.isEmpty() || body.any { '…' in it || "..." in it } || body.last().trim() in listOf("$", "# Shell command")) return review()
-    val details = if (command != null && checkNotNull(commandEnd) - command > 1) {
+    val bodyCommandEnd = commandEnd?.coerceAtMost(buttonRow)
+    val details = if (command != null && bodyCommandEnd != null && bodyCommandEnd - command > 1) {
         // OpenCode word-wraps after punctuation as well as whitespace. The pane read can
         // omit row-end spaces, so a join could change an option or a path. Keep the complete
         // run in one code block with its original row boundaries, as in the terminal.
-        val end = checkNotNull(commandEnd)
+        val end = bodyCommandEnd
         val first = rows[command]
         val gutter = first.substringBefore("$ ")
         if (end >= buttonRow || !gutter.matches(Regex("""^\s*[┃│|] +$""")) ||
