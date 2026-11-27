@@ -2030,6 +2030,7 @@ class AppViewModel internal constructor(
         openingPanePreview = null
         warningRefresh?.cancel()
         warningBatch = null
+        lastWarningRefreshAt = null
     }
 
     private fun Pane.canPrefetch(client: Herdr) = agent != null &&
@@ -2173,6 +2174,7 @@ class AppViewModel internal constructor(
 
     private var warningBatch by mutableStateOf<WarningBatch?>(null)
     private var warningRefresh: Job? = null
+    private var lastWarningRefreshAt: Long? = null
 
     internal fun warningFor(pane: Pane, server: String? = current?.id): Int? {
         if (server != current?.id || link != Link.CONNECTED || locked || pane.scrollOffset != 0) return null
@@ -2186,6 +2188,9 @@ class AppViewModel internal constructor(
     private fun refreshWarnings(server: String, client: Herdr, snapshot: Collection<Pane>) {
         val connection = client.connectionIdentity ?: return
         if (client.backend != Backend.TUI || !foreground || locked || warningRefresh?.isActive == true) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (lastWarningRefreshAt?.let { now - it < 15_000L } == true) return
+        lastWarningRefreshAt = now
         fun currentRead() = foreground && !locked && link == Link.CONNECTED &&
             current?.id == server && herdr === client && client.connectionIdentity === connection
         val candidates = snapshot.filter { it.agent == "codex" && it.scrollOffset == 0 }
@@ -2195,13 +2200,15 @@ class AppViewModel internal constructor(
                 if (!currentRead()) return@launch
                 val id = expected.id
                 try {
-                    val (before, digest) = client.cardPaneGuarded(id, connection) ?: continue
-                    if (digest == null || !before.sameCardOccupant(expected)) continue
-                    val viewport = client.readStyledViewport(id, connection, timeoutSeconds = 2)
-                    val count = paneWarningCount(expected.agent, viewport) ?: continue
-                    val (after, afterDigest) = client.cardPaneGuarded(id, connection) ?: continue
-                    if (digest == afterDigest && after.sameCardOccupant(expected)) {
-                        readings[id] = WarningReading(after, count, android.os.SystemClock.elapsedRealtime())
+                    kotlinx.coroutines.withTimeoutOrNull(3_000L) {
+                        val (before, digest) = client.cardPaneGuarded(id, connection) ?: return@withTimeoutOrNull
+                        if (digest == null || !before.sameCardOccupant(expected)) return@withTimeoutOrNull
+                        val viewport = client.readStyledViewport(id, connection, timeoutSeconds = 2)
+                        val count = paneWarningCount(expected.agent, viewport) ?: return@withTimeoutOrNull
+                        val (after, afterDigest) = client.cardPaneGuarded(id, connection) ?: return@withTimeoutOrNull
+                        if (digest == afterDigest && after.sameCardOccupant(expected)) {
+                            readings[id] = WarningReading(after, count, android.os.SystemClock.elapsedRealtime())
+                        }
                     }
                 } catch (c: CancellationException) {
                     throw c
