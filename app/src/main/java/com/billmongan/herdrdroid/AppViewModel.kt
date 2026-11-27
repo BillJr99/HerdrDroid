@@ -1910,11 +1910,11 @@ class AppViewModel internal constructor(
     /** When each pane last reported an agent, keyed "server|pane". */
     private val agentSeenAt = mutableMapOf<String, Long>()
 
-    private var paneReadSequence = 0L
-    private var appliedPaneReadSequence = 0L
+    private var paneInventorySequence = 0L
+    private var appliedPaneInventorySequence = 0L
 
     suspend fun refreshPanes(allowBackground: Boolean = false) {
-        val sequence = ++paneReadSequence
+        val sequence = ++paneInventorySequence
         val client = herdr
         val readConnection = client?.connectionIdentity
         val prefetchConnection = readConnection?.takeIf { foreground && !locked }
@@ -1924,12 +1924,12 @@ class AppViewModel internal constructor(
             val fresh0 = snapshot.panes
             // A list read on a connection that has since been replaced (a reconnect, another server)
             // is dropped: it must not land on whichever server is open now.
-            if (herdr !== client || current?.id != readServer || sequence < appliedPaneReadSequence) {
+            if (herdr !== client || current?.id != readServer || sequence < appliedPaneInventorySequence) {
                 com.billmongan.herdrdroid.diag.LinkDiag.stage(connectRun.toLong(), readServer, com.billmongan.herdrdroid.diag.LinkDiag.Stage.APPLY, "stale-dropped",
                     System.currentTimeMillis() - readAt, mapOf("parsed" to fresh0.size))
                 return
             }
-            appliedPaneReadSequence = sequence
+            appliedPaneInventorySequence = sequence
             // herdr sometimes reports a pane's agent as missing for a moment (while it redraws, or
             // just after a screen closes). Keep the agent last seen in that pane, so its card keeps
             // its usage and model instead of going blank until the next read.
