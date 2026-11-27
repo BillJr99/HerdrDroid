@@ -588,6 +588,7 @@ class AppViewModel internal constructor(
         private set
     private var openCodeComposerTarget by mutableStateOf<CardTarget?>(null)
     private var codexSteeringTarget by mutableStateOf<CardTarget?>(null)
+    private var codexActivityTarget by mutableStateOf<CardTarget?>(null)
     private var piLiveQuestion by mutableStateOf<Prompt?>(null)
     /**
      * A draft typed in the open pane's input box at the computer, read from its live screen (2.1.0).
@@ -2602,7 +2603,10 @@ class AppViewModel internal constructor(
                 null
             }
         }
-        if (reading == null && isOpen()) codexSteeringTarget = null
+        if (reading == null && isOpen()) {
+            codexSteeringTarget = null
+            codexActivityTarget = null
+        }
         reading?.let { (recent, originalPaneId) ->
             if (!isOpen()) return
             val cardOwner = originalCardOwner.takeIf { originalPaneId }
@@ -2754,6 +2758,9 @@ class AppViewModel internal constructor(
             paneTextTarget = cardOwner?.takeIf { it.isCurrent(it.client) && (!requiresLive || useLive) && (!verifyPi || livePrompt != null) }
             // Keep the native placeholder proof separate from the plain screen used by every renderer.
             codexSteeringTarget = paneTextTarget?.takeIf { codexSteeringProven }
+            codexActivityTarget = paneTextTarget?.takeIf {
+                codexQuestionCleared && useLive && com.billmongan.herdrdroid.herdr.hasCodexInputActivity(text)
+            }
             piLiveQuestion = livePrompt?.takeIf { verifyPi && paneTextTarget != null }
             openCodeComposerTarget = paneTextTarget?.takeIf { useLive && verifyOpenCode && openCodeEmptyComposer(text) }
             hermesUsageRead = verifiedUsage
@@ -2952,9 +2959,9 @@ class AppViewModel internal constructor(
     /** The status the open pane's card is read with: what the pane shows (2.2.2: the same for the card and its confirmation). */
     /** Only a successful screen read for the current Codex occupant may explain a stale wait. */
     internal fun codexActivityViewport(paneId: String): String? =
-        paneTextTarget?.takeIf { target ->
-            target.pane.id == paneId && target.pane.agent == "codex" && paneTextPane == paneId &&
-                paneReadProblem == null && target.isCurrent(target.client)
+        codexActivityTarget?.takeIf { target ->
+            paneTextTarget === target && target.pane.id == paneId && paneTextPane == paneId &&
+                paneReadProblem == null && pane(paneId)?.scrollOffset == 0 && target.isCurrent(target.client)
         }?.let { paneText }
 
     private fun cardStatus(pane: Pane): Status {

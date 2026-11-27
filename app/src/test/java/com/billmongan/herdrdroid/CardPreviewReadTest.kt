@@ -41,6 +41,10 @@ class CardPreviewReadTest {
         assertEquals(listOf("recent", "visible"), f.trace())
         assertEquals(queue, f.vm.codexActivityViewport("p1"))
 
+        f.frames(queue, "")
+        f.read()
+        assertNull(f.vm.codexActivityViewport("p1"))
+
         f.frames("", "")
         f.read()
         assertTrue(f.vm.codexActivityViewport("p1").isNullOrBlank())
