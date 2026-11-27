@@ -97,7 +97,12 @@ internal fun claudeModelCard(screen: String): Prompt? {
     val context = body.drop(firstOption.coerceAtLeast(0) + options.size).map(String::trim)
     val effort = context.singleOrNull(EFFORT_CONTROL::matches)
     val parts = QuestionParts(emptyList(), listOf(QBlock(QKind.HEADING, "Select model")) +
-        body.map { QBlock(QKind.TEXT, it.trim()) })
+        body.map { row ->
+            val text = row.trim()
+            // The option focus stays in the guarded frame and selected index, not the displayed text.
+            QBlock(QKind.TEXT, if (options.any { it.value == row && it.groupValues[1] == "❯" })
+                text.removePrefix("❯").trimStart() else text)
+        })
     val review = Prompt("Select model", emptyList(), region = frame, terminalReview = true,
         parts = parts, claudeModelControl = true)
     if (footer == null) {

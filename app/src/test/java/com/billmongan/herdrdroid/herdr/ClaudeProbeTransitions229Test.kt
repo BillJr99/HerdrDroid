@@ -31,6 +31,10 @@ class ClaudeProbeTransitions229Test {
         assertNotNull(restored)
         assertEquals("Select model", restored?.question)
         assertTrue(restored?.terminalReview == true && restored.choices.isEmpty())
+        val parsed = checkNotNull(restored)
+        assertTrue(parsed.region.orEmpty().any { it.trimStart().startsWith("❯ 2.") })
+        assertTrue(parsed.shownParts().blocks.any { it.text.startsWith("2.  Opus") })
+        assertTrue(parsed.shownParts().blocks.none { it.text.startsWith("❯") })
         assertNull(card("model-cancelled"))
     }
 }
