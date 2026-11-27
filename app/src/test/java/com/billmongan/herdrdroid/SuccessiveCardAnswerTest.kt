@@ -1677,6 +1677,19 @@ class SuccessiveCardAnswerTest {
         assertEquals(vm.notice, listOf("enter", "enter"), sent)
     }
 
+    @Test fun terminalEnterClearsTheCardAndWaitingBadgeFromLiveScreen() = fixture("claude", firstStep) {
+        readSelectedPane()
+        assertNotNull(vm.cardParse("p1", vm.paneText))
+        val terminal = readTerminal()
+        recentResult = ExecResult(0, firstStep, "")
+        afterSend = "❯ "
+        vm.sendTerminalKeys("p1", terminal, "enter")
+        val before = recentReads
+        drainUntil { sent == listOf("enter") && recentReads > before }
+        assertNull("the live terminal no longer asks a question", vm.cardParse("p1", vm.paneText))
+        assertNotEquals(Status.NEEDS_YOU, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+    }
+
     @Test fun ordinaryOutputAfterClaudeAnswerIsNotAnotherQuestion() =
         verifyPostAnswerOutput("claude", firstStep, "enter")
 
@@ -1892,6 +1905,10 @@ class SuccessiveCardAnswerTest {
             assertTrue(it.choices.isNotEmpty())
             assertFalse(it.terminalReview)
         }
+        fun readTerminal(): AppViewModel.TerminalFrame {
+            runBlocking { vm.readTerminalPane("p1") }
+            return checkNotNull(vm.terminalFrame("p1"))
+        }
         fun readSelectedPane() = runBlocking { vm.readPane("p1") }
         fun answer(prompt: Prompt, target: AppViewModel.CardTarget = checkNotNull(vm.cardTarget("p1")), index: Int = 0) {
             vm.answerChoice("p1", prompt, prompt.choices[index], target = target)
@@ -2004,6 +2021,11 @@ class SuccessiveCardAnswerTest {
 
         override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult {
             if (expectedConnection != null) assertSame(connection, expectedConnection)
+            if (Regex("""'p1' '[0-9a-f]{64}' '-'""").containsMatchIn(command) && command.contains(" && echo ${com.billmongan.herdrdroid.herdr.OCCUPANT_PASSED_MARK} && ") &&
+                command.substringAfter(" && echo ${com.billmongan.herdrdroid.herdr.OCCUPANT_PASSED_MARK} && ").startsWith("'/fixture/herdr' 'pane' 'send-keys'")) {
+                val send = command.substringAfter(" && echo ${com.billmongan.herdrdroid.herdr.OCCUPANT_PASSED_MARK} && ")
+                return immediate(send, timeoutSeconds, expectedConnection)
+            }
             if ("hashlib.sha256(screen)" in command) {
                 beforeDraftCheck?.also { beforeDraftCheck = null }?.invoke()
                 val occupant = Regex("""'p1' '([0-9a-f]{64})' '-'""").find(command)!!.groupValues[1]
