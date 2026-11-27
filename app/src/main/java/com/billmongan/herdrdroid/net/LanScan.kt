@@ -32,17 +32,24 @@ data class LanHost(val ip: String, val name: String?, val ssh: String?)
 
 /**
  * Every address in the phone's Wi-Fi subnet, at most a /24 around the phone (254 addresses), the
- * phone's own and the network and broadcast addresses left out.
+ * phone's own and the network and broadcast addresses left out. A /31 has two host addresses
+ * (RFC 3021), and a /32 has no peer.
  */
 fun subnetHosts(phoneIp: String, prefix: Int): List<String> {
-    val parts = phoneIp.split(".").mapNotNull { it.toIntOrNull() }
-    if (parts.size != 4 || parts.any { it !in 0..255 }) return emptyList()
-    val bits = prefix.coerceIn(24, 30)
+    if (prefix !in 0..31) return emptyList()
+    val octets = phoneIp.split('.')
+    if (octets.size != 4) return emptyList()
+    val parts = octets.map { octet ->
+        if (octet.isEmpty() || octet.any { it !in '0'..'9' }) return emptyList()
+        octet.toIntOrNull()?.takeIf { it in 0..255 } ?: return emptyList()
+    }
+    val bits = prefix.coerceAtLeast(24)
     val ip = (parts[0] shl 24) or (parts[1] shl 16) or (parts[2] shl 8) or parts[3]
-    val mask = if (bits == 0) 0 else (-1 shl (32 - bits))
+    val mask = -1 shl (32 - bits)
     val net = ip and mask
     val size = 1 shl (32 - bits)
-    return (1 until size - 1).map { net + it }.filter { it != ip }.map { a ->
+    val offsets = if (bits == 31) 0 until size else 1 until size - 1
+    return offsets.map { net + it }.filter { it != ip }.map { a ->
         "${(a ushr 24) and 255}.${(a ushr 16) and 255}.${(a ushr 8) and 255}.${a and 255}"
     }
 }

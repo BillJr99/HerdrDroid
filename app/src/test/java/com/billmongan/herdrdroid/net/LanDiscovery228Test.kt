@@ -11,6 +11,24 @@ import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class LanDiscovery228Test {
+    @Test fun pointToPointPrefixIncludesOnlyTheOtherEndpoint() {
+        assertEquals(listOf("192.0.2.1"), subnetHosts("192.0.2.0", 31))
+        assertEquals(listOf("192.0.2.0"), subnetHosts("192.0.2.1", 31))
+        assertEquals(listOf("192.0.2.2"), subnetHosts("192.0.2.1", 30))
+    }
+
+    @Test fun hostOnlyAndInvalidPrefixesHaveNoNeighbors() {
+        for (prefix in listOf(32, -1, 33)) {
+            assertEquals(emptyList<String>(), subnetHosts("192.0.2.1", prefix))
+        }
+    }
+
+    @Test fun malformedIpv4NeverProducesHostCandidates() {
+        for (address in listOf("192.bad.0.2.1", "192..0.2.1", "192.0.2.+1", "192.0.2.256")) {
+            assertEquals(emptyList<String>(), subnetHosts(address, 24))
+        }
+    }
+
     @Test fun discoveryStopsWhenTheCollectionWindowEnds() = runBlocking {
         val calls = mutableListOf<String>()
         collectLanDiscovery({ calls.add("start") }, { calls.add("wait") }, { calls.add("stop") })
