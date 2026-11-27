@@ -596,6 +596,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 screen = if (vm.paneTextPane == paneId) vm.paneText else "",
                 terminalTitle = pane?.title.orEmpty(),
             )
+            pane?.let { vm.warningFor(it) }?.let { PaneWarningBadge(it, Modifier.padding(start = 6.dp)) }
             PaneTitleLines(
                 name = if (isHermes) (if (live) "Hermes · live chat" else "Hermes · this pane") + "  ▾"
                 else identity.title,

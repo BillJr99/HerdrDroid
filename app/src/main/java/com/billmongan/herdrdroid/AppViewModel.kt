@@ -59,6 +59,7 @@ import com.billmongan.herdrdroid.herdr.dismissUsageOverlay
 import com.billmongan.herdrdroid.herdr.dismissibleUsageFrame
 import com.billmongan.herdrdroid.herdr.hermesUsageEnd
 import com.billmongan.herdrdroid.herdr.hermesUsageWaiting
+import com.billmongan.herdrdroid.herdr.paneWarningCount
 import com.billmongan.herdrdroid.herdr.footerModel
 import com.billmongan.herdrdroid.herdr.Status
 import com.billmongan.herdrdroid.herdr.RelayResult
@@ -296,6 +297,8 @@ class AppViewModel internal constructor(
         if (to != link) {
             com.billmongan.herdrdroid.diag.LinkDiag.transition(current?.id, link.name, to.name, reason, now - linkSince)
             linkSince = now
+            warningRefresh?.cancel()
+            warningBatch = null
         }
         link = to
     }
@@ -2161,11 +2164,57 @@ class AppViewModel internal constructor(
     private var lastPreviewsAt = 0L
     private var lastWorkAt = 0L
 
+    private data class WarningReading(val pane: Pane, val count: Int)
+    private data class WarningBatch(
+        val server: String, val client: Herdr, val connection: Any, val readings: Map<String, WarningReading>,
+    )
+
+    private var warningBatch by mutableStateOf<WarningBatch?>(null)
+    private var warningRefresh: Job? = null
+
+    internal fun warningFor(pane: Pane, server: String? = current?.id): Int? {
+        if (server != current?.id || link != Link.CONNECTED || locked || pane.scrollOffset != 0) return null
+        val batch = warningBatch ?: return null
+        if (batch.server != server || batch.client !== herdr || batch.client.connectionIdentity !== batch.connection) return null
+        return batch.readings[pane.id]?.takeIf { it.pane.sameCardOccupant(pane) }?.count
+    }
+
+    private fun refreshWarnings(server: String, client: Herdr, snapshot: Collection<Pane>) {
+        val connection = client.connectionIdentity ?: return
+        if (client.backend != Backend.TUI || !foreground || locked || warningRefresh?.isActive == true) return
+        fun currentRead() = foreground && !locked && link == Link.CONNECTED &&
+            current?.id == server && herdr === client && client.connectionIdentity === connection
+        val candidates = snapshot.filter { it.agent == "codex" && it.scrollOffset == 0 }
+        warningRefresh = viewModelScope.launch {
+            val readings = mutableMapOf<String, WarningReading>()
+            for (expected in candidates) {
+                if (!currentRead()) return@launch
+                val id = expected.id
+                try {
+                    val (before, digest) = client.cardPaneGuarded(id, connection) ?: continue
+                    if (digest == null || !before.sameCardOccupant(expected)) continue
+                    val viewport = client.readStyledViewport(id, connection, timeoutSeconds = 2)
+                    val count = paneWarningCount(expected.agent, viewport) ?: continue
+                    val (after, afterDigest) = client.cardPaneGuarded(id, connection) ?: continue
+                    if (digest == afterDigest && after.sameCardOccupant(expected)) {
+                        readings[id] = WarningReading(after, count)
+                    }
+                } catch (c: CancellationException) {
+                    throw c
+                } catch (_: Exception) {
+                    // A failed live read clears this pane's previous badge.
+                }
+            }
+            if (currentRead()) warningBatch = WarningBatch(server, client, connection, readings)
+        }
+    }
+
     suspend fun refreshPreviews() {
         val server = current?.id ?: return
         val client = herdr ?: return
         val connection = client.connectionIdentity
         val snapshot = panes.associateBy { it.id }
+        refreshWarnings(server, client, snapshot.values)
         val sequence = ++modelReadSequence
         fun currentRead() = current?.id == server && herdr === client && client.connectionIdentity === connection
         quietly { it.previews(snapshot.keys.toList()) }?.let { peeks ->

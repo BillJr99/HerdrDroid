@@ -89,3 +89,17 @@ private fun ServerLine(text: String, dot: Color?, server: String? = text, status
         )
     }
 }
+
+
+@Composable
+internal fun PaneWarningBadge(count: Int, modifier: Modifier = Modifier) {
+    val label = if (count == 1) "1 warning" else "$count warnings"
+    Text(
+        "⚠ $count",
+        color = Palette.Orange,
+        fontSize = 12.sp,
+        fontWeight = FontWeight.SemiBold,
+        maxLines = 1,
+        modifier = modifier.semantics { contentDescription = label },
+    )
+}

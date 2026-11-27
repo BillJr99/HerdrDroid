@@ -247,7 +247,7 @@ fun TabsScreen(vm: AppViewModel) {
                 items(list, key = { it.id }) { p ->
                     PaneCard(
                         p, vm.previews[p.id].orEmpty(), model = vm.modelLine(p.id), quota = vm.quotaFor(p),
-                        checking = false,
+                        checking = false, warningCount = vm.warningFor(p),
                         underneath = vm.workCounts[p.id] ?: 0,
                         git = vm.gitInfo[p.cwd],
                     ) { vm.openPane(p.id) }
@@ -278,6 +278,7 @@ fun TabsScreen(vm: AppViewModel) {
 @Composable
 internal fun PaneCard(
     p: Pane, preview: String, model: String?, quota: QuotaReading?, checking: Boolean,
+    warningCount: Int? = null,
     underneath: Int = 0,
     git: com.billmongan.herdrdroid.herdr.GitInfo? = null,
     onClose: (() -> Unit)? = null,
@@ -301,6 +302,7 @@ internal fun PaneCard(
                         fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = Palette.Ink, maxLines = 1, overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f),
                     )
+                    warningCount?.let { PaneWarningBadge(it) }
                     StatusPill(p.status, p.backgroundBusy)
                     if (onClose != null && p.status != Status.WORKING) {
                         Text("✕", color = Palette.Muted, fontSize = 15.sp, modifier = Modifier.clickable { onClose() }.padding(start = 2.dp))
