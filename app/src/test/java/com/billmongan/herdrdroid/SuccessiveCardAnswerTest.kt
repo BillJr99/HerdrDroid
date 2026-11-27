@@ -1801,12 +1801,10 @@ class SuccessiveCardAnswerTest {
                 assertEquals("Answered", active().extras.getCharSequence(android.app.Notification.EXTRA_TITLE)?.toString())
 
                 val reads = guardedVisibleReads
-                poll()
-                drainUntil { guardedVisibleReads > reads }
+                drainWithTime { guardedVisibleReads > reads }
                 assertEquals("Answered", active().extras.getCharSequence(android.app.Notification.EXTRA_TITLE)?.toString())
 
                 frame = nextFrame
-                poll()
                 drainWithTime { active().actions?.any { it.title.toString() == "Green" } == true }
                 val next = active().actions.single { it.title.toString() == "Green" }
                 com.billmongan.herdrdroid.notify.ActionReceiver().onReceive(app, android.content.Intent()

@@ -6716,15 +6716,6 @@ class AppViewModel internal constructor(
                 continue
             }
             val codexWaiting = p.agent.equals("codex", true) && p.status == Status.NEEDS_YOU
-            val previous = alertOrigins[serverId to p.id]
-            if (before == p.status && p.status == Status.NEEDS_YOU && previous?.confirmedAnswer != null &&
-                alertJobs[key]?.isActive != true && previous.isAwaitingSuccessor() &&
-                Notify.isShowing(app, serverId, p.id)) {
-                alertJobs[key] = viewModelScope.launch {
-                    refreshAnsweredAlert(app, serverId, serverLabel, p, previous)
-                }
-                continue
-            }
             if (before == p.status && codexWaiting &&
                 alertJobs[key]?.isActive != true && Notify.isShowing(app, serverId, p.id)) {
                 alertJobs[key] = viewModelScope.launch {
@@ -6842,11 +6833,6 @@ class AppViewModel internal constructor(
 
     private class AlertOrigin(val token: String, val pane: Pane, val client: Herdr, val connection: Any) {
         var answeredAt: Long? = null
-        var confirmedAnswer: Prompt? = null
-
-        fun isAwaitingSuccessor(): Boolean =
-            answeredAt?.let { System.currentTimeMillis() - it in 0 until 15_000L } == true
-
     }
     private val alertOrigins = LinkedHashMap<Pair<String, String>, AlertOrigin>()
 
@@ -6881,41 +6867,52 @@ class AppViewModel internal constructor(
             if (server == current?.id) herdr === h && link == Link.CONNECTED else fleet?.herdr(server) === h
 
     /** A successful answer may advance a dialog without a Herdr status transition. */
-    private suspend fun refreshAnsweredAlert(app: Application, serverId: String, serverLabel: String,
-        pane: Pane, previous: AlertOrigin) {
-        val answered = previous.confirmedAnswer ?: return
-        val key = serverId to pane.id
+    private fun watchAnsweredAlert(app: Application, address: NotifyAction, origin: AlertOrigin, answered: Prompt) {
+        val server = address.serverId
+        val paneId = address.paneId
+        val key = "$server|$paneId"
         fun stillWanted() =
-            watching && previous.isAwaitingSuccessor() && alertOrigins[key] === previous &&
-                alertSourceCurrent(previous.client, serverId, previous.connection) &&
-                lastStatus["$serverId|${pane.id}"] == Status.NEEDS_YOU && !probePane(serverId, pane.id) &&
-                !(foreground && serverId == current?.id && (screen as? Screen.Agent)?.paneId == pane.id) &&
-                Notify.isShowing(app, serverId, pane.id)
+            watching && origin.currentFor(address) && lastStatus[key] == Status.NEEDS_YOU &&
+                !probePane(server, paneId) &&
+                !(foreground && server == current?.id && (screen as? Screen.Agent)?.paneId == paneId) &&
+                Notify.isShowing(app, server, paneId)
 
-        if (!stillWanted() || !previous.pane.sameCardOccupant(pane)) return
-        val address = NotifyAction(serverId, pane.id, "", false, "", agent = previous.pane.agent)
-        try {
-            val first = readAlertViewport(address, previous) ?: return
-            val next = first.prompt() ?: return
-            if (com.billmongan.herdrdroid.notify.alertIdentity(answered) ==
-                com.billmongan.herdrdroid.notify.alertIdentity(next) &&
-                com.billmongan.herdrdroid.notify.alertOptionsSig(answered.choices) ==
-                com.billmongan.herdrdroid.notify.alertOptionsSig(next.choices)) return
-            delay(com.billmongan.herdrdroid.herdr.ALERT_CONFIRM_PAUSE_MS)
-            if (!stillWanted()) return
-            val second = readAlertViewport(address, previous) ?: return
-            val settled = second.prompt() ?: return
-            if (first.occupant != second.occupant || !cardAnswerStillFits(next, settled) || !stillWanted()) return
-            val origin = registerAlertOrigin(serverId, second.pane, previous.client, previous.connection) ?: return
-            Notify.needsYou(app, serverId, serverLabel, pane.id, second.pane.agentName, settled.question,
-                settled.choices, second.pane.agent, reply = com.billmongan.herdrdroid.notify.notificationOffersReply(settled),
-                prompt = settled, quietUpdate = true, origin = origin)
-            if (settled.choices.isNotEmpty())
-                observeQuestion(serverId, pane.id, settled, pane.status, pane.agentName, second.raw)
-        } catch (c: CancellationException) {
-            throw c
-        } catch (_: Exception) {
-            // Keep the original alert on transient read failures. A later poll may confirm the successor.
+        if (!stillWanted()) return
+        alertJobs.remove(key)?.cancel()
+        alertJobs[key] = viewModelScope.launch {
+            val readAddress = NotifyAction(server, paneId, "", false, "", agent = origin.pane.agent)
+            val answeredIdentity = com.billmongan.herdrdroid.notify.alertIdentity(answered)
+            val answeredOptions = com.billmongan.herdrdroid.notify.alertOptionsSig(answered.choices)
+            // A per-answer check also works when a background watcher is sleeping in a long wait.
+            for (pause in listOf(300L, 600L, 1_000L, 1_700L, 2_400L)) {
+                delay(pause)
+                if (!stillWanted()) return@launch
+                try {
+                    val first = readAlertViewport(readAddress, origin) ?: continue
+                    val next = first.prompt() ?: continue
+                    if (com.billmongan.herdrdroid.notify.alertIdentity(next) == answeredIdentity &&
+                        com.billmongan.herdrdroid.notify.alertOptionsSig(next.choices) == answeredOptions) continue
+                    delay(com.billmongan.herdrdroid.herdr.ALERT_CONFIRM_PAUSE_MS)
+                    if (!stillWanted()) return@launch
+                    val second = readAlertViewport(readAddress, origin) ?: continue
+                    val settled = second.prompt() ?: continue
+                    if (first.occupant != second.occupant || !cardAnswerStillFits(next, settled)) continue
+                    if (!stillWanted()) return@launch
+                    val token = registerAlertOrigin(server, second.pane, origin.client, origin.connection) ?: return@launch
+                    val serverLabel = current?.takeIf { it.id == server }?.label
+                        ?: servers.firstOrNull { it.id == server }?.label ?: "Server"
+                    Notify.needsYou(app, server, serverLabel, paneId, second.pane.agentName, settled.question,
+                        settled.choices, second.pane.agent, reply = com.billmongan.herdrdroid.notify.notificationOffersReply(settled),
+                        prompt = settled, quietUpdate = true, origin = token)
+                    if (settled.choices.isNotEmpty())
+                        observeQuestion(server, paneId, settled, Status.NEEDS_YOU, second.pane.agentName, second.raw)
+                    return@launch
+                } catch (c: CancellationException) {
+                    throw c
+                } catch (_: Exception) {
+                    // Keep the original alert on transient read failures.
+                }
+            }
         }
     }
 
@@ -7092,9 +7089,9 @@ class AppViewModel internal constructor(
             }
             sendAlertInput(a, origin, destination, destinationPrompt, input)
             rememberCardAnswer(a.serverId, a.paneId, now)
-            origin.confirmedAnswer = now
             answered()
             Notify.sending(app, a.serverId, a.paneId, "Answered", label.take(40))
+            watchAnsweredAlert(app, a, origin, now)
             runCatching { noteAnswer(a.paneId, now, label, a.serverId) }
         } catch (c: CancellationException) {
             refuse("The answer could not be confirmed.")
