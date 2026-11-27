@@ -59,7 +59,6 @@ internal data class BoardSource(val id: String, val label: String)
 
 private data class BoardTab(val label: String, val serverId: String? = null, val isAll: Boolean = false)
 private data class BoardSelection(val serverId: String?, val cardId: String)
-private enum class BoardFilter { ALL, MINE, WAITING }
 
 @Composable
 internal fun BoardDrawerItem(selected: Boolean, onClick: () -> Unit) {
@@ -94,7 +93,8 @@ internal fun BoardScreen(
     var allTabs by rememberSaveable { mutableStateOf(false) }
     val index = tabs.indexOfFirst { it.serverId == tabId && it.isAll == allTabs }.coerceAtLeast(0)
     val tab = tabs[index]
-    var filter by rememberSaveable { mutableStateOf(BoardFilter.ALL) }
+    var mineOnly by rememberSaveable { mutableStateOf(false) }
+    var waitingOnly by rememberSaveable { mutableStateOf(false) }
     var ownerName by rememberSaveable { mutableStateOf("") }
     var selectingOwner by remember { mutableStateOf(false) }
     var detail by remember { mutableStateOf<BoardSelection?>(null) }
@@ -135,7 +135,7 @@ internal fun BoardScreen(
                 author = ownerName.ifBlank { "Phone" },
                 onBack = { detail = null },
                 onEdit = { card -> editor = active.serverId to card },
-                onStatus = { card, status -> onSave(active.serverId, card.copy(status = status)) },
+                onStatus = { card, status -> onSave(active.serverId, card.moveStatus(status, active.serverId == null)) },
                 onMove = { id -> onMovePhoneCard(active.cardId, id); detail = null },
                 onNote = { onAddNote(active.serverId, active.cardId, it) },
                 onResolve = { field, keepPhone ->
@@ -157,15 +157,13 @@ internal fun BoardScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                FilterChip(filter == BoardFilter.MINE, onClick = {
-                    if (filter == BoardFilter.MINE) filter = BoardFilter.ALL
+                FilterChip(mineOnly, onClick = {
+                    if (mineOnly) mineOnly = false
                     else if (ownerName.isBlank()) selectingOwner = true
-                    else filter = BoardFilter.MINE
+                    else mineOnly = true
                 }, label = { Text("Mine") })
-                FilterChip(filter == BoardFilter.WAITING, onClick = {
-                    filter = if (filter == BoardFilter.WAITING) BoardFilter.ALL else BoardFilter.WAITING
-                }, label = { Text("Waiting") })
-                if (filter == BoardFilter.MINE) {
+                FilterChip(waitingOnly, onClick = { waitingOnly = !waitingOnly }, label = { Text("Waiting") })
+                if (mineOnly) {
                     TextButton(onClick = { selectingOwner = true }) {
                         Text(ownerName, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
@@ -179,7 +177,7 @@ internal fun BoardScreen(
             }
             val refreshIds = if (tab.isAll) serverIds else listOfNotNull(tab.serverId)
             val body: @Composable () -> Unit = {
-                BoardList(state, servers, tab, filter, ownerName, onRetry) { detail = it }
+                BoardList(state, servers, tab, waitingOnly, ownerName.takeIf { mineOnly }, onRetry) { detail = it }
             }
             if (refreshIds.isEmpty()) body()
             else PullRefresh(onRefresh = { onRefresh(refreshIds) }, modifier = Modifier.fillMaxSize(), content = body)
@@ -197,7 +195,7 @@ internal fun BoardScreen(
             confirmButton = {
                 TextButton(enabled = input.isNotBlank(), onClick = {
                     ownerName = input.trim()
-                    filter = BoardFilter.MINE
+                    mineOnly = true
                     selectingOwner = false
                 }) { Text("Show mine") }
             },
@@ -208,7 +206,7 @@ internal fun BoardScreen(
         val cards = if (serverId == null) state.phone else state.servers[serverId]?.cards.orEmpty()
         val existing = cards[card.id]
         val changedWhileEditing = card.title.isNotBlank() && existing != card
-        BoardEditor(card, changedWhileEditing, onDismiss = { editor = null }) { changed ->
+        BoardEditor(card, serverId == null, changedWhileEditing, onDismiss = { editor = null }) { changed ->
             onSave(serverId, changed)
             editor = null
             detail = BoardSelection(serverId, changed.id)
@@ -216,19 +214,18 @@ internal fun BoardScreen(
     }
 }
 
-private fun BoardCard.matches(filter: BoardFilter, owner: String): Boolean = when (filter) {
-    BoardFilter.ALL -> true
-    BoardFilter.MINE -> this.owner.equals(owner, ignoreCase = true)
-    BoardFilter.WAITING -> status == BoardStatus.WAITING
-}
+private fun BoardCard.moveStatus(status: BoardStatus, phone: Boolean): BoardCard = copy(
+    status = status,
+    nativeStatus = if (phone && nativeStatus == this.status.wire) status.wire else nativeStatus,
+)
 
 @Composable
 private fun BoardList(
     state: BoardState,
     servers: List<BoardSource>,
     tab: BoardTab,
-    filter: BoardFilter,
-    owner: String,
+    waitingOnly: Boolean,
+    owner: String?,
     retry: (String) -> Unit,
     open: (BoardSelection) -> Unit,
 ) {
@@ -243,7 +240,10 @@ private fun BoardList(
             val serverBoard = sourceId?.let(state.servers::get)
             val cards = if (source == null) state.phone else serverBoard?.cards.orEmpty()
             val conflicts = serverBoard?.conflicts.orEmpty().groupBy(BoardConflict::cardId)
-            val openCards = cards.values.filter { it.matches(filter, owner) }
+            val openCards = cards.values.filter {
+                (!waitingOnly || it.status == BoardStatus.WAITING) &&
+                    (owner == null || it.owner.equals(owner, ignoreCase = true))
+            }
                 .sortedWith(compareBy({ it.status.ordinal }, { it.title.lowercase() }, { it.id }))
             if (tab.isAll) item {
                 Text(serverBoard?.name ?: source?.label ?: "Phone", color = Palette.Ink, fontWeight = FontWeight.Bold,
@@ -403,6 +403,7 @@ private fun BoardStatusButton(status: BoardStatus, enabled: Boolean = true, set:
 @Composable
 private fun BoardEditor(
     card: BoardCard,
+    phone: Boolean,
     changedWhileEditing: Boolean,
     onDismiss: () -> Unit,
     onSave: (BoardCard) -> Unit,
@@ -419,7 +420,7 @@ private fun BoardEditor(
                         color = Palette.OrangeInk)
                 }
                 BoardField("Title", input.title) { input = input.copy(title = it) }
-                BoardStatusButton(input.status) { input = input.copy(status = it) }
+                BoardStatusButton(input.status) { input = input.moveStatus(it, phone) }
                 BoardField("Native status", input.nativeStatus) { input = input.copy(nativeStatus = it) }
                 BoardField("Owner", input.owner.orEmpty()) { input = input.copy(owner = it.takeIf(String::isNotEmpty)) }
                 BoardField("Next", input.next.orEmpty()) { input = input.copy(next = it.takeIf(String::isNotEmpty)) }
