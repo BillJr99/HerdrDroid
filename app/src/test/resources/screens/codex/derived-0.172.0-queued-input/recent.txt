@@ -1,0 +1,29 @@
+› Review the question-card example and record the result in the sample notes.
+• Interacted with `/sample/monitor`
+
+• Ran the sample validator with the first input
+  └ The first validation returned the following summary:
+        "phase": "read fixture metadata",
+        "status": "complete"
+    + Show details
+
+• Ran the sample validator with the second input
+  └ The second validation returned the following summary:
+    sample report contains the expected fields
+    sample checks finished without an error
+    + Show details
+
+• Working (10m 1s • esc to interrupt) · 1 background terminal running · /ps to view
+
+• Queued follow-up inputs
+  ↳ Check the example watchdog status and summarize what you find in a short note
+    only after the sample worker has finished checking the newest test fixtures.
+    for each fixture, record the outcome and leave the sample inputs unchanged.
+    …
+    shift+← edit last queued message
+
+
+› Ask Codex to do anything
+
+  GPT-6.2-Astra default · ~/sample/project · Resume sample task · Main [default]
+  ← for agents · ? for shortcuts
