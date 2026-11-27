@@ -4726,7 +4726,7 @@ class AppViewModel internal constructor(
         val paneId = source.pane.id
         val agent = source.pane.agent
         val attempt = ++paneReadSequence
-        fun current() = attempt > lastAppliedPaneRead && terminalAnswerWatch(paneId) === watch
+        fun current() = attempt == paneReadSequence && attempt > lastAppliedPaneRead && terminalAnswerWatch(paneId) === watch
         val read = quietly { h ->
             if (h !== source.client || !current()) return@quietly null
             try {
@@ -4747,16 +4747,18 @@ class AppViewModel internal constructor(
         val (live, raw) = read
         val text = com.billmongan.herdrdroid.herdr.stripAnsi(raw)
         val version = versionOf(paneId)
-        val parsed = detectPrompt(raw, blocked = false, agent, version)
-            ?: if (agent == "claude") com.billmongan.herdrdroid.herdr.claudeReviewPreview(text, null) else null
+        val emptyComposer = if (isOpenCode(agent)) openCodeEmptyComposer(raw)
+            else com.billmongan.herdrdroid.herdr.inputLineOf(raw, agent, menuWrite = true) == ""
         val working = com.billmongan.herdrdroid.herdr.composerFooterSaysWorking(raw)
-        val clear = parsed == null && !com.billmongan.herdrdroid.herdr.showsQuestionDialog(text) &&
-            (live.status in setOf(Status.IDLE, Status.DONE, Status.WORKING) || working ||
-                if (isOpenCode(agent)) openCodeEmptyComposer(raw)
-                else com.billmongan.herdrdroid.herdr.inputLineOf(raw, agent, menuWrite = true) == "")
-        if (parsed == null && !clear) return  // A partial or unknown frame is not an answer.
+        val parsed = if (agent == "pi" && live.status == Status.WORKING) activePiQuestion(text, version)
+            else detectPrompt(raw, blocked = live.status == Status.NEEDS_YOU && !emptyComposer && !working, agent, version)
+        val dialog = parsed ?: if (agent == "claude")
+            com.billmongan.herdrdroid.herdr.claudeReviewPreview(text, null) else null
+        val clear = dialog == null && !com.billmongan.herdrdroid.herdr.showsQuestionDialog(text) &&
+            (live.status in setOf(Status.IDLE, Status.DONE, Status.WORKING) || working || emptyComposer)
+        if (dialog == null && !clear) return  // A partial or unknown frame is not an answer.
         val status = when {
-            parsed != null -> Status.NEEDS_YOU
+            dialog != null -> Status.NEEDS_YOU
             working -> Status.WORKING
             live.status == Status.NEEDS_YOU || live.status == Status.UNKNOWN -> Status.IDLE
             else -> live.status
@@ -4773,7 +4775,7 @@ class AppViewModel internal constructor(
         noteInputLine(paneId, raw)
         recordModelFooter(source.server, live, text, ++modelReadSequence)
         paneTextTarget = source.takeIf { live.id == paneId }
-        piLiveQuestion = parsed?.takeIf { agent == "pi" && paneTextTarget != null }
+        piLiveQuestion = dialog?.takeIf { agent == "pi" && paneTextTarget != null }
         codexSteeringTarget = null
         codexActivityTarget = null
         openCodeComposerTarget = paneTextTarget?.takeIf { clear && isOpenCode(agent) && openCodeEmptyComposer(raw) }
@@ -4781,7 +4783,7 @@ class AppViewModel internal constructor(
         if (clear || shows == com.billmongan.herdrdroid.herdr.CardShows.CARD)
             observeQuestion(source.server, paneId, card, status, live.agentName, text, verifiedGone = clear)
         val changed = clear || watch.previous?.let {
-            !com.billmongan.herdrdroid.herdr.cardAnswerStillFits(it, parsed) && it.copy(selected = null) != parsed?.copy(selected = null)
+            !com.billmongan.herdrdroid.herdr.cardAnswerStillFits(it, dialog) && it.copy(selected = null) != dialog?.copy(selected = null)
         } == true
         if (changed) {
             val key = source.server to paneId
@@ -4795,8 +4797,8 @@ class AppViewModel internal constructor(
             watch.alert = null
             questionsFeed.poke()
         }
-        watch.previous = parsed
-        readPaneDraft(paneId, text, parsed, paneTextTarget) {
+        watch.previous = dialog
+        readPaneDraft(paneId, text, dialog, paneTextTarget) {
             lastAppliedPaneRead == attempt && terminalAnswerWatch(paneId) === watch
         }
     }

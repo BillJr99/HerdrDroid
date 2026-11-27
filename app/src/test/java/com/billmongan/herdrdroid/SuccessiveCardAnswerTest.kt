@@ -1711,7 +1711,7 @@ class SuccessiveCardAnswerTest {
             assertEquals(Status.NEEDS_YOU, vm.shownStatus(checkNotNull(vm.pane("p1"))))
             assertTrue(terminalAlertIsShowing())
             recentResult = ExecResult(0, firstStep, "")
-            frame = firstStep.replace("Which format", "Which layout")
+            frame = firstStep.replace("Which option", "Which layout")
             assertNotEquals(first.question, shown().question)
             readTerminal()
             readTerminal()
