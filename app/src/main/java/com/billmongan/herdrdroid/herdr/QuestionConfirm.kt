@@ -343,6 +343,33 @@ private val CLAUDE_CLIPPED_CHECKBOX = Regex("""^\s*([❯›]?)\s*(\d{1,2})\. \[[
 private val CLAUDE_CLIPPED_CHAT = Regex("""^\s*([❯›]?)\s*(\d{1,2})\. Chat about this$""")
 private val CLAUDE_CLIPPED_ACTION = Regex("""^\s*([❯›]?)\s*(?:Next|Submit)$""")
 
+private val CLAUDE_SINGLE_CLIP_COUNT = Regex("""^↑ [1-9][0-9]* more lines?$""")
+private val CLAUDE_CLIPPED_TYPE = Regex("""^  (\d{1,2})\. Type something\.$""")
+private val CLAUDE_CLIPPED_CHAT_PLAIN = Regex("""^  (\d{1,2})\. Chat about this$""")
+private val CLAUDE_SINGLE_DESCRIPTION = Regex("""^ {5}\S.*$""")
+
+/** The native single-select viewport can start inside an option description, above its clip counter. */
+private fun claudeClippedSingleDescriptionRows(frame: List<String>): List<String>? {
+    val rows = frame.filter { it.isNotBlank() }.map { it.trimEnd() }
+    if (rows.size < 7 || !CLAUDE_SINGLE_CLIP_COUNT.matches(rows.last().trim())) return null
+    val chat = CLAUDE_CLIPPED_CHAT_PLAIN.matchEntire(rows[rows.lastIndex - 1]) ?: return null
+    if (!CLAUDE_DIALOG_TOP_RULE.matches(rows[rows.lastIndex - 2])) return null
+    val typed = CLAUDE_CLIPPED_TYPE.matchEntire(rows[rows.lastIndex - 3]) ?: return null
+    val typeNumber = typed.groupValues[1].toInt()
+    if (typeNumber !in 3..5 || chat.groupValues[1].toInt() != typeNumber + 1) return null
+    val body = rows.dropLast(4)
+    val firstOption = body.indexOfFirst { CLAUDE_CLIPPED_OPTION.matches(it) }
+    if (firstOption <= 0 || body.take(firstOption).any { !CLAUDE_SINGLE_DESCRIPTION.matches(it) }) return null
+    val options = body.drop(firstOption).mapNotNull { row ->
+        if (CLAUDE_SINGLE_DESCRIPTION.matches(row)) null
+        else CLAUDE_CLIPPED_OPTION.matchEntire(row) ?: return null
+    }
+    val numbers = options.map { it.groupValues[2].toInt() }
+    val firstNumber = numbers.first()
+    if (firstNumber < 2 || numbers != (firstNumber until typeNumber).toList()) return null
+    return rows.dropLast(1)
+}
+
 /** Checkbox dialogs end with their own Next or Submit, rule, and separately numbered chat action. */
 internal fun claudeClippedCheckboxRows(frame: List<String>): List<String>? {
     val rows = frame.filter { it.isNotBlank() }.map { it.trimEnd() }
@@ -370,7 +397,7 @@ internal fun claudeClippedAskReview(text: String): Prompt? {
     val footer = rows.indexOfLast { it.isNotBlank() }
     if (footer < 0 || !claudeAskFooter(rows[footer])) return null
     val above = rows.take(footer).dropWhile { it.isBlank() }
-    val body = claudeClippedCheckboxRows(above + rows[footer]) ?: run {
+    val body = claudeClippedCheckboxRows(above + rows[footer]) ?: claudeClippedSingleDescriptionRows(above) ?: run {
         val first = CLAUDE_CLIPPED_OPTION.matchEntire(above.firstOrNull() ?: return null) ?: return null
         // An ordinary numbered message starts at one. A real tab or an older Ask footer
         // proves this is a mixed viewport, so leave it to the regular dialog parser.

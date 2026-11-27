@@ -103,6 +103,28 @@ class ClaudeReviewPreview228Test {
         assertNull(claudeClippedAskReview(answered))
     }
 
+    @Test fun aNativeSingleQuestionWithWrappedDescriptionsConfirmsTheThreeChoices() {
+        val screen = capture("single-described")
+        val prompt = checkNotNull(detectPrompt(screen, true, "claude", "2.1.332"))
+        assertTrue(prompt.question.contains("Which route should this synthetic project use?"))
+        assertEquals(listOf("Use the local route (Recommended)", "Use a disposable sandbox", "Defer the decision"),
+            prompt.choices.take(3).map { it.label })
+        assertTrue(questionRead(screen, prompt, "claude", "2.1.332", true).complete)
+    }
+
+    @Test fun aNativeViewportStartingInsideADescriptionShowsContextWithoutAnswerKeys() {
+        val screen = capture("single-described-clipped")
+        val prompt = checkNotNull(detectPrompt(screen, true, "claude", "2.1.332"))
+        assertTrue(prompt.terminalReview)
+        assertTrue(prompt.topOffScreen)
+        assertTrue(prompt.shownParts().details.any { it.contains("Defer the decision") })
+        assertTrue(prompt.shownParts().details.any { it.contains("Preserve existing services") })
+        assertNull(menuKeys(prompt, Choice("Defer the decision", "3", true)))
+        assertNull(extendFramedDialog(screen, screen, true, "2.1.332"))
+        assertNull(claudeClippedAskReview("❯ An echoed request\n" + screen))
+        assertNull(claudeClippedAskReview(stripAnsi(screen).replace("↑ 27 more lines", "27 lines")))
+    }
+
     @Test fun aClosedOrUnframedDialogDoesNotProduceAPreview() {
         val screen = capture("tabbed")
         assertNull(claudeReviewPreview(screen + "\n❯ A new request", null))
