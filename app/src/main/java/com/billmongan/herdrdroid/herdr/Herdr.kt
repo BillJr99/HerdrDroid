@@ -778,7 +778,7 @@ class Herdr internal constructor(
         lastSendRoute = when {
             core -> "hc send"
             pane.agent != null && status != Status.NEEDS_YOU -> "herdr agent prompt"
-            else -> "herdr pane send-text + enter"
+            else -> "herdr pane run"
         }
         // 2.2.7 (Bill: "make sure herdrdroid can tell omp about the cross server session"): Oh My Pi
         // and Copilot draw no cursor, so a blank box may hold typed spaces; their own delete-to-line-start
@@ -799,10 +799,10 @@ class Herdr internal constructor(
             } catch (e: HerdrError) {
                 if (!allowTerminalFallback) throw e
                 // Fall through to typing it in, which works in any pane.
-                lastSendRoute = "agent prompt refused; typed with send-text + enter"
+                lastSendRoute = "agent prompt refused; submitted with pane run"
             }
         }
-        if (occupant != null) { write(cmd("pane", "send-text", pane.id, text) + " && " + cmd("pane", "send-keys", pane.id, "enter")); return }
+        if (occupant != null) { write(terminalSubmitCommand(pane.id, text)); return }
         typeAndEnter(pane.id, text, expectedConnection)
     }
 
@@ -816,12 +816,25 @@ class Herdr internal constructor(
         return runWrite(hcCmd("keys", paneId, *keys.toTypedArray()), expectedConnection = expectedConnection)
     }
 
-    /** Paste and submit in one host operation so a phone-side failure cannot strand the paste. */
+    private fun terminalSubmitCommand(paneId: String, text: String) = cmd("pane", "run", paneId, text)
+
+    /**
+     * Submit text and Enter as one native input request. A lost acknowledgement cannot authorize
+     * a retry or clearing a draft whose origin the app cannot prove.
+     */
     suspend fun typeAndEnter(paneId: String, text: String, expectedConnection: Any? = null, settleMillis: Int = 0) {
         if (core) { runWrite(hcCmd("send", "--force", paneId, text), expectedConnection = expectedConnection); return }
         require(settleMillis in 0..1_000)
-        val pause = if (settleMillis == 0) "" else
-            "sleep ${settleMillis / 1_000}.${(settleMillis % 1_000).toString().padStart(3, '0')} && "
+        if (settleMillis == 0) {
+            val result = runWriteResult(terminalSubmitCommand(paneId, text), expectedConnection, null)
+            if (result.exit == 0) return
+            val problem = HerdrError(result.terminalFailureMessage(), result.exit)
+            if (problem.isMissingPane(paneId)) throw problem
+            throw DeliveryUncertain("The terminal submission could not be confirmed.")
+        }
+        // The Grok picker needs its slash command to settle before Enter. This explicit legacy
+        // path cannot treat a failure after the paste as permission to touch the composer again.
+        val pause = "sleep ${settleMillis / 1_000}.${(settleMillis % 1_000).toString().padStart(3, '0')} && "
         val paste = cmd("pane", "send-text", paneId, text)
         val submit = cmd("pane", "send-keys", paneId, "enter")
         val result = runWriteResult("$paste && echo $PASTED_MARK && $pause$submit", expectedConnection, null)
@@ -1652,6 +1665,8 @@ data class Prompt(
     /** A proven Claude Code model control uses only keys named by its own picker. */
     internal val claudeModelControl: Boolean = false,
     internal val letterKeys: Boolean = false,
+    /** Claude AskUserQuestion answers require a key sequence verified from the current highlight. */
+    internal val claudeAsk: Boolean = false,
 ) {
     internal val guardedShortcutApproval: Boolean get() = agyApproval || kiroOnceShortcuts || claudeModelControl
     internal val historyReviewOnly: Boolean get() = topOffScreen || rebuiltTallDialog
@@ -1702,8 +1717,11 @@ const val UNREAD_SCREEN = "(The app couldn't read this pane's screen yet. Tap Sh
  * something else holds the card's place (an answer being typed, a usage dialog, OpenCode's
  * background drawer, an agent error banner).
  */
-internal fun withNeedsYouCard(status: Status, prompt: Prompt?, suppressed: Boolean, agent: String): Prompt? =
-    prompt ?: if (status == Status.NEEDS_YOU && !suppressed) unreadQuestionCard(agent) else null
+internal fun withNeedsYouCard(
+    status: Status, prompt: Prompt?, suppressed: Boolean, agent: String, codexActivityViewport: String? = null,
+): Prompt? = prompt ?: if (
+    status == Status.NEEDS_YOU && !suppressed && codexActivityViewport?.let(::hasCodexInputActivity) != true
+) unreadQuestionCard(agent) else null
 
 /** [withNeedsYouCard]'s card: no options and no keys, only the way to the terminal. */
 internal fun unreadQuestionCard(agent: String): Prompt = Prompt(
@@ -4061,10 +4079,17 @@ internal fun codexFollowUpRows(text: String): Set<Int> {
     fun continuation(row: String): Boolean = row.isNotBlank() && row.startsWith("    ")
     for ((index, row) in rows.withIndex()) {
         when {
-            row.trimEnd() == "• Queued follow-up inputs" && rows.getOrNull(index + 1)?.let(::inputRow) == true -> {
-                val end = (index + 1 until rows.size).firstOrNull { !inputRow(rows[it]) && !continuation(rows[it]) }
-                    ?: rows.size
-                masked += index until end
+            row.trimEnd() == CODEX_QUEUED_FOLLOW_UP_TITLE -> {
+                // A redraw can leave the title and an indented continuation while the
+                // arrow or entire first input row is absent. Stop before the next UI row.
+                val first = (index + 1 until rows.size).firstOrNull { rows[it].isNotBlank() }
+                if (first != null && (inputRow(rows[first]) || continuation(rows[first]) &&
+                        !CODEX_COMMAND_HEADING.matches(rows[first].trim()) &&
+                        !CODEX_OTHER_APPROVAL.matches(rows[first].trim()))) {
+                    val end = (first until rows.size).firstOrNull { !inputRow(rows[it]) && !continuation(rows[it]) }
+                        ?: rows.size
+                    masked += index until end
+                }
             }
             row.trimEnd() == "    shift+← edit last queued message" -> {
                 // A recent read may start below the heading. Require at least one input
@@ -4079,19 +4104,52 @@ internal fun codexFollowUpRows(text: String): Set<Int> {
     return masked
 }
 
+private val CODEX_ACTIVE_BACKGROUND = Regex(
+    """^(?:• .+\(.*esc to interrupt\).* · |• )?[1-9]\d* background terminals? running · /ps to view(?: · .*)?$""",
+)
+private const val CODEX_QUEUED_FOLLOW_UP_TITLE = "• Queued follow-up inputs"
+private val CODEX_BACKGROUND_INTERACTION = Regex("""^• Interacted with `[^`]+`$""")
+private val CODEX_EMPTY_ACTIVITY_COMPOSER = Regex("""^› (?:Ask Codex to do anything|Ask a follow-up question)$""")
+
+/** Native queue or background activity that can explain a lagging NEEDS_YOU status. */
+internal fun hasCodexInputActivity(text: String): Boolean {
+    if (codexFollowUpRows(text).isNotEmpty()) return true
+    val tail = stripAnsi(text).lines().takeLast(32).map(String::trimEnd)
+    return tail.any(CODEX_EMPTY_ACTIVITY_COMPOSER::matches) &&
+        tail.any {
+            it == CODEX_QUEUED_FOLLOW_UP_TITLE ||
+                CODEX_ACTIVE_BACKGROUND.matches(it.trimStart()) || CODEX_BACKGROUND_INTERACTION.matches(it)
+        }
+}
+
+private val COPILOT_PENDING_INPUT_ROW = Regex("""^\s+└ \[pending · ↑ recall]\s*$""")
+
 fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version: String? = null): Prompt? {
     val unstyled = stripAnsi(text)
     val queueRows = if (agent.equals("codex", true)) codexFollowUpRows(unstyled) else emptySet()
-    val plain = if (queueRows.isEmpty()) unstyled
-        else unstyled.lines().mapIndexed { index, row -> if (index in queueRows) "" else row }.joinToString("\n")
+    val plain = when {
+        queueRows.isNotEmpty() -> unstyled.lines().mapIndexed { index, row ->
+            if (index in queueRows) "" else row
+        }.joinToString("\n")
+        // A pending Copilot follow-up has an indented recall hint under its echoed input.
+        // This row is queue chrome and must not become an unnumbered menu choice.
+        agent?.let(::canonicalAgent) == "copilot" -> unstyled.lines().joinToString("\n") { row ->
+            if (COPILOT_PENDING_INPUT_ROW.matches(row)) "" else row
+        }
+        else -> unstyled
+    }
+    // Unlike an empty read, a clipped viewport containing only queue rows is readable.
+    if (queueRows.isNotEmpty() && plain.isBlank()) return null
     if (agent.equals("claude", true)) {
         claudeModelCard(plain)?.let { return it }
         rebuiltClaudeAsk(plain)?.let { return it }
         claudeClippedAskReview(plain)?.let { return it }
     }
+    if (agent.equals("grok", true)) grokPrivacyOverlay(plain)?.let { return it }
     if (agent.equals("agy", true)) {
         agySubagentQuestion(plain)?.let { return it }
         agySubagentApproval(plain)?.let { return it }
+        agyClippedShellCommand(plain)?.let { return terminalCommandReview(it) }
     }
     if (ruleAgent(agent) in setOf("kiro", "kiro-cli")) kiroApprovalShortcuts(plain)?.let { return it }
     if (agent.equals("hermes", true)) hermesUsageEnd(plain)?.let { end ->
@@ -4128,7 +4186,16 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     // 2.2.8 (Bill: "grok is stuck on a question I can't answer"): Grok working under its own rows.
     if (agent.equals("grok", true) && grokWorkingBelowAnyQuestion(plain)) return null
     val p = detectPlainPrompt(if (agent.equals("grok", true)) grokWithoutThinkingPanel(plain) else plain, blocked, agent, version)
-    return if (p != null && agent.equals("grok", true)) grokApproval(plain, p) else p
+    if (p != null && agent.equals("grok", true)) return grokApproval(plain, p)
+    if (p != null && agent.equals("claude", true)) {
+        val askRows = withoutClaudeChromeUnderDialog(plain).lines().dropLastWhile(String::isBlank)
+        val ask = askRows.lastOrNull()?.let(::claudeAskFooter) == true
+        if (ask) return if (p.selected == null && !claudeAskHasFocusedAction(askRows))
+            p.copy(choices = emptyList(), claudeCheckboxAction = null, terminalReview = true,
+                region = p.region ?: plain.lines(), claudeAsk = true).withSpanOf(p)
+        else p.copy(claudeAsk = true).withSpanOf(p)
+    }
+    return p
 }
 
 private val GROK_THINKING_PANEL = Regex("""^\s*┃\s*◆\s+Thinking(?:…|\.\.\.)?\s*$""")
@@ -4730,6 +4797,15 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
     // The whole question: every line above the first choice up to a blank line, the top of the
     // question's box or a rule (at most 20 lines), so a long question isn't cut.
     val firstOption = run.firstOrNull()?.let { raw.lastIndexOf(lines[it.first]) } ?: -1
+    // Claude wraps a long single question inside its own vertical gutter. It may have no
+    // question mark at the end of a row, and the single tab is not a multi-question tab bar.
+    val singleClaudeBar = if (agent.equals("claude", true) && dialogAt < 0 && run.firstOrNull()?.second == "1" &&
+        raw.lastOrNull { it.isNotBlank() }?.let(::claudeAskFooter) == true) {
+        (firstOption - 1 downTo 0).firstOrNull { claudeAskTab(raw[it]) }?.takeIf { tab ->
+            val questionRows = raw.subList(tab + 1, firstOption).filter { it.isNotBlank() }
+            questionRows.isNotEmpty() && questionRows.all { it.startsWith("│ ") }
+        }
+    } else null
     // Grok's command rows ("│ git …·", "┆ …"), read whatever frame its box has (2.1.4): Grok's
     // screen, or any screen with a row in Grok's "┆" gutter.
     val grokRows = agent.equals("grok", true) || raw.any { r -> GrokMeta.commandRow(r, null)?.cont == true }
@@ -4746,9 +4822,11 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
             // Claude's multi-question dialog: everything from its tab bar down to the options is the
             // question, including the review step's "● Close 537" / "→ Close it" rows (1.2.9).
             // 2.2.8: however tall the question is (it was 30 rows), and its fenced code kept row by row.
-            val barAt = (at - 1 downTo maxOf(0, at - TALL_QUESTION_ROWS)).firstOrNull { parseTabBar(clean(raw[it])) != null }
+            val barAt = singleClaudeBar ?: (at - 1 downTo maxOf(0, at - TALL_QUESTION_ROWS))
+                .firstOrNull { parseTabBar(clean(raw[it])) != null }
             if (barAt != null) {
-                got += dialogQuestionLines(raw.subList(barAt, at), clean)
+                val questionStart = if (singleClaudeBar != null) barAt + 1 else barAt
+                got += dialogQuestionLines(raw.subList(questionStart, at), clean)
                 walkTop = barAt
                 return@let got.takeIf { it.isNotEmpty() }
             }
@@ -4895,7 +4973,7 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
         !PROMPT_ECHO.containsMatchIn(it.trimStart()) && clean(it).endsWith("?") && !CODE_LINE.containsMatchIn(clean(it))
     }
     val plainEcho = raw.firstOrNull { it.isNotBlank() }?.trimStart()?.startsWith("❯ ") == true
-    val rejectEcho = dialogAt < 0 && !approvalHeader && !questionHeader &&
+    val rejectEcho = dialogAt < 0 && singleClaudeBar == null && !approvalHeader && !questionHeader &&
         (agent?.lowercase() == "claude" || (agent == null && plainEcho)) &&
         raw.any { PROMPT_ECHO.containsMatchIn(it.trimStart()) }
 
@@ -5090,12 +5168,41 @@ fun showsGrokBanner(text: String): Boolean {
     return tail.contains("Help improve Grok") && Regex("""\[Opt out]\s*\[Opt in]""").containsMatchIn(tail)
 }
 
+private const val GROK_PRIVACY_TITLE = "Coding data, retention, and training"
+private val GROK_PRIVACY_OVERLAY_FOOTER =
+    Regex("""↑/↓ nav\s*\|\s*Enter select\s*\|\s*double-click select\s*\|\s*Esc cancel""")
+
+/** A settings overlay can retain the old composer and transcript outside its rectangular frame. */
+internal fun grokPrivacyOverlay(text: String): Prompt? {
+    val rows = text.lines().dropLastWhile(String::isBlank).takeLast(60)
+    val title = "┌─ Settings › $GROK_PRIVACY_TITLE "
+    val top = rows.indexOfLast { title in it }
+    if (top < 0 || rows.size - top < 5) return null
+    val left = rows[top].indexOf(title)
+    val right = rows[top].indexOf('┐', left + title.length)
+    if (right < 0) return null
+    val bottom = rows.last()
+    if (bottom.getOrNull(left) != '└' || bottom.getOrNull(right) != '┘' ||
+        !bottom.substring(left + 1, right).all { it == '─' }) return null
+    val body = rows.subList(top + 1, rows.lastIndex)
+    if (body.any { it.getOrNull(left) != '│' || it.getOrNull(right) != '│' }) return null
+    if (rows.drop(top).none { it.take(left).isNotBlank() || it.drop(right + 1).isNotBlank() }) return null
+    val frame = rows.drop(top).map { it.substring(left, right + 1) }
+    if (body.none { it.substring(left + 1, right).trim() == GROK_PRIVACY_TITLE } ||
+        !GROK_PRIVACY_OVERLAY_FOOTER.matches(body.last().substring(left + 1, right).trim())) return null
+    val choices = frame.mapNotNull(GROK_PRIVACY_ROW::matchEntire)
+    if (choices.map { it.groupValues[2] } != listOf("Opt in", "Opt out") ||
+        choices.count { it.groupValues[1] in setOf("●", "◉") } != 1) return null
+    return Prompt("Review Grok's privacy settings", emptyList(), region = frame, terminalReview = true)
+}
+
 /**
  * Grok's /privacy dialog: a box headed "Settings › Coding data, retention, and training" with rows
  * "○  Opt in" and "●  Opt out" (the filled circle is the current choice and the cursor) and the
  * footer "↑/↓ nav | Enter select | ... | Esc cancel".
  */
 fun detectGrokPrivacyDialog(text: String): Prompt? {
+    grokPrivacyOverlay(text)?.let { return it }
     val lines = text.lines().takeLast(40)
     if (lines.none { it.contains("Coding data, retention, and training") }) return null
     val rows = lines.mapNotNull(GROK_PRIVACY_ROW::matchEntire)
@@ -5112,6 +5219,7 @@ fun detectGrokPrivacyDialog(text: String): Prompt? {
  * as "/usage/privacy".
  */
 fun grokInputText(text: String): String? {
+    if (grokPrivacyOverlay(text) != null) return null
     val m = text.lines().takeLast(12).asReversed().firstNotNullOfOrNull { Regex("""^\s*[│┃|]\s*❯ ?(.*?)\s*[│┃|]?\s*$""").find(it) }
     return m?.groupValues?.get(1)?.trim()
 }

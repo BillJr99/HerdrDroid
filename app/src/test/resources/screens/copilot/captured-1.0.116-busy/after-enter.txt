@@ -1,0 +1,36 @@
+ ● MCP Servers reloaded: 0 servers connected
+
+ ❯ Synthetic request one, respond with text only.                                                                              17:57
+
+ ● Synthetic
+ ❯ Synthetic request two, respond with text only.                                                                              17:57
+   └ [pending · ↑ recall]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ /fixture/work
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ◉ Working · 9 B ctrl+c interrupt                                                                                             gpt-4.1

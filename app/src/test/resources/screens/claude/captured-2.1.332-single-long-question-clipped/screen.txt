@@ -1,0 +1,22 @@
+│ reviewers compare the results. The sample team w
+
+❯ 1. Preview the result (Recommended)
+     Preview the changes with local fixtures, record the exact
+     inputs, and let the second reviewer verify the same result
+     without modifying any shared branch. Preview the changes
+     with local fixtures, record the exact inputs, and let the
+     second reviewer verify the same result without modifying
+     any shared branch. Preview the changes wi
+  2. Propose a small change
+     Make a small proposal for the fixture repository. Explain
+     the tradeoffs and preserve the evidence for the next
+     reader.
+  3. Keep the existing layout
+     Keep the existing layout until the sample team can compare
+     both approaches. Record the open question in the local
+     notes.
+  4. Type something.
+────────────────────────────────────────────────────────────────
+  5. Chat about this
+ ↑ 13 more lines
+Enter to select · ↑/↓ to navigate · Esc to cancel

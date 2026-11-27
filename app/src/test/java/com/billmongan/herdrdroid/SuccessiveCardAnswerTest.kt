@@ -200,6 +200,22 @@ class SuccessiveCardAnswerTest {
         assertEquals(listOf("enter"), sent)
     }
 
+    @Test fun agyLongCommandReplacedAtTheSendIsRefused() = fixture(
+        "agy", res("/screens/agy/derived-2.2.8-format/long-command-approval.txt"),
+    ) {
+        readSelectedPane()
+        val card = displayed()
+        assertEquals("Yes, run command", card.choices.first().label)
+        assertTrue(card.question.contains("JOBS=4"))
+
+        beforeCheck = { frame = frame.replace("JOBS=4", "JOBS=8") }
+        answer(card)
+        assertEquals(1, cardChecksRefused)
+        assertTrue(sent.isEmpty())
+        assertEquals(CARD_UPDATED_NOTE, vm.notice)
+        assertTrue(displayed().question.contains("JOBS=8"))
+    }
+
     /** 2.2.8: the dialog changed before the tap's read: the card shows it now, nothing typed. */
     @Test fun aDialogChangedBeforeTheTapUpdatesTheCardAndSendsNothing() = fixture("grok", grokScreen("approval-whole.ansi")) {
         readSelectedPane()
@@ -450,6 +466,66 @@ class SuccessiveCardAnswerTest {
      * 2.2.8 (Bill: "it said it couldn't read it although it looked like a fairly standard question"): when
      * the recent read can't prove the dialog, the live screen is read, and its proven dialog is the card.
      */
+    @Test fun agyNativePickerUsesFreshViewportAndDiscardsStaleRecentCard() {
+        val picker = checkNotNull(javaClass.getResource(
+            "/screens/agy/captured-1.5.18-native-question/picker.txt"
+        )).readText()
+        fixture("agy", picker) {
+            status(Status.WORKING)
+            recentResult = ExecResult(0, "Preparing the question.", "")
+            repeat(3) { readSelectedPane() }
+            assertTrue(checkNotNull(vm.cardParse("p1", vm.paneText)).terminalReview)
+            assertTrue(vm.paneText.contains("Which fixture label?"))
+
+            recentResult = ExecResult(0, picker, "")
+            frame = "Continuing after the question."
+            repeat(3) { readSelectedPane() }
+            assertFalse(vm.paneText.contains("Which fixture label?"))
+            assertNull(vm.cardParse("p1", vm.paneText))
+            assertTrue(sent.isEmpty())
+        }
+    }
+
+    @Test fun agyClippedApprovalUsesFreshViewportAndDiscardsStaleRecentCard() {
+        val clipped = checkNotNull(javaClass.getResource(
+            "/screens/agy/captured-1.5.18-tall/clipped-a.txt"
+        )).readText()
+        fixture("agy", clipped) {
+            status(Status.WORKING)
+            recentResult = ExecResult(0, "Preparing the command.", "")
+            repeat(3) { readSelectedPane() }
+            assertTrue(checkNotNull(vm.cardParse("p1", vm.paneText)).terminalReview)
+            assertTrue(vm.paneText.contains("fixture-a-011"))
+
+            recentResult = ExecResult(0, clipped, "")
+            frame = "Continuing after the approval."
+            repeat(3) { readSelectedPane() }
+            assertFalse(vm.paneText.contains("fixture-a-011"))
+            assertNull(vm.cardParse("p1", vm.paneText))
+            assertTrue(sent.isEmpty())
+        }
+    }
+
+    @Test fun grokPrivacyOverlayUsesFreshViewportAndDiscardsStaleRecentCard() {
+        val picker = checkNotNull(javaClass.getResource(
+            "/screens/grok/captured-1.0.92-picker-draft/privacy-picker.txt"
+        )).readText()
+        fixture("grok", picker) {
+            status(Status.WORKING)
+            recentResult = ExecResult(0, "Opening settings.", "")
+            repeat(3) { readSelectedPane() }
+            assertTrue(checkNotNull(vm.cardParse("p1", vm.paneText)).terminalReview)
+            assertTrue(vm.paneText.contains("Coding data, retention, and training"))
+
+            recentResult = ExecResult(0, picker, "")
+            frame = "Continuing after closing settings."
+            repeat(3) { readSelectedPane() }
+            assertFalse(vm.paneText.contains("Coding data, retention, and training"))
+            assertNull(vm.cardParse("p1", vm.paneText))
+            assertTrue(sent.isEmpty())
+        }
+    }
+
     @Test fun anUnprovenRecentReadFallsBackToTheLiveScreen() = fixture("claude",
         checkNotNull(javaClass.getResource("/screens/claude/synthetic-2.2.8-multiq/four-tabs-first.ansi")).readText()) {
         val live = frame
@@ -942,6 +1018,27 @@ class SuccessiveCardAnswerTest {
             assertEquals(prior + "down enter", sent)
             if (label == "Submit") assertEquals("Submit answers", shown().choices.first().label)
         }
+    }
+
+    @Test fun claudeAskWithNoVisibleHighlightDoesNotTypeAnOptionDigit() =
+        fixture("claude", firstStep.replace("❯ 1.", "  1.")) {
+            readSelectedPane()
+            val card = displayed()
+            assertNull(card.selected)
+            assertTrue("displayed prompt must require terminal review: ${card.choices}", card.terminalReview)
+            assertTrue("no actions on terminal review", card.choices.isEmpty())
+            vm.answerChoice("p1", card, Choice("Blue", "1", false), target = checkNotNull(vm.paneTextTarget))
+            drainUntil { !vm.answerInFlight("p1") }
+            assertTrue("no digit must reach the pane: $sent", sent.isEmpty())
+        }
+
+    @Test fun claudeAskThatLosesHighlightBeforeTheTapDoesNotSend() = fixture("claude", firstStep) {
+        readSelectedPane()
+        val card = displayed()
+        assertEquals("1", card.selected)
+        frame = frame.replace("❯ 1.", "  1.")
+        answer(card)
+        assertTrue(sent.isEmpty())
     }
 
     @Test fun claudeCheckboxActionMissingOrAmbiguousIsNotAnAnswerRow() {
@@ -1567,6 +1664,10 @@ class SuccessiveCardAnswerTest {
         assertEquals(listOf("enter", "enter"), sent)
     }
 
+    @Test fun answeredNotificationRefreshesASecondQuestionWithoutAStatusChange() = fixture("claude", firstStep) {
+        watchAnsweredSuccessor(secondStep)
+    }
+
     @Test fun oldNotificationCannotAnswerAnIndistinguishableButtonOnTheNextStep() = fixture("claude", firstStep) {
         val first = shown()
         answer(first)
@@ -1757,6 +1858,58 @@ class SuccessiveCardAnswerTest {
             drainUntil { guardedVisibleReads > reads && !vm.answerInFlight("p1") }
         }
 
+        fun watchAnsweredSuccessor(nextFrame: String) {
+            val app = ApplicationProvider.getApplicationContext<Application>()
+            shadowOf(app).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+            val notify = com.billmongan.herdrdroid.notify.Notify
+            notify.channels(app)
+            state("watching", true)
+            state("foreground", false)
+            val h = field("herdr").get(vm) as Herdr
+            val blocked = checkNotNull(vm.pane("p1"))
+            fun poll() = vm.noticeChanges(server.id, server.label, listOf(blocked)) { h }
+            val notifications = checkNotNull(app.getSystemService(android.app.NotificationManager::class.java))
+            fun active() = notifications.activeNotifications.single { it.id == (server.id + "|p1").hashCode() }.notification
+            val first = shown()
+            val choice = first.choices.first()
+            val old = vm.bindFixtureAlert(NotifyAction(server.id, "p1", choice.keys, choice.pressEnter,
+                first.question, label = choice.label, agent = agent,
+                options = com.billmongan.herdrdroid.notify.alertOptionsSig(first.choices),
+                identity = com.billmongan.herdrdroid.notify.alertIdentity(first)), h)
+            try {
+                poll()
+                assertTrue(AppBus.emit(old))
+                drainUntil { sent.size == 1 && !vm.answerInFlight("p1") }
+                assertEquals("Answered", active().extras.getCharSequence(android.app.Notification.EXTRA_TITLE)?.toString())
+
+                val reads = guardedVisibleReads
+                drainWithTime { guardedVisibleReads > reads }
+                assertEquals("Answered", active().extras.getCharSequence(android.app.Notification.EXTRA_TITLE)?.toString())
+
+                frame = nextFrame
+                val nextPrompt = shown()
+                val nextLabel = nextPrompt.choices.first().label
+                assertEquals(choice.label, nextLabel)
+                assertEquals(first.question, nextPrompt.question)
+                assertNotEquals(old.identity, com.billmongan.herdrdroid.notify.alertIdentity(nextPrompt))
+                drainWithTime { active().actions?.any { it.title.toString() == nextLabel } == true }
+                val next = active().actions.single { it.title.toString() == nextLabel }
+                com.billmongan.herdrdroid.notify.ActionReceiver().onReceive(app, android.content.Intent()
+                    .putExtra(notify.EXTRA_SERVER, server.id)
+                    .putExtra(notify.EXTRA_PANE, "p1")
+                    .putExtra("origin", old.origin)
+                    .putExtra("keys", old.keys))
+                shadowOf(Looper.getMainLooper()).idle()
+                assertEquals(listOf("enter"), sent)
+                assertTrue(active().actions.any { it.title.toString() == nextLabel })
+                next.actionIntent.send()
+                drainUntil { sent.size == 2 && !vm.answerInFlight("p1") }
+                assertEquals(listOf("enter", "enter"), sent)
+            } finally {
+                notify.clear(app, server.id, "p1")
+            }
+        }
+
         /** [drainUntil], with the main looper's clock moving on, for answers that wait between keys. */
         fun drainWithTime(done: () -> Boolean) {
             val deadline = System.nanoTime() + 10_000_000_000L
@@ -1847,6 +2000,12 @@ class SuccessiveCardAnswerTest {
                 command.contains("'agent' 'prompt' 'p1' ") && agent == "hermes" -> {
                     sent += "prompt:" + command.substringAfter("'p1' ").removeSurrounding("'")
                     ok("")
+                }
+                command.contains("'pane' 'run' 'p1' ") -> {
+                    sent += "text:" + command.substringAfter("'p1' ").removeSurrounding("'")
+                    sent += "enter"
+                    afterSend?.let { frame = it }
+                    if (failAfterSend) ExecResult(1, "", "fixture lost acknowledgement") else ok("")
                 }
                 command.contains("'pane' 'send-text' 'p1' ") &&
                     command.contains(" && echo @@herdrdroid-text-pasted@@ && ") -> {

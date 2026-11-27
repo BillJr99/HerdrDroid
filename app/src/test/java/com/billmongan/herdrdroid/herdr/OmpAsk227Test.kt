@@ -92,6 +92,21 @@ class OmpAsk227Test {
         assertTrue(p.shownParts().tabs.last().current)
     }
 
+    @Test fun anIncompleteOrInconsistentAskOnlyOffersCancel() {
+        val frame = screen("ask-open-other.ansi")
+        for ((answered, total) in listOf(6 to 6, 6 to 5, 4 to 4)) {
+            val inconsistent = frame.replace("Ask · 5 of 5 answered", "Ask · $answered of $total answered")
+            for (agent in listOf("omp", "pi")) {
+                val prompt = checkNotNull(detectPrompt(inconsistent, true, agent))
+                val state = checkNotNull(prompt.ompAsk)
+                assertEquals(5, state.questions.size)
+                assertFalse(state.allAnswered)
+                assertFalse(state.verifiable)
+                assertEquals(listOf("esc"), prompt.choices.map { it.keys })
+            }
+        }
+    }
+
     @Test fun aDialogNotAllOnScreenIsLeftToTheOtherReaders() {
         val cut = screen("ask-open-other.ansi").lines().filterNot { it.trimStart().startsWith("╰─────") }.joinToString("\n")
         assertNull(OmpAsk.parse(stripAnsi(cut)))

@@ -1,0 +1,2 @@
+◇ 1 message queued · ctrl+x expand
+Type to steer · Ctrl+S to queue

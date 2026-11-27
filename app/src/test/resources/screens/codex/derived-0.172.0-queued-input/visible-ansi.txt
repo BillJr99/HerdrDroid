@@ -1,0 +1,30 @@
+› Review the question-card example and record the result in the sample notes.
+[2m[1m[4m[38;2;99;168;248m• Interacted with `/sample/monitor`[0m
+
+• Ran the sample validator with the first input
+  └ The first validation returned the following summary:
+        "phase": "read fixture metadata",
+        "status": "complete"
+    + Show details
+
+• Ran the sample validator with the second input
+  └ The second validation returned the following summary:
+    sample report contains the expected fields
+    sample checks finished without an error
+    + Show details
+
+[1m[38;2;144;144;144m[38;2;108;108;108m[2m[1m[38;2;204;204;204m[2m• Working (10m 1s • esc to interrupt) · 1 background terminal running · /ps to view[0m
+
+[2m• Queued follow-up inputs[0m
+[2m[2m[3m  ↳ Check the example watchdog status and summarize what you find in a short note[0m
+    only after the sample worker has finished checking the newest test fixtures.
+    for each fixture, record the outcome and leave the sample inputs unchanged.
+[2m[3m    …[0m
+[1m[38;2;204;204;204m[2m    shift+← edit last queued message[0m
+
+
+[1m[48;2;41;41;41m[48;2;41;41;41m[2m[48;2;41;41;41m[48;2;41;41;41m› Ask Codex to do anything[0m
+
+[38;2;246;226;183m[38;2;127;127;127m[38;2;171;223;167m[38;2;127;127;127m[38;2;250;179;135m[38;2;127;127;127m  GPT-6.2-Astra default · ~/sample/project · Resume sample task · Main [default][0m
+[1m[38;2;204;204;204m[38;2;127;127;127m[1m[38;2;204;204;204m[38;2;127;127;127m[38;2;196;167;103m[38;2;127;127;127m[1m[38;2;204;204;204m[38;2;127;127;127m  ← for agents · ? for shortcuts[0m
+

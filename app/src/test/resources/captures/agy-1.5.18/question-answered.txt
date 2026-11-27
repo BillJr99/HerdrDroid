@@ -1,0 +1,27 @@
+  Trajectory — self (7 steps)
+
+  ? Which fixture label?
+  > Beta
+  ● SendMessage(fixture-parent: The user answered the ask_question prompt ("Which fixt...) (ctrl+o to expand)
+    Reported selection ("Beta") to the parent agent.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  ↑/↓ scroll · pgup/pgdown page · ctrl+end bottom · ctrl+home top · ctrl+o expand · shift+k kill · esc back
+                                                                                                  Orchestrator · Gemini 4 Neon · high

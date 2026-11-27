@@ -138,7 +138,7 @@ class OpenCodeErrorVm220Test {
         override var connection: Any? = Any()
         private val paneJson = """{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1","agent":"opencode","agent_status":"blocked","screen_detection_skipped":true,"cwd":"/fixture","terminal_id":"t1","scroll":{"offset_from_bottom":0}}"""
         val commands = java.util.Collections.synchronizedList(mutableListOf<String>())
-        fun writes() = commands.filter { "'agent' 'prompt'" in it || "'send-text'" in it || "'send-keys'" in it || "'send'" in it }
+        fun writes() = commands.filter { "'agent' 'prompt'" in it || "'pane' 'run'" in it || "'send-keys'" in it || "'send'" in it }
 
         override suspend fun bulk(command: String): ExecResult = answer(command)
         override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult = answer(command)
@@ -155,7 +155,7 @@ class OpenCodeErrorVm220Test {
                 "'pane' 'get' 'w1:p1'" in command -> ok("""{"result":{"pane":$paneJson}}""")
                 "'--source' 'recent'" in command -> ok(screen.lines().takeLast(lines(command)).joinToString("\n"))
                 "'--source' 'visible'" in command -> ok(screen)
-                "'agent' 'prompt'" in command || "'send-text'" in command || "'send-keys'" in command || "'send'" in command -> ok("")
+                "'agent' 'prompt'" in command || "'pane' 'run'" in command || "'send-keys'" in command || "'send'" in command -> ok("")
                 else -> ExecResult(1, "", "not in the fake: $command")
             }
         }

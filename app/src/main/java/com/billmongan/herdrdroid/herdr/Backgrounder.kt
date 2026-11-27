@@ -17,7 +17,7 @@ import kotlinx.coroutines.CancellationException
  * - Agy 1.5.17 shows nothing while a command runs; the first Ctrl+B shows "press … again to send command
  *   to background" in its key row, the second moves it ("(run in background)", "1 task(s)"). Ctrl+B with
  *   nothing running changes nothing on screen.
- * - OpenCode 2.3.2 and Muse Code 1.4.24 show no change after Ctrl+B on a shell command, so they stay off.
+ * - Muse Code 1.4.24 advertises Ctrl+B beneath a running shell and shows the same task in its background list.
  *
  * Each press goes in one command on the computer ([Herdr.sendBackgroundKey]) that first checks the
  * pane's occupant and reads its screen again ([BACKGROUND_CHECK]): the key goes only while that
@@ -109,6 +109,7 @@ internal enum class BackgroundStep(val check: String) {
     CLAUDE("claude"),
     /** Grok's "Ctrl+b:send to bg" key hint. */
     GROK("grok"),
+    MUSE("muse"),
     /** Agy at its empty input with no dialog: the first Ctrl+B, which asks for a second when a command runs. */
     AGY_ARM("agy-arm"),
     /** Agy's "press … again to send command to background". */
@@ -141,12 +142,39 @@ internal fun agyComposerReady(screen: String): Boolean {
 /** A dialog drawn at the bottom of the screen ([BG_DIALOG]). */
 internal fun backgroundDialogShown(screen: String): Boolean = tailRows(screen, 14).any { BG_DIALOG.containsMatchIn(it) }
 
+private const val MUSE_BACKGROUND_HINT = "└ (ctrl+b to send to background)"
+private val MUSE_RUNNING_ROW = Regex("""^◆ Running command · (.+) \u2014 running \(\d+(?:\.\d+)?s · esc to interrupt\)$""")
+private val MUSE_RULE_ROW = Regex("""^─{20,}$""")
+private val MUSE_FOOTER = Regex("""^muse-[^ ]+ · .+$""")
+
+/** Native running-shell row immediately above an empty Muse composer and its footer. */
+internal fun museForegroundTask(screen: String): String? {
+    if (backgroundDialogShown(screen)) return null
+    val rows = tailRows(screen, 7).filter { it.isNotBlank() }.map(String::trim)
+    val frame = rows.takeLast(6)
+    if (frame.size != 6 || frame[1] != MUSE_BACKGROUND_HINT || frame[3] != "❯" ||
+        !MUSE_RULE_ROW.matches(frame[2]) || !MUSE_RULE_ROW.matches(frame[4]) ||
+        !MUSE_FOOTER.matches(frame[5])) return null
+    return MUSE_RUNNING_ROW.matchEntire(frame[0])?.groupValues?.get(1)
+}
+
+internal fun museBackgroundReceiptCount(screen: String, task: String): Int =
+    tailRows(screen, 80).count { it.trimStart().startsWith("◆ Backgrounded · $task · ") }
+
+internal fun museBackgroundConfirmed(screen: String, task: String, previousReceipts: Int): Boolean {
+    val running = Regex("""^└ ◈ ${Regex.escape(task)}\s+running\s+\d+(?:\.\d+)?s$""")
+    val footer = tailRows(screen, 3).map(String::trim)
+    return footer.size == 3 && footer[0] == "main · ↓ to select" && running.matches(footer[1]) &&
+        MUSE_FOOTER.matches(footer[2]) && museBackgroundReceiptCount(screen, task) > previousReceipts
+}
+
 /** The step the background key would take on [screen] for [agent], or null when it would do nothing the app can check. */
 internal fun backgroundStep(agent: String?, screen: String): BackgroundStep? {
     if (backgroundDialogShown(screen)) return null
     return when (agent?.lowercase()) {
         "claude" -> BackgroundStep.CLAUDE.takeIf { claudeBackgroundHint(screen) }
         "grok" -> BackgroundStep.GROK.takeIf { grokBackgroundHint(screen) }
+        "muse" -> BackgroundStep.MUSE.takeIf { museForegroundTask(screen) != null }
         "agy" -> when {
             agyConfirmShown(screen) -> BackgroundStep.AGY_CONFIRM
             agyComposerReady(screen) -> BackgroundStep.AGY_ARM
@@ -160,6 +188,7 @@ internal fun backgroundStep(agent: String?, screen: String): BackgroundStep? {
 internal fun backgroundCheckPasses(step: BackgroundStep, screen: String): Boolean = when (step) {
     BackgroundStep.CLAUDE -> backgroundStep("claude", screen) == step
     BackgroundStep.GROK -> backgroundStep("grok", screen) == step
+    BackgroundStep.MUSE -> backgroundStep("muse", screen) == step
     BackgroundStep.AGY_ARM -> !backgroundDialogShown(screen) && !agyConfirmShown(screen) && agyComposerReady(screen)
     BackgroundStep.AGY_CONFIRM -> !backgroundDialogShown(screen) && agyConfirmShown(screen)
 }
@@ -200,6 +229,14 @@ internal val BACKGROUND_CHECK = """
         return False
     def grok():
         return bool(rows) and re.search(r'(^|│|\s)Ctrl\+b:send to bg(\s|│|$)', rows[-1]) is not None
+    def muse():
+        t = [r.strip() for r in tail(7) if r.strip()][-6:]
+        return (len(t) == 6 and
+                re.fullmatch(r'◆ Running command · (.+) \u2014 running \(\d+(?:\.\d+)?s · esc to interrupt\)', t[0]) is not None and
+                t[1] == '└ (ctrl+b to send to background)' and
+                re.fullmatch(r'─{20,}', t[2]) is not None and t[3] == '❯' and
+                re.fullmatch(r'─{20,}', t[4]) is not None and
+                re.fullmatch(r'muse-[^ ]+ · .+', t[5]) is not None)
     def agy_confirm():
         return bool(rows) and re.match(r'^press .{0,12}again to send command to background(\s.*)?$', rows[-1].strip()) is not None
     def agy_ready():
@@ -209,7 +246,7 @@ internal val BACKGROUND_CHECK = """
         at = max([i for i, r in enumerate(t) if r.strip() == '>'], default=-1)
         return 1 <= at < len(t) - 1 and RULE.match(t[at - 1].strip()) is not None and RULE.match(t[at + 1].strip()) is not None
     ok = not dialog() and {
-        'claude': claude, 'grok': grok,
+        'claude': claude, 'grok': grok, 'muse': muse,
         'agy-arm': lambda: agy_ready() and not agy_confirm(),
         'agy-confirm': agy_confirm,
     }.get(step, lambda: False)()
@@ -225,11 +262,10 @@ internal const val BACKGROUND_REFUSED_EXIT = 6
  * Whether the app can move [agent]'s foreground work to the background for Send immediately, and if
  * not, why (2.2.8). Null: it can.
  */
-internal fun backgroundSupport(agent: String?, agentName: String): String? = when (ruleAgent(agent)) {
+internal fun backgroundSupport(agent: String?, agentName: String, manual: Boolean = false): String? = when (ruleAgent(agent)) {
     "claude", "grok", "agy" -> null
     "opencode" -> "The app can’t verify a shortcut that moves a running $agentName task to the background. Use Terminal."
-    "muse" ->
-        "$agentName takes Ctrl+B, but its screen shows no sign a command moved, so the app can't check it. Use Terminal."
+    "muse" -> if (manual) null else "Use the Background button for $agentName. Send immediately stays queued."
     else -> "$agentName has no key that moves a running task to the background, so this waits until it is idle."
 }
 

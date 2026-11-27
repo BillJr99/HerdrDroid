@@ -1,0 +1,4 @@
+card: options
+blocked: true
+options: Yes, and switch to default (ask each time) for this session | No
+source: Claude Code 2.1.332, native dialog from a disposable probe tab and loopback fixture provider

@@ -1,0 +1,23 @@
+[0m[38;5;246m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[0m[38;5;16m[48;5;153m ☐ Sample history [0m
+
+[0m[2m│ [0m[1m[38;5;231mWhich documentation approach should the fictional project use? The sample team wants a reversible change that keeps every public [0m
+[0m[2m│ [0m[1m[38;5;231mexample and every local test intact while two independent reviewers compare the results. The sample team wants a reversible change [0m
+[0m[2m│ [0m[1m[38;5;231mthat keeps every public example and every local test intact while two independent reviewers compare the results. The sample team [0m
+[0m[2m│ [0m[1m[38;5;231mwants a reversible change that keeps every public example and every local test intact while two independent reviewers compare the [0m
+[0m[2m│ [0m[1m[38;5;231mresults. The sample team wants a reversible change that keeps every public example and every local test intact while two [0m
+[0m[2m│ [0m[1m[38;5;231mindependent reviewers compare the results. The sample team w[0m
+
+[0m[38;5;153m❯ [0m[38;5;246m1. [0m[38;5;153mPreview the result (Recommended)[0m
+     [0m[38;5;246mPreview the changes with local fixtures, record the exact inputs, and let the second reviewer verify the same result without [0m
+     [0m[38;5;246mmodifying any shared branch. Preview the changes with local fixtures, record the exact inputs, and let the second reviewer [0m
+     [0m[38;5;246mverify the same result without modifying any shared branch. Preview the changes wi[0m
+  [0m[38;5;246m2. [0mPropose a small change
+     [0m[38;5;246mMake a small proposal for the fixture repository. Explain the tradeoffs and preserve the evidence for the next reader.[0m
+  [0m[38;5;246m3. [0mKeep the existing layout
+     [0m[38;5;246mKeep the existing layout until the sample team can compare both approaches. Record the open question in the local notes.[0m
+  [0m[38;5;246m4. Type something.[0m
+[0m[38;5;246m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  5. Chat about this
+
+[0m[38;5;246mEnter to select · ↑/↓ to navigate · Esc to cancel[0m

@@ -120,6 +120,26 @@ class CrossServerNoticeTest {
         assertNull(NoticeReceipt.begin("s1", history(more = true)))
     }
 
+    @Test fun nativeAntigravityStepTypesDoNotProveUserRole() {
+        fun fixture(name: String) = checkNotNull(javaClass.getResource("/captures/agy-1.5.18/$name.txt")).readText()
+        val step = Regex("""idx=(\d+) step_type=(\d+) status=\d+ fixtures=\['([^']+)'\]""")
+        val rows = fixture("notice-step-types").lineSequence().filter(String::isNotBlank).map { line ->
+            val (index, type, marker) = checkNotNull(step.matchEntire(line)).destructured
+            row(index, marker, type)
+        }.toList()
+        assertEquals(listOf("14", "15", "14", "15"), rows.map { it.getString("t") })
+        val marker = "fixture-receipt-target"
+        assertTrue(fixture("notice-target").contains(marker))
+        assertFalse(fixture("notice-control").contains(marker))
+        val target = LiveSession("target", "target-ref", null, "herdr:antigravity_cli", false)
+        val control = LiveSession("control", "control-ref", null, "herdr:antigravity_cli", false)
+        val before = checkNotNull(NoticeReceipt.begin("target", history(live = target)))
+        // The same marker appears in both numeric step types. A matching string and
+        // known conversation binding are insufficient without an authoritative role.
+        assertFalse(before.matches(history(*rows.take(2).toTypedArray(), live = target), marker))
+        assertFalse(before.matches(history(*rows.drop(2).toTypedArray(), live = control), marker))
+    }
+
     @Test fun confirmationUsesACompletePagedBaselineAndRejectsOldEntries() = runBlocking {
         val receipt = checkNotNull(NoticeReceipt.capture("s1") { cursor ->
             when (cursor) {

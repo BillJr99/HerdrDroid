@@ -2193,9 +2193,12 @@ def main():
     except Exception:
         cur = {}
     # A history view pins one past session; the pin rides in the cursor.
-    for k in ("pin", "pin_sid", "db"):
+    for k in ("pin", "pin_sid"):
         if cur.get(k):
             PIN[k] = cur[k]
+    # SQLite live cursors also carry db. Only an explicit session pin disables live binding.
+    if PIN.get("pin_sid") and cur.get("db"):
+        PIN["db"] = cur["db"]
     # 2.2.0: the pane and herdr's session id ride in the cursor too, so the live chat follows the
     # session the terminal is really in. Never with a pin (a history view stays on its session).
     pane = cur.pop("pane", None) if isinstance(cur.get("pane"), str) else None

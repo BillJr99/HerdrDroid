@@ -1,0 +1,12 @@
+  /fixture/target  2
+  › ○ Sort three strings                                       Ready          11s ago
+    ○ Run terminal commands                                    Inactive        1m ago
+
+  /fixture/control  1
+    ○ Reply fixture-no-children                                Inactive       29s ago
+
+      Show more
+
+
+
+  ? help  esc back  ↑/↓ move  enter open  n new

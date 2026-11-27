@@ -1,0 +1,18 @@
+ ~/fixture-project                         32k / 256k │ [Dashboard]
+    through fixture-a-420 in full, and wait for the
+    terminal approval.
+
+    ◆ Running print fixture tokens fixture-a-001 through fixture…
+
+
+  ◆ Print fixture tokens fixture-a-001… 9.1s   52s ⇣32.7k [↓][stop]
+ ┃  │ printf '%s\n' fixture-a-001 fixture-a-002 fixture-a-003·
+ ┃  ┆ fixture-a-004 fixture-a-005 fixture-a-006 fixture-a-007·
+ ┃  ┆ fixture-a-008 fixture-a-009 fixture-a-010 fixture-a-011·
+ ┃  … Ctrl+F to expand
+ ┃  1 (○) Always allow: printf
+ ┃  3 (●) Yes, proceed
+ ┃  4 (○) No, reject (type to add feedback)
+ ┃  5 (○) Never allow: printf
+ ┃    (○) Yes, and don't ask again for anything (always-approve m
+ 1/5:select  │  Tab:next option  │  →:scope  │  e:edit pattern

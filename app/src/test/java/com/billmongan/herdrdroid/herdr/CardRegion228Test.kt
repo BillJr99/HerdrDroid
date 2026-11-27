@@ -277,7 +277,14 @@ class CardRegion228Test {
 
     private val getJson = """{"result":{"pane":{"pane_id":"p1","tab_id":"t1","workspace_id":"w1","agent":"grok","agent_status":"blocked","cwd":"/w","terminal_id":"term-1","scroll":{"offset_from_bottom":0}}}}"""
 
-    private fun runCheck(python: Boolean, guardScreen: String, live: String, agent: String = "grok", prompt: Prompt? = null): Int {
+    private fun runCheck(
+        python: Boolean,
+        guardScreen: String,
+        live: String,
+        agent: String = "grok",
+        prompt: Prompt? = null,
+        input: CardInput = CardInput.Keys(listOf("enter")),
+    ): Int {
         val sh = listOf("/bin/sh", "/usr/bin/sh").map { File(it) }.firstOrNull { it.canExecute() }
         assumeTrue(sh != null)
         val dir = java.nio.file.Files.createTempDirectory("hd228-region").toFile()
@@ -290,7 +297,7 @@ class CardRegion228Test {
             val g = CardGuard(cardOccupantDigest(JSONObject(getJson).getJSONObject("result").getJSONObject("pane")), cardGuardScreen(guardScreen, prompt ?: card(guardScreen, agent)))
             assertTrue(g.screen.startsWith("r:"))
             val h = Herdr(HerdrSsh("127.0.0.1", 1, "u", Credentials(null, null), null, { null }), herdr.path, Backend.TUI, null)
-            val c = h.cardSendCommand("p1", CardInput.Keys(listOf("enter")), g, shellOnly = !python).let {
+            val c = h.cardSendCommand("p1", input, g, shellOnly = !python).let {
                 if (python) it.replace(Regex("""; st=.*fi \)""", RegexOption.DOT_MATCHES_ALL), " )") else it
             }
             val p = ProcessBuilder(sh!!.path, "-c", c).apply { environment()["HOME"] = File(dir, "home").apply { mkdirs() }.path }.start()
@@ -303,6 +310,32 @@ class CardRegion228Test {
             return exit
         } finally {
             dir.deleteRecursively()
+        }
+    }
+
+    @Test fun nativeGrokReplacementRefusesTheGuardedExpansionKey() {
+        // Both isolated approval captures were clipped. Their matching recent reads contained no more rows.
+        fun native(name: String) = checkNotNull(
+            javaClass.getResource("/screens/grok/captured-1.0.92-tall/pair-$name.txt")
+        ).readText()
+        val original = native("original")
+        val replacement = native("replacement")
+        val shown = card(original)
+        val fresh = card(replacement)
+        assertTrue(shown.clipped)
+        assertTrue(fresh.clipped)
+        assertEquals(shown.choices, fresh.choices)
+        assertTrue(shown.question.contains("original-fixture-000"))
+        assertTrue(fresh.question.contains("replacement-fixture-000"))
+        val guard = cardGuardScreen(original, shown, "grok")
+        assertTrue(cardGuardScreenMatches(original, guard, "grok"))
+        assertFalse(cardGuardScreenMatches(replacement, guard, "grok"))
+        val hasPython = listOf("/usr/bin/python3", "/bin/python3").any { File(it).canExecute() }
+        val expand = CardInput.Keys(listOf("ctrl+f"))
+        for (python in listOfNotNull(false, true.takeIf { hasPython })) {
+            assertEquals("python=$python original", 0, runCheck(python, original, original, input = expand))
+            assertEquals("python=$python replacement", CARD_CHANGED_EXIT,
+                runCheck(python, original, replacement, input = expand))
         }
     }
 

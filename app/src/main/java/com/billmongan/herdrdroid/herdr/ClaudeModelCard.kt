@@ -9,6 +9,7 @@ private val PICKER_RULE = Regex("""^─{20,}\s*$""")
 private val CONFIRM_RULE = Regex("""^▔{20,}$""")
 private val SWITCH_CONFIRM = Regex("""^❯ 1\. (Yes, switch to \S.*)$""")
 private const val SWITCH_HOOK = "A PreModelSwitch hook asked you to confirm"
+private const val SWITCH_CACHE_WARNING = "Your next response will be slower and use more tokens"
 private const val SWITCH_FOOTER = "Enter to confirm · Esc to cancel"
 private const val MORE_FOOTER = "Enter to expand · Esc to cancel"
 private const val MORE_ROW = "▸   More models"
@@ -21,20 +22,30 @@ private const val EFFORT_UP = "claude-model-effort-up"
 private fun pickerLabel(body: String) = body.split(Regex("""\s{2,}"""), limit = 2)
     .first().trim().trimEnd('✔').trimEnd()
 
-/** The numbered confirmation used by Claude's PreModelSwitch hook. */
+/** Numbered model-switch confirmations from the hook and the live cache warning. */
 private fun claudeModelConfirmation(rows: List<String>): Prompt? {
     val title = rows.indexOfLast { it.trim() == "Switch model?" }
     if (title <= 0 || !CONFIRM_RULE.matches(rows[title - 1])) return null
     val frame = rows.drop(title - 1)
     val content = frame.drop(1).map(String::trim).filter(String::isNotEmpty)
-    if (content.getOrNull(1) != SWITCH_HOOK) return null
+    val hook = content.getOrNull(1) == SWITCH_HOOK
+    val cacheWarning = content.getOrNull(1) == SWITCH_CACHE_WARNING
+    if (!hook && !cacheWarning) return null
     // Without the footer, only a viewport that ends on the known choice is a clipped panel.
     val hasFooter = content.last() == SWITCH_FOOTER
     if (!hasFooter && content.last() !in setOf("2. No, go back", "❯ 2. No, go back")) return null
     val confirm = content.getOrNull(content.size - 3)?.let(SWITCH_CONFIRM::matchEntire)
-    val choices = if (confirm != null && content.getOrNull(content.size - 2) == "2. No, go back" &&
-        hasFooter) {
-        listOf(Choice(confirm.groupValues[1], "enter", false), Choice("No, go back", "esc", false))
+    val choices = if (confirm != null && content.getOrNull(content.size - 2) == "2. No, go back" && hasFooter) {
+        val label = confirm.groupValues[1]
+        if (hook) {
+            listOf(Choice(label, "enter", false), Choice("No, go back", "esc", false))
+        } else {
+            val model = label.removePrefix("Yes, switch to ")
+            val explanation = content.drop(2).dropLast(3).joinToString(" ")
+            if (explanation == "This conversation is cached for the current model. Switching to $model means the full history gets re-read.") {
+                listOf(Choice("No, go back", "esc", false))
+            } else emptyList()
+        }
     } else emptyList()
     return Prompt("Switch model?", choices, region = frame, terminalReview = choices.isEmpty(),
         parts = QuestionParts(emptyList(), listOf(QBlock(QKind.HEADING, "Switch model?")) +
@@ -42,10 +53,33 @@ private fun claudeModelConfirmation(rows: List<String>): Prompt? {
         claudeModelControl = true)
 }
 
+private val FAST_COST_ROW = Regex("""^Fast mode\s{2,}(?:OFF|ON)\s{2,}[$]\d+(?:\.\d+)?/[$]\d+(?:\.\d+)? per Mtok$""")
+private const val FAST_DOCS = "Learn more: https://code.claude.com/docs/en/fast-mode"
+
+/** A standalone fast-mode panel. The app can close it without changing the paid setting. */
+private fun claudeFastPanel(rows: List<String>): Prompt? {
+    val title = rows.indexOfLast { it.trim() == "↯ Fast mode" }
+    if (title <= 0 || !CONFIRM_RULE.matches(rows[title - 1])) return null
+    val frame = rows.drop(title - 1)
+    val content = frame.drop(2).map(String::trim).filter(String::isNotEmpty)
+    val details = content.dropLast(3).joinToString(" ")
+    if (details != "High-speed mode for Opus 5.5. Draws from usage credits at a higher rate. Separate rate limits apply.") return null
+    val footer = content.takeLast(3)
+    val unavailable = footer == listOf("✘ Fast mode is currently unavailable", FAST_DOCS, "Esc to cancel")
+    val eligible = footer.size == 3 && FAST_COST_ROW.matches(footer[0]) && footer[1] == FAST_DOCS &&
+        footer[2] == "Space to toggle · Enter to confirm · Esc to cancel"
+    if (!unavailable && !eligible) return null
+    return Prompt("Fast mode", listOf(Choice("Cancel", "esc", false)), region = frame,
+        parts = QuestionParts(emptyList(), listOf(QBlock(QKind.HEADING, "Fast mode")) +
+            content.dropLast(1).map { QBlock(QKind.TEXT, it) }),
+        claudeModelControl = true)
+}
+
 /** Claude's complete /model picker at the bottom of the current screen. */
 internal fun claudeModelCard(screen: String): Prompt? {
     val rows = screen.lines().dropLastWhile(String::isBlank).map(String::trimEnd)
     claudeModelConfirmation(rows)?.let { return it }
+    claudeFastPanel(rows)?.let { return it }
     val top = rows.indexOfLast { it.trim() == "Select model" }
     if (top == -1) return null
     val frame = rows.subList(top, rows.size)
@@ -63,7 +97,12 @@ internal fun claudeModelCard(screen: String): Prompt? {
     val context = body.drop(firstOption.coerceAtLeast(0) + options.size).map(String::trim)
     val effort = context.singleOrNull(EFFORT_CONTROL::matches)
     val parts = QuestionParts(emptyList(), listOf(QBlock(QKind.HEADING, "Select model")) +
-        body.map { QBlock(QKind.TEXT, it.trim()) })
+        body.map { row ->
+            val text = row.trim()
+            // The option focus stays in the guarded frame and selected index, not the displayed text.
+            QBlock(QKind.TEXT, if (options.any { it.value == row && it.groupValues[1] == "❯" })
+                text.removePrefix("❯").trimStart() else text)
+        })
     val review = Prompt("Select model", emptyList(), region = frame, terminalReview = true,
         parts = parts, claudeModelControl = true)
     if (footer == null) {

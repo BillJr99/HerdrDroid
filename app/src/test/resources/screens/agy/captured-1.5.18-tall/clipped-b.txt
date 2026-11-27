@@ -1,0 +1,18 @@
+
+Reason: fixture policy: allowed by the shared policy (autonomous
+by default)
+Requesting permission for:
+   printf '%s\n' fixture-b-001 fixture-b-002 fixture-b-003
+fixture-b-004 fixture-b-005 fixture-b-006 fixture-b-007
+fixture-b-008 fixture-b-009 fixture-b-010 fixture-b-011...
+
+Run this command?
+> 1. Yes, run command
+  2. Yes, and always allow in this conversation for commands that
+start with 'printf'
+  3. Yes, and always allow for commands that start with 'printf'
+(Persist to settings.json)
+  4. No, cancel
+
+  ↑/↓ Navigate · tab Amend · ctrl+g edit/expand command
+esc to cancel                    Orchestrator · Gemini 4 Neon · high

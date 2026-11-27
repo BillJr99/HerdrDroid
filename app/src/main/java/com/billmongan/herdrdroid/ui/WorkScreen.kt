@@ -179,7 +179,7 @@ private fun WorkList(vm: AppViewModel, paneId: String) {
                 }
                 if (activeProcs.isNotEmpty() && com.billmongan.herdrdroid.herdr.Backgrounding.supported(pane?.agent)) item {
                     // 2.2.8: only where the screen shows the move; elsewhere, why not.
-                    val off = com.billmongan.herdrdroid.herdr.backgroundSupport(pane?.agent, pane?.agentName ?: "The agent")
+                    val off = com.billmongan.herdrdroid.herdr.backgroundSupport(pane?.agent, pane?.agentName ?: "The agent", manual = true)
                     if (off == null) BackgroundButton(vm, paneId, pane?.agentName ?: "The agent")
                     else Text(off, color = Palette.Muted, fontSize = 12.sp)
                 }

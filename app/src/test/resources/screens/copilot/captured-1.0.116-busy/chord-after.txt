@@ -1,0 +1,30 @@
+ ❯ Run the one synthetic wait.                                                                                                18:03
+
+ $ Shell Wait for a synthetic test 1 line…
+   sleep 15
+
+ ● Moving current shell command (shellId: 0) to background. Use /tasks to manage it.
+
+ ● Synthetic complete.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ /fixture/work
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ● Waiting for background shells · 126 B ctrl+c interrupt                                                                    gpt-4.1

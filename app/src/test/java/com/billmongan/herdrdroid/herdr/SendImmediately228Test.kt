@@ -93,7 +93,8 @@ class SendImmediately228Test {
             assertEquals("The app can’t verify a shortcut that moves a running OpenCode task to the background. Use Terminal.",
                 backgroundSupport(a, "OpenCode"))
         }
-        assertTrue(backgroundSupport("muse", "Muse")!!.contains("Ctrl+B"))
+        assertNotNull(backgroundSupport("muse", "Muse"))
+        assertNull(backgroundSupport("muse", "Muse", manual = true))
         for (a in listOf("codex", "omp", "pi", "copilot", "kiro", "vibe", "hermes")) assertTrue(a, backgroundSupport(a, a)!!.contains("no key"))
         assertTrue(foregroundHint("claude", withHint))
         assertFalse(foregroundHint("grok", withHint))
@@ -136,6 +137,32 @@ class SendImmediately228Test {
         assertTrue(BACKGROUND_CHECK.contains(BACKGROUND_REFUSED_MARK))
     }
 
+    @Test fun `native follow-up status does not prove a background action`() {
+        // Only the relevant rows of each probe are retained. A hint from a busy turn is not a receipt.
+        val cases = listOf("copilot-1", "hermes-1", "hermes-2", "kiro-1", "muse-1",
+            "omp-1", "opencode-1", "opencode-2", "pi-1", "vibe-1")
+        for (name in cases) {
+            val agent = name.substringBeforeLast('-')
+            val rows = res("/backgrounding/native-2026-11-27/$name.txt")
+            assertNull(name, backgroundStep(agent, rows))
+            assertNotNull(name, backgroundSupport(agent, agent))
+        }
+    }
+
+    private fun museCapture(name: String) =
+        res("/backgrounding/muse-1.4.24/$name.txt").replace("<running-separator>", "\u2014")
+
+    @Test fun `Muse background needs matching new receipt and running shell`() {
+        val before = museCapture("foreground")
+        val after = museCapture("background")
+        val task = checkNotNull(museForegroundTask(before))
+        val receipts = museBackgroundReceiptCount(before, task)
+        assertTrue(museBackgroundConfirmed(after, task, receipts))
+        assertFalse(museBackgroundConfirmed(after, task, receipts + 1))
+        assertFalse(museBackgroundConfirmed(after.replace("└ ◈ $task", "└ ◈ Another shell"), task, receipts))
+        assertFalse(museBackgroundConfirmed(after.replace("◆ Backgrounded · $task", "◆ Backgrounded · Another shell"), task, receipts))
+    }
+
     @Test fun `generated host check agrees with the app on captures and dialog boundaries`() {
         val configured = System.getenv("HERDRDROID_TEST_PYTHON")?.takeIf { it.isNotBlank() }?.let(::File)
         if (configured != null) assertTrue("HERDRDROID_TEST_PYTHON must point to an executable file",
@@ -166,6 +193,11 @@ class SendImmediately228Test {
                 Sample("agy", probe("agy", "agy-running"), BackgroundStep.AGY_ARM),
                 Sample("agy", probe("agy", "agy-after-ctrlb"), BackgroundStep.AGY_CONFIRM),
                 Sample("agy", probe("agy", "agy-draft"), null),
+                Sample("muse", museCapture("foreground"), BackgroundStep.MUSE),
+                Sample("muse", museCapture("background"), null),
+                Sample("muse", museCapture("foreground").replace("❯", "❯ draft"), null),
+                Sample("muse", "Esc to cancel\n" + museCapture("foreground"), null),
+                Sample("muse", museCapture("foreground").replace("◆ Running command ·", "◆ Ran command ·"), null),
             )
             for ((agent, frame, expected) in samples) {
                 assertEquals(agent, expected, backgroundStep(agent, frame))

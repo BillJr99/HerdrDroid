@@ -23,6 +23,45 @@ class ClaudeQuestionReviewTest {
         Esc to cancel
     """.trimIndent()
 
+    @Test fun clippedSingleQuestionWithOnlyNumberedDescriptionHasNoActions() {
+        val screen = listOf(
+            "     First line of the option description.",
+            "     2. Nested step",
+            "     Final line of the option description.",
+            "  3. Type something.",
+            "────────────────────────────────",
+            "  4. Chat about this",
+            "↑ 10 more lines",
+            "Enter to select · Tab/Arrow keys to navigate · Esc to cancel",
+        ).joinToString("\n")
+        for (blocked in listOf(false, true)) {
+            val prompt = requireNotNull(detectPrompt(screen, blocked, "claude"))
+            assertTrue(prompt.terminalReview)
+            assertTrue(prompt.topOffScreen)
+            assertTrue(prompt.choices.isEmpty())
+            assertTrue(prompt.shownParts().blocks.any { it.text == "2. Nested step" })
+        }
+    }
+
+    @Test fun clippedSingleQuestionPreservesNumberedDescriptionRows() {
+        val nestedStep = "     2. Nested step"
+        val screen = listOf(
+            "     Tail of the previous option description.",
+            nestedStep,
+            "❯ 2. Keep the sample",
+            nestedStep,
+            "  3. Type something.",
+            "────────────────────────────────",
+            "  4. Chat about this",
+            "↑ 10 more lines",
+            "Enter to select · Tab/Arrow keys to navigate · Esc to cancel",
+        ).joinToString("\n")
+        val prompt = requireNotNull(claudeClippedAskReview(screen))
+        assertTrue(prompt.terminalReview)
+        assertEquals(2, requireNotNull(prompt.region).count { it == nestedStep })
+        assertTrue(prompt.choices.isEmpty())
+    }
+
     @Test fun highLiveApprovalBelowAnOldDialogIsStillDetected() {
         for (agent in listOf("claude", "copilot", null)) {
             val prompt = detectPrompt(old + "\n● Finished the earlier step.\n" + approval, true, agent)!!

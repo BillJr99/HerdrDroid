@@ -1,0 +1,32 @@
+  Trajectory — self (3 steps)
+
+  ▸ Thought for 3s, 372 tokens
+    Command requires native terminal approval via specific execution flags. Attempting execution without permission violates cons...
+  ● Bash(printf 'fixture-deny\n') (ctrl+o to expand)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  ↑/↓ scroll · pgup/pgdown page · ctrl+end bottom · ctrl+home top · ctrl+o expand · shift+k kill · esc back
+                                                                                                   Orchestrator · Gemini 4 Neon · high

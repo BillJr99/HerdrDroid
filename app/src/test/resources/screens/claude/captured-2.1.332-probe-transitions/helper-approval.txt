@@ -1,0 +1,20 @@
+● Agent(fixture-helper)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+  Printing the fixture-helper marker line
+  ⎿  $ printf 'fixture-helper\n'
+
+────────────────────────────────────────────────────────────────────────────────────────
+ Bash command
+ Print the fixture-helper marker line
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ printf 'fixture-helper\n'
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Rule Bash(printf:*) from shared project settings overrides auto mode.
+ /permissions to let auto mode decide
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. No
+
+ Esc to cancel · Tab to amend

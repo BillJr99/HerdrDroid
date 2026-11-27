@@ -1,0 +1,19 @@
+[0m[38;5;246m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[0m[38;5;16m[48;5;153m ☐ Sample routing [0m
+
+[0m[1m[38;5;231mWhich route should this synthetic project use?[0m
+
+[0m[38;5;153m❯ [0m[38;5;246m1. [0m[38;5;153mUse the local route (Recommended)[0m
+     [0m[38;5;246mUse the known verified local route, which works even when the environment is offline. This also avoids interference with any [0m
+     [0m[38;5;246mother test fixture.[0m
+  [0m[38;5;246m2. [0mUse a disposable sandbox
+     [0m[38;5;246mUse the existing disposable sandbox for this fixture, isolate its permissions, and record any differences before proceeding. [0m
+     [0m[38;5;246mPreserve existing services and test data.[0m
+  [0m[38;5;246m3. [0mDefer the decision
+     [0m[38;5;246mKeep the original path pending review and record the evidence in the sample report. The next reader can compare results from the[0m
+     [0m[38;5;246mtwo alternatives before making a choice.[0m
+  [0m[38;5;246m4. Type something.[0m
+[0m[38;5;246m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  5. Chat about this
+
+[0m[38;5;246mEnter to select · ↑/↓ to navigate · Esc to cancel[0m

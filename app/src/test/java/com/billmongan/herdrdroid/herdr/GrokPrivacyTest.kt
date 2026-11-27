@@ -71,6 +71,37 @@ class GrokPrivacyTest {
         assertNull(grokInputText(dialog))
     }
 
+    @Test fun nativePickerDraftRemainsUnsubmittedAfterSettlingOrDismissingSuggestions() {
+        fun capture(name: String) = checkNotNull(
+            javaClass.getResource("/screens/grok/captured-1.0.92-picker-draft/$name.txt")
+        ).readText()
+
+        val privacy = capture("privacy-settled-draft")
+        assertEquals("/privacy", grokInputText(privacy))
+        assertNull(detectGrokPrivacyDialog(privacy))
+        assertEquals("/resume", grokInputText(capture("resume-after-esc")))
+        assertEquals("", grokInputText(capture("resume-after-manual-clear")))
+    }
+
+    @Test fun nativePickersDismissWithoutLeavingACommandDraft() {
+        fun capture(name: String) = checkNotNull(
+            javaClass.getResource("/screens/grok/captured-1.0.92-picker-draft/$name.txt")
+        ).readText()
+
+        assertNull(grokInputText(capture("resume-picker")))
+        val privacy = checkNotNull(detectGrokPrivacyDialog(capture("privacy-picker")))
+        assertTrue(privacy.terminalReview)
+        assertTrue(privacy.choices.isEmpty())
+        assertEquals(privacy, detectPrompt(capture("privacy-picker"), blocked = false, agent = "grok"))
+        assertNull(detectGrokPrivacyDialog(capture("privacy-picker").replace("Esc cancel", "Esc return")))
+        assertNull(grokInputText(capture("privacy-picker")))
+        for (name in listOf("resume", "privacy")) {
+            val dismissed = capture("$name-dismissed")
+            assertEquals("", grokInputText(dismissed))
+            assertNull(detectPrompt(dismissed, blocked = false, agent = "grok"))
+        }
+    }
+
     @Test fun bannerNeverMergesIntoACard() {
         val card = """
   Help improve Grok                                                                                               [Opt out] [Opt in]

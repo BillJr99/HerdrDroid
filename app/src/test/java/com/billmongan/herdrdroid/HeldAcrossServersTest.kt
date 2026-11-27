@@ -171,7 +171,7 @@ class HeldAcrossServersTest {
         private val paneJson = """{"pane_id":"w1:p1","workspace_id":"w1","tab_id":"w1:t1","agent":"claude","agent_status":"idle","cwd":"/fixture","terminal_id":"t1","scroll":{"offset_from_bottom":0}}"""
         val commands = java.util.Collections.synchronizedList(mutableListOf<String>())
         @Volatile var failSends = false
-        fun writes() = commands.filter { "'agent' 'prompt'" in it || "'send-text'" in it || "'send-keys'" in it }
+        fun writes() = commands.filter { "'agent' 'prompt'" in it || "'pane' 'run'" in it || "'send-keys'" in it }
 
         override suspend fun bulk(command: String): ExecResult = answer(command)
         override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult = answer(command)
@@ -188,6 +188,8 @@ class HeldAcrossServersTest {
                     ok(screen.lines().takeLast(n).joinToString("\n"))
                 }
                 "'--source' 'visible'" in command -> ok(screen)
+                "'pane' 'run'" in command ->
+                    if (failSends) ExecResult(1, "", """{"error":{"code":"pane_not_found","message":"pane w1:p1 not found"}}""") else ok("")
                 "'agent' 'prompt'" in command || "'send-text'" in command || "'send-keys'" in command ->
                     if (failSends) ExecResult(1, "", "send failed") else ok("")
                 else -> ExecResult(1, "", "not in the fake: $command")

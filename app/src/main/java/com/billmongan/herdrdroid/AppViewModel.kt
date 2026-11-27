@@ -588,6 +588,7 @@ class AppViewModel internal constructor(
         private set
     private var openCodeComposerTarget by mutableStateOf<CardTarget?>(null)
     private var codexSteeringTarget by mutableStateOf<CardTarget?>(null)
+    private var codexActivityTarget by mutableStateOf<CardTarget?>(null)
     private var piLiveQuestion by mutableStateOf<Prompt?>(null)
     /**
      * A draft typed in the open pane's input box at the computer, read from its live screen (2.1.0).
@@ -2602,7 +2603,10 @@ class AppViewModel internal constructor(
                 null
             }
         }
-        if (reading == null && isOpen()) codexSteeringTarget = null
+        if (reading == null && isOpen()) {
+            codexSteeringTarget = null
+            codexActivityTarget = null
+        }
         reading?.let { (recent, originalPaneId) ->
             if (!isOpen()) return
             val cardOwner = originalCardOwner.takeIf { originalPaneId }
@@ -2635,7 +2639,7 @@ class AppViewModel internal constructor(
             val shownCodexCard = recentCodexCard && paneTextPane == paneId && paneText.isNotBlank() &&
                 detectPrompt(paneText, blocked, agent, version) != null
             val requireCodexApprovalIdentity = (missingCodexCard && preview?.terminalReview != true) || recentCodexQuestion
-            val unfinishedChoicePreview = agent in setOf("claude", "agy") &&
+            val unfinishedChoicePreview = agent in setOf("claude", "agy", "grok") &&
                 paneStatus == Status.WORKING && preview?.choices.isNullOrEmpty()
             val verifyOpenCode = isOpenCode(agent) && client?.backend == Backend.TUI &&
                 (blocked || paneStatus == Status.WORKING || preview != null || openCodeBackgroundDrawer(agent, recent))
@@ -2667,8 +2671,17 @@ class AppViewModel internal constructor(
                 if (verifyPi) activePiQuestion(it, version)
                 else detectPrompt(it, pane(paneId)?.status == Status.NEEDS_YOU, agent, version)
             }
+            fun nativeReview(text: String): Boolean = when (agent?.lowercase()) {
+                "agy" -> com.billmongan.herdrdroid.herdr.agySubagentQuestion(text) != null ||
+                    com.billmongan.herdrdroid.herdr.agySubagentApproval(text)?.terminalReview == true ||
+                    com.billmongan.herdrdroid.herdr.agyClippedShellCommand(text) != null
+                "grok" -> com.billmongan.herdrdroid.herdr.grokPrivacyOverlay(text) != null
+                else -> false
+            }
+            val recentNativeReview = nativeReview(recent)
+            val liveNativeReview = liveCard?.let(::nativeReview) == true
             val livePrompt = liveCandidate?.takeIf {
-                verifyOpenCode || it.codexQuestion ||
+                verifyOpenCode || it.codexQuestion || liveNativeReview ||
                     (it.choices.isNotEmpty() && !it.terminalReview && (!requireCodexApprovalIdentity || it.approvalIdentity != null)) ||
                     ((requireCodexApprovalIdentity || verifyHermesUsage || agent.equals("claude", true)) && it.terminalReview)
             }
@@ -2686,7 +2699,7 @@ class AppViewModel internal constructor(
             val recentClarify = preview?.hermesClarify == true
             val requiresLive = verifyOpenCode || recentClaudeModel || recentClarify || recentCodexQuestion || verifyPi
             val codexQuestionCleared = liveCard != null && liveCandidate == null && (recentCodexQuestion ||
-                recentCodexCard && com.billmongan.herdrdroid.herdr.codexFollowUpRows(liveCard).isNotEmpty())
+                agent == "codex" && com.billmongan.herdrdroid.herdr.hasCodexInputActivity(liveCard))
             // 2.2.8 (Codex's review 1): once the live screen was read for an unproven recent dialog, that read is
             // the card, a closed dialog included: the stale recent dialog never goes on to be confirmed.
             val unprovenAnswered = unprovenPreview && liveCard != null
@@ -2694,7 +2707,7 @@ class AppViewModel internal constructor(
                 "$paneId: the live screen shows no dialog; the recent read's is not used")
             val recentClippedClaudeAsk = agent.equals("claude", true) && preview?.terminalReview == true &&
                 com.billmongan.herdrdroid.herdr.claudeClippedAskReview(recent) != null
-            val useLive = liveCard != null && (livePrompt != null || recentClaudeModel || recentClippedClaudeAsk || preview?.topOffScreen == true || unprovenAnswered || verifyPi && preview != null || liveReport || recentReport || verifiedUsage != null || recentClarify || codexQuestionCleared || verifyOpenCode &&
+            val useLive = liveCard != null && (livePrompt != null || recentNativeReview || recentClaudeModel || recentClippedClaudeAsk || preview?.topOffScreen == true || unprovenAnswered || verifyPi && preview != null || liveReport || recentReport || verifiedUsage != null || recentClarify || codexQuestionCleared || verifyOpenCode &&
                 (blocked || preview != null || openCodeBackgroundDrawer(agent, recent) || openCodeBackgroundDrawer(agent, liveCard)))
             val codexSteeringProven = liveViewport != null && missingCodexCard && liveCandidate == null &&
                 com.billmongan.herdrdroid.herdr.codexSteeringReady(liveViewport)
@@ -2754,6 +2767,9 @@ class AppViewModel internal constructor(
             paneTextTarget = cardOwner?.takeIf { it.isCurrent(it.client) && (!requiresLive || useLive) && (!verifyPi || livePrompt != null) }
             // Keep the native placeholder proof separate from the plain screen used by every renderer.
             codexSteeringTarget = paneTextTarget?.takeIf { codexSteeringProven }
+            codexActivityTarget = paneTextTarget?.takeIf {
+                codexQuestionCleared && useLive && com.billmongan.herdrdroid.herdr.hasCodexInputActivity(text)
+            }
             piLiveQuestion = livePrompt?.takeIf { verifyPi && paneTextTarget != null }
             openCodeComposerTarget = paneTextTarget?.takeIf { useLive && verifyOpenCode && openCodeEmptyComposer(text) }
             hermesUsageRead = verifiedUsage
@@ -2950,6 +2966,13 @@ class AppViewModel internal constructor(
     private val cardDecisions = androidx.compose.runtime.mutableStateMapOf<String, com.billmongan.herdrdroid.herdr.CardDecision>()
 
     /** The status the open pane's card is read with: what the pane shows (2.2.2: the same for the card and its confirmation). */
+    /** Only a successful screen read for the current Codex occupant may explain a stale wait. */
+    internal fun codexActivityViewport(paneId: String): String? =
+        codexActivityTarget?.takeIf { target ->
+            paneTextTarget === target && target.pane.id == paneId && paneTextPane == paneId &&
+                paneReadProblem == null && pane(paneId)?.scrollOffset == 0 && target.isCurrent(target.client)
+        }?.let { paneText }
+
     private fun cardStatus(pane: Pane): Status {
         val shown = shownStatus(pane)
         return if (shown == Status.NEEDS_YOU && openCodeComposerIsCurrent(pane)) Status.IDLE else shown
@@ -6103,7 +6126,7 @@ class AppViewModel internal constructor(
             }
             val keys = if (voiceAllowed == null) com.billmongan.herdrdroid.herdr.menuKeys(fresh, choice)
                 else com.billmongan.herdrdroid.voice.voiceCardKeys(fresh, choice)
-            if (fresh.claudeCheckboxAction != null && keys == null) {
+            if ((fresh.claudeAsk || fresh.claudeCheckboxAction != null) && keys == null) {
                 report("Not sent. Open Terminal to verify the selected row.")
                 return@answerOnce
             }
@@ -6852,6 +6875,56 @@ class AppViewModel internal constructor(
         !locked && h.connectionIdentity === connection &&
             if (server == current?.id) herdr === h && link == Link.CONNECTED else fleet?.herdr(server) === h
 
+    /** A successful answer may advance a dialog without a Herdr status transition. */
+    private fun watchAnsweredAlert(app: Application, address: NotifyAction, origin: AlertOrigin, answered: Prompt) {
+        val server = address.serverId
+        val paneId = address.paneId
+        val key = "$server|$paneId"
+        fun stillWanted() =
+            watching && origin.currentFor(address) && lastStatus[key] == Status.NEEDS_YOU &&
+                !probePane(server, paneId) &&
+                !(foreground && server == current?.id && (screen as? Screen.Agent)?.paneId == paneId) &&
+                Notify.isShowing(app, server, paneId)
+
+        if (!stillWanted()) return
+        alertJobs.remove(key)?.cancel()
+        alertJobs[key] = viewModelScope.launch {
+            val readAddress = NotifyAction(server, paneId, "", false, "", agent = origin.pane.agent)
+            val answeredIdentity = com.billmongan.herdrdroid.notify.alertIdentity(answered)
+            val answeredOptions = com.billmongan.herdrdroid.notify.alertOptionsSig(answered.choices)
+            // A per-answer check also works when a background watcher is sleeping in a long wait.
+            for (pause in listOf(300L, 600L, 1_000L, 1_700L, 2_400L)) {
+                delay(pause)
+                if (!stillWanted()) return@launch
+                try {
+                    val first = readAlertViewport(readAddress, origin) ?: continue
+                    val next = first.prompt() ?: continue
+                    if (com.billmongan.herdrdroid.notify.alertIdentity(next) == answeredIdentity &&
+                        com.billmongan.herdrdroid.notify.alertOptionsSig(next.choices) == answeredOptions) continue
+                    delay(com.billmongan.herdrdroid.herdr.ALERT_CONFIRM_PAUSE_MS)
+                    if (!stillWanted()) return@launch
+                    val second = readAlertViewport(readAddress, origin) ?: continue
+                    val settled = second.prompt() ?: continue
+                    if (first.occupant != second.occupant || !cardAnswerStillFits(next, settled)) continue
+                    if (!stillWanted()) return@launch
+                    val token = registerAlertOrigin(server, second.pane, origin.client, origin.connection) ?: return@launch
+                    val serverLabel = current?.takeIf { it.id == server }?.label
+                        ?: servers.firstOrNull { it.id == server }?.label ?: "Server"
+                    Notify.needsYou(app, server, serverLabel, paneId, second.pane.agentName, settled.question,
+                        settled.choices, second.pane.agent, reply = com.billmongan.herdrdroid.notify.notificationOffersReply(settled),
+                        prompt = settled, quietUpdate = true, origin = token)
+                    if (settled.choices.isNotEmpty())
+                        observeQuestion(server, paneId, settled, Status.NEEDS_YOU, second.pane.agentName, second.raw)
+                    return@launch
+                } catch (c: CancellationException) {
+                    throw c
+                } catch (_: Exception) {
+                    // Keep the original alert on transient read failures.
+                }
+            }
+        }
+    }
+
     private suspend fun readAlertViewport(a: NotifyAction, origin: AlertOrigin): AlertViewport? {
         if (!origin.currentFor(a)) return null
         val (pane, occupant) = origin.client.cardPaneGuarded(a.paneId, origin.connection) ?: return null
@@ -6884,7 +6957,9 @@ class AppViewModel internal constructor(
             Notify.clear(app, a.serverId, a.paneId)
             return
         }
-        val origin = alertOrigins[a.serverId to a.paneId]?.takeIf { it.token == a.origin && it.currentFor(a) }
+        val currentOrigin = alertOrigins[a.serverId to a.paneId]?.takeIf { it.currentFor(a) }
+        if (currentOrigin != null && currentOrigin.token != a.origin) return
+        val origin = currentOrigin
         if (origin == null) {
             Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer",
                 "This alert's connection or pane session could not be verified.")
@@ -6907,6 +6982,7 @@ class AppViewModel internal constructor(
             return
         }
         try {
+            Notify.sending(app, a.serverId, a.paneId, "Sending your answer", a.label.ifEmpty { if (a.isReply) "Reply" else "Esc" })
             answerFromNotificationNow(a, origin, app) { origin.answeredAt = System.currentTimeMillis() }
         } finally {
             answeringCards = answeringCards - flight
@@ -6915,7 +6991,10 @@ class AppViewModel internal constructor(
     }
 
     private suspend fun answerFromNotificationNow(a: NotifyAction, origin: AlertOrigin, app: Application, answered: () -> Unit) {
-        fun refuse(reason: String) = Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer", reason)
+        fun stillLatest() = alertOrigins[a.serverId to a.paneId] === origin
+        fun refuse(reason: String) {
+            if (stillLatest()) Notify.sending(app, a.serverId, a.paneId, "Open HerdrDroid to answer", reason)
+        }
         try {
             val initial = readAlertViewport(a, origin) ?: run {
                 refuse("The pane's live screen could not be verified.")
@@ -6933,7 +7012,7 @@ class AppViewModel internal constructor(
             if (recentAnswerAge(a.serverId, a.paneId) {
                     if (a.isReply) cardAnswerStillFits(it, now) else notificationAnswerStillFits(it, a)
                 } != null) {
-                Notify.sending(app, a.serverId, a.paneId, "Already answered", "")
+                if (stillLatest()) Notify.sending(app, a.serverId, a.paneId, "Already answered", "")
                 return
             }
             val label: String
@@ -7012,7 +7091,7 @@ class AppViewModel internal constructor(
                 if (keys != null) {
                     input = com.billmongan.herdrdroid.herdr.CardInput.Keys(keys)
                 } else if (!a.isKey && choice != null && !now.openCodePermission && now.openCodeQuestionFrame == null &&
-                    !now.hermesClarify && !now.museQuota && now.claudeCheckboxAction == null) {
+                    !now.hermesClarify && !now.museQuota && !now.claudeAsk && now.claudeCheckboxAction == null) {
                     input = com.billmongan.herdrdroid.herdr.CardInput.Text(choice.keys, choice.pressEnter)
                 } else {
                     refuse("The active option could not be verified.")
@@ -7021,9 +7100,11 @@ class AppViewModel internal constructor(
                 label = choice?.label ?: "Pressed Esc"
             }
             sendAlertInput(a, origin, destination, destinationPrompt, input)
+            if (!stillLatest()) return
             rememberCardAnswer(a.serverId, a.paneId, now)
             answered()
             Notify.sending(app, a.serverId, a.paneId, "Answered", label.take(40))
+            watchAnsweredAlert(app, a, origin, now)
             runCatching { noteAnswer(a.paneId, now, label, a.serverId) }
         } catch (c: CancellationException) {
             refuse("The answer could not be confirmed.")
@@ -7997,7 +8078,7 @@ class AppViewModel internal constructor(
 
     private fun backgroundForeground(paneId: String, permitted: () -> Boolean) {
         val p = pane(paneId) ?: return
-        backgroundSupport(p.agent, p.agentName)?.let { flash(it); return }
+        backgroundSupport(p.agent, p.agentName, manual = true)?.let { flash(it); return }
         if (hasPendingQuestion(p)) { flash("Not sent: ${p.agentName} has a question open. Answer it first."); return }
         val client = herdr ?: return
         if (paneId in backgroundingPanes) return
@@ -8006,12 +8087,26 @@ class AppViewModel internal constructor(
         viewModelScope.launch {
             var pressed: com.billmongan.herdrdroid.herdr.BackgroundStep? = null
             var fg: Set<Int> = emptySet()
+            val muse = p.agent.equals("muse", true)
+            var museTask: String? = null
+            var musePreviousReceipts = 0
             val outcome = try {
-                runBackgrounder(client, server, p, com.billmongan.herdrdroid.herdr.Backgrounder.Limits(maxPresses = 2, maxReads = 8, pollMs = 700),
+                runBackgrounder(client, server, p, com.billmongan.herdrdroid.herdr.Backgrounder.Limits(maxPresses = if (muse) 1 else 2, maxReads = 8, pollMs = 700),
                     onPressed = { pressed = it }, permitted = permitted) { s ->
                     workScreens = workScreens + (paneId to s)
                     val step = com.billmongan.herdrdroid.herdr.backgroundStep(p.agent, s)
                     val last = pressed
+                    if (muse) {
+                        if (last == null) {
+                            museTask = com.billmongan.herdrdroid.herdr.museForegroundTask(s)
+                            musePreviousReceipts = museTask?.let {
+                                com.billmongan.herdrdroid.herdr.museBackgroundReceiptCount(s, it)
+                            } ?: 0
+                        }
+                        return@runBackgrounder last != null && museTask?.let {
+                            com.billmongan.herdrdroid.herdr.museBackgroundConfirmed(s, it, musePreviousReceipts)
+                        } == true
+                    }
                     // Before any key: the shells this screen shows in the foreground for certain.
                     if (last == null) fg = com.billmongan.herdrdroid.herdr.shellPlaces(p.agent, s, work[paneId]?.activeProcs(p.agent).orEmpty())
                         .filterValues { it == com.billmongan.herdrdroid.herdr.RunPlace.FOREGROUND }.keys
@@ -8025,7 +8120,9 @@ class AppViewModel internal constructor(
                 movedToBackground = movedToBackground + (paneId to (fg to System.currentTimeMillis()))
             flash(when (outcome) {
                 com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.DONE -> "Moved to the background."
-                com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.TIMED_OUT -> "Nothing running in the foreground in ${p.agentName} could be moved just now."
+                com.billmongan.herdrdroid.herdr.Backgrounder.Outcome.TIMED_OUT -> if (muse && pressed != null)
+                    "Ctrl+B reached ${p.agentName}, but the app could not verify that the shell moved."
+                    else "Nothing running in the foreground in ${p.agentName} could be moved just now."
                 else -> com.billmongan.herdrdroid.herdr.backgroundOutcomeText(outcome, p.agentName) ?: ""
             })
             if (current?.id == server) refreshWork(paneId)

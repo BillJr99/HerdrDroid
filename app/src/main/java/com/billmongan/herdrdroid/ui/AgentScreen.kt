@@ -342,7 +342,8 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
     // question in chat"): while the pane shows as needing you, a card is always there, the parsed
     // one or one that says the question couldn't be read, with Show terminal.
     val prompt: Prompt? = com.billmongan.herdrdroid.herdr.withNeedsYouCard(status, parsedPrompt,
-        suppressed = typingAnswer || usageBlocksInput || backgroundDrawer || agentError != null, agent = pane?.agentName ?: "The agent")
+        suppressed = typingAnswer || usageBlocksInput || backgroundDrawer || agentError != null,
+        agent = pane?.agentName ?: "The agent", codexActivityViewport = vm.codexActivityViewport(paneId))
     // The question a parser read; the unread-question card leaves the chat's open questions in place.
     val questionCard: Prompt? = prompt?.takeUnless { it.unreadQuestion || it.readingQuestion }
     fun send() {
@@ -2198,11 +2199,10 @@ internal fun runningPill(w: com.billmongan.herdrdroid.herdr.WorkInfo, agent: Str
     val shells = w.shellCount(agent)
     val done = w.subagents.count { !it.active } + w.tasks.count { !it.running } + endedProcs
     fun n(k: Int, one: String) = "$k $one" + if (k == 1) "" else "s"
-    if (subs == null) {
-        val count = if (shells > 0) "$shells sh - ? sub" else if (done > 0) "$done done - ? sub" else "? sub"
-        return RunningPill(count, n(shells, "observed shell") + "; subagent count unavailable", shells > 0)
+    if (subs == null && shells > 0) {
+        return RunningPill("$shells sh", n(shells, "shell") + " running; subagent count unavailable", true)
     }
-    if (subs > 0 || shells > 0) {
+    if (subs != null && (subs > 0 || shells > 0)) {
         return RunningPill("$shells sh - $subs sub", n(shells, "shell") + " and " + n(subs, "subagent") + " running", true)
     }
     return if (done > 0) RunningPill("$done done", "Nothing running, $done finished", false) else null
