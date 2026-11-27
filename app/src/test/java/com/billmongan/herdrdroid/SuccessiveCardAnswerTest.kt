@@ -1787,7 +1787,8 @@ class SuccessiveCardAnswerTest {
             val h = field("herdr").get(vm) as Herdr
             val blocked = checkNotNull(vm.pane("p1"))
             fun poll() = vm.noticeChanges(server.id, server.label, listOf(blocked)) { h }
-            fun active() = app.getSystemService(android.app.NotificationManager::class.java).activeNotifications.single().notification
+            val notifications = checkNotNull(app.getSystemService(android.app.NotificationManager::class.java))
+            fun active() = notifications.activeNotifications.single { it.id == (server.id + "|p1").hashCode() }.notification
             val first = shown()
             val choice = first.choices.first()
             val old = vm.bindFixtureAlert(NotifyAction(server.id, "p1", choice.keys, choice.pressEnter,
