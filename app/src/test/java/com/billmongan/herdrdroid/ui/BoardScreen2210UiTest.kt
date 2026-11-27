@@ -9,7 +9,6 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.billmongan.herdrdroid.IdleMainLooperRule
 import com.billmongan.herdrdroid.OUTERMOST_RULE
 import com.billmongan.herdrdroid.board.BoardCard
-import com.billmongan.herdrdroid.board.BoardConflict
 import com.billmongan.herdrdroid.board.BoardState
 import com.billmongan.herdrdroid.board.BoardStatus
 import com.billmongan.herdrdroid.board.ServerBoard
@@ -56,7 +55,7 @@ class BoardScreen2210UiTest {
         rule.setContent {
             BoardScreen(
                 state = BoardState(servers = mapOf(source.id to ServerBoard(
-                    cards = mapOf(waiting.id to waiting, done.id to done), noAnswer = true,
+                    entries = mapOf(waiting.id to waiting, done.id to done), noAnswer = true,
                 ))),
                 servers = listOf(source),
                 onMenu = {}, onBack = {},
@@ -77,13 +76,14 @@ class BoardScreen2210UiTest {
 
     @Test fun conflictShowsBothValuesAndSendsTheChosenResolution() {
         val source = BoardSource("remote", "Shared")
-        val card = BoardCard("a", "Plan")
+        val card = BoardCard("a", "Plan", next = "Check draft")
         var chosen: List<Any> = emptyList()
         rule.setContent {
             BoardScreen(
                 state = BoardState(servers = mapOf(source.id to ServerBoard(
-                    cards = mapOf(card.id to card),
-                    conflicts = listOf(BoardConflict(card.id, "next", "Check draft", "Review changes")),
+                    entries = mapOf(card.id to card),
+                    baseline = mapOf(card.id to card.copy(next = "Review changes")),
+                    conflicted = mapOf(card.id to setOf("next")),
                 ))),
                 servers = listOf(source),
                 onMenu = {}, onBack = {}, onRefresh = {}, onRetry = {},
