@@ -2686,7 +2686,7 @@ class AppViewModel internal constructor(
             val recentClarify = preview?.hermesClarify == true
             val requiresLive = verifyOpenCode || recentClaudeModel || recentClarify || recentCodexQuestion || verifyPi
             val codexQuestionCleared = liveCard != null && liveCandidate == null && (recentCodexQuestion ||
-                recentCodexCard && com.billmongan.herdrdroid.herdr.hasCodexInputActivity(liveCard))
+                agent == "codex" && com.billmongan.herdrdroid.herdr.hasCodexInputActivity(liveCard))
             // 2.2.8 (Codex's review 1): once the live screen was read for an unproven recent dialog, that read is
             // the card, a closed dialog included: the stale recent dialog never goes on to be confirmed.
             val unprovenAnswered = unprovenPreview && liveCard != null

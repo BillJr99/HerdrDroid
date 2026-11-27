@@ -4077,7 +4077,7 @@ internal fun codexFollowUpRows(text: String): Set<Int> {
     fun continuation(row: String): Boolean = row.isNotBlank() && row.startsWith("    ")
     for ((index, row) in rows.withIndex()) {
         when {
-            row.trimEnd() == "• Queued follow-up inputs" -> {
+            row.trimEnd() == CODEX_QUEUED_FOLLOW_UP_TITLE -> {
                 // A redraw can leave the title and an indented continuation while the
                 // arrow or entire first input row is absent. Stop before the next UI row.
                 val first = (index + 1 until rows.size).firstOrNull { rows[it].isNotBlank() }
@@ -4103,8 +4103,9 @@ internal fun codexFollowUpRows(text: String): Set<Int> {
 }
 
 private val CODEX_ACTIVE_BACKGROUND = Regex(
-    """^• .+\(.*esc to interrupt\).* · [1-9]\d* background terminals? running(?: · /ps to view.*)?$""",
+    """^(?:• .+\(.*esc to interrupt\).* · |• )?[1-9]\d* background terminals? running · /ps to view(?: · .*)?$""",
 )
+private const val CODEX_QUEUED_FOLLOW_UP_TITLE = "• Queued follow-up inputs"
 private val CODEX_BACKGROUND_INTERACTION = Regex("""^• Interacted with `[^`]+`$""")
 private val CODEX_EMPTY_ACTIVITY_COMPOSER = Regex("""^› (?:Ask Codex to do anything|Ask a follow-up question)$""")
 
@@ -4113,7 +4114,10 @@ internal fun hasCodexInputActivity(text: String): Boolean {
     if (codexFollowUpRows(text).isNotEmpty()) return true
     val tail = stripAnsi(text).lines().takeLast(32).map(String::trimEnd)
     return tail.any(CODEX_EMPTY_ACTIVITY_COMPOSER::matches) &&
-        tail.any { CODEX_ACTIVE_BACKGROUND.matches(it) || CODEX_BACKGROUND_INTERACTION.matches(it) }
+        tail.any {
+            it == CODEX_QUEUED_FOLLOW_UP_TITLE ||
+                CODEX_ACTIVE_BACKGROUND.matches(it.trimStart()) || CODEX_BACKGROUND_INTERACTION.matches(it)
+        }
 }
 
 private val COPILOT_PENDING_INPUT_ROW = Regex("""^\s+└ \[pending · ↑ recall]\s*$""")

@@ -21,13 +21,17 @@ class CodexQueueRedrawTest {
         val composer = screen.substringAfterLast("shift+← edit last queued message").trimStart()
         val status = screen.lineSequence().single { it.contains("background terminal running") }
         val interaction = screen.lineSequence().single { it.contains("Interacted with") }
-        for (frame in listOf(screen, "$status\n$composer", "$interaction\n$composer")) {
+        val titleOnly = "• Queued follow-up inputs"
+        val counterOnly = "1 background terminal running · /ps to view"
+        for (frame in listOf(screen, "$status\n$composer", "$interaction\n$composer",
+            "$titleOnly\n\n$composer", "$composer\n\n$counterOnly")) {
             assertNull(detectPrompt(frame, true, "codex"))
             assertNull(withNeedsYouCard(Status.NEEDS_YOU, null, false, "Codex", frame))
         }
 
         // Keep the fallback when there is no live evidence, and keep a parsed real prompt.
         assertNotNull(withNeedsYouCard(Status.NEEDS_YOU, null, false, "Codex"))
+        assertNotNull(withNeedsYouCard(Status.NEEDS_YOU, null, false, "Codex", "\n"))
         val question = checkNotNull(detectPrompt(codexFreeformQuestion, true, "codex"))
         assertSame(question, withNeedsYouCard(Status.NEEDS_YOU, question, false, "Codex", screen))
     }

@@ -33,6 +33,19 @@ import java.io.File
 @RunWith(AndroidJUnit4::class)
 class CardPreviewReadTest {
     @get:Rule val idleMainLooper = IdleMainLooperRule()
+    @Test fun codexLiveActivityReplacesNeutralRecentAndDoesNotSurviveAnEmptyRead() = withFixture { f ->
+        val queue = codexQueuedInputViewport
+        f.select("codex", Status.NEEDS_YOU)
+        f.frames("Codex is processing the current turn.", queue)
+        f.read()
+        assertEquals(listOf("recent", "visible"), f.trace())
+        assertEquals(queue, f.vm.codexActivityViewport("p1"))
+
+        f.frames("", "")
+        f.read()
+        assertTrue(f.vm.codexActivityViewport("p1").isNullOrBlank())
+    }
+
     @Test fun queuedCodexInputClearsAVisibleCardOnTheNextPoll() = withFixture { f ->
         val approval = resource("/screens/codex/synthetic-2.0/multiline-command-approval.txt")
         f.select("codex", Status.WORKING)
