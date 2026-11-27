@@ -662,7 +662,7 @@ To keep a new test class safe:
 - **Antigravity approvals.** When Antigravity clips a shell command, the card shows the visible portion and directs you to the terminal to review the full command.
 - **OpenCode notices.** The app keeps receipt checks tied to the selected pane across chat refreshes. Another OpenCode session in the same project cannot confirm delivery.
 - **Running work.** The pill displays subagent counts when the app can verify them. Open **Running under** to see the available details, including when the subagent count is unavailable.
-- **Local discovery.** The app limits reverse DNS work and discards results from cancelled scans. Missing local network access ends the scan cleanly.
+- **Local discovery.** The app limits reverse DNS work and discards results from cancelled scans. Missing local network access ends the scan cleanly. On a /31 link, discovery checks only the other endpoint. A /32 address has no neighbors to scan.
 
 ### Earlier releases
 
