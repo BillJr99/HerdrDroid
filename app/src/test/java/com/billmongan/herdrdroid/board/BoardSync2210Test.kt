@@ -1,5 +1,8 @@
 package com.billmongan.herdrdroid.board
 
+import com.billmongan.herdrdroid.IdleMainLooperRule
+import com.billmongan.herdrdroid.OUTERMOST_RULE
+import org.junit.Rule
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.*
@@ -9,6 +12,8 @@ import org.robolectric.RobolectricTestRunner
 
 @RunWith(RobolectricTestRunner::class)
 class BoardSync2210Test {
+    @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = IdleMainLooperRule()
+
     private val source = "source"
     private val firstTime = "2026-01-02T12:00:00Z"
     private val secondTime = "2026-01-02T12:05:00Z"
