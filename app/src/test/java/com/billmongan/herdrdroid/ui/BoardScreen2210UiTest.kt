@@ -26,7 +26,7 @@ class BoardScreen2210UiTest {
     @get:Rule val rule = createComposeRule()
 
     @Test fun createsPhoneCardWithoutAServer() {
-        var savedServer = "not called"
+        var savedServer: String? = "not called"
         var savedTitle = ""
         rule.setContent {
             BoardScreen(
