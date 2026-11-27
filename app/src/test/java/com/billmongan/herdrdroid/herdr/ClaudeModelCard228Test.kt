@@ -62,6 +62,20 @@ class ClaudeModelCard228Test {
             ?.choices.orEmpty().isEmpty())
     }
 
+    @Test fun capturedCacheWarningOnlyOffersGuardedGoBack() {
+        val screen = checkNotNull(javaClass.getResource(
+            "/screens/claude/captured-2.1.332-model-cache-warning/screen.ansi"
+        )).readText()
+        val prompt = card(screen)
+        assertTrue(prompt.guardedShortcutApproval)
+        assertEquals(listOf("No, go back"), prompt.choices.map { it.label })
+        assertEquals(listOf("esc"), menuKeys(prompt, prompt.choices.single()))
+        val digest = cardGuardScreen(screen, prompt, "claude")
+        val changed = screen.replace("Switching to Sonnet", "Switching to Opus")
+        assertFalse(cardGuardScreenMatches(changed, digest, "claude"))
+        assertTrue(card(changed).terminalReview)
+    }
+
     @Test fun capturedPickerShowsModelsAndSessionOnlyActions() {
         val prompt = card()
         assertTrue(prompt.claudeModelControl)

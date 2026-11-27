@@ -9,6 +9,7 @@ private val PICKER_RULE = Regex("""^─{20,}\s*$""")
 private val CONFIRM_RULE = Regex("""^▔{20,}$""")
 private val SWITCH_CONFIRM = Regex("""^❯ 1\. (Yes, switch to \S.*)$""")
 private const val SWITCH_HOOK = "A PreModelSwitch hook asked you to confirm"
+private const val SWITCH_CACHE_WARNING = "Your next response will be slower and use more tokens"
 private const val SWITCH_FOOTER = "Enter to confirm · Esc to cancel"
 private const val MORE_FOOTER = "Enter to expand · Esc to cancel"
 private const val MORE_ROW = "▸   More models"
@@ -21,20 +22,30 @@ private const val EFFORT_UP = "claude-model-effort-up"
 private fun pickerLabel(body: String) = body.split(Regex("""\s{2,}"""), limit = 2)
     .first().trim().trimEnd('✔').trimEnd()
 
-/** The numbered confirmation used by Claude's PreModelSwitch hook. */
+/** Numbered model-switch confirmations from the hook and the live cache warning. */
 private fun claudeModelConfirmation(rows: List<String>): Prompt? {
     val title = rows.indexOfLast { it.trim() == "Switch model?" }
     if (title <= 0 || !CONFIRM_RULE.matches(rows[title - 1])) return null
     val frame = rows.drop(title - 1)
     val content = frame.drop(1).map(String::trim).filter(String::isNotEmpty)
-    if (content.getOrNull(1) != SWITCH_HOOK) return null
+    val hook = content.getOrNull(1) == SWITCH_HOOK
+    val cacheWarning = content.getOrNull(1) == SWITCH_CACHE_WARNING
+    if (!hook && !cacheWarning) return null
     // Without the footer, only a viewport that ends on the known choice is a clipped panel.
     val hasFooter = content.last() == SWITCH_FOOTER
     if (!hasFooter && content.last() !in setOf("2. No, go back", "❯ 2. No, go back")) return null
     val confirm = content.getOrNull(content.size - 3)?.let(SWITCH_CONFIRM::matchEntire)
-    val choices = if (confirm != null && content.getOrNull(content.size - 2) == "2. No, go back" &&
-        hasFooter) {
-        listOf(Choice(confirm.groupValues[1], "enter", false), Choice("No, go back", "esc", false))
+    val choices = if (confirm != null && content.getOrNull(content.size - 2) == "2. No, go back" && hasFooter) {
+        val label = confirm.groupValues[1]
+        if (hook) {
+            listOf(Choice(label, "enter", false), Choice("No, go back", "esc", false))
+        } else {
+            val model = label.removePrefix("Yes, switch to ")
+            val explanation = content.drop(2).dropLast(3).joinToString(" ")
+            if (explanation == "This conversation is cached for the current model. Switching to $model means the full history gets re-read.") {
+                listOf(Choice("No, go back", "esc", false))
+            } else emptyList()
+        }
     } else emptyList()
     return Prompt("Switch model?", choices, region = frame, terminalReview = choices.isEmpty(),
         parts = QuestionParts(emptyList(), listOf(QBlock(QKind.HEADING, "Switch model?")) +
