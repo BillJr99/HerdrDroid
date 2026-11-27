@@ -52,7 +52,7 @@ class ClaudeQuestionReviewTest {
         ).joinToString("\n")
         val prompt = requireNotNull(claudeClippedAskReview(screen))
         assertTrue(prompt.terminalReview)
-        assertEquals(2, prompt.region.count { it == nestedStep })
+        assertEquals(2, requireNotNull(prompt.region).count { it == nestedStep })
         assertTrue(prompt.choices.isEmpty())
     }
 
