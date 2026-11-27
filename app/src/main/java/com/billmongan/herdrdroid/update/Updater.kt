@@ -25,10 +25,8 @@ sealed interface UpdateDialogState {
 }
 
 /**
- * Checks GitHub for a newer release (daily if the switch is on, or when the user taps Check for
- * updates now), offers it, downloads it into the app's cache with progress and Cancel, verifies
- * it, and hands it to Android's installer. Nothing reaches the network unless the switch is on
- * and a day has passed, or the user asked.
+ * Checks for a newer release once per launch on an unmetered network or when requested.
+ * An accepted offer downloads and verifies the APK before opening Android's installer.
  */
 class Updater(
     private val prefs: UpdatePrefs,
@@ -41,7 +39,7 @@ class Updater(
     private val dir = File(cacheDir, "updates")
     private val userAgent = updateUserAgent(platform.installedVersionName)
 
-    var dailyCheck by mutableStateOf(prefs.dailyCheck)
+    var checkOnLaunch by mutableStateOf(prefs.checkOnLaunch)
         private set
     var lastCheckAt by mutableStateOf(prefs.lastCheckAt)
         private set
@@ -58,6 +56,7 @@ class Updater(
     @Volatile private var cancelled = false
     private var job: Job? = null
     private var pending: File? = null
+    private var launchChecked = false
 
     /** Kept so [release] can tell whether the installer's results still come here. */
     private val events: (Int, String?) -> Unit = ::installResult
@@ -68,15 +67,16 @@ class Updater(
         scope.launch(io) { runCatching { dir.listFiles()?.forEach { it.delete() } } }
     }
 
-    fun changeDailyCheck(on: Boolean) {
-        dailyCheck = on
-        prefs.dailyCheck = on
+    fun changeCheckOnLaunch(on: Boolean) {
+        checkOnLaunch = on
+        prefs.checkOnLaunch = on
     }
 
-    /** On app start or resume: checks if the switch is on, a day has passed and the network isn't metered. */
-    fun maybeCheckDaily() {
-        if (checking || !UpdateSchedule.dailyDue(prefs.dailyCheck, platform.now(), prefs.lastCheckAt, prefs.lastAttemptAt)) return
-        if (platform.isMetered()) return
+    /** Recomposition, re-unlock and Activity recreation share the same launch check. */
+    fun checkAtLaunch() {
+        if (launchChecked) return
+        launchChecked = true
+        if (checking || !prefs.checkOnLaunch || !platform.hasNetwork() || platform.isMetered()) return
         scope.launch { check(manual = false) }
     }
 
@@ -85,13 +85,16 @@ class Updater(
         scope.launch { check(manual = true) }
     }
 
-    /** One check. A failed daily check stays quiet; a failed manual one says why. */
+    /** One check. A failed launch check stays quiet; a failed manual one says why. */
     suspend fun check(manual: Boolean) {
         if (checking) return
+        if (!platform.hasNetwork()) {
+            if (manual) note = "No network connection. Try again when online."
+            return
+        }
         checking = true
         if (manual) note = null
         val now = platform.now()
-        prefs.lastAttemptAt = now
         try {
             val read = withContext(io) { parseRelease(http.getText(LATEST_RELEASE_URL, userAgent)) }
             prefs.lastCheckAt = now
@@ -119,7 +122,7 @@ class Updater(
 
     private fun busy() = dialog.let { it is UpdateDialogState.Downloading || it is UpdateDialogState.NeedsPermission || it is UpdateDialogState.Installing }
 
-    /** Not now: the daily check skips this version until a newer one is out. */
+    /** Not now: the launch check skips this version until a newer one is out. */
     fun notNow() {
         (dialog as? UpdateDialogState.Available)?.let { prefs.skippedVersion = it.release.version.toString() }
         dialog = null
@@ -131,6 +134,10 @@ class Updater(
     }
 
     suspend fun download(release: ReleaseInfo) {
+        if (!platform.hasNetwork()) {
+            dialog = UpdateDialogState.Failed("No network connection. Try again when online.")
+            return
+        }
         cancelled = false
         val file = File(dir, release.apkName)
         dialog = UpdateDialogState.Downloading(release, 0, release.apkSize)

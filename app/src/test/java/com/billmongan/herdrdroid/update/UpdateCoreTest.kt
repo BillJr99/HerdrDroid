@@ -6,7 +6,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** 2.1.4 in-app updates: version order, the release JSON, the daily schedule and the APK checks. */
+/** 2.1.4 in-app updates: version order, the release JSON, the offer rules and the APK checks. */
 class UpdateCoreTest {
     private fun v(s: String) = AppVersion.parse(s)!!
 
@@ -66,21 +66,6 @@ class UpdateCoreTest {
         assertTrue(parseRelease(release(assets = asset("2.1.5", 57_000_000, "http://github.com/BillJr99/HerdrDroid/releases/download/v2.1.5/HerdrDroid-2.1.5.apk"))) is ReleaseRead.Skipped)
         assertTrue(parseRelease(release(assets = asset("2.1.5", 0))) is ReleaseRead.Skipped)
         assertTrue(parseRelease(release(assets = asset("2.1.5", MAX_APK_BYTES + 1))) is ReleaseRead.Skipped)
-    }
-
-    @Test fun theDailyCheckRunsAtMostOnceADayAndOnlyWithTheSwitchOn() {
-        val day = UpdateSchedule.DAY_MS
-        val t = 1_800_000_000_000L
-        assertTrue(UpdateSchedule.dailyDue(true, t, 0, 0))
-        assertFalse(UpdateSchedule.dailyDue(false, t, 0, 0))
-        assertFalse(UpdateSchedule.dailyDue(true, t + day - 1, t, t))
-        assertTrue(UpdateSchedule.dailyDue(true, t + day, t, t))
-        assertFalse(UpdateSchedule.dailyDue(false, t + 10 * day, t, t))
-        // A failed try waits an hour before the next, even though no check has succeeded today.
-        assertFalse(UpdateSchedule.dailyDue(true, t + day + 60_000, t, t + day))
-        assertTrue(UpdateSchedule.dailyDue(true, t + day + UpdateSchedule.RETRY_MS, t, t + day))
-        // A clock set back doesn't block the check.
-        assertTrue(UpdateSchedule.dailyDue(true, t - day, t, t))
     }
 
     @Test fun notNowSkipsThatVersionUntilANewerOne() {

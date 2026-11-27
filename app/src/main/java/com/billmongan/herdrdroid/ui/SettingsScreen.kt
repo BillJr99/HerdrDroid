@@ -257,11 +257,11 @@ fun SettingsScreen(vm: AppViewModel, back: Screen) {
                 val u = vm.updates
                 com.billmongan.herdrdroid.update.UpdateSettings(
                     installedVersion = u.installedVersion,
-                    dailyCheck = u.dailyCheck,
+                    checkOnLaunch = u.checkOnLaunch,
                     lastCheckAt = u.lastCheckAt,
                     checking = u.checking,
                     note = u.note,
-                    onDailyCheck = u::changeDailyCheck,
+                    onCheckOnLaunch = u::changeCheckOnLaunch,
                     onCheckNow = u::checkNow,
                 )
             }

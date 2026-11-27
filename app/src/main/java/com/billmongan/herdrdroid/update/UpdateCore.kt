@@ -6,7 +6,7 @@ import org.json.JSONObject
 /**
  * 2.1.4: the in-app update check (Bill, 2026-11-21). The rules here are plain functions, so the
  * tests can check them without a network or a phone: comparing versions, reading GitHub's release
- * JSON, when the daily check is due, and the checks a downloaded APK must pass before it is
+ * JSON, and the checks a downloaded APK must pass before it is
  * handed to Android's installer.
  */
 const val UPDATE_PACKAGE = "com.billmongan.herdrdroid"
@@ -104,19 +104,8 @@ fun parseRelease(json: String): ReleaseRead {
     return ReleaseRead.Skipped("Release $version has no $name yet.")
 }
 
-/** When the daily check runs: at most once a day, and after a failure not again for an hour. */
+/** Rules for choosing which releases to offer. */
 object UpdateSchedule {
-    const val DAY_MS = 24L * 60 * 60 * 1000
-    const val RETRY_MS = 60L * 60 * 1000
-
-    fun dailyDue(enabled: Boolean, now: Long, lastCheckAt: Long, lastAttemptAt: Long): Boolean {
-        if (!enabled) return false
-        // A clock set back counts as due rather than waiting for it to catch up.
-        val dayPassed = lastCheckAt <= 0 || now < lastCheckAt || now - lastCheckAt >= DAY_MS
-        val retryPassed = lastAttemptAt <= 0 || now < lastAttemptAt || now - lastAttemptAt >= RETRY_MS
-        return dayPassed && retryPassed
-    }
-
     /** Offer a newer release, unless Not now skipped this exact version and the user didn't ask. */
     fun shouldOffer(release: AppVersion, installed: AppVersion?, skipped: String?, manual: Boolean): Boolean {
         if (installed == null || release <= installed) return false
@@ -165,26 +154,21 @@ fun verifyApk(
 
 /** What the update check keeps between runs. */
 interface UpdatePrefs {
-    var dailyCheck: Boolean
+    var checkOnLaunch: Boolean
     /** The last check that got an answer from GitHub (ms), shown in Settings. */
     var lastCheckAt: Long
-    /** The last daily check tried, answered or not (ms), so a failure isn't retried every resume. */
-    var lastAttemptAt: Long
-    /** A version Not now skipped; the daily check doesn't offer it again. */
+    /** A version Not now skipped; launch checks don't offer it again. */
     var skippedVersion: String?
 }
 
 class AppUpdatePrefs(context: Context) : UpdatePrefs {
     private val prefs = context.getSharedPreferences("updates", Context.MODE_PRIVATE)
-    override var dailyCheck: Boolean
+    override var checkOnLaunch: Boolean
         get() = prefs.getBoolean("dailyCheck", true)
         set(v) = prefs.edit().putBoolean("dailyCheck", v).apply()
     override var lastCheckAt: Long
         get() = prefs.getLong("lastCheckAt", 0L)
         set(v) = prefs.edit().putLong("lastCheckAt", v).apply()
-    override var lastAttemptAt: Long
-        get() = prefs.getLong("lastAttemptAt", 0L)
-        set(v) = prefs.edit().putLong("lastAttemptAt", v).apply()
     override var skippedVersion: String?
         get() = prefs.getString("skippedVersion", null)
         set(v) = prefs.edit().putString("skippedVersion", v).apply()

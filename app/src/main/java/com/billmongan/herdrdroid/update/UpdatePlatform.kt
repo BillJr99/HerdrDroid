@@ -8,6 +8,7 @@ import android.content.pm.PackageInfo
 import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
@@ -23,6 +24,7 @@ interface UpdatePlatform {
     fun installedSigners(): Set<String>
     /** Package, version code and signers of an APK file, or null when Android can't read it. */
     fun readArchive(file: File): ArchiveFacts?
+    fun hasNetwork(): Boolean
     fun isMetered(): Boolean
     /** Whether "Install unknown apps" is allowed for HerdrDroid. */
     fun canInstall(): Boolean
@@ -62,6 +64,12 @@ class AndroidUpdatePlatform(context: Context) : UpdatePlatform {
         val code = if (Build.VERSION.SDK_INT >= 28) info.longVersionCode else @Suppress("DEPRECATION") info.versionCode.toLong()
         ArchiveFacts(info.packageName, code, signersOf(info))
     }.getOrNull()
+
+    override fun hasNetwork(): Boolean = runCatching {
+        val manager = context.getSystemService(ConnectivityManager::class.java)
+        val active = manager?.activeNetwork
+        manager != null && active != null && manager.getNetworkCapabilities(active)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+    }.getOrDefault(false)
 
     override fun isMetered(): Boolean = runCatching {
         (context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager).isActiveNetworkMetered
