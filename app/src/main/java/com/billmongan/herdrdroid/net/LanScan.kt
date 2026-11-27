@@ -7,6 +7,7 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -206,12 +207,15 @@ internal class LanReverseLookup(
         0, threads, 15L, TimeUnit.SECONDS, SynchronousQueue(),
     ) { job -> Thread(job, "lan-reverse-lookup").apply { isDaemon = true } }
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     suspend fun name(ip: String): String? = withTimeoutOrNull(timeoutMs) {
         suspendCancellableCoroutine { continuation ->
             val work = try {
                 workers.submit {
                     val name = runCatching { resolve(ip) }.getOrNull()?.takeIf { it != ip }
-                    if (continuation.isActive) continuation.resume(name)
+                    continuation.resume(name) {
+                        // A DNS name needs no cleanup if cancellation wins.
+                    }
                 }
             } catch (_: RejectedExecutionException) {
                 continuation.resume(null)
