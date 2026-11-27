@@ -12,8 +12,10 @@ import org.apache.sshd.common.keyprovider.KeyPairProvider
 import org.apache.sshd.server.Environment
 import org.apache.sshd.server.ExitCallback
 import org.apache.sshd.server.SshServer
+import org.apache.sshd.server.auth.password.PasswordAuthenticator
 import org.apache.sshd.server.channel.ChannelSession
 import org.apache.sshd.server.command.Command
+import org.apache.sshd.server.command.CommandFactory
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -33,8 +35,8 @@ class TranscriptFollowLoopback229Test {
             host = "127.0.0.1"
             port = 0
             keyPairProvider = KeyPairProvider.wrap(hostKey)
-            passwordAuthenticator = { user, _, _ -> user == "fixture" }
-            commandFactory = { _, name ->
+            passwordAuthenticator = PasswordAuthenticator { user, _, _ -> user == "fixture" }
+            commandFactory = CommandFactory { _, name ->
                 object : Command {
                     private lateinit var output: OutputStream
                     private lateinit var exit: ExitCallback
