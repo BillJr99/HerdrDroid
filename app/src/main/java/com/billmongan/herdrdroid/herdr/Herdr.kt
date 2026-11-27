@@ -4188,9 +4188,9 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     val p = detectPlainPrompt(if (agent.equals("grok", true)) grokWithoutThinkingPanel(plain) else plain, blocked, agent, version)
     if (p != null && agent.equals("grok", true)) return grokApproval(plain, p)
     if (p != null && agent.equals("claude", true)) {
-        val ask = withoutClaudeChromeUnderDialog(plain).lineSequence().lastOrNull { it.isNotBlank() }
-            ?.let(::claudeAskFooter) == true
-        if (ask) return if (p.selected == null)
+        val askRows = withoutClaudeChromeUnderDialog(plain).lines().dropLastWhile(String::isBlank)
+        val ask = askRows.lastOrNull()?.let(::claudeAskFooter) == true
+        if (ask) return if (p.selected == null && !claudeAskHasFocusedAction(askRows))
             p.copy(choices = emptyList(), claudeCheckboxAction = null, terminalReview = true,
                 region = p.region ?: plain.lines(), claudeAsk = true).withSpanOf(p)
         else p.copy(claudeAsk = true).withSpanOf(p)

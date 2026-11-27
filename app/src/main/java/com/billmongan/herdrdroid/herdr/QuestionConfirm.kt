@@ -404,9 +404,21 @@ internal fun claudeClippedCheckboxRows(frame: List<String>): List<String>? {
     if (options.size < 2 || focused != 1) return null
     val firstNumber = options.first().groupValues[2].toInt()
     val nextNumber = firstNumber + options.size
+    val typed = CLAUDE_CLIPPED_TYPE.matchEntire(body.last())
+    if (typed != null && typed.groupValues[1].toInt() != nextNumber) return null
     if (firstNumber < 1 || options.map { it.groupValues[2].toInt() } != (firstNumber until nextNumber).toList() ||
-        chat.groupValues[2].toInt() != nextNumber) return null
+        chat.groupValues[2].toInt() != nextNumber + if (typed == null) 0 else 1) return null
     return body.drop(first)
+}
+
+/** Prove a focused native Next or Submit in a complete Ask whose generic parse has no selection. */
+internal fun claudeAskHasFocusedAction(rows: List<String>): Boolean {
+    val visible = rows.filter { it.isNotBlank() }
+    if (visible.size < 4) return false
+    val action = CLAUDE_CLIPPED_ACTION.matchEntire(visible[visible.lastIndex - 3]) ?: return false
+    if (action.groupValues[1].isEmpty()) return false
+    val tab = visible.indexOfLast(::claudeAskTab)
+    return tab >= 0 && claudeClippedCheckboxRows(visible.drop(tab + 1)) != null
 }
 
 /** A viewport can start partway through the option list, after its question and tab have scrolled off. */
