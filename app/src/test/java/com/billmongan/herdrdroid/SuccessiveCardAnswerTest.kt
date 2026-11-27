@@ -1025,11 +1025,21 @@ class SuccessiveCardAnswerTest {
             readSelectedPane()
             val card = displayed()
             assertNull(card.selected)
-            assertEquals(listOf("Blue", "Orange", "Type something."), card.choices.map { it.label })
-            answer(card)
-            assertEquals("Not sent. Open Terminal to verify the selected row.", vm.notice)
+            assertTrue(card.terminalReview)
+            assertTrue(card.choices.isEmpty())
+            vm.answerChoice("p1", card, Choice("Blue", "1", false), target = checkNotNull(vm.paneTextTarget))
+            drainUntil { !vm.answerInFlight("p1") }
             assertTrue(sent.isEmpty())
         }
+
+    @Test fun claudeAskThatLosesHighlightBeforeTheTapDoesNotSend() = fixture("claude", firstStep) {
+        readSelectedPane()
+        val card = displayed()
+        assertEquals("1", card.selected)
+        frame = frame.replace("❯ 1.", "  1.")
+        answer(card)
+        assertTrue(sent.isEmpty())
+    }
 
     @Test fun claudeCheckboxActionMissingOrAmbiguousIsNotAnAnswerRow() {
         fun labels(frame: String, agent: String = "claude") = detectPrompt(frame, true, agent)?.answerRows().orEmpty().map { it.label }

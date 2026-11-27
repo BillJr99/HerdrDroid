@@ -5067,10 +5067,14 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
         val shortcuts = agent?.lowercase() in setOf("codex", "muse") ||
             lines.takeLast(4).any { CODEX_FOOTER.containsMatchIn(it) || MUSE_CARD_FOOTER.containsMatchIn(it) }
         val rebuiltTall = agent.equals("claude", true) && isRebuiltDialog(text.lines())
+        val claudeAsk = agent.equals("claude", true) && raw.lastOrNull { it.isNotBlank() }?.let(::claudeAskFooter) == true
+        if (claudeAsk && selected == null) {
+            return Prompt(question ?: "Claude question", emptyList(), parts = parts, region = raw,
+                terminalReview = true, claudeAsk = true)
+        }
         return Prompt(question ?: "Choose an option", numbered, selected, escRejects = vibeCard, parts = parts, multi = multi,
             shortcuts = shortcuts, approvalIdentity = approvalIdentity, claudeCheckboxAction = checkboxAction, topOffScreen = topOff,
-            rebuiltTallDialog = rebuiltTall, region = if (topOff || rebuiltTall) raw else null,
-            claudeAsk = agent.equals("claude", true) && raw.lastOrNull { it.isNotBlank() }?.let(::claudeAskFooter) == true)
+            rebuiltTallDialog = rebuiltTall, region = if (topOff || rebuiltTall) raw else null, claudeAsk = claudeAsk)
             .also { p ->
                 // 2.2.8 (Codex's review 4B): the parser's exact rows, the question block it read down to the
                 // last option's last row, with each option's own row; none when they can't be mapped.
