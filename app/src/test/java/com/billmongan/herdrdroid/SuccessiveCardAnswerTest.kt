@@ -1025,11 +1025,11 @@ class SuccessiveCardAnswerTest {
             readSelectedPane()
             val card = displayed()
             assertNull(card.selected)
-            assertTrue(card.terminalReview)
-            assertTrue(card.choices.isEmpty())
+            assertTrue("displayed prompt must require terminal review: ${card.choices}", card.terminalReview)
+            assertTrue("no actions on terminal review", card.choices.isEmpty())
             vm.answerChoice("p1", card, Choice("Blue", "1", false), target = checkNotNull(vm.paneTextTarget))
             drainUntil { !vm.answerInFlight("p1") }
-            assertTrue(sent.isEmpty())
+            assertTrue("no digit must reach the pane: $sent", sent.isEmpty())
         }
 
     @Test fun claudeAskThatLosesHighlightBeforeTheTapDoesNotSend() = fixture("claude", firstStep) {

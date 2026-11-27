@@ -4186,7 +4186,16 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     // 2.2.8 (Bill: "grok is stuck on a question I can't answer"): Grok working under its own rows.
     if (agent.equals("grok", true) && grokWorkingBelowAnyQuestion(plain)) return null
     val p = detectPlainPrompt(if (agent.equals("grok", true)) grokWithoutThinkingPanel(plain) else plain, blocked, agent, version)
-    return if (p != null && agent.equals("grok", true)) grokApproval(plain, p) else p
+    if (p != null && agent.equals("grok", true)) return grokApproval(plain, p)
+    if (p != null && agent.equals("claude", true)) {
+        val ask = withoutClaudeChromeUnderDialog(plain).lineSequence().lastOrNull { it.isNotBlank() }
+            ?.let(::claudeAskFooter) == true
+        if (ask) return if (p.choices.isNotEmpty() && p.selected == null)
+            p.copy(choices = emptyList(), claudeCheckboxAction = null, terminalReview = true,
+                region = p.region ?: plain.lines(), claudeAsk = true).withSpanOf(p)
+        else p.copy(claudeAsk = true).withSpanOf(p)
+    }
+    return p
 }
 
 private val GROK_THINKING_PANEL = Regex("""^\s*┃\s*◆\s+Thinking(?:…|\.\.\.)?\s*$""")
@@ -5067,14 +5076,9 @@ private fun detectPlainPrompt(text: String, blocked: Boolean, agent: String?, ve
         val shortcuts = agent?.lowercase() in setOf("codex", "muse") ||
             lines.takeLast(4).any { CODEX_FOOTER.containsMatchIn(it) || MUSE_CARD_FOOTER.containsMatchIn(it) }
         val rebuiltTall = agent.equals("claude", true) && isRebuiltDialog(text.lines())
-        val claudeAsk = agent.equals("claude", true) && raw.lastOrNull { it.isNotBlank() }?.let(::claudeAskFooter) == true
-        if (claudeAsk && selected == null) {
-            return Prompt(question ?: "Claude question", emptyList(), parts = parts, region = raw,
-                terminalReview = true, claudeAsk = true)
-        }
         return Prompt(question ?: "Choose an option", numbered, selected, escRejects = vibeCard, parts = parts, multi = multi,
             shortcuts = shortcuts, approvalIdentity = approvalIdentity, claudeCheckboxAction = checkboxAction, topOffScreen = topOff,
-            rebuiltTallDialog = rebuiltTall, region = if (topOff || rebuiltTall) raw else null, claudeAsk = claudeAsk)
+            rebuiltTallDialog = rebuiltTall, region = if (topOff || rebuiltTall) raw else null)
             .also { p ->
                 // 2.2.8 (Codex's review 4B): the parser's exact rows, the question block it read down to the
                 // last option's last row, with each option's own row; none when they can't be mapped.
