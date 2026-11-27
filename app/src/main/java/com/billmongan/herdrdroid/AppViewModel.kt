@@ -2667,7 +2667,7 @@ class AppViewModel internal constructor(
             if (screen == Screen.Questions) questionsFeed.poke()
             return
         }
-        if (terminalAnswerWatch(paneId)?.let { readTerminalAnswerViewport(it); true } == true) return
+        val terminalWatch = terminalAnswerWatch(paneId)
         val attempt = ++paneReadSequence
         val modelSequence = ++modelReadSequence
         // Only for the pane open now (1.4.2, from review: a late answer for another pane set or
@@ -2680,7 +2680,8 @@ class AppViewModel internal constructor(
         val readConnection = client?.connectionIdentity
         val readTarget = pane(paneId)
         fun isOpen() = attempt > lastAppliedPaneRead && current?.id == serverId && herdr === client &&
-            client?.connectionIdentity === readConnection && paneVisit == visit && (screen as? Screen.Agent)?.paneId == paneId
+            client?.connectionIdentity === readConnection && paneVisit == visit && (screen as? Screen.Agent)?.paneId == paneId &&
+            (terminalWatch == null || attempt == paneReadSequence && terminalAnswerWatch(paneId) === terminalWatch)
         fun problem(why: String) {
             if (!isOpen()) return
             lastAppliedPaneRead = attempt
@@ -2697,7 +2698,10 @@ class AppViewModel internal constructor(
             paneDraft = null
             draftReadFor = null
         }
-        val reading = quietly { h ->
+        val terminalRead = terminalWatch?.let { readTerminalAnswerViewport(it, ::isOpen) ?: return }
+        val reading = if (terminalRead != null)
+            com.billmongan.herdrdroid.herdr.stripAnsi(terminalRead.raw) to (terminalRead.live.id == paneId)
+        else quietly { h ->
             val waiting = pane(paneId)?.status == Status.NEEDS_YOU
             try {
                 val lines = if (waiting || paneReadProblem != null) 80 else 200
@@ -2726,10 +2730,10 @@ class AppViewModel internal constructor(
                     ?.let { OpenUsage(serverId, paneId, visit, client, agent, it) }
             } else null
             if (!isOpen()) return
-            val paneStatus = pane(paneId)?.status
+            val paneStatus = terminalRead?.status ?: pane(paneId)?.status
             val blocked = paneStatus == Status.NEEDS_YOU
             val version = versionOf(paneId)
-            val preview = detectPrompt(recent, blocked, agent, version)
+            val preview = if (terminalRead != null) terminalRead.prompt else detectPrompt(recent, blocked, agent, version)
             fun canUpgrade() = foreground && isOpen() && cardOwner != null &&
                 cardOwner.client.backend == Backend.TUI && cardOwner.isCurrent(cardOwner.client) &&
                 pane(paneId)?.scrollOffset == 0
@@ -2756,7 +2760,7 @@ class AppViewModel internal constructor(
                 !com.billmongan.herdrdroid.herdr.questionRead(recent, preview.forCard(), agent, version, blocked).topped
             if (unprovenPreview) com.billmongan.herdrdroid.diag.DiagLog.log("prompt",
                 "$paneId: the recent read's dialog isn't proven (${preview!!.choices.size} choice(s)); reading the live screen")
-            val liveViewport = if (liveUsage == null &&
+            val liveViewport = terminalRead?.raw ?: if (liveUsage == null &&
                 (verifyOpenCode || verifyHermesUsage || verifyPi || recentClaudeModel || recentCodexQuestion || shownCodexCard || missingCodexCard || unfinishedChoicePreview || unprovenPreview ||
                     preview?.terminalReview == true || preview?.topOffScreen == true || (blocked && preview?.choices.isNullOrEmpty())) && canUpgrade()) {
                 val owner = checkNotNull(cardOwner)
@@ -2771,7 +2775,7 @@ class AppViewModel internal constructor(
             } else null
             val liveCard = liveViewport?.let { com.billmongan.herdrdroid.herdr.stripAnsi(it) }
             if (!isOpen()) return
-            val liveCandidate = liveCard?.let {
+            val liveCandidate = if (terminalRead != null) terminalRead.prompt else liveCard?.let {
                 if (verifyPi) activePiQuestion(it, version)
                 else detectPrompt(it, pane(paneId)?.status == Status.NEEDS_YOU, agent, version)
             }
@@ -2801,7 +2805,7 @@ class AppViewModel internal constructor(
                 if (liveReport || continued && ready) HermesUsageRead(owner, ready) else null
             }
             val recentClarify = preview?.hermesClarify == true
-            val requiresLive = verifyOpenCode || recentClaudeModel || recentClarify || recentCodexQuestion || verifyPi
+            val requiresLive = terminalRead != null || verifyOpenCode || recentClaudeModel || recentClarify || recentCodexQuestion || verifyPi
             val codexQuestionCleared = liveCard != null && liveCandidate == null && (recentCodexQuestion ||
                 agent == "codex" && com.billmongan.herdrdroid.herdr.hasCodexInputActivity(liveCard))
             // 2.2.8 (Codex's review 1): once the live screen was read for an unproven recent dialog, that read is
@@ -2811,7 +2815,7 @@ class AppViewModel internal constructor(
                 "$paneId: the live screen shows no dialog; the recent read's is not used")
             val recentClippedClaudeAsk = agent.equals("claude", true) && preview?.terminalReview == true &&
                 com.billmongan.herdrdroid.herdr.claudeClippedAskReview(recent) != null
-            val useLive = liveCard != null && (livePrompt != null || recentNativeReview || recentClaudeModel || recentClippedClaudeAsk || preview?.topOffScreen == true || unprovenAnswered || verifyPi && preview != null || liveReport || recentReport || verifiedUsage != null || recentClarify || codexQuestionCleared || verifyOpenCode &&
+            val useLive = liveCard != null && (terminalRead != null || livePrompt != null || recentNativeReview || recentClaudeModel || recentClippedClaudeAsk || preview?.topOffScreen == true || unprovenAnswered || verifyPi && preview != null || liveReport || recentReport || verifiedUsage != null || recentClarify || codexQuestionCleared || verifyOpenCode &&
                 (blocked || preview != null || openCodeBackgroundDrawer(agent, recent) || openCodeBackgroundDrawer(agent, liveCard)))
             val codexSteeringProven = liveViewport != null && missingCodexCard && liveCandidate == null &&
                 com.billmongan.herdrdroid.herdr.codexSteeringReady(liveViewport)
@@ -2879,8 +2883,10 @@ class AppViewModel internal constructor(
             hermesUsageRead = verifiedUsage
 
             // What the question card sees, logged when it changes (sizes only, no question text).
-            val status = panes.firstOrNull { it.id == paneId }?.status
+            if (terminalRead != null) applyTerminalQuestionStatus(checkNotNull(terminalWatch), terminalRead)
+            val status = terminalRead?.status ?: panes.firstOrNull { it.id == paneId }?.status
             val p = when {
+                terminalRead != null -> terminalRead.prompt
                 useLive -> livePrompt
                 requiresLive -> null // Recent output does not establish that this card is current.
                 (status == Status.NEEDS_YOU) == blocked && pane(paneId)?.agent == agent && versionOf(paneId) == version -> preview
@@ -2891,7 +2897,8 @@ class AppViewModel internal constructor(
             // still being read, nothing is recorded and no miss is counted against an open question.
             val (cardParsed, cardShows) = offerQuestionRead(serverId, paneId, text)
             if (cardShows == com.billmongan.herdrdroid.herdr.CardShows.CARD || cardShows == com.billmongan.herdrdroid.herdr.CardShows.NONE)
-                current?.id?.let { sid -> observeQuestion(sid, paneId, cardParsed, status, pane(paneId)?.agentName, text) }
+                current?.id?.let { sid -> observeQuestion(sid, paneId, cardParsed, status, pane(paneId)?.agentName, text,
+                    verifiedGone = terminalRead != null && terminalRead.prompt == null) }
             else com.billmongan.herdrdroid.diag.DiagLog.log("prompt", "$paneId: question card not confirmed yet")
             val dialog = com.billmongan.herdrdroid.herdr.showsQuestionDialog(text)
             val sig = if (p == null && !dialog) "none" else
@@ -4699,16 +4706,17 @@ class AppViewModel internal constructor(
         lastTerminalRead = attempt
         paintedTerminal = result?.let { (live, text) -> TerminalFrame(target, live, text) }
         terminalReadProblem = if (result == null) problem ?: "the terminal could not be verified" else null
-        terminalAnswerWatch(paneId)?.let { readTerminalAnswerViewport(it) }
+        if (terminalAnswerWatch(paneId) != null) readPane(paneId)
     }
 
     private class TerminalAnswerWatch(
         val frame: TerminalFrame,
         var previous: Prompt?,
-        var alert: AlertOrigin?,
-        var alertJob: Job?,
+        val alert: AlertOrigin?,
+        val alertJob: Job?,
     ) {
         var status by mutableStateOf<Status?>(null)
+        var alertResolved = false
     }
 
     private var terminalAnswerWatch by mutableStateOf<TerminalAnswerWatch?>(null)
@@ -4719,88 +4727,63 @@ class AppViewModel internal constructor(
     private fun terminalAnswerStatus(pane: Pane, server: String?): Status? =
         terminalAnswerWatch(pane.id)?.takeIf { it.frame.source.server == server && it.frame.source.pane.sameCardOccupant(pane) }?.status
 
-    /** Recent terminal output is useful for display, but only a current viewport may retire a question. */
-    private suspend fun readTerminalAnswerViewport(watch: TerminalAnswerWatch) {
+    private data class TerminalAnswerRead(val live: Pane, val raw: String, val prompt: Prompt?, val status: Status)
+
+    /** Recent terminal output is useful for display. Only a bracketed live viewport may retire its question. */
+    private suspend fun readTerminalAnswerViewport(watch: TerminalAnswerWatch, current: () -> Boolean): TerminalAnswerRead? {
         val frame = watch.frame
         val source = frame.source
-        val paneId = source.pane.id
-        val agent = source.pane.agent
-        val attempt = ++paneReadSequence
-        fun current() = attempt == paneReadSequence && attempt > lastAppliedPaneRead && terminalAnswerWatch(paneId) === watch
-        val read = quietly { h ->
+        val version = versionOf(source.pane.id)
+        val (live, raw) = quietly { h ->
             if (h !== source.client || !current()) return@quietly null
-            try {
-                // A terminal move, new occupant, or viewport scrolled away from its bottom proves nothing.
-                val first = h.cardPane(frame.live.id, source.connection) ?: return@quietly null
-                if (!first.sameCardOccupant(frame.live) || first.scrollOffset != 0) return@quietly null
-                val raw = h.readStyledViewport(first.id, source.connection).takeIf { it.isNotBlank() } ?: return@quietly null
-                val last = h.cardPane(first.id, source.connection) ?: return@quietly null
-                if (!last.sameCardOccupant(first) || last.scrollOffset != 0) return@quietly null
-                last to raw
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                null
-            }
-        } ?: return
-        if (!current()) return
-        val (live, raw) = read
+            val first = h.cardPane(frame.live.id, source.connection) ?: return@quietly null
+            if (!first.sameCardOccupant(frame.live) || first.scrollOffset != 0 || !current()) return@quietly null
+            val raw = h.readStyledViewport(first.id, source.connection).takeIf { it.isNotBlank() } ?: return@quietly null
+            val last = h.cardPane(first.id, source.connection) ?: return@quietly null
+            if (!last.sameCardOccupant(first) || last.scrollOffset != 0) return@quietly null
+            last to raw
+        } ?: return null
+        if (!current()) return null
         val text = com.billmongan.herdrdroid.herdr.stripAnsi(raw)
-        val version = versionOf(paneId)
-        val emptyComposer = if (isOpenCode(agent)) openCodeEmptyComposer(raw)
-            else com.billmongan.herdrdroid.herdr.inputLineOf(raw, agent, menuWrite = true) == ""
+        val agent = live.agent
+        val composer = if (isOpenCode(agent)) openCodeEmptyComposer(raw)
+            else com.billmongan.herdrdroid.herdr.inputLineOf(raw, agent, menuWrite = true)?.let {
+                it.isEmpty() || live.status in setOf(Status.IDLE, Status.DONE, Status.WORKING)
+            } == true
         val working = com.billmongan.herdrdroid.herdr.composerFooterSaysWorking(raw)
         val parsed = if (agent == "pi" && live.status == Status.WORKING) activePiQuestion(text, version)
-            else detectPrompt(raw, blocked = live.status == Status.NEEDS_YOU && !emptyComposer && !working, agent, version)
+            else detectPrompt(raw, blocked = live.status == Status.NEEDS_YOU && !composer && !working, agent, version)
         val dialog = parsed ?: if (agent == "claude")
             com.billmongan.herdrdroid.herdr.claudeReviewPreview(text, null) else null
-        val clear = dialog == null && !com.billmongan.herdrdroid.herdr.showsQuestionDialog(text) &&
-            (live.status in setOf(Status.IDLE, Status.DONE, Status.WORKING) || working || emptyComposer)
-        if (dialog == null && !clear) return  // A partial or unknown frame is not an answer.
+        if (dialog == null && (!composer && !working || com.billmongan.herdrdroid.herdr.showsQuestionDialog(text))) return null
         val status = when {
             dialog != null -> Status.NEEDS_YOU
             working -> Status.WORKING
             live.status == Status.NEEDS_YOU || live.status == Status.UNKNOWN -> Status.IDLE
             else -> live.status
         }
+        return TerminalAnswerRead(live, raw, dialog, status)
+    }
 
-        lastAppliedPaneRead = attempt
-        paneReadsApplied++
-        watch.status = status
-        paneText = text
-        paneTextPane = paneId
-        paneReadProblem = null
-        openingPanePreview = null
-        paneViewSettled = true
-        noteInputLine(paneId, raw)
-        recordModelFooter(source.server, live, text, ++modelReadSequence)
-        paneTextTarget = source.takeIf { live.id == paneId }
-        piLiveQuestion = dialog?.takeIf { agent == "pi" && paneTextTarget != null }
-        codexSteeringTarget = null
-        codexActivityTarget = null
-        openCodeComposerTarget = paneTextTarget?.takeIf { clear && isOpenCode(agent) && openCodeEmptyComposer(raw) }
-        val (card, shows) = offerQuestionRead(source.server, paneId, text)
-        if (clear || shows == com.billmongan.herdrdroid.herdr.CardShows.CARD)
-            observeQuestion(source.server, paneId, card, status, live.agentName, text, verifiedGone = clear)
-        val changed = clear || watch.previous?.let {
-            !com.billmongan.herdrdroid.herdr.cardAnswerStillFits(it, dialog) && it.copy(selected = null) != dialog?.copy(selected = null)
-        } == true
-        if (changed) {
-            val key = source.server to paneId
-            // Ignore a different notification posted while the viewport was being read.
+    private fun applyTerminalQuestionStatus(watch: TerminalAnswerWatch, read: TerminalAnswerRead) {
+        val source = watch.frame.source
+        val previous = watch.previous
+        val changed = read.prompt == null || previous != null &&
+            !com.billmongan.herdrdroid.herdr.cardAnswerStillFits(previous, read.prompt) &&
+            previous.copy(selected = null) != read.prompt.copy(selected = null)
+        if (changed && !watch.alertResolved) {
+            val key = source.server to source.pane.id
+            // Leave a different notification posted while the viewport was being read alone.
             if (alertJobs[key] === watch.alertJob && alertOrigins[key] === watch.alert) {
                 alertJobs.remove(key)?.cancel()
                 alertOrigins.remove(key)
-                Notify.clear(getApplication<Application>(), source.server, paneId)
+                Notify.clear(getApplication<Application>(), source.server, source.pane.id)
             }
-            watch.alertJob = null
-            watch.alert = null
+            watch.alertResolved = true
             questionsFeed.poke()
         }
-        watch.previous = dialog
-        readPaneDraft(paneId, text, dialog, paneTextTarget) {
-            lastAppliedPaneRead == attempt && terminalAnswerWatch(paneId) === watch
-        }
+        watch.previous = read.prompt
+        watch.status = read.status
     }
 
     private fun terminalFrameMatches(paneId: String, frame: TerminalFrame?, client: Herdr) =

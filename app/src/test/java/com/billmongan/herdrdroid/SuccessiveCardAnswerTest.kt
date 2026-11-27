@@ -1741,6 +1741,30 @@ class SuccessiveCardAnswerTest {
         assertEquals(Status.NEEDS_YOU, vm.shownStatus(checkNotNull(vm.pane("p1"))))
     }
 
+    @Test fun terminalAnswerKeepsTheCardOnAnUnrecognizedRedrawEvenWithIdleStatus() = fixture("claude", firstStep) {
+        readSelectedPane()
+        val terminal = readTerminal()
+        val before = recentReads
+        vm.sendTerminalKeys("p1", terminal, "enter")
+        drainUntil { sent == listOf("enter") && recentReads > before }
+        status(Status.IDLE)
+        frame = "A partial redraw"
+        readTerminal()
+        assertNotNull(vm.cardParse("p1", vm.paneText))
+        assertEquals(Status.NEEDS_YOU, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+    }
+
+    @Test fun terminalLetterAnswerClearsCodexAndGivesLiveScreenAuthority() = fixture("codex", command("alpha-beta")) {
+        readSelectedPane()
+        val terminal = readTerminal()
+        recentResult = ExecResult(0, frame, "")
+        afterSend = "› "
+        vm.sendTerminalKeys("p1", terminal, "y")
+        drainUntil { sent == listOf("y") && vm.paneText == "› " }
+        assertNull(vm.cardParse("p1", vm.paneText))
+        assertFalse(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+    }
+
     @Test fun ordinaryOutputAfterClaudeAnswerIsNotAnotherQuestion() =
         verifyPostAnswerOutput("claude", firstStep, "enter")
 
