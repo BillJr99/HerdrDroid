@@ -377,7 +377,7 @@ To upgrade, install the newer APK over the old one; your servers, chats and sett
 
 ### Updates
 
-From 2.1.4, HerdrDroid can update itself. In **Settings**, under **Updates**, **Check for updates daily** (on by default) asks GitHub once a day, when the app opens on a network that isn't metered, whether a newer release is out; **Check for updates now** asks right away. When one is out, the app shows "HerdrDroid X.Y.Z is available" with **Update** and **Not now** (Not now skips that version until the next one). **Update** downloads the release APK into the app's cache, checks that it is HerdrDroid, newer than the installed build, the size the release lists, and signed with the same key as the installed app, and then opens Android's installer, where you confirm it. The first time, Android asks you to allow HerdrDroid to install apps. The check sends only a generic `HerdrDroid/<version>` User-Agent, nothing about you or your servers.
+From 2.1.4, HerdrDroid can update itself. In **Settings**, under **Updates**, **Check for updates on launch** (on by default) asks GitHub once per launch when online. **Check for updates now** asks right away. The app makes no automatic checks in the background. When one is out, the app shows "HerdrDroid X.Y.Z is available" with **Update** and **Not now** (Not now skips that version until the next one). **Update** downloads the release APK into the app's cache, checks that it is HerdrDroid, newer than the installed build, the size the release lists, and signed with the same key as the installed app, and then opens Android's installer, where you confirm it. The first time, Android asks you to allow HerdrDroid to install apps. The check sends only a generic `HerdrDroid/<version>` User-Agent, nothing about you or your servers.
 
 ## First setup
 
@@ -655,6 +655,9 @@ To keep a new test class safe:
 
 ### 2.2.10
 
+- **Updates.** HerdrDroid checks for a new release once on launch when online, and you can also check from Settings. Installation still opens the Android installer for confirmation.
+- **Pane warnings.** A recognized live Codex warning footer shows its count in the pane list and chat header. HerdrDroid reads the footer without opening the warning panel.
+- **Pane quota.** Set an optional **Pane quota command** in a server's settings. Use a trusted read-only command that prints one JSON object keyed by current pane IDs. Each value has a number `used_percent` from 0 to 100 and an ISO 8601 instant `observed_at`. Valid readings appear with their age in the pane list and chat header. Missing or failed reads leave the badge hidden.
 - **Pane alerts.** When a complete Herdr TUI pane list confirms a pane has closed, its waiting alert clears. A partial list cannot clear it.
 - **SSH reconnects.** Authentication and host-key errors from a replaced connection no longer disconnect the active connection. Errors from the client that ran a read or send still surface when it is current.
 - **SSH over WebSocket.** After the WebSocket server closes, the bridge delivers already received bytes before closing the SSH connection, even if the SSH client writes or closes its sending side.
