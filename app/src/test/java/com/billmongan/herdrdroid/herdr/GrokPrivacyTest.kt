@@ -90,7 +90,10 @@ class GrokPrivacyTest {
 
         assertNull(grokInputText(capture("resume-picker")))
         val privacy = checkNotNull(detectGrokPrivacyDialog(capture("privacy-picker")))
-        assertEquals("2", privacy.selected)
+        assertTrue(privacy.terminalReview)
+        assertTrue(privacy.choices.isEmpty())
+        assertEquals(privacy, detectPrompt(capture("privacy-picker"), blocked = false, agent = "grok"))
+        assertNull(detectGrokPrivacyDialog(capture("privacy-picker").replace("Esc cancel", "Esc return")))
         assertNull(grokInputText(capture("privacy-picker")))
         for (name in listOf("resume", "privacy")) {
             val dismissed = capture("$name-dismissed")

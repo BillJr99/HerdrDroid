@@ -1,41 +1,41 @@
-┌─ Settings › Coding data, retention, and training ─────────────────────────────────── [✗] ─┐
-│                                                                                           │
-│  Coding data, retention, and training                                                     │
-│  Opt-in to provide SpaceXSI the ability to retain and train on coding data, e.g.,         │
-│  prompts, traces, & metrics, for training and debugging purposes. We may still collect    │
-│  simple user metrics, e.g. how many times you use the product or a feature.               │
-│                                                                                           │
-│  ○  Opt in                                                                                │
-│  ●  Opt out                                                                               │
-│                                                                                           │
-│                                                                                           │
-│                                                                                           │
-│                                                                                           │
-│                                                                                           │
-│                                                                                           │
-│                                                                                           │
-│                                                                                           │
-│                                                                                           │
-│                                                                                           │
-│                                                                                           │
-│                                                                                           │
-│                                                                                           │
-│                                                                                           │
-│                                                                                           │
-│                                                                                           │
-│                                                                                           │
-│                                                                                           │
-│                                                                                           │
-│                                                                                           │
-│                                                                                           │
-│                                                                                           │
-│                                                                                           │
-│                                                                                           │
-│                                                                                           │
-│                                                                                           │
-│                                                                                           │
-│                                                                                           │
-│                                                                                           │
-│                                                                                           │
-│              ↑/↓ nav  |  Enter select  |  double-click select  |  Esc cancel              │
-└───────────────────────────────────────────────────────────────────────────────────────────┘
+                    ┌─ Settings › Coding data, retention, and training ─────────────────────────────────── [✗] ─┐
+                    │                                                                                           │
+                    │  Coding data, retention, and training                                                     │
+                    │  Opt-in to provide SpaceXSI the ability to retain and train on coding data, e.g.,         │
+                    │  prompts, traces, & metrics, for training and debugging purposes. We may still collect    │
+     ❯ Reply exactly│  simple user metrics, e.g. how many times you use the product or a feature.               │         9:02 AM
+                    │                                                                                           │
+                    │  ○  Opt in                                                                                │
+     ◆ Thought for 6│  ●  Opt out                                                                               │
+                    │                                                                                           │
+     fixture-picker │                                                                                           │         9:02 AM
+                    │                                                                                           │
+     Worked for 8.6s│                                                                                           │
+                    │                                                                                           │
+                    │                                                                                           │
+                    │                                                                                           │
+                    │                                                                                           │
+                    │                                                                                           │
+                    │                                                                                           │
+                    │                                                                                           │
+                    │                                                                                           │
+                    │                                                                                           │
+                    │                                                                                           │
+                    │                                                                                           │
+                    │                                                                                           │
+                    │                                                                                           │
+                    │                                                                                           │
+                    │                                                                                           │
+                    │                                                                                           │
+                    │                                                                                           │
+                    │                                                                                           │
+                    │                                                                                           │
+                    │                                                                                           │
+                    │                                                                                           │
+                    │                                                                                           │
+                    │                                                                                           │
+                    │                                                                                           │
+                    │                                                                                           │
+  ╭─────────────────│                                                                                           │─────────────────╮
+  │ ❯               │              ↑/↓ nav  |  Enter select  |  double-click select  |  Esc cancel              │                 │
+  ╰─────────────────└───────────────────────────────────────────────────────────────────────────────────────────┘) · auto-review ─╯

@@ -4143,6 +4143,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
         rebuiltClaudeAsk(plain)?.let { return it }
         claudeClippedAskReview(plain)?.let { return it }
     }
+    if (agent.equals("grok", true)) grokPrivacyOverlay(plain)?.let { return it }
     if (agent.equals("agy", true)) {
         agySubagentQuestion(plain)?.let { return it }
         agySubagentApproval(plain)?.let { return it }
@@ -5156,12 +5157,41 @@ fun showsGrokBanner(text: String): Boolean {
     return tail.contains("Help improve Grok") && Regex("""\[Opt out]\s*\[Opt in]""").containsMatchIn(tail)
 }
 
+private const val GROK_PRIVACY_TITLE = "Coding data, retention, and training"
+private val GROK_PRIVACY_OVERLAY_FOOTER =
+    Regex("""↑/↓ nav\s*\|\s*Enter select\s*\|\s*double-click select\s*\|\s*Esc cancel""")
+
+/** A settings overlay can retain the old composer and transcript outside its rectangular frame. */
+private fun grokPrivacyOverlay(text: String): Prompt? {
+    val rows = text.lines().dropLastWhile(String::isBlank).takeLast(60)
+    val title = "┌─ Settings › $GROK_PRIVACY_TITLE "
+    val top = rows.indexOfLast { title in it }
+    if (top < 0 || rows.size - top < 5) return null
+    val left = rows[top].indexOf(title)
+    val right = rows[top].indexOf('┐', left + title.length)
+    if (right < 0) return null
+    val bottom = rows.last()
+    if (bottom.getOrNull(left) != '└' || bottom.getOrNull(right) != '┘' ||
+        !bottom.substring(left + 1, right).all { it == '─' }) return null
+    val body = rows.subList(top + 1, rows.lastIndex)
+    if (body.any { it.getOrNull(left) != '│' || it.getOrNull(right) != '│' }) return null
+    if (rows.drop(top).none { it.take(left).isNotBlank() || it.drop(right + 1).isNotBlank() }) return null
+    val frame = rows.drop(top).map { it.substring(left, right + 1) }
+    if (body.none { it.substring(left + 1, right).trim() == GROK_PRIVACY_TITLE } ||
+        !GROK_PRIVACY_OVERLAY_FOOTER.matches(body.last().substring(left + 1, right).trim())) return null
+    val choices = frame.mapNotNull(GROK_PRIVACY_ROW::matchEntire)
+    if (choices.map { it.groupValues[2] } != listOf("Opt in", "Opt out") ||
+        choices.count { it.groupValues[1] in setOf("●", "◉") } != 1) return null
+    return Prompt("Review Grok's privacy settings", emptyList(), region = frame, terminalReview = true)
+}
+
 /**
  * Grok's /privacy dialog: a box headed "Settings › Coding data, retention, and training" with rows
  * "○  Opt in" and "●  Opt out" (the filled circle is the current choice and the cursor) and the
  * footer "↑/↓ nav | Enter select | ... | Esc cancel".
  */
 fun detectGrokPrivacyDialog(text: String): Prompt? {
+    grokPrivacyOverlay(text)?.let { return it }
     val lines = text.lines().takeLast(40)
     if (lines.none { it.contains("Coding data, retention, and training") }) return null
     val rows = lines.mapNotNull(GROK_PRIVACY_ROW::matchEntire)
@@ -5178,6 +5208,7 @@ fun detectGrokPrivacyDialog(text: String): Prompt? {
  * as "/usage/privacy".
  */
 fun grokInputText(text: String): String? {
+    if (grokPrivacyOverlay(text) != null) return null
     val m = text.lines().takeLast(12).asReversed().firstNotNullOfOrNull { Regex("""^\s*[│┃|]\s*❯ ?(.*?)\s*[│┃|]?\s*$""").find(it) }
     return m?.groupValues?.get(1)?.trim()
 }
