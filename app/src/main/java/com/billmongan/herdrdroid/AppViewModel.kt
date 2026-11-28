@@ -25,6 +25,7 @@ import com.billmongan.herdrdroid.herdr.backgroundSupport
 import com.billmongan.herdrdroid.herdr.openCodeBackgroundDrawer
 import com.billmongan.herdrdroid.herdr.openCodePermissionRan
 import com.billmongan.herdrdroid.herdr.openCodeEmptyComposer
+import com.billmongan.herdrdroid.herdr.openCodeSessionComposerEmpty
 import com.billmongan.herdrdroid.herdr.Prompt
 import com.billmongan.herdrdroid.herdr.Choice
 import com.billmongan.herdrdroid.herdr.cardAnswerStillFits
@@ -4955,7 +4956,7 @@ class AppViewModel internal constructor(
         if (!current()) return null
         val text = com.billmongan.herdrdroid.herdr.stripAnsi(raw)
         val agent = live.agent
-        val composer = if (isOpenCode(agent)) openCodeEmptyComposer(raw)
+        val composer = if (isOpenCode(agent)) openCodeSessionComposerEmpty(raw) || openCodeEmptyComposer(raw)
             else com.billmongan.herdrdroid.herdr.inputLineOf(raw, agent, menuWrite = true)?.let {
                 it.isEmpty() || live.status in setOf(Status.IDLE, Status.DONE, Status.WORKING)
             } == true
