@@ -49,6 +49,7 @@ internal fun detectVibeRelease(screen: String, allowGenericReview: Boolean = fal
     val selected = fills.mapIndexedNotNull { index, style ->
         (index + 1).toString().takeIf { style != null && (style.first.isNotEmpty() || style.second) }
     }.singleOrNull()?.takeIf { fills.all { it != null } }
-    return Prompt("$title\n$version", labels.mapIndexed { i, label -> Choice(label, (i + 1).toString(), false) },
+    val versionLabel = version.replace(Regex("""\s+→\s+"""), " to ")
+    return Prompt("$title\n$versionLabel", labels.mapIndexed { i, label -> Choice(label, (i + 1).toString(), false) },
         selected = selected, horizontal = true, vibeRelease = true, approvalIdentity = region.joinToString("\n"))
 }

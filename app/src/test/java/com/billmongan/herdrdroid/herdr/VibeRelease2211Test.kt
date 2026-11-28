@@ -10,6 +10,7 @@ class VibeRelease2211Test {
     @Test fun unclassifiedPaneShowsReleaseAndLiveFocusSetsExactArrowKeys() {
         val raw = capture
         val prompt = checkNotNull(detectPrompt(raw, blocked = false))
+        assertEquals("A new Vibe release is available\n3.1.2 to 3.1.5", prompt.question)
         assertEquals(listOf("Update now", "Continue with current version"), prompt.choices.map(Choice::label))
         assertEquals(listOf("enter"), menuKeys(prompt, prompt.choices.first()))
         assertEquals(listOf("right", "enter"), menuKeys(prompt, prompt.choices.last()))
