@@ -472,7 +472,14 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 sending = vm.answerInFlight(paneId),
                 readOnlyPreview = openingPreview != null ||
                     ((com.billmongan.herdrdroid.herdr.isOpenCode(pane?.agent) || p.hermesClarify) && shownTarget == null && !p.terminalReview),
-                onChoice = { c -> vm.answerChoice(paneId, p, c, target = shownTarget) },
+                onChoice = { c ->
+                    val openHooks = p.codexHooksReview && c.label == com.billmongan.herdrdroid.herdr.CODEX_HOOKS_REVIEW
+                    vm.answerChoice(paneId, p, c, target = shownTarget, onDelivered = if (openHooks) ({
+                        hermesLive = false
+                        fullTerminal = true
+                        termFollow = true
+                    }) else null)
+                },
                 onKey = { k ->
                     val label = "Pressed " + when (k) { "esc" -> "Esc"; "tab" -> "Tab"; "shift+tab" -> "Shift+Tab"; "ctrl+c" -> "Ctrl+C"; else -> k }
                     vm.answerCardKey(shownTarget, p, k, label)
@@ -2271,15 +2278,18 @@ const val QUEUED_FOR_QUESTION = "The agent is waiting on a question. Your messag
 @Composable
 internal fun ApproveAllDialog(vm: AppViewModel, pending: AppViewModel.ApproveAllPending, agentName: String?) {
     val ask = pending.ask
+    val hooks = pending.prompt.codexHooksReview
+    val title = if (hooks) "Trust all Codex hooks?" else "Approve everything from now on?"
     androidx.compose.material3.AlertDialog(
         onDismissRequest = { vm.cancelApproveAll() },
-        modifier = Modifier.semantics { contentDescription = "Approve everything from now on" }.testTag("approve-all-dialog"),
-        title = { Text(if (ask.reason == null) "Approve everything from now on?" else "Not sent from here") },
+        modifier = Modifier.semantics { contentDescription = title.removeSuffix("?") }.testTag("approve-all-dialog"),
+        title = { Text(if (ask.reason == null) title else "Not sent from here") },
         text = {
             Column {
                 Text("\u201c${ask.label}\u201d", color = Palette.Ink, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(8.dp))
-                Text(ask.reason ?: "${agentName ?: "The agent"} will do this again without asking you. Nothing is sent until you confirm.",
+                Text(ask.reason ?: if (hooks) "New hooks will run when their events occur and can run outside the sandbox. Trust them only if you have reviewed them."
+                    else "${agentName ?: "The agent"} will do this again without asking you. Nothing is sent until you confirm.",
                     color = Palette.Ink)
             }
         },

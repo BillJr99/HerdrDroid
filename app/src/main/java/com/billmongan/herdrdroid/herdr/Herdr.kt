@@ -1747,8 +1747,10 @@ data class Prompt(
     /** Claude AskUserQuestion answers require a key sequence verified from the current highlight. */
     internal val claudeAsk: Boolean = false,
     internal val vibeRelease: Boolean = false,
+    /** Codex's startup hook trust or hook browser review screen. */
+    internal val codexHooksReview: Boolean = false,
 ) {
-    internal val guardedShortcutApproval: Boolean get() = agyApproval || kiroOnceShortcuts || claudeModelControl || vibeRelease
+    internal val guardedShortcutApproval: Boolean get() = agyApproval || kiroOnceShortcuts || claudeModelControl || vibeRelease || codexHooksReview
     internal val historyReviewOnly: Boolean get() = topOffScreen || rebuiltTallDialog
 
     /**
@@ -1800,7 +1802,7 @@ const val UNREAD_SCREEN = "(The app couldn't read this pane's screen yet. Tap Sh
 internal fun withNeedsYouCard(
     status: Status, prompt: Prompt?, suppressed: Boolean, agent: String, codexActivityViewport: String? = null,
 ): Prompt? = prompt ?: if (
-    status == Status.NEEDS_YOU && !suppressed && codexActivityViewport?.let(::hasCodexInputActivity) != true
+    status == Status.NEEDS_YOU && !suppressed && codexActivityViewport?.let { hasCodexInputActivity(it) || codexHooksBrowserPassive(it) } != true
 ) unreadQuestionCard(agent) else null
 
 /** [withNeedsYouCard]'s card: no options and no keys, only the way to the terminal. */
@@ -4317,6 +4319,10 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     }
     // Unlike an empty read, a clipped viewport containing only queue rows is readable.
     if (queueRows.isNotEmpty() && plain.isBlank()) return null
+    if (agent.equals("codex", true)) {
+        codexHooksPrompt(plain)?.let { return it }
+        if (codexHooksBrowserPassive(plain)) return null
+    }
     if (agent.equals("claude", true)) {
         claudeModelCard(plain)?.let { return it }
         rebuiltClaudeAsk(plain)?.let { return it }
