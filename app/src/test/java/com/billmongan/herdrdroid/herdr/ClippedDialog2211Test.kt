@@ -73,6 +73,24 @@ class ClippedDialog2211Test {
         assertEquals(screen, rebuilt)
     }
 
+    @Test fun exhaustedHistoryLeavesAnExplicitTerminalReview() = runBlocking {
+        val agent = "opencode"
+        val viewport = fixture(agent).takeLast(36)
+        val screen = viewport.joinToString("\n")
+        val noBeginning = List(TALL_DIALOG_MAX_LINES) { "  ┃  Older sample text" } + viewport
+        val reads = mutableListOf<Int>()
+        val unresolved = completeClippedDialog(screen, true, agent, null) { count ->
+            reads += count
+            noBeginning.takeLast(count).joinToString("\n")
+        }
+        assertEquals(TALL_DIALOG_READS, reads)
+        assertEquals(screen, unresolved)
+        val prompt = checkNotNull(detectPrompt(unresolved, true, agent))
+        assertTrue(prompt.terminalReview)
+        assertTrue(shownText(prompt).contains("beginning of this dialog is cut off"))
+        assertFalse(shownText(prompt).contains("Older sample text"))
+    }
+
     @Test fun ordinaryOutputDoesNotReadHistory() = runBlocking {
         val plain = "The sample report is complete."
         for (agent in listOf("claude", "opencode", "agy")) {
