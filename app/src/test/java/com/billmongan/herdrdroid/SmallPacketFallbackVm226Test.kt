@@ -10,9 +10,11 @@ import com.billmongan.herdrdroid.diag.DiagLog
 import com.billmongan.herdrdroid.diag.NetworkWatch
 import com.billmongan.herdrdroid.herdr.Backend
 import com.billmongan.herdrdroid.herdr.Herdr
+import com.billmongan.herdrdroid.ssh.AuthRejected
 import com.billmongan.herdrdroid.ssh.Credentials
 import com.billmongan.herdrdroid.ssh.ExecResult
 import com.billmongan.herdrdroid.ssh.HerdrSsh
+import com.billmongan.herdrdroid.ssh.HostKeyChanged
 import com.billmongan.herdrdroid.ssh.LinkDown
 import com.billmongan.herdrdroid.store.Server
 import kotlinx.coroutines.CompletableDeferred
@@ -53,6 +55,7 @@ class SmallPacketFallbackVm226Test {
         /** Writes seen; with [dropAfterStart] set, each one fails: after its exec (true) or before it (false). */
         val sends = mutableListOf<String>()
         var dropAfterStart: Boolean? = null
+        var writeGate: CompletableDeferred<ExecResult>? = null
         /** When set, the guard read before a send waits on it. */
         var readGate: CompletableDeferred<Unit>? = null
         override suspend fun immediate(command: String, timeoutSeconds: Long, expectedConnection: Any?): ExecResult {
@@ -63,6 +66,7 @@ class SmallPacketFallbackVm226Test {
                 return if ("'--source'" in command) ExecResult(0, "❯ ", "") else ExecResult(1, "", "fixture")
             }
             sends += command
+            writeGate?.let { return it.await() }
             val drop = dropAfterStart ?: return ExecResult(0, "", "")
             // As HerdrSsh does just before a write's exec: from here it may have reached the computer.
             if (drop) ctx[com.billmongan.herdrdroid.ssh.SendTrace]?.started = true
@@ -186,6 +190,90 @@ class SmallPacketFallbackVm226Test {
             assertNull(epA.ssh.activeMss)
             assertNull(epB.ssh.activeMss)
             assertEquals(Link.CONNECTED, vm.link)
+        }
+    }
+
+    @Test fun staleAuthenticationReadDoesNotDisconnectTheReplacement() {
+        for (failure in listOf(AuthRejected("fixture auth failure"), HostKeyChanged("expected", "actual"))) {
+            val old = Endpoint(a)
+            val replacement = Endpoint(b)
+            open(old, a)
+            val read = vm.viewModelScope.launch { vm.refreshPanes() }
+            idle()
+            assertTrue(read.isActive)
+            open(replacement, b)
+            old.gate.completeExceptionally(failure)
+            idle()
+            assertTrue(read.isCompleted)
+            assertEquals(b.id, vm.current?.id)
+            assertEquals(Link.CONNECTED, vm.link)
+            assertNull(vm.error)
+        }
+    }
+
+    @Test fun currentAuthenticationReadStillReportsTheFailure() {
+        for (failure in listOf(AuthRejected("fixture auth failure"), HostKeyChanged("expected", "actual"))) {
+            val endpoint = Endpoint(a)
+            open(endpoint, a)
+            val read = vm.viewModelScope.launch { vm.refreshPanes() }
+            idle()
+            assertTrue(read.isActive)
+            endpoint.gate.completeExceptionally(failure)
+            idle()
+            assertTrue(read.isCompleted)
+            assertNull(vm.current)
+            assertEquals(Screen.Servers, vm.screen)
+            assertFalse(vm.error.isNullOrBlank())
+        }
+    }
+
+    @Test fun staleAuthenticationWriteDoesNotDisconnectTheReplacement() {
+        for (failure in listOf(AuthRejected("fixture auth failure"), HostKeyChanged("expected", "actual"))) {
+            val old = Endpoint(a)
+            val replacement = Endpoint(b)
+            val write = CompletableDeferred<ExecResult>()
+            old.writeGate = write
+            open(old, a)
+            vm.sendKeys("p1", "enter")
+            idle()
+            assertEquals(1, old.sends.size)
+
+            open(replacement, b)
+            write.completeExceptionally(failure)
+            idle()
+
+            assertEquals(b.id, vm.current?.id)
+            assertEquals(Link.CONNECTED, vm.link)
+            assertNull(vm.error)
+        }
+    }
+
+    @Test fun aKeyWaitingForTheLaneReportsFailuresFromTheClientThatRunsIt() {
+        for (failure in listOf(AuthRejected("fixture auth failure"), HostKeyChanged("expected", "actual"))) {
+            val old = Endpoint(a)
+            val replacement = Endpoint(a)
+            val first = CompletableDeferred<ExecResult>()
+            val second = CompletableDeferred<ExecResult>()
+            old.writeGate = first
+            replacement.writeGate = second
+            open(old, a)
+            vm.sendKeys("p1", "enter")
+            idle()
+            assertEquals(1, old.sends.size)
+            vm.sendKeys("p1", "escape")
+            idle()
+            assertEquals(1, old.sends.size)
+
+            open(replacement, a)
+            first.complete(ExecResult(0, "", ""))
+            idle()
+            assertEquals(1, replacement.sends.size)
+            second.completeExceptionally(failure)
+            idle()
+
+            assertNull(vm.current)
+            assertEquals(Screen.Servers, vm.screen)
+            assertFalse(vm.error.isNullOrBlank())
         }
     }
 

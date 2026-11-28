@@ -1,0 +1,5 @@
+card: options
+blocked: false
+heading: Permission required
+options: Allow once | Always allow | Reject
+source: Sanitized OpenCode 1.x live permission capture with a shell command across three pane rows.

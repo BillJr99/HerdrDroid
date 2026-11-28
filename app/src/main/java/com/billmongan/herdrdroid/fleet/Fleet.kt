@@ -25,7 +25,7 @@ import net.schmizz.sshj.userauth.keyprovider.KeyProvider
  * override: an agent herdr calls idle, done or unknown while its subagents, background tasks or
  * shells still run shows as working ([busy] is that count per pane).
  */
-data class FleetState(val server: Server, val panes: List<Pane>, val error: String?, val at: Long, val busy: Map<String, Int> = emptyMap())
+data class FleetState(val server: Server, val panes: List<Pane>, val error: String?, val at: Long, val busy: Map<String, Int> = emptyMap(), val complete: Boolean = false)
 
 /**
  * Watches the servers other than the open one, so one "needs you" list can cover all of them.
@@ -133,7 +133,8 @@ class Fleet(
         }
 
         val state = try {
-            val raw = pair.second.panes()
+            val connection = pair.second.connectionIdentity
+            val snapshot = pair.second.paneSnapshot(server.paneQuotaCommand)
             if (!stillWatching()) return
             val gap = if (screenOn()) 30_000L else 90_000L
             val sweepDue = System.currentTimeMillis() - (sweptAt[id] ?: 0L) >= gap
@@ -150,7 +151,10 @@ class Fleet(
                     last
                 }
             }.orEmpty()
-            FleetState(server, sweptPanes(raw, Result.success(busy)), null, System.currentTimeMillis(), busy)
+            val panes = if (pair.second.connectionIdentity === connection) snapshot.panes
+                else snapshot.panes.map { it.copy(quotaReading = null) }
+            FleetState(server, sweptPanes(panes, Result.success(busy)), null, System.currentTimeMillis(), busy,
+                complete = snapshot.complete && connection != null && pair.second.connectionIdentity === connection)
         } catch (c: CancellationException) {
             throw c
         } catch (e: Exception) {
@@ -159,7 +163,8 @@ class Fleet(
             val wait = ((retryStep[id] ?: 15_000L) * 2).coerceAtMost(10 * 60_000L)
             retryStep[id] = wait
             retryAt[id] = System.currentTimeMillis() + wait
-            FleetState(server, states[id]?.panes.orEmpty(), e.message ?: "unreachable", System.currentTimeMillis())
+            FleetState(server, states[id]?.panes.orEmpty().map { it.copy(quotaReading = null) },
+                e.message ?: "unreachable", System.currentTimeMillis())
         }
         if (!stillWatching()) return
         if (state.error == null) {

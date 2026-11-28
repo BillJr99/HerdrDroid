@@ -596,6 +596,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 screen = if (vm.paneTextPane == paneId) vm.paneText else "",
                 terminalTitle = pane?.title.orEmpty(),
             )
+            pane?.let { vm.warningFor(it) }?.let { PaneWarningBadge(it, Modifier.padding(start = 6.dp)) }
             PaneTitleLines(
                 name = if (isHermes) (if (live) "Hermes · live chat" else "Hermes · this pane") + "  ▾"
                 else identity.title,
@@ -605,6 +606,7 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 status = if (vm.link == Link.CONNECTED && identity.known) look(status, pane?.backgroundBusy == true).label else null,
                 statusInk = look(status).ink,
                 compact = keyboardUp,
+                quota = pane?.quotaReading?.takeIf { vm.link == Link.CONNECTED },
                 onName = { if (isHermes) { hermesMenu = true; vm.hermesChat()?.refreshSessions() } else vm.drawerOpen = true },
                 onModel = if (pane?.agent != null) ({ choosingModel = true }) else null,
                 nameAnchor = {

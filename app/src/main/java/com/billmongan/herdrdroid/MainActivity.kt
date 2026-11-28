@@ -184,8 +184,8 @@ class MainActivity : FragmentActivity() {
                     LockScreen(lockMessage) { unlock { ok -> if (ok) vm.unlocked() } }
                     return@HerdrTheme
                 }
-                // 2.1.4: the daily update check once unlocked, and its prompt over any screen.
-                LaunchedEffect(Unit) { vm.updates.maybeCheckDaily() }
+                // 2.1.4: check for updates at launch once unlocked, and its prompt over any screen.
+                LaunchedEffect(Unit) { vm.updates.checkAtLaunch() }
                 com.billmongan.herdrdroid.update.UpdatePrompt(vm.updates)
                 // A tablet, an unfolded phone or a wide window shows the list and the open agent
                 // side by side; a phone shows one at a time.
@@ -198,7 +198,7 @@ class MainActivity : FragmentActivity() {
                 BoxWithConstraints(Modifier.fillMaxSize().background(Palette.Ground)) {
                 val wide = maxWidth >= 840.dp
                 val s0 = vm.screen
-                if (wide && (s0 is Screen.Agent || s0 == Screen.Home || s0 == Screen.Questions)) {
+                if (wide && (s0 is Screen.Agent || s0 == Screen.Home || s0 == Screen.Questions || s0 == Screen.Board)) {
                     // Wide: the drawer stays out beside the agent.
                     // 2.2.7: Back on the wide main screen (agent or Home) stays in the app: the drawer is
                     // already out here, so there is nothing to open or close, and the app never closes from it.
@@ -208,6 +208,7 @@ class MainActivity : FragmentActivity() {
                         VerticalDivider(color = Palette.Line)
                         Box(Modifier.weight(1f).fillMaxHeight()) {
                             if (s0 is Screen.Agent) androidx.compose.runtime.key(vm.chatServerId, s0.paneId) { AgentScreen(vm, s0.paneId) }
+                            else if (s0 == Screen.Board) com.billmongan.herdrdroid.ui.ConnectedBoardScreen(vm)
                             else if (s0 == Screen.Questions) com.billmongan.herdrdroid.ui.QuestionsScreen(vm)
                             else com.billmongan.herdrdroid.ui.HomeScreen(vm)
                         }
@@ -248,7 +249,7 @@ class MainActivity : FragmentActivity() {
                         BackHandler { vm.disconnect() }
                         TabsScreen(vm)
                     }
-                    is Screen.Agent, Screen.Home, Screen.Questions -> {
+                    is Screen.Agent, Screen.Home, Screen.Questions, Screen.Board -> {
                         // The drawer is the way around: Back closes it, or opens it.
                         val drawer = androidx.compose.material3.rememberDrawerState(androidx.compose.material3.DrawerValue.Closed)
                         LaunchedEffect(vm.drawerOpen) { if (vm.drawerOpen) drawer.open() else drawer.close() }
@@ -271,6 +272,7 @@ class MainActivity : FragmentActivity() {
                             // its composer text (saved per pane id) never carries over.
                             if (s is Screen.Agent) androidx.compose.runtime.key(vm.chatServerId) { AgentScreen(vm, s.paneId) }
                             // 2.2.8: the Questions view, the drawer still there.
+                            else if (s == Screen.Board) com.billmongan.herdrdroid.ui.ConnectedBoardScreen(vm)
                             else if (s == Screen.Questions) com.billmongan.herdrdroid.ui.QuestionsScreen(vm)
                             // 2.2.7: the main screen with no agent open, the drawer still there.
                             else com.billmongan.herdrdroid.ui.HomeScreen(vm)
@@ -330,9 +332,8 @@ class MainActivity : FragmentActivity() {
     override fun onStart() {
         super.onStart()
         vm.onForeground(HandsFreeService.active && HandsFreeService.command === handsFreeCommand)
-        // Back from Android's settings, an allowed update continues; a resume may be due its daily check.
+        // Back from Android's settings, an allowed update continues.
         vm.updates.onResume()
-        if (!vm.locked) vm.updates.maybeCheckDaily()
     }
 
     override fun onStop() {

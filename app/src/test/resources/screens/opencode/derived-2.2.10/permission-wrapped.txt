@@ -1,0 +1,10 @@
+  ┃
+  ┃  △ Permission required
+  ┃
+  ┃  $ python /home/user/project/fixture/fixture/fixture/fixture/fixture/xxtool.py -
+  ┃  c 12345 --preview --format text --file /home/user/project/fixture/fixture/
+  ┃  fixtures/data.json
+  ┃
+  ┃
+  ┃   Allow once   Always allow   Reject  ctrl+f fullscreen  ⇆ select  enter confirm
+  ┃

@@ -45,6 +45,7 @@ data class Pane(
      * send keeps its guards; only the display shows the pane as idle ([com.billmongan.herdrdroid.AppViewModel.shownStatus]).
      */
     val openCodeStaleBlock: Boolean = false,
+    val quotaReading: PaneQuotaReading? = null,
 ) {
     /** Disposable probes use a reserved tab label, independent of pane titles and agent output. */
     val isProbe: Boolean get() = tabLabel.startsWith("probe-")
@@ -138,6 +139,7 @@ enum class Backend { TUI, CORE }
 /** What a computer has: which herdr is installed and which one's server is running. */
 /** herdr's own pane count in a list read, and how many of them this app parsed (2.2.5). */
 data class PaneListCounts(val raw: Int, val parsed: Int)
+internal data class PaneSnapshot(val panes: List<Pane>, val complete: Boolean)
 
 /** One parsed pane list read (2.2.5). */
 data class TuiPaneList(val panes: List<Pane>, val raw: Int)
@@ -269,16 +271,45 @@ class Herdr internal constructor(
         private set
 
     /** 2.2.6: the read is named "list-read" in the diagnostic log. */
-    suspend fun panes(): List<Pane> = kotlinx.coroutines.withContext(com.billmongan.herdrdroid.diag.ReadLabel("list-read")) { panesRead() }
+    suspend fun panes(): List<Pane> = paneSnapshot().panes
 
-    private suspend fun panesRead(): List<Pane> {
-        if (core) return corePanes(run(hcCmd("ls", "--json"))).also { lastListCounts = PaneListCounts(it.size, it.size) }
+    private val paneQuotaSource = PaneQuotaSource({ connectionIdentity }, { command, connection ->
+        commands?.immediate(command, QUOTA_TIMEOUT_SECONDS, connection)?.let { it.exit to it.out.toByteArray() }
+            ?: kotlinx.coroutines.withTimeoutOrNull(QUOTA_TIMEOUT_SECONDS * 1_000) {
+                ssh.execBytes(command, QUOTA_TIMEOUT_SECONDS, QUOTA_OUTPUT_LIMIT, expectedConnection = connection)
+            } ?: (-2 to ByteArray(0))
+    })
+
+    internal suspend fun paneSnapshot(quotaCommand: String? = null): PaneSnapshot =
+        kotlinx.coroutines.withContext(com.billmongan.herdrdroid.diag.ReadLabel("list-read")) {
+            val connection = connectionIdentity
+            val snapshot = panesRead()
+            if (quotaCommand == null || !snapshot.complete) snapshot else {
+                val panes = paneQuotaSource.decorate(snapshot.panes, quotaCommand, connection) {
+                    kotlinx.coroutines.withTimeoutOrNull(QUOTA_TIMEOUT_SECONDS * 1_000) {
+                        tuiPaneList().takeIf { it.raw == it.panes.size }?.panes
+                    }.orEmpty()
+                }
+                snapshot.copy(panes = panes)
+            }
+        }
+
+    private suspend fun tuiPaneList(): TuiPaneList {
         // Panes and tab labels in one round trip; a tab list failure only loses the labels.
         // 2.2.5: the pane list's own exit status comes back after the marker. Before, the line's
         // status was the tab list's (always 0), so a failed pane list reached the parser as empty
         // text and its error was lost.
         val both = run(cmd("pane", "list") + "; s=\$?; echo \"$TABS_MARK \$s\"; " + cmd("tab", "list") + " 2>/dev/null || true")
-        val read = parseTuiPaneList(both)
+        return parseTuiPaneList(both)
+    }
+
+    private suspend fun panesRead(): PaneSnapshot {
+        if (core) {
+            val panes = corePanes(run(hcCmd("ls", "--json")))
+            lastListCounts = PaneListCounts(panes.size, panes.size)
+            return PaneSnapshot(panes, complete = false)
+        }
+        val read = tuiPaneList()
         lastListCounts = PaneListCounts(read.raw, read.panes.size)
         val list = read.panes
         // herdr doesn't always mark a Claude question dialog (AskUserQuestion) as blocked, so the
@@ -305,7 +336,8 @@ class Herdr internal constructor(
         }
         val order = listOf(Status.NEEDS_YOU, Status.WORKING, Status.DONE, Status.IDLE, Status.UNKNOWN)
         panes0Cache = marked
-        return marked.sortedWith(compareBy({ order.indexOf(it.status) }, { it.id }))
+        return PaneSnapshot(marked.sortedWith(compareBy({ order.indexOf(it.status) }, { it.id })),
+            complete = read.raw == read.panes.size)
     }
 
     /**
@@ -389,6 +421,12 @@ class Herdr internal constructor(
         // The permit is checked by the SSH transport after it has the connection (2.0.1 finding 4).
         override suspend fun send(pane: Pane, text: String, connection: Any, permit: WritePermit) =
             sendPermitted(pane, text, connection, permit)
+        override suspend fun sendBoardRequest(pane: Pane, text: String, viewport: String, connection: Any, permit: WritePermit) {
+            val (fresh, occupant) = cardPaneGuarded(pane.id, connection) ?: throw CardChanged()
+            if (occupant == null || !sameOccupant(pane, fresh) || fresh.status !in setOf(Status.IDLE, Status.DONE))
+                throw CardChanged()
+            sendCardInput(pane.id, CardInput.Submit(text), CardGuard(occupant, cardScreenDigest(viewport, pane.agent)), connection, permit)
+        }
         // 2.2.2: Force Send's prompt to a working agent, still herdr's agent prompt (it reaches a working agent), never --force.
         override suspend fun sendForced(pane: Pane, text: String, connection: Any, permit: WritePermit) =
             sendMessage(pane, text, allowTerminalFallback = false, expectedConnection = connection, permit = permit, busyOk = true)
@@ -3827,6 +3865,24 @@ private fun detectOpenCodePermission(styled: String, text: String): Prompt? {
     val buttons = OPENCODE_PERMISSION_BUTTONS.find(if (buttonRow == footer) onFooter else clean(rows[buttonRow])) ?: return review()
     val body = rows.subList(title + 1, buttonRow).map(::clean).filter(String::isNotEmpty)
     if (body.isEmpty() || body.any { '…' in it || "..." in it } || body.last().trim() in listOf("$", "# Shell command")) return review()
+    val bodyCommandEnd = commandEnd?.coerceAtMost(buttonRow)
+    val details = if (command != null && bodyCommandEnd != null && bodyCommandEnd - command > 1) {
+        // OpenCode word-wraps after punctuation as well as whitespace. The pane read can
+        // omit row-end spaces, so a join could change an option or a path. Keep the complete
+        // run in one code block with its original row boundaries, as in the terminal.
+        val end = bodyCommandEnd
+        val first = rows[command]
+        val gutter = first.substringBefore("$ ")
+        if (end >= buttonRow || !gutter.matches(Regex("""^\s*[┃│|] +$""")) ||
+            rows.subList(end, buttonRow).any { clean(it).isNotEmpty() }) return review()
+        val continuation = rows.subList(command + 1, end)
+        if (continuation.any { !it.startsWith(gutter) || it.removePrefix(gutter).trimStart().startsWith("$ ") }) return review()
+        val context = rows.subList(title + 1, command).map(::clean).filter(String::isNotEmpty)
+        val parsed = questionParts((listOf(heading) + context).map { QLine(it) })
+        val commandLines = listOf(first.removePrefix(gutter).removePrefix("$ ")) + continuation.map { it.removePrefix(gutter) }
+        parsed.copy(blocks = parsed.blocks + QBlock(QKind.COMMAND, commandLines.joinToString("\n")) +
+            QBlock(QKind.TEXT, "Line breaks follow the terminal display."))
+    } else questionParts((listOf(heading) + body).map { QLine(it) })
     val labels = listOfNotNull(buttons.groups[1]?.value, buttons.groups[2]?.value, buttons.groups[3]?.value)
     val styledRow = styled.lines().getOrNull(buttonRow).orEmpty()
     val chars = styledChars(styledRow)
@@ -3843,7 +3899,7 @@ private fun detectOpenCodePermission(styled: String, text: String): Prompt? {
         else null
     // Every button the dialog shows, Always allow included (2.1.2, Bill: "The alert should offer
     // whatever options the question does").
-    return Prompt(heading, labels.mapIndexed { i, label -> Choice(label, (i + 1).toString(), false) }, focused, escRejects = true, parts = questionParts((listOf(heading) + body).map { QLine(it) }),
+    return Prompt(heading, labels.mapIndexed { i, label -> Choice(label, (i + 1).toString(), false) }, focused, escRejects = true, parts = details,
         horizontal = true, approvalIdentity = rows.subList(title, buttonRow).joinToString("\n"), openCodePermission = true)
 }
 private val OPENCODE_WEB_SEARCH_OPTION = Regex("""^(?:[❯›>]\s*)?([1-3])[.]\s+(.+)$""")
@@ -4490,7 +4546,11 @@ data class ApproveAllAsk(val label: String, val keys: List<String>?, val reason:
 fun approveAllAsk(p: Prompt, c: Choice): ApproveAllAsk? {
     if (!approvesFromNowOn(c)) return null
     val keys = if (blockedChoiceReason(c) == null) menuKeys(p, c) else null
-    val reason = blockedChoiceReason(c) ?: if (keys == null) "Not sent: the app can't tell which keys pick this option. Use the terminal." else null
+    // OpenCode's chat card is drawn without ANSI. The confirm action reads its live focus
+    // before choosing any movement keys, just as for Allow once.
+    val canReadLiveFocus = p.openCodePermission && !p.terminalReview && !p.historyReviewOnly && c in p.choices
+    val reason = blockedChoiceReason(c) ?: if (keys == null && !canReadLiveFocus)
+        "Not sent: the app can't tell which keys pick this option. Use the terminal." else null
     return ApproveAllAsk(c.label, keys, reason)
 }
 

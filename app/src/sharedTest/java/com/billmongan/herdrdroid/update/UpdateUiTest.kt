@@ -33,27 +33,27 @@ class UpdateUiTest {
     )
 
     @Test fun settingsShowTheSwitchTheButtonTheVersionAndTheLastCheck() {
-        var daily by mutableStateOf(true)
+        var onLaunch by mutableStateOf(true)
         var checks = 0
         rule.setContent {
             Column {
-                UpdateSettings("2.1.4", daily, 0L, checking = false, note = "HerdrDroid 2.1.4 is up to date.", onDailyCheck = { daily = it }, onCheckNow = { checks++ })
+                UpdateSettings("2.1.4", onLaunch, 0L, checking = false, note = "HerdrDroid 2.1.4 is up to date.", onCheckOnLaunch = { onLaunch = it }, onCheckNow = { checks++ })
             }
         }
         rule.onNodeWithText("Installed: HerdrDroid 2.1.4").assertIsDisplayed()
         rule.onNodeWithText("Last checked: Never").assertIsDisplayed()
         rule.onNodeWithText("HerdrDroid 2.1.4 is up to date.").assertIsDisplayed()
-        rule.onNodeWithText("Check for updates daily").assertIsOn()
-        rule.onNodeWithText("Check for updates daily").performClick()
-        rule.onNodeWithText("Check for updates daily").assertIsOff()
-        rule.runOnIdle { assertEquals(false, daily) }
+        rule.onNodeWithText("Check for updates on launch").assertIsOn()
+        rule.onNodeWithText("Check for updates on launch").performClick()
+        rule.onNodeWithText("Check for updates on launch").assertIsOff()
+        rule.runOnIdle { assertEquals(false, onLaunch) }
         rule.onNodeWithText("Check for updates now").assertIsEnabled().performClick()
         rule.runOnIdle { assertEquals(1, checks) }
     }
 
     @Test fun theButtonIsOffWhileACheckRuns() {
         rule.setContent {
-            Column { UpdateSettings("2.1.4", true, 1_800_000_000_000L, checking = true, note = null, onDailyCheck = {}, onCheckNow = {}) }
+            Column { UpdateSettings("2.1.4", true, 1_800_000_000_000L, checking = true, note = null, onCheckOnLaunch = {}, onCheckNow = {}) }
         }
         rule.onNodeWithText("Checking…").assertIsNotEnabled()
         rule.onNodeWithText(lastCheckLabel(1_800_000_000_000L), substring = true).assertIsDisplayed()

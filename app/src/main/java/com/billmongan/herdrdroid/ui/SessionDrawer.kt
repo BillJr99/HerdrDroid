@@ -102,6 +102,7 @@ fun SessionDrawer(vm: AppViewModel, opening: Boolean = true) {
                 items(rows, key = { it.server.id + "|" + it.pane.id }) { s ->
                     SessionRow(
                         s, open = s.current && s.pane.id == openId, model = vm.modelFor(s.server.id, s.pane.id),
+                        warningCount = vm.warningFor(s.pane, s.server.id),
                         onOpen = { vm.drawerOpen = false; vm.switchTo(s.server.id, s.pane.id) },
                         onRelay = if (!s.current) ({ relaying = s }) else null,
                         onRename = if (vm.canRename(s.server.id)) ({ renaming = s }) else null, onPin = { vm.togglePin(s.server, s.pane) }, onClose = { closing = s },
@@ -144,6 +145,7 @@ fun SessionDrawer(vm: AppViewModel, opening: Boolean = true) {
         }
         // 2.2.8: every open question on the servers the app can see, pinned under the list.
         HorizontalDivider(color = Palette.Line)
+        BoardDrawerItem(selected = vm.screen == Screen.Board, onClick = vm::openBoard)
         QuestionsDrawerItem(vm.openQuestionCount(), selected = vm.screen == Screen.Questions) {
             vm.drawerOpen = false
             vm.screen = Screen.Questions
@@ -196,7 +198,7 @@ internal fun sessionName(p: Pane): String {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun SessionRow(s: AppViewModel.Session, open: Boolean, model: String?, onOpen: () -> Unit, onRelay: (() -> Unit)?, onRename: (() -> Unit)?, onPin: () -> Unit, onClose: () -> Unit) {
+private fun SessionRow(s: AppViewModel.Session, open: Boolean, model: String?, warningCount: Int?, onOpen: () -> Unit, onRelay: (() -> Unit)?, onRename: (() -> Unit)?, onPin: () -> Unit, onClose: () -> Unit) {
     var menu by remember { mutableStateOf(false) }
     Box {
         Row(
@@ -216,7 +218,9 @@ private fun SessionRow(s: AppViewModel.Session, open: Boolean, model: String?, o
                     listOfNotNull(s.server.label, model, s.pane.folder).filter { it.isNotBlank() }.joinToString(" · "),
                     color = Palette.Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
+                s.pane.quotaReading?.let { PaneQuotaText(it) }
             }
+            warningCount?.let { PaneWarningBadge(it, Modifier.padding(end = 6.dp)) }
             // The session on screen now (Bill asked what the old blue check meant: it read as "done").
             if (open) Text("open", color = Palette.Blue, fontWeight = FontWeight.Bold, fontSize = 12.sp)
         }

@@ -228,8 +228,12 @@ class WsBridge private constructor(private val url: String) {
         } catch (e: Exception) {
             why = "reading from sshj failed: ${DiagLog.describe(e)}"
         } finally {
-            close(why)
-            down.interrupt()
+            // A closed WebSocket cannot take further SSH bytes. Let downstream finish delivering
+            // already-received frames, including when SSH half-closes its output.
+            if (!wsDone.get()) {
+                close(why)
+                down.interrupt()
+            }
         }
     }
 

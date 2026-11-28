@@ -12,22 +12,22 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** 2.1.4: the daily check is on by default, and the switch and Not now are kept. */
+/** 2.1.4: the launch check is on by default, and the switch and Not now are kept. */
 @RunWith(AndroidJUnit4::class)
 class AppUpdatePrefsTest {
     @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = IdleMainLooperRule()
     private val context = ApplicationProvider.getApplicationContext<android.app.Application>()
 
-    @Test fun theDailyCheckIsOnByDefaultAndTheChoicesAreKept() {
+    @Test fun theLaunchCheckIsOnByDefaultAndTheChoicesAreKept() {
         val p = AppUpdatePrefs(context)
-        assertTrue(p.dailyCheck)
+        assertTrue(p.checkOnLaunch)
         assertEquals(0L, p.lastCheckAt)
         assertNull(p.skippedVersion)
-        p.dailyCheck = false
+        p.checkOnLaunch = false
         p.lastCheckAt = 42
         p.skippedVersion = "2.1.5"
         val again = AppUpdatePrefs(context)
-        assertFalse(again.dailyCheck)
+        assertFalse(again.checkOnLaunch)
         assertEquals(42L, again.lastCheckAt)
         assertEquals("2.1.5", again.skippedVersion)
     }

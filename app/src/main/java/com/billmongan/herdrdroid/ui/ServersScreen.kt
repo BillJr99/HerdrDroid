@@ -129,6 +129,7 @@ fun ServersScreen(vm: AppViewModel) {
                     Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = Palette.Muted)
                 }
             }
+            TextButton(onClick = vm::openBoard, modifier = Modifier.padding(horizontal = 12.dp)) { Text("Board") }
             vm.error?.let { ErrorBanner(it) { vm.error = null } }
             if (vm.pendingShare != null) {
                 Text(
@@ -383,6 +384,9 @@ fun EditServerScreen(vm: AppViewModel, existing: Server?, prefillHost: String? =
     var port by remember { mutableStateOf(existing?.port?.toString() ?: "22") }
     var user by remember { mutableStateOf(existing?.user ?: "") }
     var herdrPath by remember { mutableStateOf(existing?.herdrPath ?: "herdr") }
+    var boardAgentPane by remember { mutableStateOf(existing?.boardAgentPane) }
+    var boardPicker by remember { mutableStateOf(false) }
+    var paneQuotaCommand by remember { mutableStateOf(existing?.paneQuotaCommand.orEmpty()) }
     var biometric by remember { mutableStateOf(existing?.biometric ?: false) }
     var useKey by remember { mutableStateOf(existing?.useKey ?: false) }
     var keyKind by remember { mutableStateOf(existing?.keyKind) }
@@ -499,6 +503,37 @@ fun EditServerScreen(vm: AppViewModel, existing: Server?, prefillHost: String? =
             modifier = Modifier.fillMaxWidth(),
         )
 
+        if (existing != null) {
+            val boardPanes = vm.boardAgentChoices(existing.id)
+            val chosen = boardPanes.firstOrNull { vm.boardPaneKey(it) == boardAgentPane }
+            Box {
+                OutlinedButton(onClick = { boardPicker = true }) {
+                    Text("Board agent: " + (chosen?.let { it.tabLabel.ifBlank { it.agentName } }
+                        ?: if (boardAgentPane == null) "Off" else "Unavailable"))
+                }
+                androidx.compose.material3.DropdownMenu(expanded = boardPicker, onDismissRequest = { boardPicker = false }) {
+                    androidx.compose.material3.DropdownMenuItem(text = { Text("Off") }, onClick = {
+                        boardAgentPane = null
+                        boardPicker = false
+                    })
+                    boardPanes.forEach { pane ->
+                        androidx.compose.material3.DropdownMenuItem(
+                            text = { Text("${pane.tabLabel.ifBlank { pane.agentName }} (${pane.id})") },
+                            onClick = { boardAgentPane = vm.boardPaneKey(pane); boardPicker = false },
+                        )
+                    }
+                }
+            }
+        }
+
+        OutlinedTextField(
+            paneQuotaCommand,
+            { paneQuotaCommand = it.filterNot(Char::isISOControl).take(com.billmongan.herdrdroid.herdr.QUOTA_COMMAND_LIMIT) },
+            label = { Text("Pane quota command (optional)") }, singleLine = true,
+            supportingText = { Text("Runs over SSH. Use a trusted, read-only command that prints quota JSON keyed by pane ID.") },
+            modifier = Modifier.fillMaxWidth(),
+        )
+
         if (!viaWs) {
             SwitchRow(
                 "Small packets (for lossy Wi-Fi)",
@@ -599,6 +634,8 @@ fun EditServerScreen(vm: AppViewModel, existing: Server?, prefillHost: String? =
                 vm.saveServer(
                     base.copy(
                         name = name.trim(), host = newHost, port = newPort, user = user, herdrPath = herdrPath.trim(),
+                        boardAgentPane = boardAgentPane,
+                        paneQuotaCommand = paneQuotaCommand.trim().takeUnless(String::isBlank),
                         biometric = false,
                         passwordCipher = if (viaWs || forgetPassword || (existing != null && existing.user != user)) null else base.passwordCipher,
                         fingerprint = fp,

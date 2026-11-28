@@ -1,0 +1,68 @@
+package com.billmongan.herdrdroid.board
+
+import com.billmongan.herdrdroid.IdleMainLooperRule
+import com.billmongan.herdrdroid.OUTERMOST_RULE
+import org.junit.Rule
+import org.json.JSONObject
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+
+@RunWith(RobolectricTestRunner::class)
+class BoardTranscript2210Test {
+    @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = IdleMainLooperRule()
+
+    private val request = BoardRequest(BoardRequestKind.EXPORT, null, id = "board-request")
+    private val answer = """{"herdrdroid_board":1,"request":"board-request","board":"Example","as_of":"2026-01-01T00:00:00Z","cards":[],"deleted":[],"results":[]}"""
+    private val block = "```json\n$answer\n```"
+    private fun item(role: String, text: String) = JSONObject().put("t", role).put("text", text)
+
+    @Test fun acceptsTheMatchingAssistantTurnAcrossReads() {
+        val receipt = BoardTranscript(request)
+        receipt.append(listOf(item("user", BoardProtocol.message(request)), item("text", "```json")))
+        assertNull(receipt.result())
+        receipt.append(listOf(item("text", "$answer\n```")))
+        assertEquals("Example", receipt.result()?.board)
+    }
+
+    @Test fun inclusiveCursorReplayKeepsOneReply() {
+        val receipt = BoardTranscript(request)
+        val assistant = item("text", block).put("k", "answer-1")
+        receipt.append(listOf(item("user", BoardProtocol.message(request)), assistant))
+        receipt.append(listOf(assistant))
+        assertEquals("Example", receipt.result()?.board)
+    }
+
+    @Test fun rewrittenAssistantItemReplacesItsEarlierContents() {
+        val receipt = BoardTranscript(request)
+        receipt.append(listOf(
+            item("user", BoardProtocol.message(request)),
+            item("text", "A partial answer.").put("k", "answer-1"),
+            item("text", "```").put("k", "answer-2"),
+        ))
+        receipt.append(listOf(item("text", "```json\n$answer").put("k", "answer-1")))
+        assertEquals("Example", receipt.result()?.board)
+    }
+
+    @Test fun genuinelySeparateMatchingFencesRemainInvalid() {
+        val receipt = BoardTranscript(request)
+        receipt.append(listOf(
+            item("user", BoardProtocol.message(request)),
+            item("text", block).put("k", "answer-1"),
+            item("text", block).put("k", "answer-2"),
+        ))
+        assertNull(receipt.result())
+    }
+
+    @Test fun ignoresToolOutputAndOtherTurns() {
+        val receipt = BoardTranscript(request)
+        receipt.append(listOf(item("user", "Other prompt"), item("text", block)))
+        assertNull(receipt.result())
+        receipt.append(listOf(item("user", BoardProtocol.message(request)), item("note", block)))
+        assertNull(receipt.result())
+        receipt.append(listOf(item("user", block), item("text", block)))
+        assertNull(receipt.result())
+    }
+}

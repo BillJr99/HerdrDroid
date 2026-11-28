@@ -24,9 +24,8 @@ class UpdaterTest {
     @get:Rule val tmp = TemporaryFolder()
 
     private class MemPrefs : UpdatePrefs {
-        override var dailyCheck = true
+        override var checkOnLaunch = true
         override var lastCheckAt = 0L
-        override var lastAttemptAt = 0L
         override var skippedVersion: String? = null
     }
 
@@ -58,14 +57,14 @@ class UpdaterTest {
         override val installedVersionCode = 117L
         var signers = setOf(RELEASE_SIGNER_SHA256)
         var archive: ArchiveFacts? = ArchiveFacts(UPDATE_PACKAGE, 118, setOf(RELEASE_SIGNER_SHA256))
-        var metered = false
+        var online = true
         var allowed = true
         var clock = 1_800_000_000_000L
         val installed = mutableListOf<String>()
         var settingsOpened = 0
         override fun installedSigners() = signers
         override fun readArchive(file: File) = archive
-        override fun isMetered() = metered
+        override fun hasNetwork() = online
         override fun canInstall() = allowed
         override fun openInstallPermissionSettings() { settingsOpened++ }
         override fun install(file: File) { installed += file.name; file.delete() }
@@ -92,62 +91,55 @@ class UpdaterTest {
     private fun cachedApks() = File(cache, "updates").listFiles().orEmpty().toList()
 
     @Test fun noNetworkCallWhenTheSwitchIsOffAndTheButtonIsNotPressed() {
-        prefs.dailyCheck = false
+        prefs.checkOnLaunch = false
         http.body = releaseJson()
-        updater.maybeCheckDaily()
+        updater.checkAtLaunch()
         updater.onResume()
-        updater.maybeCheckDaily()
-        platform.clock += 10 * UpdateSchedule.DAY_MS
-        updater.maybeCheckDaily()
+        updater.checkAtLaunch()
+        platform.clock += 86_400_000L
+        updater.checkAtLaunch()
         assertTrue(http.gets.isEmpty())
         assertTrue(http.downloads.isEmpty())
         assertNull(updater.dialog)
     }
 
-    @Test fun turningTheSwitchOffStopsTheDailyCheck() {
+    @Test fun theLaunchCheckAsksGitHubOnceAcrossResumes() {
         http.body = releaseJson()
-        assertTrue(updater.dailyCheck)
-        updater.changeDailyCheck(false)
-        assertFalse(prefs.dailyCheck)
-        updater.maybeCheckDaily()
-        assertTrue(http.gets.isEmpty())
-        updater.changeDailyCheck(true)
-        updater.maybeCheckDaily()
-        assertEquals(1, http.gets.size)
-    }
-
-    @Test fun theDailyCheckAsksGitHubOnceADayWithOnlyAGenericUserAgent() {
-        http.body = releaseJson()
-        updater.maybeCheckDaily()
+        updater.checkAtLaunch()
         assertEquals(listOf(LATEST_RELEASE_URL to "HerdrDroid/2.1.4"), http.gets)
         assertEquals(platform.clock, updater.lastCheckAt)
         updater.notNow()
-        platform.clock += UpdateSchedule.DAY_MS - 1
-        updater.maybeCheckDaily()
+        platform.clock += 86_400_000L
+        updater.onResume()
+        updater.checkAtLaunch()
         assertEquals(1, http.gets.size)
-        platform.clock += 1
-        updater.maybeCheckDaily()
-        assertEquals(2, http.gets.size)
     }
 
-    @Test fun theDailyCheckWaitsForAnUnmeteredNetwork() {
-        http.body = releaseJson()
-        platform.metered = true
-        updater.maybeCheckDaily()
+    @Test fun anOfflineLaunchAndManualCheckMakeNoRequest() {
+        platform.online = false
+        updater.checkAtLaunch()
+        assertNull(updater.note)
+        updater.checkNow()
+        assertEquals("No network connection. Try again when online.", updater.note)
         assertTrue(http.gets.isEmpty())
-        platform.metered = false
-        updater.maybeCheckDaily()
+        platform.online = true
+        http.body = releaseJson()
+        updater.onResume()
+        updater.checkAtLaunch()
+        assertTrue(http.gets.isEmpty())
+        updater.checkNow()
         assertEquals(1, http.gets.size)
+        assertTrue(updater.dialog is UpdateDialogState.Available)
     }
 
-    @Test fun aFailedDailyCheckIsSilentAndAFailedButtonSaysWhy() = runBlocking {
+    @Test fun aFailedLaunchCheckIsSilentAndAFailedButtonSaysWhy() = runBlocking {
         http.fail = IOException("no route")
-        updater.maybeCheckDaily()
+        updater.checkAtLaunch()
         assertNull(updater.note)
         assertNull(updater.dialog)
         assertEquals(0L, updater.lastCheckAt)
-        // Not again on the next resume.
-        updater.maybeCheckDaily()
+        updater.onResume()
+        updater.checkAtLaunch()
         assertEquals(1, http.gets.size)
         updater.check(manual = true)
         assertTrue(updater.note!!.startsWith("Couldn't check for updates"))
@@ -291,7 +283,7 @@ class UpdaterTest {
 
     @Test fun aLeftoverApkIsClearedWhenTheAppStarts() {
         File(cache, "updates").apply { mkdirs() }.resolve("HerdrDroid-2.1.5.apk").writeBytes(ByteArray(10))
-        updater.dailyCheck
+        updater.checkOnLaunch
         assertTrue(cachedApks().isEmpty())
     }
 }

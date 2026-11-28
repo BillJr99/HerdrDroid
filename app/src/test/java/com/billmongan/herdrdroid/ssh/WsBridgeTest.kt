@@ -17,8 +17,11 @@ import org.junit.Test
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
+import java.net.InetSocketAddress
 import java.net.Socket
 import java.util.Random
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 class WsBridgeTest {
     /** A WebSocket server that sends back every binary frame it gets, cut into different-sized pieces. */
@@ -115,6 +118,55 @@ class WsBridgeTest {
                     s.soTimeout = 10_000
                     val all = s.getInputStream().readBytes() // returns at EOF; a hang would time out
                     assertArrayEquals(byteArrayOf(1, 2, 3), all)
+                }
+            } finally {
+                bridge.close()
+            }
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test fun lateLocalWriteDoesNotInterruptServerCloseDrain() = serverCloseDrainsAfterLocalInput {
+        it.getOutputStream().write(1)
+    }
+
+    @Test fun localEofDoesNotInterruptServerCloseDrain() = serverCloseDrainsAfterLocalInput {
+        it.shutdownOutput()
+    }
+
+    private fun serverCloseDrainsAfterLocalInput(localInput: (Socket) -> Unit) {
+        val payload = ByteArray(8 * 1024 * 1024) { (it % 251).toByte() }
+        val closeAcknowledged = CountDownLatch(1)
+        val server = MockWebServer()
+        server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                webSocket.send(payload.toByteString())
+                webSocket.close(1000, "done")
+            }
+
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                closeAcknowledged.countDown()
+            }
+        }))
+        server.start()
+        val existing = Thread.getAllStackTraces().keys
+        try {
+            val bridge = WsBridge.open(server.url("/").toString().replaceFirst("http", "ws"))
+            try {
+                assertTrue("WebSocket close handshake", closeAcknowledged.await(10, TimeUnit.SECONDS))
+                val pump = Thread.getAllStackTraces().keys.single {
+                    it !in existing && it.name.startsWith("herdrdroid-ws-bridge-")
+                }
+                Socket().use { socket ->
+                    socket.receiveBufferSize = 32 * 1024
+                    socket.soTimeout = 10_000
+                    socket.connect(InetSocketAddress(bridge.host, bridge.port))
+                    localInput(socket)
+                    // Let the upstream pump finish while the payload is still backed up.
+                    pump.join(2_000)
+                    assertTrue("Upstream pump must stop", !pump.isAlive)
+                    assertArrayEquals(payload, socket.getInputStream().readBytes())
                 }
             } finally {
                 bridge.close()

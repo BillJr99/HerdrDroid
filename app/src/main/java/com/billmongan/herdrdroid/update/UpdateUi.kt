@@ -25,26 +25,26 @@ import java.util.Date
 fun lastCheckLabel(at: Long): String =
     if (at <= 0) "Never" else DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(at))
 
-/** The Updates part of Settings: the daily switch, Check for updates now, the version and last check. */
+/** The Updates part of Settings: the launch switch, Check for updates now, the version and last check. */
 @Composable
 fun UpdateSettings(
     installedVersion: String,
-    dailyCheck: Boolean,
+    checkOnLaunch: Boolean,
     lastCheckAt: Long,
     checking: Boolean,
     note: String?,
-    onDailyCheck: (Boolean) -> Unit,
+    onCheckOnLaunch: (Boolean) -> Unit,
     onCheckNow: () -> Unit,
 ) {
     Row(
-        Modifier.fillMaxWidth().toggleable(value = dailyCheck, role = Role.Switch, onValueChange = onDailyCheck),
+        Modifier.fillMaxWidth().toggleable(value = checkOnLaunch, role = Role.Switch, onValueChange = onCheckOnLaunch),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text("Check for updates daily", color = Palette.Ink, fontSize = 16.sp, modifier = Modifier.weight(1f))
-        Switch(checked = dailyCheck, onCheckedChange = null)
+        Text("Check for updates on launch", color = Palette.Ink, fontSize = 16.sp, modifier = Modifier.weight(1f))
+        Switch(checked = checkOnLaunch, onCheckedChange = null)
     }
     Text(
-        "Once a day, when the app opens and isn't on a metered network, it asks GitHub whether a newer " +
+        "Once each launch when online, the app asks GitHub whether a newer " +
             "HerdrDroid release is out. It sends nothing about you or your servers.",
         color = Palette.Muted, fontSize = 13.sp,
     )
