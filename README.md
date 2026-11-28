@@ -657,6 +657,7 @@ To keep a new test class safe:
 
 - **Two-way Board sync.** Pull down on a server tab to sync that board, or on **All** to sync every board with an agent configured. HerdrDroid sends queued edits first, then requests changes since the last export. Manual pulls can refresh within five minutes. Requests wait for an idle pane with an empty composer.
 - **Phone card targets.** Choose a board when creating or editing a phone card, then pull to sync it. If a server card already has the same normalized title, choose whether to link it or create a separate card. Notes merge in time order without duplicates. A remote deletion of a locally edited card requires a decision.
+- **Warning details.** Tap the chat warning badge to read the warnings and choose an action. HerdrDroid opens a supported native panel only after a tap and after it verifies that the pane is idle, the composer is empty, and no approval or question is open. Dismiss hides a warning in the app. Use the chat menu to check again when every warning is hidden.
 
 ### 2.2.10
 
