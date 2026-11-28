@@ -32,6 +32,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -51,6 +52,7 @@ import com.billmongan.herdrdroid.board.BoardConflict
 import com.billmongan.herdrdroid.board.BoardNote
 import com.billmongan.herdrdroid.board.BoardState
 import com.billmongan.herdrdroid.board.BoardStatus
+import com.billmongan.herdrdroid.board.BoardSyncProgress
 import com.billmongan.herdrdroid.board.ServerBoard
 import java.time.Instant
 import java.util.UUID
@@ -80,11 +82,12 @@ internal fun BoardScreen(
     onMenu: () -> Unit,
     onBack: () -> Unit,
     onRefresh: (List<String>) -> Unit,
+    onSync: (List<String>) -> Unit,
     onRetry: (String) -> Unit,
-    onSave: (String?, BoardCard) -> Unit,
-    onMovePhoneCard: (String, String) -> Unit,
+    onSave: (String?, BoardCard, String?) -> Unit,
     onAddNote: (String?, String, BoardNote) -> Unit,
     onResolve: (String, String, String, Boolean) -> Unit,
+    onResolveDuplicate: (String, String, String?) -> Unit,
     handleBack: Boolean = true,
 ) {
     val serverIds = servers.map(BoardSource::id)
@@ -93,6 +96,7 @@ internal fun BoardScreen(
     var allTabs by rememberSaveable { mutableStateOf(false) }
     val index = tabs.indexOfFirst { it.serverId == tabId && it.isAll == allTabs }.coerceAtLeast(0)
     val tab = tabs[index]
+    val syncIds = if (tab.isAll) serverIds else listOfNotNull(tab.serverId)
     var mineOnly by rememberSaveable { mutableStateOf(false) }
     var waitingOnly by rememberSaveable { mutableStateOf(false) }
     var ownerName by rememberSaveable { mutableStateOf("") }
@@ -104,6 +108,7 @@ internal fun BoardScreen(
         val cards = if (it.serverId == null) state.phone else state.servers[it.serverId]?.cards.orEmpty()
         cards[it.cardId]
     }
+    val targetId = active?.takeIf { it.serverId == null }?.let { state.phoneTargets[it.cardId] }
     val activeConflicts = active?.let { selection ->
         selection.serverId?.let(state.servers::get)?.conflicts.orEmpty().filter { it.cardId == selection.cardId }
     }.orEmpty()
@@ -120,10 +125,9 @@ internal fun BoardScreen(
             IconButton(onClick = onMenu) { Icon(Icons.Filled.Menu, "All agents", tint = Palette.Ink) }
             Text("Board", Modifier.weight(1f).padding(start = 10.dp), color = Palette.Ink, fontSize = 18.sp,
                 fontWeight = FontWeight.SemiBold)
-            if (activeCard == null && activeConflicts.isEmpty() && (tab.serverId != null || tab.isAll && servers.isNotEmpty())) {
-                val refreshIds = if (tab.isAll) serverIds else listOfNotNull(tab.serverId)
-                IconButton(onClick = { onRefresh(refreshIds) }) {
-                    Icon(Icons.Filled.Refresh, "Refresh board", tint = Palette.Ink)
+            if (activeCard == null && activeConflicts.isEmpty() && syncIds.isNotEmpty()) {
+                IconButton(onClick = { onSync(syncIds) }) {
+                    Icon(Icons.Filled.Refresh, "Sync board", tint = Palette.Ink)
                 }
             }
         }
@@ -131,12 +135,13 @@ internal fun BoardScreen(
             BoardCardDetail(
                 card = activeCard,
                 conflicts = activeConflicts,
-                destinations = if (active.serverId == null) servers else emptyList(),
+                target = if (active.serverId == null) {
+                    if (targetId == null) "Phone only" else servers.firstOrNull { it.id == targetId }?.label ?: "Unavailable"
+                } else null,
                 author = ownerName.ifBlank { "Phone" },
                 onBack = { detail = null },
                 onEdit = { card -> editor = active.serverId to card },
-                onStatus = { card, status -> onSave(active.serverId, card.moveStatus(status, active.serverId == null)) },
-                onMove = { id -> onMovePhoneCard(active.cardId, id); detail = null },
+                onStatus = { card, status -> onSave(active.serverId, card.moveStatus(status, active.serverId == null), targetId) },
                 onNote = { onAddNote(active.serverId, active.cardId, it) },
                 onResolve = { field, keepPhone ->
                     active.serverId?.let { onResolve(it, active.cardId, field, keepPhone) }
@@ -176,12 +181,20 @@ internal fun BoardScreen(
                         owner = ownerName.takeIf(String::isNotBlank))
                 }, modifier = Modifier.padding(horizontal = 8.dp)) { Text("New card") }
             }
-            val refreshIds = if (tab.isAll) serverIds else listOfNotNull(tab.serverId)
             val body: @Composable () -> Unit = {
-                BoardList(state, servers, tab, waitingOnly, ownerName.takeIf { mineOnly }, onRetry) { detail = it }
+                BoardList(state, servers, tab, waitingOnly, ownerName.takeIf { mineOnly }, onRetry, onResolveDuplicate) { detail = it }
             }
-            if (refreshIds.isEmpty()) body()
-            else PullRefresh(onRefresh = { onRefresh(refreshIds) }, modifier = Modifier.fillMaxSize(), content = body)
+            if (syncIds.isEmpty()) body()
+            else PullToRefreshBox(
+                isRefreshing = syncIds.any { id ->
+                    when (state.servers[id]?.syncProgress) {
+                        BoardSyncProgress.APPLYING, BoardSyncProgress.EXPORTING -> true
+                        else -> false
+                    }
+                },
+                onRefresh = { onSync(syncIds) },
+                modifier = Modifier.fillMaxSize(),
+            ) { body() }
         }
     }
 
@@ -212,8 +225,9 @@ internal fun BoardScreen(
                 "This card updated while you were editing. Reopen it to see the latest values."
             else -> null
         }
-        BoardEditor(card, serverId == null, blockedReason, onDismiss = { editor = null }) { changed ->
-            onSave(serverId, changed)
+        BoardEditor(card, serverId == null, blockedReason, servers, state.phoneTargets[card.id],
+            onDismiss = { editor = null }) { changed, target ->
+            onSave(serverId, changed, target)
             editor = null
             detail = BoardSelection(serverId, changed.id)
         }
@@ -233,6 +247,7 @@ private fun BoardList(
     waitingOnly: Boolean,
     owner: String?,
     retry: (String) -> Unit,
+    resolveDuplicate: (String, String, String?) -> Unit,
     open: (BoardSelection) -> Unit,
 ) {
     val boards = when {
@@ -258,8 +273,15 @@ private fun BoardList(
             source?.availability?.let { message ->
                 item { Text(message, color = Palette.Muted, modifier = Modifier.padding(horizontal = 16.dp)) }
             }
-            if (sourceId != null && serverBoard != null) item {
-                BoardSyncStatus(serverBoard) { retry(sourceId) }
+            if (sourceId != null && serverBoard != null) {
+                item { BoardSyncStatus(serverBoard) { retry(sourceId) } }
+                items(serverBoard.duplicates) { duplicate ->
+                    val phone = state.phone[duplicate.phoneId]
+                    val matches = duplicate.remoteIds.mapNotNull(cards::get)
+                    if (phone != null && matches.isNotEmpty()) {
+                        BoardDuplicateCard(phone, matches) { remote -> resolveDuplicate(sourceId, phone.id, remote) }
+                    }
+                }
             }
             if (openCards.isEmpty() && conflicts.isEmpty()) item {
                 Text("No cards", color = Palette.Muted, modifier = Modifier.padding(16.dp))
@@ -281,8 +303,13 @@ private fun BoardSyncStatus(board: ServerBoard, retry: () -> Unit) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
         board.asOf?.let { Text("Last export $it", fontSize = 12.sp, color = Palette.Muted) }
         val status = when {
-            board.noAnswer -> "No answer. Showing the cached board."
+            board.noAnswer || board.syncProgress == BoardSyncProgress.NO_ANSWER -> "No answer. Showing the cached board."
+            board.syncProgress == BoardSyncProgress.APPLYING -> "Sending phone changes"
+            board.syncProgress == BoardSyncProgress.EXPORTING -> "Getting server changes"
+            board.syncProgress == BoardSyncProgress.SYNCED -> "Synced"
+            board.syncProgress == BoardSyncProgress.CONFLICTS -> "Conflicts to resolve"
             board.requestSentAt != null -> "Waiting for the board agent"
+            board.syncProgress == BoardSyncProgress.QUEUED -> "Sync queued for the board agent"
             board.request != null -> "Queued for the board agent"
             else -> null
         }
@@ -315,16 +342,14 @@ private val BoardStatus.label: String get() = wire.replaceFirstChar { it.upperca
 private fun BoardCardDetail(
     card: BoardCard?,
     conflicts: List<BoardConflict>,
-    destinations: List<BoardSource>,
+    target: String?,
     author: String,
     onBack: () -> Unit,
     onEdit: (BoardCard) -> Unit,
     onStatus: (BoardCard, BoardStatus) -> Unit,
-    onMove: (String) -> Unit,
     onNote: (BoardNote) -> Unit,
     onResolve: (String, Boolean) -> Unit,
 ) {
-    var moving by remember { mutableStateOf(false) }
     var note by rememberSaveable(card?.id) { mutableStateOf("") }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp),
@@ -358,9 +383,7 @@ private fun BoardCardDetail(
             card.next?.let { FieldText("Next", it) }
             if (card.waitingOn.isNotEmpty()) FieldText("Waiting on", card.waitingOn.joinToString(", "))
             card.updatedAt?.let { FieldText("Updated", it) }
-            if (destinations.isNotEmpty()) {
-                TextButton(onClick = { moving = true }) { Text("Move to a server board") }
-            }
+            target?.let { FieldText("Board", it) }
             HorizontalDivider()
             Text("Notes", color = Palette.Ink, fontWeight = FontWeight.Bold)
             card.notes.forEach { entry ->
@@ -376,18 +399,6 @@ private fun BoardCardDetail(
             }) { Text("Add note") }
         }
     }
-    if (moving) AlertDialog(
-        onDismissRequest = { moving = false },
-        title = { Text("Move card to a server board") },
-        text = {
-            Column(Modifier.verticalScroll(rememberScrollState())) {
-                destinations.forEach { source ->
-                    TextButton(onClick = { moving = false; onMove(source.id) }) { Text(source.label) }
-                }
-            }
-        },
-        confirmButton = { TextButton(onClick = { moving = false }) { Text("Cancel") } },
-    )
 }
 
 @Composable
@@ -416,10 +427,13 @@ private fun BoardEditor(
     card: BoardCard,
     phone: Boolean,
     blockedReason: String?,
+    destinations: List<BoardSource>,
+    initialTarget: String?,
     onDismiss: () -> Unit,
-    onSave: (BoardCard) -> Unit,
+    onSave: (BoardCard, String?) -> Unit,
 ) {
     var input by remember(card.id) { mutableStateOf(card) }
+    var target by remember(card.id) { mutableStateOf(initialTarget) }
     var waiting by remember(card.id) { mutableStateOf(card.waitingOn.joinToString("\n")) }
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -428,6 +442,7 @@ private fun BoardEditor(
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 blockedReason?.let { Text(it, color = Palette.OrangeInk) }
                 BoardField("Title", input.title, Modifier.testTag("board-card-title")) { input = input.copy(title = it) }
+                if (phone) BoardTargetButton(target, destinations) { target = it }
                 BoardStatusButton(input.status) { input = input.moveStatus(it, phone) }
                 BoardField("Native status", input.nativeStatus) { input = input.copy(nativeStatus = it) }
                 BoardField("Owner", input.owner.orEmpty()) { input = input.copy(owner = it.takeIf(String::isNotEmpty)) }
@@ -453,11 +468,46 @@ private fun BoardEditor(
         },
         confirmButton = {
             TextButton(enabled = input.title.isNotBlank() && blockedReason == null, onClick = {
-                onSave(input.copy(waitingOn = waiting.lineSequence().map(String::trim).filter(String::isNotEmpty).toList()))
+                onSave(input.copy(waitingOn = waiting.lineSequence().map(String::trim).filter(String::isNotEmpty).toList()), target)
             }) { Text("Save card") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
+}
+
+@Composable
+private fun BoardTargetButton(target: String?, destinations: List<BoardSource>, select: (String?) -> Unit) {
+    var choosing by remember { mutableStateOf(false) }
+    val name = if (target == null) "Phone only" else destinations.firstOrNull { it.id == target }?.label ?: "Unavailable"
+    Column {
+        TextButton(onClick = { choosing = true }, modifier = Modifier.testTag("board-target")) { Text("Board: $name") }
+        DropdownMenu(expanded = choosing, onDismissRequest = { choosing = false }) {
+            DropdownMenuItem(text = { Text("Phone only") }, onClick = { choosing = false; select(null) })
+            destinations.forEach { destination ->
+                DropdownMenuItem(text = { Text(destination.label) }, modifier = Modifier.testTag("board-target-${destination.id}"), onClick = {
+                    choosing = false
+                    select(destination.id)
+                })
+            }
+        }
+    }
+}
+
+@Composable
+private fun BoardDuplicateCard(phone: BoardCard, matches: List<BoardCard>, resolve: (String?) -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+        shape = RoundedCornerShape(12.dp), color = Palette.Card,
+    ) {
+        Column(Modifier.padding(12.dp)) {
+            Text("${phone.title} matches an existing card", color = Palette.OrangeInk, fontWeight = FontWeight.Bold)
+            matches.forEach { match ->
+                val cardLabel = if (matches.size == 1) match.title else "${match.title} (${match.id})"
+                TextButton(onClick = { resolve(match.id) }) { Text("Link to $cardLabel") }
+            }
+            TextButton(onClick = { resolve(null) }) { Text("Create separately") }
+        }
+    }
 }
 
 @Composable

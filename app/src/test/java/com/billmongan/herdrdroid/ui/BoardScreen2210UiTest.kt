@@ -9,10 +9,14 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeDown
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.billmongan.herdrdroid.IdleMainLooperRule
 import com.billmongan.herdrdroid.OUTERMOST_RULE
 import com.billmongan.herdrdroid.board.BoardCard
+import com.billmongan.herdrdroid.board.BoardDuplicate
+import com.billmongan.herdrdroid.board.BoardSyncProgress
 import com.billmongan.herdrdroid.board.BoardState
 import com.billmongan.herdrdroid.board.BoardStatus
 import com.billmongan.herdrdroid.board.ServerBoard
@@ -40,9 +44,9 @@ class BoardScreen2210UiTest {
                 state = BoardState(),
                 servers = emptyList(),
                 onMenu = {}, onBack = {},
-                onRefresh = {}, onRetry = {},
-                onSave = { target, card -> savedServer = target; savedTitle = card.title },
-                onMovePhoneCard = { _, _ -> }, onAddNote = { _, _, _ -> }, onResolve = { _, _, _, _ -> },
+                onRefresh = {}, onSync = {}, onRetry = {},
+                onSave = { target, card, _ -> savedServer = target; savedTitle = card.title },
+                onAddNote = { _, _, _ -> }, onResolve = { _, _, _, _ -> }, onResolveDuplicate = { _, _, _ -> },
             )
         }
         rule.onNodeWithText("New card").performClick()
@@ -66,19 +70,20 @@ class BoardScreen2210UiTest {
                 ))),
                 servers = listOf(source),
                 onMenu = {}, onBack = {},
-                onRefresh = { events += "refresh:${it.joinToString()}" }, onRetry = { events += "retry:$it" },
-                onSave = { _, _ -> }, onMovePhoneCard = { _, _ -> }, onAddNote = { _, _, _ -> },
-                onResolve = { _, _, _, _ -> },
+                onRefresh = { events += "refresh:${it.joinToString()}" },
+                onSync = { events += "sync:${it.joinToString()}" }, onRetry = { events += "retry:$it" },
+                onSave = { _, _, _ -> }, onAddNote = { _, _, _ -> },
+                onResolve = { _, _, _, _ -> }, onResolveDuplicate = { _, _, _ -> },
             )
         }
         rule.onNodeWithText("Shared").performClick()
         rule.onNodeWithText("No answer. Showing the cached board.").assertExists()
         rule.onNodeWithText("Retry").performClick()
-        rule.onNodeWithContentDescription("Refresh board").performClick()
+        rule.onNodeWithContentDescription("Sync board").performClick()
         rule.onNodeWithTag("board-filter-waiting").performClick()
         rule.onNodeWithText("Await review").assertExists()
         rule.onNodeWithText("Ready to archive").assertDoesNotExist()
-        rule.runOnIdle { assertEquals(listOf("refresh:remote", "retry:remote", "refresh:remote"), events) }
+        rule.runOnIdle { assertEquals(listOf("refresh:remote", "retry:remote", "sync:remote"), events) }
     }
 
     @Test fun conflictShowsBothValuesAndSendsTheChosenResolution() {
@@ -96,9 +101,10 @@ class BoardScreen2210UiTest {
             BoardScreen(
                 state = state.value,
                 servers = listOf(source),
-                onMenu = {}, onBack = {}, onRefresh = {}, onRetry = {},
-                onSave = { _, _ -> }, onMovePhoneCard = { _, _ -> }, onAddNote = { _, _, _ -> },
+                onMenu = {}, onBack = {}, onRefresh = {}, onSync = {}, onRetry = {},
+                onSave = { _, _, _ -> }, onAddNote = { _, _, _ -> },
                 onResolve = { server, id, field, keepPhone -> chosen = listOf(server, id, field, keepPhone) },
+                onResolveDuplicate = { _, _, _ -> },
             )
         }
         rule.onNodeWithText("Shared").performClick()
@@ -116,4 +122,77 @@ class BoardScreen2210UiTest {
         }
         rule.onNodeWithText("Edit card").assertIsEnabled()
     }
+
+    @Test fun pullSyncScopesToTheSelectedServerOrAll() {
+        val rounds = mutableListOf<List<String>>()
+        val exports = mutableListOf<List<String>>()
+        rule.setContent {
+            BoardScreen(
+                state = BoardState(phone = mapOf("a" to BoardCard("a", "Phone task"))),
+                servers = listOf(BoardSource("one", "First"), BoardSource("two", "Second")),
+                onMenu = {}, onBack = {}, onRefresh = { exports += it }, onSync = { rounds += it },
+                onRetry = {}, onSave = { _, _, _ -> }, onAddNote = { _, _, _ -> },
+                onResolve = { _, _, _, _ -> }, onResolveDuplicate = { _, _, _ -> },
+            )
+        }
+        rule.onNodeWithTag("board-cards").performTouchInput { swipeDown() }
+        rule.onNodeWithText("First").performClick()
+        rule.onNodeWithTag("board-cards").performTouchInput { swipeDown() }
+        rule.onNodeWithText("All").performClick()
+        rule.onNodeWithTag("board-cards").performTouchInput { swipeDown() }
+        rule.runOnIdle {
+            assertEquals(listOf(listOf("one", "two")), exports)
+            assertEquals(listOf(listOf("one"), listOf("one", "two")), rounds)
+        }
+    }
+
+    @Test
+    @Config(qualifiers = "w320dp-h1000dp")
+    fun editingAPhoneCardCanAssignItsTargetWithoutMovingIt() {
+        val card = BoardCard("a", "Phone task")
+        var saved: List<String?> = emptyList()
+        rule.setContent {
+            BoardScreen(
+                state = BoardState(phone = mapOf(card.id to card)),
+                servers = listOf(BoardSource("one", "First")),
+                onMenu = {}, onBack = {}, onRefresh = {}, onSync = {},
+                onRetry = {}, onSave = { server, edited, target -> saved = listOf(server, edited.id, target) },
+                onAddNote = { _, _, _ -> }, onResolve = { _, _, _, _ -> }, onResolveDuplicate = { _, _, _ -> },
+            )
+        }
+        rule.onNodeWithText("Phone task").performClick()
+        rule.onNodeWithText("Edit card").performClick()
+        rule.onNodeWithTag("board-target").performClick()
+        rule.onNodeWithTag("board-target-one").performClick()
+        rule.onNodeWithText("Save card").performClick()
+        rule.runOnIdle { assertEquals(listOf(null, "a", "one"), saved) }
+    }
+
+    @Test fun aDuplicateShowsAnExplicitLinkChoice() {
+        val local = BoardCard("local", "Write draft")
+        val remote = BoardCard("remote", "Write draft")
+        var selected: List<String?> = emptyList()
+        rule.setContent {
+            BoardScreen(
+                state = BoardState(phone = mapOf(local.id to local), servers = mapOf("one" to ServerBoard(
+                    entries = mapOf(remote.id to remote),
+                    syncProgress = BoardSyncProgress.CONFLICTS,
+                    duplicates = listOf(BoardDuplicate(local.id, listOf(remote.id))),
+                ))),
+                servers = listOf(BoardSource("one", "First")),
+                onMenu = {}, onBack = {}, onRefresh = {}, onSync = {},
+                onRetry = {}, onSave = { _, _, _ -> }, onAddNote = { _, _, _ -> },
+                onResolve = { _, _, _, _ -> }, onResolveDuplicate = { server, phone, target ->
+                    selected = listOf(server, phone, target)
+                },
+            )
+        }
+        rule.onNodeWithText("First").performClick()
+        rule.onNodeWithText("Conflicts to resolve").assertExists()
+        rule.onNodeWithText("Create separately").assertExists()
+        rule.runOnIdle { assertEquals(emptyList<String?>(), selected) }
+        rule.onNodeWithText("Link to Write draft").performClick()
+        rule.runOnIdle { assertEquals(listOf("one", "local", "remote"), selected) }
+    }
+
 }
