@@ -1004,15 +1004,47 @@ class Herdr internal constructor(
     /** Draft keys only after the host compares the app's last ANSI viewport byte for byte. */
     internal suspend fun sendCheckedDraftKeys(
         paneId: String, keys: List<String>, viewport: String, occupant: String, connection: Any, permit: WritePermit,
+        requireBottom: Boolean = false,
     ): Boolean {
         if (core || viewport.isBlank()) return false
-        val check = occupantCheckCommand(paneId, occupant) + " && " + exactViewportCheck(paneId, viewport)
+        val check = occupantCheckCommand(paneId, occupant) + " && " + exactViewportCheck(paneId, viewport, requireBottom)
         val send = cmd("pane", "send-keys", paneId, *keys.toTypedArray())
         val result = runWriteResult("$check && echo $OCCUPANT_PASSED_MARK && $send", connection, permit)
         if (result.exit == 0) return true
         val lines = result.out.lineSequence().map(String::trim).toSet()
-        if (result.exit == -2 || OCCUPANT_PASSED_MARK in lines) throw DeliveryUncertain("The draft key may have gone through.")
+        if (result.exit == -2 || OCCUPANT_PASSED_MARK in lines) throw DeliveryUncertain("The key may have gone through.")
         return false
+    }
+
+    /** Called only from a user tap while the caller holds the pane's dispatch lane. */
+    internal suspend fun readPaneWarnings(pane: Pane, connection: Any, allowed: () -> Boolean): PaneWarningResult {
+        if (core) return PaneWarningResult.Unavailable("Open in terminal to read.")
+        fun current() = connectionIdentity === connection && allowed()
+        return try {
+            readCodexWarningPages(
+                expected = pane,
+                allowed = ::current,
+                read = read@{
+                    val (live, occupant) = cardPaneGuarded(pane.id, connection) ?: return@read null
+                    if (occupant == null || !sameOccupant(pane, live) || !current()) return@read null
+                    val viewport = readStyledViewport(pane.id, connection, timeoutSeconds = 2)
+                    val (after, afterOccupant) = cardPaneGuarded(pane.id, connection) ?: return@read null
+                    if (occupant != afterOccupant || !sameOccupant(live, after) || !current()) return@read null
+                    WarningPaneFrame(after, occupant, viewport)
+                },
+                send = { frame, key ->
+                    sendCheckedDraftKeys(pane.id, listOf(key), frame.viewport, frame.occupant, connection,
+                        WritePermit(::current), requireBottom = true)
+                },
+                pause = { delay(100) },
+            )
+        } catch (c: kotlinx.coroutines.CancellationException) {
+            throw c
+        } catch (_: DeliveryUncertain) {
+            PaneWarningResult.Unavailable("A warning key may have gone through. Open Terminal to check the pane.")
+        } catch (_: Exception) {
+            PaneWarningResult.Unavailable("The pane could not be verified. Open Terminal to check it.")
+        }
     }
 
     /** Keys that go only while [permit] is open; on herdr-core as `hc keys` (2.2.0: the mode menu works there too). */
