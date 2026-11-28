@@ -67,7 +67,6 @@ import com.billmongan.herdrdroid.herdr.hermesUsageEnd
 import com.billmongan.herdrdroid.herdr.hermesUsageWaiting
 import com.billmongan.herdrdroid.herdr.PaneWarningResult
 import com.billmongan.herdrdroid.herdr.paneWarningCount
-import com.billmongan.herdrdroid.herdr.readPaneWarnings
 import com.billmongan.herdrdroid.herdr.footerModel
 import com.billmongan.herdrdroid.herdr.Status
 import com.billmongan.herdrdroid.herdr.RelayResult
