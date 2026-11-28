@@ -4323,6 +4323,7 @@ internal fun hasCodexInputActivity(text: String): Boolean {
 private val COPILOT_PENDING_INPUT_ROW = Regex("""^\s+└ \[pending · ↑ recall]\s*$""")
 
 fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version: String? = null): Prompt? {
+    rebuiltClippedDialog(text, blocked, agent, version)?.let { return it }
     val unstyled = stripAnsi(text)
     val queueRows = if (agent.equals("codex", true)) codexFollowUpRows(unstyled) else emptySet()
     val plain = when {
@@ -4408,7 +4409,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
                 region = p.region ?: plain.lines(), claudeAsk = true).withSpanOf(p)
         else p.copy(claudeAsk = true).withSpanOf(p)
     }
-    return p
+    return p ?: clippedDialogReview(plain, agent)
 }
 
 private val GROK_THINKING_PANEL = Regex("""^\s*┃\s*◆\s+Thinking(?:…|\.\.\.)?\s*$""")
