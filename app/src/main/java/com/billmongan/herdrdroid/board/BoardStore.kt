@@ -441,12 +441,18 @@ private fun ServerBoard.accept(request: BoardRequest, reply: BoardReply): Server
         when (change) {
             is BoardChange.Create -> {
                 val id = change.clientId
-                val notesToAppend = pending.remove(id).orEmpty()
                 val inFlight = local[id]
+                val submittedNotes = change.card.notes.toSet()
+                val notesToAppend = unionNotes(pending.remove(id).orEmpty(),
+                    inFlight?.notes.orEmpty().filterNot { it in submittedNotes })
                 newIds.remove(id)
                 local.remove(id)
                 if (notesToAppend.isNotEmpty()) pending[result.id] = notesToAppend
-                if (inFlight != null) local[result.id] = inFlight.copy(id = result.id)
+                // The acknowledgement includes the saved card. Use its canonical notes, which
+                // may carry a different author or timestamp, and queue only edits made in flight.
+                if (inFlight != null) local[result.id] = inFlight.copy(
+                    id = result.id, notes = incoming.getValue(result.id).notes,
+                )
                 known[result.id] = change.card.copy(id = result.id)
             }
             is BoardChange.Update -> known[change.id]?.let { known[change.id] = it.withFields(change.set) }

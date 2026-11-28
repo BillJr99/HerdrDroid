@@ -141,6 +141,32 @@ class BoardPull2211Test {
         assertEquals(BoardSyncProgress.APPLYING, board(second).syncProgress)
     }
     @Test
+    fun createAcknowledgementUsesServerNotesAndKeepsPhoneNotesAddedInFlight() {
+        val firstNote = BoardNote(time, "Phone", "Start the drawing")
+        val lateNote = BoardNote(newer, "Phone", "Pick up pencils")
+        val local = BoardCard(UUID.randomUUID().toString(), "Draw a boat", notes = listOf(firstNote))
+        assertTrue(store.saveCard(null, local, first))
+        assertTrue(store.startSync(first, 1))
+        val create = request()
+        assertTrue(store.markSent(first, create.id, 1))
+        assertTrue(store.addNote(null, local.id, lateNote))
+
+        val saved = local.copy(id = "server-assigned", notes = listOf(firstNote.copy(by = "Editor")))
+        assertTrue(store.receive(first, BoardReply(create.id, "Board", newer,
+            listOf(saved), emptyList(), listOf(BoardResult(true, saved.id)))))
+        assertEquals(saved.notes + lateNote, board().cards.getValue(saved.id).notes)
+        assertFalse(local.id in store.state.value.phone)
+
+        val export = request()
+        assertEquals(BoardRequestKind.EXPORT, export.kind)
+        assertTrue(store.markSent(first, export.id, 2))
+        assertTrue(store.receive(first, BoardReply(export.id, "Board", newer,
+            listOf(saved), emptyList(), emptyList())))
+        assertTrue(store.queueApply(first, 3))
+        assertEquals(listOf(BoardChange.Note(saved.id, lateNote.text)), request().changes)
+    }
+
+    @Test
     fun pendingNotesAreOrderedAndDeduplicatedWithoutTurningIntoAFieldUpdate() {
         val original = BoardNote(time, "Author", "Original")
         val earlier = BoardNote("2026-01-02T11:00:00Z", "Author", "Earlier")
