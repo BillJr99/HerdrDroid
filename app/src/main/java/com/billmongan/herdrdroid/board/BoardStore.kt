@@ -65,7 +65,7 @@ data class ServerBoard(
     }
 
     val cards: Map<String, BoardCard> get() = entries.mapValues { (id, card) ->
-        card.copy(notes = card.notes + pendingNotes[id].orEmpty())
+        card.copy(notes = unionNotes(card.notes, pendingNotes[id].orEmpty()))
     }
 
     val conflicts: List<BoardConflict> get() = conflicted.flatMap { (id, fields) ->
@@ -130,13 +130,15 @@ class BoardStore internal constructor(
         return server(serverId) { board ->
             val new = card.id !in board.entries
             val pending = board.pendingNotes[card.id].orEmpty()
-            val kept = if (pending.isNotEmpty() && card.notes.takeLast(pending.size) == pending) {
-                card.copy(notes = card.notes.dropLast(pending.size))
-            } else card
+            val pendingOnly = pending.toSet() - board.entries[card.id]?.notes.orEmpty().toSet()
+            val preservesPending = card.notes.containsAll(pendingOnly)
+            val kept = card.copy(notes = unionNotes(
+                if (preservesPending) card.notes.filterNot { it in pendingOnly } else card.notes, emptyList(),
+            ))
             board.copy(
                 entries = board.entries + (card.id to kept),
                 creates = if (new) board.creates + card.id else board.creates,
-                pendingNotes = if (pending.isNotEmpty() && kept == card) board.pendingNotes - card.id else board.pendingNotes,
+                pendingNotes = if (preservesPending) board.pendingNotes else board.pendingNotes - card.id,
             ).afterEdit()
         }
     }
@@ -223,14 +225,15 @@ class BoardStore internal constructor(
     fun addNote(serverId: String?, id: String, note: BoardNote): Boolean {
         if (serverId == null) {
             val card = state.value.phone[id] ?: return false
-            return saveCard(null, card.copy(notes = card.notes + note))
+            return saveCard(null, card.copy(notes = unionNotes(card.notes, listOf(note))))
         }
         return server(serverId) { board ->
             val card = board.entries[id] ?: return@server board
+            if (note in card.notes || note in board.pendingNotes[id].orEmpty()) return@server board
             if (id in board.creates && !(board.attempted && board.request?.changes.orEmpty().any {
                 it is BoardChange.Create && it.clientId == id
-            })) board.copy(entries = board.entries + (id to card.copy(notes = card.notes + note))).afterEdit()
-            else board.copy(pendingNotes = board.pendingNotes + (id to (board.pendingNotes[id].orEmpty() + note))).afterEdit()
+            })) board.copy(entries = board.entries + (id to card.copy(notes = unionNotes(card.notes, listOf(note))))).afterEdit()
+            else board.copy(pendingNotes = board.pendingNotes + (id to unionNotes(board.pendingNotes[id].orEmpty(), listOf(note)))).afterEdit()
         }
     }
 
@@ -401,7 +404,8 @@ private fun ServerBoard.withPendingApply(): ServerBoard {
             val remote = baseline[id]?.fields() ?: return@forEach
             val changed = phone.fields().filter { (field, value) -> value != remote[field] }
             if (changed.isNotEmpty()) add(BoardChange.Update(id, remote.filterKeys { it in changed }, changed))
-            pendingNotes[id].orEmpty().forEach { add(BoardChange.Note(id, it.text)) }
+            unionNotes(pendingNotes[id].orEmpty(), emptyList()).filterNot { it in phone.notes }
+                .forEach { add(BoardChange.Note(id, it.text)) }
         }
     }
     if (changes == request?.changes) return this

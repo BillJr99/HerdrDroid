@@ -1,11 +1,19 @@
 package com.billmongan.herdrdroid.board
 
+import com.billmongan.herdrdroid.IdleMainLooperRule
+import com.billmongan.herdrdroid.OUTERMOST_RULE
 import org.json.JSONObject
 import org.junit.Assert.*
+import org.junit.Rule
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
 import java.util.UUID
 
+@RunWith(RobolectricTestRunner::class)
 class BoardPull2211Test {
+    @get:Rule(order = OUTERMOST_RULE) val idleMainLooper = IdleMainLooperRule()
+
     private val first = "source-a"
     private val second = "source-b"
     private val time = "2026-01-02T12:00:00Z"
@@ -131,5 +139,22 @@ class BoardPull2211Test {
         assertTrue(store.markSent(second, request(second).id, 1))
         assertEquals(BoardSyncProgress.QUEUED, board(first).syncProgress)
         assertEquals(BoardSyncProgress.APPLYING, board(second).syncProgress)
+    }
+    @Test
+    fun pendingNotesAreOrderedAndDeduplicatedWithoutTurningIntoAFieldUpdate() {
+        val original = BoardNote(time, "Author", "Original")
+        val earlier = BoardNote("2026-01-02T11:00:00Z", "Author", "Earlier")
+        val latest = BoardNote(newer, "Author", "Latest")
+        export(existing.copy(notes = listOf(original)))
+        assertTrue(store.addNote(first, existing.id, latest))
+        assertTrue(store.addNote(first, existing.id, earlier))
+        assertFalse(store.addNote(first, existing.id, earlier))
+        assertFalse(store.addNote(first, existing.id, original))
+        val shown = board().cards.getValue(existing.id)
+        assertEquals(listOf(earlier, original, latest), shown.notes)
+        assertTrue(store.saveCard(first, shown.copy(next = "Find scrap paper")))
+        val changes = request().changes
+        assertEquals(listOf("Earlier", "Latest"), changes.filterIsInstance<BoardChange.Note>().map { it.text })
+        assertEquals(mapOf("next" to "Find scrap paper"), changes.filterIsInstance<BoardChange.Update>().single().set)
     }
 }
