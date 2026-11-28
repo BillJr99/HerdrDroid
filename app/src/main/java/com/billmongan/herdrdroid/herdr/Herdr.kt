@@ -4015,7 +4015,7 @@ private fun detectOpenCodePermission(styled: String, text: String): Prompt? {
         val context = (title + 1 until command).map(::cleanBody).filter(String::isNotEmpty)
         val parsed = questionParts((listOf(heading) + context).map { QLine(it) })
         val commandLines = listOf(first.removePrefix(gutter).removePrefix("$ ")) + continuation.map { it.removePrefix(gutter) }
-        val joined = sidebarEdge != null && commandLines.size >= 4
+        val joined = commandLines.size >= 4
         val display = if (joined) joinOpenCodePermissionCommand(commandLines) else commandLines.joinToString("\n")
         val wrapNote = if (joined) "Wrapped lines were joined for display. Check Terminal for exact spacing."
             else "Line breaks follow the terminal display."
