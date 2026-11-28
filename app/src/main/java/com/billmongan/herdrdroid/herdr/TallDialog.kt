@@ -124,3 +124,59 @@ internal fun tallDialogFits(shown: Prompt, fresh: Prompt): Boolean {
         topOffScreen = false, rebuiltTallDialog = false)
     return bare(shown) == bare(fresh)
 }
+
+private const val TALL_CLIPPED_MARK = "\u2060\u2060\u2060"
+
+internal fun isClippedDialogViewport(screen: String, agent: String?): Boolean =
+    clippedDialogFooter(screen, agent) && screenRows(screen).none { clippedDialogHeading(it, agent) }
+
+/** Extra scrollback must have a proven native start before the live viewport. */
+internal suspend fun completeClippedDialog(
+    screen: String, blocked: Boolean, agent: String?, version: String?, read: suspend (Int) -> String?,
+): String {
+    val visible = screenRows(screen)
+    if (visible.isEmpty() || !isClippedDialogViewport(screen, agent)) return screen
+    val parsed = detectPrompt(screen, blocked, agent, version)
+    if (parsed?.rebuiltTallDialog == true) return screen
+    for (n in TALL_DIALOG_READS) {
+        val history = read(n) ?: return screen
+        val rows = screenRows(history)
+        val start = rows.size - visible.size
+        if (start > 0 && rows.takeLast(visible.size) == visible) {
+            // An earlier copy of the visible prefix is a redraw, not an extension.
+            val k = minOf(3, start, visible.size)
+            val duplicate = k >= 2 && rows.subList(start - k, start) == visible.take(k)
+            val head = (start - 1 downTo 0).firstOrNull { clippedDialogHeading(rows[it], agent) }
+            if (!duplicate && head != null) {
+                val before = rows.subList(head, start)
+                val hasPriorFooter = before.indices.any { i ->
+                    clippedDialogFooter(before.subList(maxOf(0, i - 24), i + 1).joinToString("\n"), agent)
+                }
+                if (!hasPriorFooter && !agentWentOn(before.drop(1))) {
+                    val candidate = (listOf(TALL_CLIPPED_MARK) + rows.drop(head)).joinToString("\n")
+                    if (rebuiltClippedDialog(candidate, blocked, agent, version) != null) return candidate
+                }
+            }
+        }
+        if (rows.size < n - 1) return screen
+    }
+    return screen
+}
+
+/** Recovered text is display-only. A marker can never make an old question answerable. */
+internal fun rebuiltClippedDialog(text: String, blocked: Boolean, agent: String?, version: String?): Prompt? {
+    if (text.substringBefore('\n') != TALL_CLIPPED_MARK) return null
+    val body = text.substringAfter('\n')
+    val rows = screenRows(body)
+    if (rows.size !in 2..TALL_DIALOG_MAX_LINES || !clippedDialogHeading(rows.first(), agent) ||
+        !clippedDialogFooter(body, agent)) return null
+    val parsed = detectPrompt(body, blocked, agent, version)
+    val labels = parsed?.choices.orEmpty().map { it.label }
+    val heading = rowBody(rows.first()).second
+    val parts = parsed?.parts?.takeIf { !parsed.terminalReview && !parsed.topOffScreen }
+        ?: QuestionParts(emptyList(), listOf(QBlock(QKind.HEADING, heading),
+            QBlock(QKind.TEXT, rows.drop(1).joinToString("\n") { rowBody(it).second })))
+    return Prompt(heading, emptyList(), region = rows, terminalReview = true, historyReviewOnly = true,
+        rebuiltTallDialog = true, parts = if (labels.isEmpty()) parts else parts.copy(
+            blocks = parts.blocks + labels.map { QBlock(QKind.TEXT, it) }))
+}

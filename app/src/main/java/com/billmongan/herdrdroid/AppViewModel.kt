@@ -18,6 +18,9 @@ import com.billmongan.herdrdroid.herdr.PastSession
 import com.billmongan.herdrdroid.herdr.forPhone
 import com.billmongan.herdrdroid.transcript.lastReply
 import com.billmongan.herdrdroid.transcript.toMarkdown
+import com.billmongan.herdrdroid.herdr.clippedDialogReview
+import com.billmongan.herdrdroid.herdr.completeClippedDialog
+import com.billmongan.herdrdroid.herdr.isClippedDialogViewport
 import com.billmongan.herdrdroid.herdr.detectPrompt
 import com.billmongan.herdrdroid.herdr.activePiQuestion
 import com.billmongan.herdrdroid.herdr.isOpenCode
@@ -2880,6 +2883,7 @@ class AppViewModel internal constructor(
             // A nonempty recent capture can omit the entire dialog or just its choices
             // while status still says Working. Probe only the selected, live-bottom viewport.
             val missingCodexCard = agent == "codex" && paneStatus == Status.WORKING && preview?.choices.isNullOrEmpty()
+            val recentClippedDialog = isClippedDialogViewport(recent, agent)
             val recentClaudeModel = preview?.claudeModelControl == true
             val recentAgyFiles = preview?.agyFileAccess == true
             val recentCodexCard = agent == "codex" && preview != null && client?.backend == Backend.TUI
@@ -2907,7 +2911,7 @@ class AppViewModel internal constructor(
                 "$paneId: the recent read's dialog isn't proven (${preview!!.choices.size} choice(s)); reading the live screen")
             val liveViewport = terminalRead?.raw ?: if (liveUsage == null &&
                 (verifyOpenCode || verifyVibeRelease || verifyHermesUsage || verifyPi || recentClaudeModel || recentCodexQuestion || recentCodexHooks || shownCodexCard || missingCodexCard || unfinishedChoicePreview || unprovenPreview ||
-                    recentAgyFiles || preview?.terminalReview == true || preview?.topOffScreen == true || (blocked && preview?.choices.isNullOrEmpty())) && canUpgrade()) {
+                    recentAgyFiles || recentClippedDialog || preview?.terminalReview == true || preview?.topOffScreen == true || (blocked && preview?.choices.isNullOrEmpty())) && canUpgrade()) {
                 val owner = checkNotNull(cardOwner)
                 quietly { h ->
                     if (h !== owner.client) return@quietly null
@@ -2964,13 +2968,25 @@ class AppViewModel internal constructor(
                 "$paneId: the live screen shows no dialog; the recent read's is not used")
             val recentClippedClaudeAsk = agent.equals("claude", true) && preview?.terminalReview == true &&
                 com.billmongan.herdrdroid.herdr.claudeClippedAskReview(recent) != null
-            val useLive = liveCard != null && (terminalRead != null || recentAgyFiles || verifyVibeRelease || livePrompt != null || recentNativeReview || recentClaudeModel || recentClippedClaudeAsk || preview?.topOffScreen == true || unprovenAnswered || verifyPi && preview != null || liveReport || recentReport || verifiedUsage != null || recentClarify || codexQuestionCleared || verifyOpenCode &&
+            val liveClippedDialog = liveViewport != null && isClippedDialogViewport(liveViewport, agent)
+            val nativeClaudeTall = agent == "claude" && liveCandidate?.topOffScreen == true &&
+                (liveCandidate.choices.isNotEmpty() || liveCard?.let {
+                    com.billmongan.herdrdroid.herdr.claudeClippedAskReview(it)
+                } != null)
+            val useLive = liveCard != null && (terminalRead != null || liveClippedDialog || recentClippedDialog || recentAgyFiles || verifyVibeRelease || livePrompt != null || recentNativeReview || recentClaudeModel || recentClippedClaudeAsk || preview?.topOffScreen == true || unprovenAnswered || verifyPi && preview != null || liveReport || recentReport || verifiedUsage != null || recentClarify || codexQuestionCleared || verifyOpenCode &&
                 (blocked || preview != null || openCodeBackgroundDrawer(agent, recent) || openCodeBackgroundDrawer(agent, liveCard)))
+            val clippedCard = if (liveClippedDialog && liveViewport != null && cardOwner != null && !nativeClaudeTall) {
+                quietly { h ->
+                    if (h !== cardOwner.client || !canUpgrade()) null
+                    else recoverClippedCard(h, cardOwner.pane, cardOwner.connection, liveViewport, agent,
+                        blocked, version, ::canUpgrade)
+                }
+            } else null
             val codexSteeringProven = liveViewport != null && missingCodexCard && liveCandidate == null &&
                 com.billmongan.herdrdroid.herdr.codexSteeringReady(liveViewport)
             val shownText = if (useLive || codexSteeringProven) checkNotNull(liveCard) else recent
             // 2.2.7: a Claude dialog taller than the screen is completed from the pane's history when that proves it (herdr/TallDialog.kt).
-            val text = if (useLive && agent.equals("claude", true) && cardOwner != null)
+            val text = if (useLive && nativeClaudeTall && cardOwner != null)
                 com.billmongan.herdrdroid.herdr.completeTallDialog(shownText, blocked, version) { n ->
                     quietly { h -> if (h === cardOwner.client && canUpgrade()) h.readCardHistory(paneId, n, cardOwner.connection) else null }
                 }
@@ -3019,6 +3035,7 @@ class AppViewModel internal constructor(
             if (panelVisitsRead.size > 256) { panelVisitsRead.clear(); panelOpenCloses.clear() }
             if (panelVisitsRead.add("$serverId/$paneId/$visit")) liveUsage?.let { closePanelOnOpen(it) }
             noteInputLine(paneId, text)
+            clippedCardRead = clippedCard?.let { card -> cardOwner?.let { ClippedCardRead(it, text, card) } }
             paneText = text
             paneTextPane = paneId
             paneTextTarget = cardOwner?.takeIf { it.isCurrent(it.client) && (!requiresLive || useLive) && (!verifyPi || livePrompt != null) }
@@ -3036,6 +3053,7 @@ class AppViewModel internal constructor(
             if (terminalRead != null) applyTerminalQuestionStatus(checkNotNull(terminalWatch), terminalRead)
             val status = terminalRead?.status ?: panes.firstOrNull { it.id == paneId }?.status
             val p = when {
+                clippedCard != null -> clippedCard
                 terminalRead != null -> terminalRead.prompt
                 useLive -> livePrompt
                 requiresLive -> null // Recent output does not establish that this card is current.
@@ -3249,8 +3267,15 @@ class AppViewModel internal constructor(
      * the screen parsed with the pane's shown status. The screen and the read path both use this, so
      * the card confirmed is the card drawn.
      */
+    private data class ClippedCardRead(val target: CardTarget, val text: String, val prompt: Prompt)
+    private var clippedCardRead by mutableStateOf<ClippedCardRead?>(null)
+
     internal fun cardParse(paneId: String, text: String): Prompt? {
         val pane = pane(paneId) ?: return null
+        clippedCardRead?.takeIf {
+            it.target.pane.id == paneId && it.text == text && it.target.isCurrent(it.target.client)
+        }?.let { return it.prompt.forCard() }
+
         if (requiresLivePiQuestion(pane)) return currentPiQuestion(pane)?.forCard()
         return detectPrompt(text, cardStatus(pane) == Status.NEEDS_YOU, pane.agent, versionOf(paneId))?.forCard()
     }
@@ -6158,6 +6183,26 @@ class AppViewModel internal constructor(
         }
     }
 
+    /** Scrollback is display-only and may supplement only a still-live, pinned viewport. */
+    private suspend fun recoverClippedCard(
+        client: Herdr, pane: Pane, connection: Any, viewport: String, agent: String?,
+        blocked: Boolean, version: String?, current: () -> Boolean,
+    ): Prompt? {
+        if (!com.billmongan.herdrdroid.herdr.hasStableOccupant(pane) || !current()) return null
+        val first = client.cardPane(pane.id, connection) ?: return null
+        if (!first.sameCardOccupant(pane) || !current() ||
+            client.readStyledViewport(pane.id, connection) != viewport || !current()) return null
+        val rebuilt = completeClippedDialog(viewport, blocked, agent, version) { lines ->
+            if (current()) client.readCardHistory(pane.id, lines, connection) else null
+        }
+        if (!current() || client.readStyledViewport(pane.id, connection) != viewport) return null
+        val last = client.cardPane(pane.id, connection) ?: return null
+        if (!current() || !last.sameCardOccupant(first)) return null
+        return if (rebuilt != viewport) detectPrompt(rebuilt, blocked, agent, version)
+            ?.takeIf { it.historyReviewOnly && it.terminalReview }
+        else clippedDialogReview(viewport, agent)
+    }
+
     // ---- The Questions view (2.2.8) -----------------------------------------------------------
 
     /**
@@ -6240,12 +6285,17 @@ class AppViewModel internal constructor(
                     else -> detectPrompt(if (styled) raw else plain, blocked, agent, version)
                 }
                 // A Claude dialog taller than the screen: rebuilt whole from the history, as its card is.
-                if (parsed != null && parsed.topOffScreen && agent.equals("claude", true)) {
+                if (parsed?.topOffScreen == true && agent.equals("claude", true) &&
+                    (parsed.choices.isNotEmpty() || com.billmongan.herdrdroid.herdr.claudeClippedAskReview(plain) != null)) {
                     plain = com.billmongan.herdrdroid.herdr.completeTallDialog(plain, blocked, version) { k ->
                         if (stillCurrent()) client.readCardHistory(pane.id, k, connection) else null
                     }
                     if (!stillCurrent()) return null
                     parsed = detectPrompt(plain, blocked, agent, version)
+                } else if (isClippedDialogViewport(raw, agent)) {
+                    val recovered = recoverClippedCard(client, pane, connection, raw, agent, blocked, version, ::stillCurrent)
+                    if (!stillCurrent()) return null
+                    if (recovered != null) return com.billmongan.herdrdroid.questions.QuestionRead(recovered.forCard(), null)
                 }
                 parsed = parsed?.forCard()?.takeIf { it.terminalReview || it.choices.isNotEmpty() }
                 reviewPreview = if (agent.equals("claude", true))
