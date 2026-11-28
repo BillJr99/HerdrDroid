@@ -4955,7 +4955,10 @@ class AppViewModel internal constructor(
         if (!current()) return null
         val text = com.billmongan.herdrdroid.herdr.stripAnsi(raw)
         val agent = live.agent
-        val composer = if (isOpenCode(agent)) openCodeEmptyComposer(raw)
+        // 2.2.11: after Enter or Reject OpenCode goes straight back to its in-session box, which has
+        // no "Ask anything…" placeholder; either empty box proves its question is gone.
+        val composer = if (isOpenCode(agent))
+                com.billmongan.herdrdroid.herdr.openCodeSessionComposerEmpty(raw) || openCodeEmptyComposer(raw)
             else com.billmongan.herdrdroid.herdr.inputLineOf(raw, agent, menuWrite = true)?.let {
                 it.isEmpty() || live.status in setOf(Status.IDLE, Status.DONE, Status.WORKING)
             } == true
