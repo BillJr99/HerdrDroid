@@ -385,7 +385,8 @@ class QuestionText222Test {
         val p = requireNotNull(detectPrompt(capture(path), true, "opencode"))
         val command = requireNotNull(p.parts?.command)
         assertTrue(command.length > 400)
-        assertTrue(command.contains("  "))
+        assertFalse(command.contains("OpenCode includes"))
+        assertFalse(command.contains("Connect from"))
         assertEquals(listOf("Permission required", command.take(400).trimEnd(), "Full command in the app."),
             alertBody(p).lines())
     }

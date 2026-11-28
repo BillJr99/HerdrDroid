@@ -3938,7 +3938,7 @@ private fun detectOpenCodePermission(styled: String, text: String): Prompt? {
     // A wider terminal can continue drawing the right sidebar below the permission
     // controls. Accept that trailing gutter row only when its text starts to the
     // right of the complete controls, never when there is later text in the dialog.
-    var sidebarBelow = false
+    var sidebarEdge: Int? = null
     if (footer > 0 && OPENCODE_PERMISSION_HINT.find(clean(rows[footer])) == null) {
         val candidate = (footer - 1 downTo maxOf(0, footer - 6)).firstOrNull {
             val control = clean(rows[it])
@@ -3958,17 +3958,28 @@ private fun detectOpenCodePermission(styled: String, text: String): Prompt? {
                         }
                 }) {
                 footer = candidate
-                sidebarBelow = true
+                sidebarEdge = controlsEnd
             }
         }
     }
+    // The proven sidebar can begin on the same row as the command or its context.
+    // Strip across the column gap only; adjacent shell text keeps its original bytes.
+    fun bodyRow(i: Int): String {
+        val row = rows[i]
+        val edge = sidebarEdge ?: return row
+        if (edge >= row.length || !row[edge].isWhitespace()) return row
+        val left = row.take(edge).trimEnd()
+        val right = row.drop(edge).indexOfFirst { !it.isWhitespace() }
+        return if (right >= 0 && edge + right - left.length >= 4) left else row
+    }
+    fun cleanBody(i: Int) = clean(bodyRow(i))
     val hint = OPENCODE_PERMISSION_HINT.find(clean(rows[footer]))
     val title = (footer downTo maxOf(0, footer - 60)).firstOrNull { OPENCODE_PERMISSION_TITLE.matches(clean(rows[it])) }
     if (hint == null && (title == null || openCodePermissionRan(text))) return null
     // A shell command wrapped inside the dialog can start a row with ">" (">/dev/null 2>&1"): it is
     // the command being asked about, not an input row under the dialog (2.1.2).
-    val command = title?.let { t -> (t + 1..footer).firstOrNull { clean(rows[it]).startsWith("$ ") } }
-    val commandEnd = command?.let { c -> (c + 1..footer).firstOrNull { clean(rows[it]).isEmpty() } ?: (footer + 1) }
+    val command = title?.let { t -> (t + 1..footer).firstOrNull { cleanBody(it).startsWith("$ ") } }
+    val commandEnd = command?.let { c -> (c + 1..footer).firstOrNull { cleanBody(it).isEmpty() } ?: (footer + 1) }
     if (title != null && agentWentOn((title + 1..footer).filter { command == null || it !in command until checkNotNull(commandEnd) }.map { rows[it] })) return null
     val region = rows.subList(title ?: footer, footer + 1)
     val heading = title?.let { clean(rows[it]).removePrefix("△ ") } ?: "Permission required"
@@ -3981,7 +3992,7 @@ private fun detectOpenCodePermission(styled: String, text: String): Prompt? {
         else (footer - 1 downTo maxOf(0, footer - 2)).firstOrNull { clean(rows[it]).isNotEmpty() } ?: return review()
     if (buttonRow <= title) return review()
     val buttons = OPENCODE_PERMISSION_BUTTONS.find(if (buttonRow == footer) onFooter else clean(rows[buttonRow])) ?: return review()
-    val body = rows.subList(title + 1, buttonRow).map(::clean).filter(String::isNotEmpty)
+    val body = (title + 1 until buttonRow).map(::cleanBody).filter(String::isNotEmpty)
     if (body.isEmpty() || body.any { '…' in it || "..." in it } || body.last().trim() in listOf("$", "# Shell command")) return review()
     val bodyCommandEnd = commandEnd?.coerceAtMost(buttonRow)
     val details = if (command != null && bodyCommandEnd != null && bodyCommandEnd - command > 1) {
@@ -3989,16 +4000,16 @@ private fun detectOpenCodePermission(styled: String, text: String): Prompt? {
         // omit row-end spaces, so a join could change an option or a path. Keep the complete
         // run in one code block with its original row boundaries, as in the terminal.
         val end = bodyCommandEnd
-        val first = rows[command]
+        val first = bodyRow(command)
         val gutter = first.substringBefore("$ ")
         if (end >= buttonRow || !gutter.matches(Regex("""^\s*[┃│|] +$""")) ||
-            rows.subList(end, buttonRow).any { clean(it).isNotEmpty() }) return review()
-        val continuation = rows.subList(command + 1, end)
+            (end until buttonRow).any { cleanBody(it).isNotEmpty() }) return review()
+        val continuation = (command + 1 until end).map(::bodyRow)
         if (continuation.any { !it.startsWith(gutter) || it.removePrefix(gutter).trimStart().startsWith("$ ") }) return review()
-        val context = rows.subList(title + 1, command).map(::clean).filter(String::isNotEmpty)
+        val context = (title + 1 until command).map(::cleanBody).filter(String::isNotEmpty)
         val parsed = questionParts((listOf(heading) + context).map { QLine(it) })
         val commandLines = listOf(first.removePrefix(gutter).removePrefix("$ ")) + continuation.map { it.removePrefix(gutter) }
-        val joined = sidebarBelow && commandLines.size >= 4
+        val joined = sidebarEdge != null && commandLines.size >= 4
         val display = if (joined) joinOpenCodePermissionCommand(commandLines) else commandLines.joinToString("\n")
         val wrapNote = if (joined) "Wrapped lines were joined for display. Check Terminal for exact spacing."
             else "Line breaks follow the terminal display."
