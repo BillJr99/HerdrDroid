@@ -6,7 +6,7 @@ import org.junit.Test
 
 class BoardSyncTargets2211Test {
     private fun server(id: String, configured: Boolean) = Server(
-        id = id, name = id, host = "example.invalid", port = 22, user = "example",
+        id = id, name = id, host = "example.invalid", port = 22, user = "example", herdrPath = "herdr",
         boardAgentPane = "selected-pane".takeIf { configured },
     )
 
