@@ -6357,7 +6357,7 @@ class AppViewModel internal constructor(
         if (isOpenCode(pane.agent) && currentPane.scrollOffset != 0) return null
         // Muse's quota warning shows its highlight only in colour (2.1.0): read with styles to find it.
         val raw = h.readStyledViewport(pane.id, connection)
-        val text = (if (isOpenCode(pane.agent) || shown.museQuota) raw
+        val text = (if (isOpenCode(pane.agent) || shown.museQuota || shown.vibeRelease) raw
             else com.billmongan.herdrdroid.herdr.stripAnsi(raw)).takeUnless { it.isBlank() } ?: return null
         if (!isCurrent(h) || guardedChoice && !foreground) return null
         val live = if (pane.agent == "pi" && h.backend == Backend.TUI &&
@@ -6365,7 +6365,8 @@ class AppViewModel internal constructor(
         else detectPrompt(text, currentPane.status == Status.NEEDS_YOU, currentPane.agent, versionOf(pane.id))
         // Scrollback may explain a command, but only the live, complete card can authorize input.
         val guard = occupant?.let { com.billmongan.herdrdroid.herdr.CardGuard(it,
-            com.billmongan.herdrdroid.herdr.cardGuardScreen(raw, live, currentPane.agent)) }
+            com.billmongan.herdrdroid.herdr.cardGuardScreen(raw, live, currentPane.agent),
+            styledScreen = if (live?.vibeRelease == true) com.billmongan.herdrdroid.herdr.sha256Hex(raw.toByteArray(Charsets.UTF_8)) else null) }
         return live?.takeIf { !it.terminalReview && !it.historyReviewOnly && fits(shown, it) }?.let { it to guard }
     }
 

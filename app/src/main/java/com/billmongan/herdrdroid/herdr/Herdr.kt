@@ -363,18 +363,23 @@ class Herdr internal constructor(
         val panes = (0 until arr.length()).mapNotNull { i ->
             runCatching {
                 val p = arr.getJSONObject(i)
-                tuiPane(p).copy(tabLabel = labels[p.optString("tab_id")].orEmpty())
+                tuiPane(p, labels[p.optString("tab_id")].orEmpty())
             }.getOrNull()
         }
         return TuiPaneList(panes, arr.length())
     }
 
-    private fun tuiPane(p: JSONObject): Pane = Pane(
+    private fun tuiPane(p: JSONObject, tabLabel: String = panes0Cache.firstOrNull {
+        it.id == p.optString("pane_id") && it.tabId == p.optString("tab_id") &&
+            it.terminalId != null && it.terminalId == p.optString("terminal_id")
+    }?.tabLabel.orEmpty()): Pane = Pane(
                 id = p.getString("pane_id"),
                 tabId = p.optString("tab_id"),
                 workspaceId = p.optString("workspace_id"),
                 agent = p.optString("agent").takeIf { !p.isNull("agent") && it.isNotBlank() }?.let(::canonicalAgent)
-                    ?: titleAgent(p.optString("terminal_title_stripped")),
+                    ?: titleAgent(p.optString("terminal_title_stripped"))
+                    ?: "vibe".takeIf { Regex("""^vibe(?:-\d+)?$""", RegexOption.IGNORE_CASE).matches(tabLabel) },
+                tabLabel = tabLabel,
                 status = when (p.optString("agent_status")) {
                     "blocked" -> Status.NEEDS_YOU
                     "working" -> Status.WORKING
@@ -506,7 +511,8 @@ class Herdr internal constructor(
      * [shellOnly]: the shell check alone.
      */
     internal fun cardSendCommand(paneId: String, input: CardInput, guard: CardGuard, shellOnly: Boolean = false): String {
-        val check = checkCommand(paneId, guard.occupant, guard.screen, shellOnly)
+        val check = checkCommand(paneId, guard.occupant, guard.screen, shellOnly) +
+            guard.styledScreen?.let { " && " + exactViewportDigestCheck(paneId, it, requireBottom = true) }.orEmpty()
         val send = when (input) {
             is CardInput.Keys -> cmd("pane", "send-keys", paneId, *input.keys.toTypedArray())
             // pane run sends the literal argument and Enter in one pane.send_input request.
@@ -998,8 +1004,11 @@ class Herdr internal constructor(
 
     private fun exactViewportCheck(paneId: String, viewport: String, requireBottom: Boolean = false): String {
         val digest = sha256Hex(viewport.toByteArray(Charsets.UTF_8))
-        return "$PY -c ${shq(EXACT_VIEWPORT_CHECK)} $herdr ${shq(paneId)} ${shq(digest)}" + if (requireBottom) " bottom" else ""
+        return exactViewportDigestCheck(paneId, digest, requireBottom)
     }
+
+    private fun exactViewportDigestCheck(paneId: String, digest: String, requireBottom: Boolean): String =
+        "$PY -c ${shq(EXACT_VIEWPORT_CHECK)} $herdr ${shq(paneId)} ${shq(digest)}" + if (requireBottom) " bottom" else ""
 
     /** Draft keys only after the host compares the app's last ANSI viewport byte for byte. */
     internal suspend fun sendCheckedDraftKeys(
@@ -1737,8 +1746,9 @@ data class Prompt(
     internal val letterKeys: Boolean = false,
     /** Claude AskUserQuestion answers require a key sequence verified from the current highlight. */
     internal val claudeAsk: Boolean = false,
+    internal val vibeRelease: Boolean = false,
 ) {
-    internal val guardedShortcutApproval: Boolean get() = agyApproval || kiroOnceShortcuts || claudeModelControl
+    internal val guardedShortcutApproval: Boolean get() = agyApproval || kiroOnceShortcuts || claudeModelControl || vibeRelease
     internal val historyReviewOnly: Boolean get() = topOffScreen || rebuiltTallDialog
 
     /**
@@ -3217,6 +3227,7 @@ internal fun screenAskable(list: List<Pane>): List<Pane> = list.filter {
     (it.agent == "claude" && it.status != Status.NEEDS_YOU) ||
         (isOpenCode(it.agent) && it.status in setOf(Status.DONE, Status.IDLE)) ||
         (it.agent == "agy" && !it.isProbe && it.status == Status.WORKING) ||
+        (it.agent == "vibe" && !it.isProbe && it.status != Status.NEEDS_YOU) ||
         // 2.2.7: herdr can call Hermes done or idle through a whole turn and through an approval.
         (it.agent == "hermes" && it.status != Status.NEEDS_YOU)
 }
@@ -3244,6 +3255,7 @@ internal fun markScreenNeedsYou(list: List<Pane>, tails: Map<String, String>): L
         val why = when {
             tail == null -> null
             p.agent == "claude" -> claudeNeedsYouReason(tail)
+            p.agent == "vibe" -> detectVibeRelease(tail)?.let { "a release dialog is open" }
             p.agent == "agy" -> when {
                 agySubagentApproval(tail) != null -> "a subagent approval is open"
                 agySubagentQuestion(tail) != null -> "a subagent question needs attention"
@@ -4329,6 +4341,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     }
     // Before the styles are stripped: they are the only mark of Muse's highlighted option (2.1.0).
     if (agent.equals("muse", true)) detectMuseQuotaDialog(text)?.let { return it }
+    if (agent == null || agent.equals("vibe", true)) detectVibeRelease(text, allowGenericReview = agent == null)?.let { return it }
     // 2.2.7 (Bill: "show the whole question"): Oh My Pi's and pi's boxed multi-question Ask dialog.
     if (agent?.lowercase() in setOf("omp", "pi")) OmpAsk.prompt(plain)?.let { return it }
     // 2.2.8 (Bill: "OMP popped up another question it won't let me answer"): Oh My Pi's tool approval
@@ -5582,7 +5595,7 @@ internal sealed class CardInput {
 }
 
 /** The pane's occupant digest and its screen digest, as the card's last read saw them (hex SHA-256). */
-internal data class CardGuard(val occupant: String, val screen: String)
+internal data class CardGuard(val occupant: String, val screen: String, val styledScreen: String? = null)
 
 /** Nothing was typed: the card's pane, or its screen, changed after the card's last read. */
 internal class CardChanged : Exception("The question changed; not sent.")
