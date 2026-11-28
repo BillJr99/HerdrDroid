@@ -1811,7 +1811,13 @@ internal fun PromptCard(
                         p.openCodePermission && c.keys == "1" -> "checks the live selection before confirming"
                         else -> keysLabel(com.billmongan.herdrdroid.herdr.menuKeys(p, c), c)
                     }
-                    val caution = com.billmongan.herdrdroid.herdr.grantsStandingPermission(c.label)
+                    val caution = when {
+                        p.kiroStartupMigration && c.label == com.billmongan.herdrdroid.herdr.KIRO_SKIP_STARTUP_REMINDER ->
+                            "Kiro will stop showing this startup reminder."
+                        com.billmongan.herdrdroid.herdr.grantsStandingPermission(c.label) ->
+                            "Caution: this lets the agent do it again without asking you."
+                        else -> null
+                    }
                     // The highlighted row (the one Enter picks) is the blue one, not always the first.
                     val first = c.keys == (p.selected ?: p.choices.firstOrNull()?.keys?.takeUnless { p.openCodePermission })
                     val shownLabel = com.billmongan.herdrdroid.herdr.shownChoiceLabel(allRows, c)
@@ -1843,7 +1849,7 @@ internal fun PromptCard(
                             }
                             Text(what, fontSize = 12.sp, color = if (first) Palette.OnBlue.copy(alpha = 0.8f) else Palette.Muted)
                             // Standing permission (1.4.0): say so before it is tapped.
-                            if (caution) Text("Caution: this lets the agent do it again without asking you.", fontSize = 12.sp,
+                            if (caution != null) Text(caution, fontSize = 12.sp,
                                 fontWeight = FontWeight.SemiBold, color = if (first) Palette.OnBlue else Palette.OrangeInk)
                         }
                     }
@@ -2279,7 +2285,18 @@ const val QUEUED_FOR_QUESTION = "The agent is waiting on a question. Your messag
 internal fun ApproveAllDialog(vm: AppViewModel, pending: AppViewModel.ApproveAllPending, agentName: String?) {
     val ask = pending.ask
     val hooks = pending.prompt.codexHooksReview
-    val title = if (hooks) "Trust all Codex hooks?" else "Approve everything from now on?"
+    val skipKiroReminder = pending.prompt.kiroStartupMigration &&
+        ask.label == com.billmongan.herdrdroid.herdr.KIRO_SKIP_STARTUP_REMINDER
+    val title = when {
+        skipKiroReminder -> "Stay on V2 and stop Kiro's startup reminder?"
+        hooks -> "Trust all Codex hooks?"
+        else -> "Approve everything from now on?"
+    }
+    val explanation = when {
+        skipKiroReminder -> "Kiro will stay on V2 and stop showing this reminder at startup."
+        hooks -> "New hooks will run when their events occur and can run outside the sandbox. Trust them only if you have reviewed them."
+        else -> "${agentName ?: "The agent"} will do this again without asking you. Nothing is sent until you confirm."
+    }
     androidx.compose.material3.AlertDialog(
         onDismissRequest = { vm.cancelApproveAll() },
         modifier = Modifier.semantics { contentDescription = title.removeSuffix("?") }.testTag("approve-all-dialog"),
@@ -2288,9 +2305,7 @@ internal fun ApproveAllDialog(vm: AppViewModel, pending: AppViewModel.ApproveAll
             Column {
                 Text("\u201c${ask.label}\u201d", color = Palette.Ink, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(8.dp))
-                Text(ask.reason ?: if (hooks) "New hooks will run when their events occur and can run outside the sandbox. Trust them only if you have reviewed them."
-                    else "${agentName ?: "The agent"} will do this again without asking you. Nothing is sent until you confirm.",
-                    color = Palette.Ink)
+                Text(ask.reason ?: explanation, color = Palette.Ink)
             }
         },
         confirmButton = {

@@ -1737,6 +1737,7 @@ data class Prompt(
     internal val agyApproval: Boolean = false,
     /** Kiro advertises its exact one-time approval keys on this page. */
     internal val kiroOnceShortcuts: Boolean = false,
+    internal val kiroStartupMigration: Boolean = false,
     /** A proven Claude Code model control uses only keys named by its own picker. */
     internal val claudeModelControl: Boolean = false,
     internal val copilotPermissionControl: Boolean = false,
