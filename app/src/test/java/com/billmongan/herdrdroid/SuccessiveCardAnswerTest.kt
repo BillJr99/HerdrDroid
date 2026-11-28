@@ -1698,6 +1698,21 @@ class SuccessiveCardAnswerTest {
         }
     }
 
+    @Test fun vibeTerminalEnterClearsTheReleaseCardOnceTheComposerReturns() {
+        val modal = checkNotNull(javaClass.getResource("/screens/vibe/derived-2.2.11/release.ansi")).readText()
+        fixture("vibe", modal) {
+            readSelectedPane()
+            assertTrue(shown().vibeRelease)
+            val terminal = readTerminal()
+            recentResult = ExecResult(0, modal, "")
+            afterSend = "> "
+            vm.sendTerminalKeys("p1", terminal, "enter")
+            drainUntil { sent == listOf("enter") && vm.paneText == "> " }
+            assertNull(vm.cardParse("p1", vm.paneText))
+            assertFalse(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+        }
+    }
+
     @Test fun openCodeTerminalEnterClearsPermissionWhenTheLiveToolStarts() =
         fixture("opencode", focusedPermission("Allow once")) {
             readSelectedPane()
