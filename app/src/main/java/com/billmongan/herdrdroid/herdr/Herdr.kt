@@ -1739,12 +1739,13 @@ data class Prompt(
     internal val kiroOnceShortcuts: Boolean = false,
     /** A proven Claude Code model control uses only keys named by its own picker. */
     internal val claudeModelControl: Boolean = false,
+    internal val copilotPermissionControl: Boolean = false,
     internal val letterKeys: Boolean = false,
     /** Claude AskUserQuestion answers require a key sequence verified from the current highlight. */
     internal val claudeAsk: Boolean = false,
     internal val vibeRelease: Boolean = false,
 ) {
-    internal val guardedShortcutApproval: Boolean get() = agyApproval || kiroOnceShortcuts || claudeModelControl || vibeRelease
+    internal val guardedShortcutApproval: Boolean get() = agyApproval || kiroOnceShortcuts || claudeModelControl || copilotPermissionControl || vibeRelease
     internal val historyReviewOnly: Boolean get() = topOffScreen || rebuiltTallDialog
 
     /**
@@ -2905,7 +2906,8 @@ private val ALWAYS_LABEL = Regex("""\balways\b|don'?t ask again|\btrust\b|remain
 // 1.4.1 (from a code review): a refusal ("No, don't trust this", "Never allow") grants nothing.
 private val REFUSAL_LABEL = Regex("""^\W*(no|deny|reject|cancel|never|quit|don'?t (trust|allow))\b|\b(don'?t|do not|not|never) (trust|always)\b|\bdeny rule\b|^\W*block\b""", RegexOption.IGNORE_CASE)
 // A curly apostrophe ("don’t ask again", Claude's MCP and skill rows) reads as a straight one (1.4.9).
-fun grantsStandingPermission(label: String): Boolean = label.replace('\u2019', '\'').let { ALWAYS_LABEL.containsMatchIn(it) && !REFUSAL_LABEL.containsMatchIn(it) }
+fun grantsStandingPermission(label: String): Boolean = label.replace('\u2019', '\'').let { (ALWAYS_LABEL.containsMatchIn(it) || it.equals("Allow All", ignoreCase = true)) &&
+        !REFUSAL_LABEL.containsMatchIn(it) }
 
 /** A choice that means "I'll type my own answer" ("Type something.", "Other", "Something else"), 1.4.0. */
 /** 2.2.8: Oh My Pi's tool approval footer, and the card's typed answer that denies the tool and steers. */
@@ -4319,6 +4321,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
         claudeGutteredTabAsk(plain)?.let { return it }
         claudeClippedAskReview(plain)?.let { return it }
     }
+    if (agent?.let(::canonicalAgent) == "copilot") copilotPermissionMode(plain)?.let { return it }
     if (agent.equals("grok", true)) grokPrivacyOverlay(plain)?.let { return it }
     if (agent.equals("agy", true)) {
         agySubagentQuestion(plain)?.let { return it }

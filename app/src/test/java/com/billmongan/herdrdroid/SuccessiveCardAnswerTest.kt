@@ -2093,6 +2093,40 @@ class SuccessiveCardAnswerTest {
             }
         }
 
+    @Test fun copilotAllowAllWaitsForConfirmation() =
+        fixture("copilot", res("/screens/copilot/derived-2.2.11/permission-mode.txt").trimEnd()) {
+            readSelectedPane()
+            val question = displayed()
+            answer(question, index = 2)
+            assertTrue(sent.isEmpty())
+            assertEquals("Allow All", checkNotNull(vm.approveAllPending).ask.label)
+            vm.cancelApproveAll()
+            assertTrue(sent.isEmpty())
+            answer(question, index = 2)
+            vm.confirmApproveAll()
+            drainUntil { !vm.answerInFlight("p1") }
+            assertEquals(listOf("down", "down", "enter"), sent)
+        }
+
+    @Test fun copilotTerminalAnswerClearsPermissionModeCardFromVerifiedComposer() =
+        fixture("copilot", res("/screens/copilot/derived-2.2.11/permission-mode.txt").trimEnd()) {
+            readSelectedPane()
+            showTerminalQuestionAlert(displayed())
+            try {
+                val terminal = readTerminal()
+                recentResult = ExecResult(0, frame, "")
+                afterSend = "╻" + "▄".repeat(24) + "\n┃\n╹" + "▀".repeat(24) +
+                    "\n← open sidebar · Interactive · Assisted Permissions · / commands"
+                vm.sendTerminalKeys("p1", terminal, "down", "enter")
+                drainUntil { sent == listOf("down", "enter") && vm.paneText == afterSend }
+                assertNull(vm.cardParse("p1", vm.paneText))
+                assertFalse(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+                assertFalse(terminalAlertIsShowing())
+            } finally {
+                clearTerminalAlert()
+            }
+        }
+
     private fun fixture(agent: String, frame: String, test: Fixture.() -> Unit) {
         val f = Fixture(agent, frame)
         try {
