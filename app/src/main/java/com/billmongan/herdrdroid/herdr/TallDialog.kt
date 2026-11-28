@@ -176,7 +176,7 @@ internal fun rebuiltClippedDialog(text: String, blocked: Boolean, agent: String?
     val parts = parsed?.parts?.takeIf { !parsed.terminalReview && !parsed.topOffScreen }
         ?: QuestionParts(emptyList(), listOf(QBlock(QKind.HEADING, heading),
             QBlock(QKind.TEXT, rows.drop(1).joinToString("\n") { rowBody(it).second })))
-    return Prompt(heading, emptyList(), region = rows, terminalReview = true, historyReviewOnly = true,
+    return Prompt(heading, emptyList(), region = rows, terminalReview = true,
         rebuiltTallDialog = true, parts = if (labels.isEmpty()) parts else parts.copy(
             blocks = parts.blocks + labels.map { QBlock(QKind.TEXT, it) }))
 }
