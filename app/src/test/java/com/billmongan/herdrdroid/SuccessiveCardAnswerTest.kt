@@ -1264,6 +1264,67 @@ class SuccessiveCardAnswerTest {
         }
     }
 
+    @Test fun codexHookTrustRequiresConfirmationAndClearsWhenCodexShowsDetails() =
+        fixture("codex", hooksBrowser) {
+            readSelectedPane()
+            val card = displayed()
+            assertEquals(listOf("Trust all", "Review", "Close"), card.choices.map { it.label })
+            assertEquals(listOf("t"), com.billmongan.herdrdroid.herdr.menuKeys(card, card.choices[0]))
+            assertEquals(listOf("enter"), com.billmongan.herdrdroid.herdr.menuKeys(card, card.choices[1]))
+            assertEquals(listOf("esc"), com.billmongan.herdrdroid.herdr.menuKeys(card, card.choices[2]))
+            val target = checkNotNull(vm.paneTextTarget)
+            vm.answerChoice("p1", card, card.choices.first(), target = target)
+            assertNotNull(vm.approveAllPending)
+            assertTrue(sent.isEmpty())
+            vm.cancelApproveAll()
+            assertTrue(sent.isEmpty())
+            vm.answerChoice("p1", card, card.choices.first(), target = target)
+            frame = hooksBrowser.replace("1 hook needs review", "2 hooks need review").replace("it can run", "they can run")
+            vm.confirmApproveAll()
+            drainUntil { !vm.answerInFlight("p1") }
+            assertTrue("confirmation of a changed hook table must refuse", sent.isEmpty())
+            frame = hooksBrowser
+            readSelectedPane()
+            val live = displayed()
+            recentResult = ExecResult(0, hooksBrowser, "")
+            afterSend = hooksTrusted
+            vm.answerChoice("p1", live, live.choices.first(), target = checkNotNull(vm.paneTextTarget))
+            vm.confirmApproveAll()
+            drainUntil { sent == listOf("t") && vm.paneText.contains("enter details") }
+            assertNull(vm.cardParse("p1", vm.paneText))
+        }
+
+    @Test fun codexHookReviewSendsEnterThenHandsOffToTheTerminal() = fixture("codex", hooksBrowser) {
+        readSelectedPane()
+        val card = displayed()
+        afterSend = hooksDetail
+        vm.answerChoice("p1", card, card.choices.single { it.label == "Review" },
+            target = checkNotNull(vm.paneTextTarget))
+        drainUntil { sent == listOf("enter") && vm.paneText.contains("esc back") }
+        assertEquals(listOf("enter"), sent)
+        assertNull(vm.cardParse("p1", vm.paneText))
+    }
+
+    @Test fun codexHookBrowserClosesWithEsc() = fixture("codex", hooksBrowser) {
+        readSelectedPane()
+        val card = displayed()
+        status(Status.IDLE)
+        afterSend = "› "
+        answer(card, checkNotNull(vm.paneTextTarget), index = 2)
+        assertEquals(listOf("esc"), sent)
+        assertNull(vm.cardParse("p1", vm.paneText))
+    }
+
+    @Test fun codexStartupHookMenuUsesItsOwnArrowKeysAndRequiresTrustConfirmation() {
+        val frame = hooksFixture("startup")
+        val card = checkNotNull(detectPrompt(frame, false, "codex"))
+        assertEquals("Hooks need review", card.question)
+        assertEquals(listOf("Review", "Trust all and continue", "Continue without trusting"), card.choices.map { it.label })
+        assertEquals(listOf("down", "enter"), com.billmongan.herdrdroid.herdr.approveAllAsk(card, card.choices[1])?.keys)
+        assertNull(detectPrompt("$hooksBrowser\n\n› New input", false, "codex")?.takeIf { it.choices.any { c -> c.label == "Trust all" } })
+        assertNull(detectPrompt(hooksBrowser.replace("PreToolUse", "invalid row"), false, "codex")?.takeIf { it.choices.any { c -> c.label == "Trust all" } })
+    }
+
     @Test fun clippedCodexQuestionProbesTheLiveViewportWithoutSendingKeys() = fixture("codex", codexUnansweredConfirmation) {
         status(Status.WORKING)
         val clipped = codexWrappedQuestion.substringAfter('\n')
@@ -2431,6 +2492,22 @@ class SuccessiveCardAnswerTest {
     private companion object {
         fun backgroundAsk(step: String) = checkNotNull(SuccessiveCardAnswerTest::class.java.getResource(
             "/screens/claude/derived-2.2.11/background-ask-$step.txt")).readText().trimEnd()
+
+        fun hooksFixture(name: String) = checkNotNull(SuccessiveCardAnswerTest::class.java.getResource(
+            "/screens/codex/derived-hooks-0.172.0/$name.txt")).readText().trimEnd()
+
+        val hooksBrowser = hooksFixture("browser")
+        val hooksTrusted = hooksBrowser
+            .replace("  ⚠ 1 hook needs review before it can run.\n", "")
+            .replace("t trust all · enter review · esc close", "enter details · esc close")
+        val hooksDetail = """
+            PreToolUse hooks
+            1 hook needs review before it can run.
+
+            › [ ] 1 Fixture hook
+
+            t trust · esc back
+        """.trimIndent()
 
         val piQuestion = checkNotNull(SuccessiveCardAnswerTest::class.java.getResource(
             "/screens/pi/derived-1.4.9/0502-project-trust.txt")).readText().trimEnd()
