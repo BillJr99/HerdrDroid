@@ -14,6 +14,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -94,14 +95,17 @@ private fun ServerLine(text: String, dot: Color?, server: String? = text, status
 
 
 @Composable
-internal fun PaneWarningBadge(count: Int, modifier: Modifier = Modifier) {
+internal fun PaneWarningBadge(count: Int, modifier: Modifier = Modifier, onClick: (() -> Unit)? = null) {
     val label = if (count == 1) "1 warning" else "$count warnings"
+    val action = if (onClick == null) Modifier else Modifier.clickable(
+        role = Role.Button, onClickLabel = "Show warning details", onClick = onClick,
+    )
     Text(
         "⚠ $count",
         color = Palette.Orange,
         fontSize = 12.sp,
         fontWeight = FontWeight.SemiBold,
         maxLines = 1,
-        modifier = modifier.semantics { contentDescription = label },
+        modifier = modifier.then(action).semantics { contentDescription = label },
     )
 }
