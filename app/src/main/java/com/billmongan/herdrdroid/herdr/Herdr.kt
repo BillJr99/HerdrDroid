@@ -3889,7 +3889,7 @@ private val OPENCODE_INLINE_TOOL_SPINNER = Regex("""^ +[⠁-⣿] +\S""")
 internal fun openCodePermissionRan(screen: String): Boolean {
     val rows = stripAnsi(screen).lines().takeLast(20)
     val mode = openCodeComposerMode(rows)
-    if (mode >= 3 && openCodeEmptyComposer(screen)) {
+    if (mode >= 3 && (openCodeSessionComposerEmpty(screen) || openCodeEmptyComposer(screen))) {
         val hint = (mode - 4 downTo maxOf(0, mode - 7)).firstOrNull { rows[it].isNotBlank() } ?: return false
         if (!OPENCODE_BACKGROUND_HINT.matches(rows[hint])) return false
         val spinner = (hint - 1 downTo maxOf(0, hint - 4)).firstOrNull { rows[it].isNotBlank() } ?: return false
