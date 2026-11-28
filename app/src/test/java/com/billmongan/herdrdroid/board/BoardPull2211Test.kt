@@ -167,6 +167,18 @@ class BoardPull2211Test {
     }
 
     @Test
+    fun notesSortByInstantAndKeepUnknownTimestampsLastInInputOrder() {
+        val unknownFirst = BoardNote("Yesterday", "First author", "First unknown")
+        val unknownSecond = BoardNote("Unknown", "Second author", "Second unknown")
+        val early = BoardNote(time, "Author", "At noon")
+        val fractionLater = BoardNote("2026-01-02T12:00:00.003Z", "Author", "Just after noon")
+        export(existing.copy(notes = listOf(unknownFirst, fractionLater, early, unknownSecond, unknownFirst)))
+
+        assertEquals(listOf(early, fractionLater, unknownFirst, unknownSecond),
+            board().cards.getValue(existing.id).notes)
+    }
+
+    @Test
     fun pendingNotesAreOrderedAndDeduplicatedWithoutTurningIntoAFieldUpdate() {
         val original = BoardNote(time, "Author", "Original")
         val earlier = BoardNote("2026-01-02T11:00:00Z", "Author", "Earlier")

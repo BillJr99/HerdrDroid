@@ -374,9 +374,11 @@ private fun ServerBoard.withManualExport(): ServerBoard =
     withExport().let { it.copy(manualRequestId = it.request?.id) }
 
 private fun unionNotes(first: List<BoardNote>, second: List<BoardNote>): List<BoardNote> =
-    (first + second).distinct().sortedWith(compareBy(
-        { runCatching { Instant.parse(it.at) }.getOrNull() }, { it.at }, { it.by }, { it.text },
-    ))
+    (first + second).distinct()
+        .map { it to runCatching { Instant.parse(it.at) }.getOrNull() }
+        // Stable sorting preserves the supplied order for equal or unparseable timestamps.
+        .sortedWith(compareBy(nullsLast(naturalOrder<Instant>())) { it.second })
+        .map { it.first }
 
 private fun ServerBoard.exportDue(now: Long): Boolean =
     lastExportAt?.let { now >= it && now - it >= BoardProtocol.EXPORT_INTERVAL_MS } ?: true
