@@ -1919,6 +1919,73 @@ class SuccessiveCardAnswerTest {
             }
         }
 
+    /**
+     * 2.2.11 (Bill: "in terminal view when I then hit Enter for that question it keeps the card there
+     * as if it still thinks there's a question"). After Enter on a permission, or after Reject, OpenCode
+     * goes straight back to its in-session box (three bare rows over "Build · <model>", no "Ask
+     * anything…" placeholder). That box is the proof the question is gone, as the home-screen one is.
+     */
+    private fun Fixture.openCodeTerminalAnswerClears(focus: String, after: String, expected: Status) {
+        readSelectedPane()
+        showTerminalQuestionAlert(shown())
+        try {
+            val terminal = readTerminal()
+            recentResult = ExecResult(0, frame, "")
+            afterSend = after
+            vm.sendTerminalKeys("p1", terminal, "enter")
+            drainUntil { sent == listOf("enter") && vm.paneText == after }
+            assertNull("$focus: no card on the session box", vm.cardParse("p1", vm.paneText))
+            assertEquals(expected, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+            assertFalse(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+            assertFalse(terminalAlertIsShowing())
+        } finally {
+            clearTerminalAlert()
+        }
+    }
+
+    @Test fun openCodeTerminalEnterClearsPermissionOnTheSessionComposer() =
+        fixture("opencode", focusedPermission("Allow once")) {
+            openCodeTerminalAnswerClears("Allow once",
+                res("/screens/opencode/derived-2.2.11/after-answer-session-composer.txt").trimEnd(), Status.IDLE)
+        }
+
+    @Test fun openCodeTerminalRejectClearsPermissionOnTheSessionComposer() =
+        fixture("opencode", focusedPermission("Reject")) {
+            openCodeTerminalAnswerClears("Reject",
+                res("/screens/opencode/derived-2.2.11/after-answer-session-composer.txt").trimEnd(), Status.IDLE)
+        }
+
+    @Test fun openCodeTerminalEnterClearsPermissionOnTheRunningCommandSpinner() =
+        fixture("opencode", focusedPermission("Allow once")) {
+            openCodeTerminalAnswerClears("Allow once",
+                res("/screens/opencode/derived-2.2.11/after-enter-running-command.txt").trimEnd(), Status.WORKING)
+        }
+
+    @Test fun openCodeOlderPermissionInTheHistoryDoesNotKeepTheCard() =
+        fixture("opencode", focusedPermission("Allow once")) {
+            openCodeTerminalAnswerClears("Allow once",
+                res("/screens/opencode/derived-2.2.11/after-answer-session-composer-old-box.txt").trimEnd(), Status.IDLE)
+        }
+
+    @Test fun openCodeTerminalEnterKeepsTheCardWhileThePermissionBoxIsStillThere() =
+        fixture("opencode", focusedPermission("Allow once")) {
+            readSelectedPane()
+            showTerminalQuestionAlert(shown())
+            try {
+                val terminal = readTerminal()
+                val still = res("/screens/opencode/derived-2.2.11/permission-after-tool.txt").trimEnd()
+                recentResult = ExecResult(0, frame, "")
+                afterSend = still
+                vm.sendTerminalKeys("p1", terminal, "enter")
+                drainUntil { sent == listOf("enter") && vm.paneText == still }
+                assertNotNull(vm.cardParse("p1", vm.paneText))
+                assertEquals(Status.NEEDS_YOU, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+                assertTrue(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+            } finally {
+                clearTerminalAlert()
+            }
+        }
+
     @Test fun terminalAnswerKeepsTheOldCardUntilASecondLiveQuestionArrives() = fixture("claude", firstStep) {
         readSelectedPane()
         val first = shown()
