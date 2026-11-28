@@ -4316,7 +4316,10 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
         agySubagentApproval(plain)?.let { return it }
         agyClippedShellCommand(plain)?.let { return terminalCommandReview(it) }
     }
-    if (ruleAgent(agent) in setOf("kiro", "kiro-cli")) kiroApprovalShortcuts(plain)?.let { return it }
+    if (ruleAgent(agent) in setOf("kiro", "kiro-cli")) {
+        kiroV3Startup(plain)?.let { return it }
+        kiroApprovalShortcuts(plain)?.let { return it }
+    }
     if (agent.equals("hermes", true)) hermesUsageEnd(plain)?.let { end ->
         // A report supersedes any old question above it, not a new card below it. A close
         // hint alone is not a question, even when herdr still reports that it is blocked.
