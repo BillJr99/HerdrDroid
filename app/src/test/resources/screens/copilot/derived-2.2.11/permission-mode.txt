@@ -1,0 +1,7 @@
+Select Permission Mode
+
+❯ 1. Manual Approval ✓
+  2. Assisted Permissions
+  3. Allow All
+
+1-3 to select · ↑/↓ to navigate · enter to confirm · esc to cancel
