@@ -6190,12 +6190,14 @@ class AppViewModel internal constructor(
     ): Prompt? {
         if (!com.billmongan.herdrdroid.herdr.hasStableOccupant(pane) || !current()) return null
         val first = client.cardPane(pane.id, connection) ?: return null
-        if (!first.sameCardOccupant(pane) || !current() ||
-            client.readStyledViewport(pane.id, connection) != viewport || !current()) return null
+        if (!first.sameCardOccupant(pane) || !current()) return null
         val rebuilt = completeClippedDialog(viewport, blocked, agent, version) { lines ->
             if (current()) client.readCardHistory(pane.id, lines, connection) else null
         }
-        if (!current() || client.readStyledViewport(pane.id, connection) != viewport) return null
+        if (!current()) return null
+        // A failed extension has no historical content to verify. The caller's original
+        // live viewport already establishes the terminal-only fallback.
+        if (rebuilt != viewport && client.readStyledViewport(pane.id, connection) != viewport) return null
         val last = client.cardPane(pane.id, connection) ?: return null
         if (!current() || !last.sameCardOccupant(first)) return null
         return if (rebuilt != viewport) detectPrompt(rebuilt, blocked, agent, version)
