@@ -26,6 +26,17 @@ class OpenCodePermission2211Test {
         assertFalse(command.contains("Session details"))
     }
 
+    @Test fun fourRowCommandJoinsWithoutASidebar() {
+        val withoutSidebar = screen.lineSequence().filterNot { it.endsWith("Session details") }.joinToString("\n")
+        val narrow = checkNotNull(detectPrompt(withoutSidebar, blocked = false, agent = "opencode"))
+        val wide = checkNotNull(detectPrompt(screen, blocked = false, agent = "opencode"))
+        assertFalse(narrow.terminalReview)
+        assertEquals(wide.choices, narrow.choices)
+        assertEquals(wide.shownParts().command, narrow.shownParts().command)
+        assertTrue(narrow.shownParts().command.orEmpty().endsWith("dates.json"))
+        assertTrue(narrow.approvalIdentity.orEmpty().contains("dates.\n  ┃  json"))
+    }
+
     @Test fun olderPermissionDoesNotSurviveTheSubsequentRunningTool() {
         assertNull(detectPrompt(screen.substring(0, liveTitle), blocked = false, agent = "opencode"))
     }
