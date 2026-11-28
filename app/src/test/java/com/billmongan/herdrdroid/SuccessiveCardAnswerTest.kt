@@ -1864,6 +1864,21 @@ class SuccessiveCardAnswerTest {
         }
     }
 
+    @Test fun selectedOpenCodePaneKeepsTheRecoveredCommandVisibleForReview() {
+        val history = res("/long-dialog-2211/opencode.txt").trimEnd('\n').lines()
+        val viewport = history.takeLast(36).joinToString("\n")
+        fixture("opencode", viewport) {
+            recentCapture = { lines -> history.takeLast(lines).joinToString("\n") }
+            readSelectedPane()
+            val prompt = checkNotNull(vm.cardParse("p1", vm.paneText))
+            val details = (prompt.shownParts().blocks.map { it.text } + prompt.region.orEmpty()).joinToString("\n")
+            assertTrue(details.contains("sample-record-000"))
+            assertTrue(details.contains("sample-record-206"))
+            assertTrue(prompt.terminalReview)
+            assertTrue(sent.isEmpty())
+        }
+    }
+
     @Test fun openCodeTerminalEnterClearsPermissionWhenTheLiveToolStarts() =
         fixture("opencode", focusedPermission("Allow once")) {
             readSelectedPane()
@@ -2333,6 +2348,7 @@ class SuccessiveCardAnswerTest {
         var liveScrollOffset = 0
         var recentReads = 0
         var recentResult: ExecResult? = null
+        var recentCapture: ((Int) -> String)? = null
         val visibleReadsWithLineLimit = mutableListOf<Boolean>()
         var guardedVisibleReads = 0
         var afterGuardedVisibleRead: (() -> Unit)? = null
@@ -2546,7 +2562,13 @@ class SuccessiveCardAnswerTest {
             }
             return when {
                 command.endsWith("'pane' 'get' 'p1'") -> { onPaneGet?.invoke(); ok("""{"result":{"pane":$pane}}""") }
-                command.contains("'pane' 'read' 'p1' '--source' 'recent'") -> { recentReads++; recentResult ?: ok(ansiFrame()) }
+                command.contains("'pane' 'read' 'p1' '--source' 'recent'") -> {
+                    recentReads++
+                    recentResult ?: ok(recentCapture?.let { capture ->
+                        val limit = checkNotNull(Regex("""'--lines' '(\d+)'""").find(command)).groupValues[1].toInt()
+                        capture(limit)
+                    } ?: ansiFrame())
+                }
                 command.contains("'pane' 'read' 'p1' '--source' 'visible'") -> {
                     visibleReadsWithLineLimit += command.contains("'--lines'")
                     if (expectedConnection != null) {
