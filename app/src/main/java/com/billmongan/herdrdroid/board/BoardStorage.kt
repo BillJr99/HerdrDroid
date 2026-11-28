@@ -4,6 +4,7 @@ import org.json.JSONObject
 
 internal fun boardStateJson(state: BoardState): JSONObject = JSONObject()
     .put("phone", jsonArray(state.phone.values, ::cardJson))
+    .put("phone_targets", JSONObject().apply { state.phoneTargets.forEach { (id, target) -> put(id, target) } })
     .put("servers", JSONObject().apply { state.servers.forEach { (id, board) -> put(id, serverJson(board)) } })
 
 private fun serverJson(board: ServerBoard): JSONObject = JSONObject()
@@ -28,6 +29,13 @@ private fun serverJson(board: ServerBoard): JSONObject = JSONObject()
     .put("previously_attempted", board.previouslyAttempted)
     .put("export_wanted", board.exportWanted)
     .put("refusal", board.refusal ?: JSONObject.NULL)
+    .put("manual_round", board.manualRound)
+    .put("manual_request_id", board.manualRequestId ?: JSONObject.NULL)
+    .put("manual_finished", board.manualFinished)
+    .put("duplicates", JSONObject().apply {
+        board.duplicateCandidates.forEach { (id, candidates) -> put(id, jsonArray(candidates) { it }) }
+    })
+    .put("allow_duplicate", jsonArray(board.allowDuplicate) { it })
 
 private fun JSONObject.cards(key: String): Map<String, BoardCard> =
     getJSONArray(key).objects().map(::cardFromJson).associateBy { it.id }
@@ -37,6 +45,7 @@ private fun JSONObject.nullableLong(key: String): Long? = if (isNull(key)) null 
 private fun serverFromJson(json: JSONObject): ServerBoard {
     val notes = json.getJSONObject("pending_notes")
     val conflicted = json.getJSONObject("conflicted")
+    val duplicates = json.optJSONObject("duplicates") ?: JSONObject()
     return ServerBoard(
         name = json.nullableString("name"),
         asOf = json.nullableString("as_of"),
@@ -55,13 +64,20 @@ private fun serverFromJson(json: JSONObject): ServerBoard {
         previouslyAttempted = json.optBoolean("previously_attempted"),
         exportWanted = json.optBoolean("export_wanted"),
         refusal = json.nullableString("refusal"),
+        manualRound = json.optBoolean("manual_round"),
+        manualRequestId = json.nullableString("manual_request_id"),
+        manualFinished = json.optBoolean("manual_finished"),
+        duplicateCandidates = duplicates.keys().asSequence().associateWith { duplicates.getJSONArray(it).strings() },
+        allowDuplicate = json.optJSONArray("allow_duplicate")?.strings().orEmpty().toSet(),
     )
 }
 
 internal fun boardStateFromJson(json: JSONObject): BoardState {
     val servers = json.getJSONObject("servers")
+    val targets = json.optJSONObject("phone_targets") ?: JSONObject()
     return BoardState(
         phone = json.cards("phone"),
         servers = servers.keys().asSequence().associateWith { serverFromJson(servers.getJSONObject(it)) },
+        phoneTargets = targets.keys().asSequence().associateWith { targets.string(it) },
     )
 }
