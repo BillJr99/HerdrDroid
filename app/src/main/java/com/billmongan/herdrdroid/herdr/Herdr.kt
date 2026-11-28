@@ -3261,6 +3261,8 @@ internal fun markScreenNeedsYou(list: List<Pane>, tails: Map<String, String>): L
             p.agent == "agy" -> when {
                 agySubagentApproval(tail) != null -> "a subagent approval is open"
                 agySubagentQuestion(tail) != null -> "a subagent question needs attention"
+                agyFileAccess(tail) != null -> "a file access approval is open"
+                agyClippedShellCommand(tail) != null -> "a shell approval is open"
                 else -> null
             }
             isOpenCode(p.agent) -> openCodeNeedsYouReason(tail)

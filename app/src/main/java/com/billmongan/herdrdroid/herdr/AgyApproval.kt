@@ -122,13 +122,13 @@ internal fun agySubagentQuestion(screen: String): Prompt? {
 private val SHELL_APPROVAL_HINT = Regex(
     """↑/↓ Navigate · tab Amend · ctrl\+g edit/expand command""", RegexOption.IGNORE_CASE,
 )
-private val SHELL_APPROVAL_FOOTER = Regex("""esc to cancel(?:\s{2,}\S.*)?""", RegexOption.IGNORE_CASE)
+private val AGY_APPROVAL_FOOTER = Regex("""esc to cancel(?:\s{2,}\S.*)?""", RegexOption.IGNORE_CASE)
 
 /** A native shell approval can omit the command's tail from both the viewport and recent history. */
 internal fun agyClippedShellCommand(screen: String): String? {
     val rows = stripAnsi(screen).lines().takeLast(80).map(String::trim)
         .filter(String::isNotEmpty)
-    if (rows.size < 8 || !SHELL_APPROVAL_FOOTER.matches(rows.last()) ||
+    if (rows.size < 8 || !AGY_APPROVAL_FOOTER.matches(rows.last()) ||
         !SHELL_APPROVAL_HINT.matches(rows[rows.lastIndex - 1])) return null
     val question = rows.indexOfLast { it == "Run this command?" }
     if (question < 2 || question >= rows.size - 4 ||
@@ -141,7 +141,6 @@ internal fun agyClippedShellCommand(screen: String): String? {
     return rows.subList(intro + 1, question).joinToString("\n")
 }
 
-private val FILE_ACCESS_FOOTER = Regex("""esc to cancel(?:\s{2,}Orchestrator · \S.*)?""", RegexOption.IGNORE_CASE)
 private val FILE_ACCESS_PATH = Regex("""(Read|Write): (\S.*)""")
 private const val FILE_ACCESS_QUESTION = "Allow access to this file?"
 private val FILE_ACCESS_CHOICES = listOf(
@@ -153,7 +152,7 @@ internal fun agyFileAccess(screen: String): Prompt? {
     val raw = stripAnsi(screen).lines().takeLast(80)
     val rows = raw.withIndex().filter { it.value.isNotBlank() }
     val footer = rows.lastIndex
-    if (footer < 6 || !FILE_ACCESS_FOOTER.matches(rows[footer].value.trim()) ||
+    if (footer < 6 || !AGY_APPROVAL_FOOTER.matches(rows[footer].value.trim()) ||
         rows[footer - 1].value.trim() != "↑/↓ Navigate") return null
     val choiceStart = footer - 4
     val question = choiceStart - 1
