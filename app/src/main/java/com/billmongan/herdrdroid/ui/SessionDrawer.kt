@@ -38,6 +38,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -89,7 +90,7 @@ fun SessionDrawer(vm: AppViewModel, opening: Boolean = true) {
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
         )
         vm.sessionBusy?.let { Text(it, color = Palette.Blue, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 16.dp)) }
-        LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = listState) {
+        LazyColumn(Modifier.weight(1f).fillMaxWidth().testTag("session-drawer-list"), state = listState) {
             val groups = listOf(
                 "Needs you" to listOf(Status.NEEDS_YOU),
                 "Working" to listOf(Status.WORKING),
@@ -135,20 +136,27 @@ fun SessionDrawer(vm: AppViewModel, opening: Boolean = true) {
             }
             item(key = "links") {
                 HorizontalDivider(color = Palette.Line, modifier = Modifier.padding(top = 8.dp))
-                val back = vm.screen
-                DrawerLink("Usage") { vm.drawerOpen = false; vm.screen = Screen.Usage }
-                DrawerLink("Search chats") { vm.drawerOpen = false; vm.screen = Screen.Search }
-                DrawerLink("Servers…") { vm.drawerOpen = false; vm.openServers() }
-                DrawerLink("Settings") { vm.drawerOpen = false; vm.screen = Screen.Settings(back) }
-                Spacer(Modifier.height(24.dp))
             }
-        }
-        // 2.2.8: every open question on the servers the app can see, pinned under the list.
-        HorizontalDivider(color = Palette.Line)
-        BoardDrawerItem(selected = vm.screen == Screen.Board, onClick = vm::openBoard)
-        QuestionsDrawerItem(vm.openQuestionCount(), selected = vm.screen == Screen.Questions) {
-            vm.drawerOpen = false
-            vm.screen = Screen.Questions
+            item(key = "usage") { DrawerLink("Usage") { vm.drawerOpen = false; vm.screen = Screen.Usage } }
+            item(key = "search") { DrawerLink("Search chats") { vm.drawerOpen = false; vm.screen = Screen.Search } }
+            item(key = "server-settings") { DrawerLink("Servers…") { vm.drawerOpen = false; vm.openServers() } }
+            item(key = "settings") {
+                DrawerLink("Settings") {
+                    val back = vm.screen
+                    vm.drawerOpen = false
+                    vm.screen = Screen.Settings(back)
+                }
+            }
+            item(key = "board") {
+                BoardDrawerItem(selected = vm.screen == Screen.Board, onClick = vm::openBoard)
+            }
+            item(key = "questions") {
+                QuestionsDrawerItem(vm.openQuestionCount(), selected = vm.screen == Screen.Questions) {
+                    vm.drawerOpen = false
+                    vm.screen = Screen.Questions
+                }
+            }
+            item(key = "bottom") { Spacer(Modifier.height(24.dp)) }
         }
     }
     relaying?.let { session ->

@@ -59,7 +59,7 @@ import kotlinx.coroutines.delay
  * with the answers its pane's own card shows ([PromptCard]), sent through the same checks.
  */
 
-/** The drawer's Questions item, pinned under the agent list, with its count. */
+/** The drawer's Questions item and its waiting count. */
 @Composable
 internal fun QuestionsDrawerItem(count: Int, selected: Boolean, onClick: () -> Unit) {
     Row(
