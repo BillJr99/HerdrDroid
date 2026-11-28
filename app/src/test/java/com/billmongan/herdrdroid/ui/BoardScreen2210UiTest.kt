@@ -174,6 +174,7 @@ class BoardScreen2210UiTest {
             BoardScreen(
                 state = BoardState(phone = mapOf(local.id to local), servers = mapOf("one" to ServerBoard(
                     entries = mapOf(remote.id to remote),
+                    baseline = mapOf(remote.id to remote),
                     duplicateCandidates = mapOf(local.id to listOf(remote.id)),
                 ))),
                 servers = listOf(BoardSource("one", "First")),
