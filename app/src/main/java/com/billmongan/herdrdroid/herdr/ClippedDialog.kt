@@ -91,8 +91,13 @@ internal fun clippedDialogFooter(screen: String, agent: String?): Boolean {
 internal fun clippedDialogReview(screen: String, agent: String?): Prompt? {
     if (!clippedDialogFooter(screen, agent)) return null
     val rows = stripAnsi(screen).lines().dropLastWhile(String::isBlank).takeLast(80)
-    val title = "Question or approval"
+    val title = "The beginning of this dialog is cut off. Open Terminal to review it."
     return Prompt(title, emptyList(), region = rows, terminalReview = true, topOffScreen = true,
         parts = QuestionParts(emptyList(), listOf(QBlock(QKind.HEADING, title)) +
-            rows.mapNotNull { row -> clippedBody(row).takeIf(String::isNotBlank)?.let { QBlock(QKind.TEXT, it) } }))
+            rows.mapNotNull { row ->
+                val body = clippedBody(row).takeIf(String::isNotBlank) ?: return@mapNotNull null
+                val text = if (nativeNumber.containsMatchIn(body)) body.removePrefix("› ").removePrefix("❯ ").removePrefix("> ")
+                    else body
+                QBlock(QKind.TEXT, text)
+            }))
 }
