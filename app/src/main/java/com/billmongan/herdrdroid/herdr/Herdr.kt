@@ -4413,7 +4413,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
                 region = p.region ?: plain.lines(), claudeAsk = true).withSpanOf(p)
         else p.copy(claudeAsk = true).withSpanOf(p)
     }
-    return p ?: clippedDialogReview(plain, agent)
+    return p ?: if (agent.equals("claude", true)) null else clippedDialogReview(plain, agent)
 }
 
 private val GROK_THINKING_PANEL = Regex("""^\s*┃\s*◆\s+Thinking(?:…|\.\.\.)?\s*$""")

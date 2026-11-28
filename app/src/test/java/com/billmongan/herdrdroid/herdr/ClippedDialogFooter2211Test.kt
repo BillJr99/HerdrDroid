@@ -9,7 +9,7 @@ class ClippedDialogFooter2211Test {
     @Test fun eachNativeFooterCanRequestTheMissingStart() {
         val options = "❯ 1. First\n  2. Second"
         val examples = mapOf(
-            "claude" to "$options\nEnter to select · Tab/Arrow keys to navigate · Esc to cancel",
+            "claude" to "❯ 2. First\n  3. Second\nEnter to select · Tab/Arrow keys to navigate · Esc to cancel",
             "codex" to "$options\nPress enter to confirm or esc to cancel",
             "copilot" to "$options\n1–3 to select · ↑/↓ to navigate · enter to confirm · esc to cancel",
             "kiro" to "$options\ny allow once · n deny once · t create allow rule · d create deny rule",

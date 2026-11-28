@@ -65,7 +65,9 @@ internal fun clippedDialogFooter(screen: String, agent: String?): Boolean {
     val numbered = tail.dropLast(1).takeLast(10).mapNotNull { nativeNumber.find(it)?.groupValues?.get(1)?.toIntOrNull() }
     val hasOptions = numbered.size >= 2 && numbered.zipWithNext().all { (a, b) -> b == a + 1 }
     return when (harness) {
-        "claude" -> hasOptions && (claudeAskFooter(footer) || claudePermissionFooterAtBottom(plain))
+        // Claude has stricter native proofs for clipped Ask views and framed permissions.
+        // A footer plus arbitrary numbered chat rows can be an orphaned redraw.
+        "claude" -> claudeClippedAskReview(plain) != null
         "codex" -> hasOptions && footer.lowercase() in setOf("press enter to confirm or esc to cancel",
             "press enter to confirm or esc to go back", "enter continue · esc skip", "enter confirm · esc skip")
         "copilot" -> hasOptions && (copilotModeHint.matches(footer) ||
