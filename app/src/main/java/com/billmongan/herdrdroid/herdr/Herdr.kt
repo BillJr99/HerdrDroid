@@ -3918,9 +3918,9 @@ private fun joinOpenCodePermissionCommand(lines: List<String>): String = buildSt
         // The native TUI can wrap after shell punctuation. Join the two split forms
         // seen in the pane, and keep other word boundaries separated.
         val optionSplit = left.endsWith(" -") && right.startsWith("-") && right.getOrNull(1)?.isLetter() == true
-        val extensionSplit = left.endsWith(".") && left.getOrNull(left.lastIndex - 1)?.isLetterOrDigit() == true &&
+        val punctuationSplit = left.lastOrNull() in listOf('.', '-') && left.getOrNull(left.lastIndex - 1)?.isLetterOrDigit() == true &&
             right.firstOrNull()?.isLetterOrDigit() == true
-        if (!optionSplit && !extensionSplit) append(' ')
+        if (!optionSplit && !punctuationSplit) append(' ')
         append(right.trimEnd())
     }
 }
@@ -3939,6 +3939,7 @@ private fun detectOpenCodePermission(styled: String, text: String): Prompt? {
     // controls. Accept that trailing gutter row only when its text starts to the
     // right of the complete controls, never when there is later text in the dialog.
     var sidebarEdge: Int? = null
+    var sidebarTextColumn: Int? = null
     if (footer > 0 && OPENCODE_PERMISSION_HINT.find(clean(rows[footer])) == null) {
         val candidate = (footer - 1 downTo maxOf(0, footer - 6)).firstOrNull {
             val control = clean(rows[it])
@@ -3959,6 +3960,10 @@ private fun detectOpenCodePermission(styled: String, text: String): Prompt? {
                 }) {
                 footer = candidate
                 sidebarEdge = controlsEnd
+                sidebarTextColumn = below.mapNotNull { row ->
+                    row.drop(gutter.length).indexOfFirst { !it.isWhitespace() }.takeIf { it >= 0 }
+                        ?.plus(gutter.length)
+                }.minOrNull()
             }
         }
     }
@@ -3970,7 +3975,8 @@ private fun detectOpenCodePermission(styled: String, text: String): Prompt? {
         if (edge >= row.length || !row[edge].isWhitespace()) return row
         val left = row.take(edge).trimEnd()
         val right = row.drop(edge).indexOfFirst { !it.isWhitespace() }
-        return if (right >= 0 && edge + right - left.length >= 4) left else row
+        val column = sidebarTextColumn ?: return row
+        return if (right >= 0 && edge + right >= column && edge + right - left.length >= 4) left else row
     }
     fun cleanBody(i: Int) = clean(bodyRow(i))
     val hint = OPENCODE_PERMISSION_HINT.find(clean(rows[footer]))
@@ -3980,7 +3986,7 @@ private fun detectOpenCodePermission(styled: String, text: String): Prompt? {
     // the command being asked about, not an input row under the dialog (2.1.2).
     val command = title?.let { t -> (t + 1..footer).firstOrNull { cleanBody(it).startsWith("$ ") } }
     val commandEnd = command?.let { c -> (c + 1..footer).firstOrNull { cleanBody(it).isEmpty() } ?: (footer + 1) }
-    if (title != null && agentWentOn((title + 1..footer).filter { command == null || it !in command until checkNotNull(commandEnd) }.map { rows[it] })) return null
+    if (title != null && agentWentOn((title + 1..footer).filter { command == null || it !in command until checkNotNull(commandEnd) }.map(::bodyRow))) return null
     val region = rows.subList(title ?: footer, footer + 1)
     val heading = title?.let { clean(rows[it]).removePrefix("△ ") } ?: "Permission required"
     fun review() = Prompt(heading, emptyList(), region = region.map(::clean), terminalReview = true,
