@@ -11,6 +11,7 @@ import com.billmongan.herdrdroid.notify.alertPlan
 import com.billmongan.herdrdroid.notify.alertBody
 import com.billmongan.herdrdroid.transcript.QuestionLog
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
