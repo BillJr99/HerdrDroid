@@ -65,7 +65,9 @@ import com.billmongan.herdrdroid.herdr.dismissUsageOverlay
 import com.billmongan.herdrdroid.herdr.dismissibleUsageFrame
 import com.billmongan.herdrdroid.herdr.hermesUsageEnd
 import com.billmongan.herdrdroid.herdr.hermesUsageWaiting
+import com.billmongan.herdrdroid.herdr.PaneWarningResult
 import com.billmongan.herdrdroid.herdr.paneWarningCount
+import com.billmongan.herdrdroid.herdr.readPaneWarnings
 import com.billmongan.herdrdroid.herdr.footerModel
 import com.billmongan.herdrdroid.herdr.Status
 import com.billmongan.herdrdroid.herdr.RelayResult
@@ -2193,13 +2195,142 @@ class AppViewModel internal constructor(
     private var warningRefresh: Job? = null
     private var lastWarningRefreshAt: Long? = null
 
-    internal fun warningFor(pane: Pane, server: String? = current?.id): Int? {
+    data class PaneWarningDetail(val text: String, val canDiagnose: Boolean)
+    data class PaneWarningReview(
+        val paneId: String,
+        val warnings: List<PaneWarningDetail> = emptyList(),
+        val issue: String? = null,
+        val loading: Boolean = false,
+    )
+
+    private data class ReviewedWarnings(val target: CardTarget, val review: PaneWarningReview)
+    private data class WarningDismissal(val pane: Pane, val count: Int, val texts: Set<String>)
+
+    private var warningReview by mutableStateOf<ReviewedWarnings?>(null)
+    private var warningRestart by mutableStateOf<Pair<CardTarget, PaneWarningDetail>?>(null)
+    private var warningDismissals by mutableStateOf<Map<Pair<String, String>, WarningDismissal>>(emptyMap())
+    private var warningPanelRead: Job? = null
+
+    val paneWarningReview: PaneWarningReview? get() = warningReview?.takeIf {
+        it.target.isCurrent(it.target.client)
+    }?.review
+
+    val warningRestartConfirmation: PaneWarningDetail? get() = warningRestart?.takeIf { (target, warning) ->
+        target.isCurrent(target.client) && paneWarningReview?.warnings?.contains(warning) == true
+    }?.second
+
+    internal fun rawWarningFor(pane: Pane): Int? = warningReading(pane, current?.id)?.count
+
+    private fun warningReading(pane: Pane, server: String?): WarningReading? {
         if (server != current?.id || link != Link.CONNECTED || locked || pane.scrollOffset != 0) return null
         val batch = warningBatch ?: return null
         if (batch.server != server || batch.client !== herdr || batch.client.connectionIdentity !== batch.connection) return null
         return batch.readings[pane.id]?.takeIf {
             it.pane.sameCardOccupant(pane) && android.os.SystemClock.elapsedRealtime() - it.readAt < 60_000
-        }?.count
+        }
+    }
+
+    internal fun warningFor(pane: Pane, server: String? = current?.id): Int? {
+        val serverId = server ?: return null
+        val count = warningReading(pane, serverId)?.count ?: return null
+        val hidden = warningDismissals[serverId to pane.id]?.takeIf {
+            it.count == count && it.pane.sameCardOccupant(pane)
+        }?.texts?.size ?: 0
+        return (count - hidden).takeIf { it > 0 }
+    }
+
+    fun openPaneWarnings(paneId: String) = openPaneWarnings(paneId) { target, allowed ->
+        target.client.readPaneWarnings(target.pane, target.connection, allowed)
+    }
+
+    internal fun openPaneWarnings(paneId: String, read: suspend (CardTarget, () -> Boolean) -> PaneWarningResult) {
+        if (warningPanelRead?.isActive == true) return
+        val target = cardTarget(paneId) ?: return
+        val key = target.server to paneId
+        val loading = ReviewedWarnings(target, PaneWarningReview(paneId, loading = true))
+        warningReview = loading
+        warningRestart = null
+        fun allowed() = foreground && target.isCurrent(target.client) && boardLaneClear(target.server, paneId) &&
+            !writeGate.isClosing(key)
+        fun show(review: PaneWarningReview) {
+            if (warningReview === loading && target.isCurrent(target.client)) warningReview = ReviewedWarnings(target, review)
+        }
+        if (!allowed()) {
+            show(PaneWarningReview(paneId, issue = "The pane is busy or a draft is waiting. Try again when it is idle."))
+            return
+        }
+        val release = paneDispatch.tryAcquire(key)
+        if (release == null) {
+            show(PaneWarningReview(paneId, issue = "The pane is busy. Try again when it is idle."))
+            return
+        }
+        warningPanelRead = viewModelScope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+            try {
+                when (val result = read(target, ::allowed)) {
+                    is PaneWarningResult.Unavailable -> show(PaneWarningReview(paneId, issue = result.reason))
+                    is PaneWarningResult.Ready -> {
+                        if (!allowed() || warningReview !== loading) return@launch
+                        val texts = result.warnings.distinct()
+                        val previous = warningDismissals[key]?.takeIf { it.pane.sameCardOccupant(target.pane) }
+                        val hidden = previous?.texts.orEmpty().intersect(texts.toSet())
+                        if (hidden.isEmpty()) warningDismissals = warningDismissals - key
+                        else warningDismissals = warningDismissals + (key to WarningDismissal(target.pane, texts.size, hidden))
+                        val details = texts.filterNot { it in hidden }.map { text ->
+                            PaneWarningDetail(text, target.pane.agent == "codex" &&
+                                text.contains("diagnostic logs", ignoreCase = true) &&
+                                text.contains("local database", ignoreCase = true))
+                        }
+                        show(PaneWarningReview(paneId, details, issue = "No undismissed warnings.".takeIf { details.isEmpty() }))
+                    }
+                }
+            } catch (c: CancellationException) {
+                throw c
+            } catch (_: Exception) {
+                show(PaneWarningReview(paneId, issue = "The warning panel could not be read. Open it in Terminal."))
+            } finally {
+                release()
+            }
+        }
+    }
+
+    fun closePaneWarnings() {
+        // A read already opening the panel may finish its guarded cleanup while this chat is still current.
+        warningReview = null
+        warningRestart = null
+    }
+
+    fun dismissPaneWarning(paneId: String, text: String) {
+        val reviewed = warningReview ?: return
+        val target = reviewed.target
+        val current = paneWarningReview?.takeIf { it.paneId == paneId } ?: return
+        if (current.warnings.none { it.text == text }) return
+        val key = target.server to paneId
+        val previous = warningDismissals[key]?.takeIf { it.pane.sameCardOccupant(target.pane) }?.texts.orEmpty()
+        val count = rawWarningFor(target.pane) ?: (current.warnings.size + previous.size)
+        warningDismissals = warningDismissals + (key to WarningDismissal(target.pane, count, previous + text))
+        val remaining = current.warnings.filterNot { it.text == text }
+        warningReview = reviewed.copy(review = current.copy(
+            warnings = remaining, issue = "No undismissed warnings.".takeIf { remaining.isEmpty() },
+        ))
+        if (warningRestart?.second?.text == text) warningRestart = null
+    }
+
+    fun requestWarningRestart(paneId: String, text: String) {
+        val reviewed = warningReview ?: return
+        val warning = paneWarningReview?.takeIf { it.paneId == paneId }?.warnings
+            ?.firstOrNull { it.text == text && it.canDiagnose } ?: return
+        warningRestart = reviewed.target to warning
+    }
+
+    fun cancelWarningRestart() { warningRestart = null }
+
+    /** This confirmation offers terminal guidance. No harness-independent in-place restart is available. */
+    fun confirmWarningRestart(): Boolean {
+        val (target, _) = warningRestart ?: return false
+        val confirmedCurrent = warningRestartConfirmation != null && foreground &&
+            boardLaneClear(target.server, target.pane.id) && !writeGate.isClosing(target.server to target.pane.id)
+        warningRestart = null
+        return confirmedCurrent
     }
 
     private fun refreshWarnings(server: String, client: Herdr, snapshot: Collection<Pane>) {
@@ -2233,7 +2364,14 @@ class AppViewModel internal constructor(
                     // A failed live read clears this pane's previous badge.
                 }
             }
-            if (currentRead()) warningBatch = WarningBatch(server, client, connection, readings)
+            if (currentRead()) {
+                warningDismissals = warningDismissals.filterNot { (key, dismissed) ->
+                    val revised = readings[key.second]
+                    key.first == server && revised != null &&
+                        (revised.count != dismissed.count || !revised.pane.sameCardOccupant(dismissed.pane))
+                }
+                warningBatch = WarningBatch(server, client, connection, readings)
+            }
         }
     }
 
