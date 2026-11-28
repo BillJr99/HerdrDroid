@@ -4341,7 +4341,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     }
     // Before the styles are stripped: they are the only mark of Muse's highlighted option (2.1.0).
     if (agent.equals("muse", true)) detectMuseQuotaDialog(text)?.let { return it }
-    if (agent == null || agent.equals("vibe", true)) detectVibeRelease(text, allowGenericReview = agent == null)?.let { return it }
+    if (agent == null || agent.equals("vibe", true)) detectVibeRelease(text, allowGenericReview = true)?.let { return it }
     // 2.2.7 (Bill: "show the whole question"): Oh My Pi's and pi's boxed multi-question Ask dialog.
     if (agent?.lowercase() in setOf("omp", "pi")) OmpAsk.prompt(plain)?.let { return it }
     // 2.2.8 (Bill: "OMP popped up another question it won't let me answer"): Oh My Pi's tool approval

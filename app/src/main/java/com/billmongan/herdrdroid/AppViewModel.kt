@@ -2889,6 +2889,7 @@ class AppViewModel internal constructor(
                 paneStatus == Status.WORKING && preview?.choices.isNullOrEmpty()
             val verifyOpenCode = isOpenCode(agent) && client?.backend == Backend.TUI &&
                 (blocked || paneStatus == Status.WORKING || preview != null || openCodeBackgroundDrawer(agent, recent))
+            val verifyVibeRelease = agent == "vibe" && (preview?.vibeRelease == true || blocked)
             val verifyHermesUsage = agent == "hermes"
             val verifyPi = paneNow != null && requiresLivePiQuestion(paneNow)
             // 2.2.8 (Bill: "the AWS Cloud session failed to render a question ... make that more robust"): a
@@ -2899,12 +2900,12 @@ class AppViewModel internal constructor(
             if (unprovenPreview) com.billmongan.herdrdroid.diag.DiagLog.log("prompt",
                 "$paneId: the recent read's dialog isn't proven (${preview!!.choices.size} choice(s)); reading the live screen")
             val liveViewport = terminalRead?.raw ?: if (liveUsage == null &&
-                (verifyOpenCode || verifyHermesUsage || verifyPi || recentClaudeModel || recentCodexQuestion || shownCodexCard || missingCodexCard || unfinishedChoicePreview || unprovenPreview ||
+                (verifyOpenCode || verifyVibeRelease || verifyHermesUsage || verifyPi || recentClaudeModel || recentCodexQuestion || shownCodexCard || missingCodexCard || unfinishedChoicePreview || unprovenPreview ||
                     preview?.terminalReview == true || preview?.topOffScreen == true || (blocked && preview?.choices.isNullOrEmpty())) && canUpgrade()) {
                 val owner = checkNotNull(cardOwner)
                 quietly { h ->
                     if (h !== owner.client) return@quietly null
-                    if ((verifyHermesUsage || verifyPi) && (!com.billmongan.herdrdroid.herdr.hasStableOccupant(owner.pane) ||
+                    if ((verifyVibeRelease || verifyHermesUsage || verifyPi) && (!com.billmongan.herdrdroid.herdr.hasStableOccupant(owner.pane) ||
                             h.cardPane(paneId, owner.connection)?.sameCardOccupant(owner.pane) != true || !canUpgrade())) return@quietly null
                     // 2.2.8: a far server (a cloud host) can take more than a second to answer.
                     h.readStyledViewport(paneId, owner.connection, timeoutSeconds = 3)
@@ -2927,7 +2928,7 @@ class AppViewModel internal constructor(
             val recentNativeReview = nativeReview(recent)
             val liveNativeReview = liveCard?.let(::nativeReview) == true
             val livePrompt = liveCandidate?.takeIf {
-                verifyOpenCode || it.codexQuestion || liveNativeReview ||
+                verifyOpenCode || verifyVibeRelease || it.codexQuestion || liveNativeReview ||
                     (it.choices.isNotEmpty() && !it.terminalReview && (!requireCodexApprovalIdentity || it.approvalIdentity != null)) ||
                     ((requireCodexApprovalIdentity || verifyHermesUsage || agent.equals("claude", true)) && it.terminalReview)
             }
@@ -2943,7 +2944,7 @@ class AppViewModel internal constructor(
                 if (liveReport || continued && ready) HermesUsageRead(owner, ready) else null
             }
             val recentClarify = preview?.hermesClarify == true
-            val requiresLive = terminalRead != null || verifyOpenCode || recentClaudeModel || recentClarify || recentCodexQuestion || verifyPi
+            val requiresLive = terminalRead != null || verifyOpenCode || verifyVibeRelease || recentClaudeModel || recentClarify || recentCodexQuestion || verifyPi
             val codexQuestionCleared = liveCard != null && liveCandidate == null && (recentCodexQuestion ||
                 agent == "codex" && com.billmongan.herdrdroid.herdr.hasCodexInputActivity(liveCard))
             // 2.2.8 (Codex's review 1): once the live screen was read for an unproven recent dialog, that read is
@@ -2953,7 +2954,7 @@ class AppViewModel internal constructor(
                 "$paneId: the live screen shows no dialog; the recent read's is not used")
             val recentClippedClaudeAsk = agent.equals("claude", true) && preview?.terminalReview == true &&
                 com.billmongan.herdrdroid.herdr.claudeClippedAskReview(recent) != null
-            val useLive = liveCard != null && (terminalRead != null || livePrompt != null || recentNativeReview || recentClaudeModel || recentClippedClaudeAsk || preview?.topOffScreen == true || unprovenAnswered || verifyPi && preview != null || liveReport || recentReport || verifiedUsage != null || recentClarify || codexQuestionCleared || verifyOpenCode &&
+            val useLive = liveCard != null && (terminalRead != null || verifyVibeRelease || livePrompt != null || recentNativeReview || recentClaudeModel || recentClippedClaudeAsk || preview?.topOffScreen == true || unprovenAnswered || verifyPi && preview != null || liveReport || recentReport || verifiedUsage != null || recentClarify || codexQuestionCleared || verifyOpenCode &&
                 (blocked || preview != null || openCodeBackgroundDrawer(agent, recent) || openCodeBackgroundDrawer(agent, liveCard)))
             val codexSteeringProven = liveViewport != null && missingCodexCard && liveCandidate == null &&
                 com.billmongan.herdrdroid.herdr.codexSteeringReady(liveViewport)
