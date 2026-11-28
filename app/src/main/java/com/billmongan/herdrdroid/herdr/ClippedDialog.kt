@@ -69,8 +69,11 @@ internal fun clippedDialogFooter(screen: String, agent: String?): Boolean {
         "opencode" -> {
             // A narrow panel can put its controls on the preceding row. Chrome below the dialog is
             // admitted only when it is the normal command footer and is outside its gutter.
-            val controls = if (!raw.last().trim().startsWith("┃") && footer.contains("ctrl+p commands", true))
-                tail.dropLast(1) else tail
+            val trimmedTail = tail.dropLastWhile(String::isBlank)
+            val last = trimmedTail.lastOrNull().orEmpty()
+            val controls = if (last.contains("ctrl+p commands", true) &&
+                !raw[trimmedTail.lastIndex].trim().startsWith("┃")) trimmedTail.dropLast(1).dropLastWhile(String::isBlank)
+                else trimmedTail
             val hint = controls.lastOrNull().orEmpty()
             openCodeHint.containsMatchIn(hint) && controls.takeLast(3).any(openCodeButtons::containsMatchIn) ||
                 hasOptions && openCodeQuestionHint.matches(hint)

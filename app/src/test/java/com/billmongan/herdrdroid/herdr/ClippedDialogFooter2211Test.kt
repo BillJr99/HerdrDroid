@@ -13,7 +13,7 @@ class ClippedDialogFooter2211Test {
             "copilot" to "$options\n1–3 to select · ↑/↓ to navigate · enter to confirm · esc to cancel",
             "kiro" to "$options\ny allow once · n deny once · t create allow rule · d create deny rule",
             "vibe" to "│ Update now   Continue with current version │\n│ ←→ navigate Enter select │\n└───────────────────────────┘",
-            "opencode" to "┃  Allow once   Always allow   Reject     ⇆ select  enter confirm",
+            "opencode" to "┃  Allow once   Always allow   Reject     ⇆ select  enter confirm\n┃",
             "agy" to "$options\n  ↑/↓ Navigate\nesc to cancel              Plan · Example",
             "grok" to "$options\n2/2:select",
             "hermes" to "↑/↓ to select, Enter to lock, Tab next question  (21s)\n? ❯",

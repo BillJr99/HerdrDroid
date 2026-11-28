@@ -4394,6 +4394,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     if (isOpenCode(agent)) {
         if (openCodeBackgroundDrawer(agent, plain) || openCodeComposerMode(plain.lines().takeLast(20)) >= 0) return null
         detectOpenCodeQuestion(plain)?.let { return it }
+        if (isClippedDialogViewport(plain, agent)) clippedDialogReview(plain, agent)?.let { return it }
         detectOpenCodePermission(text, plain)?.let { return it }
         if (openCodePermissionRan(plain)) return null
     }
