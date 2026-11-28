@@ -140,3 +140,48 @@ internal fun agyClippedShellCommand(screen: String): String? {
     if (!lastCommandRow.endsWith("...") && !lastCommandRow.endsWith("…")) return null
     return rows.subList(intro + 1, question).joinToString("\n")
 }
+
+private val FILE_ACCESS_FOOTER = Regex("""esc to cancel(?:\s{2,}Orchestrator · \S.*)?""", RegexOption.IGNORE_CASE)
+private val FILE_ACCESS_PATH = Regex("""(Read|Write): (\S.*)""")
+private const val FILE_ACCESS_QUESTION = "Allow access to this file?"
+private val FILE_ACCESS_CHOICES = listOf(
+    "Yes, allow access", "Yes, and always allow non-workspace access", "No, deny access",
+)
+
+/** The file access picker has its own digit shortcuts and an Esc cancel. */
+internal fun agyFileAccess(screen: String): Prompt? {
+    val raw = stripAnsi(screen).lines().takeLast(80)
+    val rows = raw.withIndex().filter { it.value.isNotBlank() }
+    val footer = rows.lastIndex
+    if (footer < 6 || !FILE_ACCESS_FOOTER.matches(rows[footer].value.trim()) ||
+        rows[footer - 1].value.trim() != "↑/↓ Navigate") return null
+    val choiceStart = footer - 4
+    val question = choiceStart - 1
+    if (rows[question].value.trim() != FILE_ACCESS_QUESTION) return null
+    val title = (question - 1 downTo maxOf(0, question - 16)).firstOrNull {
+        rows[it].value.trim() == "File access"
+    } ?: return null
+    if (title + 3 >= question || !RULE.matches(rows[title + 1].value.trim())) return null
+    val frame = raw.subList(rows[title].index, rows[footer].index + 1)
+    val reason = rows.subList(title + 2, question - 1).map { it.value.trim() }
+    val access = rows[question - 1].value.trim()
+    val parts = QuestionParts(emptyList(), listOf(QBlock(QKind.HEADING, FILE_ACCESS_QUESTION)) +
+        reason.map { QBlock(QKind.TEXT, it) } + QBlock(QKind.TEXT, access))
+    fun review() = Prompt(FILE_ACCESS_QUESTION, emptyList(), region = frame, parts = parts,
+        terminalReview = true, agyFileAccess = true)
+    if (!reason.first().startsWith("Reason: ") || FILE_ACCESS_PATH.matchEntire(access) == null ||
+        frame.any { row -> row.any { c -> c.isISOControl() && c != '\t' || c == '\uFFFD' } } ||
+        access.endsWith("…") || access.endsWith("...")) return review()
+    val focused = mutableListOf<String>()
+    for ((index, label) in FILE_ACCESS_CHOICES.withIndex()) {
+        val choice = rows[choiceStart + index].value.trim()
+        val digit = (index + 1).toString()
+        if (choice.removePrefix("> ").removePrefix("❯ ") != "$digit. $label") return review()
+        if (choice.startsWith("> ") || choice.startsWith("❯ ")) focused += digit
+    }
+    return Prompt(FILE_ACCESS_QUESTION,
+        FILE_ACCESS_CHOICES.mapIndexed { index, label -> Choice(label, (index + 1).toString(), false) } +
+            Choice("Cancel", "esc", false),
+        selected = focused.singleOrNull(), parts = parts, letterKeys = true,
+        approvalIdentity = frame.joinToString("\n"), agyFileAccess = true)
+}

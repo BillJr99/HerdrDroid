@@ -2881,6 +2881,7 @@ class AppViewModel internal constructor(
             // while status still says Working. Probe only the selected, live-bottom viewport.
             val missingCodexCard = agent == "codex" && paneStatus == Status.WORKING && preview?.choices.isNullOrEmpty()
             val recentClaudeModel = preview?.claudeModelControl == true
+            val recentAgyFiles = preview?.agyFileAccess == true
             val recentCodexCard = agent == "codex" && preview != null && client?.backend == Backend.TUI
             val recentCodexQuestion = recentCodexCard && preview?.codexQuestion == true
             val recentCodexHooks = agent == "codex" && client?.backend == Backend.TUI &&
@@ -2906,15 +2907,15 @@ class AppViewModel internal constructor(
                 "$paneId: the recent read's dialog isn't proven (${preview!!.choices.size} choice(s)); reading the live screen")
             val liveViewport = terminalRead?.raw ?: if (liveUsage == null &&
                 (verifyOpenCode || verifyVibeRelease || verifyHermesUsage || verifyPi || recentClaudeModel || recentCodexQuestion || recentCodexHooks || shownCodexCard || missingCodexCard || unfinishedChoicePreview || unprovenPreview ||
-                    preview?.terminalReview == true || preview?.topOffScreen == true || (blocked && preview?.choices.isNullOrEmpty())) && canUpgrade()) {
+                    recentAgyFiles || preview?.terminalReview == true || preview?.topOffScreen == true || (blocked && preview?.choices.isNullOrEmpty())) && canUpgrade()) {
                 val owner = checkNotNull(cardOwner)
                 quietly { h ->
                     if (h !== owner.client) return@quietly null
-                    if ((verifyVibeRelease || verifyHermesUsage || verifyPi || recentCodexHooks) && (!com.billmongan.herdrdroid.herdr.hasStableOccupant(owner.pane) ||
+                    if ((verifyVibeRelease || verifyHermesUsage || verifyPi || recentCodexHooks || recentAgyFiles) && (!com.billmongan.herdrdroid.herdr.hasStableOccupant(owner.pane) ||
                             h.cardPane(paneId, owner.connection)?.sameCardOccupant(owner.pane) != true || !canUpgrade())) return@quietly null
                     // 2.2.8: a far server (a cloud host) can take more than a second to answer.
                     val viewport = h.readStyledViewport(paneId, owner.connection, timeoutSeconds = 3)
-                    if (recentCodexHooks && h.cardPane(paneId, owner.connection)?.sameCardOccupant(owner.pane) != true)
+                    if ((recentCodexHooks || recentAgyFiles) && h.cardPane(paneId, owner.connection)?.sameCardOccupant(owner.pane) != true)
                         return@quietly null
                     viewport
                 }
@@ -2929,7 +2930,8 @@ class AppViewModel internal constructor(
             fun nativeReview(text: String): Boolean = when (agent?.lowercase()) {
                 "agy" -> com.billmongan.herdrdroid.herdr.agySubagentQuestion(text) != null ||
                     com.billmongan.herdrdroid.herdr.agySubagentApproval(text)?.terminalReview == true ||
-                    com.billmongan.herdrdroid.herdr.agyClippedShellCommand(text) != null
+                    com.billmongan.herdrdroid.herdr.agyClippedShellCommand(text) != null ||
+                    com.billmongan.herdrdroid.herdr.agyFileAccess(text)?.terminalReview == true
                 "grok" -> com.billmongan.herdrdroid.herdr.grokPrivacyOverlay(text) != null
                 else -> false
             }
@@ -2952,7 +2954,7 @@ class AppViewModel internal constructor(
                 if (liveReport || continued && ready) HermesUsageRead(owner, ready) else null
             }
             val recentClarify = preview?.hermesClarify == true
-            val requiresLive = terminalRead != null || verifyOpenCode || verifyVibeRelease || recentClaudeModel || recentClarify || recentCodexQuestion || recentCodexHooks || verifyPi
+            val requiresLive = terminalRead != null || verifyOpenCode || verifyVibeRelease || recentClaudeModel || recentClarify || recentCodexQuestion || recentCodexHooks || recentAgyFiles || verifyPi
             val codexQuestionCleared = liveCard != null && liveCandidate == null && (recentCodexQuestion || recentCodexHooks ||
                 agent == "codex" && com.billmongan.herdrdroid.herdr.hasCodexInputActivity(liveCard))
             // 2.2.8 (Codex's review 1): once the live screen was read for an unproven recent dialog, that read is
@@ -2962,7 +2964,7 @@ class AppViewModel internal constructor(
                 "$paneId: the live screen shows no dialog; the recent read's is not used")
             val recentClippedClaudeAsk = agent.equals("claude", true) && preview?.terminalReview == true &&
                 com.billmongan.herdrdroid.herdr.claudeClippedAskReview(recent) != null
-            val useLive = liveCard != null && (terminalRead != null || verifyVibeRelease || livePrompt != null || recentNativeReview || recentClaudeModel || recentClippedClaudeAsk || preview?.topOffScreen == true || unprovenAnswered || verifyPi && preview != null || liveReport || recentReport || verifiedUsage != null || recentClarify || codexQuestionCleared || verifyOpenCode &&
+            val useLive = liveCard != null && (terminalRead != null || recentAgyFiles || verifyVibeRelease || livePrompt != null || recentNativeReview || recentClaudeModel || recentClippedClaudeAsk || preview?.topOffScreen == true || unprovenAnswered || verifyPi && preview != null || liveReport || recentReport || verifiedUsage != null || recentClarify || codexQuestionCleared || verifyOpenCode &&
                 (blocked || preview != null || openCodeBackgroundDrawer(agent, recent) || openCodeBackgroundDrawer(agent, liveCard)))
             val codexSteeringProven = liveViewport != null && missingCodexCard && liveCandidate == null &&
                 com.billmongan.herdrdroid.herdr.codexSteeringReady(liveViewport)
@@ -9671,7 +9673,7 @@ internal const val MAY_HAVE_SENT = "it may have reached the agent; check the age
 internal const val OCCUPANT_REFUSAL = "Not sent. Another agent or session is in this pane now."
 
 /** 2.2.8: agents whose approval or Ask dialog waits while herdr may call them working: the Questions view reads them too. */
-internal val QUESTION_CANDIDATE_AGENTS = setOf("omp", "pi")
+internal val QUESTION_CANDIDATE_AGENTS = setOf("omp", "pi", "agy")
 
 /** 2.2.8: a card answer whose keys failed after the check passed. */
 internal const val CARD_MAY_HAVE_SENT = "Could not confirm delivery: the answer may have been sent. Check the pane before answering again."

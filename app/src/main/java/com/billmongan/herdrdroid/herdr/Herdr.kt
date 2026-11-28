@@ -1735,6 +1735,7 @@ data class Prompt(
     internal val clipped: Boolean = false,
     /** AGY subagent Bash approval takes only the explicitly displayed Ctrl+K shortcut. */
     internal val agyApproval: Boolean = false,
+    internal val agyFileAccess: Boolean = false,
     /** Kiro advertises its exact one-time approval keys on this page. */
     internal val kiroOnceShortcuts: Boolean = false,
     internal val kiroStartupMigration: Boolean = false,
@@ -1748,7 +1749,7 @@ data class Prompt(
     /** Codex's startup hook trust or hook browser review screen. */
     internal val codexHooksReview: Boolean = false,
 ) {
-    internal val guardedShortcutApproval: Boolean get() = agyApproval || kiroOnceShortcuts || claudeModelControl || copilotPermissionControl || vibeRelease || codexHooksReview
+    internal val guardedShortcutApproval: Boolean get() = agyApproval || agyFileAccess || kiroOnceShortcuts || claudeModelControl || copilotPermissionControl || vibeRelease || codexHooksReview
     internal val historyReviewOnly: Boolean get() = topOffScreen || rebuiltTallDialog
 
     /**
@@ -4351,6 +4352,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     }
     if (agent.equals("grok", true)) grokPrivacyOverlay(plain)?.let { return it }
     if (agent.equals("agy", true)) {
+        agyFileAccess(plain)?.let { return it }
         agySubagentQuestion(plain)?.let { return it }
         agySubagentApproval(plain)?.let { return it }
         agyClippedShellCommand(plain)?.let { return terminalCommandReview(it) }
