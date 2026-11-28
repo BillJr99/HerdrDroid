@@ -3871,10 +3871,20 @@ private val OPENCODE_PERMISSION_GUTTER = Regex("""^ *[┃│|]""")
 private val OPENCODE_BACKGROUND_HINT =
     Regex("""^\s*Press ctrl\+b to move running work to the background\s*$""", RegexOption.IGNORE_CASE)
 private val OPENCODE_TOOL_SPINNER = Regex("""^ *[┃│] +[⠁-⣿] +\S""")
+private val OPENCODE_INLINE_TOOL_SPINNER = Regex("""^ +[⠁-⣿] +\S""")
 
-/** A native running tool followed by its background hint, with no later dialog or composer. */
+/** The native running-tool footer, optionally followed by OpenCode's empty composer. */
 internal fun openCodePermissionRan(screen: String): Boolean {
     val rows = stripAnsi(screen).lines().takeLast(20)
+    val mode = openCodeComposerMode(rows)
+    if (mode >= 3 && openCodeEmptyComposer(screen)) {
+        val hint = (mode - 4 downTo maxOf(0, mode - 7)).firstOrNull { rows[it].isNotBlank() } ?: return false
+        if (!OPENCODE_BACKGROUND_HINT.matches(rows[hint])) return false
+        val spinner = (hint - 1 downTo maxOf(0, hint - 4)).firstOrNull { rows[it].isNotBlank() } ?: return false
+        return OPENCODE_INLINE_TOOL_SPINNER.containsMatchIn(rows[spinner]) &&
+            rows[spinner].indexOfFirst { !it.isWhitespace() } == rows[hint].indexOfFirst { !it.isWhitespace() }
+    }
+
     val hint = rows.indexOfLast { it.trim().trim('┃', '│').isNotBlank() }
     if (hint < 0 || !OPENCODE_BACKGROUND_HINT.matches(rows[hint])) return false
     val spinner = (hint - 1 downTo maxOf(0, hint - 12)).firstOrNull { OPENCODE_TOOL_SPINNER.containsMatchIn(rows[it]) }
