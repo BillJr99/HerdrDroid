@@ -28,6 +28,18 @@ private val MUSE_RULE = Regex("""^\s*[─━═]{8,}""")
 private val MUSE_SGR = Regex("""\u001B\[([0-9;]*)m""")
 private val MUSE_ANY_ESC = Regex("""\u001B\[[0-9;?]*[ -/]*[@-~]|\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)""")
 
+/** A clipped quota card retains its options, its closing rule and its native status footer. */
+internal fun museQuotaTail(rows: List<String>): Boolean {
+    if (rows.size < 4 || !MUSE_RULE.containsMatchIn(rows[rows.lastIndex - 1])) return false
+    val footer = rows.last().trim().split(" · ")
+    if (footer.size < 3 || !footer.first().startsWith("muse-")) return false
+    val options = rows.dropLast(2).mapNotNull { MUSE_OPTION.matchEntire(it.trimEnd()) }
+    return options.size >= 2 && options.last().groupValues[2] == "Keep going" &&
+        options.any { it.groupValues[3].isNotEmpty() } &&
+        options.map { it.groupValues[2] }.distinct().size == options.size &&
+        options.all { it.groupValues[1] == options.last().groupValues[1] }
+}
+
 /** How the first letter of a row is drawn: enough to tell the highlighted option from the rest. */
 private data class MuseLook(val bold: Boolean, val faint: Boolean, val inverse: Boolean, val fg: String, val bg: String) {
     /** More is more emphasis: the highlight is drawn bolder, brighter or on a background. */

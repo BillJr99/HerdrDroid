@@ -12,6 +12,12 @@ private val agyCancel = Regex("""esc to cancel(?:\s{2,}\S.*)?""", RegexOption.IG
 private val hermesMenu = Regex("""[0-9]+/[1-9][0-9]* answered · .+ cancel""", RegexOption.IGNORE_CASE)
 private val hermesClassic = Regex("""↑/↓ to select, Enter to (?:lock, Tab next question|confirm)(?:\s+\(\d+s\))?""")
 private val hermesInput = Regex("""[?✎] ❯.*""")
+private val grokNumberedHint = Regex("""^([1-9]\d*)/([1-9]\d*):select(?:\s+│.*)?$""")
+private val grokApprovalTitle = Regex("""^› {2,}\S.*$""")
+private val grokPlanTitle = Regex("""^# {1,3}\S.*$""")
+private val grokQuestionTitle = Regex("""^(?:\?\s+\S.*|[A-Z][^|]{3,150}\?)$""")
+private val musePermissionHeading = Regex("""^Permission for the \S+ tool(?:\s*\(.*\))?$""")
+private val musePermissionFooter = Regex("""Change approval defaults in /permissions""", RegexOption.IGNORE_CASE)
 private val kiroApprovalHint = Regex("""y allow once · n deny once · t create allow rule · d create deny rule""")
 
 private fun clippedBody(row: String): String = row.trim().let {
@@ -32,7 +38,10 @@ internal fun clippedDialogHeading(row: String, agent: String?): Boolean {
             body == "Question"
         "agy" -> body in setOf("File access", "Requesting permission for:", "⚠ Approval Required", "Question")
         "grok" -> body == "Run this command?" || body.startsWith("Run this command:") ||
-            body.startsWith("Approve this action") || isDialogHeaderRow(body)
+            body.startsWith("Approve this action") || isDialogHeaderRow(body) ||
+            grokApprovalTitle.matches(body) || grokPlanTitle.matches(body) || grokQuestionTitle.matches(body)
+        "muse" -> body == "You're using your quota fast" || musePermissionHeading.matches(body) ||
+            isDialogHeaderRow(body)
         "hermes" -> body == "Hermes needs your input" || body.startsWith("ask ") && body.endsWith(" question") ||
             body.startsWith("Dangerous command") || body.startsWith("⚠ Approval")
         "omp", "pi" -> body.startsWith("Ask · ") || body.startsWith("Allow tool:")
@@ -82,7 +91,12 @@ internal fun clippedDialogFooter(screen: String, agent: String?): Boolean {
             tail.getOrNull(tail.lastIndex - 1)?.let { it == "↑/↓ Navigate" || agyShellHint.matches(it) } == true ||
             hasOptions && footer in setOf("↑/↓ Navigate · enter Select · esc Skip",
                 "↑/↓ navigate · / select · enter confirm · esc cancel")
-        "grok" -> hasOptions && isDialogFooterRow(footer) || GROK_PLAN_FOOTER_ROW.matches(raw.last())
+        "grok" -> grokNumberedHint.matchEntire(footer)?.let {
+            val selected = it.groupValues[1].toIntOrNull()
+            val count = it.groupValues[2].toIntOrNull()
+            hasOptions && selected != null && count != null && selected <= count && numbered.last() <= count
+        } == true || GROK_PLAN_FOOTER_ROW.matches(raw.last())
+        "muse" -> hasOptions && musePermissionFooter.matches(footer) || museQuotaTail(raw)
         "hermes" -> hermesMenu.matches(footer) && hasOptions ||
             hermesInput.matches(footer) && tail.getOrNull(tail.lastIndex - 1)?.let(hermesClassic::matches) == true
         "omp", "pi" -> hasOptions && (OMP_APPROVAL_FOOTER.containsMatchIn(footer) || isDialogFooterRow(footer))
