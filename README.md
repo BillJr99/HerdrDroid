@@ -653,6 +653,11 @@ To keep a new test class safe:
 
 ## Version history
 
+### 2.2.11
+
+- **Two-way Board sync.** Pull down on a server tab to sync that board, or on **All** to sync every board with an agent configured. HerdrDroid sends queued edits first, then requests changes since the last export. Manual pulls can refresh within five minutes. Requests wait for an idle pane with an empty composer.
+- **Phone card targets.** Choose a board when creating or editing a phone card, then pull to sync it. If a server card already has the same normalized title, choose whether to link it or create a separate card. Notes merge in time order without duplicates. A remote deletion of a locally edited card requires a decision.
+
 ### 2.2.10
 
 - **Updates.** HerdrDroid checks for a new release once on launch when online, and you can also check from Settings. Installation still opens the Android installer for confirmation.

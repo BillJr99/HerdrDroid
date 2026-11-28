@@ -5021,17 +5021,30 @@ class AppViewModel internal constructor(
             clearToSend = ::boardLaneClear)
     }
 
-    internal fun refreshBoards(ids: List<String>) {
+    private fun forConfiguredBoards(ids: List<String>, action: (String, Long) -> Unit) {
         val now = System.currentTimeMillis()
-        ids.filter { id -> servers.any { it.id == id && it.boardAgentPane != null } }
-            .forEach { boardStore.queueExport(it, now) }
+        com.billmongan.herdrdroid.board.boardSyncTargets(ids, servers).forEach { action(it, now) }
     }
+
+    internal fun refreshBoards(ids: List<String>) {
+        forConfiguredBoards(ids) { server, now -> boardStore.queueExport(server, now) }
+    }
+
+    internal fun syncBoards(ids: List<String>) {
+        forConfiguredBoards(ids) { server, now -> boardStore.startSync(server, now) }
+    }
+
+    private val boardQueueRefusals = mutableStateMapOf<String, Pair<String, RelayRefusal>>()
 
     internal fun boardAgentAvailability(server: String): String? {
         val selection = servers.firstOrNull { it.id == server }?.boardAgentPane ?: return null
+        val pending = boardStore.state.value.servers[server]
         return when {
             boardClient(server)?.connectionIdentity == null -> "Connect to this server to sync."
             boardAgentChoices(server).none { boardPaneKey(it) == selection } -> "The board agent is unavailable. Check the server settings."
+            pending != null && pending.requestSentAt == null && !pending.noAnswer ->
+                boardQueueRefusals[server]?.takeIf { it.first == pending.request?.id }
+                    ?.second?.let { "Queued: ${it.why}." }
             else -> null
         }
     }
@@ -5098,10 +5111,12 @@ class AppViewModel internal constructor(
         val permit = WritePermit { enabled() && boardLaneClear(server, pane.id) && boardRelay.isCurrent(target) }
         try {
             val result = boardRelay.send(target, message, authorizedWrite = permit, boardRequest = true,
+                refused = { if (enabled()) boardQueueRefusals[server] = request.id to it },
                 beforeBoardWrite = {
                     enabled() && boardStore.markSent(server, request.id, System.currentTimeMillis())
                 }) { enabled() }
             if (result == RelayResult.REFUSED || result == RelayResult.DRAFT) boardStore.markQueued(server, request.id)
+            else boardQueueRefusals.remove(server)
         } catch (c: CancellationException) {
             if (!permit.submitted) boardStore.markQueued(server, request.id)
             throw c

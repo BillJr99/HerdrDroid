@@ -31,9 +31,12 @@ internal fun ConnectedBoardScreen(vm: AppViewModel) {
         onMenu = { vm.drawerOpen = true },
         onBack = vm::leaveBoard,
         onRefresh = vm::refreshBoards,
+        onSync = vm::syncBoards,
         onRetry = { store.retry(it) },
-        onSave = { server, card -> if (!store.saveCard(server, card)) vm.boardEditFailed() },
-        onMovePhoneCard = { card, server -> if (!store.movePhoneCard(card, server)) vm.boardEditFailed() },
+        onSave = { server, card, target -> if (!store.saveCard(server, card, target)) vm.boardEditFailed() },
+        onResolveDuplicate = { server, phone, remote ->
+            if (!store.resolveDuplicate(server, phone, remote)) vm.boardEditFailed()
+        },
         onAddNote = { server, card, note -> if (!store.addNote(server, card, note)) vm.boardEditFailed() },
         onResolve = { server, card, field, keepPhone -> if (!store.resolve(server, card, field, keepPhone)) vm.boardEditFailed() },
         handleBack = !vm.drawerOpen,
