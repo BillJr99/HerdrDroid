@@ -12,6 +12,7 @@ import com.billmongan.herdrdroid.herdr.Status
 import com.billmongan.herdrdroid.ssh.Credentials
 import com.billmongan.herdrdroid.ssh.ExecResult
 import com.billmongan.herdrdroid.ssh.HerdrSsh
+import com.billmongan.herdrdroid.store.Server
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test

@@ -15,8 +15,6 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.billmongan.herdrdroid.IdleMainLooperRule
 import com.billmongan.herdrdroid.OUTERMOST_RULE
 import com.billmongan.herdrdroid.board.BoardCard
-import com.billmongan.herdrdroid.board.BoardDuplicate
-import com.billmongan.herdrdroid.board.BoardSyncProgress
 import com.billmongan.herdrdroid.board.BoardState
 import com.billmongan.herdrdroid.board.BoardStatus
 import com.billmongan.herdrdroid.board.ServerBoard
@@ -176,8 +174,7 @@ class BoardScreen2210UiTest {
             BoardScreen(
                 state = BoardState(phone = mapOf(local.id to local), servers = mapOf("one" to ServerBoard(
                     entries = mapOf(remote.id to remote),
-                    syncProgress = BoardSyncProgress.CONFLICTS,
-                    duplicates = listOf(BoardDuplicate(local.id, listOf(remote.id))),
+                    duplicateCandidates = mapOf(local.id to listOf(remote.id)),
                 ))),
                 servers = listOf(BoardSource("one", "First")),
                 onMenu = {}, onBack = {}, onRefresh = {}, onSync = {},
