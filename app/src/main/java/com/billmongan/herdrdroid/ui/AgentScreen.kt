@@ -160,13 +160,19 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         if (draftServer != null) vm.noteVoiceComposerDraft(draftServer, paneId, message.isNotBlank())
     }
     var fullTerminal by rememberSaveable { mutableStateOf(false) }
+    var warningGuidance by remember(draftServer, paneId) { mutableStateOf<String?>(null) }
     var confirmCtrlC by remember { mutableStateOf(false) }
 
     var ctrl by remember { mutableStateOf(Hold.OFF) }
     var alt by remember { mutableStateOf(Hold.OFF) }
     /** The slash command whose screen is showing, until you go back to the chat. */
     var commandScreen by rememberSaveable(paneId) { mutableStateOf<String?>(null) }
-    LaunchedEffect(fullTerminal) { if (!fullTerminal) commandScreen = null }
+    LaunchedEffect(fullTerminal) {
+        if (!fullTerminal) {
+            commandScreen = null
+            warningGuidance = null
+        }
+    }
     // 2.1.4: while the terminal shows a usage dialog the app opened, it stays open; going back to the
     // chat, to another pane or out of the app closes it, and the app checks that it closed.
     LaunchedEffect(paneId, commandScreen) {
@@ -596,7 +602,9 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 screen = if (vm.paneTextPane == paneId) vm.paneText else "",
                 terminalTitle = pane?.title.orEmpty(),
             )
-            pane?.let { vm.warningFor(it) }?.let { PaneWarningBadge(it, Modifier.padding(start = 6.dp)) }
+            pane?.let { vm.warningFor(it) }?.let {
+                PaneWarningBadge(it, Modifier.padding(start = 6.dp), onClick = { vm.openPaneWarnings(paneId) })
+            }
             PaneTitleLines(
                 name = if (isHermes) (if (live) "Hermes · live chat" else "Hermes · this pane") + "  ▾"
                 else identity.title,
@@ -663,6 +671,12 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     // of the chat, out of sight when the chat sits at the bottom, so it seemed to do nothing
                     // (Bill, 2026-11-13). Every agent's usage is on the screen below.
                     DropdownMenuItem(text = { Text("Usage history, all agents") }, onClick = { menu = false; vm.screen = Screen.Usage })
+                    if (pane != null && vm.rawWarningFor(pane) != null && vm.warningFor(pane) == null) {
+                        DropdownMenuItem(text = { Text("Warning details") }, onClick = {
+                            menu = false
+                            vm.openPaneWarnings(paneId)
+                        })
+                    }
                     if (pane != null) DropdownMenuItem(text = { Text("Files") }, onClick = { menu = false; vm.openFiles(pane.cwd.ifBlank { "~" }) })
                     if (pane?.agent != null && vm.hasTranscriptReader(paneId)) {
                         DropdownMenuItem(text = { Text("History") }, onClick = { menu = false; vm.screen = Screen.History(paneId) })
@@ -741,6 +755,41 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         }
         HorizontalDivider(color = Palette.Line)
         ServerBanners(vm)
+        val warningReview = vm.paneWarningReview?.takeIf { it.paneId == paneId }
+        warningReview?.let { review ->
+            fun openWarningTerminal() {
+                vm.closePaneWarnings()
+                hermesLive = false
+                fullTerminal = true
+                termFollow = true
+            }
+            PaneWarningCards(
+                review,
+                onClose = vm::closePaneWarnings,
+                onTerminal = ::openWarningTerminal,
+                onCopy = { text ->
+                    val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
+                    runCatching { clipboard?.setPrimaryClip(android.content.ClipData.newPlainText("Pane warning", text)) }
+                },
+                onDismiss = { text -> vm.dismissPaneWarning(paneId, text) },
+                onDiagnose = {
+                    warningGuidance = "Run codex doctor in a separate shell to keep this session open."
+                    openWarningTerminal()
+                },
+                onRestart = { text -> vm.requestWarningRestart(paneId, text) },
+            )
+            if (vm.warningRestartConfirmation != null) {
+                WarningRestartDialog(onConfirm = {
+                    if (vm.confirmWarningRestart()) {
+                        warningGuidance = "Restart this pane only when its session is ready to close."
+                        openWarningTerminal()
+                    }
+                }, onCancel = vm::cancelWarningRestart)
+            }
+        }
+        if (fullTerminal) warningGuidance?.let { guidance ->
+            Text(guidance, color = Palette.Muted, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+        }
         // A held send's problem shows only in its own pane's chat, on its own server (2.1.2).
         sendNotice?.takeUnless { pane?.isProbe == true || (showChatDraft && vm.isPaneDraftHold(it)) }
             ?.let { ErrorBanner(it) { vm.dismissSendNotice(paneId) } }
