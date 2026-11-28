@@ -24,6 +24,22 @@ class VibeRelease2211Test {
         assertNull(detectPrompt("$raw\n> ", blocked = false))
     }
 
+    @Test fun differingControlSequenceInterpretationsCannotAuthorizeKeys() {
+        val controls = listOf(
+            "\u001B(B",
+            "\u001B]8;;https://example.invalid\u001B\\extra\u001B]8;;\u0007",
+        )
+        for (control in controls) {
+            val screen = capture.lineSequence().joinToString("\n") { row ->
+                if ("Update now" in row) row + control else row
+            }
+            val prompt = checkNotNull(detectPrompt(screen, blocked = false))
+            assertNull(prompt.selected)
+            assertNull(menuKeys(prompt, prompt.choices.first()))
+            assertNull(menuKeys(prompt, prompt.choices.last()))
+        }
+    }
+
     @Test fun unknownModalShowsTerminalReviewWithoutInventingFocus() {
         val prompt = checkNotNull(detectPrompt(capture.replace("Vibe release", "Tool choice "), blocked = false))
         assertTrue(prompt.terminalReview)
