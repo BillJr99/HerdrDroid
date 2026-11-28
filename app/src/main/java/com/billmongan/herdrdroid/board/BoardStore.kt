@@ -190,9 +190,19 @@ class BoardStore internal constructor(
             if (state.phoneTargets[phoneId] != serverId || phoneId !in board.duplicateCandidates)
                 return@mutate state
             val cleared = board.copy(duplicateCandidates = board.duplicateCandidates - phoneId)
-            if (remoteId == null) return@mutate state.copy(servers = state.servers + (
-                serverId to cleared.copy(allowDuplicate = cleared.allowDuplicate + phoneId)
-            ))
+            if (remoteId == null) {
+                val staged = cleared.copy(
+                    entries = cleared.entries + (phoneId to card),
+                    creates = cleared.creates + phoneId,
+                    allowDuplicate = cleared.allowDuplicate + phoneId,
+                    manualFinished = false,
+                )
+                val queued = when {
+                    staged.refusal != null || (staged.request != null && staged.attempted) -> staged
+                    else -> staged.withPendingApply()
+                }
+                return@mutate state.copy(servers = state.servers + (serverId to queued))
+            }
             if (remoteId !in board.duplicateCandidates.getValue(phoneId)) return@mutate state
             val remote = board.entries[remoteId] ?: return@mutate state
             val linked = remote.copy(notes = unionNotes(remote.notes, card.notes))
@@ -351,15 +361,20 @@ class BoardStore internal constructor(
 
 private fun BoardState.beginManualSync(serverId: String, board: ServerBoard): ServerBoard {
     val candidates = mutableMapOf<String, List<String>>()
-    val phoneCards = phoneTargets.filterValues { it == serverId }.keys.mapNotNull(phone::get)
+    val phoneCards = phoneTargets.filterValues { it == serverId }.keys.mapNotNull(phone::get).sortedBy { it.id }
+    val stagedNow = mutableListOf<String>()
     val staged = phoneCards.fold(board.copy(request = null, manualRequestId = null)) { current, card ->
         if (card.id in current.entries) return@fold current
-        val sameTitle = current.baseline.values.filter { normalizedTitle(it.title) == normalizedTitle(card.title) }
-            .map { it.id }
+        val title = normalizedTitle(card.title)
+        val sameTitle = current.baseline.values.filter { normalizedTitle(it.title) == title }.map { it.id } +
+            stagedNow.filter { normalizedTitle(current.entries.getValue(it).title) == title }
         if (sameTitle.isNotEmpty() && card.id !in current.allowDuplicate) {
             candidates[card.id] = sameTitle
             current
-        } else current.copy(entries = current.entries + (card.id to card), creates = current.creates + card.id)
+        } else {
+            stagedNow += card.id
+            current.copy(entries = current.entries + (card.id to card), creates = current.creates + card.id)
+        }
     }.copy(duplicateCandidates = candidates)
     val apply = if (staged.refusal == null) staged.withPendingApply() else staged
     return if (apply.request != null) apply.copy(manualRequestId = apply.request.id)
@@ -372,6 +387,11 @@ private fun normalizedTitle(title: String): String =
 
 private fun ServerBoard.withManualExport(): ServerBoard =
     withExport().let { it.copy(manualRequestId = it.request?.id) }
+
+private fun dedupedNotes(notes: List<BoardNote>): List<BoardNote> {
+    val seen = HashSet<Triple<String, String, String>>()
+    return notes.filter { seen.add(Triple(it.at, it.by, it.text)) }
+}
 
 private fun unionNotes(first: List<BoardNote>, second: List<BoardNote>): List<BoardNote> =
     (first + second).distinct()
@@ -445,17 +465,18 @@ private fun ServerBoard.accept(request: BoardRequest, reply: BoardReply): Server
                 val id = change.clientId
                 val inFlight = local[id]
                 val submittedNotes = change.card.notes.toSet()
+                val base = incoming.getValue(result.id).let { it.copy(notes = dedupedNotes(it.notes)) }
+                incoming[result.id] = base
+                val serverKeys = base.notes.map { Triple(it.at, it.by, it.text) }.toSet()
                 val notesToAppend = unionNotes(pending.remove(id).orEmpty(),
                     inFlight?.notes.orEmpty().filterNot { it in submittedNotes })
+                    .filterNot { Triple(it.at, it.by, it.text) in serverKeys }
                 newIds.remove(id)
                 local.remove(id)
                 if (notesToAppend.isNotEmpty()) pending[result.id] = notesToAppend
-                // The acknowledgement includes the saved card. Use its canonical notes, which
-                // may carry a different author or timestamp, and queue only edits made in flight.
-                if (inFlight != null) local[result.id] = inFlight.copy(
-                    id = result.id, notes = incoming.getValue(result.id).notes,
-                )
-                known[result.id] = change.card.copy(id = result.id)
+                // The acknowledgement is the base: one copy of each server note, in server order.
+                if (inFlight != null) local[result.id] = inFlight.copy(id = result.id, notes = base.notes)
+                known[result.id] = base
             }
             is BoardChange.Update -> known[change.id]?.let { known[change.id] = it.withFields(change.set) }
             is BoardChange.Note -> {

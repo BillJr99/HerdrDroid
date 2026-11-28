@@ -179,6 +179,114 @@ class BoardPull2211Test {
     }
 
     @Test
+    fun createAcknowledgementAdoptsDedupedServerNotesAsTheBase() {
+        val phoneNote = BoardNote(time, "Phone", "Start the drawing")
+        val drawing = BoardNote(newer, "Editor", "Start the drawing")
+        val paper = BoardNote(time, "Editor", "Lay out the paper")
+        val lateNote = BoardNote("2026-01-02T12:02:00Z", "Phone", "Pick up pencils")
+        val local = BoardCard(UUID.randomUUID().toString(), "Draw a boat", notes = listOf(phoneNote, phoneNote))
+        assertTrue(store.saveCard(null, local, first))
+        assertTrue(store.startSync(first, 1))
+        val create = request()
+        assertTrue(store.markSent(first, create.id, 1))
+        assertTrue(store.addNote(null, local.id, lateNote))
+
+        val saved = local.copy(id = "server-assigned", notes = listOf(drawing, paper, drawing))
+        assertTrue(store.receive(first, BoardReply(create.id, "Board", newer,
+            listOf(saved), emptyList(), listOf(BoardResult(true, saved.id)))))
+        val base = listOf(drawing, paper)
+        assertEquals(base, board().baseline.getValue(saved.id).notes)
+        assertEquals(base, board().entries.getValue(saved.id).notes)
+        assertEquals(listOf(paper, drawing, lateNote), board().cards.getValue(saved.id).notes)
+        assertFalse(local.id in store.state.value.phone)
+
+        val export = request()
+        assertEquals(BoardRequestKind.EXPORT, export.kind)
+        assertTrue(store.markSent(first, export.id, 2))
+        assertTrue(store.receive(first, BoardReply(export.id, "Board", newer,
+            listOf(saved.copy(notes = base)), emptyList(), emptyList())))
+        assertEquals(base, board().baseline.getValue(saved.id).notes)
+        assertEquals(listOf(paper, drawing, lateNote), board().cards.getValue(saved.id).notes)
+        assertTrue(store.queueApply(first, 3))
+        assertEquals(listOf(BoardChange.Note(saved.id, lateNote.text)), request().changes)
+    }
+
+    @Test
+    fun repeatedIdenticalServerNotesCollapseWithoutDroppingANewNote() {
+        val note = BoardNote(time, "Phone", "Start the drawing")
+        val lateNote = BoardNote(newer, "Phone", "Pick up pencils")
+        val local = BoardCard(UUID.randomUUID().toString(), "Draw a boat", notes = listOf(note, note))
+        assertTrue(store.saveCard(null, local, first))
+        assertTrue(store.startSync(first, 1))
+        val create = request()
+        assertTrue(store.markSent(first, create.id, 1))
+        assertTrue(store.addNote(null, local.id, lateNote))
+        val saved = local.copy(id = "server-assigned", notes = listOf(note, note))
+        assertTrue(store.receive(first, BoardReply(create.id, "Board", newer,
+            listOf(saved), emptyList(), listOf(BoardResult(true, saved.id)))))
+        assertEquals(listOf(note), board().baseline.getValue(saved.id).notes)
+        assertEquals(listOf(note), board().entries.getValue(saved.id).notes)
+        assertEquals(listOf(note, lateNote), board().cards.getValue(saved.id).notes)
+    }
+
+    @Test
+    fun createSeparatelyQueuesThePhoneCardInsteadOfShowingSynced() {
+        export(existing.copy(next = null))
+        val local = BoardCard(UUID.randomUUID().toString(), "Fold a paper boat")
+        assertTrue(store.saveCard(null, local, first))
+        assertTrue(store.startSync(first, 2))
+        assertEquals(listOf(BoardDuplicate(local.id, listOf(existing.id))), board().duplicates)
+        val export = request()
+        assertEquals(BoardRequestKind.EXPORT, export.kind)
+        assertTrue(store.markSent(first, export.id, 2))
+        assertTrue(store.receive(first, BoardReply(export.id, "Board", newer, emptyList(), emptyList(), emptyList())))
+        assertEquals(BoardSyncProgress.CONFLICTS, board().syncProgress)
+        assertTrue(store.resolveDuplicate(first, local.id, null))
+        assertEquals(BoardSyncProgress.QUEUED, board().syncProgress)
+        val apply = request()
+        assertEquals(BoardRequestKind.APPLY, apply.kind)
+        assertNull(board().requestSentAt)
+        assertEquals(local.id, (apply.changes.single() as BoardChange.Create).clientId)
+        assertEquals(first, store.state.value.phoneTargets[local.id])
+        assertTrue(local.id in board().allowDuplicate)
+    }
+
+    @Test
+    fun createSeparatelyKeepsAnUnsentCreateAlreadyStaged() {
+        export(existing.copy(next = null))
+        val kite = BoardCard("card-a", "Make a kite")
+        val twin = BoardCard("card-b", "Fold a paper boat")
+        assertTrue(store.saveCard(null, kite, first))
+        assertTrue(store.saveCard(null, twin, first))
+        assertTrue(store.startSync(first, 2))
+        assertEquals(kite.id, (request().changes.single() as BoardChange.Create).clientId)
+        assertTrue(store.resolveDuplicate(first, twin.id, null))
+        assertEquals(BoardSyncProgress.QUEUED, board().syncProgress)
+        assertEquals(setOf(kite.id, twin.id), request().changes.filterIsInstance<BoardChange.Create>().map { it.clientId }.toSet())
+        assertNull(board().requestSentAt)
+    }
+
+    @Test
+    fun pullComparesCardsStagedInTheSameRound() {
+        val ids = List(3) { UUID.randomUUID().toString() }.sorted()
+        listOf("Fold a paper boat", "  fold   a paper boat  ", "Fold a paper boat").zip(ids).forEach { (title, id) ->
+            assertTrue(store.saveCard(null, BoardCard(id, title), first))
+        }
+        val kite = BoardCard(UUID.randomUUID().toString(), "Make a kite")
+        assertTrue(store.saveCard(null, kite, first))
+        assertTrue(store.startSync(first, 1))
+        assertEquals(
+            listOf(BoardDuplicate(ids[1], listOf(ids[0])), BoardDuplicate(ids[2], listOf(ids[0]))),
+            board().duplicates,
+        )
+        assertEquals(BoardSyncProgress.QUEUED, board().syncProgress)
+        assertEquals(setOf(ids[0], kite.id), request().changes.filterIsInstance<BoardChange.Create>().map { it.clientId }.toSet())
+        assertTrue(ids[0] in board().entries)
+        assertFalse(ids[1] in board().entries)
+        assertFalse(ids[2] in board().entries)
+    }
+
+    @Test
     fun pendingNotesAreOrderedAndDeduplicatedWithoutTurningIntoAFieldUpdate() {
         val original = BoardNote(time, "Author", "Original")
         val earlier = BoardNote("2026-01-02T11:00:00Z", "Author", "Earlier")
