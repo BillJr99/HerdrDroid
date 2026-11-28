@@ -95,7 +95,9 @@ class PaneWarningDetails2211VmTest {
         private val ssh = HerdrSsh(server.host, server.port, server.user, Credentials(null, null), null, { null })
         override val connection = Any()
         private val client = Herdr(ssh, server.herdrPath, Backend.TUI, null, this)
-        var pane = Pane("p1", "tab", "w1", "codex", Status.IDLE, "", ".", terminalId = "terminal-1")
+        var pane = Pane(
+            "p1", "tab", "w1", "codex", Status.IDLE, "", ".", scrollOffset = 0, terminalId = "terminal-1",
+        )
             private set
 
         init {
