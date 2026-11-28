@@ -659,6 +659,10 @@ To keep a new test class safe:
 - **Phone card targets.** Choose a board when creating or editing a phone card, then pull to sync it. If a server card already has the same normalized title, choose whether to link it or create a separate card. Notes merge in time order without duplicates. A remote deletion of a locally edited card requires a decision.
 - **Warning details.** Tap the chat warning badge to read the warnings and choose an action. HerdrDroid opens a supported native panel only after a tap and after it verifies that the pane is idle, the composer is empty, and no approval or question is open. Dismiss hides a warning in the app. Use the chat menu to check again when every warning is hidden.
 
+- **Drawer and chat controls.** Board and Questions scroll with Settings and retain their badges. The Stop button uses a light red accent in light mode and a muted red accent in dark mode.
+- **More dialogs in chat.** Claude Code's tabbed questions, Kiro's startup picker, Vibe's update dialog, Codex's hook review, and Copilot's permission picker can appear as cards. Trusting hooks and selecting Allow All require confirmation. The app verifies the live dialog before sending any keys.
+- **OpenCode permissions.** The card shows wrapped commands separately from sidebar text. After a terminal answer, a fresh read clears the card and its alert when the running tool or the empty session composer replaces the permission box.
+
 ### 2.2.10
 
 - **Updates.** HerdrDroid checks for a new release once on launch when online, and you can also check from Settings. Installation still opens the Android installer for confirmation.
