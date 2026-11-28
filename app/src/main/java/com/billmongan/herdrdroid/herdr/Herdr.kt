@@ -4308,6 +4308,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     if (agent.equals("claude", true)) {
         claudeModelCard(plain)?.let { return it }
         rebuiltClaudeAsk(plain)?.let { return it }
+        claudeGutteredTabAsk(plain)?.let { return it }
         claudeClippedAskReview(plain)?.let { return it }
     }
     if (agent.equals("grok", true)) grokPrivacyOverlay(plain)?.let { return it }
