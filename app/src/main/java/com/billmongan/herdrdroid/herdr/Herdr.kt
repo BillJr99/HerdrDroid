@@ -511,8 +511,7 @@ class Herdr internal constructor(
      * [shellOnly]: the shell check alone.
      */
     internal fun cardSendCommand(paneId: String, input: CardInput, guard: CardGuard, shellOnly: Boolean = false): String {
-        val check = checkCommand(paneId, guard.occupant, guard.screen, shellOnly) +
-            guard.styledScreen?.let { " && " + exactViewportDigestCheck(paneId, it, requireBottom = true) }.orEmpty()
+        val check = checkCommand(paneId, guard.occupant, guard.screen, shellOnly)
         val send = when (input) {
             is CardInput.Keys -> cmd("pane", "send-keys", paneId, *input.keys.toTypedArray())
             // pane run sends the literal argument and Enter in one pane.send_input request.
@@ -1004,11 +1003,8 @@ class Herdr internal constructor(
 
     private fun exactViewportCheck(paneId: String, viewport: String, requireBottom: Boolean = false): String {
         val digest = sha256Hex(viewport.toByteArray(Charsets.UTF_8))
-        return exactViewportDigestCheck(paneId, digest, requireBottom)
+        return "$PY -c ${shq(EXACT_VIEWPORT_CHECK)} $herdr ${shq(paneId)} ${shq(digest)}" + if (requireBottom) " bottom" else ""
     }
-
-    private fun exactViewportDigestCheck(paneId: String, digest: String, requireBottom: Boolean): String =
-        "$PY -c ${shq(EXACT_VIEWPORT_CHECK)} $herdr ${shq(paneId)} ${shq(digest)}" + if (requireBottom) " bottom" else ""
 
     /** Draft keys only after the host compares the app's last ANSI viewport byte for byte. */
     internal suspend fun sendCheckedDraftKeys(
@@ -5591,7 +5587,7 @@ internal sealed class CardInput {
 }
 
 /** The pane's occupant digest and its screen digest, as the card's last read saw them (hex SHA-256). */
-internal data class CardGuard(val occupant: String, val screen: String, val styledScreen: String? = null)
+internal data class CardGuard(val occupant: String, val screen: String)
 
 /** Nothing was typed: the card's pane, or its screen, changed after the card's last read. */
 internal class CardChanged : Exception("The question changed; not sent.")

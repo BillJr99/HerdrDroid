@@ -6366,8 +6366,7 @@ class AppViewModel internal constructor(
         else detectPrompt(text, currentPane.status == Status.NEEDS_YOU, currentPane.agent, versionOf(pane.id))
         // Scrollback may explain a command, but only the live, complete card can authorize input.
         val guard = occupant?.let { com.billmongan.herdrdroid.herdr.CardGuard(it,
-            com.billmongan.herdrdroid.herdr.cardGuardScreen(raw, live, currentPane.agent),
-            styledScreen = if (live?.vibeRelease == true) com.billmongan.herdrdroid.herdr.sha256Hex(raw.toByteArray(Charsets.UTF_8)) else null) }
+            com.billmongan.herdrdroid.herdr.cardGuardScreen(raw, live, currentPane.agent)) }
         return live?.takeIf { !it.terminalReview && !it.historyReviewOnly && fits(shown, it) }?.let { it to guard }
     }
 
