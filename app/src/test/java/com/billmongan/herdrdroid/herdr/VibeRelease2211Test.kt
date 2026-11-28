@@ -40,6 +40,20 @@ class VibeRelease2211Test {
         }
     }
 
+    @Test fun oscBelAndCsiKeepFocusWhenBothParsersAgreeOnButtonText() {
+        val controls = listOf(
+            "\u001B]0;Continue with current version\u0007",
+            "\u001B[1m",
+        )
+        for (control in controls) {
+            val raw = capture.replace("Update now", "Update ${control}now")
+            val prompt = checkNotNull(detectPrompt(raw, blocked = false))
+            assertEquals(listOf("Update now", "Continue with current version"), prompt.choices.map(Choice::label))
+            assertEquals("1", prompt.selected)
+            assertEquals(listOf("right", "enter"), menuKeys(prompt, prompt.choices.last()))
+        }
+    }
+
     @Test fun unknownModalShowsTerminalReviewWithoutInventingFocus() {
         val prompt = checkNotNull(detectPrompt(capture.replace("Vibe release", "Tool choice "), blocked = false))
         assertTrue(prompt.terminalReview)
