@@ -21,3 +21,30 @@ internal fun kiroApprovalShortcuts(screen: String): Prompt? {
     return prompt.copy(approvalIdentity = rows.subList(head - 1, footer + 1).joinToString("\n"),
         kiroOnceShortcuts = true)
 }
+
+private const val KIRO_V3_STARTUP_TITLE = "Kiro CLI 3.0 is here"
+private val KIRO_V3_STARTUP_OPTIONS = listOf(
+    "Continue with V3", "Stay on V2, remind me later", "Stay on V2, don't ask again",
+)
+
+/** The V3 startup picker ends at its three unnumbered options and shows its focus with ❯. */
+internal fun kiroV3Startup(screen: String): Prompt? {
+    val rows = screen.lines().dropLastWhile(String::isBlank)
+    val start = rows.size - KIRO_V3_STARTUP_OPTIONS.size
+    if (start <= 0) return null
+    val options = rows.drop(start).map(String::trim)
+    if (options.map { it.removePrefix("❯ ").trimStart() } != KIRO_V3_STARTUP_OPTIONS) return null
+    val title = (start - 1 downTo maxOf(0, start - 16)).firstOrNull {
+        val line = rows[it].trim()
+        line == KIRO_V3_STARTUP_TITLE || line.startsWith("$KIRO_V3_STARTUP_TITLE.")
+    } ?: return null
+    val body = rows.subList(title, start)
+    if (agentWentOn(body.drop(1))) return null
+    val selected = options.indices.filter { options[it].startsWith("❯ ") }.singleOrNull()
+    val parts = questionParts(body.map { QLine(it) })
+    if (selected == null) return Prompt(KIRO_V3_STARTUP_TITLE, emptyList(), region = rows.drop(title),
+        terminalReview = true, parts = parts)
+    return Prompt(KIRO_V3_STARTUP_TITLE, KIRO_V3_STARTUP_OPTIONS.mapIndexed { index, label ->
+        Choice(label, (index + 1).toString(), false)
+    }, selected = (selected + 1).toString(), parts = parts)
+}
