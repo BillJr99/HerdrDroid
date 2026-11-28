@@ -23,8 +23,9 @@ internal fun kiroApprovalShortcuts(screen: String): Prompt? {
 }
 
 private const val KIRO_V3_STARTUP_TITLE = "Kiro CLI 3.0 is here"
+internal const val KIRO_SKIP_STARTUP_REMINDER = "Stay on V2, don't ask again"
 private val KIRO_V3_STARTUP_OPTIONS = listOf(
-    "Continue with V3", "Stay on V2, remind me later", "Stay on V2, don't ask again",
+    "Continue with V3", "Stay on V2, remind me later", KIRO_SKIP_STARTUP_REMINDER,
 )
 
 /** The V3 startup picker ends at its three unnumbered options and shows its focus with ❯. */
@@ -46,5 +47,5 @@ internal fun kiroV3Startup(screen: String): Prompt? {
         terminalReview = true, parts = parts)
     return Prompt(KIRO_V3_STARTUP_TITLE, KIRO_V3_STARTUP_OPTIONS.mapIndexed { index, label ->
         Choice(label, (index + 1).toString(), false)
-    }, selected = (selected + 1).toString(), parts = parts)
+    }, selected = (selected + 1).toString(), parts = parts, kiroStartupMigration = true)
 }
