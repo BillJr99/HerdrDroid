@@ -58,7 +58,7 @@ private fun startupHooksReview(rows: List<String>): Prompt? {
 internal fun codexHooksPrompt(text: String): Prompt? {
     val rows = hookRows(text)
     val table = hooksEventTable(rows, HOOKS_TRUST_HINT, review = true) ?: return startupHooksReview(rows)
-    val details = table.filterNot { it in setOf("↑", "↓") }.joinToString("\n")
+    val details = table.filterNot { it in setOf("↑", "↓") }.joinToString("\n") { it.removePrefix("› ") }
     return Prompt(HOOKS_TITLE, listOf(Choice("Trust all", "t", false),
         Choice(CODEX_HOOKS_REVIEW, "enter", false), Choice("Close", "esc", false)), letterKeys = true,
         parts = QuestionParts(emptyList(), listOf(QBlock(QKind.HEADING, HOOKS_TITLE), QBlock(QKind.TEXT, details))),
