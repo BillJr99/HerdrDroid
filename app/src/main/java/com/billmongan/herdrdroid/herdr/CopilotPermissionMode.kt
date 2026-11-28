@@ -26,3 +26,12 @@ internal fun copilotPermissionMode(screen: String): Prompt? {
         it.removePrefix("❯").trimStart()
     }, copilotPermissionControl = true)
 }
+
+/** A complete earlier picker cannot lend its options to subsequent transcript output. */
+internal fun copilotAfterPermissionMode(screen: String): String? {
+    val rows = screen.lines().takeLast(80)
+    val footer = rows.indexOfLast { COPILOT_PERMISSION_HINT.matches(it.trim()) }
+    if (footer < 0 || rows.drop(footer + 1).all(String::isBlank)) return null
+    if (copilotPermissionMode(rows.take(footer + 1).joinToString("\n")) == null) return null
+    return rows.drop(footer + 1).joinToString("\n")
+}

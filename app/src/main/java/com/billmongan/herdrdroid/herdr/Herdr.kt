@@ -4327,7 +4327,10 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
         claudeGutteredTabAsk(plain)?.let { return it }
         claudeClippedAskReview(plain)?.let { return it }
     }
-    if (agent?.let(::canonicalAgent) == "copilot") copilotPermissionMode(plain)?.let { return it }
+    if (agent?.let(::canonicalAgent) == "copilot") {
+        copilotPermissionMode(plain)?.let { return it }
+        copilotAfterPermissionMode(plain)?.let { return detectPlainPrompt(it, blocked, agent, version) }
+    }
     if (agent.equals("grok", true)) grokPrivacyOverlay(plain)?.let { return it }
     if (agent.equals("agy", true)) {
         agySubagentQuestion(plain)?.let { return it }

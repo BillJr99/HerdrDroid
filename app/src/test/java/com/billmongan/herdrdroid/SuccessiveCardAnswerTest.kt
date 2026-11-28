@@ -2145,7 +2145,7 @@ class SuccessiveCardAnswerTest {
                 recentResult = ExecResult(0, frame, "")
                 afterSend = "❯ Ask a question or describe a task ↵"
                 vm.sendTerminalKeys("p1", terminal, "down", "enter")
-                drainUntil { sent == listOf("down", "enter") && vm.paneText == afterSend }
+                drainUntil { sent == listOf("down enter") && vm.paneText == afterSend }
                 assertNull(vm.cardParse("p1", vm.paneText))
                 assertFalse(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
                 assertFalse(terminalAlertIsShowing())
@@ -2166,7 +2166,7 @@ class SuccessiveCardAnswerTest {
             answer(question, index = 2)
             vm.confirmApproveAll()
             drainUntil { !vm.answerInFlight("p1") }
-            assertEquals(listOf("down", "down", "enter"), sent)
+            assertEquals(listOf("down down enter"), sent)
         }
 
     @Test fun copilotTerminalAnswerClearsPermissionModeCardFromVerifiedComposer() =
@@ -2179,7 +2179,7 @@ class SuccessiveCardAnswerTest {
                 afterSend = "╻" + "▄".repeat(24) + "\n┃\n╹" + "▀".repeat(24) +
                     "\n← open sidebar · Interactive · Assisted Permissions · / commands"
                 vm.sendTerminalKeys("p1", terminal, "down", "enter")
-                drainUntil { sent == listOf("down", "enter") && vm.paneText == afterSend }
+                drainUntil { sent == listOf("down enter") && vm.paneText == afterSend }
                 assertNull(vm.cardParse("p1", vm.paneText))
                 assertFalse(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
                 assertFalse(terminalAlertIsShowing())
