@@ -160,13 +160,19 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         if (draftServer != null) vm.noteVoiceComposerDraft(draftServer, paneId, message.isNotBlank())
     }
     var fullTerminal by rememberSaveable { mutableStateOf(false) }
+    var warningGuidance by remember(draftServer, paneId) { mutableStateOf<String?>(null) }
     var confirmCtrlC by remember { mutableStateOf(false) }
 
     var ctrl by remember { mutableStateOf(Hold.OFF) }
     var alt by remember { mutableStateOf(Hold.OFF) }
     /** The slash command whose screen is showing, until you go back to the chat. */
     var commandScreen by rememberSaveable(paneId) { mutableStateOf<String?>(null) }
-    LaunchedEffect(fullTerminal) { if (!fullTerminal) commandScreen = null }
+    LaunchedEffect(fullTerminal) {
+        if (!fullTerminal) {
+            commandScreen = null
+            warningGuidance = null
+        }
+    }
     // 2.1.4: while the terminal shows a usage dialog the app opened, it stays open; going back to the
     // chat, to another pane or out of the app closes it, and the app checks that it closed.
     LaunchedEffect(paneId, commandScreen) {
@@ -466,7 +472,14 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 sending = vm.answerInFlight(paneId),
                 readOnlyPreview = openingPreview != null ||
                     ((com.billmongan.herdrdroid.herdr.isOpenCode(pane?.agent) || p.hermesClarify) && shownTarget == null && !p.terminalReview),
-                onChoice = { c -> vm.answerChoice(paneId, p, c, target = shownTarget) },
+                onChoice = { c ->
+                    val openHooks = p.codexHooksReview && c.label == com.billmongan.herdrdroid.herdr.CODEX_HOOKS_REVIEW
+                    vm.answerChoice(paneId, p, c, target = shownTarget, onDelivered = if (openHooks) ({
+                        hermesLive = false
+                        fullTerminal = true
+                        termFollow = true
+                    }) else null)
+                },
                 onKey = { k ->
                     val label = "Pressed " + when (k) { "esc" -> "Esc"; "tab" -> "Tab"; "shift+tab" -> "Shift+Tab"; "ctrl+c" -> "Ctrl+C"; else -> k }
                     vm.answerCardKey(shownTarget, p, k, label)
@@ -596,7 +609,9 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                 screen = if (vm.paneTextPane == paneId) vm.paneText else "",
                 terminalTitle = pane?.title.orEmpty(),
             )
-            pane?.let { vm.warningFor(it) }?.let { PaneWarningBadge(it, Modifier.padding(start = 6.dp)) }
+            pane?.let { vm.warningFor(it) }?.let {
+                PaneWarningBadge(it, Modifier.padding(start = 6.dp), onClick = { vm.openPaneWarnings(paneId) })
+            }
             PaneTitleLines(
                 name = if (isHermes) (if (live) "Hermes · live chat" else "Hermes · this pane") + "  ▾"
                 else identity.title,
@@ -663,6 +678,12 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
                     // of the chat, out of sight when the chat sits at the bottom, so it seemed to do nothing
                     // (Bill, 2026-11-13). Every agent's usage is on the screen below.
                     DropdownMenuItem(text = { Text("Usage history, all agents") }, onClick = { menu = false; vm.screen = Screen.Usage })
+                    if (pane != null && vm.rawWarningFor(pane) != null && vm.warningFor(pane) == null) {
+                        DropdownMenuItem(text = { Text("Warning details") }, onClick = {
+                            menu = false
+                            vm.openPaneWarnings(paneId)
+                        })
+                    }
                     if (pane != null) DropdownMenuItem(text = { Text("Files") }, onClick = { menu = false; vm.openFiles(pane.cwd.ifBlank { "~" }) })
                     if (pane?.agent != null && vm.hasTranscriptReader(paneId)) {
                         DropdownMenuItem(text = { Text("History") }, onClick = { menu = false; vm.screen = Screen.History(paneId) })
@@ -741,6 +762,41 @@ internal fun AgentScreen(vm: AppViewModel, paneId: String, readScreen: suspend (
         }
         HorizontalDivider(color = Palette.Line)
         ServerBanners(vm)
+        val warningReview = vm.paneWarningReview?.takeIf { it.paneId == paneId }
+        warningReview?.let { review ->
+            fun openWarningTerminal() {
+                vm.closePaneWarnings()
+                hermesLive = false
+                fullTerminal = true
+                termFollow = true
+            }
+            PaneWarningCards(
+                review,
+                onClose = vm::closePaneWarnings,
+                onTerminal = ::openWarningTerminal,
+                onCopy = { text ->
+                    val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
+                    runCatching { clipboard?.setPrimaryClip(android.content.ClipData.newPlainText("Pane warning", text)) }
+                },
+                onDismiss = { text -> vm.dismissPaneWarning(paneId, text) },
+                onDiagnose = {
+                    warningGuidance = "Run codex doctor in a separate shell to keep this session open."
+                    openWarningTerminal()
+                },
+                onRestart = { text -> vm.requestWarningRestart(paneId, text) },
+            )
+            if (vm.warningRestartConfirmation != null) {
+                WarningRestartDialog(onConfirm = {
+                    if (vm.confirmWarningRestart()) {
+                        warningGuidance = "Restart this pane only when its session is ready to close."
+                        openWarningTerminal()
+                    }
+                }, onCancel = vm::cancelWarningRestart)
+            }
+        }
+        if (fullTerminal) warningGuidance?.let { guidance ->
+            Text(guidance, color = Palette.Muted, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+        }
         // A held send's problem shows only in its own pane's chat, on its own server (2.1.2).
         sendNotice?.takeUnless { pane?.isProbe == true || (showChatDraft && vm.isPaneDraftHold(it)) }
             ?.let { ErrorBanner(it) { vm.dismissSendNotice(paneId) } }
@@ -1755,7 +1811,13 @@ internal fun PromptCard(
                         p.openCodePermission && c.keys == "1" -> "checks the live selection before confirming"
                         else -> keysLabel(com.billmongan.herdrdroid.herdr.menuKeys(p, c), c)
                     }
-                    val caution = com.billmongan.herdrdroid.herdr.grantsStandingPermission(c.label)
+                    val caution = when {
+                        p.kiroStartupMigration && c.label == com.billmongan.herdrdroid.herdr.KIRO_SKIP_STARTUP_REMINDER ->
+                            "Kiro will stop showing this startup reminder."
+                        com.billmongan.herdrdroid.herdr.grantsStandingPermission(c.label) ->
+                            "Caution: this lets the agent do it again without asking you."
+                        else -> null
+                    }
                     // The highlighted row (the one Enter picks) is the blue one, not always the first.
                     val first = c.keys == (p.selected ?: p.choices.firstOrNull()?.keys?.takeUnless { p.openCodePermission })
                     val shownLabel = com.billmongan.herdrdroid.herdr.shownChoiceLabel(allRows, c)
@@ -1787,7 +1849,7 @@ internal fun PromptCard(
                             }
                             Text(what, fontSize = 12.sp, color = if (first) Palette.OnBlue.copy(alpha = 0.8f) else Palette.Muted)
                             // Standing permission (1.4.0): say so before it is tapped.
-                            if (caution) Text("Caution: this lets the agent do it again without asking you.", fontSize = 12.sp,
+                            if (caution != null) Text(caution, fontSize = 12.sp,
                                 fontWeight = FontWeight.SemiBold, color = if (first) Palette.OnBlue else Palette.OrangeInk)
                         }
                     }
@@ -2222,16 +2284,28 @@ const val QUEUED_FOR_QUESTION = "The agent is waiting on a question. Your messag
 @Composable
 internal fun ApproveAllDialog(vm: AppViewModel, pending: AppViewModel.ApproveAllPending, agentName: String?) {
     val ask = pending.ask
+    val hooks = pending.prompt.codexHooksReview
+    val skipKiroReminder = pending.prompt.kiroStartupMigration &&
+        ask.label == com.billmongan.herdrdroid.herdr.KIRO_SKIP_STARTUP_REMINDER
+    val title = when {
+        skipKiroReminder -> "Stay on V2 and stop Kiro's startup reminder?"
+        hooks -> "Trust all Codex hooks?"
+        else -> "Approve everything from now on?"
+    }
+    val explanation = when {
+        skipKiroReminder -> "Kiro will stay on V2 and stop showing this reminder at startup."
+        hooks -> "New hooks will run when their events occur and can run outside the sandbox. Trust them only if you have reviewed them."
+        else -> "${agentName ?: "The agent"} will do this again without asking you. Nothing is sent until you confirm."
+    }
     androidx.compose.material3.AlertDialog(
         onDismissRequest = { vm.cancelApproveAll() },
-        modifier = Modifier.semantics { contentDescription = "Approve everything from now on" }.testTag("approve-all-dialog"),
-        title = { Text(if (ask.reason == null) "Approve everything from now on?" else "Not sent from here") },
+        modifier = Modifier.semantics { contentDescription = title.removeSuffix("?") }.testTag("approve-all-dialog"),
+        title = { Text(if (ask.reason == null) title else "Not sent from here") },
         text = {
             Column {
                 Text("\u201c${ask.label}\u201d", color = Palette.Ink, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(8.dp))
-                Text(ask.reason ?: "${agentName ?: "The agent"} will do this again without asking you. Nothing is sent until you confirm.",
-                    color = Palette.Ink)
+                Text(ask.reason ?: explanation, color = Palette.Ink)
             }
         },
         confirmButton = {

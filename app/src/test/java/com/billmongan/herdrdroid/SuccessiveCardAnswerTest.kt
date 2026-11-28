@@ -486,6 +486,40 @@ class SuccessiveCardAnswerTest {
         }
     }
 
+    @Test fun agyFileAccessShowsDetailsAndSendsOnlyTheSelectedDigit() {
+        val screen = res("/screens/agy/derived-2.2.11/file-access.txt")
+        val preview = checkNotNull(detectPrompt(screen, false, "agy"))
+        assertEquals("Allow access to this file?", preview.question)
+        assertEquals(listOf("Yes, allow access", "Yes, and always allow non-workspace access", "No, deny access", "Cancel"),
+            preview.choices.map { it.label })
+        assertTrue(preview.shownParts().details.any { it.contains("Reason: The helper is outside the current workspace.") })
+        assertTrue(preview.shownParts().details.any { it.contains("Read: /work/tools/helper") })
+        assertEquals(listOf(listOf("1"), listOf("2"), listOf("3"), listOf("esc")),
+            preview.choices.map { com.billmongan.herdrdroid.herdr.menuKeys(preview, it) })
+        val write = checkNotNull(detectPrompt(screen.replace("Read: ", "Write: "), false, "agy"))
+        assertTrue(write.shownParts().details.any { it.contains("Write: /work/tools/helper") })
+        fixture("agy", screen) {
+            readSelectedPane()
+            val shown = displayed()
+            val target = checkNotNull(vm.paneTextTarget)
+            answer(shown, target, index = 1)
+            assertTrue(sent.isEmpty())
+            assertNotNull(vm.approveAllPending)
+            vm.cancelApproveAll()
+            frame = screen.replace("/work/tools/helper", "/work/other/helper")
+            answer(shown, target, index = 0)
+            assertTrue("the old card must not authorize the replacement path", sent.isEmpty())
+            frame = screen
+            readSelectedPane()
+            recentResult = ExecResult(0, screen, "")
+            afterSend = ">"
+            status(Status.IDLE)
+            answer(displayed(), checkNotNull(vm.paneTextTarget), index = 2)
+            assertEquals(listOf("3"), sent)
+            assertNull(vm.cardParse("p1", vm.paneText))
+        }
+    }
+
     @Test fun agyClippedApprovalUsesFreshViewportAndDiscardsStaleRecentCard() {
         val clipped = checkNotNull(javaClass.getResource(
             "/screens/agy/captured-1.5.18-tall/clipped-a.txt"
@@ -1264,6 +1298,67 @@ class SuccessiveCardAnswerTest {
         }
     }
 
+    @Test fun codexHookTrustRequiresConfirmationAndClearsWhenCodexShowsDetails() =
+        fixture("codex", hooksBrowser) {
+            readSelectedPane()
+            val card = displayed()
+            assertEquals(listOf("Trust all", "Review", "Close"), card.choices.map { it.label })
+            assertEquals(listOf("t"), com.billmongan.herdrdroid.herdr.menuKeys(card, card.choices[0]))
+            assertEquals(listOf("enter"), com.billmongan.herdrdroid.herdr.menuKeys(card, card.choices[1]))
+            assertEquals(listOf("esc"), com.billmongan.herdrdroid.herdr.menuKeys(card, card.choices[2]))
+            val target = checkNotNull(vm.paneTextTarget)
+            vm.answerChoice("p1", card, card.choices.first(), target = target)
+            assertNotNull(vm.approveAllPending)
+            assertTrue(sent.isEmpty())
+            vm.cancelApproveAll()
+            assertTrue(sent.isEmpty())
+            vm.answerChoice("p1", card, card.choices.first(), target = target)
+            frame = hooksBrowser.replace("1 hook needs review", "2 hooks need review").replace("it can run", "they can run")
+            vm.confirmApproveAll()
+            drainUntil { !vm.answerInFlight("p1") }
+            assertTrue("confirmation of a changed hook table must refuse", sent.isEmpty())
+            frame = hooksBrowser
+            readSelectedPane()
+            val live = displayed()
+            recentResult = ExecResult(0, hooksBrowser, "")
+            afterSend = hooksTrusted
+            vm.answerChoice("p1", live, live.choices.first(), target = checkNotNull(vm.paneTextTarget))
+            vm.confirmApproveAll()
+            drainUntil { sent == listOf("t") && vm.paneText.contains("enter details") }
+            assertNull(vm.cardParse("p1", vm.paneText))
+        }
+
+    @Test fun codexHookReviewSendsEnterThenHandsOffToTheTerminal() = fixture("codex", hooksBrowser) {
+        readSelectedPane()
+        val card = displayed()
+        afterSend = hooksDetail
+        vm.answerChoice("p1", card, card.choices.single { it.label == "Review" },
+            target = checkNotNull(vm.paneTextTarget))
+        drainUntil { sent == listOf("enter") && vm.paneText.contains("esc back") }
+        assertEquals(listOf("enter"), sent)
+        assertNull(vm.cardParse("p1", vm.paneText))
+    }
+
+    @Test fun codexHookBrowserClosesWithEsc() = fixture("codex", hooksBrowser) {
+        readSelectedPane()
+        val card = displayed()
+        status(Status.IDLE)
+        afterSend = "› "
+        answer(card, checkNotNull(vm.paneTextTarget), index = 2)
+        assertEquals(listOf("esc"), sent)
+        assertNull(vm.cardParse("p1", vm.paneText))
+    }
+
+    @Test fun codexStartupHookMenuUsesItsOwnArrowKeysAndRequiresTrustConfirmation() {
+        val frame = hooksFixture("startup")
+        val card = checkNotNull(detectPrompt(frame, false, "codex"))
+        assertEquals("Hooks need review", card.question)
+        assertEquals(listOf("Review", "Trust all and continue", "Continue without trusting"), card.choices.map { it.label })
+        assertEquals(listOf("down", "enter"), com.billmongan.herdrdroid.herdr.approveAllAsk(card, card.choices[1])?.keys)
+        assertNull(detectPrompt("$hooksBrowser\n\n› New input", false, "codex")?.takeIf { it.choices.any { c -> c.label == "Trust all" } })
+        assertNull(detectPrompt(hooksBrowser.replace("PreToolUse", "invalid row"), false, "codex")?.takeIf { it.choices.any { c -> c.label == "Trust all" } })
+    }
+
     @Test fun clippedCodexQuestionProbesTheLiveViewportWithoutSendingKeys() = fixture("codex", codexUnansweredConfirmation) {
         status(Status.WORKING)
         val clipped = codexWrappedQuestion.substringAfter('\n')
@@ -1677,6 +1772,43 @@ class SuccessiveCardAnswerTest {
         assertEquals(vm.notice, listOf("enter", "enter"), sent)
     }
 
+    @Test fun claudeBackgroundAskShowsThirdTabAndAdvancesToTheFourth() = fixture("claude", backgroundAsk("third")) {
+        readSelectedPane()
+        val third = displayed()
+        assertEquals("Question 3 of 4", third.parts?.step)
+        assertEquals(listOf(true, true, false, false, false), third.parts?.tabs?.map { it.done })
+        assertEquals(listOf("Wait for completion", "Try again", "Type something.", "Chat about this"),
+            third.choices.map { it.label })
+        assertEquals(listOf("down", "enter"), com.billmongan.herdrdroid.herdr.menuKeys(third, third.choices[1]))
+        afterSend = backgroundAsk("fourth")
+        answer(third, checkNotNull(vm.paneTextTarget), index = 1)
+        assertEquals(listOf("down enter"), sent)
+        readSelectedPane()
+        val fourth = displayed()
+        assertEquals("Question 4 of 4", fourth.parts?.step)
+        assertEquals("Choose a brief time window for the next step. The window starts when work resumes.", fourth.question)
+        assertEquals(listOf("Use a short window", "Use a longer window", "Decide later", "Type something.", "Chat about this"),
+            fourth.choices.map { it.label })
+    }
+
+    @Test fun terminalEnterClearsClaudeBackgroundAskWhenTheComposerReturns() = fixture("claude", backgroundAsk("fourth")) {
+        readSelectedPane()
+        val question = displayed()
+        assertEquals("Question 4 of 4", question.parts?.step)
+        showTerminalQuestionAlert(question)
+        try {
+            val terminal = readTerminal()
+            afterSend = "❯ "
+            vm.sendTerminalKeys("p1", terminal, "enter")
+            drainUntil { sent == listOf("enter") && vm.paneText == "❯ " }
+            assertNull(vm.cardParse("p1", vm.paneText))
+            assertFalse(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+            assertFalse(terminalAlertIsShowing())
+        } finally {
+            clearTerminalAlert()
+        }
+    }
+
     @Test fun terminalEnterClearsTheCardAndWaitingBadgeFromLiveScreen() = fixture("claude", firstStep) {
         readSelectedPane()
         assertNotNull(vm.cardParse("p1", vm.paneText))
@@ -1697,6 +1829,211 @@ class SuccessiveCardAnswerTest {
             clearTerminalAlert()
         }
     }
+
+    @Test fun vibeCardAnswerRefusesFocusChangeAfterTheLiveRead() {
+        val modal = checkNotNull(javaClass.getResource("/screens/vibe/derived-2.2.11/release.ansi")).readText()
+        fixture("vibe", modal) {
+            readSelectedPane()
+            val card = displayed()
+            beforeCheck = { frame = modal.replace("\u001B[48;5;7m", "") }
+            answer(card, index = 1)
+            assertTrue(sent.isEmpty())
+            assertEquals(1, cardChecksRefused)
+        }
+        fixture("vibe", modal) {
+            readSelectedPane()
+            val card = displayed()
+            afterSend = "> "
+            answer(card, index = 1)
+            assertEquals(listOf("right enter"), sent)
+        }
+    }
+
+    @Test fun vibeTerminalEnterClearsTheReleaseCardOnceTheComposerReturns() {
+        val modal = checkNotNull(javaClass.getResource("/screens/vibe/derived-2.2.11/release.ansi")).readText()
+        fixture("vibe", modal) {
+            readSelectedPane()
+            assertTrue(shown().vibeRelease)
+            val terminal = readTerminal()
+            recentResult = ExecResult(0, modal, "")
+            afterSend = "> "
+            vm.sendTerminalKeys("p1", terminal, "enter")
+            drainUntil { sent == listOf("enter") && vm.paneText == "> " }
+            assertNull(vm.cardParse("p1", vm.paneText))
+            assertFalse(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+        }
+    }
+
+    @Test fun selectedOpenCodePaneKeepsTheRecoveredCommandVisibleForReview() {
+        val history = res("/long-dialog-2211/opencode.txt").trimEnd('\n').lines()
+        val viewport = history.takeLast(36).joinToString("\n")
+        fixture("opencode", viewport) {
+            recentCapture = { lines -> history.takeLast(lines).joinToString("\n") }
+            readSelectedPane()
+            val prompt = checkNotNull(vm.cardParse("p1", vm.paneText))
+            val details = (prompt.shownParts().blocks.map { it.text } + prompt.region.orEmpty()).joinToString("\n")
+            assertTrue(details.contains("sample-record-000"))
+            assertTrue(details.contains("sample-record-206"))
+            assertTrue(prompt.terminalReview)
+            assertTrue(sent.isEmpty())
+        }
+    }
+
+    @Test fun openCodeTerminalEnterClearsPermissionWhenTheLiveToolStarts() =
+        fixture("opencode", focusedPermission("Allow once")) {
+            readSelectedPane()
+            val question = shown()
+            assertTrue(question.openCodePermission)
+            showTerminalQuestionAlert(question)
+            try {
+                val terminal = readTerminal()
+                recentResult = ExecResult(0, frame, "")
+                afterSend = openCodeToolRunning
+                vm.sendTerminalKeys("p1", terminal, "enter")
+                drainUntil { sent == listOf("enter") && vm.paneText == openCodeToolRunning }
+                assertNull(vm.cardParse("p1", vm.paneText))
+                assertEquals(Status.WORKING, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+                assertFalse(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+                assertFalse(terminalAlertIsShowing())
+
+                frame = openCodeComposer
+                readTerminal()
+                assertNull("the previous permission remains only in recent history", vm.cardParse("p1", vm.paneText))
+                assertFalse(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+            } finally {
+                clearTerminalAlert()
+            }
+        }
+
+    @Test fun openCodeTerminalEnterClearsPermissionOnCapturedSpinnerAndComposerLayout() =
+        fixture("opencode", focusedPermission("Allow once")) {
+            readSelectedPane()
+            val permission = shown()
+            showTerminalQuestionAlert(permission)
+            try {
+                val terminal = readTerminal()
+                val after = res("/screens/opencode/derived-2.2.11/after-enter-working.txt").trimEnd()
+                recentResult = ExecResult(0, frame, "")
+                afterSend = after
+                vm.sendTerminalKeys("p1", terminal, "enter")
+                drainUntil { sent == listOf("enter") && vm.paneText == after }
+                assertNull(vm.cardParse("p1", vm.paneText))
+                assertEquals(Status.WORKING, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+                assertFalse(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+                assertFalse(terminalAlertIsShowing())
+            } finally {
+                clearTerminalAlert()
+            }
+        }
+
+    @Test fun openCodeTerminalEnterClearsPermissionOnEmptySessionComposerWithoutSpinner() =
+        fixture("opencode", focusedPermission("Allow once")) {
+            readSelectedPane()
+            showTerminalQuestionAlert(shown())
+            try {
+                val terminal = readTerminal()
+                val after = openCodeComposer.replace("┃  Ask anything...", "┃\n┃\n┃")
+                recentResult = ExecResult(0, frame, "")
+                afterSend = after
+                vm.sendTerminalKeys("p1", terminal, "enter")
+                drainUntil { sent == listOf("enter") && vm.paneText == after }
+                assertNull(vm.cardParse("p1", vm.paneText))
+                assertEquals(Status.IDLE, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+                assertFalse(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+                assertFalse(terminalAlertIsShowing())
+            } finally {
+                clearTerminalAlert()
+            }
+        }
+
+    @Test fun openCodeTerminalEnterPreservesTheLivePermissionAndRefusesAReusedViewport() =
+        fixture("opencode", focusedPermission("Reject")) {
+            readSelectedPane()
+            showTerminalQuestionAlert(shown())
+            try {
+                val terminal = readTerminal()
+                val before = recentReads
+                vm.sendTerminalKeys("p1", terminal, "down", "enter")
+                drainUntil { sent == listOf("down enter") && recentReads > before }
+                assertNotNull(vm.cardParse("p1", vm.paneText))
+                assertTrue(terminalAlertIsShowing())
+                frame = openCodeToolRunning
+                afterGuardedVisibleRead = { this.terminal = "replacement-terminal" }
+                readTerminal()
+                assertNotNull(vm.cardParse("p1", vm.paneText))
+                assertEquals(Status.NEEDS_YOU, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+                assertTrue(terminalAlertIsShowing())
+            } finally {
+                clearTerminalAlert()
+            }
+        }
+
+    /**
+     * 2.2.11 (Bill: "in terminal view when I then hit Enter for that question it keeps the card there
+     * as if it still thinks there's a question"). After Enter on a permission, or after Reject, OpenCode
+     * goes straight back to its in-session box (three bare rows over "Build · <model>", no "Ask
+     * anything…" placeholder). That box is the proof the question is gone, as the home-screen one is.
+     */
+    private fun Fixture.openCodeTerminalAnswerClears(focus: String, after: String, expected: Status) {
+        readSelectedPane()
+        showTerminalQuestionAlert(shown())
+        try {
+            val terminal = readTerminal()
+            recentResult = ExecResult(0, frame, "")
+            afterSend = after
+            vm.sendTerminalKeys("p1", terminal, "enter")
+            drainUntil { sent == listOf("enter") && vm.paneText == after }
+            assertNull("$focus: no card on the session box", vm.cardParse("p1", vm.paneText))
+            assertEquals(expected, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+            assertFalse(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+            assertFalse(terminalAlertIsShowing())
+        } finally {
+            clearTerminalAlert()
+        }
+    }
+
+    @Test fun openCodeTerminalEnterClearsPermissionOnTheSessionComposer() =
+        fixture("opencode", focusedPermission("Allow once")) {
+            openCodeTerminalAnswerClears("Allow once",
+                res("/screens/opencode/derived-2.2.11/after-answer-session-composer.txt").trimEnd(), Status.IDLE)
+        }
+
+    @Test fun openCodeTerminalRejectClearsPermissionOnTheSessionComposer() =
+        fixture("opencode", focusedPermission("Reject")) {
+            openCodeTerminalAnswerClears("Reject",
+                res("/screens/opencode/derived-2.2.11/after-answer-session-composer.txt").trimEnd(), Status.IDLE)
+        }
+
+    @Test fun openCodeTerminalEnterClearsPermissionOnTheRunningCommandSpinner() =
+        fixture("opencode", focusedPermission("Allow once")) {
+            openCodeTerminalAnswerClears("Allow once",
+                res("/screens/opencode/derived-2.2.11/after-enter-running-command.txt").trimEnd(), Status.WORKING)
+        }
+
+    @Test fun openCodeOlderPermissionInTheHistoryDoesNotKeepTheCard() =
+        fixture("opencode", focusedPermission("Allow once")) {
+            openCodeTerminalAnswerClears("Allow once",
+                res("/screens/opencode/derived-2.2.11/after-answer-session-composer-old-box.txt").trimEnd(), Status.IDLE)
+        }
+
+    @Test fun openCodeTerminalEnterKeepsTheCardWhileThePermissionBoxIsStillThere() =
+        fixture("opencode", focusedPermission("Allow once")) {
+            readSelectedPane()
+            showTerminalQuestionAlert(shown())
+            try {
+                val terminal = readTerminal()
+                val still = res("/screens/opencode/derived-2.2.11/permission-after-tool.txt").trimEnd()
+                recentResult = ExecResult(0, frame, "")
+                afterSend = still
+                vm.sendTerminalKeys("p1", terminal, "enter")
+                drainUntil { sent == listOf("enter") && vm.paneText == still }
+                assertNotNull(vm.cardParse("p1", vm.paneText))
+                assertEquals(Status.NEEDS_YOU, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+                assertTrue(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+            } finally {
+                clearTerminalAlert()
+            }
+        }
 
     @Test fun terminalAnswerKeepsTheOldCardUntilASecondLiveQuestionArrives() = fixture("claude", firstStep) {
         readSelectedPane()
@@ -1932,6 +2269,61 @@ class SuccessiveCardAnswerTest {
         }
     }
 
+    @Test fun kiroTerminalAnswerClearsMigrationCardFromTheVerifiedComposer() =
+        fixture("kiro", res("/screens/kiro/derived-2.2.11/v3-migration.txt").trimEnd()) {
+            readSelectedPane()
+            val question = shown()
+            assertEquals("Kiro CLI 3.0 is here", question.question)
+            assertEquals(3, question.choices.size)
+            showTerminalQuestionAlert(question)
+            try {
+                val terminal = readTerminal()
+                recentResult = ExecResult(0, frame, "")
+                afterSend = "❯ ask a question or describe a task ↵"
+                vm.sendTerminalKeys("p1", terminal, "down", "enter")
+                drainUntil { sent == listOf("down enter") && vm.paneText == afterSend }
+                assertNull(vm.cardParse("p1", vm.paneText))
+                assertFalse(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+                assertFalse(terminalAlertIsShowing())
+            } finally {
+                clearTerminalAlert()
+            }
+        }
+
+    @Test fun copilotAllowAllWaitsForConfirmation() =
+        fixture("copilot", res("/screens/copilot/derived-2.2.11/permission-mode.txt").trimEnd()) {
+            readSelectedPane()
+            val question = displayed()
+            answer(question, index = 2)
+            assertTrue(sent.isEmpty())
+            assertEquals("Allow All", checkNotNull(vm.approveAllPending).ask.label)
+            vm.cancelApproveAll()
+            assertTrue(sent.isEmpty())
+            answer(question, index = 2)
+            vm.confirmApproveAll()
+            drainUntil { !vm.answerInFlight("p1") }
+            assertEquals(listOf("down down enter"), sent)
+        }
+
+    @Test fun copilotTerminalAnswerClearsPermissionModeCardFromVerifiedComposer() =
+        fixture("copilot", res("/screens/copilot/derived-2.2.11/permission-mode.txt").trimEnd()) {
+            readSelectedPane()
+            showTerminalQuestionAlert(displayed())
+            try {
+                val terminal = readTerminal()
+                recentResult = ExecResult(0, frame, "")
+                afterSend = "╻" + "▄".repeat(24) + "\n┃\n╹" + "▀".repeat(24) +
+                    "\n← open sidebar · Interactive · Assisted Permissions · / commands"
+                vm.sendTerminalKeys("p1", terminal, "down", "enter")
+                drainUntil { sent == listOf("down enter") && vm.paneText == afterSend }
+                assertNull(vm.cardParse("p1", vm.paneText))
+                assertFalse(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+                assertFalse(terminalAlertIsShowing())
+            } finally {
+                clearTerminalAlert()
+            }
+        }
+
     private fun fixture(agent: String, frame: String, test: Fixture.() -> Unit) {
         val f = Fixture(agent, frame)
         try {
@@ -1956,6 +2348,7 @@ class SuccessiveCardAnswerTest {
         var liveScrollOffset = 0
         var recentReads = 0
         var recentResult: ExecResult? = null
+        var recentCapture: ((Int) -> String)? = null
         val visibleReadsWithLineLimit = mutableListOf<Boolean>()
         var guardedVisibleReads = 0
         var afterGuardedVisibleRead: (() -> Unit)? = null
@@ -2169,7 +2562,13 @@ class SuccessiveCardAnswerTest {
             }
             return when {
                 command.endsWith("'pane' 'get' 'p1'") -> { onPaneGet?.invoke(); ok("""{"result":{"pane":$pane}}""") }
-                command.contains("'pane' 'read' 'p1' '--source' 'recent'") -> { recentReads++; recentResult ?: ok(ansiFrame()) }
+                command.contains("'pane' 'read' 'p1' '--source' 'recent'") -> {
+                    recentReads++
+                    recentResult ?: ok(recentCapture?.let { capture ->
+                        val limit = checkNotNull(Regex("""'--lines' '(\d+)'""").find(command)).groupValues[1].toInt()
+                        capture(limit)
+                    } ?: ansiFrame())
+                }
                 command.contains("'pane' 'read' 'p1' '--source' 'visible'") -> {
                     visibleReadsWithLineLimit += command.contains("'--lines'")
                     if (expectedConnection != null) {
@@ -2234,6 +2633,25 @@ class SuccessiveCardAnswerTest {
     }
 
     private companion object {
+        fun backgroundAsk(step: String) = checkNotNull(SuccessiveCardAnswerTest::class.java.getResource(
+            "/screens/claude/derived-2.2.11/background-ask-$step.txt")).readText().trimEnd()
+
+        fun hooksFixture(name: String) = checkNotNull(SuccessiveCardAnswerTest::class.java.getResource(
+            "/screens/codex/derived-hooks-0.172.0/$name.txt")).readText().trimEnd()
+
+        val hooksBrowser = hooksFixture("browser")
+        val hooksTrusted = hooksBrowser
+            .replace("  ⚠ 1 hook needs review before it can run.\n", "")
+            .replace("t trust all · enter review · esc close", "enter details · esc close")
+        val hooksDetail = """
+            PreToolUse hooks
+            1 hook needs review before it can run.
+
+            › [ ] 1 Fixture hook
+
+            t trust · esc back
+        """.trimIndent()
+
         val piQuestion = checkNotNull(SuccessiveCardAnswerTest::class.java.getResource(
             "/screens/pi/derived-1.4.9/0502-project-trust.txt")).readText().trimEnd()
         val claudeMulti = screenFixture("0109-askuserquestion-multi-select-review-and--2")
@@ -2264,6 +2682,13 @@ class SuccessiveCardAnswerTest {
             ┃  Build · Fixture Model
             ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
             ~/fixture              tab agents  ctrl+p commands
+        """.trimIndent()
+
+        val openCodeToolRunning = """
+            ┃  ⠹ echo sample
+            ┃    wrapped…
+            ┃
+               Press ctrl+b to move running work to the background
         """.trimIndent()
 
         const val approvalCommand = "/fixture/.venv/bin/python -m pip install fixture"

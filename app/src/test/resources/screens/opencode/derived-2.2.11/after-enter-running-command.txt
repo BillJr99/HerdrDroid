@@ -1,0 +1,16 @@
+     Build · Example provider and model · 12.3s                                     MCP
+                                                                                     • example                  Connected
+  ┃
+  ┃  The sample request is ready. Run the two steps below.
+  ┃
+
+     ⠙ Running command…
+
+     Press ctrl+b to move running work to the background
+
+  ┃
+  ┃
+  ┃
+  ┃  Build · Example Provider Sample Model
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   ~/project                                     1 K tokens · ctrl+x tools  ctrl+p commands

@@ -862,16 +862,27 @@ private fun WorkingLine(label: String, agentName: String, onStop: (() -> Unit)?)
             color = Palette.Muted, fontSize = 13.5.sp, modifier = Modifier.weight(1f),
             maxLines = 1, overflow = TextOverflow.Ellipsis,
         )
-        if (onStop != null) {
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = Palette.OrangeSoft,
-                border = BorderStroke(1.dp, Palette.OrangeEdge),
-                modifier = Modifier.clickable(onClick = onStop),
-            ) {
-                Text("Stop", color = Palette.OrangeInk, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp))
-            }
-        }
+        if (onStop != null) StopChip(onStop)
+    }
+}
+
+/** The chat Stop button's colors (2.2.11): light red, apart from the question cards' orange. */
+internal object StopLook {
+    val container get() = Palette.StopSoft
+    val edge get() = Palette.StopEdge
+    val ink get() = Palette.StopInk
+}
+
+/** The chat Stop button (2.2.11), drawn in [StopLook]. */
+@Composable
+internal fun StopChip(onStop: () -> Unit, modifier: Modifier = Modifier) {
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = StopLook.container,
+        border = BorderStroke(1.dp, StopLook.edge),
+        modifier = modifier.clickable(onClick = onStop),
+    ) {
+        Text("Stop", color = StopLook.ink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp))
     }
 }
 

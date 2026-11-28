@@ -180,11 +180,11 @@ class BoardSync2210Test {
     }
 
     @Test
-    fun refusalAndDuplicateNoteSurviveReloadWithoutAutomaticRetry() {
+    fun refusalAndSameTextNoteSurviveReloadWithoutAutomaticRetry() {
         serverCards(card)
         val note = BoardNote(firstTime, "Phone", "Add a crease")
         assertTrue(store.addNote(source, card.id, note))
-        assertTrue(store.addNote(source, card.id, note))
+        assertTrue(store.addNote(source, card.id, note.copy(at = secondTime)))
         val apply = request()
         assertEquals(2, apply.changes.size)
         assertTrue(store.markSent(source, apply.id, 1))

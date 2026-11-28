@@ -296,9 +296,8 @@ internal class VoiceControls(
                     return
                 }
                 vm.answerChoice(answer.target.pane.id, answer.prompt, answer.choice, target = answer.target,
-                    voiceAllowed = { stillAllowed() && vm.voiceCardCurrent(answer.target) && SystemClock.elapsedRealtime() < expires }) { result ->
-                    if (stillAllowed()) say(result)
-                }
+                    voiceAllowed = { stillAllowed() && vm.voiceCardCurrent(answer.target) && SystemClock.elapsedRealtime() < expires },
+                    feedback = { result -> if (stillAllowed()) say(result) })
             }
             VoiceCommand.Cancel -> say("Cancelled.")
             null -> say("I did not recognize that voice command.")

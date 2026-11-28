@@ -1,0 +1,23 @@
+
+
+✻ Waiting for 1 background agent to finish
+
+❯ Work on the sample project
+
+› Message from @general-purpose (ctrl+o to expand)
+─────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Start  ☒ Prepare  ☐ Retry rule  ☐ Window cap  ✔ Submit  →
+
+│ What should happen if the sample task still has work left to do
+│ after the current step finishes?
+
+❯ 1. Wait for completion
+     keep the task paused until the remaining work is complete
+     and then resume the next planned step.
+  2. Try again
+     Start another attempt if the first attempt did not finish.
+  3. Type something.
+─────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel

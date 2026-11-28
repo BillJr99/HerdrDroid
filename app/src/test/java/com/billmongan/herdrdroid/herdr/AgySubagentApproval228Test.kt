@@ -143,6 +143,26 @@ class AgySubagentApproval228Test {
         assertFalse(cardGuardScreenMatches(changed, guard, "agy"))
     }
 
+    @Test fun workingAgyShowsWaitingForFileAccessAndClippedShellApprovals() {
+        val pane = Pane("p1", "tab", "w1", "agy", Status.WORKING, "", "/fixture", tabLabel = "agy")
+        fun capture(path: String) = checkNotNull(javaClass.getResource("/screens/agy/$path")).readText().trimEnd()
+        val file = capture("derived-2.2.11/file-access.txt")
+        val shell = capture("captured-1.5.18-tall/clipped-a.txt")
+        for (frame in listOf(file, shell)) {
+            val promoted = markScreenNeedsYou(listOf(pane), mapOf(pane.id to frame)).single()
+            assertEquals(Status.NEEDS_YOU, promoted.status)
+            assertEquals(Status.WORKING, promoted.sendStatus)
+            val stale = markScreenNeedsYou(listOf(pane), mapOf(pane.id to "$frame\n> New input")).single()
+            assertEquals(Status.WORKING, stale.status)
+        }
+    }
+
+    @Test fun fileAccessAcceptsTheFooterInAnotherMode() {
+        val frame = checkNotNull(javaClass.getResource("/screens/agy/derived-2.2.11/file-access.txt")).readText()
+        val review = checkNotNull(agyFileAccess(frame.replace("Orchestrator", "Plan")))
+        assertEquals(listOf("1", "2", "3", "esc"), review.choices.map { it.keys })
+    }
+
     @Test fun workingAgyRemainsWorkingForDispatchWhenItsPanelIsPromoted() {
         val pane = Pane("p1", "tab", "w1", "agy", Status.WORKING, "", "/fixture", tabLabel = "agy")
         val shown = markScreenNeedsYou(listOf(pane), mapOf(pane.id to frame)).single()

@@ -75,7 +75,10 @@ internal data class QuestionRead(val prompt: Prompt, val topped: Boolean, val co
  */
 internal fun questionRead(text: String, p: Prompt, agent: String?, version: String?, blocked: Boolean, framed: Boolean = false): QuestionRead {
     if (!needsConfirmation(p) || selfFramed(p) || framed) return QuestionRead(p, topped = true, complete = true)
-    val rows = claudeDialogWindow(stripAnsi(text).lines(), agent)
+    val plain = stripAnsi(text)
+    if (p.claudeAsk && claudeGutteredTabAsk(plain) == p)
+        return QuestionRead(p, topped = true, complete = true)
+    val rows = claudeDialogWindow(plain.lines(), agent)
     return if (p.choices.isEmpty()) regionRead(rows, p) else dialogRead(rows, p, agent, version, blocked)
 }
 
@@ -318,6 +321,52 @@ internal fun claudeAskFooter(row: String): Boolean = row.trim().let {
 }
 
 internal fun claudeAskTab(row: String): Boolean = parseTabBar(row) != null || CLAUDE_SINGLE_TAB.matches(row.trim())
+
+private val CLAUDE_TABBED_CHOICE = Regex("""^(❯ |› |  )(\d{1,2})\. (\S.*)$""")
+private val CLAUDE_TABBED_CHECKBOX = Regex("""^\s*[❯›]?\s*\d{1,2}\. \[[ xX✓✔]]""")
+
+/** The native tabbed Ask layout with a guttered question and the separate Chat action. */
+internal fun claudeGutteredTabAsk(text: String): Prompt? {
+    val window = claudeDialogWindow(withoutClaudeChromeUnderDialog(text).lines(), "claude")
+        .dropLastWhile(String::isBlank)
+    val footer = window.lastIndex
+    if (footer < 0 || !claudeAskFooter(window[footer])) return null
+    val bar = (footer - 1 downTo 0).firstOrNull { parseTabBar(window[it]) != null } ?: return null
+    val (tabs, inlineQuestion) = checkNotNull(parseTabBar(window[bar]))
+    if (inlineQuestion.isNotEmpty() || tabs.count { it.submit } != 1 || !tabs.last().submit ||
+        !window[bar].trim().startsWith("←") || !window[bar].trim().endsWith("→")) return null
+    val rows = withoutClaudeAskPreview(window)
+    val body = rows.subList(bar + 1, footer).withIndex().filter { it.value.isNotBlank() }
+    val question = body.takeWhile { it.value.startsWith("│ ") }
+    if (question.isEmpty()) return null
+    val options = body.drop(question.size)
+    val rule = options.indexOfLast { CLAUDE_DIALOG_TOP_RULE.matches(it.value) }
+    // Other native forms, especially the checkbox dialog and its unnumbered Next button,
+    // still use the existing parser.
+    if (rule < 0 || rule != options.lastIndex - 1 ||
+        options.take(rule).any { CLAUDE_TABBED_CHECKBOX.containsMatchIn(it.value) ||
+            CLAUDE_CLIPPED_ACTION.matches(it.value) }) return null
+
+    val lines = question.map { QLine(it.value.removePrefix("│ ").trim()) }
+    val title = lines.joinToString(" ") { it.text }.trim()
+    val parts = questionParts(lines).copy(tabs = tabs)
+    val region = window.subList(bar, footer + 1)
+    fun review() = Prompt(title.ifBlank { "Claude question" }, emptyList(), region = region,
+        terminalReview = true, parts = parts, claudeAsk = true)
+
+    val menu = options.filterIndexed { i, row -> i != rule && !CLAUDE_SINGLE_DESCRIPTION.matches(row.value) }
+    if (menu.size !in 4..6 || title.isBlank() || tabs.none { it.current && !it.submit }) return review()
+    val matches = menu.map { CLAUDE_TABBED_CHOICE.matchEntire(it.value) ?: return review() }
+    val numbers = matches.map { it.groupValues[2].toInt() }
+    val labels = matches.map { it.groupValues[3].trimEnd() }
+    if (numbers != (1..menu.size).toList() || labels.takeLast(2) != listOf("Type something.", "Chat about this") ||
+        options.getOrNull(rule - 1) != menu[menu.lastIndex - 1]) return review()
+    val focus = matches.filter { it.groupValues[1] != "  " }.singleOrNull() ?: return review()
+    return Prompt(title, labels.zip(numbers).map { (label, key) -> Choice(label, key.toString(), false) },
+        selected = focus.groupValues[2], parts = parts, claudeAsk = true).also {
+        it.dialogRows = DialogRows(region.map(::cardRegionRow), menu.map { row -> row.index + 1 })
+    }
+}
 
 private val CLAUDE_PREVIEW_TOP = Regex("""┌─+┐\s*""")
 

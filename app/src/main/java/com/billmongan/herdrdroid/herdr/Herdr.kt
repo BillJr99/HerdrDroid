@@ -363,18 +363,23 @@ class Herdr internal constructor(
         val panes = (0 until arr.length()).mapNotNull { i ->
             runCatching {
                 val p = arr.getJSONObject(i)
-                tuiPane(p).copy(tabLabel = labels[p.optString("tab_id")].orEmpty())
+                tuiPane(p, labels[p.optString("tab_id")].orEmpty())
             }.getOrNull()
         }
         return TuiPaneList(panes, arr.length())
     }
 
-    private fun tuiPane(p: JSONObject): Pane = Pane(
+    private fun tuiPane(p: JSONObject, tabLabel: String = panes0Cache.firstOrNull {
+        it.id == p.optString("pane_id") && it.tabId == p.optString("tab_id") &&
+            it.terminalId != null && it.terminalId == p.optString("terminal_id")
+    }?.tabLabel.orEmpty()): Pane = Pane(
                 id = p.getString("pane_id"),
                 tabId = p.optString("tab_id"),
                 workspaceId = p.optString("workspace_id"),
                 agent = p.optString("agent").takeIf { !p.isNull("agent") && it.isNotBlank() }?.let(::canonicalAgent)
-                    ?: titleAgent(p.optString("terminal_title_stripped")),
+                    ?: titleAgent(p.optString("terminal_title_stripped"))
+                    ?: "vibe".takeIf { Regex("""^vibe(?:-\d+)?$""", RegexOption.IGNORE_CASE).matches(tabLabel) },
+                tabLabel = tabLabel,
                 status = when (p.optString("agent_status")) {
                     "blocked" -> Status.NEEDS_YOU
                     "working" -> Status.WORKING
@@ -1004,15 +1009,47 @@ class Herdr internal constructor(
     /** Draft keys only after the host compares the app's last ANSI viewport byte for byte. */
     internal suspend fun sendCheckedDraftKeys(
         paneId: String, keys: List<String>, viewport: String, occupant: String, connection: Any, permit: WritePermit,
+        requireBottom: Boolean = false,
     ): Boolean {
         if (core || viewport.isBlank()) return false
-        val check = occupantCheckCommand(paneId, occupant) + " && " + exactViewportCheck(paneId, viewport)
+        val check = occupantCheckCommand(paneId, occupant) + " && " + exactViewportCheck(paneId, viewport, requireBottom)
         val send = cmd("pane", "send-keys", paneId, *keys.toTypedArray())
         val result = runWriteResult("$check && echo $OCCUPANT_PASSED_MARK && $send", connection, permit)
         if (result.exit == 0) return true
         val lines = result.out.lineSequence().map(String::trim).toSet()
-        if (result.exit == -2 || OCCUPANT_PASSED_MARK in lines) throw DeliveryUncertain("The draft key may have gone through.")
+        if (result.exit == -2 || OCCUPANT_PASSED_MARK in lines) throw DeliveryUncertain("The key may have gone through.")
         return false
+    }
+
+    /** Called only from a user tap while the caller holds the pane's dispatch lane. */
+    internal suspend fun readPaneWarnings(pane: Pane, connection: Any, allowed: () -> Boolean): PaneWarningResult {
+        if (core) return PaneWarningResult.Unavailable("Open in terminal to read.")
+        fun current() = connectionIdentity === connection && allowed()
+        return try {
+            readCodexWarningPages(
+                expected = pane,
+                allowed = ::current,
+                read = read@{
+                    val (live, occupant) = cardPaneGuarded(pane.id, connection) ?: return@read null
+                    if (occupant == null || !sameOccupant(pane, live) || !current()) return@read null
+                    val viewport = readStyledViewport(pane.id, connection, timeoutSeconds = 2)
+                    val (after, afterOccupant) = cardPaneGuarded(pane.id, connection) ?: return@read null
+                    if (occupant != afterOccupant || !sameOccupant(live, after) || !current()) return@read null
+                    WarningPaneFrame(after, occupant, viewport)
+                },
+                send = { frame, key ->
+                    sendCheckedDraftKeys(pane.id, listOf(key), frame.viewport, frame.occupant, connection,
+                        WritePermit(::current), requireBottom = true)
+                },
+                pause = { delay(100) },
+            )
+        } catch (c: kotlinx.coroutines.CancellationException) {
+            throw c
+        } catch (_: DeliveryUncertain) {
+            PaneWarningResult.Unavailable("A warning key may have gone through. Open Terminal to check the pane.")
+        } catch (_: Exception) {
+            PaneWarningResult.Unavailable("The pane could not be verified. Open Terminal to check it.")
+        }
     }
 
     /** Keys that go only while [permit] is open; on herdr-core as `hc keys` (2.2.0: the mode menu works there too). */
@@ -1698,15 +1735,21 @@ data class Prompt(
     internal val clipped: Boolean = false,
     /** AGY subagent Bash approval takes only the explicitly displayed Ctrl+K shortcut. */
     internal val agyApproval: Boolean = false,
+    internal val agyFileAccess: Boolean = false,
     /** Kiro advertises its exact one-time approval keys on this page. */
     internal val kiroOnceShortcuts: Boolean = false,
+    internal val kiroStartupMigration: Boolean = false,
     /** A proven Claude Code model control uses only keys named by its own picker. */
     internal val claudeModelControl: Boolean = false,
+    internal val copilotPermissionControl: Boolean = false,
     internal val letterKeys: Boolean = false,
     /** Claude AskUserQuestion answers require a key sequence verified from the current highlight. */
     internal val claudeAsk: Boolean = false,
+    internal val vibeRelease: Boolean = false,
+    /** Codex's startup hook trust or hook browser review screen. */
+    internal val codexHooksReview: Boolean = false,
 ) {
-    internal val guardedShortcutApproval: Boolean get() = agyApproval || kiroOnceShortcuts || claudeModelControl
+    internal val guardedShortcutApproval: Boolean get() = agyApproval || agyFileAccess || kiroOnceShortcuts || claudeModelControl || copilotPermissionControl || vibeRelease || codexHooksReview
     internal val historyReviewOnly: Boolean get() = topOffScreen || rebuiltTallDialog
 
     /**
@@ -1758,7 +1801,7 @@ const val UNREAD_SCREEN = "(The app couldn't read this pane's screen yet. Tap Sh
 internal fun withNeedsYouCard(
     status: Status, prompt: Prompt?, suppressed: Boolean, agent: String, codexActivityViewport: String? = null,
 ): Prompt? = prompt ?: if (
-    status == Status.NEEDS_YOU && !suppressed && codexActivityViewport?.let(::hasCodexInputActivity) != true
+    status == Status.NEEDS_YOU && !suppressed && codexActivityViewport?.let { hasCodexInputActivity(it) || codexHooksBrowserPassive(it) } != true
 ) unreadQuestionCard(agent) else null
 
 /** [withNeedsYouCard]'s card: no options and no keys, only the way to the terminal. */
@@ -2867,7 +2910,8 @@ private val ALWAYS_LABEL = Regex("""\balways\b|don'?t ask again|\btrust\b|remain
 // 1.4.1 (from a code review): a refusal ("No, don't trust this", "Never allow") grants nothing.
 private val REFUSAL_LABEL = Regex("""^\W*(no|deny|reject|cancel|never|quit|don'?t (trust|allow))\b|\b(don'?t|do not|not|never) (trust|always)\b|\bdeny rule\b|^\W*block\b""", RegexOption.IGNORE_CASE)
 // A curly apostrophe ("don’t ask again", Claude's MCP and skill rows) reads as a straight one (1.4.9).
-fun grantsStandingPermission(label: String): Boolean = label.replace('\u2019', '\'').let { ALWAYS_LABEL.containsMatchIn(it) && !REFUSAL_LABEL.containsMatchIn(it) }
+fun grantsStandingPermission(label: String): Boolean = label.replace('\u2019', '\'').let { (ALWAYS_LABEL.containsMatchIn(it) || it.equals("Allow All", ignoreCase = true)) &&
+        !REFUSAL_LABEL.containsMatchIn(it) }
 
 /** A choice that means "I'll type my own answer" ("Type something.", "Other", "Something else"), 1.4.0. */
 /** 2.2.8: Oh My Pi's tool approval footer, and the card's typed answer that denies the tool and steers. */
@@ -3185,6 +3229,7 @@ internal fun screenAskable(list: List<Pane>): List<Pane> = list.filter {
     (it.agent == "claude" && it.status != Status.NEEDS_YOU) ||
         (isOpenCode(it.agent) && it.status in setOf(Status.DONE, Status.IDLE)) ||
         (it.agent == "agy" && !it.isProbe && it.status == Status.WORKING) ||
+        (it.agent == "vibe" && !it.isProbe && it.status != Status.NEEDS_YOU) ||
         // 2.2.7: herdr can call Hermes done or idle through a whole turn and through an approval.
         (it.agent == "hermes" && it.status != Status.NEEDS_YOU)
 }
@@ -3212,9 +3257,12 @@ internal fun markScreenNeedsYou(list: List<Pane>, tails: Map<String, String>): L
         val why = when {
             tail == null -> null
             p.agent == "claude" -> claudeNeedsYouReason(tail)
+            p.agent == "vibe" -> detectVibeRelease(tail)?.let { "a release dialog is open" }
             p.agent == "agy" -> when {
                 agySubagentApproval(tail) != null -> "a subagent approval is open"
                 agySubagentQuestion(tail) != null -> "a subagent question needs attention"
+                agyFileAccess(tail) != null -> "a file access approval is open"
+                agyClippedShellCommand(tail) != null -> "a shell approval is open"
                 else -> null
             }
             isOpenCode(p.agent) -> openCodeNeedsYouReason(tail)
@@ -3835,8 +3883,54 @@ private val OPENCODE_PERMISSION_HINT = Regex("""(?:⇆|←→)\s+select\s+enter\
 /** OpenCode 2.3.2 puts its fullscreen toggle ("ctrl+f fullscreen", "ctrl+f minimize") before "⇆ select" (2.1.2). */
 private val OPENCODE_PERMISSION_FULLSCREEN = Regex("""(?:^|\s+)(?:\S+\s+)?(?:fullscreen|minimize)$""")
 
+private val OPENCODE_PERMISSION_GUTTER = Regex("""^ *[┃│|]""")
+private val OPENCODE_BACKGROUND_HINT =
+    Regex("""^\s*Press ctrl\+b to move running work to the background\s*$""", RegexOption.IGNORE_CASE)
+private val OPENCODE_TOOL_SPINNER = Regex("""^ *[┃│] +[⠁-⣿] +\S""")
+private val OPENCODE_INLINE_TOOL_SPINNER = Regex("""^ +[⠁-⣿] +\S""")
+
+/** The native running-tool footer, optionally followed by OpenCode's empty composer. */
+internal fun openCodePermissionRan(screen: String): Boolean {
+    val rows = stripAnsi(screen).lines().takeLast(20)
+    val mode = openCodeComposerMode(rows)
+    if (mode >= 3 && (openCodeSessionComposerEmpty(screen) || openCodeEmptyComposer(screen))) {
+        val hint = (mode - 4 downTo maxOf(0, mode - 7)).firstOrNull { rows[it].isNotBlank() } ?: return false
+        if (!OPENCODE_BACKGROUND_HINT.matches(rows[hint])) return false
+        val spinner = (hint - 1 downTo maxOf(0, hint - 4)).firstOrNull { rows[it].isNotBlank() } ?: return false
+        return OPENCODE_INLINE_TOOL_SPINNER.containsMatchIn(rows[spinner]) &&
+            rows[spinner].indexOfFirst { !it.isWhitespace() } == rows[hint].indexOfFirst { !it.isWhitespace() }
+    }
+
+    val hint = rows.indexOfLast { it.trim().trim('┃', '│').isNotBlank() }
+    if (hint < 0 || !OPENCODE_BACKGROUND_HINT.matches(rows[hint])) return false
+    val spinner = (hint - 1 downTo maxOf(0, hint - 12)).firstOrNull { OPENCODE_TOOL_SPINNER.containsMatchIn(rows[it]) }
+        ?: return false
+    val gutter = OPENCODE_PERMISSION_GUTTER.find(rows[spinner])?.value ?: return false
+    return rows.subList(spinner + 1, hint).all {
+        if (it.isBlank()) return@all true
+        if (!it.startsWith(gutter)) return@all false
+        val body = it.removePrefix(gutter).trim()
+        !OPENCODE_PERMISSION_TITLE.matches(body) && !OPENCODE_PERMISSION_HINT.containsMatchIn(body)
+    }
+}
+
+private fun joinOpenCodePermissionCommand(lines: List<String>): String = buildString {
+    append(lines.first().trimEnd())
+    lines.zipWithNext().forEach { (row, next) ->
+        val left = row.trimEnd()
+        val right = next.trimStart()
+        // The native TUI can wrap after shell punctuation. Join the two split forms
+        // seen in the pane, and keep other word boundaries separated.
+        val optionSplit = left.endsWith(" -") && right.startsWith("-") && right.getOrNull(1)?.isLetter() == true
+        val punctuationSplit = left.lastOrNull() in listOf('.', '-') && left.getOrNull(left.lastIndex - 1)?.isLetterOrDigit() == true &&
+            right.firstOrNull()?.isLetterOrDigit() == true
+        if (!optionSplit && !punctuationSplit) append(' ')
+        append(right.trimEnd())
+    }
+}
+
 private fun detectOpenCodePermission(styled: String, text: String): Prompt? {
-    fun clean(row: String) = row.trim().trim('┃', '│', '|').trim()
+    fun clean(row: String) = row.replaceFirst(OPENCODE_PERMISSION_GUTTER, "").trim()
     val rows = text.lines()
     var footer = rows.indexOfLast { clean(it).isNotEmpty() }
     if (footer < 0) return null
@@ -3845,17 +3939,62 @@ private fun detectOpenCodePermission(styled: String, text: String): Prompt? {
         OPENCODE_PERMISSION_HINT.find(clean(rows[footer])) == null) {
         footer = (footer - 1 downTo 0).firstOrNull { clean(rows[it]).isNotEmpty() } ?: return null
     }
+    // A wider terminal can continue drawing the right sidebar below the permission
+    // controls. Accept that trailing gutter row only when its text starts to the
+    // right of the complete controls, never when there is later text in the dialog.
+    var sidebarEdge: Int? = null
+    var sidebarTextColumn: Int? = null
+    if (footer > 0 && OPENCODE_PERMISSION_HINT.find(clean(rows[footer])) == null) {
+        val candidate = (footer - 1 downTo maxOf(0, footer - 6)).firstOrNull {
+            val control = clean(rows[it])
+            val keyHint = OPENCODE_PERMISSION_HINT.find(control) ?: return@firstOrNull false
+            val controls = control.substring(0, keyHint.range.first).trimEnd()
+                .replace(OPENCODE_PERMISSION_FULLSCREEN, "").trimEnd()
+            OPENCODE_PERMISSION_BUTTONS.matches(controls)
+        }
+        if (candidate != null) {
+            val gutter = OPENCODE_PERMISSION_GUTTER.find(rows[candidate])?.value
+            val controlsEnd = rows[candidate].trimEnd().length
+            val below = rows.subList(candidate + 1, footer + 1)
+            if (gutter != null && below.all { row ->
+                    row.isBlank() || row.startsWith(gutter) &&
+                        row.drop(gutter.length).indexOfFirst { !it.isWhitespace() }.let {
+                            it < 0 || it + gutter.length > controlsEnd
+                        }
+                }) {
+                footer = candidate
+                sidebarEdge = controlsEnd
+                sidebarTextColumn = below.mapNotNull { row ->
+                    row.drop(gutter.length).indexOfFirst { !it.isWhitespace() }.takeIf { it >= 0 }
+                        ?.plus(gutter.length)
+                }.minOrNull()
+            }
+        }
+    }
+    // The proven sidebar can begin on the same row as the command or its context.
+    // Strip across the column gap only; adjacent shell text keeps its original bytes.
+    fun bodyRow(i: Int): String {
+        val row = rows[i]
+        val edge = sidebarEdge ?: return row
+        if (edge >= row.length || !row[edge].isWhitespace()) return row
+        val left = row.take(edge).trimEnd()
+        val right = row.drop(edge).indexOfFirst { !it.isWhitespace() }
+        val column = sidebarTextColumn ?: return row
+        return if (right >= 0 && edge + right >= column && edge + right - left.length >= 4) left else row
+    }
+    fun cleanBody(i: Int) = clean(bodyRow(i))
     val hint = OPENCODE_PERMISSION_HINT.find(clean(rows[footer]))
     val title = (footer downTo maxOf(0, footer - 60)).firstOrNull { OPENCODE_PERMISSION_TITLE.matches(clean(rows[it])) }
-    if (title == null && hint == null) return null
+    if (hint == null && (title == null || openCodePermissionRan(text))) return null
     // A shell command wrapped inside the dialog can start a row with ">" (">/dev/null 2>&1"): it is
     // the command being asked about, not an input row under the dialog (2.1.2).
-    val command = title?.let { t -> (t + 1..footer).firstOrNull { clean(rows[it]).startsWith("$ ") } }
-    val commandEnd = command?.let { c -> (c + 1..footer).firstOrNull { clean(rows[it]).isEmpty() } ?: (footer + 1) }
-    if (title != null && agentWentOn((title + 1..footer).filter { command == null || it !in command until checkNotNull(commandEnd) }.map { rows[it] })) return null
+    val command = title?.let { t -> (t + 1..footer).firstOrNull { cleanBody(it).startsWith("$ ") } }
+    val commandEnd = command?.let { c -> (c + 1..footer).firstOrNull { cleanBody(it).isEmpty() } ?: (footer + 1) }
+    if (title != null && agentWentOn((title + 1..footer).filter { command == null || it !in command until checkNotNull(commandEnd) }.map(::bodyRow))) return null
     val region = rows.subList(title ?: footer, footer + 1)
     val heading = title?.let { clean(rows[it]).removePrefix("△ ") } ?: "Permission required"
-    fun review() = Prompt(heading, emptyList(), region = region.map(::clean), terminalReview = true)
+    fun review() = Prompt(heading, emptyList(), region = region.map(::clean), terminalReview = true,
+        openCodePermission = true)
     if (title == null || heading != "Permission required" || hint == null) return review()
     val onFooter = clean(rows[footer]).substring(0, hint.range.first).trimEnd().replace(OPENCODE_PERMISSION_FULLSCREEN, "").trimEnd()
     // Narrow panes stack the hints under the buttons, with a blank row between them (2.3.2).
@@ -3863,7 +4002,7 @@ private fun detectOpenCodePermission(styled: String, text: String): Prompt? {
         else (footer - 1 downTo maxOf(0, footer - 2)).firstOrNull { clean(rows[it]).isNotEmpty() } ?: return review()
     if (buttonRow <= title) return review()
     val buttons = OPENCODE_PERMISSION_BUTTONS.find(if (buttonRow == footer) onFooter else clean(rows[buttonRow])) ?: return review()
-    val body = rows.subList(title + 1, buttonRow).map(::clean).filter(String::isNotEmpty)
+    val body = (title + 1 until buttonRow).map(::cleanBody).filter(String::isNotEmpty)
     if (body.isEmpty() || body.any { '…' in it || "..." in it } || body.last().trim() in listOf("$", "# Shell command")) return review()
     val bodyCommandEnd = commandEnd?.coerceAtMost(buttonRow)
     val details = if (command != null && bodyCommandEnd != null && bodyCommandEnd - command > 1) {
@@ -3871,17 +4010,20 @@ private fun detectOpenCodePermission(styled: String, text: String): Prompt? {
         // omit row-end spaces, so a join could change an option or a path. Keep the complete
         // run in one code block with its original row boundaries, as in the terminal.
         val end = bodyCommandEnd
-        val first = rows[command]
+        val first = bodyRow(command)
         val gutter = first.substringBefore("$ ")
         if (end >= buttonRow || !gutter.matches(Regex("""^\s*[┃│|] +$""")) ||
-            rows.subList(end, buttonRow).any { clean(it).isNotEmpty() }) return review()
-        val continuation = rows.subList(command + 1, end)
+            (end until buttonRow).any { cleanBody(it).isNotEmpty() }) return review()
+        val continuation = (command + 1 until end).map(::bodyRow)
         if (continuation.any { !it.startsWith(gutter) || it.removePrefix(gutter).trimStart().startsWith("$ ") }) return review()
-        val context = rows.subList(title + 1, command).map(::clean).filter(String::isNotEmpty)
+        val context = (title + 1 until command).map(::cleanBody).filter(String::isNotEmpty)
         val parsed = questionParts((listOf(heading) + context).map { QLine(it) })
         val commandLines = listOf(first.removePrefix(gutter).removePrefix("$ ")) + continuation.map { it.removePrefix(gutter) }
-        parsed.copy(blocks = parsed.blocks + QBlock(QKind.COMMAND, commandLines.joinToString("\n")) +
-            QBlock(QKind.TEXT, "Line breaks follow the terminal display."))
+        val joined = commandLines.size >= 4
+        val display = if (joined) joinOpenCodePermissionCommand(commandLines) else commandLines.joinToString("\n")
+        val wrapNote = if (joined) "Wrapped lines were joined for display. Check Terminal for exact spacing."
+            else "Line breaks follow the terminal display."
+        parsed.copy(blocks = parsed.blocks + QBlock(QKind.COMMAND, display) + QBlock(QKind.TEXT, wrapNote))
     } else questionParts((listOf(heading) + body).map { QLine(it) })
     val labels = listOfNotNull(buttons.groups[1]?.value, buttons.groups[2]?.value, buttons.groups[3]?.value)
     val styledRow = styled.lines().getOrNull(buttonRow).orEmpty()
@@ -4181,6 +4323,7 @@ internal fun hasCodexInputActivity(text: String): Boolean {
 private val COPILOT_PENDING_INPUT_ROW = Regex("""^\s+└ \[pending · ↑ recall]\s*$""")
 
 fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version: String? = null): Prompt? {
+    rebuiltClippedDialog(text, blocked, agent, version)?.let { return it }
     val unstyled = stripAnsi(text)
     val queueRows = if (agent.equals("codex", true)) codexFollowUpRows(unstyled) else emptySet()
     val plain = when {
@@ -4196,18 +4339,31 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     }
     // Unlike an empty read, a clipped viewport containing only queue rows is readable.
     if (queueRows.isNotEmpty() && plain.isBlank()) return null
+    if (agent.equals("codex", true)) {
+        codexHooksPrompt(plain)?.let { return it }
+        if (codexHooksBrowserPassive(plain)) return null
+    }
     if (agent.equals("claude", true)) {
         claudeModelCard(plain)?.let { return it }
         rebuiltClaudeAsk(plain)?.let { return it }
+        claudeGutteredTabAsk(plain)?.let { return it }
         claudeClippedAskReview(plain)?.let { return it }
+    }
+    if (agent?.let(::canonicalAgent) == "copilot") {
+        copilotPermissionMode(plain)?.let { return it }
+        copilotAfterPermissionMode(plain)?.let { return detectPlainPrompt(it, blocked, agent, version) }
     }
     if (agent.equals("grok", true)) grokPrivacyOverlay(plain)?.let { return it }
     if (agent.equals("agy", true)) {
+        agyFileAccess(plain)?.let { return it }
         agySubagentQuestion(plain)?.let { return it }
         agySubagentApproval(plain)?.let { return it }
         agyClippedShellCommand(plain)?.let { return terminalCommandReview(it) }
     }
-    if (ruleAgent(agent) in setOf("kiro", "kiro-cli")) kiroApprovalShortcuts(plain)?.let { return it }
+    if (ruleAgent(agent) in setOf("kiro", "kiro-cli")) {
+        kiroV3Startup(plain)?.let { return it }
+        kiroApprovalShortcuts(plain)?.let { return it }
+    }
     if (agent.equals("hermes", true)) hermesUsageEnd(plain)?.let { end ->
         // A report supersedes any old question above it, not a new card below it. A close
         // hint alone is not a question, even when herdr still reports that it is blocked.
@@ -4216,6 +4372,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     }
     // Before the styles are stripped: they are the only mark of Muse's highlighted option (2.1.0).
     if (agent.equals("muse", true)) detectMuseQuotaDialog(text)?.let { return it }
+    if (agent == null || agent.equals("vibe", true)) detectVibeRelease(text, allowGenericReview = true)?.let { return it }
     // 2.2.7 (Bill: "show the whole question"): Oh My Pi's and pi's boxed multi-question Ask dialog.
     if (agent?.lowercase() in setOf("omp", "pi")) OmpAsk.prompt(plain)?.let { return it }
     // 2.2.8 (Bill: "OMP popped up another question it won't let me answer"): Oh My Pi's tool approval
@@ -4237,7 +4394,12 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     if (isOpenCode(agent)) {
         if (openCodeBackgroundDrawer(agent, plain) || openCodeComposerMode(plain.lines().takeLast(20)) >= 0) return null
         detectOpenCodeQuestion(plain)?.let { return it }
-        detectOpenCodePermission(text, plain)?.let { return it }
+        detectOpenCodePermission(text, plain)?.let { permission ->
+            if (permission.terminalReview && isClippedDialogViewport(plain, agent))
+                return clippedDialogReview(plain, agent) ?: permission
+            return permission
+        }
+        if (openCodePermissionRan(plain)) return null
     }
     // 2.2.8 (Bill: "grok is stuck on a question I can't answer"): Grok working under its own rows.
     if (agent.equals("grok", true) && grokWorkingBelowAnyQuestion(plain)) return null
@@ -4251,7 +4413,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
                 region = p.region ?: plain.lines(), claudeAsk = true).withSpanOf(p)
         else p.copy(claudeAsk = true).withSpanOf(p)
     }
-    return p
+    return p ?: if (agent.equals("claude", true)) null else clippedDialogReview(plain, agent)
 }
 
 private val GROK_THINKING_PANEL = Regex("""^\s*┃\s*◆\s+Thinking(?:…|\.\.\.)?\s*$""")

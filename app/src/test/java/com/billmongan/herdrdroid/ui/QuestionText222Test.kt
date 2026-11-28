@@ -11,6 +11,7 @@ import com.billmongan.herdrdroid.notify.alertPlan
 import com.billmongan.herdrdroid.notify.alertBody
 import com.billmongan.herdrdroid.transcript.QuestionLog
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -380,6 +381,17 @@ class QuestionText222Test {
         assertEquals("Do you want to proceed?\nmkdir -p sub && date > sub/now.txt\nCreate the folder and write the date", alertBody(p))
     }
 
+    @Test fun aLongJoinedOpenCodeCommandHasAnExactAlertPreview() {
+        val path = "opencode/live-2026-11-26-tall/replacement-recent.ansi"
+        val p = requireNotNull(detectPrompt(capture(path), true, "opencode"))
+        val command = requireNotNull(p.parts?.command)
+        assertTrue(command.length > 400)
+        assertFalse(command.contains("OpenCode includes"))
+        assertFalse(command.contains("Connect from"))
+        assertEquals(listOf("Permission required", command.take(400).trimEnd(), "Full command in the app."),
+            alertBody(p).lines())
+    }
+
     @Test fun theDisplayLeavesTheAnswerKeysAndTheCardIdentityAlone() {
         for (path in listOf("claude/captured-2.1.329/single-question.txt", "claude/captured-2.1.329-two-questions/q1.txt",
                 "claude/captured-2026-11-13/bash-permission.txt")) {
@@ -449,8 +461,11 @@ class QuestionText222Test {
                 notes[c.keys]?.let { found += leaks("$rel note ${c.keys}", it) }
             }
             val command = p.parts?.command?.lines().orEmpty()
+            val alertCode = command + listOfNotNull(command.singleOrNull()?.takeIf {
+                it.length > com.billmongan.herdrdroid.notify.ALERT_COMMAND_CHARS
+            }?.take(com.billmongan.herdrdroid.notify.ALERT_COMMAND_CHARS)?.trimEnd())
             val body = alertBody(p)
-            found += leaks("$rel alert", body.lines().filterNot { l -> command.any { it.trim() == l.trim() } }.joinToString("\n"))
+            found += leaks("$rel alert", body.lines().filterNot { l -> alertCode.any { it.trim() == l.trim() } }.joinToString("\n"))
             // The row marks of Claude's review step ("●", "→") never reach the alert.
             if (Regex("""(^|\s)[●→](\s|$)""").containsMatchIn(body)) found += "$rel alert: row mark in \"$body\""
             alertPlan(p).buttons.forEach { found += leaks("$rel alert button", it.title) }

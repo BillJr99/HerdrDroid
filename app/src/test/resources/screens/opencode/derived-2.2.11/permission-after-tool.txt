@@ -1,0 +1,23 @@
+  ┃  △ Permission required
+  ┃
+  ┃  $ echo earlier sample
+  ┃
+  ┃   Allow once   Always allow   Reject     ctrl+f fullscreen   ⇆ select  enter confirm
+
+  ┃  ⠹ cd /home/user/project && python /home/user/project/tool.py --preview --data latest
+  ┃    continuation from the running tool…
+  ┃
+
+     Press ctrl+b to move running work to the background
+
+  ┃
+  ┃  △ Permission required
+  ┃
+  ┃  $ python /home/user/project/scripts/tool.py --root /home/user/project/fixture -c
+  ┃  12345 --scope sample --format json --config /home/user/project/fixture --apply -
+  ┃  -file /home/user/project/fixtures/example/v2/generic/sample/content/version/dates.
+  ┃  json
+  ┃
+  ┃
+  ┃   Allow once   Always allow   Reject     ctrl+f fullscreen   ⇆ select  enter confirm
+  ┃                                                                                           Session details
