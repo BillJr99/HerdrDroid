@@ -1,0 +1,19 @@
+     Build · Example provider and model · 12.3s                                     MCP
+                                                                                     • example                  Connected
+  ┃
+  ┃  The sample request is ready. Run the two steps below.
+  ┃
+
+  ┃
+  ┃  △ Permission required
+  ┃
+  ┃  $ echo earlier sample
+  ┃
+  ┃   Allow once   Always allow   Reject     ctrl+f fullscreen   ⇆ select  enter confirm
+
+  ┃
+  ┃
+  ┃
+  ┃  Build · Example Provider Sample Model
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   ~/project                                     1 K tokens · ctrl+x tools  ctrl+p commands
