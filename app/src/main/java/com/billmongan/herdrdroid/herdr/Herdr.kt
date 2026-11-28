@@ -3867,8 +3867,44 @@ private val OPENCODE_PERMISSION_HINT = Regex("""(?:⇆|←→)\s+select\s+enter\
 /** OpenCode 2.3.2 puts its fullscreen toggle ("ctrl+f fullscreen", "ctrl+f minimize") before "⇆ select" (2.1.2). */
 private val OPENCODE_PERMISSION_FULLSCREEN = Regex("""(?:^|\s+)(?:\S+\s+)?(?:fullscreen|minimize)$""")
 
+private val OPENCODE_PERMISSION_GUTTER = Regex("""^ *[┃│|]""")
+private val OPENCODE_BACKGROUND_HINT =
+    Regex("""^\s*Press ctrl\+b to move running work to the background\s*$""", RegexOption.IGNORE_CASE)
+private val OPENCODE_TOOL_SPINNER = Regex("""^ *[┃│] +[⠁-⣿] +\S""")
+
+/** A native running tool followed by its background hint, with no later dialog or composer. */
+internal fun openCodePermissionRan(screen: String): Boolean {
+    val rows = stripAnsi(screen).lines().takeLast(20)
+    val hint = rows.indexOfLast { it.trim().trim('┃', '│').isNotBlank() }
+    if (hint < 0 || !OPENCODE_BACKGROUND_HINT.matches(rows[hint])) return false
+    val spinner = (hint - 1 downTo maxOf(0, hint - 12)).firstOrNull { OPENCODE_TOOL_SPINNER.containsMatchIn(rows[it]) }
+        ?: return false
+    val gutter = OPENCODE_PERMISSION_GUTTER.find(rows[spinner])?.value ?: return false
+    return rows.subList(spinner + 1, hint).all {
+        if (it.isBlank()) return@all true
+        if (!it.startsWith(gutter)) return@all false
+        val body = it.removePrefix(gutter).trim()
+        !OPENCODE_PERMISSION_TITLE.matches(body) && !OPENCODE_PERMISSION_HINT.containsMatchIn(body)
+    }
+}
+
+private fun joinOpenCodePermissionCommand(lines: List<String>): String = buildString {
+    append(lines.first().trimEnd())
+    lines.zipWithNext().forEach { (row, next) ->
+        val left = row.trimEnd()
+        val right = next.trimStart()
+        // The native TUI can wrap after shell punctuation. Join the two split forms
+        // seen in the pane, and keep other word boundaries separated.
+        val optionSplit = left.endsWith(" -") && right.startsWith("-") && right.getOrNull(1)?.isLetter() == true
+        val extensionSplit = left.endsWith(".") && left.getOrNull(left.lastIndex - 1)?.isLetterOrDigit() == true &&
+            right.firstOrNull()?.isLetterOrDigit() == true
+        if (!optionSplit && !extensionSplit) append(' ')
+        append(right.trimEnd())
+    }
+}
+
 private fun detectOpenCodePermission(styled: String, text: String): Prompt? {
-    fun clean(row: String) = row.trim().trim('┃', '│', '|').trim()
+    fun clean(row: String) = row.replaceFirst(OPENCODE_PERMISSION_GUTTER, "").trim()
     val rows = text.lines()
     var footer = rows.indexOfLast { clean(it).isNotEmpty() }
     if (footer < 0) return null
@@ -3877,9 +3913,36 @@ private fun detectOpenCodePermission(styled: String, text: String): Prompt? {
         OPENCODE_PERMISSION_HINT.find(clean(rows[footer])) == null) {
         footer = (footer - 1 downTo 0).firstOrNull { clean(rows[it]).isNotEmpty() } ?: return null
     }
+    // A wider terminal can continue drawing the right sidebar below the permission
+    // controls. Accept that trailing gutter row only when its text starts to the
+    // right of the complete controls, never when there is later text in the dialog.
+    var sidebarBelow = false
+    if (footer > 0 && OPENCODE_PERMISSION_HINT.find(clean(rows[footer])) == null) {
+        val candidate = (footer - 1 downTo maxOf(0, footer - 6)).firstOrNull {
+            val control = clean(rows[it])
+            val keyHint = OPENCODE_PERMISSION_HINT.find(control) ?: return@firstOrNull false
+            val controls = control.substring(0, keyHint.range.first).trimEnd()
+                .replace(OPENCODE_PERMISSION_FULLSCREEN, "").trimEnd()
+            OPENCODE_PERMISSION_BUTTONS.matches(controls)
+        }
+        if (candidate != null) {
+            val gutter = OPENCODE_PERMISSION_GUTTER.find(rows[candidate])?.value
+            val controlsEnd = rows[candidate].trimEnd().length
+            val below = rows.subList(candidate + 1, footer + 1)
+            if (gutter != null && below.all { row ->
+                    row.isBlank() || row.startsWith(gutter) &&
+                        row.drop(gutter.length).indexOfFirst { !it.isWhitespace() }.let {
+                            it < 0 || it + gutter.length > controlsEnd
+                        }
+                }) {
+                footer = candidate
+                sidebarBelow = true
+            }
+        }
+    }
     val hint = OPENCODE_PERMISSION_HINT.find(clean(rows[footer]))
     val title = (footer downTo maxOf(0, footer - 60)).firstOrNull { OPENCODE_PERMISSION_TITLE.matches(clean(rows[it])) }
-    if (title == null && hint == null) return null
+    if (hint == null && (title == null || openCodePermissionRan(text))) return null
     // A shell command wrapped inside the dialog can start a row with ">" (">/dev/null 2>&1"): it is
     // the command being asked about, not an input row under the dialog (2.1.2).
     val command = title?.let { t -> (t + 1..footer).firstOrNull { clean(rows[it]).startsWith("$ ") } }
@@ -3887,7 +3950,8 @@ private fun detectOpenCodePermission(styled: String, text: String): Prompt? {
     if (title != null && agentWentOn((title + 1..footer).filter { command == null || it !in command until checkNotNull(commandEnd) }.map { rows[it] })) return null
     val region = rows.subList(title ?: footer, footer + 1)
     val heading = title?.let { clean(rows[it]).removePrefix("△ ") } ?: "Permission required"
-    fun review() = Prompt(heading, emptyList(), region = region.map(::clean), terminalReview = true)
+    fun review() = Prompt(heading, emptyList(), region = region.map(::clean), terminalReview = true,
+        openCodePermission = true)
     if (title == null || heading != "Permission required" || hint == null) return review()
     val onFooter = clean(rows[footer]).substring(0, hint.range.first).trimEnd().replace(OPENCODE_PERMISSION_FULLSCREEN, "").trimEnd()
     // Narrow panes stack the hints under the buttons, with a blank row between them (2.3.2).
@@ -3912,8 +3976,11 @@ private fun detectOpenCodePermission(styled: String, text: String): Prompt? {
         val context = rows.subList(title + 1, command).map(::clean).filter(String::isNotEmpty)
         val parsed = questionParts((listOf(heading) + context).map { QLine(it) })
         val commandLines = listOf(first.removePrefix(gutter).removePrefix("$ ")) + continuation.map { it.removePrefix(gutter) }
-        parsed.copy(blocks = parsed.blocks + QBlock(QKind.COMMAND, commandLines.joinToString("\n")) +
-            QBlock(QKind.TEXT, "Line breaks follow the terminal display."))
+        val joined = sidebarBelow && commandLines.size >= 4
+        val display = if (joined) joinOpenCodePermissionCommand(commandLines) else commandLines.joinToString("\n")
+        val wrapNote = if (joined) "Wrapped lines were joined for display. Check Terminal for exact spacing."
+            else "Line breaks follow the terminal display."
+        parsed.copy(blocks = parsed.blocks + QBlock(QKind.COMMAND, display) + QBlock(QKind.TEXT, wrapNote))
     } else questionParts((listOf(heading) + body).map { QLine(it) })
     val labels = listOfNotNull(buttons.groups[1]?.value, buttons.groups[2]?.value, buttons.groups[3]?.value)
     val styledRow = styled.lines().getOrNull(buttonRow).orEmpty()
@@ -4270,6 +4337,7 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
         if (openCodeBackgroundDrawer(agent, plain) || openCodeComposerMode(plain.lines().takeLast(20)) >= 0) return null
         detectOpenCodeQuestion(plain)?.let { return it }
         detectOpenCodePermission(text, plain)?.let { return it }
+        if (openCodePermissionRan(plain)) return null
     }
     // 2.2.8 (Bill: "grok is stuck on a question I can't answer"): Grok working under its own rows.
     if (agent.equals("grok", true) && grokWorkingBelowAnyQuestion(plain)) return null
