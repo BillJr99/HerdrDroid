@@ -61,6 +61,15 @@ object Palette {
     val GreenSoft get() = pick(0xFFE6F4EC, 0xFF15291F)
     /** A server that can't be reached. */
     val Red get() = pick(0xFFC0392B, 0xFFF2766B)
+    /**
+     * 2.2.11 (Bill: "have the stop button be some other color besides the same yellow as the
+     * question cards, maybe a light red"): the chat Stop button's own light red, an
+     * errorContainer / onErrorContainer pair. Ink on soft is 7.4:1 light, 8.2:1 dark (WCAG AA).
+     * No palette variant remaps these, so Stop stays red in every theme.
+     */
+    val StopSoft get() = pick(0xFFFDE2E1, 0xFF4A1F1F)
+    val StopInk get() = pick(0xFF8C1D18, 0xFFFFB4AB)
+    val StopEdge get() = pick(0xFFF2B8B5, 0xFF7A3434)
     val Gray get() = pick(0xFFEEF0F3, 0xFF22262E)
     val Key get() = pick(0xFFF7F8FA, 0xFF20242B)
     val KeyEdge get() = pick(0xFFD5DAE2, 0xFF353B46)
