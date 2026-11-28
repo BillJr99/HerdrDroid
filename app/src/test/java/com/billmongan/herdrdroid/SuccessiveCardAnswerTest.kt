@@ -486,6 +486,40 @@ class SuccessiveCardAnswerTest {
         }
     }
 
+    @Test fun agyFileAccessShowsDetailsAndSendsOnlyTheSelectedDigit() {
+        val screen = res("/screens/agy/derived-2.2.11/file-access.txt")
+        val preview = checkNotNull(detectPrompt(screen, false, "agy"))
+        assertEquals("Allow access to this file?", preview.question)
+        assertEquals(listOf("Yes, allow access", "Yes, and always allow non-workspace access", "No, deny access", "Cancel"),
+            preview.choices.map { it.label })
+        assertTrue(preview.shownParts().details.any { it.contains("Reason: The helper is outside the current workspace.") })
+        assertTrue(preview.shownParts().details.any { it.contains("Read: /work/tools/helper") })
+        assertEquals(listOf(listOf("1"), listOf("2"), listOf("3"), listOf("esc")),
+            preview.choices.map { com.billmongan.herdrdroid.herdr.menuKeys(preview, it) })
+        val write = checkNotNull(detectPrompt(screen.replace("Read: ", "Write: "), false, "agy"))
+        assertTrue(write.shownParts().details.any { it.contains("Write: /work/tools/helper") })
+        fixture("agy", screen) {
+            readSelectedPane()
+            val shown = displayed()
+            val target = checkNotNull(vm.paneTextTarget)
+            answer(shown, target, index = 1)
+            assertTrue(sent.isEmpty())
+            assertNotNull(vm.approveAllPending)
+            vm.cancelApproveAll()
+            frame = screen.replace("/work/tools/helper", "/work/other/helper")
+            answer(shown, target, index = 0)
+            assertTrue("the old card must not authorize the replacement path", sent.isEmpty())
+            frame = screen
+            readSelectedPane()
+            recentResult = ExecResult(0, screen, "")
+            afterSend = ">"
+            status(Status.IDLE)
+            answer(displayed(), checkNotNull(vm.paneTextTarget), index = 2)
+            assertEquals(listOf("3"), sent)
+            assertNull(vm.cardParse("p1", vm.paneText))
+        }
+    }
+
     @Test fun agyClippedApprovalUsesFreshViewportAndDiscardsStaleRecentCard() {
         val clipped = checkNotNull(javaClass.getResource(
             "/screens/agy/captured-1.5.18-tall/clipped-a.txt"
