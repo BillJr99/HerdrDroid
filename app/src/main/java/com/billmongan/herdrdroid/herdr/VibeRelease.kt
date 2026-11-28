@@ -39,11 +39,14 @@ internal fun detectVibeRelease(screen: String, allowGenericReview: Boolean = fal
     }
     val buttonIndex = content[content.lastIndex - 1].first
     val buttons = styledChars(styled[buttonIndex])
-    val row = plain[buttonIndex]
-    val fills = labels.map { label ->
-        val from = row.indexOf(label)
-        buttons.subList(from, from + label.length).map { it.background to it.reverse }.distinct().singleOrNull()
-    }
+    val styledText = buttons.joinToString("") { it.ch.toString() }.trimEnd()
+    // The display and style parsers recognize different control sequences. Do not apply offsets
+    // from the display parser to the styled cells, or infer focus when the two rows disagree.
+    val fills = if (styledText == plain[buttonIndex]) labels.map { label ->
+        val from = styledText.indexOf(label)
+        if (from < 0 || from != styledText.lastIndexOf(label)) null
+        else buttons.subList(from, from + label.length).map { it.background to it.reverse }.distinct().singleOrNull()
+    } else emptyList()
     // The capture shows a filled button and a regular button. A plain snapshot can render the
     // labels, but only the colored live viewport establishes focus for sending.
     val selected = fills.mapIndexedNotNull { index, style ->
