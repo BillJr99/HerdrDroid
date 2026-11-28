@@ -2143,7 +2143,7 @@ class SuccessiveCardAnswerTest {
             try {
                 val terminal = readTerminal()
                 recentResult = ExecResult(0, frame, "")
-                afterSend = "❯ Ask a question or describe a task ↵"
+                afterSend = "❯ ask a question or describe a task ↵"
                 vm.sendTerminalKeys("p1", terminal, "down", "enter")
                 drainUntil { sent == listOf("down enter") && vm.paneText == afterSend }
                 assertNull(vm.cardParse("p1", vm.paneText))
