@@ -2293,18 +2293,6 @@ class SuccessiveCardAnswerTest {
                 val send = command.substringAfter(" && echo ${com.billmongan.herdrdroid.herdr.OCCUPANT_PASSED_MARK} && ")
                 return immediate(send, timeoutSeconds, expectedConnection)
             }
-            if ("hashlib.sha256(screen)" in command && " && echo @@herdrdroid-card-passed@@ && " in command) {
-                beforeCheck?.invoke()
-                val digest = checkNotNull(Regex("""'p1' '([0-9a-f]{64})' bottom""").find(command)).groupValues[1]
-                val occupant = checkNotNull(Regex("""'p1' '([0-9a-f]{64})' '[0-9a-f]{64}'""").find(command)).groupValues[1]
-                val live = com.billmongan.herdrdroid.herdr.cardOccupantDigest(org.json.JSONObject(pane))
-                if (live != occupant || liveScrollOffset != 0 ||
-                    com.billmongan.herdrdroid.herdr.sha256Hex(ansiFrame().toByteArray()) != digest) {
-                    cardChecksRefused++
-                    return ExecResult(com.billmongan.herdrdroid.herdr.CARD_CHANGED_EXIT, com.billmongan.herdrdroid.herdr.CARD_REFUSED_MARK, "")
-                }
-                return immediate(command.substringAfter(" && echo @@herdrdroid-card-passed@@ && "), timeoutSeconds, expectedConnection)
-            }
             if ("hashlib.sha256(screen)" in command) {
                 beforeDraftCheck?.also { beforeDraftCheck = null }?.invoke()
                 val occupant = Regex("""'p1' '([0-9a-f]{64})' '-'""").find(command)!!.groupValues[1]
