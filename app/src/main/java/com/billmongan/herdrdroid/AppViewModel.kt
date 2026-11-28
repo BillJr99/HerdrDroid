@@ -2968,7 +2968,8 @@ class AppViewModel internal constructor(
                 "$paneId: the live screen shows no dialog; the recent read's is not used")
             val recentClippedClaudeAsk = agent.equals("claude", true) && preview?.terminalReview == true &&
                 com.billmongan.herdrdroid.herdr.claudeClippedAskReview(recent) != null
-            val liveClippedDialog = liveViewport != null && isClippedDialogViewport(liveViewport, agent)
+            val liveClippedDialog = liveViewport != null && isClippedDialogViewport(liveViewport, agent) &&
+                (liveCandidate == null || liveCandidate.terminalReview || liveCandidate.topOffScreen)
             val nativeClaudeTall = agent == "claude" && liveCandidate?.topOffScreen == true &&
                 (liveCandidate.choices.isNotEmpty() || liveCard?.let {
                     com.billmongan.herdrdroid.herdr.claudeClippedAskReview(it)
@@ -6294,7 +6295,8 @@ class AppViewModel internal constructor(
                     }
                     if (!stillCurrent()) return null
                     parsed = detectPrompt(plain, blocked, agent, version)
-                } else if (isClippedDialogViewport(raw, agent)) {
+                } else if (isClippedDialogViewport(raw, agent) &&
+                    (parsed == null || parsed.terminalReview || parsed.topOffScreen)) {
                     val recovered = recoverClippedCard(client, pane, connection, raw, agent, blocked, version, ::stillCurrent)
                     if (!stillCurrent()) return null
                     if (recovered != null) return com.billmongan.herdrdroid.questions.QuestionRead(recovered.forCard(), null)
