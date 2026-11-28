@@ -275,15 +275,111 @@ class BoardPull2211Test {
         val kite = BoardCard(UUID.randomUUID().toString(), "Make a kite")
         assertTrue(store.saveCard(null, kite, first))
         assertTrue(store.startSync(first, 1))
-        assertEquals(
-            listOf(BoardDuplicate(ids[1], listOf(ids[0])), BoardDuplicate(ids[2], listOf(ids[0]))),
-            board().duplicates,
-        )
+        assertEquals(mapOf(ids[1] to listOf(ids[0]), ids[2] to listOf(ids[0])), board().duplicateCandidates)
+        assertTrue(board().duplicates.isEmpty())
         assertEquals(BoardSyncProgress.QUEUED, board().syncProgress)
         assertEquals(setOf(ids[0], kite.id), request().changes.filterIsInstance<BoardChange.Create>().map { it.clientId }.toSet())
         assertTrue(ids[0] in board().entries)
         assertFalse(ids[1] in board().entries)
         assertFalse(ids[2] in board().entries)
+    }
+
+    @Test
+    fun createAdoptsCanonicalFieldsAndDetectsInFlightOverlap() {
+        val unchanged = BoardCard("draft-a", "Cut paper")
+        val edited = BoardCard("draft-b", "Fold paper", next = "Start")
+        assertTrue(store.saveCard(null, unchanged, first))
+        assertTrue(store.saveCard(null, edited, first))
+        assertTrue(store.startSync(first, 10))
+        val create = request()
+        assertTrue(store.markSent(first, create.id, 10))
+        assertTrue(store.saveCard(null, edited.copy(next = "Phone choice"), first))
+        val saved = unchanged.copy(id = "saved-a", nativeStatus = "Triage", updatedAt = newer)
+        val changed = edited.copy(id = "saved-b", next = "Board choice")
+        assertTrue(store.receive(first, BoardReply(create.id, "Board", newer,
+            listOf(saved, changed), emptyList(), listOf(BoardResult(true, saved.id), BoardResult(true, changed.id)))))
+        assertEquals(saved, board().cards[saved.id])
+        assertEquals(listOf(BoardConflict(changed.id, "next", "Phone choice", "Board choice")), board().conflicts)
+        val export = request()
+        assertTrue(store.markSent(first, export.id, 11))
+        assertTrue(store.receive(first, BoardReply(export.id, "Board", newer,
+            listOf(saved, changed), emptyList(), emptyList())))
+        assertFalse(store.queueApply(first, 12))
+    }
+
+    @Test
+    fun createSeparatelyDuringSentApplyStillShowsQueuedAfterExportAndRestart() {
+        checkSeparateCreateAfterSentRequest(stagedApply = true)
+    }
+
+    @Test
+    fun createSeparatelyDuringSentExportStillShowsQueuedAfterExportAndRestart() {
+        checkSeparateCreateAfterSentRequest(stagedApply = false)
+    }
+
+    private fun checkSeparateCreateAfterSentRequest(stagedApply: Boolean) {
+        export(existing)
+        val twin = BoardCard("draft-b", "Fold a paper boat")
+        val kite = BoardCard("draft-a", "Make a kite")
+        if (stagedApply) assertTrue(store.saveCard(null, kite, first))
+        assertTrue(store.saveCard(null, twin, first))
+        assertTrue(store.startSync(first, 10))
+        val active = request()
+        assertTrue(store.markSent(first, active.id, 10))
+        assertTrue(store.resolveDuplicate(first, twin.id, null))
+        assertEquals(active, request())
+        if (stagedApply) {
+            val saved = kite.copy(id = "saved-a")
+            assertTrue(store.receive(first, BoardReply(active.id, "Board", newer,
+                listOf(saved), emptyList(), listOf(BoardResult(true, saved.id)))))
+            assertTrue(store.markSent(first, request().id, 11))
+        }
+        val export = request()
+        assertEquals(BoardRequestKind.EXPORT, export.kind)
+        assertTrue(store.receive(first, BoardReply(export.id, "Board", newer, emptyList(), emptyList(), emptyList())))
+        assertEquals(BoardSyncProgress.QUEUED, board().syncProgress)
+        val restored = BoardStore(boardStateFromJson(JSONObject(boardStateJson(store.state.value).toString()))) { true }
+        assertEquals(BoardSyncProgress.QUEUED, restored.state.value.servers.getValue(first).syncProgress)
+        assertTrue(restored.queueApply(first, 12))
+        val queued = restored.state.value.servers.getValue(first).request!!.changes.single() as BoardChange.Create
+        assertEquals(twin.id, queued.clientId)
+    }
+
+    @Test
+    fun twinWaitsForARealLinkTargetBeforeAndAfterTheFirstCreateIsSent() {
+        val firstCard = BoardCard("draft-a", "Make a kite", next = "Use paper")
+        val twin = BoardCard("draft-b", "Make a kite", next = "Use cloth")
+        assertTrue(store.saveCard(null, firstCard, first))
+        assertTrue(store.saveCard(null, twin, first))
+        assertTrue(store.startSync(first, 10))
+        val create = request()
+        assertFalse(store.resolveDuplicate(first, twin.id, firstCard.id))
+        assertEquals(firstCard, (request().changes.single() as BoardChange.Create).card)
+        assertTrue(store.markSent(first, create.id, 10))
+        assertFalse(store.resolveDuplicate(first, twin.id, firstCard.id))
+        assertEquals(firstCard, board().entries[firstCard.id])
+        assertEquals(twin, store.state.value.phone[twin.id])
+        assertTrue(board().conflicts.isEmpty())
+
+        val saved = firstCard.copy(id = "saved-a")
+        assertTrue(store.receive(first, BoardReply(create.id, "Board", newer,
+            listOf(saved), emptyList(), listOf(BoardResult(true, saved.id)))))
+        assertEquals(listOf(BoardDuplicate(twin.id, listOf(saved.id))), board().duplicates)
+        assertTrue(store.resolveDuplicate(first, twin.id, saved.id))
+        assertEquals(listOf(BoardConflict(saved.id, "next", "Use cloth", "Use paper")), board().conflicts)
+    }
+
+    @Test
+    fun pullChecksTwinsAgainstCreatesStagedBeforeThisRound() {
+        val firstCard = BoardCard("draft-a", "Make a kite")
+        val twin = BoardCard("draft-b", "Make a kite")
+        assertTrue(store.saveCard(null, firstCard))
+        assertTrue(store.movePhoneCard(firstCard.id, first))
+        assertTrue(store.saveCard(null, twin, first))
+        assertTrue(store.startSync(first, 10))
+        assertEquals(firstCard.id, (request().changes.single() as BoardChange.Create).clientId)
+        assertEquals(listOf(firstCard.id), board().duplicateCandidates[twin.id])
+        assertTrue(board().duplicates.isEmpty())
     }
 
     @Test

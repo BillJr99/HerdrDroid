@@ -51,15 +51,19 @@ data class ServerBoard(
     internal val duplicateCandidates: Map<String, List<String>> = emptyMap(),
     internal val allowDuplicate: Set<String> = emptySet(),
 ) {
-    val duplicates: List<BoardDuplicate> get() = duplicateCandidates.map { (phone, remote) -> BoardDuplicate(phone, remote) }
+    val duplicates: List<BoardDuplicate> get() = duplicateCandidates.mapNotNull { (phone, matches) ->
+        // An unsent create can hold back a twin, but is not a link target until acknowledged.
+        matches.filter { it in baseline }.takeIf { it.isNotEmpty() }?.let { BoardDuplicate(phone, it) }
+    }
 
     val syncProgress: BoardSyncProgress? get() = when {
         noAnswer -> BoardSyncProgress.NO_ANSWER
         request != null && requestSentAt == null -> BoardSyncProgress.QUEUED
         request?.kind == BoardRequestKind.APPLY -> BoardSyncProgress.APPLYING
         request?.kind == BoardRequestKind.EXPORT -> BoardSyncProgress.EXPORTING
-        conflicted.isNotEmpty() || duplicateCandidates.isNotEmpty() -> BoardSyncProgress.CONFLICTS
+        conflicted.isNotEmpty() || duplicates.isNotEmpty() -> BoardSyncProgress.CONFLICTS
         refusal != null -> BoardSyncProgress.REFUSED
+        creates.isNotEmpty() || pendingNotes.isNotEmpty() -> BoardSyncProgress.QUEUED
         manualFinished -> BoardSyncProgress.SYNCED
         else -> null
     }
@@ -203,7 +207,8 @@ class BoardStore internal constructor(
                 }
                 return@mutate state.copy(servers = state.servers + (serverId to queued))
             }
-            if (remoteId !in board.duplicateCandidates.getValue(phoneId)) return@mutate state
+            if (remoteId !in board.duplicateCandidates.getValue(phoneId) || remoteId !in board.baseline)
+                return@mutate state
             val remote = board.entries[remoteId] ?: return@mutate state
             val linked = remote.copy(notes = unionNotes(remote.notes, card.notes))
             val fieldChoices = (card.fields() - setOf("title", "notes", "updated_at", "native_status"))
@@ -348,7 +353,13 @@ class BoardStore internal constructor(
         if (createdIds.toSet().size != createdIds.size) return@mutate state
         val sentPhone = created.map { it.first }.filter { state.phoneTargets[it] == serverId }.toSet()
         val remaining = state.copy(phone = state.phone - sentPhone, phoneTargets = state.phoneTargets - sentPhone)
-        val accepted = board.accept(request, reply).copy(allowDuplicate = board.allowDuplicate - sentPhone)
+        val accepted = board.accept(request, reply).let { accepted ->
+            val assigned = created.toMap()
+            val candidates = (board.duplicateCandidates - sentPhone).mapValues { (_, matches) ->
+                matches.map { assigned[it] ?: it }.distinct().filter { it in accepted.baseline || it in accepted.creates }
+            }.filterValues { it.isNotEmpty() }
+            accepted.copy(allowDuplicate = board.allowDuplicate - sentPhone, duplicateCandidates = candidates)
+        }
         val updated = when {
             !board.manualRound -> accepted
             board.manualRequestId != request.id -> remaining.beginManualSync(serverId, accepted)
@@ -362,17 +373,15 @@ class BoardStore internal constructor(
 private fun BoardState.beginManualSync(serverId: String, board: ServerBoard): ServerBoard {
     val candidates = mutableMapOf<String, List<String>>()
     val phoneCards = phoneTargets.filterValues { it == serverId }.keys.mapNotNull(phone::get).sortedBy { it.id }
-    val stagedNow = mutableListOf<String>()
     val staged = phoneCards.fold(board.copy(request = null, manualRequestId = null)) { current, card ->
         if (card.id in current.entries) return@fold current
         val title = normalizedTitle(card.title)
         val sameTitle = current.baseline.values.filter { normalizedTitle(it.title) == title }.map { it.id } +
-            stagedNow.filter { normalizedTitle(current.entries.getValue(it).title) == title }
+            current.creates.filter { id -> current.entries[id]?.let { normalizedTitle(it.title) == title } == true }
         if (sameTitle.isNotEmpty() && card.id !in current.allowDuplicate) {
             candidates[card.id] = sameTitle
             current
         } else {
-            stagedNow += card.id
             current.copy(entries = current.entries + (card.id to card), creates = current.creates + card.id)
         }
     }.copy(duplicateCandidates = candidates)
@@ -474,9 +483,9 @@ private fun ServerBoard.accept(request: BoardRequest, reply: BoardReply): Server
                 newIds.remove(id)
                 local.remove(id)
                 if (notesToAppend.isNotEmpty()) pending[result.id] = notesToAppend
-                // The acknowledgement is the base: one copy of each server note, in server order.
+                // Only the acknowledged notes replace the submitted merge ancestor.
                 if (inFlight != null) local[result.id] = inFlight.copy(id = result.id, notes = base.notes)
-                known[result.id] = base
+                known[result.id] = change.card.copy(id = result.id, notes = base.notes)
             }
             is BoardChange.Update -> known[change.id]?.let { known[change.id] = it.withFields(change.set) }
             is BoardChange.Note -> {
