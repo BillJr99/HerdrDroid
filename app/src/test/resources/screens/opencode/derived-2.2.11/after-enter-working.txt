@@ -1,0 +1,20 @@
+     Build · Example provider and model
+                                                                                              ● Example service
+  ┃
+  ┃  The previous tool completed and returned an example response.
+  ┃
+  ┃  ## Result
+  ┃
+  ┃  The sample outputs are ready.
+  ┃
+
+     ⠙ Waiting response
+
+     Press ctrl+b to move running work to the background
+
+  ┃
+  ┃
+  ┃
+  ┃  Build · Example Provider Sample Model
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   /project cwd reference                         1 K tokens · ctrl+x tools  ctrl+p commands    Session details
