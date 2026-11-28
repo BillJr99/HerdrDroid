@@ -1677,6 +1677,43 @@ class SuccessiveCardAnswerTest {
         assertEquals(vm.notice, listOf("enter", "enter"), sent)
     }
 
+    @Test fun claudeBackgroundAskShowsThirdTabAndAdvancesToTheFourth() = fixture("claude", backgroundAsk("third")) {
+        readSelectedPane()
+        val third = displayed()
+        assertEquals("Question 3 of 4", third.parts?.step)
+        assertEquals(listOf(true, true, false, false, false), third.parts?.tabs?.map { it.done })
+        assertEquals(listOf("Wait for completion", "Try again", "Type something.", "Chat about this"),
+            third.choices.map { it.label })
+        assertEquals(listOf("down", "enter"), com.billmongan.herdrdroid.herdr.menuKeys(third, third.choices[1]))
+        afterSend = backgroundAsk("fourth")
+        answer(third, checkNotNull(vm.paneTextTarget), index = 1)
+        assertEquals(listOf("down enter"), sent)
+        readSelectedPane()
+        val fourth = displayed()
+        assertEquals("Question 4 of 4", fourth.parts?.step)
+        assertEquals("Choose a brief time window for the next step. The window starts when work resumes.", fourth.question)
+        assertEquals(listOf("Use a short window", "Use a longer window", "Decide later", "Type something.", "Chat about this"),
+            fourth.choices.map { it.label })
+    }
+
+    @Test fun terminalEnterClearsClaudeBackgroundAskWhenTheComposerReturns() = fixture("claude", backgroundAsk("fourth")) {
+        readSelectedPane()
+        val question = displayed()
+        assertEquals("Question 4 of 4", question.parts?.step)
+        showTerminalQuestionAlert(question)
+        try {
+            val terminal = readTerminal()
+            afterSend = "❯ "
+            vm.sendTerminalKeys("p1", terminal, "enter")
+            drainUntil { sent == listOf("enter") && vm.paneText == "❯ " }
+            assertNull(vm.cardParse("p1", vm.paneText))
+            assertFalse(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+            assertFalse(terminalAlertIsShowing())
+        } finally {
+            clearTerminalAlert()
+        }
+    }
+
     @Test fun terminalEnterClearsTheCardAndWaitingBadgeFromLiveScreen() = fixture("claude", firstStep) {
         readSelectedPane()
         assertNotNull(vm.cardParse("p1", vm.paneText))
@@ -2303,6 +2340,9 @@ class SuccessiveCardAnswerTest {
     }
 
     private companion object {
+        fun backgroundAsk(step: String) = checkNotNull(SuccessiveCardAnswerTest::class.java.getResource(
+            "/screens/claude/derived-2.2.11/background-ask-$step.txt")).readText().trimEnd()
+
         val piQuestion = checkNotNull(SuccessiveCardAnswerTest::class.java.getResource(
             "/screens/pi/derived-1.4.9/0502-project-trust.txt")).readText().trimEnd()
         val claudeMulti = screenFixture("0109-askuserquestion-multi-select-review-and--2")
