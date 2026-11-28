@@ -1698,6 +1698,54 @@ class SuccessiveCardAnswerTest {
         }
     }
 
+    @Test fun openCodeTerminalEnterClearsPermissionWhenTheLiveToolStarts() =
+        fixture("opencode", focusedPermission("Allow once")) {
+            readSelectedPane()
+            val question = shown()
+            assertTrue(question.openCodePermission)
+            showTerminalQuestionAlert(question)
+            try {
+                val terminal = readTerminal()
+                recentResult = ExecResult(0, frame, "")
+                afterSend = openCodeToolRunning
+                vm.sendTerminalKeys("p1", terminal, "enter")
+                drainUntil { sent == listOf("enter") && vm.paneText == openCodeToolRunning }
+                assertNull(vm.cardParse("p1", vm.paneText))
+                assertEquals(Status.WORKING, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+                assertFalse(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+                assertFalse(terminalAlertIsShowing())
+
+                frame = openCodeComposer
+                readTerminal()
+                assertNull("the previous permission remains only in recent history", vm.cardParse("p1", vm.paneText))
+                assertFalse(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+            } finally {
+                clearTerminalAlert()
+            }
+        }
+
+    @Test fun openCodeTerminalEnterPreservesTheLivePermissionAndRefusesAReusedViewport() =
+        fixture("opencode", focusedPermission("Reject")) {
+            readSelectedPane()
+            showTerminalQuestionAlert(shown())
+            try {
+                val terminal = readTerminal()
+                val before = recentReads
+                vm.sendTerminalKeys("p1", terminal, "down", "enter")
+                drainUntil { sent == listOf("down enter") && recentReads > before }
+                assertNotNull(vm.cardParse("p1", vm.paneText))
+                assertTrue(terminalAlertIsShowing())
+                frame = openCodeToolRunning
+                afterGuardedVisibleRead = { this.terminal = "replacement-terminal" }
+                readTerminal()
+                assertNotNull(vm.cardParse("p1", vm.paneText))
+                assertEquals(Status.NEEDS_YOU, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+                assertTrue(terminalAlertIsShowing())
+            } finally {
+                clearTerminalAlert()
+            }
+        }
+
     @Test fun terminalAnswerKeepsTheOldCardUntilASecondLiveQuestionArrives() = fixture("claude", firstStep) {
         readSelectedPane()
         val first = shown()
@@ -2264,6 +2312,13 @@ class SuccessiveCardAnswerTest {
             ┃  Build · Fixture Model
             ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
             ~/fixture              tab agents  ctrl+p commands
+        """.trimIndent()
+
+        val openCodeToolRunning = """
+            ┃  ⠹ echo sample
+            ┃    wrapped…
+            ┃
+               Press ctrl+b to move running work to the background
         """.trimIndent()
 
         const val approvalCommand = "/fixture/.venv/bin/python -m pip install fixture"

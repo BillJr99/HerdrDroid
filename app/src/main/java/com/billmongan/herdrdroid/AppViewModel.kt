@@ -23,6 +23,7 @@ import com.billmongan.herdrdroid.herdr.activePiQuestion
 import com.billmongan.herdrdroid.herdr.isOpenCode
 import com.billmongan.herdrdroid.herdr.backgroundSupport
 import com.billmongan.herdrdroid.herdr.openCodeBackgroundDrawer
+import com.billmongan.herdrdroid.herdr.openCodePermissionRan
 import com.billmongan.herdrdroid.herdr.openCodeEmptyComposer
 import com.billmongan.herdrdroid.herdr.Prompt
 import com.billmongan.herdrdroid.herdr.Choice
@@ -4856,6 +4857,7 @@ class AppViewModel internal constructor(
         var previous: Prompt?,
         val alert: AlertOrigin?,
         val alertJob: Job?,
+        var openCodePermission: Boolean = previous?.openCodePermission == true,
     ) {
         var status by mutableStateOf<Status?>(null)
         var alertResolved = false
@@ -4879,7 +4881,7 @@ class AppViewModel internal constructor(
         val source = cardTarget(paneId) ?: return null
         val prior = terminalDismissals[source.server to paneId]?.takeIf { it.matches(source.pane) } ?: return null
         val frame = prior.watch.frame.copy(source = source)
-        return TerminalAnswerWatch(frame, null, null, null).also {
+        return TerminalAnswerWatch(frame, null, null, null, prior.watch.openCodePermission).also {
             it.status = prior.status
             it.alertResolved = true
             terminalAnswerWatch = it
@@ -4953,11 +4955,14 @@ class AppViewModel internal constructor(
             else detectPrompt(raw, blocked = live.status == Status.NEEDS_YOU && !composer && !working, agent, version)
         val dialog = parsed ?: if (agent == "claude")
             com.billmongan.herdrdroid.herdr.claudeReviewPreview(text, null) else null
-        if (dialog == null && (!composer && !working || com.billmongan.herdrdroid.herdr.showsQuestionDialog(text)))
+        val permissionRan = dialog == null && isOpenCode(agent) && watch.openCodePermission &&
+            openCodePermissionRan(raw)
+        if (dialog == null && !permissionRan &&
+            (!composer && !working || com.billmongan.herdrdroid.herdr.showsQuestionDialog(text)))
             return TerminalAnswerRead(live, raw, null, Status.NEEDS_YOU).takeIf { watchingInventory }
         val status = when {
             dialog != null -> Status.NEEDS_YOU
-            working -> Status.WORKING
+            working || permissionRan && "Press ctrl+b to move running work to the background" in text -> Status.WORKING
             live.status == Status.NEEDS_YOU || live.status == Status.UNKNOWN -> Status.IDLE
             else -> live.status
         }
@@ -4985,6 +4990,7 @@ class AppViewModel internal constructor(
             questionsFeed.poke()
         }
         watch.previous = read.prompt
+        read.prompt?.let { watch.openCodePermission = it.openCodePermission }
         watch.status = read.status
     }
 
@@ -5012,7 +5018,8 @@ class AppViewModel internal constructor(
             if (h.backend == Backend.TUI && hasStableOccupant(frame.live) &&
                 (previous != null || shownStatus(frame.source.pane) == Status.NEEDS_YOU || watch != null)) {
                 lastAppliedPaneRead = ++paneReadSequence
-                terminalAnswerWatch = TerminalAnswerWatch(frame, previous, alert, alertJob).also {
+                terminalAnswerWatch = TerminalAnswerWatch(frame, previous, alert, alertJob,
+                    previous?.openCodePermission ?: watch?.openCodePermission ?: false).also {
                     it.status = watch?.status
                 }
             }
