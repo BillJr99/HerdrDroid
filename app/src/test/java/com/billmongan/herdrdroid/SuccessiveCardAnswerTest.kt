@@ -1877,6 +1877,26 @@ class SuccessiveCardAnswerTest {
             }
         }
 
+    @Test fun openCodeTerminalEnterClearsPermissionOnEmptySessionComposerWithoutSpinner() =
+        fixture("opencode", focusedPermission("Allow once")) {
+            readSelectedPane()
+            showTerminalQuestionAlert(shown())
+            try {
+                val terminal = readTerminal()
+                val after = openCodeComposer.replace("┃  Ask anything...", "┃\n┃\n┃")
+                recentResult = ExecResult(0, frame, "")
+                afterSend = after
+                vm.sendTerminalKeys("p1", terminal, "enter")
+                drainUntil { sent == listOf("enter") && vm.paneText == after }
+                assertNull(vm.cardParse("p1", vm.paneText))
+                assertEquals(Status.IDLE, vm.shownStatus(checkNotNull(vm.pane("p1"))))
+                assertFalse(vm.hasPendingQuestion(checkNotNull(vm.pane("p1"))))
+                assertFalse(terminalAlertIsShowing())
+            } finally {
+                clearTerminalAlert()
+            }
+        }
+
     @Test fun openCodeTerminalEnterPreservesTheLivePermissionAndRefusesAReusedViewport() =
         fixture("opencode", focusedPermission("Reject")) {
             readSelectedPane()
