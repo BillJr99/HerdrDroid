@@ -87,9 +87,9 @@ internal fun alertText(p: com.billmongan.herdrdroid.herdr.Prompt): String {
     val heading = p.parts?.heading
     if (heading != null && squash(p.question) == squash(heading) + ":" + squash(cmd) ||
         heading == null && squash(p.question) == squash(cmd)) {
-        return listOfNotNull(heading, cmd.take(400)).joinToString("\n")
+        return listOfNotNull(heading, cmd.take(ALERT_COMMAND_CHARS)).joinToString("\n")
     }
-    return if (p.question.contains(cmd)) p.question else "${p.question}\n${cmd.take(400)}"
+    return if (p.question.contains(cmd)) p.question else "${p.question}\n${cmd.take(ALERT_COMMAND_CHARS)}"
 }
 
 /**
@@ -102,12 +102,14 @@ internal fun alertBody(p: com.billmongan.herdrdroid.herdr.Prompt): String {
     val parts = p.parts
     val command = parts?.command
     val heading = parts?.heading
+    val commandPreview = command?.takeIf { '\n' !in it && it.length > ALERT_COMMAND_CHARS }
+        ?.take(ALERT_COMMAND_CHARS)?.trimEnd()
     val lines: List<String> = when {
         parts != null && heading != null && parts.tabs.any { it.submit && it.current } ->
             listOf(heading) + parts.details.flatMap { d ->
                 com.billmongan.herdrdroid.ui.QuestionText.reviewAnswer(d)?.let { (q, a) -> listOf(q, "Your answer: $a") } ?: listOf(d)
             }
-        command != null && heading != null && !command.contains('\n') && command.length <= 400 -> {
+        command != null && heading != null && !command.contains('\n') && command.length <= ALERT_COMMAND_CHARS -> {
             val context = parts.details.filter { d -> d.filterNot(Char::isWhitespace) != heading.filterNot(Char::isWhitespace) }
             // 2.2.2 review: every line of context, up to a total length, the cut one ending in "…".
             var budget = ALERT_CONTEXT_CHARS
@@ -115,8 +117,10 @@ internal fun alertBody(p: com.billmongan.herdrdroid.herdr.Prompt): String {
                 if (budget <= 0) null else (if (d.length <= budget) d else d.take(budget).trimEnd() + "…").also { budget -= d.length }
             }
         }
+        commandPreview != null && heading != null ->
+            listOf(heading, commandPreview, "Full command in the app.")
         // 2.2.4: a tall command (Claude's heredoc): the heading, the command's first lines, how many more, then the context.
-        command != null && heading != null && command.contains('\n') && command.length > 400 -> {
+        command != null && heading != null && command.contains('\n') && command.length > ALERT_COMMAND_CHARS -> {
             val all = command.lines()
             val shown = all.take(ALERT_COMMAND_LINES)
             val context = parts.details.filter { d -> d.filterNot(Char::isWhitespace) != heading.filterNot(Char::isWhitespace) }
@@ -129,12 +133,15 @@ internal fun alertBody(p: com.billmongan.herdrdroid.herdr.Prompt): String {
         else -> listOf(alertText(p))
     }
     // Each piece cleaned on its own, so a heading and the line under it never run together.
-    val code = command?.lines().orEmpty()
+    val code = command?.lines().orEmpty() + listOfNotNull(commandPreview)
     return lines.map { com.billmongan.herdrdroid.ui.QuestionText.alert(it, code) }.filter { it.isNotEmpty() }.joinToString("\n")
 }
 
 /** How much context an approval's alert carries under its command (2.2.2). */
 internal const val ALERT_CONTEXT_CHARS = 600
+
+/** How much of a long single-line command fits in the notification preview. */
+internal const val ALERT_COMMAND_CHARS = 400
 
 /** How many lines of a tall command an approval's alert shows (2.2.4). */
 internal const val ALERT_COMMAND_LINES = 8
