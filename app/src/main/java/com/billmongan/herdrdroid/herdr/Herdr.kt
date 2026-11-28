@@ -4394,8 +4394,11 @@ fun detectPrompt(text: String, blocked: Boolean, agent: String? = null, version:
     if (isOpenCode(agent)) {
         if (openCodeBackgroundDrawer(agent, plain) || openCodeComposerMode(plain.lines().takeLast(20)) >= 0) return null
         detectOpenCodeQuestion(plain)?.let { return it }
-        if (isClippedDialogViewport(plain, agent)) clippedDialogReview(plain, agent)?.let { return it }
-        detectOpenCodePermission(text, plain)?.let { return it }
+        detectOpenCodePermission(text, plain)?.let { permission ->
+            if (permission.terminalReview && isClippedDialogViewport(plain, agent))
+                return clippedDialogReview(plain, agent) ?: permission
+            return permission
+        }
         if (openCodePermissionRan(plain)) return null
     }
     // 2.2.8 (Bill: "grok is stuck on a question I can't answer"): Grok working under its own rows.
