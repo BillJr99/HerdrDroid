@@ -1,0 +1,27 @@
+
+
+✻ Waiting for 1 background agent to finish
+
+❯ Work on the sample project
+
+› Message from @general-purpose (ctrl+o to expand)
+─────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Start  ☒ Prepare  ☒ Retry rule  ☐ Window cap  ✔ Submit  →
+
+│ Choose a brief time
+│ window for the next
+│ step. The window starts
+│ when work resumes.
+
+❯ 1. Use a short window
+     Stop after the first interval
+     or as soon as the work is complete.
+  2. Use a longer window
+     Allow more time for the current step.
+  3. Decide later
+     Record the choice before work resumes.
+  4. Type something.
+─────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel
